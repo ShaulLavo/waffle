@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
@@ -112,7 +113,7 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   const sibling = new FilesystemClient(client.fork());
   try {
     await client.asyncCall("writeFile", ["/created", false, true], bytes("winner"));

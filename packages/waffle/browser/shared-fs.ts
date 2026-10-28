@@ -1,3 +1,4 @@
+import { type FilesystemRequestPool } from "../fs/request-memory.js";
 import {
   localMemory,
   localPublication,
@@ -117,6 +118,7 @@ export class SharedFilesystem {
   private startupComplete = false;
   private cancellableStartup = false;
   private stopped = false;
+  private readonly requestPool: FilesystemRequestPool;
   private clientStopped = false;
   private disposal?: Promise<void>;
   private finishDisposal?: (error?: Error) => void;
@@ -138,6 +140,7 @@ export class SharedFilesystem {
       undefined,
       options[localPublication] ?? (options.workspace ? { workspace: true } : undefined),
     );
+    this.requestPool = connection.pool;
     let worker: Worker | undefined;
     let client: FilesystemClient | undefined;
     try {
@@ -146,7 +149,9 @@ export class SharedFilesystem {
         { type: "module" },
       );
       reportRuntimeStartup(onStartupStage, "filesystem-worker-created");
-      this.client = client = new FilesystemClient(connection.client);
+      this.client = client = new FilesystemClient(connection.client, {
+        connect: (identity) => this.connect(identity),
+      });
       this.workspace = options.workspace ? createWorkspaceVfs(client, projectionBudget) : undefined;
       worker.addEventListener("message", (event) => this.receiveMessage(event, onStartupStage));
       worker.addEventListener("error", (event) => {
@@ -292,10 +297,8 @@ export class SharedFilesystem {
   }
   connect(identity: FilesystemIdentity): FilesystemConnection {
     this.assertLive();
-    const connection = connectFilesystemIdentity(identity);
-    this.client.connection.port.postMessage({ connect: connection.server }, [
-      connection.server.port,
-    ]);
+    const connection = connectFilesystemIdentity(identity, this.requestPool);
+    this.worker.postMessage({ connect: connection.server }, [connection.server.port]);
     return connection.client;
   }
   /** Cancellation is immediate, but terminate() does not establish worker death. */

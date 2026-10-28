@@ -97,6 +97,15 @@ export const DataViewConstructor = DataView;
 // Importing the core is supported without cross-origin isolation. The captured
 // constructor is unavailable there; only actual shared-state allocation needs it.
 export const SharedArrayBufferConstructor = globalThis.SharedArrayBuffer;
+const construct = Reflect.construct;
+export function createGrowableSharedArrayBuffer(bytes: number, maximum: number): SharedArrayBuffer {
+  const buffer: unknown = construct(SharedArrayBufferConstructor, [
+    bytes,
+    { __proto__: null, maxByteLength: maximum },
+  ]);
+  if (!isSharedArrayBuffer(buffer)) throw new TypeError("native shared buffer construction failed");
+  return buffer;
+}
 
 const sharedPrototype = SharedArrayBufferConstructor?.prototype;
 const sharedLength = sharedPrototype && descriptor(sharedPrototype, "byteLength")!.get!;

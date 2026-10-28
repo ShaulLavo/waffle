@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./filesystem-host.js";
 import { residentMemory } from "./resident-memory";
 import {
   FilesystemClient,
@@ -117,7 +118,7 @@ async function initialize(): Promise<void> {
   service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
-  root = new FilesystemClient(connection.client);
+  root = hostFilesystemClient(service, connection);
   const dir: number = await root.asyncCall("preopen", ["/"]);
   rootHandle = dir;
   const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);

@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -18,7 +19,7 @@ export async function mixedNotificationCases(
   const service = new FilesystemService(new MemoryBackend());
   const pair = createFilesystemConnection();
   service.connect(pair.server);
-  const fs = new FilesystemClient(pair.client);
+  const fs = hostFilesystemClient(service, pair);
   const bridge = createNotificationBridge(helperUrl);
   const guest = new Worker(guestUrl, { type: "module" });
   const transport = createWorkerProcessTransport({ capacity: 4 });

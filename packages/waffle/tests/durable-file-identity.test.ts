@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
@@ -95,7 +96,7 @@ async function fixture(backend: MemoryBackend) {
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   await client.asyncCall("writeFile", ["/file"], bytes("seed"));
   const root = await client.asyncCall("preopen", ["/"]);
   const resolved = await client.asyncCall("resolve", [root, "file"]);

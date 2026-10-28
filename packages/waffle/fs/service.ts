@@ -1,3 +1,25 @@
+import {
+  requestMemorySections,
+  waitForRequestQuiescence,
+  assertRequestBudget,
+  requestBudgetBytes,
+  retainResponseBytes,
+  captureRequestMemory,
+  closeRequestMemory,
+  retireRequestMemory,
+  requestTransportError,
+  requestLengths,
+  requestCells,
+  requestBytes,
+  requestCancelled,
+  receiveRequestBuffer,
+  releaseRequestBuffer,
+  requestMemoryResources,
+  REQUEST_SERVICE,
+  type FilesystemRequestMemory,
+  type FilesystemRequestBuffer,
+} from "./request-memory.js";
+import { atomicsWaitAsync } from "../proc/intrinsics.js";
 import { WatchService } from "./watch-service.js";
 import { checkDirectoryPage } from "./directory-pages.js";
 import type { ResolvedPath } from "../core/filesystem.js";
@@ -64,6 +86,9 @@ type Response =
   | { kind: "resolve"; references: Map<number, number>; payload: ResponsePayload };
 interface Session {
   connection: FilesystemConnection;
+  requests: FilesystemRequestMemory;
+  transportRetirement?: Promise<void>;
+  transportFailed?: boolean;
   handles: Map<number, number>;
   capabilities: Int32Array;
   freeEntries: number[];
@@ -71,7 +96,9 @@ interface Session {
   transient: Map<number, true>;
   references: Map<number, number>;
   responses: Map<number, Response>;
-  pending: Map<number, SharedArrayBuffer>;
+  responseMemory: Map<number, () => void>;
+  retainedRequests: Map<number, FilesystemRequestBuffer>;
+  pending: Map<number, FilesystemRequestBuffer>;
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
@@ -82,6 +109,9 @@ interface Session {
   namespace?: NamespaceAuthority;
   reader?: WorkspaceReadAuthority;
   readerClosing?: Promise<void>;
+}
+function sessionRevoked(session: Session): boolean {
+  return isRevoked(session.connection) || !!requestTransportError(session.requests);
 }
 interface ShutdownOwner {
   readonly done: Promise<void>;
@@ -95,6 +125,7 @@ interface PreparedRequest {
 /** One serial owner of the tree. No request ever waits for a guest acknowledgment. */
 export class FilesystemService {
   private sessions = new Set<Session>();
+  private requestBudget?: SharedArrayBuffer;
   private readBudget?: WorkspaceReadBudget;
   private queue = Promise.resolve();
   private sweeping = false;
@@ -124,8 +155,12 @@ export class FilesystemService {
       );
       this.backend.shared.onContention = () => this.sweep();
     }
+    if (this.requestBudget) assertRequestBudget(this.requestBudget, connection.requestBudget);
+    else this.requestBudget = connection.requestBudget;
+    assertRequestBudget(connection.requestBudget, connection.requests.budget);
     const session: Session = {
       connection,
+      requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
       freeEntries: Array.from(
@@ -136,6 +171,8 @@ export class FilesystemService {
       transient: new Map(),
       references: new Map(),
       responses: new Map(),
+      responseMemory: new Map(),
+      retainedRequests: new Map(),
       pending: new Map(),
       preparingHandles: new Map(),
       preparations: new Set(),
@@ -172,37 +209,92 @@ export class FilesystemService {
     // Adopting a child pin can make the live parent's final detached pin collectible.
     for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
     for (const segment of this.backend.sharedSegments?.() ?? [])
-      connection.port.postMessage({ segment: segment.buffer, index: segment.index });
+      connection.port.postMessage({ segment: segment.index });
     connection.port.onmessage = ({ data }: MessageEvent<RequestMessage>) => {
-      if (this.ownerStopping) {
-        if ("connect" in data) this.refuseConnection(data.connect);
-        else if ("buffer" in data) this.cancelRequest(session, data.id, data.buffer);
-        return;
-      }
-      if ("connect" in data) {
-        if (!isRevoked(connection)) this.connect(data.connect);
-        else data.connect.port.close();
-      } else if ("sweep" in data) {
-        this.sweep();
-        // A controller can release a transfer for another live identity. Its notifier need
-        // not own that identity's port, so sweep notifications also trim live peers in queue
-        // order. Internal contention sweeps stay lock-free until an owner has quiesced.
-        this.enqueueMaintenance(session, () => {
-          for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
-        });
-      } else if ("discard" in data) {
-        session.reader?.cancel(data.discard);
-        this.enqueueMaintenance(session, () => this.discardResponse(session, data.discard));
-      } else if ("trim" in data)
-        this.enqueueMaintenance(session, () => {
-          if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
-        });
-      else {
-        session.pending.set(data.id, data.buffer);
-        this.enqueue(session, data.id, data.buffer);
+      try {
+        this.receive(session, data);
+      } catch {
+        this.signalTransportFailure(session, "protocol");
       }
     };
+    connection.port.onmessageerror = () => this.signalTransportFailure(session);
     connection.port.start();
+    if (!session.closed) this.trackWork(session, this.watchTransport(session));
+  }
+  private signalTransportFailure(
+    session: Session,
+    reason: "messageerror" | "protocol" = "messageerror",
+  ): void {
+    closeRequestMemory(session.requests, reason);
+    wake(session.connection);
+  }
+  private async watchTransport(session: Session): Promise<void> {
+    const signal = new Int32Array(session.connection.signal);
+    while (!session.closed) {
+      const observed = Atomics.load(signal, 0);
+      if (sessionRevoked(session)) {
+        if (requestTransportError(session.requests)) session.transportFailed = true;
+        this.close(session);
+        return;
+      }
+      const waiting = atomicsWaitAsync(signal, 0, observed);
+      if (waiting.async) await waiting.value;
+    }
+  }
+  private receive(session: Session, data: RequestMessage): void {
+    const connection = session.connection;
+    if (requestTransportError(session.requests) || "transportClosed" in data) {
+      this.signalTransportFailure(session);
+      return;
+    }
+    if ("sweep" in data) {
+      this.sweep();
+      this.enqueueMaintenance(session, () => {
+        for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
+      });
+      return;
+    }
+    if ("discard" in data) {
+      session.reader?.cancel(data.discard);
+      this.enqueueMaintenance(session, () => this.discardResponse(session, data.discard));
+      return;
+    }
+    if ("trim" in data) {
+      this.enqueueMaintenance(session, () => {
+        if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
+      });
+      return;
+    }
+    const buffer = receiveRequestBuffer(
+      session.requests,
+      data.id,
+      data.generation,
+      data.offset,
+      data.length,
+    );
+    if (this.ownerStopping) {
+      this.cancelRequest(session, data.id, buffer);
+      return;
+    }
+    if (session.pending.has(data.id)) throw new FilesystemError(28, "duplicate filesystem request");
+    session.pending.set(data.id, buffer);
+    this.enqueue(session, data.id, buffer);
+  }
+  private retireTransport(session: Session): void {
+    if (session.transportRetirement) return;
+    const pending = Array.from(this.work)
+      .filter((entry) => entry[1] === session)
+      .map((entry) => entry[0]);
+    if (!pending.length) {
+      retireRequestMemory(session.requests);
+      wake(session.connection);
+      return;
+    }
+    session.transportRetirement = Promise.all(pending).then(() => {
+      session.transportRetirement = undefined;
+      this.retireTransport(session);
+    });
+    void session.transportRetirement.catch(() => {});
   }
   private async closeWorkspace(connection: FilesystemConnection): Promise<void> {
     const session = Array.from(this.sessions).find(
@@ -254,15 +346,15 @@ export class FilesystemService {
   private enqueue(
     session: Session,
     id: number,
-    buffer: SharedArrayBuffer,
+    buffer: FilesystemRequestBuffer,
     prepared?: PreparedRequest,
   ): void {
     // Barriers capture their checkpoint in queue order without holding the mutation lock
     // while storage commits. Cold preparation likewise rejoins the queue only when ready.
     let barrier = false;
     try {
-      const cells = new Int32Array(buffer, 0, HEADER / 4);
-      const input = unpack(new Uint8Array(buffer, HEADER, cells[1]!));
+      const cells = requestCells(buffer);
+      const input = unpack(requestBytes(buffer).subarray(0, cells[1]!));
       barrier = input.operation === "flush" || input.operation === "sync";
     } catch {
       /* request() reports malformed input through its completion */
@@ -309,13 +401,14 @@ export class FilesystemService {
     revokeFilesystem(connection);
     connection.port.close();
   }
-  private cancelRequest(session: Session, id: number, buffer: SharedArrayBuffer): void {
-    const cells = new Int32Array(buffer, 0, HEADER / 4);
+  private cancelRequest(session: Session, id: number, buffer: FilesystemRequestBuffer): void {
+    const cells = requestCells(buffer);
     Atomics.store(cells, 6, 1);
     Atomics.store(cells, 3, 11);
     Atomics.store(cells, 0, State.Cancelled);
     Atomics.notify(cells, 0);
     wake(session.connection);
+    releaseRequestBuffer(buffer, REQUEST_SERVICE);
     session.pending.delete(id);
     this.discardResponse(session, id);
     session.connection.port.postMessage({ completed: id });
@@ -342,8 +435,7 @@ export class FilesystemService {
     const key = session.handles.get(handle);
     if (key === undefined) throw new FilesystemError(11);
     for (;;) {
-      if (isRevoked(session.connection) || !this.sessions.has(session))
-        throw new FilesystemError(11);
+      if (sessionRevoked(session) || !this.sessions.has(session)) throw new FilesystemError(11);
       const count = Atomics.load(session.capabilities, key + 1);
       if (count < 0) throw new FilesystemError(8);
       if (count === 0x7fffffff) throw new FilesystemError(33);
@@ -363,13 +455,21 @@ export class FilesystemService {
         return;
     }
   }
+  private releaseResponseMemory(session: Session, id: number): void {
+    session.responseMemory.get(id)?.();
+    session.responseMemory.delete(id);
+  }
   private discardResponse(session: Session, id: number): void {
+    this.releaseResponseMemory(session, id);
+    const retained = session.retainedRequests.get(id);
+    if (retained) releaseRequestBuffer(retained, REQUEST_SERVICE);
+    session.retainedRequests.delete(id);
     const response = session.responses.get(id);
     session.responses.delete(id);
     if (response?.kind !== "resolve") return;
     for (const [handle, key] of response.references)
       this.dropResponseReference(session, handle, key);
-    if (this.sessions.has(session) && !isRevoked(session.connection)) this.trim(session);
+    if (this.sessions.has(session) && !sessionRevoked(session)) this.trim(session);
   }
   private pin(session: Session, handle: number | undefined, preopen = false): void {
     if (handle === undefined) return;
@@ -379,7 +479,7 @@ export class FilesystemService {
       try {
         this.backend.retain(handle);
         // Contention can run sweep() and close a cancelled session before retain returns.
-        if (isRevoked(session.connection) || !this.sessions.has(session)) {
+        if (sessionRevoked(session) || !this.sessions.has(session)) {
           this.backend.release(handle);
           throw new FilesystemError(11);
         }
@@ -530,7 +630,7 @@ export class FilesystemService {
         session.connection.owner,
         a,
         b,
-        () => isRevoked(session.connection) || !this.sessions.has(session),
+        () => sessionRevoked(session) || !this.sessions.has(session),
       );
     }
     if (operation === "watchRead") {
@@ -563,8 +663,9 @@ export class FilesystemService {
       if (!bytes) throw new FilesystemError(11);
       const part = bytes.slice(b, b + c);
       if (b + c < bytes.length) return part;
+      this.releaseResponseMemory(session, a);
       if (response?.kind === "resolve") response.payload = { kind: "inline" };
-      else session.responses.delete(a);
+      else this.discardResponse(session, a);
       return part;
     }
     if (operation === "retain") {
@@ -622,10 +723,10 @@ export class FilesystemService {
   private finishResult(session: Session, id: number, operation: string, result: any): unknown {
     const pending = session.pending.get(id);
     if (
-      isRevoked(session.connection) ||
+      sessionRevoked(session) ||
       !this.sessions.has(session) ||
       !pending ||
-      Atomics.load(new Int32Array(pending, 0, HEADER / 4), 6)
+      requestCancelled(pending)
     )
       throw new FilesystemError(11);
     if (operation === "preopen" || (operation === "create" && typeof result === "number"))
@@ -645,11 +746,11 @@ export class FilesystemService {
   private async request(
     session: Session,
     id: number,
-    buffer: SharedArrayBuffer,
+    buffer: FilesystemRequestBuffer,
     prepared?: PreparedRequest,
   ): Promise<void> {
-    const cells = new Int32Array(buffer, 0, HEADER / 4);
-    const bytes = new Uint8Array(buffer, HEADER);
+    const cells = requestCells(buffer);
+    const bytes = requestBytes(buffer);
     let state = State.Complete;
     let mutation = false;
     let preparing = false;
@@ -657,10 +758,9 @@ export class FilesystemService {
     let dirtyRetry: number | undefined;
     const epoch = new Int32Array(session.connection.epoch);
     try {
-      if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
+      if (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(buffer))
         throw new FilesystemError(11);
-      const inputLength = cells[1]!;
-      const dataLength = cells[2]!;
+      const { inputLength, dataLength } = requestLengths(buffer);
       const input = unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
       if (session.connection.publication && input.publication)
@@ -699,7 +799,7 @@ export class FilesystemService {
       const segments = this.backend.takeSharedSegments?.() ?? [];
       for (const segment of segments)
         for (const peer of this.sessions)
-          peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
+          peer.connection.port.postMessage({ segment: segment.index });
       state = this.writeResponse(session, id, cells, bytes, value);
     } catch (error) {
       this.discardResponse(session, id);
@@ -723,7 +823,7 @@ export class FilesystemService {
       // indexed so a newly connected peer can receive both its snapshot and this broadcast.
       for (const segment of this.backend.takeSharedSegments?.() ?? [])
         for (const peer of this.sessions)
-          peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
+          peer.connection.port.postMessage({ segment: segment.index });
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
@@ -732,7 +832,7 @@ export class FilesystemService {
         this.cancelPublication(session, admission);
         this.releasePrepared(session, prepared);
         cells[5] = Atomics.load(epoch, 0);
-        if (isRevoked(session.connection) || Atomics.load(cells, 6)) {
+        if (sessionRevoked(session) || requestCancelled(buffer)) {
           this.discardResponse(session, id);
           state = State.Cancelled;
         }
@@ -740,6 +840,8 @@ export class FilesystemService {
         Atomics.notify(cells, 0);
         wake(session.connection);
         session.pending.delete(id);
+        if (session.responses.has(id)) session.retainedRequests.set(id, buffer);
+        else releaseRequestBuffer(buffer, REQUEST_SERVICE);
         session.connection.port.postMessage({ completed: id });
         this.sweep();
       }
@@ -747,7 +849,7 @@ export class FilesystemService {
     if (dirtyRetry !== undefined && prepared) {
       const wait = this.backend.waitForDirtyCapacity!(
         dirtyRetry,
-        () => isRevoked(session.connection) || Atomics.load(cells, 6) !== 0,
+        () => sessionRevoked(session) || requestCancelled(buffer),
       );
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
@@ -765,6 +867,7 @@ export class FilesystemService {
     cells[4] = binary ? 1 : 0;
     const response = session.responses.get(id);
     if (result.length > bytes.length) {
+      session.responseMemory.set(id, retainResponseBytes(session.requests, result.length));
       if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: result };
       else session.responses.set(id, { kind: "bytes", bytes: result });
       return State.Overflow;
@@ -776,7 +879,7 @@ export class FilesystemService {
   private joinPreparation(
     session: Session,
     id: number,
-    buffer: SharedArrayBuffer,
+    buffer: FilesystemRequestBuffer,
     continuation: PreparedRequest,
     preparation: Promise<void>,
   ): void {
@@ -799,7 +902,7 @@ export class FilesystemService {
   private prepareRequest(
     session: Session,
     id: number,
-    buffer: SharedArrayBuffer,
+    buffer: FilesystemRequestBuffer,
     operation: string,
     args: Parameters<NonNullable<FilesystemBackend["prepare"]>>[1],
     payload: Uint8Array,
@@ -814,9 +917,7 @@ export class FilesystemService {
         args[0],
         args[2],
         args[1],
-        () =>
-          isRevoked(session.connection) ||
-          Atomics.load(new Int32Array(buffer, 0, HEADER / 4), 6) !== 0,
+        () => sessionRevoked(session) || requestCancelled(buffer),
       );
       if (read) return this.prepareDescriptorRead(session, id, buffer, operation, args, read);
     }
@@ -824,9 +925,7 @@ export class FilesystemService {
       operation === "dirtyWait"
         ? this.backend.waitForDirtyCapacity?.(
             args[1],
-            () =>
-              isRevoked(session.connection) ||
-              Atomics.load(new Int32Array(buffer, 0, HEADER / 4), 6) !== 0,
+            () => sessionRevoked(session) || requestCancelled(buffer),
           )
         : this.backend.prepare?.(
             operation === "publicationPin" ? "read" : operation,
@@ -842,7 +941,7 @@ export class FilesystemService {
   private prepareDescriptorRead(
     session: Session,
     id: number,
-    buffer: SharedArrayBuffer,
+    buffer: FilesystemRequestBuffer,
     operation: string,
     args: unknown[],
     read: Promise<Uint8Array>,
@@ -858,7 +957,7 @@ export class FilesystemService {
   private prepareRead(
     session: Session,
     id: number,
-    buffer: SharedArrayBuffer,
+    buffer: FilesystemRequestBuffer,
     operation: string,
     args: unknown[],
   ): PreparedRequest {
@@ -1154,13 +1253,14 @@ export class FilesystemService {
     if (this.sweeping) return;
     this.sweeping = true;
     try {
-      for (const session of this.sessions) if (isRevoked(session.connection)) this.close(session);
+      for (const session of this.sessions) if (sessionRevoked(session)) this.close(session);
     } finally {
       this.sweeping = false;
     }
   }
   private close(session: Session): void {
     if (this.shutdownOwner) return;
+    if (requestTransportError(session.requests)) session.transportFailed = true;
     this.releaseSession(session);
   }
   private releaseSession(session: Session): void {
@@ -1188,11 +1288,25 @@ export class FilesystemService {
     this.watchService?.closeOwner(session.connection.owner);
     session.namespace?.close();
     this.stopSessionReader(session);
-    revokeFilesystem(session.connection);
+    if (!session.transportFailed) revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
     // Revocation precedes the admission-count observation. Looking only at held locks misses
     // an entrant between admission and acquisition, which may still be touching a pin or page.
-    if (ownRevocation !== 2 && Atomics.load(new Int32Array(session.connection.sections), 0)) {
+    if (session.transportFailed && ownRevocation !== 2 && requestMemorySections(session.requests)) {
+      session.quiescing ??= this.trackWork(
+        session,
+        waitForRequestQuiescence(session.connection, session.requests).then(() => {
+          session.quiescing = undefined;
+          this.sweep();
+        }),
+      );
+      return;
+    }
+    if (
+      !session.transportFailed &&
+      ownRevocation !== 2 &&
+      Atomics.load(new Int32Array(session.connection.sections), 0)
+    ) {
       session.quiescing ??= this.trackWork(
         session,
         waitForFilesystemQuiescence(session.connection).then(() => {
@@ -1209,7 +1323,7 @@ export class FilesystemService {
         new Int32Array(session.connection.epoch),
       );
     for (const [id, buffer] of session.pending) {
-      const cells = new Int32Array(buffer, 0, HEADER / 4);
+      const cells = requestCells(buffer);
       Atomics.store(cells, 6, 1);
       Atomics.store(cells, 0, State.Cancelled);
       Atomics.notify(cells, 0);
@@ -1227,6 +1341,11 @@ export class FilesystemService {
     session.preopens.clear();
     session.transient.clear();
     session.references.clear();
+    for (const retained of session.retainedRequests.values())
+      releaseRequestBuffer(retained, REQUEST_SERVICE);
+    session.retainedRequests.clear();
+    for (const release of session.responseMemory.values()) release();
+    session.responseMemory.clear();
     session.responses.clear();
     session.preparingHandles.clear();
     if (this.backend instanceof MemoryBackend)
@@ -1235,6 +1354,7 @@ export class FilesystemService {
     session.publicationPins?.clear();
     session.connection.port.close();
     session.closed = true;
+    this.retireTransport(session);
     if (!session.handles.size) {
       const publication = session.connection.publication;
       if (publication && !this.retirePublication(session)) return;
@@ -1286,9 +1406,11 @@ export class FilesystemService {
       this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
     const readers =
       this.backend instanceof MemoryBackend ? (this.readBudget?.resources(this.backend) ?? {}) : {};
+    const requestTransportBytes = this.requestBudget ? requestBudgetBytes(this.requestBudget) : 0;
     return Object.assign(
       {
         ...backend,
+        requestTransportBytes,
         workspaceCursors,
         ownerStateBytes,
         clients: this.sessions.size,
@@ -1297,7 +1419,7 @@ export class FilesystemService {
         responses,
         capabilityBytes,
         metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
-        bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
+        bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes + requestTransportBytes,
       },
       readers,
     );

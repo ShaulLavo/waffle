@@ -789,6 +789,7 @@ export class BrowserProcessBroker {
         identity.capabilities,
         identity.sections,
         identity.ownerStates,
+        identity.requestBudget,
       ].every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
       identity.ownerStates.byteLength < (identity.owner + 1) * 4 ||
       !Array.isArray(identity.revocations) ||

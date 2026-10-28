@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -35,7 +36,7 @@ async function fixture(publication: boolean) {
     publication ? { limits, observe: true } : undefined,
   );
   service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
+  const root = hostFilesystemClient(service, connection);
   const guest = new FilesystemClient(root.fork());
   const directory = await root.asyncCall("preopen", ["/"]);
   const resolved = await guest.asyncCall("resolve", [
@@ -165,7 +166,7 @@ test("a persistent cold file is loaded and compared before a conditional remove"
     const service = new FilesystemService(backend);
     const pair = createFilesystemConnection();
     service.connect(pair.server);
-    const client = new FilesystemClient(pair.client);
+    const client = hostFilesystemClient(service, pair);
     return {
       client,
       backend,

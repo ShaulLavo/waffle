@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import { FilesystemClient, MemoryBackend, PersistentBackend } from "../fs";
 import { PAGE, createFilesystemIdentity } from "../fs/protocol";
@@ -574,7 +575,7 @@ test("all public projections of one actual root share the lease budget", async (
   let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;
   try {
     value.service.connect(pair.server);
-    peer = new FilesystemClient(pair.client);
+    peer = hostFilesystemClient(service, pair);
     workspace = createWorkspaceVfs(peer);
     const held = await value.workspace.pin("/file");
     if (held.kind !== "ok") throw new Error(held.kind);

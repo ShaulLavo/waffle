@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { fixturePayloadHooks, coldPublicationRoot } from "./fixtures/publication-storage";
 import { IdentityAllocator, nextReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
@@ -471,7 +472,7 @@ async function localPublicationFixture(
     observe: true,
   });
   service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
+  const root = hostFilesystemClient(service, connection);
   const sibling = new FilesystemClient(root.fork());
   const directory = await root.asyncCall("preopen", ["/"]);
   const path = await root.asyncCall("resolve", [directory, "file"]);
@@ -735,7 +736,7 @@ test("uninstrumented completion errors preserve ordinary delivery", async () => 
   const service = new FilesystemService(new MemoryBackend());
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
+  const root = hostFilesystemClient(service, connection);
   try {
     for (let index = 0; index < 3; index++) {
       await expectErrno(root.asyncCall("unknown-operation"), 52);
@@ -1637,7 +1638,7 @@ test("cancelled unconnected publication identities release bounded sessions with
     limits: { ...limits, sessions: 3 },
   });
   service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
+  const root = hostFilesystemClient(service, connection);
   const peer = new FilesystemClient(root.fork());
   const domain = backend.shared.publication!;
   let next: FilesystemClient | undefined;
@@ -1670,7 +1671,7 @@ test("cancelled unconnected publication identities release bounded sessions with
     }
     const connected = connectFilesystemIdentity(createProcessFilesystemIdentity(root.connection));
     service.connect(connected.server);
-    next = new FilesystemClient(connected.client);
+    next = hostFilesystemClient(service, connected);
     expect(next.connection.publication!.session.slot).toBe(cancelled.publication!.session.slot);
     expect(await next.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([23]));
     cancelUnconnectedIdentity(cancelled);
@@ -1703,7 +1704,7 @@ async function observePrivatePublicationCopies(
     enabled ? { limits, observe: true } : undefined,
   );
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   const calls: PrivateCopyObservation[] = [];
   const original = Uint8Array.prototype.set;
   const buffers = connection.client.publication?.buffers;

@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { afterEach, expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -67,7 +68,7 @@ test("the default cap reserves wrappers, not the whole pool's backing storage", 
   const service = new FilesystemService(backend);
   const pair = connectFilesystemIdentity(identity);
   service.connect(pair.server);
-  const client = new FilesystemClient(pair.client);
+  const client = hostFilesystemClient(service, pair);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -87,7 +88,7 @@ test("synchronous guests access service-grown segments without port delivery or 
   const identity = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES * 2);
   const pair = connectFilesystemIdentity(identity);
   service.connect(pair.server);
-  const client = new FilesystemClient(pair.client);
+  const client = hostFilesystemClient(service, pair);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -123,7 +124,7 @@ test("prepublished segments preserve the real storage cap and report only grown 
     createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES * 2),
   );
   service.connect(pair.server);
-  const client = new FilesystemClient(pair.client);
+  const client = hostFilesystemClient(service, pair);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
