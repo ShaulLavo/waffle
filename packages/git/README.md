@@ -3,10 +3,10 @@
 Local Git (`init`, `add`, `commit`, `status`, `log`, `diff`, `branch`, `switch`, `checkout`, `merge`, `stash`) for Waffle runtimes, backed by isomorphic-git 1.44.5.
 
 ```ts
-import { installGitProgram } from "waffle-git/program";
+import { installGitProgram, GIT_CLI_URL } from "waffle-git/program";
 
 // Needs a JavaScript interpreter on the runtime, e.g. bun-wasm's /bin/bun.
-await installGitProgram(runtime, { source: await (await fetch(gitCliUrl)).text() });
+await installGitProgram(runtime, { source: await (await fetch(GIT_CLI_URL)).text() });
 // Now `git init`, `git commit -m ...` work from any shell or process on the runtime.
 ```
 

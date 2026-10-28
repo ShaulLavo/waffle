@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -116,8 +116,21 @@ export function patchGitSource(root = resolve(import.meta.dirname, "..")) {
     return { path, source, patched };
   });
   for (const { path, source, patched } of changes)
-    if (source !== patched) writeFileSync(path, patched);
+    if (source !== patched) replacePatchedFile(path, patched);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   patchGitSource();
+
+/** Replace the install-local directory entry, leaving cached hard links unchanged. */
+export function replacePatchedFile(path: string, content: string) {
+  const temporary = `${path}.waffle-patch-${process.pid}`;
+  let created = false;
+  try {
+    writeFileSync(temporary, content, { flag: "wx" });
+    created = true;
+    renameSync(temporary, path);
+  } finally {
+    if (created) rmSync(temporary, { force: true });
+  }
+}

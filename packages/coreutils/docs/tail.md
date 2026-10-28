@@ -1,6 +1,19 @@
 # tail
 
-`tail` writes the last lines from standard input or one file. It is a separate WASM utility, installed with `installTail` from `bash-web/utilities/tail`.
+Print final lines from standard input or one file. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/tail` with a `/bin` alias.
+
+```ts
+import { coreutils } from "waffle-coreutils";
+import { installPrograms } from "waffle/programs";
+
+const installed = await installPrograms(runtime, [coreutils], { launcher });
+// The caller owns its runtime and generic preview1 launcher.
+await installed.dispose();
+```
+
+Installing the family does not fetch or start programs. The runtime owns markers, conflicts,
+first-use source admission, process lifetimes and disposal. `waffle-base` includes this
+family with the other everyday programs. See [installing program packages](../../../docs/guides/install-program-packages.md).
 
 ## Supported behavior
 
@@ -15,6 +28,14 @@
 
 Multiple input files, filename headers, `-c`, `-f`, and other GNU `tail` options are not supported.
 
-## Verification
+## Source and verification
 
-The native and WASI streaming tests check exact output bytes, line counts, pipeline EOF, cancellation, and error statuses. The Chromium acceptance test runs `seq` and `tail` as separate Waffle guests in a 20,000-line pipeline. These checks assert the utility contract directly because `tail` is an external program, not a GNU Bash builtin.
+The current entry is [src/bin/tail.rs](../src/bin/tail.rs). Prepare this family once with
+`bun run --cwd packages/coreutils prepare:package`. The root `programs:integration`
+command checks the actual public family exports on Waffle after the required assets exist.
+Wrapped uutils guests initialize libc cwd from PWD; keep it aligned with the requested cwd
+when using their relative file operands. Env's child request preserves its own cwd policy.
+
+[The original transfer guide](../provenance/history/docs/tail.md) is frozen historical
+source/qualification evidence, not current installation or build instructions. Its
+recordings, license identities and observations have not been rerecorded.

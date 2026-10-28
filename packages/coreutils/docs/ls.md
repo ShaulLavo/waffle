@@ -1,16 +1,19 @@
 # ls
 
-`bash-web/utilities/ls` installs the individual uutils `uu_ls` program at `/bin/ls` on the caller's Waffle runtime. It does not add code to the shell engine. The guest is an ordinary WASI program, not a cooperative guest or a coreutils multicall executable.
+List directory entries with the pinned uutils implementation. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/ls` with a `/bin` alias.
 
 ```ts
-import { installLs } from "bash-web/utilities/ls";
+import { coreutils } from "waffle-coreutils";
+import { installPrograms } from "waffle/programs";
 
-const installation = await installLs(runtime);
-// After its processes stop:
-await installation.dispose();
+const installed = await installPrograms(runtime, [coreutils], { launcher });
+// The caller owns its runtime and generic preview1 launcher.
+await installed.dispose();
 ```
 
-Installation writes an executable marker but does not fetch, compile, or start the program. The first spawn loads `dist/ls.wasm`. Later spawns share the source load. `wasmUrl` overrides the URL. `source` accepts raw bytes or a lazy byte loader. Waffle owns compilation and interruption instrumentation. Precompiled modules are not accepted. The options type is `WasiUtilityOptions`, and lazy input uses `UtilitySource`.
+Installing the family does not fetch or start programs. The runtime owns markers, conflicts,
+first-use source admission, process lifetimes and disposal. `waffle-base` includes this
+family with the other everyday programs. See [installing program packages](../../../docs/guides/install-program-packages.md).
 
 ## Supported behavior
 
@@ -18,14 +21,16 @@ The qualified C-locale cases cover default listing, `-a`, `-1`, `-d`, absolute a
 
 The wrapper sets libc's working directory from the shell's `PWD` before upstream entry. Without that step, WASI starts in `/` and `ls` without an operand ignores `cd`.
 
-`-l` runs and prints names, sizes, dates, and file kinds. It is not GNU metadata parity. On this upstream WASI target, owner and group are `somebody` and `somegroup`, link count is synthesized as 1, and mode strings are synthesized from file kind and readonly state. A normal writable Waffle file prints `-r-xr-xr-x`, not its actual permission bits. Directory sizes and totals are not Unix allocated-block counts. The test pins that limitation rather than replacing metadata in the shell adapter.
-
 Symlink targets, hard-link counts, ACLs, ownership lookup, security contexts, terminal-width parity, non-C locale collation, and recursive large-tree behavior are not qualified. Waffle capabilities remain Waffle's responsibility. No link or permissions substitute is included here.
 
-## Source and checks
+## Source and verification
 
-The source is `uutils/coreutils` revision `07763857f6b9a547742a994b58aef0ccd036198b`, individual crate `src/uu/ls`, through `uucore::bin!(uu_ls)`. The Cargo git dependency and lockfile pin it. `shell/utilities/ls-upstream.json` records the surveyed archive and checksum. No upstream source is patched. `shell/utilities/LICENSE.uutils` retains its MIT notice.
+The current entry is [src/bin/ls.rs](../src/bin/ls.rs). Prepare this family once with
+`bun run --cwd packages/coreutils prepare:package`. The root `programs:integration`
+command checks the actual public family exports on Waffle after the required assets exist.
+Wrapped uutils guests initialize libc cwd from PWD; keep it aligned with the requested cwd
+when using their relative file operands. Env's child request preserves its own cwd policy.
 
-- `npm run build:ls` builds and verifies the final standalone guest with the shared patched wasi-libc and 256 MiB memory ceiling, then copies it to `dist/ls.wasm` and `public/programs/ls.wasm`.
-- `npm run build:node-harness && npm run test:ls` checks actual shell spawn and filesystem behavior on Waffle, source laziness, repeat spawn, disposal, and worker cleanup.
-- `npm run build:browser && npx playwright test tests/ls.spec.ts` checks GNU fixture bytes, the documented long-format output, missing-path status, and one first-use fetch in the browser.
+[The original transfer guide](../provenance/history/docs/ls.md) is frozen historical
+source/qualification evidence, not current installation or build instructions. Its
+recordings, license identities and observations have not been rerecorded.

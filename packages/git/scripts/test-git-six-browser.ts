@@ -11,15 +11,25 @@ import { chromium, type Browser } from "@playwright/test";
  */
 const page = process.argv[2] ?? "six";
 const entryNames: Record<string, string> = { six: "main", lookup: "lookup", dispose: "dispose" };
-const globals: Record<string, string> = { six: "gitSix", lookup: "gitLookup", dispose: "gitDispose" };
+const globals: Record<string, string> = {
+  six: "gitSix",
+  lookup: "gitLookup",
+  dispose: "gitDispose",
+};
 assert.ok(page in entryNames, `unknown page ${page}`);
 const bunGuest = process.env.GIT_BUN_GUEST;
 if (page !== "dispose")
-  assert.ok(bunGuest && resolve(bunGuest) === bunGuest, "GIT_BUN_GUEST must be the absolute published bun.wasm path");
+  assert.ok(
+    bunGuest && resolve(bunGuest) === bunGuest,
+    "GIT_BUN_GUEST must be the absolute published bun.wasm path",
+  );
 const bashSource = process.env.GIT_BASH_SOURCE;
 const shellGuest = process.env.GIT_SHELL_GUEST;
 if (page === "lookup")
-  assert.ok(bashSource && shellGuest, "lookup needs GIT_BASH_SOURCE and GIT_SHELL_GUEST absolute paths");
+  assert.ok(
+    bashSource && shellGuest,
+    "lookup needs GIT_BASH_SOURCE and GIT_SHELL_GUEST absolute paths",
+  );
 const root = resolve(import.meta.dirname, "..");
 const scratch = await mkdtemp(join(process.env.GIT_SCRATCH ?? "/work/tmp", "git-six-browser-"));
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -33,7 +43,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => void cleanup().finally(() => process.exit(1)));
 try {
   const entry = entryNames[page];
-  const workers = page === "dispose" ? [] : page === "lookup" ? ["worker", "shell-worker"] : ["worker"];
+  const workers =
+    page === "dispose" ? [] : page === "lookup" ? ["worker", "shell-worker"] : ["worker"];
   const entries = [entry, "fs-worker"].concat(workers);
   const built = await Bun.build({
     entrypoints: entries.map((name) => join(root, "tests/browser", `${name}.ts`)),
@@ -46,16 +57,23 @@ try {
         name: "staged-bash-web",
         setup(builder) {
           builder.onResolve({ filter: /^bash-web(\/worker)?$/ }, (args) => ({
-            path: join(bashSource!, args.path === "bash-web" ? "src/index.ts" : "src/runtime/worker.ts"),
+            path: join(
+              bashSource!,
+              args.path === "bash-web" ? "src/index.ts" : "src/runtime/worker.ts",
+            ),
           }));
         },
       },
     ],
   });
   assert.ok(built.success, built.logs.map(String).join("\n"));
-  await writeFile(join(scratch, "index.html"), `<!doctype html><script type="module" src="/${entry}.js"></script>`);
+  await writeFile(
+    join(scratch, "index.html"),
+    `<!doctype html><script type="module" src="/${entry}.js"></script>`,
+  );
   const files: Record<string, string> = {
     "/git-cli.js": join(root, "dist/git-cli.js"),
+    "/dist/git-cli.js": join(root, "dist/git-cli.js"),
     "/network.wasm": join(root, "node_modules/waffle/browser/net/network.wasm"),
   };
   if (bunGuest) files["/bun.wasm"] = bunGuest;
@@ -70,8 +88,10 @@ try {
         "Cache-Control": "no-store",
       };
       const pathname = new URL(request.url).pathname;
-      const path = files[pathname] ?? resolve(scratch, `.${pathname === "/" ? "/index.html" : pathname}`);
-      if (!files[pathname] && !path.startsWith(scratch + sep)) return new Response(null, { status: 403, headers });
+      const path =
+        files[pathname] ?? resolve(scratch, `.${pathname === "/" ? "/index.html" : pathname}`);
+      if (!files[pathname] && !path.startsWith(scratch + sep))
+        return new Response(null, { status: 403, headers });
       const file = Bun.file(path);
       if (!(await file.exists())) {
         console.error(JSON.stringify({ missing: pathname }));
@@ -93,6 +113,7 @@ try {
   const result = await tab.evaluate((name) => Reflect.get(globalThis, name)(), name);
   console.log(JSON.stringify({ browser: browser.version(), result, errors }, null, 1));
   assert.equal(result.ok, true, result.error);
+  if (page === "six") assert.equal(await tab.locator("body").getAttribute("data-disposed"), "true");
   if (page === "lookup") checkLookup(result);
   if (page === "dispose")
     assert.deepEqual(result.results, {
@@ -105,7 +126,11 @@ try {
   assert.deepEqual(errors, []);
 } finally {
   await cleanup();
-  console.log(JSON.stringify({ cleanup: { scratchRemoved: true, browserClosed: true, listenerStopped: true } }));
+  console.log(
+    JSON.stringify({
+      cleanup: { scratchRemoved: true, browserClosed: true, listenerStopped: true },
+    }),
+  );
 }
 
 type Spawned = { argv: string[]; cwd: string; status: number; stdout: string; stderr: string };

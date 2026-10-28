@@ -1,6 +1,19 @@
-# Head utility
+# head
 
-`head` prints the first ten lines of each input by default. It is the upstream uutils program, compiled as a separate WASI guest. `installHead` from `bash-web/utilities/head` registers it on the shell's existing Waffle runtime. The shell core does not include it.
+Print initial lines or bytes. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/head` with a `/bin` alias.
+
+```ts
+import { coreutils } from "waffle-coreutils";
+import { installPrograms } from "waffle/programs";
+
+const installed = await installPrograms(runtime, [coreutils], { launcher });
+// The caller owns its runtime and generic preview1 launcher.
+await installed.dispose();
+```
+
+Installing the family does not fetch or start programs. The runtime owns markers, conflicts,
+first-use source admission, process lifetimes and disposal. `waffle-base` includes this
+family with the other everyday programs. See [installing program packages](../../../docs/guides/install-program-packages.md).
 
 ## Supported behavior
 
@@ -21,24 +34,14 @@ The WASI build uses upstream's non-Unix buffered stdin path. It can discard byte
 
 Negative counts need to retain a suffix and can use memory proportional to the requested count. The guest has the shared 256 MiB WASI memory cap.
 
-## Loading
+## Source and verification
 
-`installHead(runtime, { wasmUrl, workerUrl })` loads nothing until the first spawn. Instead of `wasmUrl`, `source` accepts a `Uint8Array` or a function returning bytes or a promise of bytes. Ordinary guests cannot accept a precompiled `WebAssembly.Module`, because Waffle needs the original bytes to add interrupt checks. See [Install utilities](guides/install-utilities.md).
+The current entry is [src/bin/head.rs](../src/bin/head.rs). Prepare this family once with
+`bun run --cwd packages/coreutils prepare:package`. The root `programs:integration`
+command checks the actual public family exports on Waffle after the required assets exist.
+Wrapped uutils guests initialize libc cwd from PWD; keep it aligned with the requested cwd
+when using their relative file operands. Env's child request preserves its own cwd policy.
 
-## Source and build
-
-`shell/utilities/src/bin/head.rs` calls `uucore::bin!(uu_head)`. It initializes WASI libc's working directory from Waffle's `PWD` before calling upstream. There is no local implementation of head's parsing or I/O.
-
-`uu_head` and `uucore` are pinned to registry version `0.12.0` in `shell/utilities/Cargo.toml` and `shell/Cargo.lock`. The crate's source receipt identifies uutils/coreutils revision `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69`, path `src/uu/head`. Both crates are MIT licensed, copyright uutils developers. `npm run notices:shell` includes their license files and transitive dependency notices in the distribution.
-
-The direct Rustix dependency enables its `std` feature so uucore's WASI file-descriptor conversions compile. This dependency is intentionally feature-only. A new workspace utility can reuse `buildWasiShell(["-p", "shell-utilities", "--bin", "head"])` from `scripts/wasi-build.ts`, changing the binary name. The helper supplies the patched wasi-sdk 34.0 sysroot, the memory cap, and the final guest verifier. No guest-specific linker recipe is needed.
-
-`cargo test --locked --manifest-path shell/Cargo.toml -p shell-utilities --test head` tests the native upstream binary. After `npm run build:shell`, `npm run build:utilities`, and `npm run build:node-harness`, `node --test scripts/test-own-shell-head.ts` tests the real guest through Waffle, including GNU usage controls, cancellation, and the stdin differences above.
-
-## Recorded GNU controls
-
-The 24 comparison scripts retain their original text. Qualification replays `scripts/owned-fixtures/head-gnu.json`, not the host's Bash or coreutils. Each recording contains raw stdout and stderr bytes in base64 and the exit status. Tests compare stdout bytes, status, and diagnostic presence. Only the documented standard-input header difference is normalized.
-
-The recording used GNU Bash `5.3.15(1)-release`, binary SHA-256 `575e03ac834b739349a4484de481abcd06a6f7193cefc795260a32a1943f20a5`, and `head (GNU coreutils) 9.12`, binary SHA-256 `313bf1f0c296d63fa9534394e22a502cfe29d9fe9e110c5b45f3c070b9ddf3e1`. Each unchanged script ran twice with empty stdin, a fresh working directory, `PATH=/usr/bin:/bin`, `HOME=/home/user`, and `LC_ALL=C`. Both runs produced identical bytes and status. Recording processes had a two-second bound and owned process-group cleanup.
-
-`node --test scripts/test-own-shell-head-oracle.ts` checks the recorded identities, original case-set digest, complete observation digest, and absence of host subprocesses in qualification. The normal scoreboard test discovery includes this check automatically. This additive recording does not change the frozen score oracle, membership, exclusions, or baselines.
+[The original transfer guide](../provenance/history/docs/head.md) is frozen historical
+source/qualification evidence, not current installation or build instructions. Its
+recordings, license identities and observations have not been rerecorded.

@@ -1,20 +1,23 @@
-# Uniq utility
+# uniq
 
-`uniq` runs the upstream uutils adjacent-line filter as its own ordinary WASI guest. Import `installUniq` from `bash-web/utilities/uniq` and install it on the Waffle runtime your shell already uses. The shell core does not include it.
+Filter adjacent equal records with the pinned uutils implementation. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/uniq` with a `/bin` alias.
+
+```ts
+import { coreutils } from "waffle-coreutils";
+import { installPrograms } from "waffle/programs";
+
+const installed = await installPrograms(runtime, [coreutils], { launcher });
+// The caller owns its runtime and generic preview1 launcher.
+await installed.dispose();
+```
+
+Installing the family does not fetch or start programs. The runtime owns markers, conflicts,
+first-use source admission, process lifetimes and disposal. `waffle-base` includes this
+family with the other everyday programs. See [installing program packages](../../../docs/guides/install-program-packages.md).
 
 ## Supported behavior
 
 The usage suite compares adjacent duplicate removal, `-c` counts, `-d` repeated groups, `-u` unique groups, `-i` case-insensitive matching, named relative inputs, output files, empty input, and unterminated input against GNU uniq with `LC_ALL=C`. Non-adjacent equal lines remain separate. Use `sort | uniq` to group all equal lines. Missing inputs and invalid options retain upstream diagnostics and failure statuses.
-
-```ts
-import { installUniq } from "bash-web/utilities/uniq";
-
-const uniq = await installUniq(runtime);
-// The first shell invocation of uniq loads its guest.
-await uniq.dispose();
-```
-
-`wasmUrl` and `workerUrl` override the packaged URLs. Instead of `wasmUrl`, `source` accepts raw `Uint8Array` bytes or a lazy function returning bytes. There is no precompiled-module or cooperative registration. Waffle owns ordinary admission, interruption, files, and descriptors. Uniq loads independently of sort. Disposing its installation does not dispose the borrowed runtime.
 
 ## Resource limits
 
@@ -22,6 +25,12 @@ The guest shares the repository's 256 MiB linear-memory cap. Upstream retains re
 
 ## Source and verification
 
-`uu_uniq = "=0.12.0"` is an unmodified individual registry library, not a multicall binary. Its source receipt identifies uutils/coreutils revision `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69`, path `src/uu/uniq`. [The source receipt](sort-uniq-source.json) records the registry checksum. Cargo.lock pins its dependencies. `npm run notices:shell` includes the MIT license and dependency notices.
+The current entry is [src/bin/uniq.rs](../src/bin/uniq.rs). Prepare this family once with
+`bun run --cwd packages/coreutils prepare:package`. The root `programs:integration`
+command checks the actual public family exports on Waffle after the required assets exist.
+Wrapped uutils guests initialize libc cwd from PWD; keep it aligned with the requested cwd
+when using their relative file operands. Env's child request preserves its own cwd policy.
 
-The wrapper calls `uucore::bin!(uu_uniq)` after setting WASI libc's cwd from `PWD`. It adds no local filtering algorithm. Build and verification commands are shared with [Sort](sort.md#source-and-verification).
+[The original transfer guide](../provenance/history/docs/uniq.md) is frozen historical
+source/qualification evidence, not current installation or build instructions. Its
+recordings, license identities and observations have not been rerecorded.
