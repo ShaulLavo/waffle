@@ -307,3 +307,29 @@ test("network packaging and acceptance inputs select the producer and browser co
   for (const path of ["docs/development.md", "site/src/pages/index.astro", "site/bun.lock"])
     expect(selected("network", path), path).toBe(false);
 });
+
+test("programs selects every consumed tool, workspace dependency, installer and libc input", () => {
+  for (const path of [
+    "package.json",
+    "bun.lock",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "tools/source-contract-test.ts",
+    "tools/test-family-build-routes.ts",
+    "tools/program-family-manifest.test.ts",
+    "tools/family-acceptance.ts",
+    "tools/program-package.ts",
+    "tools/program-notices.ts",
+    "packages/waffle/programs/index.ts",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/scripts/build-wasi-libc.sh",
+    "packages/waffle/patches/wasi-libc/preopen-scan.patch",
+    "packages/coreutils/package-artifacts.json",
+    "packages/python/src/launcher.ts",
+  ])
+    expect(selected("programs", path), path).toBe(true);
+  expect(String(record(jobs.programs).if)).toContain("needs.changes.outputs.programs");
+  for (const path of ["docs/development.md", "site/src/pages/index.astro", "site/bun.lock"])
+    expect(selected("programs", path), path).toBe(false);
+});

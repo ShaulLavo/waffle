@@ -51,6 +51,79 @@ function borrowed(description: OpenDescription): Descriptor {
   };
 }
 
+test("a stdin-only resolver keeps checked default output and EOF for declined targets", () => {
+  const state = fixture();
+  const imported = new DescriptorTable();
+  let active = true;
+  const codec = createRuntimeTerminalCodec({
+    fallback: state.fallback,
+    resolveTerminal: (target) => (target === 0 ? terminal() : undefined),
+    output(fd, bytes) {
+      state.output.push([fd, new TextDecoder().decode(bytes)]);
+    },
+    checkActive() {
+      if (!active) throw Error("revoked");
+    },
+  });
+  try {
+    for (const target of [1, 2] as const) {
+      const description = codec.import({ kind: "web-terminal", target }, 2);
+      const fd = imported.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+      const stream = imported.get(fd)!.resource;
+      if (stream.kind !== "terminal") throw Error("not a terminal");
+      expect(stream.tryWrite?.([text(`fd${target}`)])).toBe(3);
+      expect(codec.export(imported.get(fd)!, 3)).toEqual({ kind: "web-terminal", target });
+      active = false;
+      expect(() => stream.write([text("blocked")])).toThrow("revoked");
+      active = true;
+    }
+    expect(state.output).toEqual([
+      [1, "fd1"],
+      [2, "fd2"],
+    ]);
+  } finally {
+    imported.dispose();
+    state.table.dispose();
+  }
+});
+
+test("declining stdin preserves EOF and cannot bypass revocation during resolution", () => {
+  const state = fixture();
+  let active = true;
+  const codec = createRuntimeTerminalCodec({
+    fallback: state.fallback,
+    resolveTerminal: () => undefined,
+    checkActive() {
+      if (!active) throw Error("revoked");
+    },
+  });
+  const table = new DescriptorTable();
+  try {
+    const fd = table.add(codec.import({ kind: "web-terminal", target: 0 }, 2), {
+      rightsBase: 0n,
+      rightsInheriting: 0n,
+    });
+    const stream = table.get(fd)!.resource;
+    if (stream.kind !== "terminal") throw Error("not a terminal");
+    expect(stream.tryRead?.([new Uint8Array(1)])).toBe(0);
+    expect(stream.readiness().hangup).toBe(true);
+    const revoked = createRuntimeTerminalCodec({
+      fallback: state.fallback,
+      resolveTerminal() {
+        active = false;
+        return undefined;
+      },
+      checkActive() {
+        if (!active) throw Error("revoked");
+      },
+    });
+    expect(() => revoked.import({ kind: "web-terminal", target: 1 }, 2)).toThrow("revoked");
+  } finally {
+    table.dispose();
+    state.table.dispose();
+  }
+});
+
 test("default runtime stdio transfers without Bun slots and routes stdout/stderr separately", () => {
   const state = fixture();
   try {

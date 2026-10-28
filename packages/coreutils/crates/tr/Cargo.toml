@@ -1,0 +1,18 @@
+[package]
+name = "waffle-tr"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+uu_tr = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[[bin]]
+name = "tr"
+path = "src/main.rs"
+
+[package.metadata.cargo-machete]
+ignored = ["uu_tr", "uucore"]

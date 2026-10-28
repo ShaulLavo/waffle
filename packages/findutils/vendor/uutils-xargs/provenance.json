@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/uutils/findutils",
+  "revision": "505421d4e03586efeb7b9c55adf057599e192e0a",
+  "version": "0.11.0",
+  "upstreamPath": "src/xargs/mod.rs",
+  "localPath": "src/lib.rs",
+  "upstreamSha256": "8fa9777ff191bef065ffac7a5f862b7ffd0e0716105808ae6e0d8a9ae159dc7b",
+  "files": {
+    "src/lib.rs": "0ae81e4ebbac812787af785ef6437464227b311b31482d6cc68bbabfe75d4997",
+    "LICENSE": "b2888851106d2281b01ff2b807b4950463725c39895dd064770c43d28d419a71",
+    "Cargo.toml": "01777dfc847857aeba6c30c4f7075b3de6fd72a813c98e64183f7a88db4e958c",
+    "wasi.patch": "c6c510cc371d24b2faa2e1a10d57696c5c4ea8a3c26d0303964fdf563ee92436"
+  },
+  "changes": [
+    "Copy only the upstream xargs module; omit unrelated find/locate dependencies.",
+    "Reject explicit commands, parallelism and replacement after upstream option parsing and before opening input. Parser, readers, batching, echo and upstream unit tests are unchanged.",
+    "Help describes the echo-only contract."
+  ],
+  "license": {
+    "spdx": "MIT",
+    "path": "LICENSE",
+    "sha256": "b2888851106d2281b01ff2b807b4950463725c39895dd064770c43d28d419a71"
+  }
+}

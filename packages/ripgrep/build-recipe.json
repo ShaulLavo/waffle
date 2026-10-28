@@ -1,0 +1,29 @@
+{
+  "schema": "waffle-program-build-recipe/v1",
+  "status": "caller wired; final monorepo layout and guest qualification pending",
+  "sourceCommit": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+  "sharedTools": "../../../tools/program-build-tools.ts",
+  "sharedToolsCommit": "74490abce8067d3d23b857d9774ba4f235f43a1d",
+  "copiedHelpers": false,
+  "familyRecipe": {
+    "root": "monorepo root",
+    "waffle": "packages/waffle",
+    "targetDirectory": ".build/ripgrep",
+    "releaseDirectory": ".build/ripgrep/wasm32-wasip1/release"
+  },
+  "wasiSdk": "34.0",
+  "wasiLibc": "2e6fb9d8ee0c",
+  "maxMemoryBytes": 268435456,
+  "toolRecipe": "scripts/build-rg.ts",
+  "historicalToolRecipe": "provenance/bash/scripts/build-rg.ts",
+  "sourceVerification": "scripts/test-rg-source.ts",
+  "generatedOutputs": ["rg.wasm", "rg.NOTICES.txt"],
+  "note": "Active recipe uses the singular shared helper; no installer, package export, source download or produced guest is claimed.",
+  "upstream": "BurntSushi/ripgrep",
+  "revision": "6892bc2b7efe5909cbbeec8f757ed2c4c76b1d30",
+  "archiveSha256": "bc5a3bc1c3d58a192a3c4731c6f2aa159e74b007ce6200d7f6ef05d8fb4e000e",
+  "patch": "patches/ripgrep-wasi.patch",
+  "patchSha256": "e9d991ff17e2b2f8fbf2ed7adfc99b5fdb26d9287378a472fb95bd60f6f45853",
+  "historicalRecipeIdentity": "7c05ed740a41d29b3528304a07a22ecf6f8e54c3b22e10bc6029ab10e26c0277",
+  "nativeOrWasiQualification": "Pending final monorepo producer, notice and guest checks; mocked route and source-only checks do not qualify WASI."
+}

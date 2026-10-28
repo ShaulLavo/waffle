@@ -1,0 +1,15 @@
+{
+  "schema": "waffle-family-source-candidate/v1",
+  "family": "findutils",
+  "programs": [
+    {"name": "find", "execution": "ordinary WASI source bytes", "plannedWafflePath": "/usr/bin/find", "asset": "find.wasm"},
+    {"name": "xargs", "execution": "ordinary WASI source bytes", "plannedWafflePath": "/usr/bin/xargs", "asset": "xargs.wasm"}
+  ],
+  "packageName": null,
+  "exports": null,
+  "status": "Provisional source transfer; Waffle layout and install API are pending.",
+  "buildRecipe": "build-recipe.json",
+  "sourceTests": ["scripts/test-find-source.ts", "scripts/test-xargs-source.ts"],
+  "nativeTests": ["tests/find.rs", "tests/xargs_contract.rs"],
+  "sharedBuildTools": "Future Waffle shared build-tools owner; no helper copy in this candidate."
+}

@@ -1,0 +1,3 @@
+{
+  "files": ["dist/find.wasm", "dist/xargs.wasm", "dist/THIRD_PARTY_NOTICES.txt"]
+}

@@ -2,6 +2,10 @@ node_modules/
 dist/
 .runtime-size/
 target/
+.build/
+packages/*/dist/
+packages/*/assets/
+packages/*/.sources/
 browser/net/network.wasm
 browser/net/network.input-hash
 browser/net/network.sha256
@@ -10,3 +14,6 @@ browser/net/network.sha256
 packages/waffle/browser/net/network.wasm
 packages/waffle/browser/net/network.input-hash
 packages/waffle/browser/net/network.sha256
+
+# Family build staging; published entries use dist assets
+packages/*/public/programs/

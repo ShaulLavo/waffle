@@ -19,6 +19,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `patches/wasi-libc/preopen-scan.patch`                                                                                                | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.                                                                                    |
 | `network/src/{lib,queue,native}.rs`, `network/tests/`                                                                                 | Adaptation       | bun-wasm PR116 `crates/bunwasm-host/src/net/{tcp,mod}.rs` at `4a734933901f5ff4c403925d1589afc2a4ce2e71`; retain dual-stack bind, fallback, byte queue, graceful output drain, FIN completion and input discard; replace native threads with bounded progress turns and interruptible Unix wait-many.                                                                                                                         |
 | `network/src/{abi,module,virtual_net}.rs`, `browser/net/module.ts`                                                                    | Original adapter | Waffle binary ABI, virtual-only namespace, explicit loader and per-runtime module ownership. No Bun API facade copied.                                                                                                                                                                                                                                                                                                       |
+| `tools/licenses/`                                                                                                                     | License copy     | Exact upstream MIT license texts for fluent-langneg 0.13.1 and intl_pluralrules 7.0.2, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                         |
 
 ## Node WASI descriptor adapter
 
@@ -205,3 +206,14 @@ SharedFilesystem, Worker, service and IndexedDB backend, joins the original targ
 close event before cleanup, and reopens its dirty marker. The post-close failure seam
 runs after native close/unlock; it does not prove native failed-close lock retention.
 See [storage shutdown](storage.md#ordinary-ready-shutdown) for commands and limits.
+
+## Program dependency license texts
+
+`tools/licenses/fluent-langneg-0.13.1-MIT.txt` is the unchanged `LICENSE-MIT` from
+projectfluent/fluent-langneg-rs at `7fdc590466ea63ca2367ac10fb1b881fe561f1a8`.
+`tools/licenses/intl_pluralrules-7.0.2-MIT.txt` is the unchanged
+`intl_pluralrules/LICENSE-MIT` from zbraniecki/pluralrules at
+`d0715d5b7cca72e228d6e6c4de154bd30dfdd06a`. The crates declare a choice of MIT
+or Apache-2.0, but their published archives omit those files. Their `.cargo_vcs_info.json`
+records identify these commits. The notice generator verifies those recorded revisions
+and the copied text hashes before including the MIT texts. No dependency code is changed.

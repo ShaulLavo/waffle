@@ -1,0 +1,32 @@
+{
+  "name": "waffle-base",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The everyday Waffle program families.",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "package-artifacts.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check"
+  },
+  "dependencies": {
+    "waffle": "workspace:*",
+    "waffle-coreutils": "workspace:*",
+    "waffle-findutils": "workspace:*",
+    "waffle-grep": "workspace:*",
+    "waffle-ripgrep": "workspace:*",
+    "waffle-sed": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  }
+}
