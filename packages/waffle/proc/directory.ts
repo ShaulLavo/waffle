@@ -38,7 +38,7 @@ import {
 } from "./intrinsics.ts";
 
 const HEADER_BYTES = 32;
-const PROCESS_WORDS = 76;
+const PROCESS_WORDS = 78;
 const JOB_WORDS = 10;
 export interface DirectoryHandle {
   readonly directory: SharedArrayBuffer;
@@ -173,6 +173,8 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     jobPending: group.pending,
     confirmed: liveCells(raw, pid, 71),
     jobConfirmed: liveCells(raw, pid, 72),
+    terminalAdmission: liveCells(raw, pid, 76),
+    terminalStopped: liveCells(raw, pid, 77),
     signals: {
       interrupt: liveCells(raw, pid, 3),
       requestedSignal: liveCells(raw, pid, 4),

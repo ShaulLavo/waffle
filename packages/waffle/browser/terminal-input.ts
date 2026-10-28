@@ -6,6 +6,7 @@ import {
   type TerminalPolicy,
   type TerminalResult,
   type TerminalTurn,
+  terminalInputSection,
 } from "./terminal-session.js";
 import {
   atomicsAdd,
@@ -15,13 +16,16 @@ import {
   atomicsStore,
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
+  BigInt64ArrayConstructor,
+  Uint32ArrayConstructor,
+  cryptoGetRandomValues,
 } from "../proc/intrinsics.ts";
 
 const AGAIN = -6;
 const BADF = -8;
 const CANCELED = -11;
 const NOTSUP = -58;
-const HEADER_WORDS = 10;
+const HEADER_WORDS = 16;
 const HEADER_BYTES = HEADER_WORDS * 4;
 const DEFAULT_CAPACITY = 65536;
 const H = {
@@ -30,11 +34,14 @@ const H = {
   wake: 2,
   closed: 3,
   lock: 4,
-  cancelled: 5,
-  cookedReady: 6,
-  cookedEnd: 7,
-  cookedOutputEnd: 8,
-  skipLineFeed: 9,
+  cancelled: 6,
+  cookedReady: 7,
+  cookedEnd: 8,
+  cookedOutputEnd: 9,
+  skipLineFeed: 10,
+  poisoned: 11,
+  nonce: 12,
+  nextToken: 14,
 } as const;
 
 export interface TerminalInput {
@@ -101,11 +108,15 @@ class InputBuffer implements TerminalInput {
   readonly state: Int32Array;
   readonly ring: Uint8Array;
   readonly notification: Int32Array;
+  readonly lock: BigInt64Array;
+  readonly identity: BigInt64Array;
   constructor(readonly buffer: SharedArrayBuffer) {
     this.capacity = viewCapacity(buffer);
     this.state = new Int32ArrayConstructor(buffer, 0, HEADER_WORDS);
     this.ring = new Uint8Array(buffer, HEADER_BYTES);
     this.notification = new Int32ArrayConstructor(buffer, H.wake * 4, 1);
+    this.lock = new BigInt64ArrayConstructor(buffer, H.lock * 4, 1);
+    this.identity = new BigInt64ArrayConstructor(buffer, H.nonce * 4, 2);
   }
   available(): number {
     return (atomicsLoad(this.state, H.write) - atomicsLoad(this.state, H.read)) >>> 0;
@@ -114,10 +125,11 @@ class InputBuffer implements TerminalInput {
     return atomicsLoad(this.state, H.cancelled) !== 0;
   }
   push(bytes: Uint8Array): number {
+    if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
     if (!bytes.length) return 0;
     if (this.cancelled()) return CANCELED;
     if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
-    if (atomicsCompareExchange(this.state, H.lock, 0, 1) !== 0) return AGAIN;
+    if (atomicsCompareExchange(this.lock, 0, 0n, 1n) !== 0n) return AGAIN;
     try {
       if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
@@ -128,23 +140,36 @@ class InputBuffer implements TerminalInput {
       this.signal();
       return bytes.length;
     } finally {
-      atomicsStore(this.state, H.lock, 0);
-      atomicsNotify(this.state, H.lock);
+      atomicsStore(this.lock, 0, 0n);
+      atomicsNotify(this.lock, 0);
     }
   }
-  read(chunks: readonly Uint8Array[], cooked: boolean): number {
+  read(turn: TerminalTurn, chunks: readonly Uint8Array[], cooked: boolean): number {
+    if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
     if (!chunks.some((chunk) => chunk.length)) return 0;
     if (this.cancelled()) return CANCELED;
-    if (atomicsCompareExchange(this.state, H.lock, 0, 1) !== 0) return AGAIN;
+    const token = atomicsAdd(this.identity, 1, 1n) + 1n;
+    if (token <= 1n) {
+      this.poison();
+      return BADF;
+    }
+    return terminalInputSection(turn, atomicsLoad(this.identity, 0), token, () =>
+      this.lockedRead(chunks, cooked, token),
+    );
+  }
+  private lockedRead(chunks: readonly Uint8Array[], cooked: boolean, token: bigint): number {
+    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) return AGAIN;
     try {
+      if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
       return cooked ? this.readCooked(chunks) : this.readRaw(chunks);
     } finally {
-      atomicsStore(this.state, H.lock, 0);
-      atomicsNotify(this.state, H.lock);
+      atomicsStore(this.lock, 0, 0n);
+      atomicsNotify(this.lock, 0);
     }
   }
   inputReady(cooked: boolean): boolean {
+    if (atomicsLoad(this.state, H.poisoned) !== 0) return true;
     if (this.cancelled()) return true;
     if (atomicsLoad(this.state, H.closed) !== 0 && this.available() === 0) return true;
     if (!cooked) return this.available() > 0;
@@ -274,6 +299,10 @@ class InputBuffer implements TerminalInput {
   private byteAt(index: number): number {
     return this.ring[(index >>> 0) % this.capacity]!;
   }
+  poison(): void {
+    atomicsStore(this.state, H.poisoned, 1);
+    this.signal();
+  }
   close(): void {
     atomicsStore(this.state, H.closed, 1);
     this.signal();
@@ -301,7 +330,19 @@ function inputBuffer(input: TerminalInput | SharedArrayBuffer): InputBuffer {
 export function createTerminalInput(options: { readonly capacity?: number } = {}): TerminalInput {
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
   if (!validCapacity(capacity)) throw new RangeError("invalid terminal input capacity");
-  return new InputBuffer(new SharedArrayBufferConstructor(HEADER_BYTES + capacity));
+  const input = new InputBuffer(new SharedArrayBufferConstructor(HEADER_BYTES + capacity));
+  const nonce = cryptoGetRandomValues(new Uint32ArrayConstructor(input.buffer, H.nonce * 4, 2));
+  if (nonce[0] === 0 && nonce[1] === 0) nonce[0] = 1;
+  atomicsStore(input.identity, 1, 1n);
+  return input;
+}
+
+/** Only a captured native owner's successful stop may abandon its exact acquisition token. */
+export function poisonTerminalInput(input: TerminalInput, nonce: bigint, token: bigint): boolean {
+  const buffer = inputBuffer(input);
+  if (atomicsLoad(buffer.identity, 0) !== nonce) return false;
+  if (atomicsLoad(buffer.lock, 0) === token) buffer.poison();
+  return true;
 }
 
 export function attachTerminalInput(buffer: SharedArrayBuffer): TerminalInput {
@@ -341,7 +382,7 @@ export function createTerminalInputPolicy(options: TerminalInputPolicyOptions): 
   const input = inputBuffer(options.input);
   return {
     tryRead(turn: TerminalTurn, chunks: readonly Uint8Array[]): number {
-      return input.read(chunks, turn.mode === "cooked");
+      return input.read(turn, chunks, turn.mode === "cooked");
     },
     inputReadiness(turn): Pick<Readiness, "readable" | "nbytes"> {
       const available = input.available();

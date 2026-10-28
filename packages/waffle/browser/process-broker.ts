@@ -30,6 +30,10 @@ import {
 } from "../proc/outcome.js";
 import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import {
+  captureTerminalLifetime,
+  type TerminalProcessLifetime,
+} from "../proc/terminal-lifetime.js";
+import {
   reportProcessAdmission,
   type ProcessAdmissionEvent,
   type ProcessAdmissionObserver,
@@ -197,6 +201,7 @@ export class BrowserProcessBroker {
   private readonly rejectedTransfers = new Map<string, Promise<void>>();
   private cleanupCodec?: WorkerDescriptorCodec;
   private readonly acquiredProcesses = new Map<number, string>();
+  private readonly terminalLifetimes = new Map<number, TerminalProcessLifetime>();
   private readonly stopTrackingConsumers: () => void;
   private readonly accesses = new WorkerExecutableAccess({
     active: (sender) => !this.suspended && !isRevoked(this.filesystem(sender)),
@@ -367,6 +372,7 @@ export class BrowserProcessBroker {
         return handle;
       }
       acquireLaunch();
+      const terminal = this.terminalLifetimes.get(context.pid);
       // External launchers own their physical handle. Keep controller authority until
       // that handle's asynchronous cleanup settles, not merely its child-exit event.
       return {
@@ -381,6 +387,7 @@ export class BrowserProcessBroker {
           if (pending) {
             const stopping = pending
               .then(() => {
+                terminal?.stopped();
                 this.controllerStops?.delete(context.pid);
                 this.launches?.delete(context.pid);
                 this.retireChildController(context.pid);
@@ -392,6 +399,7 @@ export class BrowserProcessBroker {
             });
             return stopping;
           }
+          terminal?.stopped();
           this.launches?.delete(context.pid);
           this.retireChildController(context.pid);
           settled();
@@ -646,13 +654,19 @@ export class BrowserProcessBroker {
   private processLifetime(transport: WorkerProcessTransport): string {
     return `${workerProcessDirectoryId(transport)}:${transport.slot}:${transport.pid}`;
   }
-  private runtimeProcessLifetime(pid: number): string | undefined {
+  private runtimeProcessLifetime(
+    pid: number,
+  ): { key: string; terminal: TerminalProcessLifetime } | undefined {
     // Only adopted directories can resolve a controller registered before publication.
     for (const root of this.roots.values()) {
       const state = Array.from(directoryProcesses(root.directory)).find(
         (state) => state.pid === pid,
       );
-      if (state) return `${workerProcessDirectoryId(root)}:${state.slot}:${pid}`;
+      if (state)
+        return {
+          key: `${workerProcessDirectoryId(root)}:${state.slot}:${pid}`,
+          terminal: captureTerminalLifetime({ directory: root.directory, slot: state.slot, pid }),
+        };
     }
     return undefined;
   }
@@ -662,11 +676,15 @@ export class BrowserProcessBroker {
     if (acquired && acquired !== lifetime)
       throw new Error("process consumer belongs to another lifetime");
     this.acquiredProcesses.set(transport.pid, lifetime);
+    if (!this.terminalLifetimes.has(transport.pid))
+      this.terminalLifetimes.set(transport.pid, captureTerminalLifetime(transport));
   }
   private acquireController(pid: number): void {
     if (this.acquiredProcesses.has(pid) || !this.controllers.has(pid)) return;
     const lifetime = this.runtimeProcessLifetime(pid);
-    if (lifetime) this.acquiredProcesses.set(pid, lifetime);
+    if (!lifetime) return;
+    this.acquiredProcesses.set(pid, lifetime.key);
+    this.terminalLifetimes.set(pid, lifetime.terminal);
   }
   private releaseAcquiredProcess(pid: number): void {
     if (
@@ -679,6 +697,7 @@ export class BrowserProcessBroker {
     )
       return;
     this.acquiredProcesses.delete(pid);
+    this.terminalLifetimes.delete(pid);
   }
   private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
     // prepareSpawn may register before publication; resolve against our adopted roots.
@@ -1211,10 +1230,12 @@ export class BrowserProcessBroker {
     controller.revoke?.();
   }
   private processFence(pid: number): void | Promise<void> {
+    const pending: Promise<void>[] = [];
+    const terminal = this.terminalLifetimes.get(pid)?.quiesce();
+    if (terminal) pending.push(terminal);
     // Lazy/external roots may have no supervisor record to invoke their revocation hook.
     this.revokeController(pid);
     const controller = this.controllers.get(pid);
-    const pending: Promise<void>[] = [];
     const adapter = controller?.quiesce?.();
     if (adapter) pending.push(adapter);
     if (controller?.filesystem && !controller.acknowledged?.())
@@ -1245,13 +1266,17 @@ export class BrowserProcessBroker {
   private stop(child: RuntimeChild): void | Promise<void> {
     if (child.stopping) return child.stopping;
     if (child.stopped) return;
+    const terminal = this.terminalLifetimes.get(child.context.pid);
     const stop = async () => {
       if (child.stopped) return;
       child.stopped = true;
       const errors: unknown[] = [];
       const notifications = child.notifications;
       if (notifications) await settleStop(() => notifications.dispose(), errors);
-      await settleStop(() => child.worker?.terminate(), errors);
+      await settleStop(async () => {
+        await child.worker?.terminate();
+        terminal?.stopped();
+      }, errors);
       await settleStop(() => child.cleanup?.(), errors);
       if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
       this.children.delete(child.context.pid);
@@ -1282,9 +1307,11 @@ export class BrowserProcessBroker {
     if (pending) return pending.pending;
     const controller = this.controllers.get(pid);
     if (!controller) return;
+    const terminal = this.terminalLifetimes.get(pid);
     const stopping = Promise.resolve(this.quiesceProcess(pid))
       .then(() => controller.stop?.())
       .then(() => {
+        terminal?.stopped();
         this.controllerStops?.delete(pid);
         this.retireChildController(pid);
       });
@@ -1490,13 +1517,16 @@ export class BrowserProcessBroker {
     failed: Set<ProcessController>,
   ): Promise<void> {
     const stopping = this.controllerStops?.get(pid);
+    const terminal = this.terminalLifetimes.get(pid);
     const pending = stopping?.controllerStop
       ? stopping.pending
       : Promise.resolve().then(() => controller.stop?.());
-    return pending.catch((error) => {
-      failed.add(controller);
-      throw error;
-    });
+    return pending
+      .then(() => terminal?.stopped())
+      .catch((error) => {
+        failed.add(controller);
+        throw error;
+      });
   }
   private retireDisposedControllers(
     failed: ReadonlySet<ProcessController>,
@@ -1595,6 +1625,7 @@ export class BrowserProcessBroker {
       this.pendingLaunches?.clear();
       this.fences.clear();
       this.acquiredProcesses.clear();
+      this.terminalLifetimes.clear();
       this.stopTrackingConsumers();
       if (errors.length) throw new AggregateError(errors, "Process broker cleanup failed");
     })().then(resolve, reject);
