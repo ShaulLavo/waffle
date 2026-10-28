@@ -39,10 +39,6 @@ import {
   setDelete,
   setForEach,
   arrayAppend,
-  PromiseConstructor,
-  abortSignalAborted,
-  listenAbort,
-  unlistenAbort,
 } from "../proc/intrinsics.ts";
 import type {
   FileSystem,
@@ -113,7 +109,6 @@ export class FilesystemCompletion {
   private decoded: unknown;
   private loading?: Promise<unknown>;
   private consumed = false;
-  private received = false;
   constructor(
     readonly id: number,
     readonly buffer: SharedArrayBuffer,
@@ -132,25 +127,6 @@ export class FilesystemCompletion {
     const changed = this.changed;
     this.changed = [];
     for (let index = 0; index < changed.length; index++) changed[index]!();
-  }
-  receive(): void {
-    this.received = true;
-    this.notify();
-  }
-  /** Wait for this request's actual port reply, not only its shared completion state. */
-  async acknowledged(): Promise<void> {
-    this.check();
-    while (!this.received) {
-      await this.waitForMessage();
-      this.check();
-    }
-  }
-  private waitForMessage(): Promise<void> {
-    return new PromiseConstructor<void>((resolve) => {
-      arrayAppend(this.changed, resolve);
-      this.client.watchRevocation();
-      if (this.received || isRevoked(this.client.connection) || this.cells[6]) this.notify();
-    });
   }
   cancel(): void {
     if (this.publication) this.client.cancelPublication(this.publication);
@@ -314,28 +290,9 @@ export class FilesystemClient implements FileSystem {
     );
     connection.port.onmessage = ({ data }) => {
       if (data.segment) this.shared.addSegment(data.segment, data.index);
-      else mapGet(this.completions, data.completed)?.receive();
+      else mapGet(this.completions, data.completed)?.notify();
     };
     connection.port.start();
-  }
-  /** A real port round trip before this agent performs synchronous filesystem calls.
-   * Each call is independent and cancellable; success is not a future liveness guarantee. */
-  async ready(options: { readonly signal?: AbortSignal } = {}): Promise<void> {
-    const signal = options.signal;
-    if (this.revoked() || (signal && abortSignalAborted(signal))) throw new FilesystemError(11);
-    // Readiness does not access the namespace or require a resident publication attachment.
-    const completion = this.submitPrepared("connectionReady", [], new Uint8ArrayConstructor(), 0);
-    const cancel = () => completion.cancel();
-    if (signal) listenAbort(signal, cancel);
-    try {
-      if (signal && abortSignalAborted(signal)) cancel();
-      await completion.acknowledged();
-      await completion.value();
-      if (this.revoked() || (signal && abortSignalAborted(signal))) throw new FilesystemError(11);
-    } finally {
-      if (signal) unlistenAbort(signal, cancel);
-      completion.release();
-    }
   }
   async attachResidentPublication(): Promise<void> {
     await this.resident?.attach();

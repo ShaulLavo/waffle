@@ -668,18 +668,15 @@ export class FilesystemService {
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
       this.assertBackendAccess();
-      const continuation =
-        operation === "connectionReady"
-          ? undefined
-          : this.prepareRequest(
-              session,
-              id,
-              buffer,
-              operation,
-              args,
-              bytes.subarray(inputLength, inputLength + dataLength),
-              prepared,
-            );
+      const continuation = this.prepareRequest(
+        session,
+        id,
+        buffer,
+        operation,
+        args,
+        bytes.subarray(inputLength, inputLength + dataLength),
+        prepared,
+      );
       if (continuation) {
         prepared = continuation;
         preparing = true;
@@ -694,14 +691,11 @@ export class FilesystemService {
         else Atomics.add(epoch, 0, 1);
       }
       const payload = bytes.subarray(inputLength, inputLength + dataLength);
-      const value =
-        operation === "connectionReady"
-          ? undefined
-          : prepared?.read
-            ? this.finishResult(session, id, operation, prepared.read.value)
-            : local && operation !== "flush" && operation !== "sync"
-              ? this.executePublication(session, id, operation, args, payload, admission)
-              : await this.execute(session, id, operation, args, payload);
+      const value = prepared?.read
+        ? this.finishResult(session, id, operation, prepared.read.value)
+        : local && operation !== "flush" && operation !== "sync"
+          ? this.executePublication(session, id, operation, args, payload, admission)
+          : await this.execute(session, id, operation, args, payload);
       const segments = this.backend.takeSharedSegments?.() ?? [];
       for (const segment of segments)
         for (const peer of this.sessions)
