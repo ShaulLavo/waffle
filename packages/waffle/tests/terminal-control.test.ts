@@ -1,3 +1,6 @@
+import { DescriptorTable } from "../core/descriptors.js";
+import { MemFS } from "../fs/memory.js";
+import { ProcessABI } from "../proc/abi.js";
 import { Worker } from "node:worker_threads";
 import type { TerminalControlWorkerData } from "./fixtures/terminal-control-worker.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
@@ -13,7 +16,7 @@ import {
   TERMINAL_SESSION_LIMITS,
   type TerminalResult,
 } from "../browser/runtime-terminals.js";
-import { createWorkerProcessTransport } from "../proc/worker-client.js";
+import { createWorkerProcessTransport, WorkerProcessClient } from "../proc/worker-client.js";
 
 function must<T>(result: TerminalResult<T>): T {
   if (result.kind === "error") throw Error(result.code);
@@ -362,6 +365,61 @@ test("cancellation after commit cannot discard a committed return handle", async
     expect(result.receipt.group(result.value)).toBe("active");
     expect(f.authority.retireGroup({ group: result.value, reason: "cancelled" }).kind).toBe("ok");
   } finally {
+    f.display.close("disposed");
+    f.input.close();
+  }
+});
+
+test("a scoped runtime wait is rejected without blocking while a nonblocking job probe remains valid", async () => {
+  const f = fixture();
+  const descriptors = new DescriptorTable();
+  let waits = 0;
+  const client = new WorkerProcessClient({
+    transport: f.root,
+    descriptors,
+    codec: {
+      export() {
+        throw Error("unused");
+      },
+      import() {
+        throw Error("unused");
+      },
+      discard() {},
+    },
+    postMessage() {},
+  });
+  const pid = client.spawn(client.pid, {
+    executable: "fixture",
+    argv: [],
+    env: {},
+    cwd: "/",
+    job: -1,
+    fds: [],
+  });
+  const job = client.jobOf(pid);
+  const abi = new ProcessABI({
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    descriptors,
+    fs: new MemFS(),
+    pid: client.pid,
+    service: client,
+    signals: client.signals,
+    wake: client.wake,
+    wait() {
+      waits++;
+      throw Error("a scoped wait reached the blocking host");
+    },
+  });
+  try {
+    const result = await f.authority.control(() => {
+      expect(abi.imports.wait_job!(job, 1, 64)).toBe(-6);
+      expect(abi.imports.wait_job!(job, 0, 64)).toBe(-58);
+      return { kind: "ok", value: undefined };
+    });
+    expect(result.kind).toBe("ok");
+    expect(waits).toBe(0);
+  } finally {
+    descriptors.dispose();
     f.display.close("disposed");
     f.input.close();
   }

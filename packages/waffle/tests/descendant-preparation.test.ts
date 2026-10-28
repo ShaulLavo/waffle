@@ -6,6 +6,7 @@ import {
   BrowserProcessBroker,
   type RuntimeDescendant,
   type RuntimeRootOptions,
+  type RootPreparationCompletion,
   type RootDescendantPreparation,
 } from "../browser/process-broker.js";
 import {
@@ -45,6 +46,11 @@ const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 
 function must<T>(result: TerminalResult<T>): T {
   if (result.kind === "error") throw new Error(result.code);
   return result.value;
+}
+function completionLabel(completion: RootPreparationCompletion): string {
+  return completion.kind === "committed"
+    ? `${completion.kind}:${completion.entry}`
+    : completion.kind;
 }
 
 /** A real broker, supervisor and directory; only the adapter's Worker is a launch callback. */
@@ -495,27 +501,13 @@ test("postcommit cancellation reports committed/no-entry before exactly one exit
     },
     settled(_descendant, completion) {
       ownedMember = t.members.get(_descendant.pid);
-      order.push(
-        completion.kind === "committed"
-          ? `${completion.kind}:${completion.entry}`
-          : completion.kind,
-      );
+      order.push(completionLabel(completion));
     },
   });
-  const supervisor = await f.broker.ready();
-  let exits = 0;
-  supervisor.onChildExit(() => {
-    exits++;
-    order.push("exit");
-  });
-  const child = await f.spawn(t.root, {}, t.admitRootJob());
-  await supervisor.waitForExit(t.root.pid, child.pid);
+  const { exits } = await assertChildExitCleanup(f, t, order, "committed:not-entered");
   expect(committed).toBe(true);
   expect(f.launched).toEqual([]);
-  expect(order).toEqual(["committed:not-entered", "exit"]);
   expect(exits).toBe(1);
-  await t.cleanup();
-  expect(t.removed).toEqual([child.pid]);
   const reconciled = await t.authority.control(() => ({ kind: "ok", value: undefined }));
   expect(reconciled.receipt.member(ownedMember!)).toBe("removed");
 });
@@ -529,13 +521,19 @@ test("failed adapter invocation transfers committed membership to exit cleanup o
   const order: string[] = [];
   const t = await shellTerminal(f, {
     settled(_descendant, completion) {
-      order.push(
-        completion.kind === "committed"
-          ? `${completion.kind}:${completion.entry}`
-          : completion.kind,
-      );
+      order.push(completionLabel(completion));
     },
   });
+  const { exits } = await assertChildExitCleanup(f, t, order, "committed:adapter-invoked");
+  expect(exits).toBe(1);
+});
+
+async function assertChildExitCleanup(
+  f: ReturnType<typeof fixture>,
+  t: Awaited<ReturnType<typeof shellTerminal>>,
+  order: string[],
+  expected: string,
+): Promise<{ child: Awaited<ReturnType<typeof f.spawn>>; exits: number }> {
   const supervisor = await f.broker.ready();
   let exits = 0;
   supervisor.onChildExit(() => {
@@ -544,11 +542,12 @@ test("failed adapter invocation transfers committed membership to exit cleanup o
   });
   const child = await f.spawn(t.root, {}, t.admitRootJob());
   await supervisor.waitForExit(t.root.pid, child.pid);
-  expect(order).toEqual(["committed:adapter-invoked", "exit"]);
+  expect(order).toEqual([expected, "exit"]);
   expect(exits).toBe(1);
   await t.cleanup();
   expect(t.removed).toEqual([child.pid]);
-});
+  return { child, exits };
+}
 
 async function until(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 3000;
