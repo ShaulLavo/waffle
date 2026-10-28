@@ -710,6 +710,25 @@ async function epochCancellationControl(owner: Page, name: string): Promise<void
     "PASS granted native epoch retires before cancelled factory closes without adapter load",
   );
 }
+async function closePersistentHolder(owner: Page, holder: Page, workspace: unknown): Promise<void> {
+  if (typeof workspace !== "string") throw new Error("persistent workspace missing");
+  const lockName = `waffle:publication:continuity:${workspace}`;
+  const released = owner.evaluate(
+    (name) => navigator.locks.request(name, { mode: "exclusive" }, () => {}),
+    lockName,
+  );
+  void released.catch(() => {});
+  await owner.waitForFunction(async (name) => {
+    const locks = await navigator.locks.query();
+    return (
+      locks.held?.some((lock) => lock.name === name && lock.mode === "shared") &&
+      locks.pending?.some((lock) => lock.name === name && lock.mode === "exclusive")
+    );
+  }, lockName);
+  await holder.close();
+  await released;
+  console.log("PASS native continuity release acknowledged after surviving holder page closes");
+}
 async function persistentOwnerControls(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext();
   const name = `waffle-u1-native-${crypto.randomUUID()}`;
@@ -791,8 +810,9 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
     const survivorDenied = record(await control(owner, "persistentStart", persistentAttempt(name)));
     equal(survivorDenied.ready, false);
     noFactoryNativeOpen(survivorDenied);
+    console.log("P1_SURVIVOR_DENIED=" + JSON.stringify(survivorDenied));
     equal(record(await control(owner, "persistentStop")).stopped, true);
-    await holder.close();
+    await closePersistentHolder(owner, holder, record(afterFailure.descriptor).workspace);
     readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)), recoveredCut);
     nativeClosedBeforeRelease(await control(owner, "persistentStop"));
     console.log(
