@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 
 const repository = resolve(import.meta.dirname, "../../..");
 const releaseURL = "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.2";
@@ -103,7 +104,7 @@ async function stage(consumer: string) {
     );
 }
 
-async function browserCampaign(consumer: string, owned: AsyncDisposableStack) {
+async function browserCampaign(consumer: string) {
   const runtime = resolve(consumer, "node_modules/waffle");
   const {
     BrowserRunnerLifecycle,
@@ -111,9 +112,8 @@ async function browserCampaign(consumer: string, owned: AsyncDisposableStack) {
     resolve(runtime, "tests/browser-runner-lifecycle.ts")
   );
   const resources = new BrowserRunnerLifecycle(120000);
-  owned.defer(() => resources.close());
   try {
-    await resources.init("/work/tmp");
+    await resources.init(consumer);
     console.log(JSON.stringify({ browserScratch: resources.scratch }));
     const output = resolve(consumer, "bundle");
     const build = await Bun.build({
@@ -178,22 +178,95 @@ async function browserCampaign(consumer: string, owned: AsyncDisposableStack) {
   }
 }
 
-await mkdir("/work/tmp", { recursive: true });
-const consumer = await mkdtemp("/work/tmp/waffle-clear-public-");
-console.log(JSON.stringify({ ownedConsumer: consumer }));
-const owned = new AsyncDisposableStack();
-owned.defer(() => rm(consumer, { recursive: true, force: true }));
-const interrupted = () => {
-  void owned.disposeAsync().finally(() => process.exit(143));
-};
-process.once("SIGINT", interrupted);
-process.once("SIGTERM", interrupted);
-try {
-  await stage(consumer);
-  await browserCampaign(consumer, owned);
-} finally {
-  process.removeListener("SIGINT", interrupted);
-  process.removeListener("SIGTERM", interrupted);
-  await owned.disposeAsync();
-  console.log(JSON.stringify({ removedConsumer: consumer }));
+type CampaignMode = "campaign" | "abrupt-exit" | "deadline";
+
+async function childCampaign(mode: CampaignMode, consumer: string) {
+  if (mode === "campaign") {
+    await stage(consumer);
+    await browserCampaign(consumer);
+    return;
+  }
+  await mkdir(resolve(consumer, "downloads"));
+  await writeFile(resolve(consumer, "downloads/probe"), "owned payload");
+  if (mode === "deadline") await Bun.sleep(25);
+  process.exit(mode === "deadline" ? 1 : 23);
+}
+
+async function runOwnedConsumer(mode: CampaignMode) {
+  await mkdir("/work/tmp", { recursive: true });
+  const consumer = await mkdtemp("/work/tmp/waffle-clear-public-");
+  console.log(JSON.stringify({ ownedConsumer: consumer, mode }));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let interrupted = false;
+  const stop = () => {
+    interrupted = true;
+    child?.kill("SIGTERM");
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try {
+    const supervisor = resolve(repository, "packages/waffle/scripts/browser-supervisor.ts");
+    console.log(JSON.stringify({ supervisorSHA256: digest(await readFile(supervisor)) }));
+    child = Bun.spawn(
+      [
+        process.execPath,
+        supervisor,
+        "5000",
+        process.execPath,
+        import.meta.path,
+        "--child",
+        mode,
+        consumer,
+      ],
+      {
+        env: {
+          ...process.env,
+          STORAGE_SCRATCH_ROOT: consumer,
+          WAFFLE_BROWSER_TIMEOUT: "240000",
+          WAFFLE_BROWSER_PARENT: String(process.pid),
+        },
+        stdout: "inherit",
+        stderr: "inherit",
+      },
+    );
+    if (interrupted) child.kill("SIGTERM");
+    return { status: await child.exited, consumer };
+  } finally {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+    await child?.exited;
+    await rm(consumer, { recursive: true, force: true });
+    console.log(JSON.stringify({ removedConsumer: consumer }));
+  }
+}
+
+async function testCleanup() {
+  const controls: Array<{ mode: CampaignMode; status: number }> = [
+    { mode: "abrupt-exit", status: 23 },
+    { mode: "deadline", status: 1 },
+  ];
+  for (const control of controls) {
+    const result = await runOwnedConsumer(control.mode);
+    assert.equal(result.status, control.status);
+    assert.equal(existsSync(result.consumer), false, "child exit retained consumer");
+    console.log(
+      JSON.stringify({
+        cleanupRegression: control.mode,
+        status: result.status,
+        consumerAbsent: true,
+      }),
+    );
+  }
+}
+
+const [command, mode, consumer] = process.argv.slice(2);
+if (command === "--child") {
+  assert.ok(consumer, "child consumer required");
+  assert.ok(mode === "campaign" || mode === "abrupt-exit" || mode === "deadline");
+  await childCampaign(mode, consumer);
+} else if (command === "--test-cleanup") {
+  await testCleanup();
+} else {
+  assert.equal(command, undefined, "unsupported runner option");
+  process.exitCode = (await runOwnedConsumer("campaign")).status;
 }
