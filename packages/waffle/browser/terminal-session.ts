@@ -1064,7 +1064,7 @@ class Authority implements TerminalAuthority {
         else reject(cause);
       };
       const cancel = () => {
-        if (!request.executing) settle(error("CANCELED"));
+        if (!request.executing && request.receipt.phase !== "committed") settle(error("CANCELED"));
         this.session.notify();
       };
       const request: ControlRequest = {

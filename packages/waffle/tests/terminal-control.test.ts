@@ -338,3 +338,31 @@ test("rollback preserves newly issued aliases of existing memberships and leases
     f.input.close();
   }
 });
+
+function scheduleCancellation(controller: AbortController): undefined {
+  queueMicrotask(() => controller.abort());
+}
+
+test("cancellation after commit cannot discard a committed return handle", async () => {
+  const f = fixture(),
+    cancel = new AbortController();
+  try {
+    const result = await f.authority.control(
+      (turn) => {
+        const group = must(f.authority.createGroup({ initialMode: "raw" }));
+        turn.publish(() => scheduleCancellation(cancel));
+        return { kind: "ok", value: group };
+      },
+      { signal: cancel.signal },
+    );
+    expect(cancel.signal.aborted).toBe(true);
+    expect(result.kind).toBe("ok");
+    expect(result.receipt.phase).toBe("committed");
+    if (result.kind !== "ok") throw Error(result.code);
+    expect(result.receipt.group(result.value)).toBe("active");
+    expect(f.authority.retireGroup({ group: result.value, reason: "cancelled" }).kind).toBe("ok");
+  } finally {
+    f.display.close("disposed");
+    f.input.close();
+  }
+});
