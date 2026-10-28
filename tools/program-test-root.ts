@@ -130,12 +130,11 @@ export async function createProgramTestRoot(runtime: Runtime) {
       };
     },
     async dispose() {
-      try {
-        for (const child of active) await service.kill(child, 9);
-      } finally {
-        descriptors.dispose();
-        if (descriptors.inheritable().length) throw new Error("Test root retained descriptors");
-      }
+      const stopped = await Promise.allSettled(Array.from(active, (child) => service.kill(child, 9)));
+      descriptors.dispose();
+      if (descriptors.inheritable().length) throw new Error("Test root retained descriptors");
+      const failed = stopped.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     },
   };
 }
