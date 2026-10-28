@@ -7,14 +7,20 @@
       "aliases": ["/bin/find"],
       "execution": "wasi",
       "source": "vendor/uutils-find",
-      "limits": ["reject -exec/-execdir/-ok/-okdir", "no access/ownership/mount/permission predicates"]
+      "limits": [
+        "reject -exec/-execdir/-ok/-okdir",
+        "no access/ownership/mount/permission predicates"
+      ]
     },
     "xargs": {
       "path": "/usr/bin/xargs",
       "aliases": ["/bin/xargs"],
       "execution": "wasi",
       "source": "vendor/uutils-xargs",
-      "limits": ["echo-only", "reject explicit commands/replacement/parallelism"]
+      "limits": [
+        "explicit commands require registered executables",
+        "reject replacement/parallelism"
+      ]
     }
   }
 }

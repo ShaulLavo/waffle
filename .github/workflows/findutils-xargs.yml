@@ -1,0 +1,93 @@
+name: Findutils xargs WASI
+
+# The shared CI calls this after its one network producer. Native/source/route
+# checks stay in the existing programs job rather than running twice here.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  xargs-process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BUN_VERSION: "1.4.4"
+      WAFFLE_NETWORK_PREBUILT: "1"
+      WASI_SDK_PATH: ${{ github.workspace }}/.build/wasi-sdk-34.0-x86_64-linux
+      WASI_LIBC_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip1
+      - name: Restore exact shared runtime network asset
+        uses: actions/cache/restore@v4
+        id: network
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Cache Bun downloads
+        uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - name: Cache pinned SDK
+        uses: actions/cache@v4
+        id: sdk
+        with:
+          path: .build/wasi-sdk-34.0-x86_64-linux
+          key: wasi-sdk-34.0-x86_64-linux-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - name: Install pinned SDK on a cache miss
+        if: steps.sdk.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(mktemp "$RUNNER_TEMP/xargs-wasi-sdk-XXXXXX.tar.gz")
+          trap 'rm -f -- "$archive"' EXIT
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
+            -o "$archive"
+          printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 "$archive" | sha256sum --check --status
+          mkdir -p "$WASI_SDK_PATH"
+          tar -xzf "$archive" --strip-components=1 -C "$WASI_SDK_PATH"
+      - name: Cache xargs build inputs and patched libc
+        uses: actions/cache@v4
+        id: cargo
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/findutils
+            .build/wasi-libc
+          key: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-${{ hashFiles('packages/findutils/**/*.rs', 'packages/findutils/**/Cargo.toml', 'packages/process-consumer/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-
+      - name: Prepare existing runtime modules without rebuilding its network asset
+        run: |
+          bun run --cwd packages/waffle tooling/build-network.ts --verify
+          bun install --frozen-lockfile --ignore-scripts
+          bun run prepare:package
+      - run: bun run --cwd packages/findutils test:types
+      - name: Build and verify only the changed guest
+        env:
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+        run: bun run --cwd packages/findutils build:xargs
+      - name: Actual WASI argv, outcomes, descriptors, cancellation and cleanup
+        run: bun run --cwd packages/findutils test:xargs:wasi
+      - name: Report actual cache hits
+        if: always()
+        run: |
+          echo "network=${{ steps.network.outputs.cache-hit }}"
+          echo "Bun=${{ steps.bun-cache.outputs.cache-hit }}"
+          echo "SDK=${{ steps.sdk.outputs.cache-hit }}"
+          echo "Cargo/sysroot=${{ steps.cargo.outputs.cache-hit }}"

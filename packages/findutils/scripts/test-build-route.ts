@@ -66,3 +66,22 @@ test("find and xargs share one ordinary WASI route with exact bins and verificat
     programNames.map((name) => ({ path: resolve(releaseDirectory, `${name}.wasm`), options: {} })),
   );
 });
+
+test("xargs-only qualification does not rebuild the unchanged find guest", () => {
+  const calls: (readonly string[])[] = [];
+  const checks: string[] = [];
+  buildFindutils({
+    programs: ["xargs"],
+    execute(_command, args) {
+      calls.push(args.slice());
+    },
+    environment: () => ({}),
+    verifier: (path) => {
+      checks.push(path);
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.slice(-2), ["--bin", "xargs"]);
+  assert.equal(calls[0]?.includes("find"), false);
+  assert.deepEqual(checks, [resolve(releaseDirectory, "xargs.wasm")]);
+});

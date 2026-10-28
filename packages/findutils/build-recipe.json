@@ -15,8 +15,14 @@
   "wasiLibc": "2e6fb9d8ee0c",
   "maxMemoryBytes": 268435456,
   "toolRecipe": "scripts/build-findutils.ts",
-  "sourceVerification": ["scripts/test-find-source.ts", "scripts/test-xargs-source.ts"],
-  "generatedOutputs": ["find.wasm", "xargs.wasm"],
+  "sourceVerification": [
+    "scripts/test-find-source.ts",
+    "scripts/test-xargs-source.ts"
+  ],
+  "generatedOutputs": [
+    "find.wasm",
+    "xargs.wasm"
+  ],
   "note": "Active recipe uses the singular shared helper; no installer, public package or produced guest is claimed.",
   "upstream": "uutils/findutils",
   "revision": "505421d4e03586efeb7b9c55adf057599e192e0a",
@@ -28,7 +34,7 @@
     },
     "xargs": {
       "path": "vendor/uutils-xargs/wasi.patch",
-      "sha256": "c6c510cc371d24b2faa2e1a10d57696c5c4ea8a3c26d0303964fdf563ee92436"
+      "sha256": "a58314750c5af17a2f3215d26432f5866e4277ecf71523581e939657eebaa47e"
     }
   },
   "nativeQualification": "Bounded native find and xargs contract tests only; no WASI artifact or browser qualification is claimed."

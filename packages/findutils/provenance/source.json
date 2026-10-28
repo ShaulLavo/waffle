@@ -1,8 +1,8 @@
 {
   "sourceRepository": "github.com/ShaulLavo/bash-web",
   "sourceRevision": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
-  "destination": "future Waffle packages/findutils",
-  "classification": "relocated findutils family source with package/test-boundary adaptations",
+  "destination": "Waffle packages/findutils",
+  "classification": "relocated findutils family source with original Waffle explicit-command adapter",
   "upstream": {
     "findutils": "uutils/findutils 0.11.0",
     "revision": "505421d4e03586efeb7b9c55adf057599e192e0a",
@@ -13,10 +13,7 @@
       "reject -exec/-execdir/-ok/-okdir",
       "no access/ownership/group/mount/permission predicates"
     ],
-    "xargs": [
-      "echo-only",
-      "reject explicit commands/replacement/parallelism"
-    ]
+    "xargs": ["explicit commands require registered executables", "reject replacement/parallelism"]
   },
   "excludedBashCode": [
     "Bash parser/interpreter/state/session/runtime/worker/installer",
@@ -27,5 +24,8 @@
     "vendor/uutils-xargs/provenance.json",
     "provenance/relocation.json"
   ],
-  "historicalPathPolicy": "Frozen Bash receipts and oracle observations remain historical; this candidate does not rerecord or reset them."
+  "historicalPathPolicy": "Frozen Bash receipts and oracle observations remain historical; this candidate does not rerecord or reset them.",
+  "adaptations": [
+    "xargs uses waffle-process-consumer for exact argv, env, cwd, inherited fds, cancellation and physical retirement; default echo remains print-only"
+  ]
 }

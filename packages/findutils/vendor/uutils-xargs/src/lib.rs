@@ -11,7 +11,7 @@ use std::{
     fmt::Display,
     fs,
     io::{self, BufRead, BufReader, Read, Write},
-    process::{Command, ExitStatus, Stdio},
+    process::{Command, Stdio},
 };
 
 use clap::{crate_version, error::ErrorKind, Arg, ArgAction};
@@ -375,11 +375,15 @@ impl CommandResult {
 enum CommandExecutionError {
     // exit code 255
     UrgentlyFailed,
-    Killed { signal: i32 },
+    Killed {
+        signal: i32,
+    },
     CannotRun(io::Error),
     Output(io::Error),
     NotFound,
     Unknown,
+    #[cfg(target_os = "wasi")]
+    Interrupted(u8),
 }
 
 impl Display for CommandExecutionError {
@@ -393,6 +397,8 @@ impl Display for CommandExecutionError {
             Self::Output(err) => write!(f, "Command output failed: {err}"),
             Self::NotFound => write!(f, "Command not found"),
             Self::Unknown => write!(f, "Unknown error running command"),
+            #[cfg(target_os = "wasi")]
+            Self::Interrupted(signal) => write!(f, "Canceled by signal {signal}"),
         }
     }
 }
@@ -505,12 +511,16 @@ impl CommandBuilder<'_> {
         }
 
         match &self.options.action {
-            ExecAction::Command(_) => Self::execute_command(command),
+            ExecAction::Command(_) => self.execute_command(command),
             ExecAction::Echo => self.execute_echo(),
         }
     }
 
-    fn execute_command(mut command: Command) -> Result<CommandResult, CommandExecutionError> {
+    #[cfg(not(target_os = "wasi"))]
+    fn execute_command(
+        &self,
+        mut command: Command,
+    ) -> Result<CommandResult, CommandExecutionError> {
         match command.status() {
             Ok(status) => Self::command_result(status),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Err(CommandExecutionError::NotFound),
@@ -518,7 +528,10 @@ impl CommandBuilder<'_> {
         }
     }
 
-    fn command_result(status: ExitStatus) -> Result<CommandResult, CommandExecutionError> {
+    #[cfg(not(target_os = "wasi"))]
+    fn command_result(
+        status: std::process::ExitStatus,
+    ) -> Result<CommandResult, CommandExecutionError> {
         if status.success() {
             return Ok(CommandResult::Success);
         }
@@ -538,6 +551,11 @@ impl CommandBuilder<'_> {
         }
         #[cfg(not(unix))]
         Err(CommandExecutionError::Unknown)
+    }
+
+    #[cfg(target_os = "wasi")]
+    fn execute_command(&self, command: Command) -> Result<CommandResult, CommandExecutionError> {
+        wasi_execution::execute(&command, self.options.close_stdin)
     }
 
     fn execute_echo(&self) -> Result<CommandResult, CommandExecutionError> {
@@ -751,29 +769,17 @@ where
     R: Read,
 {
     fn next(&mut self) -> io::Result<Option<Argument>> {
-        Ok(loop {
-            let mut buf = vec![];
-            let bytes_read = self.rd.read_until(self.delimiter, &mut buf)?;
-            if bytes_read > 0 {
-                let need_to_trim_delimiter = buf[buf.len() - 1] == self.delimiter;
-                let bytes = if need_to_trim_delimiter {
-                    if buf.len() == 1 {
-                        // This was *only* a delimiter, so we didn't actually
-                        // read anything interesting. Try again.
-                        continue;
-                    }
-
-                    &buf[..buf.len() - 1]
-                } else {
-                    &buf[..]
-                };
-                break Some(Argument {
-                    arg: String::from_utf8_lossy(bytes).into_owned().into(),
-                    kind: ArgumentKind::HardTerminated,
-                });
-            }
-            break None;
-        })
+        let mut buf = vec![];
+        if self.rd.read_until(self.delimiter, &mut buf)? == 0 {
+            return Ok(None);
+        }
+        if buf.last() == Some(&self.delimiter) {
+            buf.pop();
+        }
+        Ok(Some(Argument {
+            arg: String::from_utf8_lossy(&buf).into_owned().into(),
+            kind: ArgumentKind::HardTerminated,
+        }))
     }
 }
 
@@ -1026,7 +1032,7 @@ fn normalize_options(options: Options, matches: &clap::ArgMatches) -> Options {
 fn do_xargs(args: &[&str]) -> Result<CommandResult, XargsError> {
     let matches = clap::Command::new("xargs")
         .version(crate_version!())
-        .about("Parse input and echo batches; explicit commands require Waffle runtime_proc.spawn/wait integration")
+        .about("Run commands with arguments from input; replacement and parallel execution are unsupported")
         .arg(
             Arg::new(options::COMMAND)
                 .help("The command to run")
@@ -1188,14 +1194,11 @@ fn do_xargs(args: &[&str]) -> Result<CommandResult, XargsError> {
         },
     };
 
-    if matches.contains_id(options::COMMAND) {
-        return Err("explicit commands require Waffle runtime_proc.spawn/wait integration".into());
-    }
     if matches.contains_id(options::MAX_PROCS) {
         return Err("parallel execution is not supported".into());
     }
     if matches.contains_id(options::REPLACE) || matches.contains_id(options::REPLACE_I) {
-        return Err("replacement mode requires explicit command execution".into());
+        return Err("replacement mode is not supported".into());
     }
 
     let options = Options {
@@ -1317,10 +1320,128 @@ pub fn xargs_main(args: &[&str]) -> i32 {
                     CommandExecutionError::NotFound => 127,
                     CommandExecutionError::Unknown => 1,
                     CommandExecutionError::Output(_) => 1,
+                    #[cfg(target_os = "wasi")]
+                    CommandExecutionError::Interrupted(signal) => 128 + i32::from(signal),
                 }
             } else {
                 1
             }
+        }
+    }
+}
+
+#[cfg(target_os = "wasi")]
+pub fn initialize_cwd() -> io::Result<()> {
+    let mut bytes = vec![0; waffle_process_consumer::MAX_REQUEST_BYTES];
+    let length = waffle_process_consumer::decode_host_result("cwd", unsafe {
+        wasi_execution::cwd(bytes.as_mut_ptr(), bytes.len())
+    })
+    .map_err(io::Error::other)?;
+    let bytes = bytes
+        .get(..length as usize)
+        .ok_or_else(|| io::Error::other("invalid process cwd length"))?;
+    let path = std::str::from_utf8(bytes).map_err(io::Error::other)?;
+    std::env::set_current_dir(path)
+}
+
+#[cfg(target_os = "wasi")]
+mod wasi_execution {
+    use super::{io, Command, CommandExecutionError, CommandResult, OsStr};
+    use std::collections::BTreeMap;
+    use std::fs::File;
+    use std::os::wasi::io::{AsRawFd, FromRawFd};
+    use waffle_process_consumer::{DescriptorBinding, Error, Outcome, Request};
+
+    #[link(wasm_import_module = "runtime_proc")]
+    unsafe extern "C" {
+        pub(super) fn cwd(output: *mut u8, capacity: usize) -> i32;
+        fn pipe(output: *mut u8) -> i32;
+    }
+
+    fn text(value: &OsStr) -> Result<String, CommandExecutionError> {
+        value.to_str().map(str::to_owned).ok_or_else(|| {
+            CommandExecutionError::CannotRun(io::Error::other("non-UTF-8 process string"))
+        })
+    }
+
+    // A pipe with no writer gives the child EOF without borrowing the argument
+    // stream or requiring a /dev/null filesystem asset. File owns each endpoint.
+    fn empty_stdin() -> Result<File, CommandExecutionError> {
+        let mut bytes = [0; 8];
+        waffle_process_consumer::decode_host_result("pipe", unsafe { pipe(bytes.as_mut_ptr()) })
+            .map_err(process_error)?;
+        let read = i32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let write = i32::from_le_bytes(bytes[4..].try_into().unwrap());
+        let reader = unsafe { File::from_raw_fd(read) };
+        drop(unsafe { File::from_raw_fd(write) });
+        Ok(reader)
+    }
+
+    pub(super) fn execute(
+        command: &Command,
+        close_stdin: bool,
+    ) -> Result<CommandResult, CommandExecutionError> {
+        let program = text(command.get_program())?;
+        if program.is_empty() {
+            return Err(CommandExecutionError::NotFound);
+        }
+        let cwd = std::env::current_dir().map_err(CommandExecutionError::CannotRun)?;
+        let cwd = text(cwd.as_os_str())?;
+        let env = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .map(|(key, value)| Ok((text(key)?, text(value)?)))
+            .collect::<Result<BTreeMap<_, _>, CommandExecutionError>>()?;
+        let executable = waffle_process_consumer::resolve_executable(
+            &program,
+            env.get("PATH").map(String::as_str),
+            &cwd,
+        )
+        .map_err(process_error)?;
+        let mut argv = vec![program];
+        for argument in command.get_args() {
+            argv.push(text(argument)?);
+        }
+        let mut fds = waffle_process_consumer::inherited_descriptors().map_err(process_error)?;
+        let stdin = close_stdin.then(empty_stdin).transpose()?;
+        if let Some(stdin) = &stdin {
+            fds.retain(|binding| binding.child != 0);
+            fds.push(DescriptorBinding {
+                child: 0,
+                parent: u32::try_from(stdin.as_raw_fd())
+                    .map_err(|_| process_error(Error::InvalidRecord))?,
+            });
+        }
+        let request = Request {
+            executable,
+            argv,
+            env,
+            cwd,
+            fds,
+        };
+        let outcome = waffle_process_consumer::run(&request).map_err(process_error)?;
+        match outcome {
+            Outcome::Exited(0) => Ok(CommandResult::Success),
+            Outcome::Exited(255) => Err(CommandExecutionError::UrgentlyFailed),
+            Outcome::Exited(_) => Ok(CommandResult::Failure),
+            Outcome::Signaled(signal) => Err(CommandExecutionError::Killed {
+                signal: i32::from(signal),
+            }),
+            Outcome::StartFailed(44) => Err(CommandExecutionError::NotFound),
+            Outcome::StartFailed(errno) => Err(CommandExecutionError::CannotRun(
+                io::Error::from_raw_os_error(i32::from(errno)),
+            )),
+        }
+    }
+
+    fn process_error(error: Error) -> CommandExecutionError {
+        match error {
+            Error::Host {
+                operation: "access_take" | "spawn",
+                errno: 44,
+            } => CommandExecutionError::NotFound,
+            Error::Interrupted(signal) => CommandExecutionError::Interrupted(signal),
+            error => CommandExecutionError::CannotRun(io::Error::other(error)),
         }
     }
 }
@@ -1721,7 +1842,9 @@ mod tests {
 
         assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard("abc"));
         assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard("de"));
+        assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard(""));
         assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard("ef"));
+        assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard(""));
         assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard("gh"));
         assert_eq!(reader.next().unwrap().unwrap(), make_arg_hard("ij"));
         assert_eq!(reader.next().unwrap(), None);
