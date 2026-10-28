@@ -134,7 +134,7 @@ export async function identity(context: GitContext, kind: "AUTHOR" | "COMMITTER"
       name,
       email,
       timestamp: Number(raw[1]),
-      timezoneOffset: (raw[2] === "+" ? -1 : 1) * (Number(raw[3]) * 60 + Number(raw[4])),
+      timezoneOffset: timezoneOffset(raw[2], Number(raw[3]), Number(raw[4])),
     };
   const timestamp = Date.parse(rawDate);
   const zone = /([+-])(\d{2}):?(\d{2})$/.exec(rawDate);
@@ -143,8 +143,13 @@ export async function identity(context: GitContext, kind: "AUTHOR" | "COMMITTER"
     name,
     email,
     timestamp: Math.floor(timestamp / 1000),
-    timezoneOffset: (zone[1] === "+" ? -1 : 1) * (Number(zone[2]) * 60 + Number(zone[3])),
+    timezoneOffset: timezoneOffset(zone[1], Number(zone[2]), Number(zone[3])),
   };
+}
+
+function timezoneOffset(sign: string, hours: number, minutes: number): number {
+  const offset = (sign === "+" ? -1 : 1) * (hours * 60 + minutes);
+  return Object.is(offset, -0) ? 0 : offset;
 }
 
 export async function clean(context: GitContext) {
