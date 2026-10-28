@@ -51,6 +51,9 @@ import {
   atomicsWait,
   objectEntries,
   reflectApply,
+  SetConstructor,
+  setHas,
+  setAdd,
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
@@ -267,6 +270,92 @@ function loadProcessModules(runtimeProcess: unknown) {
   return { client, host };
 }
 
+function initialStdio(
+  runtimeState: RuntimeWorkerState | null,
+  ownedStdio: Partial<Record<0 | 1 | 2, Stream>> | undefined,
+  checkIoActive: () => void,
+): {
+  stdio: Partial<Record<0 | 1 | 2, Stream | null>> | undefined;
+  discarded: Stream[];
+} {
+  if (runtimeState && runtimeState.parentPid !== 0)
+    return {
+      stdio: { 0: null, 1: null, 2: null },
+      discarded: [ownedStdio?.[0], ownedStdio?.[1], ownedStdio?.[2]].filter(
+        (stream): stream is Stream => stream !== undefined,
+      ),
+    };
+  if (!ownedStdio) return { stdio: undefined, discarded: [] };
+  return {
+    stdio: {
+      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
+      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
+      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
+    },
+    discarded: [],
+  };
+}
+
+function tableOwnedStdio(
+  descriptors: Wasi["descriptors"],
+  discarded: readonly Stream[],
+): Set<Stream> {
+  const tableOwned = new SetConstructor<Stream>();
+  for (let index = 0; index < discarded.length; index++) {
+    const stream = discarded[index]!;
+    if (descriptors.hasResource(stream)) setAdd(tableOwned, stream);
+  }
+  return tableOwned;
+}
+
+function closeDiscardedStdio(discarded: readonly Stream[], tableOwned: ReadonlySet<Stream>): void {
+  const closed = new SetConstructor<Stream>();
+  const errors: unknown[] = [];
+  for (let index = 0; index < discarded.length; index++) {
+    const stream = discarded[index]!;
+    if (setHas(tableOwned, stream) || setHas(closed, stream)) continue;
+    setAdd(closed, stream);
+    try {
+      stream.close?.();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "stdio release failed");
+}
+
+function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): void {
+  const tableOwned = tableOwnedStdio(wasi.descriptors, discarded);
+  const errors: unknown[] = [];
+  try {
+    wasi.descriptors.dispose();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    closeDiscardedStdio(discarded, tableOwned);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length) throw new AggregateError(errors, "descriptor release failed");
+}
+
+function transferStdio(stream: Stream, discarded: Stream[]): Stream {
+  for (let index = discarded.length - 1; index >= 0; index--) {
+    if (discarded[index] !== stream) continue;
+    discarded[index] = discarded[discarded.length - 1]!;
+    discarded.length--;
+  }
+  return stream;
+}
+
+function adoptStdio(descriptors: Wasi["descriptors"], discarded: Stream[]): void {
+  for (let index = discarded.length - 1; index >= 0; index--) {
+    const stream = discarded[index]!;
+    if (descriptors.hasResource(stream)) transferStdio(stream, discarded);
+  }
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -283,6 +372,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let runtimeProcess: WorkerProcessClient | null = null;
   let process: ProcessABI | undefined;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
+  let discardedStdio: Stream[] = [];
   const sleepCell = createSleepCell(host);
   const isolated = sleepCell !== null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
@@ -418,18 +508,13 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const descriptorsReleased = attempt(() => {
       if (wasi) {
-        wasi.descriptors.dispose();
+        disposeProcessDescriptors(wasi, discardedStdio);
         return;
       }
-      const errors: unknown[] = [];
-      for (const fd of [0, 1, 2] as const) {
-        try {
-          ownedStdio?.[fd]?.close?.();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-      if (errors.length) throw new AggregateError(errors, "stdio release failed");
+      const streams = [ownedStdio?.[0], ownedStdio?.[1], ownedStdio?.[2]].filter(
+        (stream): stream is Stream => stream !== undefined,
+      );
+      closeDiscardedStdio(streams, new SetConstructor());
     });
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
@@ -537,13 +622,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
     }
-    const stdio = ownedStdio
-      ? {
-          ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
-          ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
-          ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
-        }
-      : undefined;
+    const initial = initialStdio(runtimeState, ownedStdio, checkIoActive);
+    const stdio = initial.stdio;
+    discardedStdio = initial.discarded;
     // Default terminal descriptions must post directly: routing their callbacks back through
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
@@ -629,6 +710,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (done) return;
     const namespaces = executor.namespaces?.(context);
     if (done) return;
+    // Launch descriptors, snapshotted after bindings and before the guest can open its own.
+    let inherited: readonly number[] = [];
     const processImports: Record<string, (...args: number[]) => number | void> = {
       fd_reopen: (
         fd: number,
@@ -643,6 +726,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       fd_kind: (fd) => {
         checkActive();
         return wasi!.descriptors.kind(fd! >>> 0);
+      },
+      inherited_fd: (index) => {
+        checkActive();
+        return inherited[index! >>> 0] ?? -44; // WASI ENOENT ends the list
       },
       signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -52,
       // Guest-owned runtime_proc.interrupted remains the cooperative handled-signal probe.
@@ -748,7 +835,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           fallback: pipes.codec(),
           descriptors: wasi.descriptors,
           resolveTerminal: executor.resolveTerminal
-            ? (...args) => executor.resolveTerminal!(...args)
+            ? (...args) => transferStdio(executor.resolveTerminal!(...args), discardedStdio)
             : undefined,
           output: (fd, data) => {
             output(fd === 2 ? "stderr" : "stdout", data);
@@ -800,6 +887,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // Record original default-terminal destinations before the hook moves/closes any fd.
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
+      adoptStdio(wasi.descriptors, discardedStdio);
       runtimeProcess.installBindings();
       process = new ProcessABI({
         memory: () => {
@@ -834,6 +922,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
+    inherited = wasi.descriptors.inheritable();
     const instantiating = perfNow();
     const imports = wasi.imports(req.module);
     // Linking binds WASI views for a real Wasm start section, which runs inside instantiation.

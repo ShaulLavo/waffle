@@ -70,6 +70,10 @@ interface EntryStat {
   mtime: number;
 }
 type LeafEntry = EntryStat & ({ kind: "file" } | { kind: "symlink"; target: string });
+export interface RemoveCondition {
+  /** Remove only a regular file whose bytes equal these. */
+  readonly ifContent: Uint8Array;
+}
 export type EntryMetadata = LeafEntry | (EntryStat & { kind: "dir" });
 export type Entry = LeafEntry | (EntryStat & { kind: "dir"; children: Map<string, EntryMetadata> });
 export const WORKSPACE_TAKEN_OVER =
@@ -390,8 +394,15 @@ export class SharedFilesystem {
       typeof text === "string" ? new TextEncoder().encode(text) : text,
     );
   }
-  remove(path: string): Promise<boolean> {
-    return this.mutate("remove", [path]);
+  /** Removes the entry at `path` (recursively for a directory), without following a final
+   * symlink. With `ifContent`, it removes only a regular file whose bytes equal it, checked and
+   * removed in one filesystem step. Resolves false when nothing was removed. */
+  remove(path: string, condition?: RemoveCondition): Promise<boolean> {
+    if (condition === undefined) return this.mutate("remove", [path]);
+    if (!(condition?.ifContent instanceof Uint8Array))
+      return Promise.reject(new TypeError("remove ifContent must be a Uint8Array"));
+    // Own the expected bytes now; the mutation is queued behind earlier writes.
+    return this.mutate("remove", [path, true], new Uint8Array(condition.ifContent));
   }
   async move(from: string, to: string): Promise<void> {
     const error = await this.mutate("move", [from, to]);

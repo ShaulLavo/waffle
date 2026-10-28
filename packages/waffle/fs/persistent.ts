@@ -568,6 +568,7 @@ export class PersistentBackend extends MemoryBackend {
       if (operation === "resize" && args[1] === 0 && args[2]) this.sync(args[0]);
       else return this.ensureLoaded(args[0]);
     }
+    if (operation === "remove") return this.prepareRemove(args);
     if (operation === "readFile" || operation === "writeFile") {
       const node = this.resolveNode(args[0]);
       if (node?.kind === "file") {
@@ -581,6 +582,12 @@ export class PersistentBackend extends MemoryBackend {
         } else return this.ensureLoaded(handle);
       }
     }
+  }
+  /** A conditional remove compares the current bytes, so load a cold payload first. */
+  private prepareRemove(args: readonly unknown[]): void | Promise<void> {
+    if (args[1] !== true || typeof args[0] !== "string") return;
+    const node = this.resolveNode(args[0]);
+    if (node?.kind === "file") return this.ensureLoaded(this.fs.handleForNode(node));
   }
   /** Capture only dirty nodes and changed resident payloads. Cost is bounded by the shared
    * slot table plus changes, not by the number of cold files in a workspace. */

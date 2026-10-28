@@ -15,6 +15,7 @@ import {
   type RunState,
   assertIdentity,
   assertSourceProvenance,
+  historicalLockfilePath,
   historicalRunnerPath,
   captureRecordsIntact,
   Failures,
@@ -252,7 +253,7 @@ test("refuses engine/version and approved executable identity mismatch", () => {
 });
 
 test("source provenance accepts the frozen historical reference and rejects wrong bytes", () => {
-  const lockfile = new URL("../../../bun.lock", import.meta.url).pathname;
+  const lockfile = historicalLockfilePath;
   const runner = historicalRunnerPath;
   const root = mkdtempSync(
     join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-source-"),
@@ -260,6 +261,9 @@ test("source provenance accepts the frozen historical reference and rejects wron
   try {
     expect(readFileSync(runner)).toHaveLength(14_361);
     expect(() => assertSourceProvenance(lockfile, runner)).not.toThrow();
+    // A live diagnostic run checks the actual root lockfile, which has moved on since approval.
+    const current = new URL("../../../bun.lock", import.meta.url).pathname;
+    expect(() => assertSourceProvenance(current, runner)).toThrow("Lockfile");
     const wrongLockfile = join(root, "bun.lock");
     writeFileSync(wrongLockfile, `${readFileSync(lockfile, "utf8")}\n`);
     expect(() => assertSourceProvenance(wrongLockfile, runner)).toThrow("Lockfile");
