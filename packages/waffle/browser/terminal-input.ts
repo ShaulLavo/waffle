@@ -19,6 +19,7 @@ import {
   listenAbort,
   unlistenAbort,
   atomicsCompareExchange,
+  atomicsExchange,
   atomicsLoad,
   atomicsNotify,
   atomicsStore,
@@ -40,7 +41,7 @@ const AGAIN = -6;
 const BADF = -8;
 const CANCELED = -11;
 const NOTSUP = -58;
-const HEADER_WORDS = 16;
+const HEADER_WORDS = 17;
 const HEADER_BYTES = HEADER_WORDS * 4;
 const DEFAULT_CAPACITY = 65536;
 const H = {
@@ -57,6 +58,7 @@ const H = {
   poisoned: 11,
   nonce: 12,
   nextToken: 14,
+  contended: 16,
 } as const;
 
 export interface TerminalInputObservation {
@@ -162,7 +164,7 @@ class InputBuffer implements TerminalInput {
     if (!length) return 0;
     if (this.cancelled()) return CANCELED;
     if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
-    if (atomicsCompareExchange(this.lock, 0, 0n, 1n) !== 0n) return AGAIN;
+    if (atomicsCompareExchange(this.lock, 0, 0n, 1n) !== 0n) return this.contend();
     try {
       if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
@@ -173,8 +175,7 @@ class InputBuffer implements TerminalInput {
       this.signal();
       return length;
     } finally {
-      atomicsStore(this.lock, 0, 0n);
-      atomicsNotify(this.lock, 0);
+      this.unlock();
     }
   }
   read(turn: TerminalTurn, chunks: readonly Uint8Array[], cooked: boolean): number {
@@ -191,15 +192,24 @@ class InputBuffer implements TerminalInput {
     );
   }
   private lockedRead(chunks: readonly Uint8Array[], cooked: boolean, token: bigint): number {
-    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) return AGAIN;
+    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) return this.contend();
     try {
       if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
       return cooked ? this.readCooked(chunks) : this.readRaw(chunks);
     } finally {
-      atomicsStore(this.lock, 0, 0n);
-      atomicsNotify(this.lock, 0);
+      this.unlock();
     }
+  }
+  private contend(): number {
+    atomicsStore(this.state, H.contended, 1);
+    if (atomicsLoad(this.lock, 0) === 0n) this.signal();
+    return AGAIN;
+  }
+  private unlock(): void {
+    atomicsStore(this.lock, 0, 0n);
+    atomicsNotify(this.lock, 0);
+    if (atomicsExchange(this.state, H.contended, 0) !== 0) this.signal();
   }
   inputReady(cooked: boolean): boolean {
     if (atomicsLoad(this.state, H.poisoned) !== 0) return true;

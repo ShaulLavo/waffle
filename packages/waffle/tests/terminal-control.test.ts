@@ -2,6 +2,7 @@ import { DescriptorTable } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
 import { ProcessABI } from "../proc/abi.js";
 import { Worker } from "node:worker_threads";
+import { once } from "node:events";
 import type { TerminalControlWorkerData } from "./fixtures/terminal-control-worker.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { expect, test } from "bun:test";
@@ -14,6 +15,9 @@ import {
   attachTerminal,
   terminalControls,
   TERMINAL_SESSION_LIMITS,
+  type TerminalAuthority,
+  type TerminalControlReceipt,
+  type TerminalMember,
   type TerminalResult,
 } from "../browser/runtime-terminals.js";
 import { createWorkerProcessTransport, WorkerProcessClient } from "../proc/worker-client.js";
@@ -37,6 +41,216 @@ function fixture(
   );
   return { root, input, display, policy, authority };
 }
+
+function reserveChild(f: ReturnType<typeof fixture>, descriptors: DescriptorTable) {
+  const client = new WorkerProcessClient({
+    transport: f.root,
+    descriptors,
+    codec: {
+      export() {
+        throw Error("unused");
+      },
+      import() {
+        throw Error("unused");
+      },
+      discard() {},
+    },
+    postMessage() {},
+  });
+  const pid = client.spawn(client.pid, {
+    executable: "fixture",
+    argv: [],
+    env: {},
+    cwd: "/",
+    job: -1,
+    fds: [],
+  });
+  return { client, pid };
+}
+
+function selectedFixture(input = createTerminalInput()) {
+  const f = fixture(input);
+  const group = must(f.authority.createGroup({ initialMode: "raw" }));
+  const admitted = must(f.authority.admitExisting({ group, pid: f.root.pid }));
+  must(f.authority.acquire({ group, expected: null }));
+  return { ...f, context: admitted.context };
+}
+
+async function bounded<T>(pending: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const failed = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(Error("expected predicate wake was lost")), 1000);
+  });
+  try {
+    return await Promise.race([pending, failed]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("a clean read-only holder unlock wakes queued control without unrelated output or timers", async () => {
+  const f = selectedFixture();
+  const flags = new Int32Array(new SharedArrayBuffer(16));
+  const cancel = new AbortController();
+  const lifetime = captureTerminalProcessLifetime({
+    process: f.root,
+    terminals: [{ identity: f.display.identity, inputs: [f.input] }],
+  });
+  const worker = new Worker(new URL("./fixtures/terminal-control-worker.ts", import.meta.url), {
+    workerData: {
+      role: "holder",
+      process: f.root,
+      context: f.context,
+      input: f.input.buffer,
+      flags: flags.buffer,
+      readOnlyPause: true,
+    } satisfies TerminalControlWorkerData,
+  });
+  let pending: Promise<unknown> | undefined;
+  try {
+    expect((await once(worker, "message"))[0]).toMatchObject({ kind: "held" });
+    const order: number[] = [];
+    const first = f.authority.control(
+      () => {
+        order.push(1);
+        return { kind: "ok", value: undefined };
+      },
+      { signal: cancel.signal },
+    );
+    const second = f.authority.control(
+      () => {
+        order.push(2);
+        return { kind: "ok", value: undefined };
+      },
+      { signal: cancel.signal },
+    );
+    pending = Promise.all([first, second]);
+    expect(order).toEqual([]);
+    const released = once(worker, "message");
+    Atomics.store(flags, 1, 1);
+    Atomics.notify(flags, 1);
+    expect((await released)[0]).toMatchObject({ kind: "released", count: 0 });
+    expect(await bounded(pending)).toMatchObject([{ kind: "ok" }, { kind: "ok" }]);
+    expect(order).toEqual([1, 2]);
+  } finally {
+    Atomics.store(flags, 1, 1);
+    Atomics.notify(flags, 1);
+    cancel.abort();
+    if (pending) await pending;
+    await lifetime.quiesce();
+    await worker.terminate();
+    lifetime.stopped();
+    f.display.close("disposed");
+    f.input.close();
+  }
+}, 10000);
+
+test("an input contention wake survives unlocked-held-unlocked before observation registration", async () => {
+  const f = selectedFixture(createTerminalInput({ capacity: 1 }));
+  const attachment = attachTerminal({
+    context: f.context,
+    process: f.root,
+    policy: f.policy,
+    checkActive() {},
+  });
+  const stream = attachment.resolve(0);
+  const flags = new Int32Array(new SharedArrayBuffer(8));
+  const cancel = new AbortController();
+  const worker = new Worker(new URL("./fixtures/terminal-input-producer.ts", import.meta.url), {
+    workerData: { input: f.input.buffer, flags: flags.buffer },
+  });
+  let pending: Promise<unknown> | undefined;
+  try {
+    expect((await once(worker, "message"))[0]).toBe("ready");
+    expect(f.input.push(Uint8Array.of(65))).toBe(1);
+    const observed = f.input.observe();
+    const held = once(worker, "message");
+    worker.postMessage("push");
+    expect((await held)[0]).toBe("held");
+    const blocked = await f.authority.control(() => ({
+      kind: "ok",
+      value: stream.tryRead!([new Uint8Array(1)]),
+    }));
+    expect(blocked).toMatchObject({ kind: "ok", value: -6 });
+    const released = once(worker, "message");
+    Atomics.store(flags, 1, 1);
+    Atomics.notify(flags, 1);
+    expect((await released)[0]).toMatchObject({ kind: "released", count: -6 });
+    pending = observed.wait({ signal: cancel.signal });
+    expect(await bounded(pending)).toMatchObject({ kind: "ok" });
+    expect(f.input.available()).toBe(1);
+    const bytes = new Uint8Array(1);
+    expect(stream.tryRead!([bytes])).toBe(1);
+    expect(bytes[0]).toBe(65);
+    const empty = f.input.observe();
+    expect(stream.tryRead!([bytes])).toBe(-6);
+    let settled = false;
+    pending = empty.wait({ signal: cancel.signal }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false); // An uncontended empty read must not wake itself forever.
+    cancel.abort();
+    expect(await pending).toMatchObject({ kind: "error", code: "CANCELED" });
+  } finally {
+    Atomics.store(flags, 1, 1);
+    Atomics.notify(flags, 1);
+    cancel.abort();
+    if (pending) await pending;
+    await worker.terminate();
+    attachment.dispose();
+    f.display.close("disposed");
+    f.input.close();
+  }
+}, 10000);
+
+function assertBindingAliases(
+  authority: TerminalAuthority,
+  receipt: TerminalControlReceipt,
+  aliases: readonly TerminalMember[],
+  commit: boolean,
+): void {
+  for (const alias of aliases) {
+    expect(receipt.member(alias)).toBe(commit ? "bound" : "stale");
+    if (!commit)
+      expect(authority.removeMember(alias)).toMatchObject({ kind: "error", code: "STALE" });
+  }
+}
+
+for (const commit of [false, true])
+  test(`all aliases of a control-bound plan share its provisional ownership, commit=${commit}`, async () => {
+    const f = fixture();
+    const descriptors = new DescriptorTable();
+    try {
+      const group = must(f.authority.createGroup({ initialMode: "raw" }));
+      const parent = must(f.authority.admitExisting({ group, pid: f.root.pid }));
+      const plan = must(f.authority.planMember({ group, parent: parent.member }));
+      const { pid } = reserveChild(f, descriptors);
+      const aliases: TerminalMember[] = [];
+      const result = await f.authority.control(() => {
+        aliases.push(must(f.authority.bindMember({ planned: plan.member, pid })).member);
+        aliases.push(must(f.authority.bindMember({ planned: plan.member, pid })).member);
+        aliases.push(must(f.authority.admitExisting({ group, pid })).member);
+        return commit ? { kind: "ok", value: undefined } : { kind: "error", code: "CAPACITY" };
+      });
+      expect(result.receipt.phase).toBe(commit ? "committed" : "rolled-back");
+      expect(result.receipt.member(parent.member)).toBe("bound");
+      expect(result.receipt.member(plan.member)).toBe(commit ? "bound" : "pending");
+      assertBindingAliases(f.authority, result.receipt, aliases, commit);
+      const rebound = must(f.authority.bindMember({ planned: plan.member, pid }));
+      if (!commit)
+        expect(f.authority.removeMember(aliases[1]!)).toMatchObject({
+          kind: "error",
+          code: "STALE",
+        });
+      expect(f.authority.removeMember(rebound.member).kind).toBe("ok");
+    } finally {
+      descriptors.dispose();
+      f.display.close("disposed");
+      f.input.close();
+    }
+  });
 
 test("control publishes one synchronous turn and permits exact-session root aliases", async () => {
   const f = fixture();
@@ -260,7 +474,8 @@ test("input observations wake and join on data, cancellation, and lock-only rele
     Atomics.store(flags, 1, 1);
     Atomics.notify(flags, 1);
     expect(await pending).toMatchObject({ kind: "ok" });
-    expect(Atomics.load(input.notification, 0)).toBe(sequence); // Unlock, not data, woke it.
+    expect(Atomics.load(input.notification, 0)).not.toBe(sequence);
+    expect(input.available()).toBe(0); // Contention release, not new data, woke it.
     expect(await observed.wait()).toMatchObject({ kind: "error", code: "INVALID" });
     const data = input.observe();
     const dataWait = data.wait();
@@ -374,28 +589,7 @@ test("a scoped runtime wait is rejected without blocking while a nonblocking job
   const f = fixture();
   const descriptors = new DescriptorTable();
   let waits = 0;
-  const client = new WorkerProcessClient({
-    transport: f.root,
-    descriptors,
-    codec: {
-      export() {
-        throw Error("unused");
-      },
-      import() {
-        throw Error("unused");
-      },
-      discard() {},
-    },
-    postMessage() {},
-  });
-  const pid = client.spawn(client.pid, {
-    executable: "fixture",
-    argv: [],
-    env: {},
-    cwd: "/",
-    job: -1,
-    fds: [],
-  });
+  const { client, pid } = reserveChild(f, descriptors);
   const job = client.jobOf(pid);
   const abi = new ProcessABI({
     memory: new WebAssembly.Memory({ initial: 1 }),

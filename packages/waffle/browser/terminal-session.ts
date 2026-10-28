@@ -660,8 +660,10 @@ class Session {
     authority: Authority,
     receipt: (value: TerminalControlReceipt) => void,
   ): ControlAttempt<T> {
-    if (atomicsCompareExchange(this.gate, 0, 0n, BigIntConstructor(state.pid)) !== 0n)
+    if (atomicsCompareExchange(this.gate, 0, 0n, BigIntConstructor(state.pid)) !== 0n) {
+      this.contend();
       return { kind: "busy" };
+    }
     this.dirty = false;
     try {
       return {
@@ -1301,7 +1303,7 @@ class Authority implements TerminalAuthority {
     s.put(plan.row + 5, state.pid);
     s.put(plan.row + 1, BOUND);
     s.signalSelected();
-    return ok(this.admitted(plan.row, true));
+    return ok(this.admitted(plan.row));
   }
   private rowGroup(row: number): Group | undefined {
     const s = this.session,
@@ -1354,7 +1356,7 @@ class Authority implements TerminalAuthority {
     s.put(row + 3, group.generation);
     s.put(row + 4, state.slot);
     s.put(row + 5, state.pid);
-    return ok(this.admitted(row, true));
+    return ok(this.admitted(row));
   }
   private existingMember(group: Group, pid: number): number | undefined {
     for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++) {
@@ -1376,10 +1378,15 @@ class Authority implements TerminalAuthority {
       generation !== atomicsLoad(this.session.words, H.selection) ? activeControl : undefined;
     return new Lease(this, group, generation, provisional);
   }
-  private admitted(row: number, provisional = false): TerminalAdmittedMember {
+  private admitted(row: number): TerminalAdmittedMember {
     const group = this.rowGroup(row)!;
+    const provisional =
+      this.session.get(row) !== atomicsLoad(this.session.words, row) ||
+      this.session.get(row + 1) !== atomicsLoad(this.session.words, row + 1)
+        ? activeControl
+        : undefined;
     return {
-      member: new Member(this, row, this.session.get(row), provisional ? activeControl : undefined),
+      member: new Member(this, row, this.session.get(row), provisional),
       context: context(this.session.identity, (row - MEMBERS) / 16, this.session.get(row)),
       lease: this.currentLease(group),
     };

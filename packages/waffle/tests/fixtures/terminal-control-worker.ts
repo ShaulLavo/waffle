@@ -1,5 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
-import type { TerminalContext } from "../../browser/runtime-terminals.js";
+import { pauseInputAcquisition } from "./terminal-input-pause.js";
+import type { TerminalContext, TerminalTurn } from "../../browser/runtime-terminals.js";
 import type { WorkerProcessTransport, WorkerProcessMessage } from "../../proc/worker-client.js";
 import type { FilesystemIdentity } from "../../fs/protocol.js";
 
@@ -12,6 +13,7 @@ export interface TerminalControlWorkerData {
   count?: number;
   childFilesystem?: FilesystemIdentity;
   inputPause?: boolean;
+  readOnlyPause?: boolean;
 }
 const data: TerminalControlWorkerData = workerData;
 if (!parentPort) throw Error("missing host port");
@@ -27,26 +29,7 @@ function pause() {
   Atomics.wait(flags, 1, 0);
 }
 // Controlled test seam: preserve the real input CAS and pause only after it acquired.
-if (data.inputPause) {
-  const cas = Atomics.compareExchange;
-  Atomics.compareExchange = ((
-    array: BigInt64Array,
-    index: number,
-    expected: bigint,
-    replacement: bigint,
-  ) => {
-    const previous = cas(array, index, expected, replacement);
-    if (
-      array.buffer === data.input &&
-      array.byteOffset === 16 &&
-      index === 0 &&
-      expected === 0n &&
-      previous === 0n
-    )
-      pause();
-    return previous;
-  }) as typeof Atomics.compareExchange;
-}
+if (data.inputPause) pauseInputAcquisition(data.input, pause);
 const { attachTerminal, createTerminalInputPolicy } =
   await import("../../browser/runtime-terminals.js");
 const { WorkerProcessClient } = await import("../../proc/worker-client.js");
@@ -78,6 +61,13 @@ const client = new WorkerProcessClient({
   }),
 });
 const base = createTerminalInputPolicy({ input: data.input });
+function holderReadiness(turn: TerminalTurn) {
+  if (data.readOnlyPause) {
+    pause();
+    return { readable: false, nbytes: 0 };
+  }
+  return data.inputPause ? { readable: true, nbytes: 1 } : base.inputReadiness(turn);
+}
 const attachment = attachTerminal({
   context: data.context,
   process: data.process,
@@ -86,9 +76,7 @@ const attachment = attachTerminal({
     data.role === "holder"
       ? {
           ...base,
-          inputReadiness: data.inputPause
-            ? () => ({ readable: true, nbytes: 1 })
-            : base.inputReadiness,
+          inputReadiness: holderReadiness,
           tryRead(turn, chunks) {
             if (!data.inputPause) pause();
             return base.tryRead(turn, chunks);
@@ -103,7 +91,10 @@ try {
   }
   if (data.role === "holder") {
     client.started();
-    const count = attachment.resolve(0).tryRead!([new Uint8Array(1)]);
+    const stream = attachment.resolve(0);
+    const count = data.readOnlyPause
+      ? Number(stream.readiness().readable)
+      : stream.tryRead!([new Uint8Array(1)]);
     port.postMessage({ kind: "released", pid: data.process.pid, count });
   } else if (data.role === "parent") {
     // The readiness attempt may contend; it returns before spawn and blocking wait_job.
