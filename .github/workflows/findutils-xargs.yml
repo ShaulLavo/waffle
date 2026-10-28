@@ -70,8 +70,8 @@ jobs:
             ~/.cargo/git
             .build/findutils
             .build/wasi-libc
-          key: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-${{ hashFiles('packages/findutils/**/*.rs', 'packages/findutils/**/Cargo.toml', 'packages/process-consumer/**') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-${{ hashFiles('packages/findutils/**/*.rs', 'packages/findutils/**/Cargo.toml', 'packages/process-consumer/**', 'packages/program-support/src/**/*.rs', 'packages/program-support/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-
       - name: Prepare existing runtime modules without rebuilding its network asset
         run: |
           bun run --cwd packages/waffle tooling/build-network.ts --verify
