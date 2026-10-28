@@ -610,15 +610,18 @@ export const historicalRunnerPath = new URL(
   "./fixtures/process-root-navigation-original-runner.txt",
   import.meta.url,
 ).pathname;
+
+/** Inert copy of the root bun.lock that #101 approved for this diagnostic (2c3dc3a, unchanged
+ * through c312af63). Tests check provenance against it; a live run checks the actual lockfile. */
 export const historicalLockfilePath = new URL(
-  "./fixtures/process-root-navigation-approved-bun.lock",
+  "./fixtures/process-root-navigation-original-bun-lock.txt",
   import.meta.url,
 ).pathname;
 
 export function assertSourceProvenance(lockfilePath: string, runnerPath: string): void {
   if (
     sha256(readFileSync(lockfilePath)) !==
-    "e25a3afea9940c3b270bb48d3803bc1830b1ee41b4496d6a442c3ca51ed20722"
+    "511031108aa6f8dc745f22cacdf25f25f3070c5fb9e48e229c20d4dca3f94bcd"
   )
     throw new Error("Lockfile does not match approved diagnostic inputs");
   if (
