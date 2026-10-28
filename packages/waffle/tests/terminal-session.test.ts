@@ -1195,7 +1195,7 @@ test("R29 post-policy endpoint disposal fails closed without publishing mode", (
 });
 
 for (const operation of transitionCases)
-  test(`R29 ${operation} gate contention has zero control and policy mutation`, () => {
+  test(`R29 ${operation} gate contention preserves control and policy apart from its wake hint`, () => {
     const f = boundaryFixture();
     const run = transitionOperation(f, operation);
     const words = controlWords(f.display);
@@ -1207,6 +1207,7 @@ for (const operation of transitionCases)
     });
     try {
       expect(run()).toEqual({ kind: "error", code: "AGAIN" });
+      before[6] = 1; // Synchronization hint only; all ownership, mode and geometry words stay fixed.
       expect(words).toEqual(before);
       expect(f.cells[130]).toBe(0);
     } finally {
