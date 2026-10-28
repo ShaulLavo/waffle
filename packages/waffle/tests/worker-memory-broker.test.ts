@@ -36,7 +36,11 @@ async function terminateNativeWorkers(workers: readonly { native?: NodeWorker }[
   await Promise.all(workers.map((worker) => worker.native?.terminate()));
 }
 
-async function fixture(real: boolean, stopping: Promise<void> = Promise.resolve()) {
+async function fixture(
+  real: boolean,
+  stopping: Promise<void> = Promise.resolve(),
+  rootRetired?: () => void,
+) {
   const previousWorker = globalThis.Worker;
   const workers: EmbeddingWorker[] = [];
   const filesystem = new FilesystemService(new MemoryBackend());
@@ -135,7 +139,7 @@ async function fixture(real: boolean, stopping: Promise<void> = Promise.resolve(
   };
   globalThis.Worker = EmbeddingWorker as unknown as typeof Worker;
   try {
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { retired: rootRetired });
     const supervisor = await broker.ready();
     let handled = 0;
     const spawn = async () => {
@@ -232,7 +236,10 @@ test("a collected directory slot cannot attribute a late old sample to its repla
 
 test("r703 failed physical stop must not retire retained controller ancestry", async () => {
   const stop = Promise.withResolvers<void>();
-  const f = await fixture(false, stop.promise);
+  let rootRetired = 0;
+  const f = await fixture(false, stop.promise, () => {
+    rootRetired++;
+  });
   let retired = 0,
     independentRetired = 0,
     independentStopped = 0;
@@ -263,6 +270,7 @@ test("r703 failed physical stop must not retire retained controller ancestry", a
     console.log(JSON.stringify({ retainedRows: f.broker.workerMemory().length, retired }));
     expect(f.broker.workerMemory()).toHaveLength(1);
     expect(retired).toBe(0);
+    expect(rootRetired).toBe(0);
     expect(independentStopped).toBe(1);
     expect(independentRetired).toBe(1);
   } finally {

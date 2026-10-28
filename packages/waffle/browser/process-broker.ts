@@ -1502,9 +1502,13 @@ export class BrowserProcessBroker {
     failed: ReadonlySet<ProcessController>,
     errors: unknown[],
   ): void {
+    const retainedRoots = new Set(
+      Array.from(this.children.values(), (child) => child.identity.rootPid),
+    );
     for (const [pid, controller] of this.controllers) {
       if (
         failed.has(controller) ||
+        retainedRoots.has(pid) ||
         this.children.has(pid) ||
         this.launches?.has(pid) ||
         this.controllerStops?.has(pid)
