@@ -120,7 +120,12 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   notificationWorkerUrl?: string;
   request: Omit<
     T,
-    "filesystem" | "runtimeProcess" | "startupStderr" | "hostIdentity" | "notifications"
+    | "filesystem"
+    | "runtimeProcess"
+    | "startupStderr"
+    | "hostIdentity"
+    | "notifications"
+    | "memoryObservation"
   >;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
@@ -133,7 +138,19 @@ interface DescendantHook {
   readonly directory: string;
 }
 const reservedDescendantData = ["filesystem", "pipeRegistry"];
+/** Latest sampled linear-memory bytes, retained until successful physical cleanup. */
+export interface WorkerMemoryObservation {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly rootPid: number;
+  readonly job: number;
+  readonly directory: string;
+  /** null until actual memory becomes visible; may be stale between host boundaries. */
+  readonly bytes: number | null;
+}
 interface RuntimeChild {
+  memory: BigInt64Array;
+  identity: Omit<WorkerMemoryObservation, "bytes">;
   notifications?: NotificationBridge;
   filesystem: FilesystemIdentity;
   context: ProcessContext;
@@ -942,6 +959,13 @@ export class BrowserProcessBroker {
   isIdleWorker(worker: Worker): boolean {
     return this.workers.isIdle(worker);
   }
+  /** Includes pending/failed physical cleanup. Each result is a fresh, authority-free snapshot. */
+  workerMemory(): readonly WorkerMemoryObservation[] {
+    return Array.from(this.children.values(), (child) => {
+      const bytes = Atomics.load(child.memory, 0);
+      return { ...child.identity, bytes: bytes < 0n ? null : Number(bytes) };
+    });
+  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
@@ -949,9 +973,21 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
+    if (this.children.has(context.pid)) throw new Error("process already has a worker");
+    const state = workerProcessState(transport);
+    const memory = new BigInt64Array(new SharedArrayBuffer(8));
+    Atomics.store(memory, 0, -1n);
     const filesystem = this.filesystem(transport);
     // Record cleanup ownership before either connection or Worker construction can throw.
     const child: RuntimeChild = {
+      memory,
+      identity: {
+        pid: state.pid,
+        parentPid: state.parentPid,
+        rootPid: state.rootPid,
+        job: state.job,
+        directory: workerProcessDirectoryId(transport),
+      },
       filesystem,
       context,
       acknowledged: false,
@@ -989,6 +1025,7 @@ export class BrowserProcessBroker {
     const request = {
       ...options.request,
       hostIdentity: this.hostIdentity,
+      memoryObservation: memory.buffer,
       filesystem: connection,
       runtimeProcess: transport,
       outcome: serializeOutcome(context.outcome),
@@ -1216,9 +1253,9 @@ export class BrowserProcessBroker {
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(() => child.worker?.terminate(), errors);
       await settleStop(() => child.cleanup?.(), errors);
+      if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
       this.children.delete(child.context.pid);
       this.retireChildController(child.context.pid);
-      if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
     };
     const fence = this.quiesceProcess(child.context.pid);
     return (child.stopping = fence ? fence.then(stop) : stop());
@@ -1447,6 +1484,43 @@ export class BrowserProcessBroker {
     for (const pid of pids) this.quiesceProcess(pid);
     await Promise.all(this.fences.values());
   }
+  private stopDisposalController(
+    pid: number,
+    controller: ProcessController,
+    failed: Set<ProcessController>,
+  ): Promise<void> {
+    const stopping = this.controllerStops?.get(pid);
+    const pending = stopping?.controllerStop
+      ? stopping.pending
+      : Promise.resolve().then(() => controller.stop?.());
+    return pending.catch((error) => {
+      failed.add(controller);
+      throw error;
+    });
+  }
+  private retireDisposedControllers(
+    failed: ReadonlySet<ProcessController>,
+    errors: unknown[],
+  ): void {
+    const retainedRoots = new Set(
+      Array.from(this.children.values(), (child) => child.identity.rootPid),
+    );
+    for (const [pid, controller] of this.controllers) {
+      if (
+        failed.has(controller) ||
+        retainedRoots.has(pid) ||
+        this.children.has(pid) ||
+        this.launches?.has(pid) ||
+        this.controllerStops?.has(pid)
+      )
+        continue;
+      try {
+        controller.retired?.();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
   dispose(): Promise<void> {
     if (this.disposing) return this.disposing;
     let resolve!: () => void, reject!: (error: unknown) => void;
@@ -1480,15 +1554,13 @@ export class BrowserProcessBroker {
       const physicalHandles = this.supervisor?.retireFencedProcesses();
       // Suspension freezes every owned pipe cursor; the filesystem fence above is still
       // mandatory. Attempt and settle every physical stop even if another consumer fails.
+      const failedControllers = new Set<ProcessController>();
       const stops = Array.from(this.children.values(), (child) =>
         Promise.resolve().then(() => this.stop(child)),
       ).concat(
-        Array.from(this.controllers, ([pid, controller]) => {
-          const stopping = this.controllerStops?.get(pid);
-          return stopping?.controllerStop
-            ? stopping.pending
-            : Promise.resolve().then(() => controller.stop?.());
-        }),
+        Array.from(this.controllers, ([pid, controller]) =>
+          this.stopDisposalController(pid, controller, failedControllers),
+        ),
         Array.from(this.controllerStops?.values() ?? [], (stopping) => stopping.pending),
         Array.from(this.pendingLaunches?.values() ?? [], (launch) => launch.settled),
       );
@@ -1501,13 +1573,7 @@ export class BrowserProcessBroker {
       } catch (error) {
         errors.push(error);
       }
-      for (const controller of this.controllers.values()) {
-        try {
-          controller.retired?.();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
+      this.retireDisposedControllers(failedControllers, errors);
       if (errors.length) {
         const failure = new AggregateError(errors, "Process broker cleanup failed");
         this.retirementGate.reject(failure);

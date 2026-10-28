@@ -200,3 +200,15 @@ export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer 
     return false;
   }
 }
+
+const wasmMemoryBufferGetter = descriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
+const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLength")!.get!;
+/** Read the current buffer through captured natives, including after memory.grow. */
+export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
+  const buffer: ArrayBuffer | SharedArrayBuffer = apply(wasmMemoryBufferGetter, memory, []);
+  return isSharedArrayBuffer(buffer)
+    ? sharedArrayBufferByteLength(buffer)
+    : apply(arrayBufferByteLengthGetter, buffer, []);
+}
+
+export const wasmModuleImports = WebAssembly.Module.imports;

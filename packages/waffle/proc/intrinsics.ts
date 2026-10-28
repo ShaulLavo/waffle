@@ -50,6 +50,8 @@ export {
   DataViewConstructor,
   SharedArrayBufferConstructor,
   sharedArrayBufferByteLength,
+  wasmMemoryByteLength,
+  wasmModuleImports,
   sharedArrayBufferMaxByteLength,
   sharedArrayBufferGrow,
   dataViewGetUint32,

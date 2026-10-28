@@ -202,6 +202,8 @@ mutation failures reserved for an explicit filesystem `drain()`.
 `Wasi`; it never creates another page runtime. `WorkerExecutor` keeps guest-specific policy
 outside Waffle. Its optional hooks run in this order:
 
+[Worker memory samples](worker-memory.md) describes actual allocation samples and their physical cleanup lifetime through `ProcessService.workerMemory()`.
+
 1. `setup(context)` receives the request, filesystem client, signal state and helpers.
 2. `namespaces(context)` returns extra `WebAssembly.Imports` namespaces for the linker.
    `runtime_proc` remains Waffle-owned; an extension cannot replace it here.

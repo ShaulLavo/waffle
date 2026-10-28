@@ -2,6 +2,7 @@
 import type { Descriptor, Stream } from "../../core/descriptors.js";
 import {
   objectDefineProperty,
+  objectEntries,
   Int32ArrayConstructor,
   Int32ArrayConstructor as SafeView,
   atomicsLoad,
@@ -189,4 +190,33 @@ export function liveMessage(
 export function capturedDescriptor(stream: Stream): void {
   const descriptor = { __proto__: null, value: stream, writable: true };
   objectDefineProperty({}, "entry", descriptor);
+}
+
+/** @compileFixture Parsed by the authority guard, never called. */
+export function privateArrayBinding(entries: readonly Descriptor[]): void {
+  const [entry] = entries;
+  void entry;
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function privateParameterBinding([entry]: readonly Descriptor[]): void {
+  void entry;
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function privateCallbackBinding(callback: () => void): void {
+  const entries = objectEntries({ callback });
+  const [name, value] = entries[0]!;
+  void name;
+  void value;
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function privateImportBinding(imports: WebAssembly.Imports): void {
+  const entries = objectEntries(imports);
+  const [name, namespace] = entries[0]!;
+  void name;
+  void namespace;
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function ordinaryArrayBinding(entries: readonly string[]): void {
+  const [entry] = entries;
+  void entry;
 }

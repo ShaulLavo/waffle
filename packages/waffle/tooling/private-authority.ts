@@ -144,6 +144,7 @@ export const enforcedModules = [
   "proc/intrinsics/host.ts",
   "proc/errors.ts",
   "browser/worker.ts",
+  "browser/worker-memory.ts",
   "browser/guarded-stream.ts",
   "browser/runtime-terminals.ts",
   "core/descriptors.ts",
@@ -463,6 +464,8 @@ function typeNames(
   const result = new Set<string>();
   if (!node) return result;
   if (ast.isTypeReferenceNode(node)) {
+    if (["WebAssembly.Imports", "WebAssembly.ModuleImports"].includes(node.typeName.getText()))
+      result.add("#private");
     mergeNames(result, typeNames(context, node.typeName, seen));
     for (const argument of node.typeArguments ?? [])
       addElementNames(result, typeNames(context, argument, new Set(seen)));
@@ -655,9 +658,14 @@ function inferCall(
   if (!ast.isIdentifier(node.expression)) return result;
   const declared = lookupInference(context, node.expression, node.expression.text);
   if (declared) mergeNames(result, inferNode(context, declared, seen));
-  const names = inferNode(context, node.expression, new Set(seen));
+  const names = new Set(result);
+  mergeNames(names, inferNode(context, node.expression, new Set(seen)));
   if (names.has("typedArraySubarray") || names.has("arrayFrom"))
     mergeNames(result, inferNode(context, node.arguments[0], seen));
+  if (names.has("objectEntries") || names.has("objectValues")) {
+    result.add("Array");
+    addElementNames(result, inferNode(context, node.arguments[0], seen));
+  }
   if (names.has("mapGet"))
     mergeNames(result, elementTypes(inferNode(context, node.arguments[0], seen)));
   if (names.has("typedArrayBuffer")) {
@@ -670,7 +678,10 @@ function inferCall(
 function inferMember(context: InferenceContext, node: ast.Node, seen: Set<ast.Node>): Set<string> {
   const result = new Set<string>();
   const access = member(node);
-  if (!access) return result;
+  if (!access)
+    return ast.isElementAccessExpression(node)
+      ? elementTypes(inferNode(context, node.expression, new Set(seen)))
+      : result;
   const receiver = inferNode(context, access.receiver, new Set(seen));
   for (const name of receiver) {
     const property = context.members.get(name)?.get(access.name);
@@ -1249,6 +1260,20 @@ function scanCall(node: ast.CallExpression | ast.NewExpression, context: ScanCon
   if (isMutableBuiltinCall(node, callee, context.analysis)) context.report(node, "mutable-builtin");
 }
 
+function arrayBindingSource(pattern: ast.ArrayBindingPattern): ast.Node | undefined {
+  for (let owner: ast.Node | undefined = pattern.parent; owner; owner = owner.parent) {
+    if (ast.isVariableDeclaration(owner)) return owner.initializer ?? owner;
+    if (ast.isParameterDeclaration(owner)) return owner;
+    if (
+      !ast.isBindingElement(owner) &&
+      !ast.isArrayBindingPattern(owner) &&
+      !ast.isObjectBindingPattern(owner)
+    )
+      return;
+  }
+  return undefined;
+}
+
 function scanNode(node: ast.Node, context: ScanContext): void {
   checkNativeConversions(context.analysis, node, (argument) => {
     const literal = argument && initializer(context.analysis, argument);
@@ -1264,6 +1289,11 @@ function scanNode(node: ast.Node, context: ScanContext): void {
   if (Object.hasOwn(intrinsicModules, context.path)) return;
   if (context.path === "proc/worker-pipes.ts" && scopeOf(node).split(".")[0] === "WorkerPipeBroker")
     return;
+  if (ast.isArrayBindingPattern(node)) {
+    const source = arrayBindingSource(node);
+    if (source && context.analysis.isPrivate(source)) context.report(node, "private-iteration");
+    return;
+  }
   if (ast.isForOfStatement(node) || ast.isSpreadElement(node)) {
     if (context.analysis.isPrivate(node.expression))
       context.report(node.expression, "private-iteration");
@@ -1287,6 +1317,7 @@ function scanSource(
       ast.isNewExpression(node) ||
       member(node) ||
       ast.isForOfStatement(node) ||
+      ast.isArrayBindingPattern(node) ||
       ast.isSpreadElement(node)
     )
       nodes.push(node);
