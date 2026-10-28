@@ -194,6 +194,7 @@ async function workerProbe() {
   const { parentPort, workerData } = await import("node:worker_threads");
   if (!parentPort) throw new Error("probe requires a Worker");
   const port = parentPort;
+  port.ref(); // A pending Atomics.waitAsync promise does not keep a Worker alive.
   const data: ProbeData = workerData;
   const barrier = new Int32Array(data.barrier);
   const gate = new BigInt64Array(data.control, 64, 1);
@@ -274,6 +275,7 @@ function startProbe(data: Omit<ProbeData, "module">) {
   };
   worker.on("message", receive);
   worker.on("error", (error) => receive({ phase: "error", error: String(error) }));
+  worker.once("exit", (code) => receive({ phase: "exit", code }));
   return {
     worker,
     async next(): Promise<unknown> {
