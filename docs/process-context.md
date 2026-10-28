@@ -56,13 +56,18 @@ A root controller can act on every later descendant of its root before that desc
 
 ```ts
 const supervisor = await service.ready();
-supervisor.onChildExit(({ pid }) => {
+function removeMember(pid: number) {
   const member = members.get(pid);
   if (!member) return;
   members.delete(pid);
   authority.removeMember(member);
-});
+}
+const unsubscribe = supervisor.onChildExit(({ pid }) => removeMember(pid));
 await service.adoptRuntimeRoot(root, {
+  retired() {
+    unsubscribe();
+    members.clear();
+  },
   prepareDescendant({ pid, job }) {
     const group = groups.get(job);
     if (!group) return undefined;
@@ -78,7 +83,7 @@ Waffle calls the hook synchronously, once per descendant whose immutable root is
 
 The hook must return `undefined`. A throw or any other return value, including a promise, fails the start. A rejected promise is only reported. After the hook, Waffle rechecks in the same turn that the process has no outcome and the root controller is still registered. A kill from another worker can still land after that point; the guest's entry commit then loses to the kill and the guest never runs. Waffle captures the hook when it adopts the root, and later edits to the options object have no effect.
 
-Clean up per-process state from `supervisor.onChildExit`, which fires once for every exit, including start failures and kills before entry. Do not use `registerController` for this: it allows one controller per process, and the adapter that launches the process may register its own. Worker stop and physical cleanup stay with Waffle.
+Clean up per-process state from `supervisor.onChildExit`, which reports each completed exit once, including start failures and kills before entry. Keep the subscription until root retirement, then unsubscribe and clear any remaining member handles. The root's terminal authority is already gone at retirement. Runtime disposal can clear exit listeners before pending exits complete. If adoption fails, release the subscription in the caller's cleanup. Do not use `registerController` for this: it allows one controller per process, and the adapter that launches the process may register its own. Worker stop and physical cleanup stay with Waffle.
 
 ## Identity helpers
 
