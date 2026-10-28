@@ -10,8 +10,8 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 
 ## Stability
 
-- **Version:** `0.0.90` in `package.json`, with `private: true`. Only patch versions change.
-- **Distribution:** exact-commit Git dependency. No npm package, no tags, no GitHub releases.
+- **Version:** `0.0.92` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
+- **Distribution:** GitHub release archives of the runtime package (`waffle-v<version>` tags). Existing exact-commit Git pins keep installing their old trees. No npm package.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
 - **SAFE filesystem:** reserved. `mode: "safe"` throws `VfsError` with code `UNSUPPORTED_VFS`.

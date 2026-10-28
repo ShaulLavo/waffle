@@ -20,8 +20,9 @@ export interface RuntimeTerminalCodecOptions {
   descriptors?: DescriptorTable;
   output?(fd: 1 | 2, data: Uint8Array): void;
   /** Resolve inherited provenance to a process-local endpoint, including interactive stdin.
+   * Return undefined to keep this target's default EOF input or host output.
    * The returned stream is owned by the imported description and closed at its last release. */
-  resolveTerminal?(target: TerminalTarget): Stream;
+  resolveTerminal?(target: TerminalTarget): Stream | undefined;
   checkActive?(): void;
 }
 function terminalToken(value: unknown): TerminalToken | undefined {
@@ -35,6 +36,21 @@ function terminalToken(value: unknown): TerminalToken | undefined {
   if (!("target" in value) || (value.target !== 0 && value.target !== 1 && value.target !== 2))
     throw new TypeError("invalid browser terminal target");
   return value as TerminalToken;
+}
+function resolveTerminal(
+  options: RuntimeTerminalCodecOptions,
+  target: TerminalTarget,
+): Stream | undefined {
+  if (!options.resolveTerminal) return;
+  options.checkActive?.();
+  const stream = options.resolveTerminal(target);
+  try {
+    options.checkActive?.();
+  } catch (error) {
+    stream?.close?.();
+    throw error;
+  }
+  return stream;
 }
 export function createRuntimeTerminalCodec(
   options: RuntimeTerminalCodecOptions,
@@ -61,15 +77,8 @@ export function createRuntimeTerminalCodec(
     import(value, pid) {
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
-      if (options.resolveTerminal) {
-        options.checkActive?.();
-        const resolved = options.resolveTerminal(token.target);
-        try {
-          options.checkActive?.();
-        } catch (error) {
-          resolved.close?.();
-          throw error;
-        }
+      const resolved = resolveTerminal(options, token.target);
+      if (resolved !== undefined) {
         const remember = (stream: Stream) => {
           weakMapSet(targets, stream, token.target);
         };

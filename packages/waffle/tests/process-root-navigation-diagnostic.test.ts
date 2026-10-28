@@ -15,8 +15,8 @@ import {
   type RunState,
   assertIdentity,
   assertSourceProvenance,
-  historicalRunnerPath,
   historicalLockfilePath,
+  historicalRunnerPath,
   captureRecordsIntact,
   Failures,
   terminalEvidence,
@@ -261,6 +261,9 @@ test("source provenance accepts the frozen historical reference and rejects wron
   try {
     expect(readFileSync(runner)).toHaveLength(14_361);
     expect(() => assertSourceProvenance(lockfile, runner)).not.toThrow();
+    // A live diagnostic run checks the actual root lockfile, which has moved on since approval.
+    const current = new URL("../../../bun.lock", import.meta.url).pathname;
+    expect(() => assertSourceProvenance(current, runner)).toThrow("Lockfile");
     const wrongLockfile = join(root, "bun.lock");
     writeFileSync(wrongLockfile, `${readFileSync(lockfile, "utf8")}\n`);
     expect(() => assertSourceProvenance(wrongLockfile, runner)).toThrow("Lockfile");

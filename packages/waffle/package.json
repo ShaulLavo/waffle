@@ -1,10 +1,11 @@
 {
   "name": "waffle",
-  "version": "0.0.90",
+  "version": "0.0.92",
   "private": true,
   "files": [
     "dist",
     "scripts",
+    "patches",
     "browser",
     "core",
     "fs",

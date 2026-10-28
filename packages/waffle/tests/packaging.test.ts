@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildNetwork, verifyNetwork } from "../tooling/build-network";
 import { buildNodeModules, rewriteNodeImports } from "../build";
+import { assertWasiLibcBuildInputs } from "../tooling/package-inputs";
 
 test("Node emission rewrites import syntax, never matching strings, comments or regexes", async () => {
   const root = await mkdtemp(
@@ -37,6 +38,25 @@ const pattern = /import('keep')/;`;
     expect(() => rewriteNodeImports("import '../outside';", join(root, "index.ts"), root)).toThrow(
       "outside package",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WASI libc package-input check rejects a missing scanner patch", async () => {
+  const root = await mkdtemp(
+    join(
+      process.env.TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()),
+      "waffle-package-inputs-",
+    ),
+  );
+  const packageRoot = new URL("../", import.meta.url).pathname;
+  const builder = join(root, "scripts/build-wasi-libc.sh");
+  try {
+    await mkdir(join(root, "scripts"), { recursive: true });
+    expect(() => assertWasiLibcBuildInputs(packageRoot)).not.toThrow();
+    await copyFile(join(packageRoot, "scripts/build-wasi-libc.sh"), builder);
+    expect(() => assertWasiLibcBuildInputs(root)).toThrow("preopen-scan.patch");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
