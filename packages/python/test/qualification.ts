@@ -4,6 +4,8 @@ import { createProgramTestRoot } from "../../../tools/program-test-root.ts";
 import { installPython } from "@waffle/python/install";
 import { PYTHON_ARGV0 } from "@waffle/python";
 import { cases, sources } from "./cases.ts";
+import type { PublicUsageCase } from "./cases.ts";
+import { qualifyPublicUsage } from "./public-usage.ts";
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -11,7 +13,12 @@ function check(value: unknown, message: string): asserts value {
 
 export async function qualifyPython(
   runtime: Runtime,
-  options: { workerUrl: URL; wasmUrl: URL; payloadUrl: URL },
+  options: {
+    workerUrl: URL;
+    wasmUrl: URL;
+    payloadUrl: URL;
+    publicUsageCases?: readonly PublicUsageCase[];
+  },
 ) {
   const requests: string[] = [];
   const original = globalThis.fetch;
@@ -88,6 +95,8 @@ export async function qualifyPython(
       new TextDecoder().decode(await runtime.filesystem.readFile("/home/guest/created.json")),
       '{"answer": 42, "square": 49}',
     );
+    const publicUsage = await qualifyPublicUsage(runtime, root, launches, options.publicUsageCases);
+    assert.equal(requests.length, cold, "Python usage cases fetched warm assets again");
     await root.dispose();
     root = undefined;
     await installation.dispose();
@@ -107,6 +116,7 @@ export async function qualifyPython(
     );
     return {
       results,
+      publicUsage,
       coldRequests: cold,
       warmRequests: 0,
       launches: launches.length,

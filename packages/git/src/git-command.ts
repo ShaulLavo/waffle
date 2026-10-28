@@ -16,6 +16,7 @@ import { gitDiff } from "./git-diff";
 import { gitMerge } from "./git-merge";
 import { gitStash } from "./git-stash";
 import { conflictStatus } from "./git-index";
+import { gitRevParse } from "./git-revision";
 
 export async function runGit(fs: GitFilesystem, invocation: GitInvocation): Promise<number> {
   try {
@@ -28,6 +29,7 @@ export async function runGit(fs: GitFilesystem, invocation: GitInvocation): Prom
       return 0;
     }
     if (command === "init") return await gitInit(fs, invocation, args);
+    if (command === "rev-parse") return await gitRevParse(fs, invocation, args);
     if (
       ![
         "add",

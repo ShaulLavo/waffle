@@ -106,6 +106,7 @@ export function createRuntimeNetwork(assertLive: () => void) {
         captured.hooks,
         namespace,
         assertLive,
+        (hostname, options) => network.lookup(hostname, options),
       );
       const capability = project(helper, assertLive, () => helpers.delete(helper));
       helpers.set(helper, capability);
