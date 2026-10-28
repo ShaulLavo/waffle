@@ -5,6 +5,24 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
+
+// Program-tools CI runs before Node export preparation; bind the real source modules.
+const { mock } = await import("bun:test");
+const sourceRuntime = await import("../packages/waffle/index.ts");
+const sourceDescriptors = await import("../packages/waffle/core/descriptors.ts");
+const sourceTerminals = await import("../packages/waffle/browser/runtime-terminals.ts");
+const sourceFilesystem = await import("../packages/waffle/browser/shared-fs.ts");
+const sourcePipes = await import("../packages/waffle/proc/pipes.ts");
+const sourceClient = await import("../packages/waffle/proc/worker-client.ts");
+const sourceWorkerPipes = await import("../packages/waffle/proc/worker-pipes.ts");
+mock.module("waffle", () => sourceRuntime);
+mock.module("waffle/core/descriptors", () => sourceDescriptors);
+mock.module("waffle/browser/runtime-terminals", () => sourceTerminals);
+mock.module("waffle/browser/shared-fs", () => sourceFilesystem);
+mock.module("waffle/proc/pipes", () => sourcePipes);
+mock.module("waffle/proc/worker-client", () => sourceClient);
+mock.module("waffle/proc/worker-pipes", () => sourceWorkerPipes);
+
 const fixtures = [
   {
     path: "packages/coreutils/fixtures/cut-tr.json",
@@ -82,3 +100,248 @@ test("representative case set covers every family, descriptors and interruption"
     assert.ok(source.includes(`../${fixture.path}`), `Fixture is not imported: ${fixture.path}`);
   }
 });
+
+// These exercise the maintained root, not a parallel process/pipe fixture.
+type TestRegistry = import("waffle/proc/pipes").PipePublicationRegistry;
+type TestController = import("waffle/proc/pipes").PipeController;
+
+async function rootLifecycleFixture() {
+  const { spyOn } = await import("bun:test");
+  const { createRuntime } = await import("waffle");
+  const { PipePublicationRegistry, PipeController } = await import("waffle/proc/pipes");
+  const { createProgramTestRoot } = await import("./program-test-root.ts");
+  const registrations: { registry: InstanceType<typeof PipePublicationRegistry>; pid: number }[] =
+    [];
+  const cursors: BigInt64Array[] = [];
+  const controllers = new Set<InstanceType<typeof PipeController>>();
+  const relays = new Set<InstanceType<typeof PipeController>>();
+  const disposed = new Set<InstanceType<typeof PipeController>>();
+  const register = PipePublicationRegistry.prototype.registerProcess;
+  const retain = PipeController.prototype.retain;
+  const relay = PipeController.prototype.startRelay;
+  const dispose = PipeController.prototype.dispose;
+  const spies = [
+    spyOn(PipePublicationRegistry.prototype, "registerProcess").mockImplementation(function (
+      this: TestRegistry,
+      pid,
+    ) {
+      register.call(this, pid);
+      registrations.push({ registry: this, pid });
+      if (pid !== registrations[0]?.pid) cursors.push(this.canonical(this.allocate(pid)));
+    }),
+    spyOn(PipeController.prototype, "retain").mockImplementation(function (
+      this: TestController,
+      pid,
+      mode,
+    ) {
+      controllers.add(this);
+      return retain.call(this, pid, mode);
+    }),
+    spyOn(PipeController.prototype, "startRelay").mockImplementation(function (
+      this: TestController,
+    ) {
+      relays.add(this);
+      return relay.call(this);
+    }),
+    spyOn(PipeController.prototype, "dispose").mockImplementation(function (this: TestController) {
+      disposed.add(this);
+      return dispose.call(this);
+    }),
+  ];
+  const restore = () => {
+    for (const spy of spies) spy.mockRestore();
+  };
+  const runtime = createRuntime({
+    filesystem: {
+      mode: "memory",
+      workerURL: new URL("../packages/waffle/browser/fs-worker.ts", import.meta.url),
+    },
+  });
+  let owner: Awaited<ReturnType<typeof createProgramTestRoot>> | undefined;
+  return {
+    runtime,
+    async start() {
+      owner = await createProgramTestRoot(runtime);
+      return owner;
+    },
+    duplicate(input: import("waffle/proc/pipes").PipeEndpoint) {
+      const controller = controllers.values().next().value;
+      assert.ok(controller, "input controller was not observed");
+      return controller.duplicate(input);
+    },
+    async idle() {
+      const registry = registrations[0]?.registry;
+      assert.ok(registry, "service registry was not observed");
+      for (const entry of registrations)
+        assert.equal(entry.registry.processCount, 1, "only the adopted root may remain enrolled");
+      const buffers = new Set(registrations.map((entry) => entry.registry.handle().buffer));
+      assert.equal(buffers.size, 1, "root, host and service must share one registry");
+      for (const cursor of cursors)
+        assert.equal(Atomics.load(cursor, 0) & (1n << 32n), 1n << 32n, "child cursor not frozen");
+      const deadline = Date.now() + 2000;
+      while (Array.from(relays).some((controller) => !disposed.has(controller))) {
+        assert.ok(Date.now() < deadline, "service retained a pipe controller after child cleanup");
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      for (const controller of controllers)
+        assert.equal(controller.closed, true, "pipe remains live");
+    },
+    async dispose() {
+      const rootStops = await Promise.allSettled([Promise.resolve().then(() => owner?.dispose())]);
+      const runtimeStops = await Promise.allSettled([
+        Promise.resolve().then(() => runtime.dispose()),
+      ]);
+      restore();
+      const failed = rootStops.concat(runtimeStops).find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    },
+  };
+}
+
+const pipeRequest = {
+  executable: "/lifecycle",
+  argv: ["lifecycle"],
+  cwd: "/",
+  env: {},
+  input: "input ending at EOF ✓",
+};
+
+function failedEndpointExport(
+  transfer: import("waffle/proc/pipes").PipeEndpoint["forProcess"],
+  retained: import("waffle/proc/pipes").PipeEndpoint[],
+) {
+  return function (this: import("waffle/proc/pipes").PipeEndpoint, pid: number) {
+    retained.push(transfer.call(this, pid));
+    throw new Error("endpoint export failed after allocation");
+  };
+}
+
+test("maintained root cancels pipe enrollment after preparation, export and snapshot failures", async () => {
+  const { spyOn } = await import("bun:test");
+  const { PipeEndpoint, PipeErrno } = await import("waffle/proc/pipes");
+  const { SharedFilesystem } = await import("waffle/browser/shared-fs");
+  const fixture = await rootLifecycleFixture();
+  const restoreMocks: Array<() => void> = [];
+  try {
+    const owner = await fixture.start();
+    const identity = spyOn(SharedFilesystem.prototype, "createIdentity");
+    restoreMocks.push(() => identity.mockRestore());
+    identity.mockImplementationOnce(() => {
+      throw new Error("identity preparation failed");
+    });
+    await assert.rejects(owner.exec(pipeRequest), /identity preparation failed/);
+    identity.mockRestore();
+    await fixture.idle();
+    const transfer = PipeEndpoint.prototype.forProcess;
+    const exporting = spyOn(PipeEndpoint.prototype, "forProcess");
+    restoreMocks.push(() => exporting.mockRestore());
+    const retained: InstanceType<typeof PipeEndpoint>[] = [];
+    for (let attempt = 0; attempt < 8; attempt++) {
+      exporting.mockImplementationOnce(failedEndpointExport(transfer, retained));
+      await assert.rejects(owner.exec(pipeRequest), /endpoint export failed/);
+      await fixture.idle();
+    }
+    exporting.mockRestore();
+    for (const endpoint of retained)
+      assert.equal(
+        endpoint.tryRead([new Uint8Array(1)]),
+        -PipeErrno.BADF,
+        "failed export retained a live endpoint",
+      );
+    const argv = ["lifecycle"];
+    Object.defineProperty(argv, "slice", {
+      value() {
+        throw new Error("request snapshot failed");
+      },
+    });
+    await assert.rejects(owner.exec({ ...pipeRequest, argv }), /request snapshot failed/);
+    await fixture.idle();
+  } finally {
+    for (const restore of restoreMocks) restore();
+    await fixture.dispose();
+  }
+});
+
+type LifecycleOutcome = "kill" | "start-failure" | "EOF";
+
+async function readLifecycleInput(input: import("waffle/proc/pipes").PipeEndpoint) {
+  const { PipeErrno } = await import("waffle/proc/pipes");
+  const bytes = new Uint8Array(128),
+    decoder = new TextDecoder();
+  const deadline = Date.now() + 2000;
+  let text = "";
+  for (;;) {
+    const count = input.tryRead([bytes]);
+    if (count === 0) return text + decoder.decode();
+    if (count === -PipeErrno.AGAIN) {
+      assert.ok(Date.now() < deadline, "input did not reach EOF");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      continue;
+    }
+    assert.ok(count > 0, `input read failed: ${count}`);
+    text += decoder.decode(bytes.subarray(0, count), { stream: true });
+  }
+}
+
+function lifecycleLaunch(
+  outcome: LifecycleOutcome,
+  launched: (pid: number) => void,
+  capture: (input: import("waffle/proc/pipes").PipeEndpoint) => void,
+): import("waffle").GuestLauncher {
+  return async (context) => {
+    const { PipeEndpoint } = await import("waffle/proc/pipes");
+    const resource = context.descriptors.get(0)?.resource;
+    assert.ok(resource instanceof PipeEndpoint);
+    capture(resource);
+    launched(context.pid);
+    if (outcome === "start-failure") throw new Error("controlled launcher failure");
+    assert.equal(context.started(), true);
+    if (outcome === "EOF") {
+      assert.equal(await readLifecycleInput(resource), pipeRequest.input);
+      context.exit(0);
+    }
+    return { terminate() {} };
+  };
+}
+
+for (const outcome of ["kill", "start-failure", "EOF"] as const) {
+  test(`maintained root uses service revocation and retires input pipes on ${outcome}`, async () => {
+    const { PipeEndpoint, PipeErrno } = await import("waffle/proc/pipes");
+    const fixture = await rootLifecycleFixture();
+    let input: InstanceType<typeof PipeEndpoint> | undefined;
+    try {
+      const owner = await fixture.start();
+      const service = await fixture.runtime.processes();
+      const entry = Promise.withResolvers<number>();
+      fixture.runtime.registerAdapter(
+        "lifecycle",
+        lifecycleLaunch(
+          outcome,
+          entry.resolve,
+          (resource) => (input = fixture.duplicate(resource)),
+        ),
+      );
+      await fixture.runtime.filesystem.writeFile("/lifecycle", "fixture");
+      fixture.runtime.registerProgram("/lifecycle", {
+        adapter: "lifecycle",
+        module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+        cooperative: true,
+      });
+      const pending = owner.exec(pipeRequest);
+      const pid = await entry.promise;
+      if (outcome === "kill") await service.kill(pid, 9);
+      const actual = await pending;
+      assert.equal(actual.status, outcome === "kill" ? 137 : outcome === "start-failure" ? 127 : 0);
+      assert.ok(input);
+      assert.equal(
+        input.tryRead([new Uint8Array(1)]),
+        -PipeErrno.BADF,
+        "retired endpoint still usable",
+      );
+      await fixture.idle();
+    } finally {
+      input?.close();
+      await fixture.dispose();
+    }
+  });
+}

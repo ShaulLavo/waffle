@@ -41,7 +41,11 @@ function inputPipe(pipes: WorkerPipeHost, descriptors: DescriptorTable, input: s
   }
 }
 
-function preparePipeChild(runtime: Runtime, pipes: WorkerPipeHost, child: number): WorkerSpawnTransfer {
+function preparePipeChild(
+  runtime: Runtime,
+  pipes: WorkerPipeHost,
+  child: number,
+): WorkerSpawnTransfer {
   let enrolled = false;
   const cancel = () => {
     if (!enrolled) return;
