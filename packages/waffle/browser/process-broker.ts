@@ -90,6 +90,24 @@ export interface BrowserProcessBrokerOptions {
   /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
 }
+/** A reserved, admitted descendant of a runtime root whose guest has not been launched. */
+export interface RuntimeDescendant {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly job: number;
+  /** A structured clone of the spawn's metadata without the runtime-owned `filesystem` and
+   * `pipeRegistry` fields. Inherited fields are claims from the parent, not proof of authority. */
+  readonly data: Readonly<Record<string, unknown>>;
+}
+/** The root controller's preparation of one descendant. */
+export interface RuntimeDescendantPreparation {
+  /** Structured-cloneable fields merged into the descendant's metadata before its adapter
+   * launches. `filesystem` and `pipeRegistry` stay runtime-owned and are rejected. */
+  readonly data?: Readonly<Record<string, unknown>>;
+  /** Runs once, before the root's `retired()`, if the descendant ends without entering its
+   * guest: publication or launch failure, start failure, a kill before entry, or disposal. */
+  cancel?(): void;
+}
 export interface RuntimeRootOptions {
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
@@ -98,6 +116,14 @@ export interface RuntimeRootOptions {
   stop?(): void | Promise<void>;
   wake?(): void;
   retired?(): void;
+  /** Called once for every transport-backed descendant of this root, after the runtime admits
+   * its reservation and before its adapter launches, so its guest cannot enter first. The
+   * descendant's directory row exists for the whole call. The launch awaits the result; a
+   * throw or rejection fails the descendant's start and the hook owns its own partial work.
+   * Captured when the root is adopted. Process control may be reentered. */
+  prepareDescendant?(
+    descendant: RuntimeDescendant,
+  ): RuntimeDescendantPreparation | void | Promise<RuntimeDescendantPreparation | void>;
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   /** Module entry stays inert until its first request; unused workers may be prestarted. */
