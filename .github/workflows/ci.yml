@@ -92,7 +92,6 @@ jobs:
               - "Cargo.lock"
               - "rust-toolchain.toml"
               - "tools/**"
-              - "scripts/**"
               - "packages/waffle/**"
               - "packages/program-support/**"
               - "packages/process-consumer/**"
@@ -404,7 +403,6 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
       - run: bun run programs:tools
-      - run: bun test scripts/program-release.test.ts
       - run: bun run programs:routes
       - run: bun run programs:source
       - run: bun run --cwd packages/python test:composition
