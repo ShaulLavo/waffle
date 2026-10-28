@@ -72,6 +72,19 @@ jobs:
               - ".github/**"
               - "packages/waffle/**"
               - "packages/findutils/**"
+              - "package.json"
+              - "bun.lock"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "packages/process-consumer/**"
+              - "packages/program-support/**"
+              - "tools/program-build-tools.ts"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/coreutils/fixtures/cut-tr.json"
+              - "packages/grep/tests/fixtures/grep-usage-cases.json"
+              - "packages/ripgrep/tests/helpers/rg-fixtures.ts"
             grep:
               - ".github/**"
               - "packages/waffle/**"
@@ -378,6 +391,10 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run build
+  findutils-xargs:
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.findutils == 'true') }}
+    uses: ./.github/workflows/findutils-xargs.yml
   programs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true') }}
@@ -413,4 +430,4 @@ jobs:
       - run: bun run --cwd packages/python test:build
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source
+      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs

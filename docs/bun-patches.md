@@ -20,6 +20,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `network/src/{lib,queue,native}.rs`, `network/tests/`                                                                                 | Adaptation       | bun-wasm PR116 `crates/bunwasm-host/src/net/{tcp,mod}.rs` at `4a734933901f5ff4c403925d1589afc2a4ce2e71`; retain dual-stack bind, fallback, byte queue, graceful output drain, FIN completion and input discard; replace native threads with bounded progress turns and interruptible Unix wait-many.                                                                                                                         |
 | `network/src/{abi,module,virtual_net}.rs`, `browser/net/module.ts`                                                                    | Original adapter | Waffle binary ABI, virtual-only namespace, explicit loader and per-runtime module ownership. No Bun API facade copied.                                                                                                                                                                                                                                                                                                       |
 | `tools/licenses/`                                                                                                                     | License copy     | Exact upstream MIT license texts for fluent-langneg 0.13.1 and intl_pluralrules 7.0.2, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                         |
+| `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                   | Adaptation       | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                         |
 
 ## Node WASI descriptor adapter
 
@@ -217,3 +218,18 @@ projectfluent/fluent-langneg-rs at `7fdc590466ea63ca2367ac10fb1b881fe561f1a8`.
 or Apache-2.0, but their published archives omit those files. Their `.cargo_vcs_info.json`
 records identify these commits. The notice generator verifies those recorded revisions
 and the copied text hashes before including the MIT texts. No dependency code is changed.
+
+## Xargs explicit-command adapter
+
+`packages/findutils/vendor/uutils-xargs/src/lib.rs` adapts uutils/findutils
+`src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a` (MIT).
+`vendor/uutils-xargs/provenance.json` records the upstream hash, current files and
+reversible `wasi.patch`. The original Waffle adapter calls the singular
+`waffle-process-consumer` for executable lookup, exact argv/environment/cwd,
+inherited descriptors, typed child outcomes and cancellation/retirement. An owned
+closed-writer pipe supplies child EOF for stdin-driven input; `-a` preserves stdin.
+The binary initializes libc cwd from runtime identity instead of trusting PWD.
+Empty byte-delimited items are retained. Default print-only echo and rejected
+replacement/parallel modes remain explicit. No shell, host fallback, copied
+process protocol or new runtime controller is introduced. The controlled C test
+utility is original test-only code, never a shipped command.

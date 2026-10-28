@@ -1697,6 +1697,7 @@ version = "0.11.0"
 dependencies = [
  "clap",
  "uucore 0.12.0",
+ "waffle-process-consumer",
 ]
 
 [[package]]
@@ -2037,6 +2038,7 @@ name = "waffle-findutils-source"
 version = "0.0.0"
 dependencies = [
  "findutils",
+ "tempfile",
  "upstream-xargs",
  "uucore 0.12.0",
 ]

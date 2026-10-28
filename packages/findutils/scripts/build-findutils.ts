@@ -28,6 +28,7 @@ export type Execute = (
 export type BuildEnvironment = (recipe: WasiBuildRecipe, target: string) => NodeJS.ProcessEnv;
 
 export interface FindutilsBuildOptions {
+  readonly programs?: readonly (typeof programNames)[number][];
   readonly execute?: Execute;
   readonly environment?: BuildEnvironment;
   readonly verifier?: typeof verifyWasiGuest;
@@ -35,6 +36,7 @@ export interface FindutilsBuildOptions {
 
 export function buildFindutils(options: FindutilsBuildOptions = {}) {
   verifyXargsSource(packageRoot);
+  const programs = options.programs ?? programNames;
   const execute = options.execute ?? execFileSync;
   const environment = options.environment ?? wasiBuildEnvironment;
   const verifier = options.verifier ?? verifyWasiGuest;
@@ -51,18 +53,14 @@ export function buildFindutils(options: FindutilsBuildOptions = {}) {
       "-j2",
       "-p",
       "waffle-findutils-source",
-      "--bin",
-      "find",
-      "--bin",
-      "xargs",
-    ],
+    ].concat(programs.flatMap((name) => ["--bin", name])),
     {
       cwd: workspaceRoot,
       env: environment(familyRecipe, targetDirectory),
       stdio: "inherit",
     },
   );
-  for (const name of programNames) verifier(resolve(releaseDirectory, `${name}.wasm`));
+  for (const name of programs) verifier(resolve(releaseDirectory, `${name}.wasm`));
 }
 
 export function stageFindutils() {

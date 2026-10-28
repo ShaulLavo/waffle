@@ -33,12 +33,16 @@
     "pack": "node ../../tools/program-package.ts pack",
     "prepack": "node ../../tools/program-package.ts check",
     "notices": "node scripts/notices.ts",
-    "prepare:package": "bun run build && bun run notices"
-  },
-  "peerDependencies": {
-    "waffle": "*"
+    "prepare:package": "bun run build && bun run notices",
+    "build:xargs": "node scripts/build-xargs.ts",
+    "test:xargs:wasi": "bun test tests/xargs-wasi.test.ts",
+    "test:xargs:ci": "bun run test:types && bun run test:source && bun run test:build-route && bun run test:native && bun run build:xargs && bun run test:xargs:wasi",
+    "test:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.json"
   },
   "devDependencies": {
     "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
   }
 }
