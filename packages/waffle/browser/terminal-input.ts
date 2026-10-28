@@ -19,6 +19,7 @@ import {
   BigInt64ArrayConstructor,
   Uint32ArrayConstructor,
   cryptoGetRandomValues,
+  typedArraySet,
 } from "../proc/intrinsics.ts";
 
 const AGAIN = -6;
@@ -331,8 +332,9 @@ export function createTerminalInput(options: { readonly capacity?: number } = {}
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
   if (!validCapacity(capacity)) throw new RangeError("invalid terminal input capacity");
   const input = new InputBuffer(new SharedArrayBufferConstructor(HEADER_BYTES + capacity));
-  const nonce = cryptoGetRandomValues(new Uint32ArrayConstructor(input.buffer, H.nonce * 4, 2));
+  const nonce = cryptoGetRandomValues(new Uint32ArrayConstructor(2));
   if (nonce[0] === 0 && nonce[1] === 0) nonce[0] = 1;
+  typedArraySet(new Uint32ArrayConstructor(input.buffer, H.nonce * 4, 2), nonce);
   atomicsStore(input.identity, 1, 1n);
   return input;
 }

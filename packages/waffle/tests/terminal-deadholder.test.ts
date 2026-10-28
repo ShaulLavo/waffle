@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
+import { spawnSync } from "node:child_process";
 import { DescriptorTable } from "../core/descriptors.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
@@ -33,6 +34,30 @@ function must<T>(result: TerminalResult<T>): T {
   if (result.kind === "error") throw new Error(result.code);
   return result.value;
 }
+
+test("prepared terminal lifetime works with Node WebCrypto", () => {
+  const terminals = new URL("../dist/browser/runtime-terminals.js", import.meta.url).href;
+  const processes = new URL("../dist/proc/worker-client.js", import.meta.url).href;
+  const script = `
+    const t = await import(${JSON.stringify(terminals)});
+    const p = await import(${JSON.stringify(processes)});
+    const process = p.createWorkerProcessTransport({capacity:4});
+    const input = t.createTerminalInput();
+    const display = t.createTerminalSession({controller:process,geometry:{columns:80,rows:24}});
+    const lifetime = t.captureTerminalProcessLifetime({process,terminals:[{identity:display.identity,inputs:[input]}]});
+    await lifetime.quiesce();
+    display.close('disposed');
+    console.log('prepared terminal lifetime passed');
+  `;
+  const result = spawnSync("node", ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: 2000,
+  });
+  expect(result.error).toBeUndefined();
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+  expect(result.stdout.trim()).toBe("prepared terminal lifetime passed");
+});
 
 function fixture(input: TerminalInput = createTerminalInput()) {
   const root = createWorkerProcessTransport({ capacity: 4 });
