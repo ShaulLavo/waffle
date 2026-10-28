@@ -241,7 +241,8 @@ sharing a transferred reference also share one open description; the resolver st
 `close` runs on that description's last release. Return `undefined` for a target to use its
 default, just as when no resolver is provided: stdin remains EOF and output uses the checked
 host callbacks. A stdin-only resolver can return `target === 0 ? attachment.resolve(0) : undefined`
-to keep host output without routing it back through `WorkerSetupContext.post`. The same resolver option is available directly on
+to keep host output without routing it back through `WorkerSetupContext.post`. The same resolver
+option is available directly on
 `createRuntimeTerminalCodec` from `waffle/browser/runtime-terminals`.
 
 `createTerminalInput()` provides the generic foreground input transport. The page keeps the

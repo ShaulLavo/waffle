@@ -57,9 +57,13 @@ test("a stdin-only resolver keeps checked default output and EOF for declined ta
   let active = true;
   const codec = createRuntimeTerminalCodec({
     fallback: state.fallback,
-    resolveTerminal: (target) => target === 0 ? terminal() : undefined,
-    output(fd, bytes) { state.output.push([fd, new TextDecoder().decode(bytes)]); },
-    checkActive() { if (!active) throw Error("revoked"); },
+    resolveTerminal: (target) => (target === 0 ? terminal() : undefined),
+    output(fd, bytes) {
+      state.output.push([fd, new TextDecoder().decode(bytes)]);
+    },
+    checkActive() {
+      if (!active) throw Error("revoked");
+    },
   });
   try {
     for (const target of [1, 2] as const) {
@@ -73,7 +77,10 @@ test("a stdin-only resolver keeps checked default output and EOF for declined ta
       expect(() => stream.write([text("blocked")])).toThrow("revoked");
       active = true;
     }
-    expect(state.output).toEqual([[1, "fd1"], [2, "fd2"]]);
+    expect(state.output).toEqual([
+      [1, "fd1"],
+      [2, "fd2"],
+    ]);
   } finally {
     imported.dispose();
     state.table.dispose();
@@ -86,19 +93,29 @@ test("declining stdin preserves EOF and cannot bypass revocation during resoluti
   const codec = createRuntimeTerminalCodec({
     fallback: state.fallback,
     resolveTerminal: () => undefined,
-    checkActive() { if (!active) throw Error("revoked"); },
+    checkActive() {
+      if (!active) throw Error("revoked");
+    },
   });
   const table = new DescriptorTable();
   try {
-    const fd = table.add(codec.import({ kind: "web-terminal", target: 0 }, 2), { rightsBase: 0n, rightsInheriting: 0n });
+    const fd = table.add(codec.import({ kind: "web-terminal", target: 0 }, 2), {
+      rightsBase: 0n,
+      rightsInheriting: 0n,
+    });
     const stream = table.get(fd)!.resource;
     if (stream.kind !== "terminal") throw Error("not a terminal");
     expect(stream.tryRead?.([new Uint8Array(1)])).toBe(0);
     expect(stream.readiness().hangup).toBe(true);
     const revoked = createRuntimeTerminalCodec({
       fallback: state.fallback,
-      resolveTerminal() { active = false; return undefined; },
-      checkActive() { if (!active) throw Error("revoked"); },
+      resolveTerminal() {
+        active = false;
+        return undefined;
+      },
+      checkActive() {
+        if (!active) throw Error("revoked");
+      },
     });
     expect(() => revoked.import({ kind: "web-terminal", target: 1 }, 2)).toThrow("revoked");
   } finally {

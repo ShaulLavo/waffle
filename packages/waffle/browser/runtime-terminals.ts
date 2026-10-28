@@ -37,7 +37,10 @@ function terminalToken(value: unknown): TerminalToken | undefined {
     throw new TypeError("invalid browser terminal target");
   return value as TerminalToken;
 }
-function resolveTerminal(options: RuntimeTerminalCodecOptions, target: TerminalTarget): Stream | undefined {
+function resolveTerminal(
+  options: RuntimeTerminalCodecOptions,
+  target: TerminalTarget,
+): Stream | undefined {
   if (!options.resolveTerminal) return;
   options.checkActive?.();
   const stream = options.resolveTerminal(target);
@@ -75,7 +78,7 @@ export function createRuntimeTerminalCodec(
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
       const resolved = resolveTerminal(options, token.target);
-      if (resolved) {
+      if (resolved !== undefined) {
         const remember = (stream: Stream) => {
           weakMapSet(targets, stream, token.target);
         };

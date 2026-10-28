@@ -341,7 +341,7 @@ function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): vo
 }
 
 function transferStdio(stream: Stream | undefined, discarded: Stream[]): Stream | undefined {
-  if (!stream) return;
+  if (stream === undefined) return;
   for (let index = discarded.length - 1; index >= 0; index--) {
     if (discarded[index] !== stream) continue;
     discarded[index] = discarded[discarded.length - 1]!;
