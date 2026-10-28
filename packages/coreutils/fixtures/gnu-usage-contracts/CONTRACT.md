@@ -56,3 +56,7 @@ stderr and status, unique names and per-command case counts.
 All 33 invocations are successful usage cases. Error wording, file errors and other flags
 remain outside this slice. Head's documented WASI stdin read-ahead and header differences
 also remain outside it. GNU is the recording oracle, never the product implementation.
+
+Native `wc` has a separate formatting difference for redirected seekable stdin: the pinned
+uutils version uses width seven, while GNU sizes columns from the file metadata. This corpus
+qualifies explicit stdin pipes and named file operands. It does not qualify that redirection.
