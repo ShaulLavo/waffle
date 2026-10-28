@@ -44,6 +44,7 @@ interface FetchHandle extends Stream {
 
 interface LookupHandle {
   kind: "lookup";
+  chunks: Uint8Array[];
   head: Uint8Array | null;
   error: NetError | null;
 }
@@ -239,7 +240,7 @@ export class NetHost {
     const captured = { family: options.family, hints: options.hints };
     if (this.disposed) return BADF;
     const id = this.nextHandle++;
-    this.handles.set(id, { kind: "lookup", head: null, error: null });
+    this.handles.set(id, { kind: "lookup", chunks: [], head: null, error: null });
     try {
       this.send({ type: "lookup", id, hostname, options: captured });
     } catch (error) {
@@ -597,14 +598,29 @@ export class NetHost {
     const h = this.handles.get(handle) ?? this.unaccepted.get(handle);
     if (!h || h.kind === "listener") return;
     if (h.kind === "lookup") {
-      if (kind === Kind.LookupHead) h.head = payload;
-      else if (kind === Kind.Error) h.error = JSON.parse(decoder.decode(payload)) as NetError;
+      if (kind === Kind.Data) h.chunks.push(payload);
+      if (kind === Kind.LookupHead) h.head = this.lookupPayload(h, payload);
+      if (kind === Kind.Error)
+        h.error = JSON.parse(decoder.decode(this.lookupPayload(h, payload))) as NetError;
       return;
     }
     if (kind === Kind.Head && h.kind === "fetch") h.head = payload;
     else if (kind === Kind.Data) h.chunks.push(payload);
     else if (kind === Kind.End) h.ended = true;
     else if (kind === Kind.Error) h.error = JSON.parse(decoder.decode(payload)) as NetError;
+  }
+
+  private lookupPayload(state: LookupHandle, payload: Uint8Array): Uint8Array {
+    if (state.chunks.length === 0) return payload;
+    state.chunks.push(payload);
+    const bytes = new Uint8Array(state.chunks.reduce((size, chunk) => size + chunk.length, 0));
+    let at = 0;
+    for (const chunk of state.chunks) {
+      bytes.set(chunk, at);
+      at += chunk.length;
+    }
+    state.chunks = [];
+    return bytes;
   }
 
   private receiveFile(kind: number, payload: Uint8Array): void {

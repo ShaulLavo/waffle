@@ -21,7 +21,7 @@ export const UNSUPPORTED = -4;
 export const Kind = {
   /** Fetch response head (JSON FetchHead). */
   Head: 1,
-  /** Body bytes (fetch) or bytes from the peer (connection). */
+  /** Body bytes, connection bytes, or a fragment before a lookup head/error. */
   Data: 2,
   /** End of the body / peer closed its side. */
   End: 3,

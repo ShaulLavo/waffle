@@ -493,17 +493,34 @@ export class NetHelper {
     const job = {};
     this.lookups.set(req.id, job);
     try {
+      await Promise.resolve();
+      if (!this.lookupLive(req.id, job)) return;
       const lookupRequest = this.lookupRequest;
       const results = await lookupRequest(req.hostname, req.options);
       if (!this.lookupLive(req.id, job)) return;
-      const payload = json(results);
-      if (payload.length > MAX_RECORD) throw new RangeError("Lookup result exceeds ring record size");
-      await this.ring.write(req.id, Kind.LookupHead, payload);
+      await this.publishLookup(req.id, job, Kind.LookupHead, json(results));
     } catch (error) {
       if (this.lookupLive(req.id, job))
-        await this.ring.write(req.id, Kind.Error, json(lookupError(error)));
+        await this.publishLookup(req.id, job, Kind.Error, json(lookupError(error)));
     } finally {
       if (this.lookups.get(req.id) === job) this.lookups.delete(req.id);
+    }
+  }
+
+  private async publishLookup(
+    id: number,
+    job: object,
+    kind: typeof Kind.LookupHead | typeof Kind.Error,
+    payload: Uint8Array,
+  ): Promise<void> {
+    for (let at = 0; at < payload.length; at += MAX_RECORD) {
+      if (!this.lookupLive(id, job)) return;
+      const end = Math.min(at + MAX_RECORD, payload.length);
+      await this.ring.write(
+        id,
+        end === payload.length ? kind : Kind.Data,
+        payload.subarray(at, end),
+      );
     }
   }
 
@@ -812,12 +829,17 @@ function snapshotRequest(req: NetRequest): NetRequest {
 
 function lookupError(error: unknown): NetError {
   if (!error || typeof error !== "object") return { name: "Error", message: String(error) };
+  const name = "name" in error ? error.name : undefined;
+  const message = "message" in error ? error.message : undefined;
+  const code = "code" in error ? error.code : undefined;
+  const syscall = "syscall" in error ? error.syscall : undefined;
+  const hostname = "hostname" in error ? error.hostname : undefined;
   return {
-    name: "name" in error && typeof error.name === "string" ? error.name : "Error",
-    message: "message" in error && typeof error.message === "string" ? error.message : String(error),
-    code: "code" in error && typeof error.code === "string" ? error.code : undefined,
-    syscall: "syscall" in error && typeof error.syscall === "string" ? error.syscall : undefined,
-    hostname: "hostname" in error && typeof error.hostname === "string" ? error.hostname : undefined,
+    name: typeof name === "string" ? name : "Error",
+    message: typeof message === "string" ? message : String(error),
+    code: typeof code === "string" ? code : undefined,
+    syscall: typeof syscall === "string" ? syscall : undefined,
+    hostname: typeof hostname === "string" ? hostname : undefined,
   };
 }
 
