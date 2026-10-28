@@ -76,17 +76,18 @@ function must<T>(result: TerminalResult<T>): T {
   return result.value;
 }
 
+function deadline() {
+  const { promise, reject } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => reject(new Error("descendant worker timeout")), 5000);
+  return { promise, timer };
+}
+
 async function bounded<T>(pending: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = deadline();
   try {
-    return await Promise.race([
-      pending,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("descendant worker timeout")), 5000);
-      }),
-    ]);
+    return await Promise.race([pending, timeout.promise]);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timeout.timer);
   }
 }
 
@@ -114,6 +115,12 @@ function isNotice(value: unknown): value is Notice {
     "pid" in value &&
     typeof value.pid === "number"
   );
+}
+
+function recordNotice(message: unknown, notices: Notice[], notify: () => void): void {
+  if (!isNotice(message)) return;
+  notices.push(message);
+  notify();
 }
 
 async function fixture() {
@@ -194,12 +201,7 @@ async function fixture() {
           markers,
           terminalIdentity: display.identity,
         },
-        onMessage(message) {
-          if (isNotice(message)) {
-            notices.push(message);
-            notify();
-          }
-        },
+        onMessage: (message) => recordNotice(message, notices, notify),
         cleanup() {
           cleaned.push(context.pid);
         },
