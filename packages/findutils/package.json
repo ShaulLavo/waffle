@@ -1,0 +1,44 @@
+{
+  "name": "waffle-findutils",
+  "version": "0.0.0",
+  "private": true,
+  "description": "WASI find and xargs for Waffle runtimes.",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "provenance",
+    "vendor",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "programs.provisional.json",
+    "manifest.json",
+    "build-recipe.json",
+    "BUILD-TOOLS.md",
+    "CLEANUP.md",
+    "INTEGRATION.md",
+    "package-artifacts.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build-findutils.ts",
+    "test:build-route": "node --test scripts/test-build-route.ts",
+    "test:source": "node --test scripts/test-find-source.ts scripts/test-xargs-source.ts",
+    "test:native": "cargo test --offline --locked -p waffle-findutils-source",
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check",
+    "notices": "node scripts/notices.ts",
+    "prepare:package": "bun run build && bun run notices"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  },
+  "devDependencies": {
+    "waffle": "workspace:*"
+  }
+}

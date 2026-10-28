@@ -1,0 +1,191 @@
+[
+  {
+    "name": "numbered inverted ignore case",
+    "script": "printf 'hit\\nMISS\\nHIT\\n' | grep -nvi hit",
+    "status": 0,
+    "stdout": "2:MISS\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "extended quantifiers",
+    "script": "printf 'ab\\nabab\\na+b\\n' | grep -nE '^(ab)+$'",
+    "status": 0,
+    "stdout": "1:ab\n2:abab\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "fixed literal case insensitive",
+    "script": "printf 'a+b\\naaab\\nA+B' | grep -Fin a+b",
+    "status": 0,
+    "stdout": "1:a+b\n3:A+B\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "repeated explicit patterns",
+    "script": "printf 'TODO: one\\nskip\\nFIXME: two\\n' | grep -n -e TODO -e FIXME",
+    "status": 0,
+    "stdout": "1:TODO: one\n3:FIXME: two\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "attached grouped pattern and later flags",
+    "script": "printf 'a+b\\nA+B\\naaab\\n' | grep -nFea+b -i",
+    "status": 0,
+    "stdout": "1:a+b\n2:A+B\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "dash pattern",
+    "script": "printf '%s\\n' -needle other | grep -n -e -needle",
+    "status": 0,
+    "stdout": "1:-needle\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "empty pattern alternative",
+    "script": "printf 'one\\n\\ntwo' | grep -ne missing -e ''",
+    "status": 0,
+    "stdout": "1:one\n2:\n3:two\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "newline alternatives within explicit patterns",
+    "script": "printf 'a\\nb\\nc\\nd\\n' | grep -nE -e '^a$\n^c$' -e '^d$'",
+    "status": 0,
+    "stdout": "1:a\n3:c\n4:d\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "basic grouping across explicit patterns",
+    "script": "printf 'ab\\nabab\\na+b\\n' | grep -n -e '^\\(ab\\)\\+$' -e '^a+b$'",
+    "status": 0,
+    "stdout": "1:ab\n2:abab\n3:a+b\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "forced single filename",
+    "script": "printf 'hit\\nmiss\\n' > first; grep -Hn hit first",
+    "status": 0,
+    "stdout": "first:1:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "suppressed multiple filenames",
+    "script": "printf 'hit\\nmiss\\n' > first; printf 'hit\\n' > second; grep -hn hit first second",
+    "status": 0,
+    "stdout": "1:hit\n1:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "file plus explicit standard input",
+    "script": "printf 'hit\\n' > first; printf 'hit\\n' | grep -n hit first -",
+    "status": 0,
+    "stdout": "first:1:hit\n(standard input):1:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "forced stdin filename",
+    "script": "printf 'hit\\n' | grep -Hn hit",
+    "status": 0,
+    "stdout": "(standard input):1:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "last filename option wins",
+    "script": "printf 'hit\\n' > first; grep -Hh hit first; grep -hH hit first",
+    "status": 0,
+    "stdout": "hit\nfirst:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "counts remain per operand",
+    "script": "printf 'hit\\nmiss\\nhit' > first; printf 'miss\\n' > second; grep -hc -e hit first second",
+    "status": 0,
+    "stdout": "2\n0\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "option terminator and dash filename",
+    "script": "printf 'hit\\n' > ./-input; grep -n -e hit -- -input",
+    "status": 0,
+    "stdout": "1:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "pattern option after operand",
+    "script": "printf 'hit\\nmiss\\n' > first; grep first -ne hit",
+    "status": 0,
+    "stdout": "1:hit\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "no match status",
+    "script": "printf 'hit\\n' | grep -e absent -e missing",
+    "status": 1,
+    "stdout": "",
+    "stderrPresent": false
+  },
+  {
+    "name": "count no match status",
+    "script": "printf 'hit\\n' | grep -c -e absent",
+    "status": 1,
+    "stdout": "0\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "invalid regex status",
+    "script": "grep -E -e '['",
+    "status": 2,
+    "stdout": "",
+    "stderrPresent": true
+  },
+  {
+    "name": "missing explicit pattern status",
+    "script": "grep -e",
+    "status": 2,
+    "stdout": "",
+    "stderrPresent": true
+  },
+  {
+    "name": "missing file status",
+    "script": "grep -e hit absent-file",
+    "status": 2,
+    "stdout": "",
+    "stderrPresent": true
+  },
+  {
+    "name": "quiet success takes priority over file error",
+    "script": "printf 'hit\\n' > first; grep -q -e hit absent-file first",
+    "status": 0,
+    "stdout": "",
+    "stderrPresent": true
+  },
+  {
+    "name": "non quiet error takes priority over match",
+    "script": "printf 'hit\\n' > first; grep -h -e hit absent-file first",
+    "status": 2,
+    "stdout": "hit\n",
+    "stderrPresent": true
+  },
+  {
+    "name": "pipeline output reaches downstream builtin",
+    "script": "printf 'hit\\nmiss\\nHIT\\n' | grep -nie hit | while IFS= read -r line; do printf '[%s]\\n' \"$line\"; done",
+    "status": 0,
+    "stdout": "[1:hit]\n[3:HIT]\n",
+    "stderrPresent": false
+  },
+  {
+    "name": "closed output is an error",
+    "script": "printf 'hit\\n' | grep -e hit >&-",
+    "status": 2,
+    "stdout": "",
+    "stderrPresent": true
+  },
+  {
+    "name": "closed pipeline reader propagates broken pipe",
+    "script": "set -o pipefail; for ((i=0;i<20000;i++)); do printf 'hit payload\\n'; done | grep -e hit | { IFS= read -r first; printf '%s\\n' \"$first\"; }",
+    "status": 141,
+    "stdout": "hit payload\n",
+    "stderrPresent": false
+  }
+]

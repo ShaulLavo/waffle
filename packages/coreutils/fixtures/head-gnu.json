@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "oracle": {
+    "bash": {
+      "version": "GNU bash, version 5.3.15(1)-release (x86_64-pc-linux-gnu)",
+      "sha256": "575e03ac834b739349a4484de481abcd06a6f7193cefc795260a32a1943f20a5",
+      "packageArchiveSha256": "2c14ce3c72790ec6b344267b39f04f921bbb34f0c1399460e71492547f6b6c65"
+    },
+    "head": {
+      "version": "head (GNU coreutils) 9.12",
+      "sha256": "313bf1f0c296d63fa9534394e22a502cfe29d9fe9e110c5b45f3c070b9ddf3e1"
+    }
+  },
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/home/user",
+    "LC_ALL": "C"
+  },
+  "casesSha256": "66256ffe42aad6bc4aa7485e397f57ddbe25ef01826e176800ce337f5bdbaecf",
+  "cases": [
+    {
+      "name": "default ten lines",
+      "script": "for ((i=1;i<=12;i++)); do printf '%s\\n' \"$i\"; done | head",
+      "status": 0,
+      "stdoutBase64": "MQoyCjMKNAo1CjYKNwo4CjkKMTAK",
+      "stderrBase64": ""
+    },
+    {
+      "name": "attached line count",
+      "script": "printf 'one\\ntwo\\nthree' | head -n2",
+      "status": 0,
+      "stdoutBase64": "b25lCnR3bwo=",
+      "stderrBase64": ""
+    },
+    {
+      "name": "long line count",
+      "script": "printf 'one\\ntwo\\nthree' | head --lines=+2",
+      "status": 0,
+      "stdoutBase64": "b25lCnR3bwo=",
+      "stderrBase64": ""
+    },
+    {
+      "name": "legacy count",
+      "script": "printf 'one\\ntwo\\nthree' | head -1",
+      "status": 0,
+      "stdoutBase64": "b25lCg==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "byte count preserves binary",
+      "script": "printf '\\377\\000abc\\n' | head -c3",
+      "status": 0,
+      "stdoutBase64": "/wBh",
+      "stderrBase64": ""
+    },
+    {
+      "name": "long byte count",
+      "script": "printf 'abcdef' | head --bytes 2",
+      "status": 0,
+      "stdoutBase64": "YWI=",
+      "stderrBase64": ""
+    },
+    {
+      "name": "suffix count",
+      "script": "printf 'abcdef' | head -c 1KB",
+      "status": 0,
+      "stdoutBase64": "YWJjZGVm",
+      "stderrBase64": ""
+    },
+    {
+      "name": "last mode wins",
+      "script": "printf 'ab\\ncd\\nef' | head -n1 -c4",
+      "status": 0,
+      "stdoutBase64": "YWIKYw==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "file and missing newline",
+      "script": "printf 'one\\ntwo' > f; head -n9 f",
+      "status": 0,
+      "stdoutBase64": "b25lCnR3bw==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "multiple file headers",
+      "script": "printf 'a\\nb\\n' > a; printf xyz > b; head -n1 a b",
+      "status": 0,
+      "stdoutBase64": "PT0+IGEgPD09CmEKCj09PiBiIDw9PQp4eXo=",
+      "stderrBase64": ""
+    },
+    {
+      "name": "quiet headers",
+      "script": "printf a > a; printf b > b; head --quiet a b",
+      "status": 0,
+      "stdoutBase64": "YWI=",
+      "stderrBase64": ""
+    },
+    {
+      "name": "verbose stdin header",
+      "script": "printf 'one\\ntwo\\n' | head --verbose -n1 -",
+      "status": 0,
+      "stdoutBase64": "PT0+ICdzdGFuZGFyZCBpbnB1dCcgPD09Cm9uZQo=",
+      "stderrBase64": ""
+    },
+    {
+      "name": "option after file",
+      "script": "printf 'one\\ntwo\\n' > f; head f -n1",
+      "status": 0,
+      "stdoutBase64": "b25lCg==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "option terminator",
+      "script": "printf 'one\\ntwo\\n' > ./-n; head -n1 -- -n",
+      "status": 0,
+      "stdoutBase64": "b25lCg==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "zero leaves stdin",
+      "script": "printf 'one\\ntwo\\n' | { head -n0; head -n1; }",
+      "status": 0,
+      "stdoutBase64": "b25lCg==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "missing operand continues",
+      "script": "printf 'ok\\n' > f; head -q missing f",
+      "status": 1,
+      "stdoutBase64": "b2sK",
+      "stderrBase64": "aGVhZDogY2Fubm90IG9wZW4gJ21pc3NpbmcnIGZvciByZWFkaW5nOiBObyBzdWNoIGZpbGUgb3IgZGlyZWN0b3J5Cg=="
+    },
+    {
+      "name": "missing count",
+      "script": "head -n",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrBase64": "aGVhZDogb3B0aW9uIHJlcXVpcmVzIGFuIGFyZ3VtZW50IC0tICduJwpUcnkgJ2hlYWQgLS1oZWxwJyBmb3IgbW9yZSBpbmZvcm1hdGlvbi4K"
+    },
+    {
+      "name": "invalid count",
+      "script": "head --lines=oops",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrBase64": "aGVhZDogaW52YWxpZCBudW1iZXIgb2YgbGluZXM6ICdvb3BzJwo="
+    },
+    {
+      "name": "invalid suffix",
+      "script": "head -c 1J",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrBase64": "aGVhZDogaW52YWxpZCBudW1iZXIgb2YgYnl0ZXM6ICcxSicK"
+    },
+    {
+      "name": "unsupported option",
+      "script": "head --not-an-option",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrBase64": "aGVhZDogdW5yZWNvZ25pemVkIG9wdGlvbiAnLS1ub3QtYW4tb3B0aW9uJwpUcnkgJ2hlYWQgLS1oZWxwJyBmb3IgbW9yZSBpbmZvcm1hdGlvbi4K"
+    },
+    {
+      "name": "all but last line",
+      "script": "printf 'a\\nb\\nc\\n' | head -n -1",
+      "status": 0,
+      "stdoutBase64": "YQpiCg==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "all but last bytes",
+      "script": "printf abcdef | head -c -2",
+      "status": 0,
+      "stdoutBase64": "YWJjZA==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "NUL-delimited records",
+      "script": "printf 'a\\000b\\000c' | head -z -n2",
+      "status": 0,
+      "stdoutBase64": "YQBiAA==",
+      "stderrBase64": ""
+    },
+    {
+      "name": "early prefix from running producer",
+      "script": "{ printf 'ready\\n'; while printf x; do :; done; } | head -n1",
+      "status": 0,
+      "stdoutBase64": "cmVhZHkK",
+      "stderrBase64": ""
+    }
+  ]
+}

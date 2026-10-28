@@ -1,0 +1,15 @@
+[package]
+name = "waffle-program-support"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Needs Waffle's runtime_proc.inherited_fd launch descriptor list.
+cooperative-wasi = []
+
+[dependencies]
+futures.workspace = true

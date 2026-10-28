@@ -1,0 +1,26 @@
+{
+  "schema": "search-family-source-candidate/v1",
+  "family": "sed",
+  "programs": [
+    {
+      "name": "sed",
+      "execution": "ordinary WASI source bytes",
+      "currentBashPath": "/bin/sed",
+      "plannedWafflePath": "/usr/bin/sed",
+      "aliases": "pending Waffle contract; none invented",
+      "asset": "sed.wasm"
+    }
+  ],
+  "packageName": null,
+  "exports": null,
+  "status": "Provisional. Waffle step 1 package layout and step 2 install API are pending.",
+  "source": "third-party/uutils-sed",
+  "buildRecipe": "build-recipe.json",
+  "sourceVerifier": "scripts/sed-source.ts",
+  "tests": [
+    "scripts/test-sed-source.ts",
+    "provenance/bash/scripts/test-installed-sed.ts",
+    "provenance/bash/tests/sed-installed-app.ts"
+  ],
+  "sharedBuildTools": "Future Waffle shared build-tools owner; no helper copy in this candidate."
+}

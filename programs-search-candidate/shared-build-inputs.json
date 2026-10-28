@@ -1,0 +1,50 @@
+{
+  "owner": "Repository-level tools/program-build-tools.ts",
+  "candidate": "74490abce8067d3d23b857d9774ba4f235f43a1d",
+  "status": "wired",
+  "relativeImport": "../../../tools/program-build-tools.ts",
+  "callers": {
+    "sed": {
+      "recipe": "packages/sed/scripts/build-sed.ts",
+      "targetDirectory": ".build/sed"
+    },
+    "ripgrep": {
+      "recipe": "packages/ripgrep/scripts/build-rg.ts",
+      "targetDirectory": ".build/ripgrep"
+    }
+  },
+  "historicalInputs": [
+    {
+      "repository": "https://github.com/ShaulLavo/bash-web",
+      "commit": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+      "path": "scripts/wasi-build.ts",
+      "sha256": "283a9ac1273d9bbd623cc883983abdba2333a384db5ba8a9b526d0b5530b9b41",
+      "blob": "5444843cbbe7bc5d91f1c9fed46a3fb52c9ec0e9",
+      "implementationCopied": false
+    },
+    {
+      "repository": "https://github.com/ShaulLavo/bash-web",
+      "commit": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+      "path": "scripts/verify-wasi-guests.ts",
+      "sha256": "3b0c4e356b8e737493a261a3f36513ac5907d1fd29ca72577b862cb4af0abbf5",
+      "blob": "0a91454072ec2badc1b3c0fcc45668fe5f5e3844",
+      "implementationCopied": false
+    },
+    {
+      "repository": "https://github.com/ShaulLavo/bash-web",
+      "commit": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+      "path": "scripts/utility-artifacts.ts",
+      "sha256": "e6db67c0e0748ad4ebed9b7759300c4b641ce8a7df3c73537c7c0faba51ce9f0",
+      "blob": "2a66fe8cf01a231cde9b7b0c45d11a2c98c4fa05",
+      "implementationCopied": false
+    },
+    {
+      "repository": "https://github.com/ShaulLavo/bash-web",
+      "commit": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+      "path": "sources.lock.json",
+      "sha256": "8a0071a9ec8f21250d3d41b79351e730689bfbfb52352070669d27753e11eb90",
+      "blob": "e4f544be8b0a2527378b183212bb8f53ac38a067",
+      "implementationCopied": false
+    }
+  ]
+}

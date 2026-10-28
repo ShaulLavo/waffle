@@ -1,0 +1,3568 @@
+{
+  "schema": 1,
+  "provenance": {
+    "git": {
+      "path": "/usr/bin/git",
+      "version": "git version 2.56.0",
+      "sha256": "2912a2a32f408c9b8122e476251b32f4b35f4c3f0c15961686ae87ca456d384c"
+    },
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "LC_ALL": "C",
+      "TZ": "UTC",
+      "GIT_CONFIG_NOSYSTEM": "1",
+      "GIT_CONFIG_SYSTEM": "/dev/null",
+      "GIT_CONFIG_GLOBAL": "/dev/null",
+      "GIT_ATTR_NOSYSTEM": "1",
+      "GIT_TERMINAL_PROMPT": "0",
+      "GIT_AUTHOR_NAME": "Fixture Author",
+      "GIT_AUTHOR_EMAIL": "author@example.invalid",
+      "GIT_COMMITTER_NAME": "Fixture Committer",
+      "GIT_COMMITTER_EMAIL": "committer@example.invalid",
+      "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+0000",
+      "GIT_COMMITTER_DATE": "2001-02-03T04:05:06+0000"
+    },
+    "config": [
+      "core.autocrlf=false",
+      "core.filemode=false",
+      "core.quotePath=false",
+      "color.ui=false",
+      "commit.gpgSign=false",
+      "tag.gpgSign=false",
+      "commit.cleanup=verbatim",
+      "diff.algorithm=myers",
+      "diff.context=3",
+      "merge.conflictStyle=merge",
+      "merge.autoStash=false",
+      "rerere.enabled=false"
+    ],
+    "probes": {
+      "head": ["symbolic-ref", "--short", "HEAD"],
+      "refs": ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads/"],
+      "history": ["log", "--branches", "--topo-order", "--reverse", "--format=%H%x00%P%x00%s"],
+      "status": ["status", "--porcelain=v1", "--untracked-files=all"],
+      "stash": ["stash", "list", "--format=%gs"]
+    },
+    "inputsSha256": "7825ac2e3becbcd9e50d88b8f549bcac6c004edf2b7a5856e4516a82668d4b8b",
+    "casesSha256": "3e6fdde16a5cbd21a00b02ba5d67074651728fbe1405f6abbfcf5f64932b608c",
+    "normalization": "Compare all states and exit statuses. Compare stdout/stderr only for exact queries, replacing diff index blob IDs with <old>..<new>. Commit labels c1,c2,... follow first observation in reverse topological history. No dates or object IDs in expected state. Raw mutation diagnostics are provenance only; scratch paths become <repo>."
+  },
+  "cases": [
+    {
+      "id": "index-worktree",
+      "semantics": "Init an empty repository. Stage a spaced filename and text, commit, then distinguish staged, unstaged, untracked and deleted files. Log subjects and both diff views reflect the index. An empty commit fails without changing refs.",
+      "steps": [
+        {
+          "action": {
+            "kind": "git",
+            "argv": [
+              "init",
+              "--quiet",
+              "--initial-branch=main",
+              "--object-format=sha1",
+              "--template="
+            ],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {},
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {},
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "notes.txt",
+            "text": "one\ntwo\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "notes.txt": "one\ntwo\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "?? notes.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "spaced name.txt",
+            "text": "space\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "notes.txt": "one\ntwo\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "?? notes.txt\n?? \"spaced name.txt\"\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "?? notes.txt\n?? \"spaced name.txt\"\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "notes.txt": "one\ntwo\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "?? notes.txt\n?? \"spaced name.txt\"\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "?? notes.txt\n?? \"spaced name.txt\"\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "notes.txt", "spaced name.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "notes.txt": "one\ntwo\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "A  notes.txt\nA  \"spaced name.txt\"\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["diff", "--cached", "--no-ext-diff", "--no-color", "--no-prefix"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "diff --git notes.txt notes.txt\nnew file mode 100644\nindex <old>..<new>\n--- /dev/null\n+++ notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\ndiff --git spaced name.txt spaced name.txt\nnew file mode 100644\nindex <old>..<new>\n--- /dev/null\n+++ spaced name.txt\t\n@@ -0,0 +1 @@\n+space\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "notes.txt": "one\ntwo\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "A  notes.txt\nA  \"spaced name.txt\"\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "diff --git notes.txt notes.txt\nnew file mode 100644\nindex 0000000..814f4a4\n--- /dev/null\n+++ notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\ndiff --git spaced name.txt spaced name.txt\nnew file mode 100644\nindex 0000000..9495c3c\n--- /dev/null\n+++ spaced name.txt\t\n@@ -0,0 +1 @@\n+space\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "initial notes"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "notes.txt": "one\ntwo\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main (root-commit) 7e6d952] initial notes\n Author: Fixture Author <author@example.invalid>\n 2 files changed, 3 insertions(+)\n create mode 100644 notes.txt\n create mode 100644 spaced name.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "notes.txt",
+            "text": "one\nTWO\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "notes.txt": "one\nTWO\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": " M notes.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "notes.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "notes.txt": "one\nTWO\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "M  notes.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "notes.txt",
+            "text": "one\nTWO\nthree\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "MM notes.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "loose.txt",
+            "text": "untracked\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "MM notes.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "MM notes.txt\n?? loose.txt\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "MM notes.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "MM notes.txt\n?? loose.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["diff", "--exit-code", "--no-ext-diff", "--no-color", "--no-prefix"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 1,
+            "stdout": "diff --git notes.txt notes.txt\nindex <old>..<new> 100644\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,3 @@\n one\n TWO\n+three\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "MM notes.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 1,
+            "stdout": "diff --git notes.txt notes.txt\nindex 879de50..ddc897f 100644\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,3 @@\n one\n TWO\n+three\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["diff", "--cached", "--no-ext-diff", "--no-color", "--no-prefix"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "diff --git notes.txt notes.txt\nindex <old>..<new> 100644\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              }
+            },
+            "status": "MM notes.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "diff --git notes.txt notes.txt\nindex 814f4a4..879de50 100644\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "stage second line"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M notes.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main a76152f] stage second line\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": " M notes.txt\n?? loose.txt\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n",
+              "spaced name.txt": "space\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M notes.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": " M notes.txt\n?? loose.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "remove",
+            "path": "spaced name.txt"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M notes.txt\n D \"spaced name.txt\"\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "-u"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              }
+            },
+            "status": "M  notes.txt\nD  \"spaced name.txt\"\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "finish notes and remove spaced file"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "finish notes and remove spaced file",
+                "parents": ["c2"]
+              }
+            },
+            "status": "?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main 198e2b7] finish notes and remove spaced file\n Author: Fixture Author <author@example.invalid>\n 2 files changed, 1 insertion(+), 1 deletion(-)\n delete mode 100644 spaced name.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["log", "--format=%s"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "finish notes and remove spaced file\nstage second line\ninitial notes\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "finish notes and remove spaced file",
+                "parents": ["c2"]
+              }
+            },
+            "status": "?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "finish notes and remove spaced file\nstage second line\ninitial notes\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "empty commit must fail"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 1,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "finish notes and remove spaced file",
+                "parents": ["c2"]
+              }
+            },
+            "status": "?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 1,
+            "stdout": "On branch main\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\tloose.txt\n\nnothing added to commit but untracked files present (use \"git add\" to track)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "?? loose.txt\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "untracked\n",
+              "notes.txt": "one\nTWO\nthree\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "initial notes",
+                "parents": []
+              },
+              "c2": {
+                "subject": "stage second line",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "finish notes and remove spaced file",
+                "parents": ["c2"]
+              }
+            },
+            "status": "?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "?? loose.txt\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "branches-and-merges",
+      "semantics": "Create and list branches, checkout an existing branch and create one with -b. Fast-forward first, then merge independent changes with two parents. Checking out a missing branch fails and preserves files and refs.",
+      "steps": [
+        {
+          "action": {
+            "kind": "git",
+            "argv": [
+              "init",
+              "--quiet",
+              "--initial-branch=main",
+              "--object-format=sha1",
+              "--template="
+            ],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {},
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "base\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "?? story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "A  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "base"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main (root-commit) 52adaeb] base\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+)\n create mode 100644 story.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["branch", "feature"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c1",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["branch", "--list"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "  feature\n* main\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c1",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "  feature\n* main\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "feature"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "feature",
+            "refs": {
+              "refs/heads/feature": "c1",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": "Switched to branch 'feature'\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "feature.txt",
+            "text": "feature\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "story.txt": "base\n"
+            },
+            "head": "feature",
+            "refs": {
+              "refs/heads/feature": "c1",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "?? feature.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "feature.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "story.txt": "base\n"
+            },
+            "head": "feature",
+            "refs": {
+              "refs/heads/feature": "c1",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "A  feature.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "feature work"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "story.txt": "base\n"
+            },
+            "head": "feature",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[feature 18aecf6] feature work\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+)\n create mode 100644 feature.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "main"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": "Switched to branch 'main'\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["merge", "--ff-only", "feature"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "Updating 52adaeb..18aecf6\nFast-forward\n feature.txt | 1 +\n 1 file changed, 1 insertion(+)\n create mode 100644 feature.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "-b", "side"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "story.txt": "base\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": "Switched to a new branch 'side'\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "side.txt",
+            "text": "side\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "?? side.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "side.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "A  side.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "side work"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[side 1e27b71] side work\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+)\n create mode 100644 side.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "main"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": "Switched to branch 'main'\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "main.txt",
+            "text": "main\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "?? main.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "main.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c2",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "A  main.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "main work"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c4",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              },
+              "c4": {
+                "subject": "main work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main a926413] main work\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+)\n create mode 100644 main.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["merge", "--no-ff", "side", "-m", "combine independent changes"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c5",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "main work",
+                "parents": ["c2"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              },
+              "c5": {
+                "subject": "combine independent changes",
+                "parents": ["c4", "c3"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "Merge made by the 'ort' strategy.\n side.txt | 1 +\n 1 file changed, 1 insertion(+)\n create mode 100644 side.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["log", "--first-parent", "--format=%s"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "combine independent changes\nmain work\nfeature work\nbase\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c5",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "main work",
+                "parents": ["c2"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              },
+              "c5": {
+                "subject": "combine independent changes",
+                "parents": ["c4", "c3"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "combine independent changes\nmain work\nfeature work\nbase\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "missing"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 1,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c5",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "main work",
+                "parents": ["c2"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              },
+              "c5": {
+                "subject": "combine independent changes",
+                "parents": ["c4", "c3"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 1,
+            "stdout": "",
+            "stderr": "error: pathspec 'missing' did not match any file(s) known to git\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "feature.txt": "feature\n",
+              "main.txt": "main\n",
+              "side.txt": "side\n",
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/feature": "c2",
+              "refs/heads/main": "c5",
+              "refs/heads/side": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "feature work",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "main work",
+                "parents": ["c2"]
+              },
+              "c3": {
+                "subject": "side work",
+                "parents": ["c2"]
+              },
+              "c5": {
+                "subject": "combine independent changes",
+                "parents": ["c4", "c3"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "conflict-and-recovery",
+      "semantics": "Conflicting edits produce exit 1, UU index state and conflict markers. Merge --abort restores the pre-merge files and refs. Retry, edit the resolution, add and commit to finish a two-parent merge.",
+      "steps": [
+        {
+          "action": {
+            "kind": "git",
+            "argv": [
+              "init",
+              "--quiet",
+              "--initial-branch=main",
+              "--object-format=sha1",
+              "--template="
+            ],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {},
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "base\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "?? story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "A  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "base"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main (root-commit) 52adaeb] base\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+)\n create mode 100644 story.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "-b", "side"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": "Switched to a new branch 'side'\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "side\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "side\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "side\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "M  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "side changes story"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "side\n"
+            },
+            "head": "side",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[side aba892e] side changes story\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["checkout", "main"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": "Switched to branch 'main'\n"
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "main\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "main\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "main\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "M  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "main changes story"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "main\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main 145c55e] main changes story\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["merge", "side", "-m", "attempt story merge"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 1,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "<<<<<<< HEAD\nmain\n=======\nside\n>>>>>>> side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "UU story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 1,
+            "stdout": "Auto-merging story.txt\nCONFLICT (content): Merge conflict in story.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "UU story.txt\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "<<<<<<< HEAD\nmain\n=======\nside\n>>>>>>> side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "UU story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "UU story.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["merge", "--abort"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "main\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "main\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["merge", "side", "-m", "resolve story merge"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 1,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "<<<<<<< HEAD\nmain\n=======\nside\n>>>>>>> side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "UU story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 1,
+            "stdout": "Auto-merging story.txt\nCONFLICT (content): Merge conflict in story.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "main and side\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "main and side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "UU story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "main and side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              }
+            },
+            "status": "M  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "resolve story merge"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "main and side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c4",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "resolve story merge",
+                "parents": ["c3", "c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main 8dcbf5b] resolve story merge\n Author: Fixture Author <author@example.invalid>\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["log", "--first-parent", "--format=%s"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "resolve story merge\nmain changes story\nbase\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "main and side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c4",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "resolve story merge",
+                "parents": ["c3", "c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "resolve story merge\nmain changes story\nbase\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "main and side\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c4",
+              "refs/heads/side": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c3": {
+                "subject": "main changes story",
+                "parents": ["c1"]
+              },
+              "c2": {
+                "subject": "side changes story",
+                "parents": ["c1"]
+              },
+              "c4": {
+                "subject": "resolve story merge",
+                "parents": ["c3", "c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "stash-index-and-untracked",
+      "semantics": "Stash -u saves staged, unstaged and untracked files and cleans the worktree. Pop --index restores all three and drops the entry. Apply --index retains an entry until drop. An empty stash push creates no entry.",
+      "steps": [
+        {
+          "action": {
+            "kind": "git",
+            "argv": [
+              "init",
+              "--quiet",
+              "--initial-branch=main",
+              "--object-format=sha1",
+              "--template="
+            ],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {},
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "base\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "?? story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {},
+            "history": {},
+            "status": "A  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "base"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main (root-commit) 52adaeb] base\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+)\n create mode 100644 story.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "staged\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "staged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "staged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "M  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "staged\nunstaged\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "MM story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "loose.txt",
+            "text": "keep me\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "MM story.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "push", "-u", "-m", "shelved work"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": ["On main: shelved work"]
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "Saved working directory and index state On main: shelved work\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "list", "--format=%gs"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "On main: shelved work\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": ["On main: shelved work"]
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "On main: shelved work\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "story.txt": "base\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "",
+            "stash": ["On main: shelved work"]
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "pop", "--index"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "MM story.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "On branch main\nChanges to be committed:\n  (use \"git restore --staged <file>...\" to unstage)\n\tmodified:   story.txt\n\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   story.txt\n\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\tloose.txt\n\nDropped refs/stash@{0} (6989cc720583d6584903fd22fb1d8ff0fe5c2a73)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "MM story.txt\n?? loose.txt\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "MM story.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "MM story.txt\n?? loose.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["diff", "--cached", "--no-ext-diff", "--no-color", "--no-prefix"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "diff --git story.txt story.txt\nindex <old>..<new> 100644\n--- story.txt\n+++ story.txt\n@@ -1 +1 @@\n-base\n+staged\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "MM story.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "diff --git story.txt story.txt\nindex df967b9..19d9cc8 100644\n--- story.txt\n+++ story.txt\n@@ -1 +1 @@\n-base\n+staged\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["diff", "--no-ext-diff", "--no-color", "--no-prefix"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "diff --git story.txt story.txt\nindex <old>..<new> 100644\n--- story.txt\n+++ story.txt\n@@ -1 +1,2 @@\n staged\n+unstaged\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "MM story.txt\n?? loose.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "diff --git story.txt story.txt\nindex 19d9cc8..b97ac3c 100644\n--- story.txt\n+++ story.txt\n@@ -1 +1,2 @@\n staged\n+unstaged\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt", "loose.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c1"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              }
+            },
+            "status": "A  loose.txt\nM  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "restored work"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main 3575346] restored work\n Author: Fixture Author <author@example.invalid>\n 2 files changed, 3 insertions(+), 1 deletion(-)\n create mode 100644 loose.txt\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "write",
+            "path": "story.txt",
+            "text": "another change\n"
+          },
+          "expected": null,
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": []
+          },
+          "oracle": null
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "push", "-m", "apply separately"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "staged\nunstaged\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "",
+            "stash": ["On main: apply separately"]
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "Saved working directory and index state On main: apply separately\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "apply", "--index"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": ["On main: apply separately"]
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "On branch main\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   story.txt\n\nno changes added to commit (use \"git add\" and/or \"git commit -a\")\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "list", "--format=%gs"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "On main: apply separately\n",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": ["On main: apply separately"]
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "On main: apply separately\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "drop"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": " M story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "Dropped refs/stash@{0} (07524590f1a84881513a8e411d855aa825ca84d4)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["add", "story.txt"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c2"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              }
+            },
+            "status": "M  story.txt\n",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["commit", "-m", "applied work"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "applied work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "[main 6018376] applied work\n Author: Fixture Author <author@example.invalid>\n 1 file changed, 1 insertion(+), 2 deletions(-)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "push", "-m", "nothing to save"],
+            "output": "exit-only"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": null,
+            "stderr": null
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "applied work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "No local changes to save\n",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["stash", "list", "--format=%gs"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "applied work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        },
+        {
+          "action": {
+            "kind": "git",
+            "argv": ["status", "--porcelain=v1", "--untracked-files=all"],
+            "output": "exact"
+          },
+          "expected": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          },
+          "state": {
+            "files": {
+              "loose.txt": "keep me\n",
+              "story.txt": "another change\n"
+            },
+            "head": "main",
+            "refs": {
+              "refs/heads/main": "c3"
+            },
+            "history": {
+              "c1": {
+                "subject": "base",
+                "parents": []
+              },
+              "c2": {
+                "subject": "restored work",
+                "parents": ["c1"]
+              },
+              "c3": {
+                "subject": "applied work",
+                "parents": ["c2"]
+              }
+            },
+            "status": "",
+            "stash": []
+          },
+          "oracle": {
+            "status": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,282 @@
+{
+  "schema": 1,
+  "capturedAt": "2026-10-26T07:54:18.975Z",
+  "oracle": {
+    "bash": {
+      "version": "GNU bash, version 5.3.15(1)-release (x86_64-pc-linux-gnu)",
+      "sha256": "575e03ac834b739349a4484de481abcd06a6f7193cefc795260a32a1943f20a5"
+    },
+    "sort": {
+      "version": "sort (GNU coreutils) 9.12",
+      "sha256": "16eaf3cb72ff0563b26ceebd2b0057d137833765fe22d9109faa675ad08eb15b"
+    },
+    "uniq": {
+      "version": "uniq (GNU coreutils) 9.12",
+      "sha256": "2b04b14dd0772a95955df23148c4c5130a10cacd10269b2471ccbd20ad1ab922"
+    }
+  },
+  "bashPackage": {
+    "name": "bash-5.3.15-1-x86_64.pkg.tar.zst",
+    "sha256": "2c14ce3c72790ec6b344267b39f04f921bbb34f0c1399460e71492547f6b6c65"
+  },
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/home/user",
+    "LC_ALL": "C",
+    "TMPDIR": "/tmp"
+  },
+  "cases": [
+    {
+      "name": "sort default",
+      "script": "printf 'pear\\napple\\npear\\n' | sort",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 112, 112, 108, 101, 10, 112, 101, 97, 114, 10, 112, 101, 97, 114, 10],
+      "native": {
+        "program": "sort",
+        "args": [],
+        "stdin": [112, 101, 97, 114, 10, 97, 112, 112, 108, 101, 10, 112, 101, 97, 114, 10]
+      }
+    },
+    {
+      "name": "sort numeric",
+      "script": "printf '10\\n2\\n-3\\n2.5\\n' | sort -n",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [45, 51, 10, 50, 10, 50, 46, 53, 10, 49, 48, 10],
+      "native": {
+        "program": "sort",
+        "args": ["-n"],
+        "stdin": [49, 48, 10, 50, 10, 45, 51, 10, 50, 46, 53, 10]
+      }
+    },
+    {
+      "name": "sort reverse",
+      "script": "printf 'b\\na\\nc' | sort -r",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [99, 10, 98, 10, 97, 10],
+      "native": {
+        "program": "sort",
+        "args": ["-r"],
+        "stdin": [98, 10, 97, 10, 99]
+      }
+    },
+    {
+      "name": "sort unique",
+      "script": "printf 'b\\na\\nb' | sort -u",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10],
+      "native": {
+        "program": "sort",
+        "args": ["-u"],
+        "stdin": [98, 10, 97, 10, 98]
+      }
+    },
+    {
+      "name": "sort numeric reverse unique",
+      "script": "printf '10\\n2\\n2\\n-3' | sort -nru",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [49, 48, 10, 50, 10, 45, 51, 10],
+      "native": {
+        "program": "sort",
+        "args": ["-nru"],
+        "stdin": [49, 48, 10, 50, 10, 50, 10, 45, 51]
+      }
+    },
+    {
+      "name": "sort empty",
+      "script": "printf '' | sort",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [],
+      "native": {
+        "program": "sort",
+        "args": [],
+        "stdin": []
+      }
+    },
+    {
+      "name": "sort unterminated",
+      "script": "printf last | sort",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [108, 97, 115, 116, 10]
+    },
+    {
+      "name": "sort relative files",
+      "script": "printf 'b\\na' > input; sort input",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10]
+    },
+    {
+      "name": "sort output file",
+      "script": "printf 'b\\na' > input; sort -o output input; sort output",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10]
+    },
+    {
+      "name": "sort check failure",
+      "script": "printf 'b\\na\\n' | sort -c",
+      "status": 1,
+      "stderrPresent": true,
+      "stdout": [],
+      "native": {
+        "program": "sort",
+        "args": ["-c"],
+        "stdin": [98, 10, 97, 10]
+      }
+    },
+    {
+      "name": "sort missing file",
+      "script": "sort missing",
+      "status": 2,
+      "stderrPresent": true,
+      "stdout": []
+    },
+    {
+      "name": "sort invalid option",
+      "script": "sort --not-an-option",
+      "status": 2,
+      "stderrPresent": true,
+      "stdout": []
+    },
+    {
+      "name": "sort buffer hint",
+      "script": "printf 'c\\nb\\na\\n' | sort -S 1b -T /tmp",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10, 99, 10],
+      "native": {
+        "program": "sort",
+        "args": ["-S", "1b", "-T", "/tmp"],
+        "stdin": [99, 10, 98, 10, 97, 10]
+      }
+    },
+    {
+      "name": "uniq adjacent only",
+      "script": "printf 'a\\na\\nb\\na' | uniq",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10, 97, 10],
+      "native": {
+        "program": "uniq",
+        "args": [],
+        "stdin": [97, 10, 97, 10, 98, 10, 97]
+      }
+    },
+    {
+      "name": "uniq counts",
+      "script": "printf 'a\\na\\nb\\n' | uniq -c",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [32, 32, 32, 32, 32, 32, 50, 32, 97, 10, 32, 32, 32, 32, 32, 32, 49, 32, 98, 10],
+      "native": {
+        "program": "uniq",
+        "args": ["-c"],
+        "stdin": [97, 10, 97, 10, 98, 10]
+      }
+    },
+    {
+      "name": "uniq repeated",
+      "script": "printf 'a\\na\\nb\\nb\\nc' | uniq -d",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10],
+      "native": {
+        "program": "uniq",
+        "args": ["-d"],
+        "stdin": [97, 10, 97, 10, 98, 10, 98, 10, 99]
+      }
+    },
+    {
+      "name": "uniq unique",
+      "script": "printf 'a\\na\\nb' | uniq -u",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [98, 10],
+      "native": {
+        "program": "uniq",
+        "args": ["-u"],
+        "stdin": [97, 10, 97, 10, 98]
+      }
+    },
+    {
+      "name": "uniq empty",
+      "script": "printf '' | uniq",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [],
+      "native": {
+        "program": "uniq",
+        "args": [],
+        "stdin": []
+      }
+    },
+    {
+      "name": "uniq unterminated",
+      "script": "printf last | uniq",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [108, 97, 115, 116, 10]
+    },
+    {
+      "name": "uniq file",
+      "script": "printf 'a\\na\\nb' > input; uniq input",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10]
+    },
+    {
+      "name": "uniq output file",
+      "script": "printf 'a\\na\\nb' > input; uniq input output; uniq output",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [97, 10, 98, 10]
+    },
+    {
+      "name": "uniq case insensitive",
+      "script": "printf 'A\\na\\nb' | uniq -i",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [65, 10, 98, 10],
+      "native": {
+        "program": "uniq",
+        "args": ["-i"],
+        "stdin": [65, 10, 97, 10, 98]
+      }
+    },
+    {
+      "name": "uniq missing file",
+      "script": "uniq missing",
+      "status": 1,
+      "stderrPresent": true,
+      "stdout": []
+    },
+    {
+      "name": "uniq invalid option",
+      "script": "uniq --not-an-option",
+      "status": 1,
+      "stderrPresent": true,
+      "stdout": []
+    },
+    {
+      "name": "sort uniq pipeline",
+      "script": "printf 'b\\na\\nb\\na\\nb' | sort | uniq -c",
+      "status": 0,
+      "stderrPresent": false,
+      "stdout": [32, 32, 32, 32, 32, 32, 50, 32, 97, 10, 32, 32, 32, 32, 32, 32, 51, 32, 98, 10]
+    }
+  ],
+  "capture": {
+    "shellArgs": ["--noprofile", "--norc", "-c", "<script>"],
+    "cwd": "fresh private empty directory per case",
+    "stdoutEncoding": "unsigned byte array, no normalization",
+    "stderrComparison": "presence only",
+    "nativeInputs": "derived from the unchanged single printf-to-program scripts; no extra oracle runs"
+  }
+}

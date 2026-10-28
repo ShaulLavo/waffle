@@ -1,0 +1,13 @@
+{
+  "schema": "waffle-program-transfer/v1",
+  "family": "findutils",
+  "sourceCheckout": "/work/worktrees/waffle-programs-findutils-20261027/build-callers",
+  "sourceCommit": "957c3f805aff00e75b77c2c6cd2cc4b0493d378e",
+  "sourcePaths": [
+    "packages/findutils"
+  ],
+  "targetPaths": [
+    "packages/findutils"
+  ],
+  "installerContract": "waffle/programs ProgramPackage; supplied by Waffle runtime PR163"
+}

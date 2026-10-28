@@ -1,0 +1,20 @@
+{
+  "status": "provisional-source-data-not-an-install-manifest",
+  "pathContract": "Activate paths and aliases only with the real Waffle install API; no public package scope is claimed.",
+  "programs": {
+    "find": {
+      "path": "/usr/bin/find",
+      "aliases": ["/bin/find"],
+      "execution": "wasi",
+      "source": "vendor/uutils-find",
+      "limits": ["reject -exec/-execdir/-ok/-okdir", "no access/ownership/mount/permission predicates"]
+    },
+    "xargs": {
+      "path": "/usr/bin/xargs",
+      "aliases": ["/bin/xargs"],
+      "execution": "wasi",
+      "source": "vendor/uutils-xargs",
+      "limits": ["echo-only", "reject explicit commands/replacement/parallelism"]
+    }
+  }
+}

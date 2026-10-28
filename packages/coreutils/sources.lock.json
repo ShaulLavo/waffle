@@ -1,0 +1,40 @@
+{
+  "shellCutTrQualification": {
+    "classification": "Original additive cut/tr usage observations. GNU Bash and GNU coreutils are behavior oracles; no implementation copied.",
+    "recorder": "scripts/record-cut-tr.ts",
+    "fixture": {
+      "path": "scripts/owned-fixtures/cut-tr.json",
+      "sha256": "570bc21ba9b602cff273a164b6077521da0418d81703a2c74a404e1de3da4129"
+    },
+    "oracle": {
+      "bash": {
+        "version": "GNU bash, version 5.3.15(1)-release (x86_64-pc-linux-gnu)",
+        "sha256": "575e03ac834b739349a4484de481abcd06a6f7193cefc795260a32a1943f20a5"
+      },
+      "cut": {
+        "version": "cut (GNU coreutils) 9.12",
+        "sha256": "8c6f5f8f8c47ed43982033a1a78120a59c32b3010ca63f850e0fb0df8df131cd"
+      },
+      "tr": {
+        "version": "tr (GNU coreutils) 9.12",
+        "sha256": "88f5bf7637963cf5973872526423aee1785a2b9cca2de944a5738de5cb8254cd"
+      }
+    },
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/tmp/spec",
+      "LC_ALL": "C"
+    },
+    "bashPackage": {
+      "name": "Arch Linux bash 5.3.15-1 x86_64",
+      "sha256": "2c14ce3c72790ec6b344267b39f04f921bbb34f0c1399460e71492547f6b6c65",
+      "signingFingerprint": "5B7E3FB71B7F10329A1C03AB771DF6627EDF681F"
+    },
+    "runners": [
+      "scripts/test-own-shell-cut.ts",
+      "tests/cut.spec.ts",
+      "tests/cut-tr-recording.unit.ts"
+    ],
+    "discovery": "Existing scoreboard filename discovery, runtime unit-test discovery, and Playwright spec discovery. Both comparison runners replay the same committed stdout bytes, status and stderr presence. Missing, reordered, changed or extra cases fail. Existing protected fixtures and scoring are unchanged. Standalone cut extraction executes only the 24 cut-prefixed observations; the original 45-case recording is retained byte-for-byte as historical evidence. Tr and combined execution remain parked in PR133."
+  }
+}

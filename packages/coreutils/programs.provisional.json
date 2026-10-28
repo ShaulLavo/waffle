@@ -1,0 +1,24 @@
+{
+  "status": "provisional-source-data-not-an-install-manifest",
+  "pathContract": "Activate canonical paths and aliases only with Waffle step 2; every alias names this one program source.",
+  "programs": {
+    "cat": { "path": "/usr/bin/cat", "aliases": ["/bin/cat"], "execution": "cooperative", "feature": "cooperative-wasi" },
+    "cp": { "path": "/usr/bin/cp", "aliases": ["/bin/cp"], "execution": "wasi" },
+    "cut": { "path": "/usr/bin/cut", "aliases": ["/bin/cut"], "execution": "wasi", "crate": "crates/cut" },
+    "env": { "path": "/usr/bin/env", "aliases": ["/bin/env"], "execution": "wasi", "source": "qualified-env-95827ca4ef80e367bf0eef7b548b6a58683c8719" },
+    "head": { "path": "/usr/bin/head", "aliases": ["/bin/head"], "execution": "wasi" },
+    "ls": { "path": "/usr/bin/ls", "aliases": ["/bin/ls"], "execution": "wasi" },
+    "mkdir": { "path": "/usr/bin/mkdir", "aliases": ["/bin/mkdir"], "execution": "cooperative", "feature": "cooperative-wasi" },
+    "mv": { "path": "/usr/bin/mv", "aliases": ["/bin/mv"], "execution": "wasi" },
+    "rm": { "path": "/usr/bin/rm", "aliases": ["/bin/rm"], "execution": "wasi" },
+    "seq": { "path": "/usr/bin/seq", "aliases": ["/bin/seq"], "execution": "cooperative", "feature": "cooperative-wasi" },
+    "sort": { "path": "/usr/bin/sort", "aliases": ["/bin/sort"], "execution": "wasi" },
+    "tail": { "path": "/usr/bin/tail", "aliases": ["/bin/tail"], "execution": "cooperative", "feature": "cooperative-wasi" },
+    "touch": { "path": "/usr/bin/touch", "aliases": ["/bin/touch"], "execution": "wasi" },
+    "tr": { "path": "/usr/bin/tr", "aliases": ["/bin/tr"], "execution": "wasi", "crate": "crates/tr" },
+    "uniq": { "path": "/usr/bin/uniq", "aliases": ["/bin/uniq"], "execution": "wasi" },
+    "wc": { "path": "/usr/bin/wc", "aliases": ["/bin/wc"], "execution": "wasi-scalar", "crate": "crates/wc" },
+    "which": { "path": "/usr/bin/which", "aliases": ["/bin/which"], "execution": "wasi" },
+    "clear": { "path": "/usr/bin/clear", "aliases": ["/bin/clear"], "execution": "wasi", "crate": "crates/clear" }
+  }
+}

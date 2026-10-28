@@ -30,6 +30,7 @@ jobs:
       grep: ${{ steps.paths.outputs.grep }}
       ripgrep: ${{ steps.paths.outputs.ripgrep }}
       base: ${{ steps.paths.outputs.base }}
+      programs: ${{ steps.paths.outputs.programs }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -83,6 +84,25 @@ jobs:
               - ".github/**"
               - "packages/waffle/**"
               - "packages/base/**"
+            programs:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "tools/**"
+              - "packages/waffle/**"
+              - "packages/program-support/**"
+              - "packages/process-consumer/**"
+              - "packages/coreutils/**"
+              - "packages/grep/**"
+              - "packages/findutils/**"
+              - "packages/sed/**"
+              - "packages/ripgrep/**"
+              - "packages/base/**"
+              - "packages/python/**"
+              - "packages/git/**"
             browser:
               - ".github/**"
               - "packages/waffle/Cargo.toml"
@@ -357,3 +377,36 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run build
+  programs:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip1
+          components: rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run programs:check
+      - run: bun run programs:tools
+      - run: bun run programs:routes
+      - run: bun run programs:source
+      - run: bun run --cwd packages/python test:composition
+      - run: bun run --cwd packages/python test:build
+      - run: bun run --cwd packages/python test:unit
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source

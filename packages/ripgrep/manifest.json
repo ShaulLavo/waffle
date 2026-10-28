@@ -1,0 +1,26 @@
+{
+  "schema": "search-family-source-candidate/v1",
+  "family": "ripgrep",
+  "programs": [
+    {
+      "name": "rg",
+      "execution": "ordinary WASI source bytes",
+      "currentBashPath": "/bin/rg",
+      "plannedWafflePath": "/usr/bin/rg",
+      "aliases": "pending Waffle contract; none invented",
+      "asset": "rg.wasm"
+    }
+  ],
+  "packageName": null,
+  "exports": null,
+  "status": "Provisional. Waffle step 1 package layout and step 2 install API are pending.",
+  "source": "generated only at build time from pinned archive; no generated source is retained",
+  "buildRecipe": "build-recipe.json",
+  "sourceVerifier": "scripts/test-rg-source.ts",
+  "tests": [
+    "scripts/test-rg-source.ts",
+    "scripts/test-rg-wasi.ts",
+    "provenance/bash/tests/rg.spec.ts"
+  ],
+  "sharedBuildTools": "Future Waffle shared build-tools owner; no helper copy in this candidate."
+}

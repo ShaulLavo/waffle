@@ -1,0 +1,23 @@
+{
+  "files": [
+    "dist/env.wasm",
+    "dist/clear.wasm",
+    "dist/cat.wasm",
+    "dist/cut.wasm",
+    "dist/tr.wasm",
+    "dist/head.wasm",
+    "dist/which.wasm",
+    "dist/ls.wasm",
+    "dist/mkdir.wasm",
+    "dist/seq.wasm",
+    "dist/sort.wasm",
+    "dist/tail.wasm",
+    "dist/uniq.wasm",
+    "dist/wc.wasm",
+    "dist/touch.wasm",
+    "dist/rm.wasm",
+    "dist/cp.wasm",
+    "dist/mv.wasm",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "sourceRepository": "github.com/ShaulLavo/bash-web",
+  "sourceRevision": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+  "sourceIncludesClear": true,
+  "approvedBaseCheckpoint": "d9601fd622d86a8dcc2abc9231cb70b6a54c3af5",
+  "envRefresh": {
+    "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719",
+    "sourceTree": "c91b1ce2581c53240df77388f56ec122abc27bda",
+    "qualifiedWaffleRevision": "d3050e73914b7ed4cd72010f72047cce383e2f29",
+    "paths": ["third-party/uutils-env", "shell/wasi-process/src", "shell/wasi-process/tests/codec.rs"],
+    "adaptations": ["shell-wasi-process to waffle-process-consumer", "shell_wasi_process to waffle_process_consumer", "relative crate source path"]
+  },
+  "destination": "future waffle/packages/coreutils, program-support and process-consumer",
+  "maintainedTransfer": {
+    "manifest": "maintained-transfer.json",
+    "mixedRecords": "integration-transfer.json",
+    "callerWiring": "caller-wiring.json",
+    "sharedBuildToolsCandidate": "74490abce8067d3d23b857d9774ba4f235f43a1d",
+    "buildRoutes": "wired through ../../../tools/program-build-tools.ts with explicit monorepo and packages/waffle roots at .build/coreutils",
+    "generatedNotices": "scripts/notices.mjs"
+  },
+  "classification": "relocated source with crate/import boundary adaptations",
+  "upstream": {
+    "coreutils0.13": "07763857f6b9a547742a994b58aef0ccd036198b",
+    "coreutils0.12": "dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69",
+    "bytecount": "0.6.9 with retained scalar wasm32 simd128 guard",
+    "licenses": "MIT original/uutils; bytecount MIT OR Apache-2.0"
+  },
+  "excludedFamilies": ["grep", "find", "xargs", "sed", "ripgrep", "python", "git"],
+  "excludedBashCode": [
+    "register_in_process and InProcessHost",
+    "parser, interpreter, State, Session and Limits",
+    "ProcessHost, shell process groups and shell job cleanup",
+    "Bash host, runtime and worker implementations"
+  ],
+  "receipts": [
+    "env.source.json",
+    "file-operations.source.json",
+    "ls-upstream.json",
+    "../vendor/uutils-env/provenance.json",
+    "../crates/wc/vendor/bytecount"
+  ],
+  "historicalPathPolicy": "Receipt paths and hashes remain historical source identities; do not rewrite frozen observations or upstream revisions."
+}

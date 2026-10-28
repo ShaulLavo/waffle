@@ -1,0 +1,13 @@
+{
+  "schema": "waffle-program-transfer/v1",
+  "family": "grep",
+  "sourceCheckout": "/work/worktrees/waffle-programs-grep-20261027/build-callers",
+  "sourceCommit": "9084dcca7cc6c6fdf8be02b8ceaa5841bc47156f",
+  "sourcePaths": [
+    "packages/grep"
+  ],
+  "targetPaths": [
+    "packages/grep"
+  ],
+  "installerContract": "waffle/programs ProgramPackage; supplied by Waffle runtime PR163"
+}

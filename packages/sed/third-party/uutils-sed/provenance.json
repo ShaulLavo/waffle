@@ -1,0 +1,42 @@
+{
+  "repository": "https://github.com/uutils/sed",
+  "revision": "301a2b7ca14e62c687cc4904798d5c72a54ade8f",
+  "archiveSha256": "aee9b0bdf8c05a686d88ff3e8c3b073a3f9a2624102669fb7978c340942a0d79",
+  "patch": "wasi.patch",
+  "upstreamFiles": {
+    "src/bin/sed.rs": "4c727da884bab20f980e7881024087bda412ba1920da8b67b2374e2bb6137c29",
+    "src/lib.rs": "a96ca424608e1227c96edd16d259018057c95b5ad55e9704535d81b57ed40f4f",
+    "src/sed/command.rs": "cd181e4c5141b3875bb96a11fb0ca8f18682d90932de671105ac2f9c0bfa1393",
+    "src/sed/compiler.rs": "40deab9acf400d1743154a144207e64d3d27828ac3106d344494c6c04d38057f",
+    "src/sed/delimited_parser.rs": "098ecb4b858868225b8a10e02f5ad6c82b9ec416015864a65449648a4f1f520d",
+    "src/sed/error_handling.rs": "e45e1e2e7d7f971cf81b990a8fabd1e59cbfb14d74441b298e476699bbb2a155",
+    "src/sed/fast_io.rs": "d33848abce3e4833efaff2072ac05a9f10b03b718b4c4e5a057cacd43995ad58",
+    "src/sed/fast_regex.rs": "7a631186676cfcf8412244255eb5f0da5067b00ee8a4d78dbc9d6d891ae00dff",
+    "src/sed/in_place.rs": "9f5f4f9bf2ba4f32c74bced3aad0db0462ab999f559987453af1b7597a57b9fd",
+    "src/sed/main.rs": "606f7d7d5179724e9251accbd5311a4d45e54f39329c5ffde919837a350da3a7",
+    "src/sed/mod.rs": "0daafc4c5088b735069d2606d23f5a478015d803a08a154aaf1b46a7efa9fd87",
+    "src/sed/named_reader.rs": "79402d299e2694357b3740970cfaa9653c1b0e2fde147e9c436a457c1ed99a46",
+    "src/sed/named_writer.rs": "805eae623e8bf695b6e6887117df646f7709ef415b70253e37d37e8e5769cbb3",
+    "src/sed/processor.rs": "230cf7d646672b0d3ba21bd57690462f99d67907086c5040f11efac4a146803c",
+    "src/sed/script_char_provider.rs": "18f2a5ff3c6abac955ff309e62fb0fa2485804eff18e3aa263c860f2df3227a6",
+    "src/sed/script_line_provider.rs": "537ba9fef41df220deb1f42b30179ce5573fffaf192819f1e3cce5c23bf04e0d"
+  },
+  "files": {
+    "src/bin/sed.rs": "4c727da884bab20f980e7881024087bda412ba1920da8b67b2374e2bb6137c29",
+    "src/lib.rs": "a96ca424608e1227c96edd16d259018057c95b5ad55e9704535d81b57ed40f4f",
+    "src/sed/command.rs": "cd181e4c5141b3875bb96a11fb0ca8f18682d90932de671105ac2f9c0bfa1393",
+    "src/sed/compiler.rs": "494a4665c92b07cb8be7b53276d851a8a8e58f28e3c74772bfe48fdefcb41d78",
+    "src/sed/delimited_parser.rs": "098ecb4b858868225b8a10e02f5ad6c82b9ec416015864a65449648a4f1f520d",
+    "src/sed/error_handling.rs": "e45e1e2e7d7f971cf81b990a8fabd1e59cbfb14d74441b298e476699bbb2a155",
+    "src/sed/fast_io.rs": "d33848abce3e4833efaff2072ac05a9f10b03b718b4c4e5a057cacd43995ad58",
+    "src/sed/fast_regex.rs": "7a631186676cfcf8412244255eb5f0da5067b00ee8a4d78dbc9d6d891ae00dff",
+    "src/sed/in_place.rs": "9f5f4f9bf2ba4f32c74bced3aad0db0462ab999f559987453af1b7597a57b9fd",
+    "src/sed/main.rs": "606f7d7d5179724e9251accbd5311a4d45e54f39329c5ffde919837a350da3a7",
+    "src/sed/mod.rs": "fb8d0d7d66900d4a4ad1202110afd087ad81a89e4f859ae4b1f6c7f892c9ddcb",
+    "src/sed/named_reader.rs": "79402d299e2694357b3740970cfaa9653c1b0e2fde147e9c436a457c1ed99a46",
+    "src/sed/named_writer.rs": "29d3d982b525380e158a9d3186b077fe6bd64a40ef3ef964ab6d8ac507387c60",
+    "src/sed/processor.rs": "230cf7d646672b0d3ba21bd57690462f99d67907086c5040f11efac4a146803c",
+    "src/sed/script_char_provider.rs": "18f2a5ff3c6abac955ff309e62fb0fa2485804eff18e3aa263c860f2df3227a6",
+    "src/sed/script_line_provider.rs": "537ba9fef41df220deb1f42b30179ce5573fffaf192819f1e3cce5c23bf04e0d"
+  }
+}

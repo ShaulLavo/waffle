@@ -1,0 +1,41 @@
+{
+  "repository": "https://github.com/python/cpython.git",
+  "annotated_tag_object": "a4ed3466611d5941876ff91610601eb29543a5ff",
+  "archive_sha256": "8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de",
+  "archive_size": 27960396,
+  "archive_url": "https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz",
+  "commit_tree": "dd16465b91a6d7da5fb5ea3bc5be7558585b9b34",
+  "peeled_commit": "5e58eaad7c58df58dfa8ea549c87996e01dd1077",
+  "release": "CPython 3.15.2 final",
+  "sbom_sha256": "d2c26cfc418b268180009e8f3bc4261cbe1aeb4662ee7bb92b6d9624583e6c1c",
+  "sbom_url": "https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz.spdx.json",
+  "tag": "v3.15.2",
+  "appliedPatches": [
+    {
+      "path": "patches/cpython-wasi-cwd.patch",
+      "target": "Modules/main.c",
+      "sha256": "b85dda59d0aef994c3e2b9b1cf09bd2f121d31c79363094ed638051965773c1b",
+      "upstreamSha256": "724ebf378f2d33974ed8342d3ffba755ddbf6d9b14e0253563ca28e6190c5adc",
+      "patchedSha256": "ce326dfb6fa4843c26b120cbaee8d8ed5e108be5eafd620be113b3776faf0ec5"
+    }
+  ],
+  "sourceCorrespondence": {
+    "Doc/license.rst": "0d4c04850f7320219853c3c9d20cf9d2c6916524030e147f220f2b96b5ae8aeb",
+    "LICENSE": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+    "Lib/ensurepip/__init__.py": "1344169d86bb3b1aeab0f7d3c06b2dd0b58a3fc574b30110711fd2dfc66e1df0",
+    "Lib/ensurepip/_bundled/pip-26.2.2-py3-none-any.whl": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
+    "Lib/site.py": "687f54712e5df424dccdb399cd2b73be88507797801db7ee38f17dd79de62666",
+    "Lib/test/wheeldata/setuptools-79.0.1-py3-none-any.whl": "e147c0549f27767ba362f9da434eab9c5dc0045d5304feb602a0af001089fc51",
+    "Makefile.pre.in": "918d2a0cbc564ed4e3f72a3bf7b1afa41c570b2a328fc0095f14fe9573433ea9",
+    "Modules/Setup.stdlib.in": "809bed0e86aec14d1f0e110ebb1e69e425e116bb749cd923fe43623d1018bd0b",
+    "Modules/getpath.py": "845767e82ed6f75533ee8b5aec7b294ffbe659aa9598a3bb21715db2d5597cba",
+    "Platforms/WASI/__main__.py": "22d631980e81e07bb63bd5d46dc8729fad87015339cb5047dfe442cc409bfd75",
+    "Platforms/WASI/_build.py": "06e8a9929f950c9c050b8164423031b890062b0a9615b260e06ec3b7222b33c2",
+    "Platforms/WASI/config.site-wasm32-wasi": "c5a748adda8e186a2287cf82e02e1167a025838234b46bf7afe7298aa02c9106",
+    "Platforms/WASI/config.toml": "bfea682d0cbcded264c1a1eb41b285897ee5f9d99fe0a5bc83d2c0d08073e194",
+    "Platforms/WASI/wasmtime.toml": "b9ea649e50ef1b9d416ca9a570f47eb14f1defa326216683254081df3b80d714"
+  },
+  "archiveLibFiles": 2643,
+  "archiveLibBytes": 52433814,
+  "correspondenceScope": "Official archive digest is authoritative; selected immutable commit files are compared, not whole-archive Git tree equivalence."
+}

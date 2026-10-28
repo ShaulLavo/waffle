@@ -1,0 +1,24 @@
+[package]
+name = "shell-sed"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "sed"
+path = "src/main.rs"
+
+[dependencies]
+upstream-sed = { path = "third-party/uutils-sed" }
+
+[workspace]
+members = ["third-party/uutils-sed"]
+resolver = "3"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
