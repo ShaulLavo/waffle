@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import {
   BrowserProcessBroker,
   type RuntimeDescendant,
-  type RuntimeDescendantPreparation,
   type RuntimeRootOptions,
 } from "../browser/process-broker.js";
 import {
@@ -20,10 +19,11 @@ import {
 import { DescriptorTable } from "../core/descriptors.js";
 import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
-import { readOutcome, startStatus } from "../proc/outcome.js";
+import { readOutcome } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
+import { requestSignal } from "../proc/signals.js";
 import { ProcessTable } from "../proc/table.js";
-import type { ProcessContext, ProcessHandle } from "../proc/types.js";
+import type { ProcessContext } from "../proc/types.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -43,13 +43,14 @@ function must<T>(result: TerminalResult<T>): T {
   return result.value;
 }
 
-/** A real broker, supervisor and directory; only the adapter's Worker is replaced. */
-function fixture(options: { launch?(context: ProcessContext): ProcessHandle } = {}) {
+/** A real broker, supervisor and directory; only the adapter's Worker is a launch callback. */
+function fixture(options: { launch?(context: ProcessContext): void } = {}) {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
   registry.register("fixture", { adapter: "fixture", module });
-  const launched: ProcessContext[] = [],
+  const launched: number[] = [],
+    terminated: number[] = [],
     errors: unknown[] = [];
   const broker = new BrowserProcessBroker({
     identities,
@@ -64,8 +65,13 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle } = 
       async quiesce() {},
     },
     launch(context) {
-      launched.push(context);
-      return options.launch?.(context) ?? { terminate() {} };
+      launched.push(context.pid);
+      options.launch?.(context);
+      return {
+        terminate() {
+          terminated.push(context.pid);
+        },
+      };
     },
     onError(error) {
       errors.push(error);
@@ -113,264 +119,271 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle } = 
     descriptors.dispose();
     if (message?.operation !== "spawn") throw new Error("expected spawn");
     await broker.runtimeMessage(message, parent.pid);
-    const start = (await broker.ready()).start(pid);
-    return { pid, transport: message.transport, start };
+    const supervisor = await broker.ready();
+    await supervisor.start(pid);
+    return { pid, transport: message.transport, supervisor };
   }
-  return { broker, launched, errors, adopt, spawn };
+  return { broker, launched, terminated, errors, adopt, spawn };
 }
 
-test("a same-job grandchild is bound and published before its guest can enter", async () => {
-  const f = fixture({
-    launch(context) {
-      // The adapter boundary: the guest enters only after this point.
-      const transport = f.broker.transportFor(context.pid)!;
-      entries.set(context.pid, structuredClone(transport.data) as Record<string, unknown>);
-      expect(context.started()).toBe(true);
-      return { terminate() {} };
-    },
-  });
-  const entries = new Map<number, Record<string, unknown>>();
+/** The Shell recipe: root admission in the hook, one-shot membership cleanup on child exit. */
+async function shellTerminal(f: ReturnType<typeof fixture>, extra: RuntimeRootOptions = {}) {
   const input = createTerminalInput();
   const policy = createTerminalInputPolicy({ input });
-  const members = new Map<number, { group: TerminalGroup; member: TerminalMember }>();
-  const terminal = {} as { authority: TerminalAuthority };
-  const seen: RuntimeDescendant[] = [];
+  const groups = new Map<number, TerminalGroup>(),
+    members = new Map<number, TerminalMember>(),
+    removed: number[] = [],
+    seen: RuntimeDescendant[] = [];
+  const shell = {} as { authority: TerminalAuthority };
   const root = await f.adopt({
+    ...extra,
     prepareDescendant(descendant) {
       seen.push(descendant);
-      // Rendezvous: reserved and admitted, with no adapter launch yet.
-      expect(f.launched.some((context) => context.pid === descendant.pid)).toBe(false);
-      expect(f.broker.transportFor(descendant.pid)).toBeDefined();
-      const parent = members.get(descendant.parentPid)!;
-      const plan = must(
-        terminal.authority.planMember({ group: parent.group, parent: parent.member }),
-      );
-      const bound = must(
-        terminal.authority.bindMember({ planned: plan.member, pid: descendant.pid }),
-      );
-      members.set(descendant.pid, { group: parent.group, member: bound.member });
-      return { data: { terminalContext: bound.context } };
+      // Before entry: reserved and admitted, with no adapter launch yet.
+      expect(f.launched).not.toContain(descendant.pid);
+      const group = groups.get(descendant.job);
+      if (group)
+        members.set(
+          descendant.pid,
+          must(shell.authority.admitExisting({ group, pid: descendant.pid })).member,
+        );
+      return extra.prepareDescendant?.(descendant);
     },
   });
   const display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
   cleanups.push(() => display.close("disposed"));
-  const authority = (terminal.authority = must(
+  const authority = (shell.authority = must(
     claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }),
   ));
-  const shell = must(authority.createGroup({ initialMode: "raw" }));
-  const rootMember = must(authority.admitExisting({ group: shell, pid: root.pid }));
-  const lease = must(authority.acquire({ group: shell, expected: null }));
-  const job = must(authority.createGroup({ initialMode: "raw" }));
-  members.set(root.pid, { group: job, member: rootMember.member });
+  (await f.broker.ready()).onChildExit(({ pid }) => {
+    const member = members.get(pid);
+    if (!member) return;
+    members.delete(pid);
+    removed.push(pid);
+    authority.removeMember(member);
+  });
+  const editor = must(authority.createGroup({ initialMode: "raw" }));
+  must(authority.admitExisting({ group: editor, pid: root.pid }));
+  const lease = must(authority.acquire({ group: editor, expected: null }));
+  const job = workerProcessState(root).job;
+  /** Map the root's own job to a fresh group, so its same-job children are admitted. */
+  const admitRootJob = () =>
+    groups.set(job, must(authority.createGroup({ initialMode: "raw" }))) && job;
+  return {
+    root,
+    display,
+    input,
+    policy,
+    authority,
+    groups,
+    members,
+    removed,
+    seen,
+    lease,
+    admitRootJob,
+  };
+}
 
-  const child = await f.spawn(root);
-  await child.start;
-  must(authority.transfer({ from: lease, to: job }));
-  // Bun forwards only cloneable identity metadata, never membership.
-  const unbound = attachTerminal({
-    context: entries.get(child.pid)!.terminalContext,
+test("a same-job grandchild admitted by the root reads its inherited terminal", async () => {
+  const f = fixture({ launch: (context) => void context.started() });
+  const t = await shellTerminal(f);
+  const job = must(t.authority.createGroup({ initialMode: "raw" }));
+  const child = await f.spawn(t.root, {
+    terminalContext: t.display.inherit(),
+    terminalInput: t.input.buffer,
+  });
+  const childJob = workerProcessState(child.transport).job;
+  t.groups.set(childJob, job);
+  // The Shell's own direct spawn is admitted the same way it already is today.
+  must(t.authority.admitExisting({ group: job, pid: child.pid }));
+  must(t.authority.transfer({ from: t.lease, to: job }));
+  const childAttachment = attachTerminal({
+    context: (child.transport.data as { terminalContext: unknown }).terminalContext,
     process: child.transport,
     checkActive() {},
-    policy,
-  }).inherit();
+    policy: t.policy,
+  });
+  cleanups.push(() => childAttachment.dispose());
+  // Bun forwards identity-only metadata and cannot claim the root's authority.
+  expect(
+    claimTerminalAuthority({
+      identity: t.display.identity,
+      process: child.transport,
+      checkActive() {},
+      policy: t.policy,
+    }),
+  ).toEqual({ kind: "error", code: "DENIED" });
+  const inherited = childAttachment.inherit();
   const grandchild = await f.spawn(
     child.transport,
-    { terminalContext: unbound, terminalInput: input.buffer },
-    workerProcessState(child.transport).job,
+    { terminalContext: inherited, terminalInput: t.input.buffer },
+    childJob,
   );
-  await grandchild.start;
-  expect(workerProcessState(grandchild.transport).job).toBe(
-    workerProcessState(child.transport).job,
+  expect(workerProcessState(grandchild.transport).job).toBe(childJob);
+  expect(t.seen.map((descendant) => descendant.pid)).toEqual([child.pid, grandchild.pid]);
+  expect(t.seen[1]).toMatchObject({ pid: grandchild.pid, parentPid: child.pid, job: childJob });
+  expect(Object.isFrozen(t.seen[1])).toBe(true);
+  expect(Object.isFrozen(t.seen[1]!.data)).toBe(true);
+  expect(t.seen[1]!.data).not.toHaveProperty("filesystem");
+  // No metadata rewrite: the guest receives the parent's identity-only context unchanged.
+  expect((grandchild.transport.data as { terminalContext: unknown }).terminalContext).toBe(
+    inherited,
   );
-  expect(seen.map((descendant) => descendant.pid)).toEqual([child.pid, grandchild.pid]);
-  expect(Object.isFrozen(seen[1])).toBe(true);
-  expect(seen[1]!.data).not.toHaveProperty("filesystem");
-  expect(seen[1]!.data.terminalInput).toBeInstanceOf(SharedArrayBuffer);
-
   const attachment = attachTerminal({
-    context: entries.get(grandchild.pid)!.terminalContext,
+    context: inherited,
     process: grandchild.transport,
     checkActive() {},
-    policy,
+    policy: t.policy,
   });
   cleanups.push(() => attachment.dispose());
   expect(attachment.ready().kind).toBe("ok");
-  must(pushTerminalInput(display, input, Uint8Array.of(65)));
+  must(pushTerminalInput(t.display, t.input, Uint8Array.of(65)));
   const bytes = new Uint8Array(1);
   expect(attachment.resolve(0).tryRead!([bytes])).toBe(1);
   expect(bytes[0]).toBe(65);
+  grandchild.supervisor.exit(grandchild.pid, 0);
+  await grandchild.supervisor.waitForExit(child.pid, grandchild.pid);
+  // An entered descendant's exit cleans its membership exactly once.
+  expect(t.removed).toEqual([grandchild.pid]);
   expect(f.errors).toEqual([]);
 });
 
-test("a blocked preparation holds launch; a kill while blocked cancels once and never launches", async () => {
-  const f = fixture();
-  const blocked = Promise.withResolvers<RuntimeDescendantPreparation>();
-  let calls = 0,
-    cancels = 0;
-  const root = await f.adopt({
-    prepareDescendant() {
-      calls++;
-      return blocked.promise;
-    },
-  });
-  const child = await f.spawn(root);
-  await Promise.resolve();
-  expect(calls).toBe(1);
-  expect(f.launched).toEqual([]);
-  await f.broker.kill(child.pid, 9);
-  blocked.resolve({
-    data: { late: true },
-    cancel() {
-      cancels++;
-    },
-  });
-  await child.start;
-  const supervisor = await f.broker.ready();
-  await supervisor.waitForExit(root.pid, child.pid);
-  expect(cancels).toBe(1);
-  expect(f.launched).toEqual([]);
-  expect(readOutcome(workerProcessState(child.transport).signals.outcome)?.kind).toBe("signaled");
-  expect(f.broker.transportFor(child.pid)?.data).not.toHaveProperty("late");
-});
-
-for (const failure of ["throw", "reject", "reserved", "uncloneable", "launch"] as const)
-  test(`preparation failure (${failure}) fails start and cancels only accepted work`, async () => {
-    let cancels = 0;
-    const f = fixture({
-      launch() {
-        throw new Error("adapter refused");
-      },
-    });
-    const cancel = () => {
-      cancels++;
-    };
-    const root = await f.adopt({
-      prepareDescendant() {
-        if (failure === "throw") throw new Error("root refused");
-        if (failure === "reject") return Promise.reject(new Error("root refused"));
-        if (failure === "reserved") return { data: { filesystem: null }, cancel };
-        if (failure === "uncloneable") return { data: { callback() {} }, cancel };
-        return { data: { ok: true }, cancel };
-      },
-    });
-    const child = await f.spawn(root);
-    await child.start;
-    await (await f.broker.ready()).waitForExit(root.pid, child.pid);
-    const outcome = readOutcome(workerProcessState(child.transport).signals.outcome);
-    expect(outcome?.kind).toBe("start-failed");
-    expect(f.launched.length).toBe(failure === "launch" ? 1 : 0);
-    expect(cancels).toBe(failure === "throw" || failure === "reject" ? 0 : 1);
-  });
-
-test("an entered descendant's exit is ordinary and never cancels", async () => {
+test("root cleanup composes with a foreign adapter's own process controller", async () => {
+  const exited: number[] = [];
   const f = fixture({
     launch(context) {
+      // A foreign adapter (for example Bun's) keeps its own per-process controller.
+      f.broker.registerController(context.pid, {
+        exited: (event) => void exited.push(event.pid),
+      });
       context.started();
-      return { terminate() {} };
     },
   });
-  let cancels = 0,
-    prepared = 0;
-  const root = await f.adopt({
-    prepareDescendant() {
-      prepared++;
-      return {
-        cancel() {
-          cancels++;
-        },
-      };
-    },
-  });
-  const child = await f.spawn(root);
-  await child.start;
-  const supervisor = await f.broker.ready();
-  expect(prepared).toBe(1);
-  expect(startStatus(workerProcessState(child.transport).signals.outcome)).toBe(0);
-  supervisor.exit(child.pid, 0);
-  await supervisor.waitForExit(root.pid, child.pid);
-  expect(cancels).toBe(0);
+  const t = await shellTerminal(f);
+  const job = workerProcessState(t.root).job;
+  const outside = await f.spawn(t.root, {}, job);
+  t.admitRootJob();
+  const member = await f.spawn(t.root, {}, job);
+  expect(t.members.has(outside.pid)).toBe(false);
+  expect(t.members.has(member.pid)).toBe(true);
+  for (const { pid } of [outside, member]) {
+    member.supervisor.exit(pid, 0);
+    await member.supervisor.waitForExit(t.root.pid, pid);
+  }
+  expect(exited).toEqual([outside.pid, member.pid]);
+  expect(t.removed).toEqual([member.pid]);
+  expect(f.errors).toEqual([]);
 });
 
-test("only the descendant's own captured root hook runs", async () => {
+for (const failure of ["throw", "promise", "value"] as const)
+  test(`a hook ${failure} fails the start before launch and cleans membership once`, async () => {
+    const f = fixture();
+    const t = await shellTerminal(f, {
+      prepareDescendant: (() => {
+        if (failure === "throw") throw new Error("root refused");
+        if (failure === "promise") return Promise.reject(new Error("late root refusal"));
+        return { unexpected: true };
+      }) as unknown as RuntimeRootOptions["prepareDescendant"],
+    });
+    const child = await f.spawn(t.root, {}, t.admitRootJob());
+    await child.supervisor.waitForExit(t.root.pid, child.pid);
+    await Promise.resolve();
+    expect(readOutcome(workerProcessState(child.transport).signals.outcome)?.kind).toBe(
+      "start-failed",
+    );
+    expect(f.launched).toEqual([]);
+    expect(t.removed).toEqual([child.pid]);
+    if (failure === "promise")
+      expect(f.errors.some((error) => String(error).includes("late root refusal"))).toBe(true);
+  });
+
+test("a kill and root exit inside the hook prevent launch; retirement follows cleanup", async () => {
+  const f = fixture();
+  const order: string[] = [];
+  const root = { pid: 0 };
+  const t = await shellTerminal(f, {
+    prepareDescendant({ pid }) {
+      void f.broker.kill(pid, 9);
+      void f.broker.rootExit(root.pid, 0);
+      return undefined;
+    },
+    retired() {
+      order.push("retired");
+    },
+  });
+  root.pid = t.root.pid;
+  const supervisor = await f.broker.ready();
+  const exited = Promise.withResolvers<void>();
+  supervisor.onChildExit((event) => {
+    order.push(`child-exit:${event.result.kind}`);
+    exited.resolve();
+  });
+  const child = await f.spawn(t.root, {}, t.admitRootJob());
+  await exited.promise;
+  await f.broker.dispose();
+  expect(f.launched).toEqual([]);
+  expect(t.removed).toEqual([child.pid]);
+  expect(order[0]).toBe("child-exit:signaled");
+  expect(order).toContain("retired");
+});
+
+test("disposing from inside the hook neither deadlocks nor launches", async () => {
+  const f = fixture();
+  let disposal: Promise<void> | undefined;
+  const root = await f.adopt({
+    prepareDescendant() {
+      disposal = f.broker.dispose();
+      return undefined;
+    },
+  });
+  await f.spawn(root);
+  await disposal;
+  expect(f.launched).toEqual([]);
+});
+
+test("a kill from another worker after the hook is fenced at guest entry", async () => {
+  const entered: boolean[] = [];
+  const f = fixture({
+    launch(context) {
+      // Another worker publishes SIGKILL on the shared row between preparation and entry.
+      requestSignal(workerProcessState(f.broker.transportFor(context.pid)!).signals, 9);
+      entered.push(context.started());
+    },
+  });
+  const t = await shellTerminal(f);
+  const child = await f.spawn(t.root, {}, t.admitRootJob());
+  child.supervisor.observeSignal(child.pid, 9);
+  await child.supervisor.waitForExit(t.root.pid, child.pid);
+  expect(entered).toEqual([false]);
+  expect(readOutcome(workerProcessState(child.transport).signals.outcome)?.kind).toBe("signaled");
+  expect(f.terminated).toEqual([child.pid]);
+  expect(t.removed).toEqual([child.pid]);
+});
+
+test("only the descendant's own root hook runs, as captured at adoption", async () => {
   const f = fixture();
   const calls: string[] = [];
   const options: RuntimeRootOptions = {
-    prepareDescendant: () => {
+    prepareDescendant() {
       calls.push("first");
+      return undefined;
     },
   };
   const first = await f.adopt(options);
   options.prepareDescendant = () => {
     calls.push("replaced");
+    return undefined;
   };
   const second = await f.adopt({
-    prepareDescendant: () => {
+    prepareDescendant() {
       calls.push("second");
+      return undefined;
     },
   });
-  await (
-    await f.spawn(first)
-  ).start;
-  await (
-    await f.spawn(second)
-  ).start;
+  const unprepared = await f.adopt();
+  await f.spawn(first);
+  await f.spawn(second);
+  await f.spawn(unprepared);
   expect(calls).toEqual(["first", "second"]);
-  expect(f.launched.length).toBe(2);
-});
-
-test("root death does not retire the root before an unentered descendant cancels", async () => {
-  const f = fixture();
-  const order: string[] = [];
-  const blocked = Promise.withResolvers<void>();
-  const root = await f.adopt({
-    async prepareDescendant() {
-      await blocked.promise;
-      return {
-        cancel() {
-          order.push("cancel");
-        },
-      };
-    },
-    retired() {
-      order.push("retired");
-    },
-  });
-  const child = await f.spawn(root);
-  await f.broker.rootExit(root.pid, 0);
-  blocked.resolve();
-  await child.start;
-  expect(order).toEqual([]);
-  // Launched but never entered; the descendant's exit settles the root's reservation.
-  const supervisor = await f.broker.ready();
-  supervisor.failStart(child.pid, new Error("guest never entered"));
-  await supervisor.waitForExit(root.pid, child.pid);
-  expect(order).toEqual(["cancel"]);
-  await f.broker.dispose();
-  expect(order).toEqual(["cancel", "retired"]);
-});
-
-test("disposal waits for a blocked preparation and cancels it before retiring the root", async () => {
-  const f = fixture();
-  const order: string[] = [];
-  const blocked = Promise.withResolvers<RuntimeDescendantPreparation>();
-  const root = await f.adopt({
-    prepareDescendant: () => blocked.promise,
-    retired() {
-      order.push("retired");
-    },
-  });
-  const child = await f.spawn(root);
-  await Promise.resolve();
-  const disposal = f.broker.dispose();
-  await Promise.resolve();
-  expect(order).toEqual([]);
-  blocked.resolve({
-    cancel() {
-      order.push("cancel");
-    },
-  });
-  await disposal;
-  await child.start;
-  expect(order).toEqual(["cancel", "retired"]);
-  expect(f.launched).toEqual([]);
+  expect(f.launched.length).toBe(3);
 });

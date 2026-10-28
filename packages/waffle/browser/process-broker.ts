@@ -306,7 +306,7 @@ export class BrowserProcessBroker {
         void Promise.resolve(result).catch((error) => this.report(error));
       throw new TypeError("prepareDescendant must return undefined synchronously");
     }
-    if (this.suspended) throw new Error("Process broker is disposed");
+    // launchAdapter rechecks disposal in this same turn.
     if (this.descendantHooks.get(state.rootPid) !== hook)
       throw new Error("descendant root controller retired during preparation");
     if (readOutcome(context.outcome))
