@@ -24,7 +24,6 @@ import { requestSignal, createSignalState, type SignalTransport } from "../proc/
 import {
   claimOutcome,
   outcomeWord,
-  type OutcomeWord,
   readOutcome,
   startStatus,
   serializeOutcome,
@@ -91,23 +90,14 @@ export interface BrowserProcessBrokerOptions {
   /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
 }
-/** A reserved, admitted descendant of a runtime root whose guest has not been launched. */
+/** A reserved, admitted descendant of a runtime root whose adapter has not launched. */
 export interface RuntimeDescendant {
   readonly pid: number;
   readonly parentPid: number;
   readonly job: number;
-  /** A structured clone of the spawn's metadata without the runtime-owned `filesystem` and
-   * `pipeRegistry` fields. Inherited fields are claims from the parent, not proof of authority. */
+  /** A frozen structured clone of the spawn's metadata without the runtime-owned `filesystem`
+   * and `pipeRegistry` fields. Inherited fields are the parent's claims, not membership. */
   readonly data: Readonly<Record<string, unknown>>;
-}
-/** The root controller's preparation of one descendant. */
-export interface RuntimeDescendantPreparation {
-  /** Structured-cloneable fields merged into the descendant's metadata before its adapter
-   * launches. `filesystem` and `pipeRegistry` stay runtime-owned and are rejected. */
-  readonly data?: Readonly<Record<string, unknown>>;
-  /** Runs once, before the root's `retired()`, if the descendant ends without entering its
-   * guest: publication or launch failure, start failure, a kill before entry, or disposal. */
-  cancel?(): void;
 }
 export interface RuntimeRootOptions {
   filesystem?: FilesystemIdentity;
@@ -117,14 +107,12 @@ export interface RuntimeRootOptions {
   stop?(): void | Promise<void>;
   wake?(): void;
   retired?(): void;
-  /** Called once for every transport-backed descendant of this root, after the runtime admits
-   * its reservation and before its adapter launches, so its guest cannot enter first. The
-   * descendant's directory row exists for the whole call. The launch awaits the result; a
-   * throw or rejection fails the descendant's start and the hook owns its own partial work.
-   * Captured when the root is adopted. Process control may be reentered. */
-  prepareDescendant?(
-    descendant: RuntimeDescendant,
-  ): RuntimeDescendantPreparation | void | Promise<RuntimeDescendantPreparation | void>;
+  /** Called synchronously, once, for every transport-backed descendant of this root, after the
+   * runtime admits its reservation and immediately before its adapter launcher runs. The guest
+   * cannot enter first. Must return `undefined`: a returned value or promise, or a throw, fails
+   * the descendant's start. Captured when the root is adopted. The process may still be killed
+   * from another worker after the call; the guest's entry commit then fails as usual. */
+  prepareDescendant?(descendant: RuntimeDescendant): undefined;
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   /** Module entry stays inert until its first request; unused workers may be prestarted. */
@@ -145,15 +133,6 @@ interface DescendantHook {
   readonly directory: string;
 }
 const reservedDescendantData = ["filesystem", "pipeRegistry"];
-function descendantData(data: unknown): Record<string, unknown> {
-  if (typeof data !== "object" || data === null || Array.isArray(data))
-    throw new TypeError("descendant data must be an object");
-  // Snapshot before publication: later caller mutation never reaches the launched guest.
-  const snapshot = structuredClone(data) as Record<string, unknown>;
-  for (const key of reservedDescendantData)
-    if (Object.hasOwn(snapshot, key)) throw new TypeError(`descendant data cannot replace ${key}`);
-  return snapshot;
-}
 interface RuntimeChild {
   notifications?: NotificationBridge;
   filesystem: FilesystemIdentity;
@@ -193,8 +172,6 @@ export class BrowserProcessBroker {
   private launches?: Set<number>;
   private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
   private readonly descendantHooks = new Map<number, DescendantHook>();
-  private preparing?: Set<Promise<void>>;
-  private readonly preparations = new Map<number, { outcome: OutcomeWord; settle(): void }>();
   private readonly outputs = new Map<number, RuntimeRootOptions["output"]>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
@@ -254,7 +231,6 @@ export class BrowserProcessBroker {
           onError: (error) => this.report(error),
         }));
         supervisor.onChildExit((event) => {
-          this.settlePreparation(event.pid);
           this.revokeRuntimeProcess(event.pid);
           const transport = this.transport.get(event.pid);
           if (transport && !this.children.get(event.pid)?.acknowledged)
@@ -294,15 +270,8 @@ export class BrowserProcessBroker {
   }
   private launchPrepared(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
     const descendant = this.descendant(context.pid);
-    if (!descendant) return this.launchAdapter(context);
-    const preparing = this.prepareDescendant(context, descendant.hook, descendant.transport);
-    const pending = preparing.then(() => this.launchAdapter(context));
-    (this.preparing ??= new Set()).add(preparing);
-    void preparing.then(
-      () => this.preparing?.delete(preparing),
-      () => this.preparing?.delete(preparing),
-    );
-    return pending;
+    if (descendant) this.prepareDescendant(context, descendant.hook, descendant.transport);
+    return this.launchAdapter(context);
   }
   /** Only the descendant's immutable root, in that root's own directory, prepares it. */
   private descendant(pid: number) {
@@ -313,15 +282,17 @@ export class BrowserProcessBroker {
     if (!hook || hook.directory !== workerProcessDirectoryId(transport)) return undefined;
     return { hook, transport };
   }
-  private async prepareDescendant(
+  /** Synchronous, so no page-side kill, root retirement or disposal can interleave before the
+   * adapter launcher. Kills from other workers remain fenced by the guest's entry commit. */
+  private prepareDescendant(
     context: ProcessContext,
     hook: DescendantHook,
     transport: WorkerProcessTransport,
-  ): Promise<void> {
+  ): void {
     const state = workerProcessState(transport);
     const claims = { ...(transport.data as Record<string, unknown>) };
     for (const key of reservedDescendantData) delete claims[key];
-    const prepared = await hook.prepare.call(
+    const result: unknown = hook.prepare.call(
       hook.receiver,
       Object.freeze({
         pid: state.pid,
@@ -330,46 +301,16 @@ export class BrowserProcessBroker {
         data: Object.freeze(structuredClone(claims)),
       }),
     );
-    if (prepared !== undefined && (typeof prepared !== "object" || prepared === null))
-      throw new TypeError("descendant preparation must be an object");
-    const cancel = prepared?.cancel,
-      data = prepared?.data;
-    let cancelled = false;
-    const settle = () => {
-      if (cancelled || typeof cancel !== "function") return;
-      cancelled = true;
-      try {
-        cancel.call(prepared);
-      } catch (error) {
-        this.report(error);
-      }
-    };
-    try {
-      if (cancel !== undefined && typeof cancel !== "function")
-        throw new TypeError("descendant cancel must be a function");
-      if (this.suspended) throw new Error("Process broker is disposed");
-      if (readOutcome(context.outcome))
-        throw new Error("process exited before descendant preparation completed");
-      if (data !== undefined) transport.data = { ...transport.data!, ...descendantData(data) };
-    } catch (error) {
-      settle();
-      throw error;
+    if (result !== undefined) {
+      if (typeof (result as PromiseLike<unknown> | null)?.then === "function")
+        void Promise.resolve(result).catch((error) => this.report(error));
+      throw new TypeError("prepareDescendant must return undefined synchronously");
     }
-    if (typeof cancel === "function")
-      this.preparations.set(context.pid, { outcome: context.outcome, settle });
-  }
-  /** Prepared descendants that never entered their guest release the root's reservation. */
-  private settlePreparation(pid: number): void {
-    const preparation = this.preparations.get(pid);
-    if (!preparation) return;
-    this.preparations.delete(pid);
-    let entered = false;
-    try {
-      entered = startStatus(preparation.outcome) === 0;
-    } catch (error) {
-      if (!isCollectedProcess(error)) this.report(error);
-    }
-    if (!entered) preparation.settle();
+    if (this.suspended) throw new Error("Process broker is disposed");
+    if (this.descendantHooks.get(state.rootPid) !== hook)
+      throw new Error("descendant root controller retired during preparation");
+    if (readOutcome(context.outcome))
+      throw new Error("process exited before descendant preparation completed");
   }
   private launchAdapter(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
     if (this.suspended) throw new Error("Process broker is disposed");
@@ -1531,8 +1472,6 @@ export class BrowserProcessBroker {
       }
       await Promise.allSettled(this.startupDiagnostics);
       await this.quiesce();
-      // A pending preparation must settle, and cancel if it lost, before roots retire.
-      await Promise.allSettled(this.preparing ?? []);
       // A controller stop may release a physical handle, but cannot consume authority
       // before a pending launcher acquires it. Then settle both stops before retirement.
       await Promise.all(
@@ -1562,7 +1501,6 @@ export class BrowserProcessBroker {
       } catch (error) {
         errors.push(error);
       }
-      for (const pid of Array.from(this.preparations.keys())) this.settlePreparation(pid);
       for (const controller of this.controllers.values()) {
         try {
           controller.retired?.();
