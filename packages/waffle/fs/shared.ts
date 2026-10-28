@@ -822,8 +822,11 @@ export class SharedFilesystemState {
       this.globalUnlock();
     }
   }
-  identity(handle: FileHandle): FileIdentity | undefined {
-    this.globalLock(undefined, this.lockOwner, true);
+  /** Waits for the global lock like stat() does: another owner's critical section is short, and
+   * the owner's contention sweep reclaims a dead holder's lock. A non-blocking probe here failed
+   * blocking descriptor reads with EAGAIN. revoked ends the wait for a cancelled request. */
+  identity(handle: FileHandle, revoked?: () => boolean): FileIdentity | undefined {
+    this.globalLock(revoked, this.lockOwner);
     try {
       const slot = this.findSlot(handle);
       if (!slot) return undefined;

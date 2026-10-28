@@ -333,7 +333,8 @@ export class PersistentBackend extends MemoryBackend {
     if (node.kind !== "file") throw new FilesystemError(31);
     this.sync(handle);
     if (this.shared.isResident(handle)) return;
-    const count = Math.min(length, PAGE, Math.max(0, this.readMetadata(node).size - offset));
+    const size = this.readMetadata(node, cancelled).size;
+    const count = Math.min(length, PAGE, Math.max(0, size - offset));
     if (!count) return Promise.resolve(new Uint8Array());
     const backing = this.selectReadBacking(node, offset, count);
     if (backing.kind !== "cold") throw new FilesystemError(6);

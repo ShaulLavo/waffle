@@ -287,3 +287,23 @@ write set is `fs/publication-attachment.ts`, `fs/publication-workspace.ts`,
 `browser/publication-authority.ts` and focused tests. Coordinate serial ownership
 with the reversible write-barrier lane. Preserve uncertainty when no authoritative
 outcome exists; do not add stale-version compatibility or a timeout-based takeover.
+
+### Follow-up: a metadata change on a cold file fails blocking reads, 2026-10-28
+
+Status: Approved follow-up. This is separate from the lock-contention EAGAIN fixed beside it. It
+was found with a unit fixture and was not observed in the browser `next build` failure.
+
+`setMtime` on a linked, non-resident file bumps the shared slot
+revision without loading bytes. The persistent backend's retained revision stays behind, so
+`selectReadBacking` (`packages/waffle/fs/persistent.ts:312-316`) throws errno 6, "cold revision is
+not retained", and a blocking `read` fails until the next checkpoint records the new revision.
+The 50 ms timer narrows the window but does not close it; the timer skips while a checkpoint is
+pending. Reproduce on main with a persisted 4-byte cold file and `intervalMs: 0`: `read` returns
+the bytes, `setMtime(handle, 123456)` succeeds, `read` fails with errno 6, `checkpoint(true)`, then
+`read` returns the bytes again. The probe is
+`/work/reports/wave-20261022/waffle/r2/fs-read-failed6-r630/utimes-cold-read-probe.test.ts`.
+
+The cold payload is still the durable bytes, so a metadata-only revision should not refuse it.
+Keep the explicit refusal for detached or unlinked files whose bytes changed (the existing
+`persistence.test.ts` case after a failed checkpoint). Do not retry errno 6 in general and do not
+hydrate stale payloads. Initial write set: `packages/waffle/fs/persistent.ts` and a focused test.
