@@ -2,6 +2,8 @@
 
 `waffle-git` runs local repository commands through isomorphic-git 1.44.5 on the embedding page's Waffle filesystem. It creates no runtime, process service, worker or executable marker. The Git core and text-diff library load on the first command from `dist/git-command.js`. Package preparation builds that self-contained asset with the verified upstream patch, so tarball consumers also receive the corrected backend.
 
+The public exports contain TypeScript source. Node consumers need a loader or bundler that handles TypeScript inside `node_modules`; Node's built-in type stripping alone does not load dependency source there. Both exports support strip-only TypeScript loaders.
+
 ```ts
 import { installGit } from "waffle-git";
 
