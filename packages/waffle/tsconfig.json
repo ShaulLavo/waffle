@@ -21,6 +21,7 @@
     "proc",
     "interrupt",
     "link",
+    "programs",
     "browser",
     "tests/interrupt-browser-runner-control.ts",
     "tests/process-recycling-browser-runner.ts",
@@ -35,6 +36,7 @@
     "tests/wasi-libc.test.ts",
     "tests/wasm-start-section.test.ts",
     "tests/preopen-placement.test.ts",
+    "tests/inherited-fd-review.test.ts",
     "tests/libc-tooling.test.ts",
     "tests/fixtures/preopen-node-host.ts",
     "tests/fixtures/start-failure-public.ts"

@@ -42,6 +42,7 @@ const runtimeProcSignatures = new Map<string, FunctionSignature>([
   ["pipe", { params: [0x7f], results: [0x7f] }],
   ["dup", { params: [0x7f], results: [0x7f] }],
   ["fd_kind", { params: [0x7f], results: [0x7f] }],
+  ["inherited_fd", { params: [0x7f], results: [0x7f] }],
   ["fd_reopen", { params: [0x7f, 0x7f, 0x7f, 0x7e, 0x7f], results: [0x7f] }],
   ["read", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
   ["write", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],

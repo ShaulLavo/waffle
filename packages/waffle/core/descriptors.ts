@@ -95,6 +95,13 @@ export class DescriptorTable {
   get(fd: number): Descriptor | undefined {
     return mapGet(this.entries, fd);
   }
+  hasResource(resource: Resource): boolean {
+    let found = false;
+    mapForEach(this.entries, (entry) => {
+      if (entry.resource === resource) found = true;
+    });
+    return found;
+  }
   /** The caller's live root capability, including any guest rights reductions. */
   rootPreopen(): Descriptor | undefined {
     let root: Descriptor | undefined;
@@ -102,6 +109,16 @@ export class DescriptorTable {
       if (entry.preopen === "/" && entry.resource.kind === "directory") root = entry;
     });
     return root;
+  }
+  /** Open descriptor numbers in ascending order, excluding preopened directories. */
+  inheritable(): number[] {
+    const fds: number[] = [];
+    mapForEach(this.entries, (entry, fd) => {
+      if (entry.preopen !== undefined) return;
+      arrayAppend(fds, fd);
+    });
+    fds.sort((left, right) => left - right);
+    return fds;
   }
   /** Non-consuming runtime_proc classification; independent of rights and preview1 filetype. */
   kind(fd: number): number {

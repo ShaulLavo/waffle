@@ -17,6 +17,19 @@ winner. Missing parent directories retain the host API's existing `mkdirp` behav
 exclusive modes cannot be combined; ordinary writes continue to replace existing file contents.
 The operation is shared by memory, IndexedDB and OPFS backends.
 
+`SharedFilesystem.remove(path)` removes the entry at `path` without following a final
+symlink, recursively for a directory, and resolves `false` when nothing exists there.
+`remove(path, { ifContent })` removes only a regular file whose bytes equal `ifContent`. The
+expected bytes are copied when the call is made. The service compares and removes in one
+planning step under the global mutation lock, reading the file under its own lock, so a host
+write lands wholly before the check (and the remove is skipped) or after it. A guest writing
+through a descriptor it already has open writes to the unlinked file, as after any remove. A
+missing path, a directory, a symlink or different bytes resolve `false` and change nothing.
+A non-`Uint8Array` condition rejects with `TypeError`, and a malformed condition at the service
+boundary fails with `EINVAL` (28). Persistent backends load a cold file's bytes before
+comparing. If the bytes still aren't resident, the call fails with `ENOTSUP` (58) rather than
+removing unchecked.
+
 ## Process admission
 
 `BrowserProcessBroker` reserves identities and descriptor bindings synchronously, then activates the lazy supervisor. Worker bootstrap receives a compiled module, argv, environment, filesystem connection and optional process transport. Source bytes must pass interruption admission; a precompiled module is accepted only with explicit cooperative execution.
@@ -93,6 +106,19 @@ The shared `ProcessABI` exposes the import in host and worker process adapters;
 the browser's signal-only worker namespace also exposes it without activating the
 process service. The descriptor number itself (including stdio 0, 1 and 2) never
 determines its kind.
+
+## Inherited descriptor list
+
+`runtime_proc.inherited_fd(index: u32) -> i32` returns the `index`th descriptor the process
+started with, in ascending numeric order, or `-ENOENT` (`-44`) past the end. The list is a
+snapshot taken in the worker after launch bindings are installed (and after an executor's
+`beforeBindings` hook) and before instantiation: open stdio and every `runtime_proc` binding at
+its child number, excluding preopened directories. Later `dup`, open or close calls do not
+change it. It reports numbers only; use `fd_kind` for the kind and `dup` to take a reference.
+Programs that forward descriptors to a child or resolve `/dev/fd/N` use this list instead of
+probing a descriptor range. Sparse bindings cost one entry each. Runtime child workers start
+with stdio closed unless a binding targets fd 0, 1 or 2; a page-root worker retains its default
+stdio terminals.
 
 ## Reopen an existing descriptor
 

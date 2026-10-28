@@ -36,6 +36,7 @@ export type {
   SharedFilesystemState,
   SharedFilesystemStatus,
   SharedFilesystemStateObserver,
+  RemoveCondition,
 } from "./browser/shared-fs.js";
 export { getVfsDescriptor, VfsError } from "./fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./fs/vfs.js";
@@ -104,6 +105,7 @@ export interface Runtime {
   readonly identities: ProcessIdentityAllocator;
   readonly disposed: boolean;
   /** Register an absolute canonical path; the caller creates its regular file before spawn.
+   * Paths registered with the same source loader function share one compiled module.
    * Releasing the lease removes only this registration, never files or running processes. */
   registerProgram(name: string, program: ProgramDefinition): () => void;
   /** Releasing the lease removes only this registration, never running processes. */
@@ -338,6 +340,27 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   const assertLive = () => {
     if (disposed) throw new Error("Runtime is disposed");
   };
+  // One loader per source function, so a program registered at several paths compiles once.
+  const sourceModules = new WeakMap<object, Executable["module"]>();
+  const sourceModule = (source: Uint8Array | (() => Uint8Array | Promise<Uint8Array>)) => {
+    const shared = typeof source === "function" ? sourceModules.get(source) : undefined;
+    if (shared) return shared;
+    const ownedSource = source instanceof Uint8Array ? new Uint8Array(source) : source;
+    const module = async () => {
+      assertLive();
+      const bytes = typeof ownedSource === "function" ? await ownedSource() : ownedSource;
+      if (!(bytes instanceof Uint8Array))
+        throw new TypeError("Program source loader must return Wasm bytes");
+      // Own source bytes before an asynchronous import can yield to a mutating caller.
+      const snapshot = new Uint8Array(bytes);
+      const { compileInterruptible } = await import("./interrupt/loader.js");
+      const compiled = await compileInterruptible(snapshot);
+      assertLive();
+      return compiled;
+    };
+    if (typeof source === "function") sourceModules.set(source, module);
+    return module;
+  };
   const borrowedFilesystem = borrow<RuntimeFilesystem>(
     filesystem,
     filesystemCapabilities,
@@ -399,22 +422,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           throw new TypeError("Source bytes use interrupt admission, not cooperative module trust");
         if (!(source instanceof Uint8Array) && typeof source !== "function")
           throw new TypeError("Program source must provide Wasm bytes");
-        const ownedSource = source instanceof Uint8Array ? new Uint8Array(source) : source;
         executable = {
           adapter: program.adapter,
           interruptible: true,
-          module: async () => {
-            assertLive();
-            const bytes = typeof ownedSource === "function" ? await ownedSource() : ownedSource;
-            if (!(bytes instanceof Uint8Array))
-              throw new TypeError("Program source loader must return Wasm bytes");
-            // Own source bytes before an asynchronous import can yield to a mutating caller.
-            const snapshot = new Uint8Array(bytes);
-            const { compileInterruptible } = await import("./interrupt/loader.js");
-            const compiled = await compileInterruptible(snapshot);
-            assertLive();
-            return compiled;
-          },
+          module: sourceModule(source),
         };
       } else {
         if (program.cooperative !== true)

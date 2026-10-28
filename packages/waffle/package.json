@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.90",
+  "version": "0.0.91",
   "private": true,
   "files": [
     "dist",
@@ -11,6 +11,7 @@
     "interrupt",
     "link",
     "proc",
+    "programs",
     "tests",
     "tooling",
     "index.ts",
@@ -520,6 +521,13 @@
       "bun": "./browser/preview-host.ts",
       "browser": "./browser/preview-host.ts",
       "default": "./browser/preview-host.ts"
+    },
+    "./programs": {
+      "types": "./programs/index.ts",
+      "node": "./dist/programs/index.js",
+      "bun": "./programs/index.ts",
+      "browser": "./programs/index.ts",
+      "default": "./programs/index.ts"
     }
   },
   "scripts": {
