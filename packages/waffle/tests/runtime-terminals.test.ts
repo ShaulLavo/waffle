@@ -8,6 +8,7 @@ import {
 import { ProcessError } from "../proc/types";
 import type { WorkerDescriptorCodec } from "../proc/worker-client";
 import { createRuntimeTerminalCodec } from "../browser/runtime-terminals";
+import { deliveredTerminalOutput } from "../browser/terminal-output";
 
 const text = (value: string) => new TextEncoder().encode(value);
 function terminal(): Stream {
@@ -36,9 +37,10 @@ function fixture() {
   const codec = createRuntimeTerminalCodec({
     descriptors: table,
     fallback,
-    output(fd, bytes) {
+    output: deliveredTerminalOutput((fd, bytes) => {
       output.push([fd, new TextDecoder().decode(bytes)]);
-    },
+      return bytes.length;
+    }),
   });
   return { table, codec, output, fallback };
 }
@@ -58,9 +60,10 @@ test("a stdin-only resolver keeps checked default output and EOF for declined ta
   const codec = createRuntimeTerminalCodec({
     fallback: state.fallback,
     resolveTerminal: (target) => (target === 0 ? terminal() : undefined),
-    output(fd, bytes) {
+    output: deliveredTerminalOutput((fd, bytes) => {
       state.output.push([fd, new TextDecoder().decode(bytes)]);
-    },
+      return bytes.length;
+    }),
     checkActive() {
       if (!active) throw Error("revoked");
     },
@@ -174,9 +177,10 @@ test("terminal tokens keep their original target when re-exported through anothe
     const second = createRuntimeTerminalCodec({
       descriptors: child,
       fallback: state.fallback,
-      output(fd, bytes) {
+      output: deliveredTerminalOutput((fd, bytes) => {
         secondOutput.push([fd, new TextDecoder().decode(bytes)]);
-      },
+        return bytes.length;
+      }),
     });
     const resource = second.import(second.export(child.get(2)!, 3), 3).resource as Stream;
     expect(resource.write([text("grandchild")])).toBe(10);

@@ -274,6 +274,46 @@ write. A closed or directory fd returns `false`. Default terminal destinations s
 to the host directly, so aliases of those destinations do not follow unrelated redirects.
 During `setup`, before Wasi exists, `post` uses the supplied stdio or host callback.
 
+### Host terminal output
+
+A terminal target that no resolver claims writes to the root's host destination. Workers that
+`launchWorker` starts write it into a bounded buffer the page drains, so they behave like a
+TTY: a blocking write waits for room, an immediate write returns the exact prefix it accepted
+or `AGAIN`, and nothing is dropped or counted as written before it was accepted. A pending
+signal ends a blocking write with its accepted prefix, or `EINTR` before any. Before the exit
+becomes visible to a parent, the Worker waits until the page has delivered every byte, so a
+shell prompt cannot overtake a child's last output.
+
+The root chooses its destination when it calls `adoptRuntimeRoot`:
+
+```ts
+await service.adoptRuntimeRoot(root, {
+  // Accept a prefix of `data` and return its length, from 0 to data.length.
+  tryOutput: (fd, data) => terminal.tryWrite(fd, data),
+});
+// After the display reads from a full terminal:
+service.outputDrained(root.pid);
+```
+
+A short count keeps the rest buffered and holds the writer until `outputDrained(rootPid)`.
+`output(fd, data)` remains for destinations that take every byte. The two are exclusive. A
+call to `outputDrained` from inside `tryOutput` joins the delivery already running; the count
+that `tryOutput` returns decides it, so it cannot loop.
+
+Accepted bytes belong to the root's terminal, not to the process that wrote them. All writers
+under one root share one 64 KiB budget, headers included. A writer stores bytes only with
+credit the page granted it, and asks for more when it runs out; idle writers give unused
+credit back. When a Worker stops, by exit, kill, revocation or disposal, its unused credit
+returns, and the bytes it was told it wrote move from its shared buffer into page memory of
+exactly their size. They are still delivered, in order, and still count against the root's
+budget, so later writers wait for credit instead of taking new storage. Memory per root is
+therefore one budget of accepted output, plus one 64 KiB buffer per live Worker. Accepted
+bytes are discarded only when the root itself retires undelivered; that is reported through
+the broker's `onError`.
+
+A Worker started outside `launchWorker` has no such buffer: its host terminal output is posted
+as `stdout` and `stderr` messages, and that host takes every byte.
+
 Adapter cleanup uses the existing lifecycle, not an extra worker-stop hook. Register a
 `ProcessController` with the browser process service's `registerController(pid, controller)`:
 `revoke` freezes adapter work, and `quiesce` fences its admitted critical sections. The broker

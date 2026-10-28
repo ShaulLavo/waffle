@@ -31,6 +31,14 @@ import {
 } from "../fs/index.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
+import {
+  attachTerminalOutput,
+  hostTerminalStream,
+  deliveredTerminalOutput,
+  type TerminalOutputWriter,
+  type TerminalOutputWriterOptions,
+  type RuntimeTerminalOutput,
+} from "./terminal-output.js";
 import { drainDiagnostic } from "./diagnostic.js";
 import { withFileOffset } from "../core/open-file.js";
 import type { ProcessABI } from "../proc/abi.js";
@@ -49,6 +57,7 @@ import type { PipeEndpointHandle } from "../proc/pipes.js";
 import {
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
+  typedArrayLength,
   atomicsWait,
   objectEntries,
   reflectApply,
@@ -73,6 +82,8 @@ export interface RuntimeWorkerRequest {
   startupStderr?: PipeEndpointHandle;
   /** Authoritative terminal word available before loading process adapters. */
   outcome?: OutcomeTransfer;
+  /** Broker-owned bounded buffer for host terminal output. Without it, output is posted. */
+  terminalOutput?: SharedArrayBuffer;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
   interruptible?: boolean;
   trace?: boolean;
@@ -83,6 +94,8 @@ export type RuntimeWorkerMessage =
   | WorkerProcessMessage
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
+  /** The page drained terminalOutput and waits for this before reading it again. */
+  | { type: "terminal-output" }
   | { type: "exit"; code: number; signal?: number; sleep?: SleepMode; cleanupErrors?: string[] }
   | {
       type: "error";
@@ -285,10 +298,29 @@ function ownedStreams(stdio: WorkerExecutor["stdio"]): Stream[] {
   return owned;
 }
 
+function hostOutputWriter(
+  buffer: SharedArrayBuffer | undefined,
+  options: TerminalOutputWriterOptions,
+): TerminalOutputWriter | undefined {
+  return buffer ? attachTerminalOutput(buffer, options) : undefined;
+}
+
+/** Without a broker buffer, host terminal output is posted to a host that takes every byte. */
+function codecOutput(
+  hostOutput: TerminalOutputWriter | undefined,
+  output: (type: "stdout" | "stderr", data: Uint8Array) => number,
+): RuntimeTerminalOutput {
+  return (
+    hostOutput ??
+    deliveredTerminalOutput((target, data) => output(target === 2 ? "stderr" : "stdout", data))
+  );
+}
+
 function initialStdio(
   runtimeState: RuntimeWorkerState | null,
   ownedStdio: Partial<Record<0 | 1 | 2, Stream>> | undefined,
   checkIoActive: () => void,
+  hostOutput: TerminalOutputWriter | undefined,
 ): {
   stdio: Partial<Record<0 | 1 | 2, Stream | null>> | undefined;
   discarded: Stream[];
@@ -297,6 +329,14 @@ function initialStdio(
     return {
       stdio: { 0: null, 1: null, 2: null },
       discarded: ownedStreams(ownedStdio),
+    };
+  if (!ownedStdio && hostOutput)
+    return {
+      stdio: {
+        1: hostTerminalStream(1, hostOutput, checkIoActive),
+        2: hostTerminalStream(2, hostOutput, checkIoActive),
+      },
+      discarded: [],
     };
   if (!ownedStdio) return { stdio: undefined, discarded: [] };
   return {
@@ -434,6 +474,13 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (executor.signalError) return executor.signalError(winner.code);
     throw new RuntimeWorkerSignal(winner.code);
   };
+  const outcomeSettled = (): boolean => {
+    try {
+      return !!(outcome ? readOutcome(outcome) : localOutcome);
+    } catch {
+      return true;
+    }
+  };
   const checkActive = () => {
     const winner = outcome ? readOutcome(outcome) : localOutcome;
     if (winner?.kind === "signaled") defaultSignal(winner.code);
@@ -452,6 +499,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // Ownership begins before setup/namespaces can fail or finish the process.
   const ownedStdio = executor.stdio ? { ...executor.stdio } : undefined;
   let wasi: Wasi | null = null;
+  let hostOutput: TerminalOutputWriter | undefined;
   let memorySampler: ReturnType<typeof createWorkerMemorySampler> | undefined;
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
@@ -482,6 +530,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         : { kind: "signaled", code: ownSignal };
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
+    // A parent may act on this exit at once: deliver every byte the guest wrote first.
+    if (!settled) hostOutput?.flush(() => revoked() || outcomeSettled());
     const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
     let winner =
       runtimeDiagnostic || !executor.complete || startupFailure ? claim(ownResult) : settled;
@@ -637,14 +687,26 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
     }
-    const initial = initialStdio(runtimeState, ownedStdio, checkIoActive);
+    hostOutput = hostOutputWriter(req.terminalOutput, {
+      checkActive: checkIoActive,
+      interrupted: () =>
+        runtimeState
+          ? signalPending(runtimeState.signals)
+          : (executor.interruptPending?.() ?? false),
+      doorbell: () => postToHost({ type: "terminal-output" }),
+    });
+    const initial = initialStdio(runtimeState, ownedStdio, checkIoActive, hostOutput);
     const stdio = initial.stdio;
     discardedStdio = initial.discarded;
     // Default terminal descriptions must post directly: routing their callbacks back through
     // the live fd would recurse, or send an inherited terminal into a redirected file.
-    const output = (type: "stdout" | "stderr", data: Uint8Array) => {
+    const output = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
       checkIoActive();
+      const target = type === "stderr" ? 2 : 1;
+      if (hostOutput)
+        return immediate ? hostOutput.tryWrite(target, [data]) : hostOutput.write(target, [data]);
       postToHost({ type, data }, [data.buffer as ArrayBuffer]);
+      return typedArrayLength(data);
     };
     const write = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
       if (immediate) checkIoActive();
@@ -653,8 +715,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       if (!wasi) {
         const stream = stdio?.[fd];
         if (stream) return immediate ? (stream.tryWrite?.([data]) ?? -58) : stream.write([data]);
-        output(type, data);
-        return data.length;
+        return output(type, data, immediate);
       }
       const descriptor = wasi.descriptors.get(fd);
       if (!descriptor || (descriptor.rightsBase & (1n << 6n)) === 0n) return -8;
@@ -853,9 +914,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           resolveTerminal: executor.resolveTerminal
             ? (...args) => transferStdio(executor.resolveTerminal!(...args), discardedStdio)
             : undefined,
-          output: (fd, data) => {
-            output(fd === 2 ? "stderr" : "stdout", data);
-          },
+          output: codecOutput(hostOutput, output),
           checkActive: checkIoActive,
         }),
         postMessage,
