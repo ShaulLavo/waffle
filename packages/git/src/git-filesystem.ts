@@ -2,11 +2,10 @@ import type { Runtime } from "waffle";
 import type { GitFilesystem, GitStat } from "./git-types";
 
 class GitFilesystemError extends Error {
-  constructor(
-    readonly code: string,
-    path: string,
-  ) {
+  readonly code: string;
+  constructor(code: string, path: string) {
     super(`${code}: ${path}`);
+    this.code = code;
   }
 }
 
