@@ -191,6 +191,7 @@ import {
   atomicsLoad,
   atomicsStore,
   atomicsCompareExchange,
+  atomicsExchange,
   atomicsAdd,
   atomicsNotify,
   atomicsWait,
@@ -254,6 +255,7 @@ const H = objectFreeze({
   rootPid: 3,
   nonce0: 4,
   nonce1: 5,
+  contended: 6,
   selected: 8,
   selection: 9,
   mode: 10,
@@ -451,15 +453,23 @@ class Session {
       this.close();
       return error("PROCESS_GONE");
     }
-    if (atomicsCompareExchange(this.gate, 0, 0n, owner) !== 0n) return error("AGAIN");
+    if (atomicsCompareExchange(this.gate, 0, 0n, owner) !== 0n) return this.contend();
     this.dirty = false;
     try {
       if (this.closed()) return error("CLOSED");
       return operation();
     } finally {
       atomicsStore(this.gate, 0, 0n);
-      if (this.dirty) this.notify();
+      const contended = atomicsExchange(this.words, H.contended, 0);
+      if (this.dirty || contended !== 0) this.notify();
     }
+  }
+  private contend(): TerminalResult<never> {
+    atomicsStore(this.words, H.contended, 1);
+    // Either the holder sees our hint after unlocking, or it already released and we wake
+    // the scan ourselves. A fully notified poll observed its sequence before losing this CAS.
+    if (atomicsLoad(this.gate, 0) === 0n) this.notify();
+    return error("AGAIN");
   }
   next(index: number): TerminalResult<number> {
     const previous = this.get(index);
