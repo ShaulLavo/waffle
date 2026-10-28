@@ -461,30 +461,40 @@ test("clean detached descriptor reload preserves the captured length", async () 
 });
 
 test("cold namespace is not pending checkpoint debt", async () => {
+  // The clean namespace must exceed the capture budget while one dirty directory still fits.
+  const maxMetadataBytes = 32 * 1024;
   const storage = new ControlledStorage();
   const seed = await PersistentBackend.open(storage, { intervalMs: 0, dirtyLimits: false });
   try {
     seed.execute("mkdirp", ["/d"], data(0));
-    for (let index = 0; index < 7000; index++) {
+    for (let index = 0; index < 32; index++) {
       const args = [`/d/file-${index}`];
       await seed.prepare("writeFile", args);
       seed.execute("writeFile", args, data(1));
-      if (index % 500 === 499) await seed.flush();
     }
     await seed.close();
   } finally {
     seed.dispose();
   }
-  const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 0,
+    checkpointLimits: { maxMetadataBytes },
+  });
   const service = new FilesystemService(backend);
   const pair = createFilesystemConnection();
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
   try {
+    const pressure = backend.dirtyPressure();
+    expect(pressure.namespaceUnits).toBeGreaterThan(maxMetadataBytes);
+    expect(pressure.accountedMetadataUnits).toBeLessThan(maxMetadataBytes);
+    expect(pressure.dirtyCaptureBytes).toBe(0);
+    expect(pressure.dirtyMetadataUnits).toBe(0);
     const root = await client.asyncCall("preopen", ["/"]);
     const directory = await client.asyncCall("resolve", [root, "d"]);
     const file = await client.asyncCall("resolve", [directory.node, "file-1"]);
     client.retain(file.node);
+    expect(backend.shared.isResident(file.node)).toBe(false);
     await backend.prepare("read", [file.node]);
     expect(client.tryWrite(file.node, [data(1, 66)], 0)).toBe(1);
     await backend.flush();
