@@ -1,0 +1,112 @@
+name: Program family release
+
+# Builds the program families with their own prepare:package routes, then stages, packs and
+# verifies the release-tarball closure with scripts/program-release.ts. Publishing is opt-in.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing programs-v<version> tag on main
+        required: true
+        type: string
+      runtime_url:
+        description: Published waffle-v<version> runtime tarball URL
+        required: true
+        type: string
+      runtime_sha256:
+        description: SHA-256 of the runtime tarball
+        required: true
+        type: string
+      families:
+        description: Comma-separated top-level families (base, git)
+        default: base
+        type: string
+      registry:
+        description: npm registry for declared third-party pins (Git needs one)
+        default: ""
+        type: string
+      publish:
+        description: Create the GitHub release with the verified assets
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      BUN_VERSION: "1.4.4"
+      RELEASE_TAG: ${{ inputs.tag }}
+      FAMILIES: ${{ inputs.families }}
+      WASI_SDK_PATH: ${{ github.workspace }}/.build/wasi-sdk-34.0-x86_64-linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+      - name: Verify the tag is on main and names no Python
+        run: |
+          [[ "$RELEASE_TAG" =~ ^programs-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
+          # Python stages a qualified interpreter artifact; release it with the local CLI.
+          [[ ",$FAMILIES," != *",python,"* ]]
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip1
+      - name: Restore wasi-sdk
+        id: wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WASI_SDK_PATH }}
+          key: wasi-sdk-34.0-x86_64-linux
+      - name: Download wasi-sdk
+        if: steps.wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$(dirname "$WASI_SDK_PATH")"
+          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
+            | tar -xz -C "$(dirname "$WASI_SDK_PATH")"
+      - name: Cache program builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            .build/wasi-libc
+          key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun test scripts/program-release.test.ts
+      - name: Prepare every family in the closure with its own route
+        run: |
+          for directory in $(bun scripts/program-release.ts --list --families "$FAMILIES"); do
+            bun run --cwd "packages/$directory" --if-present prepare:package
+          done
+      - name: Stage, pack and verify the release closure
+        env:
+          RUNTIME_URL: ${{ inputs.runtime_url }}
+          RUNTIME_SHA256: ${{ inputs.runtime_sha256 }}
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          bun scripts/program-release.ts --tag "$RELEASE_TAG" --families "$FAMILIES" \
+            --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" \
+            ${REGISTRY:+--registry "$REGISTRY"} --out .build/program-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: program-release-${{ inputs.tag }}
+          path: .build/program-release/assets
+          if-no-files-found: error
+      - name: Publish the GitHub release assets
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" .build/program-release/assets/* \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes
