@@ -42,6 +42,7 @@ try {
   const results = await page.evaluate(() => Reflect.get(globalThis, "pythonPackageResult"));
   console.log(JSON.stringify({ browser: "chromium", results, diagnostics }));
   assert.equal(results.results.length, 5);
+  assert.equal(results.publicUsage.length, 3);
   assert.equal(await page.locator("body").getAttribute("data-disposed"), "true");
   assert.deepEqual(diagnostics, []);
 } finally {

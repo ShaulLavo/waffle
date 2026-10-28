@@ -1,5 +1,6 @@
 import { createRuntime } from "waffle";
 import { qualifyPython } from "./qualification.ts";
+import { browserUsageCases } from "./public-usage.ts";
 
 Reflect.set(
   globalThis,
@@ -13,6 +14,7 @@ Reflect.set(
         workerUrl: new URL("/waffle-dist/browser/preview1-worker.js", location.href),
         wasmUrl: new URL("/assets/python.wasm", location.href),
         payloadUrl: new URL("/assets/python-stdlib.json", location.href),
+        publicUsageCases: browserUsageCases,
       });
     } finally {
       await runtime.dispose();

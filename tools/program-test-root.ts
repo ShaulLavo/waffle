@@ -2,7 +2,7 @@ import type { Runtime } from "waffle";
 import type { SpawnRequest } from "waffle/proc/types";
 import { DescriptorTable } from "waffle/core/descriptors";
 import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
-import { createWorkerPipeCodec } from "waffle/proc/worker-pipes";
+import { WorkerPipeHost } from "waffle/proc/worker-pipes";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -10,7 +10,9 @@ import {
 } from "waffle/proc/worker-client";
 
 export type TestExecution = { status: number; stdout: string; stderr: string };
-export type TestRequest = Pick<SpawnRequest, "executable" | "argv" | "env" | "cwd">;
+export type TestRequest = Pick<SpawnRequest, "executable" | "argv" | "env" | "cwd"> & {
+  readonly input?: string;
+};
 
 function decode(chunks: readonly Uint8Array[]) {
   const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
@@ -20,6 +22,20 @@ function decode(chunks: readonly Uint8Array[]) {
     offset += chunk.length;
   }
   return new TextDecoder().decode(bytes);
+}
+
+function inputPipe(pipes: WorkerPipeHost, descriptors: DescriptorTable, input: string): number {
+  const [reader, writer] = pipes.createPipe();
+  const bytes = new TextEncoder().encode(input);
+  try {
+    if (writer.write([bytes]) !== bytes.length) throw new Error("Short test stdin write");
+    return descriptors.open(reader, (1n << 1n) | (1n << 21n) | (1n << 27n), 0n);
+  } catch (error) {
+    reader.close();
+    throw error;
+  } finally {
+    writer.close();
+  }
 }
 
 /** Test-only page/root controller; all process, descriptor and worker behavior is Waffle's. */
@@ -51,26 +67,47 @@ export async function createProgramTestRoot(runtime: Runtime) {
     );
   }
   const notices: WorkerProcessMessage[] = [];
+  const pipes = new WorkerPipeHost({ transport, postMessage: (message) => notices.push(message) });
   const client = new WorkerProcessClient({
     transport,
     descriptors,
-    codec: createRuntimeTerminalCodec({ descriptors, fallback: createWorkerPipeCodec() }),
-    prepareSpawn: () => ({ data: { filesystem: runtime.filesystem.createIdentity() } }),
+    codec: createRuntimeTerminalCodec({ descriptors, fallback: pipes.codec() }),
+    prepareSpawn: (child) => {
+      pipes.registry.registerProcess(child);
+      return {
+        data: {
+          filesystem: runtime.filesystem.createIdentity(),
+          pipeRegistry: pipes.registry.handle(),
+        },
+      };
+    },
     postMessage: (message) => notices.push(message),
   });
   const active = new Set<number>();
   const flush = async () => {
     while (notices.length) await service.runtimeMessage(notices.shift()!, transport.pid);
   };
+  const spawn = (request: TestRequest) => {
+    const inputFd =
+      request.input === undefined ? undefined : inputPipe(pipes, descriptors, request.input);
+    try {
+      return client.spawn(transport.pid, {
+        executable: request.executable,
+        argv: request.argv,
+        env: request.env,
+        cwd: request.cwd,
+        job: -1,
+        fds: [0, 1, 2].map((fd) => ({ child: fd, parent: fd === 0 ? (inputFd ?? fd) : fd })),
+      });
+    } finally {
+      if (inputFd !== undefined) descriptors.close(inputFd);
+    }
+  };
   return {
     async exec(request: TestRequest): Promise<TestExecution> {
       output.stdout.length = 0;
       output.stderr.length = 0;
-      const child = client.spawn(transport.pid, {
-        ...request,
-        job: -1,
-        fds: [0, 1, 2].map((fd) => ({ child: fd, parent: fd })),
-      });
+      const child = spawn(request);
       active.add(child);
       await flush();
       await supervisor.start(child);
@@ -93,9 +130,12 @@ export async function createProgramTestRoot(runtime: Runtime) {
       };
     },
     async dispose() {
-      for (const child of active) await service.kill(child, 9);
-      descriptors.dispose();
-      if (descriptors.inheritable().length) throw new Error("Test root retained descriptors");
+      try {
+        for (const child of active) await service.kill(child, 9);
+      } finally {
+        descriptors.dispose();
+        if (descriptors.inheritable().length) throw new Error("Test root retained descriptors");
+      }
     },
   };
 }
