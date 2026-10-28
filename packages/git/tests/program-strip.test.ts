@@ -35,7 +35,7 @@ assert.equal(typeof installGitProgram, "function");
 assert.equal(GIT_CLI_URL.pathname, resolve("node_modules/waffle-git/dist/git-cli.js"));
 `;
 
-test("installed Git program export imports with Node's strip-only TypeScript loader", async (context) => {
+test("installed Git program export imports with Node's strip-only TypeScript loader", (context) => {
   const root = mkdtempSync(resolve(tmpdir(), "waffle-git-program-strip-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const gitRoot = resolve(import.meta.dirname, "..");
@@ -50,14 +50,22 @@ test("installed Git program export imports with Node's strip-only TypeScript loa
   writeFileSync(resolve(root, "package.json"), '{"private":true,"type":"module"}');
   writeFileSync(resolve(root, "consumer.mjs"), consumer);
   // Only Waffle's filesystem imports are prepared; Git's installed source stays TypeScript.
-  const built = await Bun.build({
+  const buildOptions = {
     entrypoints: [resolve(runtimeRoot, "fs/client.ts"), resolve(runtimeRoot, "fs/protocol.ts")],
     root: runtimeRoot,
     outdir: resolve(runtime, "dist"),
     naming: "[dir]/[name].js",
     target: "node",
-  });
-  assert.ok(built.success, String(built.logs));
+  };
+  execFileSync(
+    "bun",
+    [
+      "--eval",
+      `const built = await Bun.build(${JSON.stringify(buildOptions)});
+if (!built.success) throw new Error(String(built.logs));`,
+    ],
+    { stdio: "pipe", timeout: 30_000 },
+  );
   assert.deepEqual(
     readFileSync(resolve(git, "src/program.ts")),
     readFileSync(resolve(gitRoot, "src/program.ts")),
