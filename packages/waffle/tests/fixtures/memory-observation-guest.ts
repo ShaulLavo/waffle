@@ -51,3 +51,34 @@ export function failingMemoryObservationGuest(imported: boolean): WebAssembly.Mo
     ),
   );
 }
+
+/** The command traps unless its hook-supplied, named host import returns 42. */
+export function namedMemoryImportGuest(): WebAssembly.Module {
+  const body = [0, 0x10, 0, 0x41, 42, 0x47, 0x04, 0x40, 0, 0x0b, 0x0b];
+  return new WebAssembly.Module(
+    Uint8Array.from(
+      [0, 97, 115, 109, 1, 0, 0, 0].concat(
+        section(1, [2, 0x60, 0, 1, 0x7f, 0x60, 0, 0]),
+        section(2, [1].concat(text("env"), text("ping"), [0, 0])),
+        section(3, [1, 1]),
+        section(5, [1, 0, 1]),
+        section(7, [2].concat(text("memory"), [2, 0], text("_start"), [0, 1])),
+        section(10, [1].concat(uleb(body.length), body)),
+      ),
+    ),
+  );
+}
+
+export function sampledHostImportsGuest(): WebAssembly.Module {
+  return new WebAssembly.Module(
+    Uint8Array.from(
+      [0, 97, 115, 109, 1, 0, 0, 0].concat(
+        section(1, [1, 0x60, 0, 1, 0x7f]),
+        section(
+          2,
+          [2].concat(text("fixture"), text("grow"), [0, 0], text("fixture"), text("fail"), [0, 0]),
+        ),
+      ),
+    ),
+  );
+}

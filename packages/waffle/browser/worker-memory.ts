@@ -2,12 +2,12 @@ import {
   BigInt64ArrayConstructor,
   BigIntConstructor,
   atomicsStore,
-  objectEntries,
   objectCreate,
   reflectApply,
   isSharedArrayBuffer,
   sharedArrayBufferByteLength,
   wasmMemoryByteLength,
+  wasmModuleImports,
 } from "../proc/intrinsics.js";
 
 function sampledCall(call: Function, sample: () => void): Function {
@@ -36,29 +36,31 @@ export function createWorkerMemorySampler(buffer: SharedArrayBuffer) {
       sample();
     },
     sample,
-    imports(imports: WebAssembly.Imports): WebAssembly.Imports {
+    imports(module: WebAssembly.Module, imports: WebAssembly.Imports): WebAssembly.Imports {
       const linked: WebAssembly.Imports = objectCreate(null);
-      const namespaces = objectEntries(imports);
-      for (let index = 0; index < namespaces.length; index++) {
-        const [name, namespace] = namespaces[index]!;
-        linked[name] = sampledNamespace(namespace, sample);
-      }
+      const entries = wasmModuleImports(module);
+      for (let index = 0; index < entries.length; index++)
+        copyImport(linked, imports, entries[index]!, sample);
       return linked;
     },
   };
 }
 
-function sampledNamespace(
-  namespace: WebAssembly.ModuleImports,
+function copyImport(
+  linked: WebAssembly.Imports,
+  imports: WebAssembly.Imports,
+  entry: WebAssembly.ModuleImportDescriptor,
   sample: () => void,
-): WebAssembly.ModuleImports {
-  const linked: WebAssembly.ModuleImports = objectCreate(null);
-  const entries = objectEntries(namespace);
-  for (let index = 0; index < entries.length; index++) {
-    const [name, value] = entries[index]!;
-    linked[name] = typeof value === "function" ? sampledCall(value, sample) : value;
-  }
-  return linked;
+): void {
+  const namespace = imports[entry.module];
+  if (namespace === undefined) return;
+  if (namespace === null || (typeof namespace !== "object" && typeof namespace !== "function"))
+    throw new TypeError(`import namespace ${entry.module} must be an object`);
+  const target = (linked[entry.module] ??= objectCreate(null));
+  const value = namespace[entry.name];
+  if (value === undefined) return;
+  target[entry.name] =
+    entry.kind === "function" && typeof value === "function" ? sampledCall(value, sample) : value;
 }
 
 /** Imported memory is observable even when a start section traps before exports exist. */
@@ -67,7 +69,7 @@ export function bindImportedMemory(
   imports: WebAssembly.Imports,
   bind: (memory: WebAssembly.Memory) => void,
 ): void {
-  const entries = WebAssembly.Module.imports(module);
+  const entries = wasmModuleImports(module);
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index]!;
     if (entry.kind !== "memory") continue;

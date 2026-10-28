@@ -210,3 +210,5 @@ export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
     ? sharedArrayBufferByteLength(buffer)
     : apply(arrayBufferByteLengthGetter, buffer, []);
 }
+
+export const wasmModuleImports = WebAssembly.Module.imports;

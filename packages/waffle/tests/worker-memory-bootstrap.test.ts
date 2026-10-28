@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { bootstrap, type WorkerExecutor, type WorkerBindingsContext } from "../browser/worker.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
-import { failingMemoryObservationGuest } from "./fixtures/memory-observation-guest.js";
+import {
+  failingMemoryObservationGuest,
+  namedMemoryImportGuest,
+} from "./fixtures/memory-observation-guest.js";
 
 const empty = new WebAssembly.Module(
   new Uint8Array([
@@ -105,3 +108,35 @@ test("an executor cannot replace a bound memory and finish samples the original"
   expect(f.errors[0]).toContain("replace bound process memory");
   expect(Atomics.load(f.bytes, 0)).toBe(131072n);
 });
+
+function frozenProperty(name: string, value: object | (() => number), inherited: boolean) {
+  const owner = Object.defineProperty({}, name, { value });
+  Object.freeze(owner);
+  return Object.freeze(inherited ? Object.create(owner) : owner);
+}
+for (const namespaceInherited of [false, true])
+  for (const memberInherited of [false, true]) {
+    test(`bootstrap preserves frozen named imports, namespace inherited=${namespaceInherited}, member inherited=${memberInherited}`, async () => {
+      let calls = 0;
+      const ping = () => {
+        calls++;
+        return 42;
+      };
+      const namespace = frozenProperty("ping", ping, memberInherited);
+      const imports = frozenProperty("env", namespace, namespaceInherited);
+      const module = namedMemoryImportGuest();
+      const baseline = new WebAssembly.Instance(module, imports).exports._start;
+      if (typeof baseline !== "function") throw Error("fixture entry missing");
+      baseline();
+      expect(calls).toBe(1);
+      const f = run(module, {
+        namespaces: () => ({ env: { ping } }),
+        imports: () => imports,
+        run: () => 0,
+      });
+      await f.pending;
+      expect(f.errors).toEqual([]);
+      expect(calls).toBe(2);
+      expect(Atomics.load(f.bytes, 0)).toBe(65536n);
+    });
+  }

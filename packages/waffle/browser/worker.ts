@@ -55,6 +55,7 @@ import {
   SetConstructor,
   setHas,
   setAdd,
+  arrayAppend,
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
@@ -273,6 +274,16 @@ function loadProcessModules(runtimeProcess: unknown) {
   return { client, host };
 }
 
+function ownedStreams(stdio: WorkerExecutor["stdio"]): Stream[] {
+  const streams = [stdio?.[0], stdio?.[1], stdio?.[2]];
+  const owned: Stream[] = [];
+  for (let index = 0; index < streams.length; index++) {
+    const stream = streams[index];
+    if (stream) arrayAppend(owned, stream);
+  }
+  return owned;
+}
+
 function initialStdio(
   runtimeState: RuntimeWorkerState | null,
   ownedStdio: Partial<Record<0 | 1 | 2, Stream>> | undefined,
@@ -284,9 +295,7 @@ function initialStdio(
   if (runtimeState && runtimeState.parentPid !== 0)
     return {
       stdio: { 0: null, 1: null, 2: null },
-      discarded: [ownedStdio?.[0], ownedStdio?.[1], ownedStdio?.[2]].filter(
-        (stream): stream is Stream => stream !== undefined,
-      ),
+      discarded: ownedStreams(ownedStdio),
     };
   if (!ownedStdio) return { stdio: undefined, discarded: [] };
   return {
@@ -517,9 +526,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         disposeProcessDescriptors(wasi, discardedStdio);
         return;
       }
-      const streams = [ownedStdio?.[0], ownedStdio?.[1], ownedStdio?.[2]].filter(
-        (stream): stream is Stream => stream !== undefined,
-      );
+      const streams = ownedStreams(ownedStdio);
       closeDiscardedStdio(streams, new SetConstructor());
     });
     let filesystemReleased = attempt(() => fs.dispose());
@@ -946,7 +953,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       throw new TypeError("executor imports hook cannot replace imported memory");
     }
     bindImportedMemory(req.module, linked, bindMemory);
-    const sampled = memorySampler?.imports(linked) ?? linked;
+    const sampled = memorySampler?.imports(req.module, linked) ?? linked;
     const instance = executor.instantiate
       ? await Promise.race([
           executor.instantiate(sampled, { ...bindingsContext, bindMemory }),

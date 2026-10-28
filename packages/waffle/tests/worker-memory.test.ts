@@ -1,3 +1,4 @@
+import { sampledHostImportsGuest } from "./fixtures/memory-observation-guest.js";
 import { expect, test } from "bun:test";
 import { createWorkerMemorySampler } from "../browser/worker-memory.js";
 
@@ -30,7 +31,7 @@ for (const shared of [false, true])
     };
     Object.freeze(imports.fixture);
     Object.freeze(imports);
-    const linked = sampler.imports(imports);
+    const linked = sampler.imports(sampledHostImportsGuest(), imports);
     const grow = linked.fixture!.grow,
       fail = linked.fixture!.fail;
     if (typeof grow !== "function" || typeof fail !== "function")

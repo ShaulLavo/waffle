@@ -37,6 +37,7 @@ A callback that closes over a private endpoint is authority too.
   collections. Use indexed loops over owned arrays, or captured collection
   traversal helpers. Do not use `for-of`, iterable spread or mutable array
   callbacks over private collections.
+  Array binding patterns also invoke mutable iterators. Read private entry pairs by index.
 - Capturing native `subarray` alone is insufficient. Typed-array subviews must
   use captured constructors plus captured buffer, offset and length getters.
   Never consult `.constructor`, `Symbol.species` or a mutable iterator to derive
