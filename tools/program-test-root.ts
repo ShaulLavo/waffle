@@ -3,10 +3,13 @@ import type { SpawnRequest } from "waffle/proc/types";
 import { DescriptorTable } from "waffle/core/descriptors";
 import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
 import { WorkerPipeHost } from "waffle/proc/worker-pipes";
+import { PipePublicationRegistry } from "waffle/proc/pipes";
 import {
   createWorkerProcessTransport,
+  workerProcessState,
   WorkerProcessClient,
   type WorkerProcessMessage,
+  type WorkerSpawnTransfer,
 } from "waffle/proc/worker-client";
 
 export type TestExecution = { status: number; stdout: string; stderr: string };
@@ -38,6 +41,29 @@ function inputPipe(pipes: WorkerPipeHost, descriptors: DescriptorTable, input: s
   }
 }
 
+function preparePipeChild(runtime: Runtime, pipes: WorkerPipeHost, child: number): WorkerSpawnTransfer {
+  let enrolled = false;
+  const cancel = () => {
+    if (!enrolled) return;
+    pipes.registry.collectProcess(child);
+    enrolled = false;
+  };
+  try {
+    pipes.registry.registerProcess(child);
+    enrolled = true;
+    return {
+      data: {
+        filesystem: runtime.filesystem.createIdentity(),
+        pipeRegistry: pipes.registry.handle(),
+      },
+      cancel,
+    };
+  } catch (error) {
+    cancel();
+    throw error;
+  }
+}
+
 /** Test-only page/root controller; all process, descriptor and worker behavior is Waffle's. */
 export async function createProgramTestRoot(runtime: Runtime) {
   const service = await runtime.processes();
@@ -46,7 +72,9 @@ export async function createProgramTestRoot(runtime: Runtime) {
     job: runtime.identities.job(),
     identity: runtime.identities.buffer,
   });
-  transport.data = { filesystem: runtime.filesystem.createIdentity() };
+  const registry = new PipePublicationRegistry({ wake: workerProcessState(transport).wake });
+  const pipeRegistry = registry.handle();
+  transport.data = { filesystem: runtime.filesystem.createIdentity(), pipeRegistry };
   const output = { stdout: [] as Uint8Array[], stderr: [] as Uint8Array[] };
   await service.adoptRuntimeRoot(transport, {
     output: (fd, data) => (fd === 2 ? output.stderr : output.stdout).push(data.slice()),
@@ -67,20 +95,16 @@ export async function createProgramTestRoot(runtime: Runtime) {
     );
   }
   const notices: WorkerProcessMessage[] = [];
-  const pipes = new WorkerPipeHost({ transport, postMessage: (message) => notices.push(message) });
+  const pipes = new WorkerPipeHost({
+    transport,
+    registry: pipeRegistry,
+    postMessage: (message) => notices.push(message),
+  });
   const client = new WorkerProcessClient({
     transport,
     descriptors,
     codec: createRuntimeTerminalCodec({ descriptors, fallback: pipes.codec() }),
-    prepareSpawn: (child) => {
-      pipes.registry.registerProcess(child);
-      return {
-        data: {
-          filesystem: runtime.filesystem.createIdentity(),
-          pipeRegistry: pipes.registry.handle(),
-        },
-      };
-    },
+    prepareSpawn: (child) => preparePipeChild(runtime, pipes, child),
     postMessage: (message) => notices.push(message),
   });
   const active = new Set<number>();
