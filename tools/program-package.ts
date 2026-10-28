@@ -69,8 +69,11 @@ export function admitProgramPackage(root: string): string[] {
 export function verifyProgramTarball(root: string, archive: string): void {
   const files = admitProgramPackage(root);
   for (const name of files) {
-    const packed = execFileSync("tar", ["-xOf", archive, `package/${name}`]);
-    assert.deepEqual(packed, requiredFile(root, name, true), `Packed asset differs: ${name}`);
+    const expected = requiredFile(root, name, true);
+    const packed = execFileSync("tar", ["-xOf", archive, `package/${name}`], {
+      maxBuffer: expected.byteLength + 4096,
+    });
+    assert.deepEqual(packed, expected, `Packed asset differs: ${name}`);
   }
 }
 

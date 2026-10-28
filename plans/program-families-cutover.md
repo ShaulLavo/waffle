@@ -1,5 +1,7 @@
 # Program family cutover
 
+Status: Approved. Actual-main family acceptance and task-local packed closure pass. Publication metadata and real release assets precede the parent-owned Bash cutover.
+
 This branch moves the prepared everyday programs into Waffle packages. The Bash consumer cutover belongs to the shell track and must land after env PR162 is green and merged.
 
 1. Release the Waffle family packages from one green Waffle commit. The `base` package installs coreutils, findutils, grep, ripgrep and sed through one caller-owned runtime and one `installPrograms` operation.
@@ -9,3 +11,10 @@ This branch moves the prepared everyday programs into Waffle packages. The Bash 
 5. Prove the combined browser path with the real Waffle runtime: `cat`, `seq`, `tail`, `grep`, `mkdir`, `which`, `env`, `sed`, `find`, `xargs` and `rg`, then Python scripts and Git's six local commands.
 
 The env PR162 browser fix remains an external prerequisite for the Bash companion change. This plan does not modify PR162 or the Bash environment source.
+
+The outside-workspace consumer uses explicit local tarball overrides for Waffle and
+all five families plus base. Bun's conversion of workspace dependencies to version
+strings is not a valid external release plan. Waffle steps 4/5 own the final published
+names, dependency rewrites and asset identities. Do not pin a Git repository root or
+invent a release URL while those assets are unavailable. Existing private package
+labels, including Python's, do not grant a public npm scope.

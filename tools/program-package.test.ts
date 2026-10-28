@@ -20,7 +20,7 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     );
     writeFileSync(
       resolve(root, "package-artifacts.json"),
-      JSON.stringify({ files: ["dist/program.wasm", "dist/NOTICES.txt"] }),
+      JSON.stringify({ files: ["dist/program.wasm", "dist/NOTICES.txt", "dist/payload.bin"] }),
     );
     assert.throws(() => packProgramPackage(root), /ENOENT/);
     mkdirSync(resolve(root, "dist"));
@@ -30,7 +30,8 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     );
     assert.throws(() => packProgramPackage(root), /ENOENT/);
     writeFileSync(resolve(root, "dist/NOTICES.txt"), "fixture license\n");
-    assert.equal(admitProgramPackage(root).length, 2);
+    writeFileSync(resolve(root, "dist/payload.bin"), new Uint8Array(1024 * 1024 + 1));
+    assert.equal(admitProgramPackage(root).length, 3);
     const archive = packProgramPackage(root);
     assert.ok(readFileSync(archive).length > 0);
     writeFileSync(resolve(root, "dist/NOTICES.txt"), "changed license\n");

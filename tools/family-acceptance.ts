@@ -35,7 +35,9 @@ export interface LaunchRequest {
   readonly fds: DescriptorBinding[];
 }
 
-type LaunchRecord = LaunchRequest;
+interface LaunchRecord extends Omit<LaunchRequest, "fds"> {
+  readonly fds: readonly number[];
+}
 
 export interface Execution {
   readonly exit: ProcessExit;
@@ -140,7 +142,7 @@ function expectBytes(actual: Uint8Array, expected: string | Uint8Array, label: s
   const wanted = bytes(expected);
   assert(
     actual.length === wanted.length,
-    `${label}: byte length ${actual.length} != ${wanted.length}`,
+    `${label}: byte length ${actual.length} != ${wanted.length}; actual=${JSON.stringify(decoder.decode(actual))}`,
   );
   for (let index = 0; index < actual.length; index++) {
     assert(actual[index] === wanted[index], `${label}: byte ${index} differs`);
@@ -166,8 +168,9 @@ function expectLaunch(result: Execution, expected: LaunchRequest) {
   assert(actual.cwd === expected.cwd, `cwd changed at launch: ${actual.cwd}`);
   assert(normalizedEnv(actual.env) === normalizedEnv(expected.env), "env changed at launch");
   assert(
-    JSON.stringify(actual.fds) === JSON.stringify(expected.fds),
-    "Descriptor bindings changed",
+    JSON.stringify(actual.fds) ===
+      JSON.stringify(expected.fds.map((binding) => binding.child).sort((a, b) => a - b)),
+    `Delivered descriptors changed: ${JSON.stringify(actual.fds)}`,
   );
 }
 
@@ -373,7 +376,8 @@ async function createInstalledSession(options: FamilyAcceptanceOptions): Promise
       argv: context.request.argv.slice(),
       cwd: context.request.cwd,
       env: { ...context.request.env },
-      fds: context.request.fds.map(({ child, parent }) => ({ child, parent })),
+      // The broker consumes request bindings; the installed descriptor table is authoritative.
+      fds: context.descriptors.inheritable(),
     });
     return service.launchWorker(context, {
       workerUrl: workerUrl.href,
@@ -397,10 +401,17 @@ async function createInstalledSession(options: FamilyAcceptanceOptions): Promise
 
 async function runCases(session: FamilyAcceptanceSession, cases: readonly FamilyAcceptanceCase[]) {
   const completed: string[] = [];
+  const errors: unknown[] = [];
   for (const acceptanceCase of cases) {
-    await acceptanceCase.run(session);
-    completed.push(acceptanceCase.name);
+    const error = await runCase(session, acceptanceCase);
+    if (error) errors.push(error);
+    else completed.push(acceptanceCase.name);
   }
+  if (errors.length)
+    throw new AggregateError(
+      errors,
+      `Family acceptance failures; completed ${completed.length}/${cases.length}`,
+    );
   return completed;
 }
 
@@ -434,7 +445,7 @@ async function find(session: FamilyAcceptanceSession) {
   await seedFindTree(session.runtime);
   const launched = request(["find", "sub", "-type", "f", "-size", "2c"], "/tree");
   const result = await session.exec(launched);
-  expectExecution(result, launched, 0, "./sub/b.txt\n");
+  expectExecution(result, launched, 0, "sub/b.txt\n");
 }
 
 async function xargs(session: FamilyAcceptanceSession) {
@@ -558,4 +569,14 @@ async function closedStdout(session: FamilyAcceptanceSession) {
   expectExit(result.exit, 1);
   expectBytes(result.stdout, "", "closed stdout");
   expectLaunch(result, launched);
+}
+
+async function runCase(session: FamilyAcceptanceSession, acceptanceCase: FamilyAcceptanceCase) {
+  try {
+    await acceptanceCase.run(session);
+    console.log(`Passed family acceptance: ${acceptanceCase.name}`);
+    return undefined;
+  } catch (error) {
+    return new Error(acceptanceCase.name, { cause: error });
+  }
 }

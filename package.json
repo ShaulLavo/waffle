@@ -31,6 +31,15 @@
     "programs:source": "bun run --cwd packages/findutils test:source && bun run --cwd packages/sed test:source && bun run --cwd packages/ripgrep test:source",
     "programs:tools": "bun test tools/program-build-tools.test.ts tools/program-build-tools-verifier.test.ts tools/program-family-manifest.test.ts tools/family-acceptance.test.ts tools/program-package.test.ts tools/program-notices.test.ts",
     "programs:native": "cargo test --locked --offline -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source",
-    "programs:pack": "bun run --cwd packages/coreutils pack && bun run --cwd packages/grep pack && bun run --cwd packages/findutils pack && bun run --cwd packages/sed pack && bun run --cwd packages/ripgrep pack && bun run --cwd packages/base pack"
+    "programs:pack": "bun run --cwd packages/coreutils pack && bun run --cwd packages/grep pack && bun run --cwd packages/findutils pack && bun run --cwd packages/sed pack && bun run --cwd packages/ripgrep pack && bun run --cwd packages/base pack",
+    "programs:check": "bun run --cwd packages/waffle tsc -p ../../tools/tsconfig.programs.json",
+    "programs:integration": "bun test tools/family-integration.test.ts",
+    "programs:browser": "bun tools/family-browser.ts",
+    "programs:packed": "bun tools/family-packed.ts"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1",
+    "waffle": "workspace:*",
+    "waffle-base": "workspace:*"
   }
 }

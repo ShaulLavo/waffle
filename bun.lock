@@ -4,6 +4,11 @@
   "workspaces": {
     "": {
       "name": "waffle-monorepo",
+      "devDependencies": {
+        "playwright": "^1.64.1",
+        "waffle": "workspace:*",
+        "waffle-base": "workspace:*",
+      },
     },
     "packages/base": {
       "name": "waffle-base",
@@ -23,10 +28,22 @@
     "packages/coreutils": {
       "name": "waffle-coreutils",
       "version": "0.0.0",
+      "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
     },
     "packages/findutils": {
       "name": "waffle-findutils",
       "version": "0.0.0",
+      "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
     },
     "packages/git": {
       "name": "waffle-git",
@@ -51,6 +68,12 @@
     "packages/grep": {
       "name": "waffle-grep",
       "version": "0.0.0",
+      "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
     },
     "packages/process-consumer": {
       "name": "waffle-process-consumer",
@@ -75,10 +98,22 @@
     "packages/ripgrep": {
       "name": "waffle-ripgrep",
       "version": "0.0.0",
+      "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
     },
     "packages/sed": {
       "name": "waffle-sed",
       "version": "0.0.0",
+      "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
     },
     "packages/waffle": {
       "name": "waffle",

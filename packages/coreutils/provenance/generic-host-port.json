@@ -1,5 +1,5 @@
 {
-  "base": "aff7671",
+  "base": "aff7671630a99f6f642335965ba11c934a560ae9",
   "runtimeMain": "d44553dd8b9c55541c1dce4008bb5395a63a536c",
   "guestPatch": "coreutils-0e44eeb.patch",
   "reason": "Use the landed runtime_proc inherited descriptor and access contracts; align which build features. Historical handoff receipts remain unchanged.",
@@ -94,5 +94,6 @@
       "beforeSha256": "2f77f23820b99a222d859ed7ebe75f993a077bd4fccc05e1cb50e7d4bf2cac07",
       "afterSha256": "4f069c14b33764ca6bb1c803cd0ab64ce42329a0d6512ced0a86e4178e8c3260"
     }
-  ]
+  ],
+  "guestPatchSha256": "6b7c3f79b35456f63a8f20afe386bb85b6cd96d705523b2181c90a49bd197737"
 }

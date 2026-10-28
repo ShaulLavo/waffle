@@ -29,5 +29,11 @@
     "pack": "node ../../tools/program-package.ts pack",
     "prepack": "node ../../tools/program-package.ts check",
     "prepare:package": "bun run build"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  },
+  "devDependencies": {
+    "waffle": "workspace:*"
   }
 }
