@@ -1,5 +1,10 @@
 // Parsed but never executed: deliberately unsafe examples for the static guard.
 import type { Descriptor, Stream } from "../../core/descriptors.js";
+import type {
+  TerminalContext,
+  TerminalInput,
+  TerminalProcessLifetime,
+} from "../../browser/runtime-terminals.js";
 import {
   objectDefineProperty,
   objectEntries,
@@ -14,6 +19,26 @@ import {
 
 type PrivateAlias = SharedArrayBuffer;
 type NestedAlias = Map<number, Descriptor>;
+
+/** @compileFixture Parsed by the authority guard, never called. */
+export function liveTerminalLifetimes(entries: readonly TerminalProcessLifetime[]): void {
+  entries.some((lifetime) => {
+    lifetime.quiesce();
+    return true;
+  });
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function liveTerminalInputs(inputs: readonly TerminalInput[]): TerminalInput[] {
+  return Array.from(inputs);
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function liveTerminalContexts(contexts: readonly TerminalContext[]): void {
+  for (const context of contexts) void context;
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function indexedTerminalLifetimes(entries: readonly TerminalProcessLifetime[]): void {
+  for (let index = 0; index < entries.length; index++) entries[index]!.quiesce();
+}
 
 /** @compileFixture Parsed by the authority guard, never called. */
 export function liveAtomics(buffer: PrivateAlias): number {

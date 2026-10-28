@@ -128,6 +128,8 @@ export function createRuntimeTerminalCodec(
   };
 }
 
+export { captureTerminalProcessLifetime } from "./terminal-lifetime.js";
+export type { TerminalProcessLifetime } from "./terminal-lifetime.js";
 export {
   createTerminalInput,
   attachTerminalInput,

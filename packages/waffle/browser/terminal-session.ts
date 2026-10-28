@@ -217,7 +217,11 @@ import {
   mapDelete,
   mapSize,
   mapForEach,
+  WeakMapConstructor,
+  weakMapGet,
+  weakMapSet,
 } from "../proc/intrinsics.ts";
+import { enterTerminalSection, leaveTerminalSection } from "../proc/terminal-lifetime.js";
 import {
   directoryControls,
   directoryProcesses,
@@ -265,6 +269,8 @@ const H = objectFreeze({
   geometry: 14,
   wake: 15,
   gate: 16,
+  inputNonce: 18,
+  inputToken: 20,
 });
 const GROUPS = 64,
   MEMBERS = GROUPS + 64 * 16;
@@ -276,6 +282,7 @@ const PENDING = 1,
   BOUND = 2,
   REMOVED = 3;
 const pageOwner = -9223372036854775808n;
+const turns = new WeakMapConstructor<TerminalTurn, Session>();
 const timedWaitAsync = atomicsWaitAsync as
   | ((
       a: Int32Array,
@@ -447,12 +454,24 @@ class Session {
   rootLive(): boolean {
     return alive(this.identity, this.identity.rootSlot, this.identity.rootPid) !== undefined;
   }
-  transact<T>(owner: bigint, operation: () => TerminalResult<T>): TerminalResult<T> {
+  transact<T>(
+    owner: ProcessState | typeof pageOwner,
+    operation: () => TerminalResult<T>,
+  ): TerminalResult<T> {
     if (this.closed()) return error("CLOSED");
     if (!this.rootLive()) {
       this.close();
       return error("PROCESS_GONE");
     }
+    if (typeof owner === "bigint") return this.lock(owner, operation);
+    if (!enterTerminalSection(owner)) return error("CANCELED");
+    try {
+      return this.lock(BigIntConstructor(owner.pid), operation);
+    } finally {
+      leaveTerminalSection(owner, this.identity.directory);
+    }
+  }
+  private lock<T>(owner: bigint, operation: () => TerminalResult<T>): TerminalResult<T> {
     if (atomicsCompareExchange(this.gate, 0, 0n, owner) !== 0n) return this.contend();
     this.dirty = false;
     try {
@@ -515,6 +534,7 @@ class Session {
         return read("selection");
       },
     });
+    weakMapSet(turns, turn, this);
     try {
       return callback(turn);
     } catch (cause) {
@@ -542,6 +562,50 @@ class Session {
     const state = alive(this.identity, this.get(row + 4), this.get(row + 5));
     if (state) requestSignal(state.signals, Signal.SIGWINCH);
   }
+}
+
+/** Internal lock publication precedes the input CAS, while this turn owns the Session gate. */
+export function terminalInputSection<T>(
+  turn: TerminalTurn,
+  nonce: bigint,
+  token: bigint,
+  operation: () => T,
+): T {
+  const session = weakMapGet(turns, turn);
+  if (!session) return operation(); // Direct policy calls have no Session lifetime to fence.
+  void turn.mode; // The frozen turn getter rejects a retained, expired turn before publication.
+  const record = new BigInt64ArrayConstructor(session.identity.buffer, H.inputNonce * 4, 2);
+  atomicsStore(record, 0, nonce);
+  atomicsStore(record, 1, token);
+  try {
+    return operation();
+  } finally {
+    atomicsStore(record, 1, 0n);
+    atomicsStore(record, 0, 0n);
+  }
+}
+
+/** Trusted stop capture. Physical death closes an interrupted session without unlocking it. */
+export function terminalStopCapture(identity: TerminalIdentity, process: WorkerProcessTransport) {
+  const parsed = parseIdentity(identity);
+  const state = workerProcessState(process);
+  if (workerProcessDirectoryId(process) !== parsed.directoryId || state.rootPid !== parsed.rootPid)
+    throw new TypeError("terminal stop capture belongs to another process root");
+  const root = directoryState({
+    directory: parsed.directory,
+    slot: parsed.rootSlot,
+    pid: parsed.rootPid,
+  });
+  if (root.pid !== state.rootPid) throw new TypeError("terminal root incarnation does not match");
+  const session = new Session(parsed);
+  const record = new BigInt64ArrayConstructor(parsed.buffer, H.inputNonce * 4, 2);
+  return (poisonInput: (nonce: bigint, token: bigint) => void): void => {
+    if (atomicsLoad(session.gate, 0) !== BigIntConstructor(state.pid)) return;
+    session.close();
+    const nonce = atomicsLoad(record, 0),
+      token = atomicsLoad(record, 1);
+    if (nonce !== 0n && token !== 0n) poisonInput(nonce, token);
+  };
 }
 
 export function createTerminalSession(options: {
@@ -681,22 +745,24 @@ export function claimTerminalAuthority(options: {
   )
     return error("DENIED");
   const session = new Session(identity);
-  return session.transact(BigIntConstructor(identity.rootPid), () => {
+  const state = workerProcessState(process);
+  return session.transact(state, () => {
     checkActive();
     if (atomicsCompareExchange(session.words, H.claimed, 0, 1) !== 0) return error("DENIED");
-    return ok(new Authority(session, checkActive, policy));
+    return ok(new Authority(session, state, checkActive, policy));
   });
 }
 class Authority implements TerminalAuthority {
   readonly local = () => {};
   constructor(
     readonly session: Session,
+    private readonly state: ProcessState,
     private readonly checkActive: () => void,
     private readonly policy: TerminalPolicy,
   ) {}
   private run<T>(operation: () => TerminalResult<T>): TerminalResult<T> {
     this.checkActive();
-    return this.session.transact(BigIntConstructor(this.session.identity.rootPid), () => {
+    return this.session.transact(this.state, () => {
       this.checkActive();
       return operation();
     });
@@ -1141,7 +1207,7 @@ class Attachment implements TerminalAttachment {
   run<T>(state: ProcessState, callback: () => TerminalResult<T>): TerminalResult<T> {
     const denied = this.check(state);
     if (denied) return error(denied);
-    return this.session.transact(BigIntConstructor(state.pid), () => {
+    return this.session.transact(state, () => {
       const failure = this.check(state);
       return failure ? error(failure) : callback();
     });
@@ -1169,7 +1235,7 @@ class Attachment implements TerminalAttachment {
       const seen = this.session.get(H.wake);
       const denied = this.check();
       if (denied) return error(denied);
-      const result = this.session.transact(BigIntConstructor(this.state.pid), () => this.startup());
+      const result = this.session.transact(this.state, () => this.startup());
       if (result.kind !== "error" || result.code !== "AGAIN") return result;
       atomicsWait(this.session.wake, 0, seen, 10);
     }

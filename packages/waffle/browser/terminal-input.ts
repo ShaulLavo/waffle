@@ -6,6 +6,7 @@ import {
   type TerminalPolicy,
   type TerminalResult,
   type TerminalTurn,
+  terminalInputSection,
 } from "./terminal-session.js";
 import {
   atomicsAdd,
@@ -15,13 +16,23 @@ import {
   atomicsStore,
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
+  BigInt64ArrayConstructor,
+  Uint32ArrayConstructor,
+  cryptoGetRandomValues,
+  typedArraySet,
+  typedArrayLength,
+  typedArraySubarray,
+  sharedArrayBufferByteLength,
+  Uint8ArrayConstructor,
+  isInstance,
+  isSharedArrayBuffer,
 } from "../proc/intrinsics.ts";
 
 const AGAIN = -6;
 const BADF = -8;
 const CANCELED = -11;
 const NOTSUP = -58;
-const HEADER_WORDS = 10;
+const HEADER_WORDS = 16;
 const HEADER_BYTES = HEADER_WORDS * 4;
 const DEFAULT_CAPACITY = 65536;
 const H = {
@@ -30,11 +41,14 @@ const H = {
   wake: 2,
   closed: 3,
   lock: 4,
-  cancelled: 5,
-  cookedReady: 6,
-  cookedEnd: 7,
-  cookedOutputEnd: 8,
-  skipLineFeed: 9,
+  cancelled: 6,
+  cookedReady: 7,
+  cookedEnd: 8,
+  cookedOutputEnd: 9,
+  skipLineFeed: 10,
+  poisoned: 11,
+  nonce: 12,
+  nextToken: 14,
 } as const;
 
 export interface TerminalInput {
@@ -74,26 +88,34 @@ function validCapacity(capacity: number): boolean {
 }
 
 function viewCapacity(buffer: SharedArrayBuffer): number {
-  if (buffer.byteLength <= HEADER_BYTES) throw new TypeError("invalid terminal input buffer");
-  const capacity = buffer.byteLength - HEADER_BYTES;
+  const capacity = sharedArrayBufferByteLength(buffer) - HEADER_BYTES;
+  if (capacity <= 0) throw new TypeError("invalid terminal input buffer");
   if (!validCapacity(capacity)) throw new TypeError("invalid terminal input capacity");
   return capacity;
 }
 
 function copyInto(ring: Uint8Array, index: number, bytes: Uint8Array): void {
-  const start = (index >>> 0) % ring.length;
-  const first = Math.min(bytes.length, ring.length - start);
-  ring.set(bytes.subarray(0, first), start);
-  ring.set(bytes.subarray(first), 0);
+  const capacity = typedArrayLength(ring);
+  const start = (index >>> 0) % capacity;
+  const first = Math.min(typedArrayLength(bytes), capacity - start);
+  typedArraySet(ring, typedArraySubarray(bytes, 0, first), start);
+  typedArraySet(ring, typedArraySubarray(bytes, first), 0);
 }
 
 function copyFrom(ring: Uint8Array, index: number, length: number): Uint8Array {
-  const result = new Uint8Array(length);
-  const start = (index >>> 0) % ring.length;
-  const first = Math.min(length, ring.length - start);
-  result.set(ring.subarray(start, start + first));
-  result.set(ring.subarray(0, length - first), first);
+  const result = new Uint8ArrayConstructor(length);
+  const capacity = typedArrayLength(ring);
+  const start = (index >>> 0) % capacity;
+  const first = Math.min(length, capacity - start);
+  typedArraySet(result, typedArraySubarray(ring, start, start + first));
+  typedArraySet(result, typedArraySubarray(ring, 0, length - first), first);
   return result;
+}
+
+function hasBytes(chunks: readonly Uint8Array[]): boolean {
+  for (let index = 0; index < chunks.length; index++)
+    if (typedArrayLength(chunks[index]!) > 0) return true;
+  return false;
 }
 
 class InputBuffer implements TerminalInput {
@@ -101,11 +123,15 @@ class InputBuffer implements TerminalInput {
   readonly state: Int32Array;
   readonly ring: Uint8Array;
   readonly notification: Int32Array;
+  readonly lock: BigInt64Array;
+  readonly identity: BigInt64Array;
   constructor(readonly buffer: SharedArrayBuffer) {
     this.capacity = viewCapacity(buffer);
     this.state = new Int32ArrayConstructor(buffer, 0, HEADER_WORDS);
-    this.ring = new Uint8Array(buffer, HEADER_BYTES);
+    this.ring = new Uint8ArrayConstructor(buffer, HEADER_BYTES);
     this.notification = new Int32ArrayConstructor(buffer, H.wake * 4, 1);
+    this.lock = new BigInt64ArrayConstructor(buffer, H.lock * 4, 1);
+    this.identity = new BigInt64ArrayConstructor(buffer, H.nonce * 4, 2);
   }
   available(): number {
     return (atomicsLoad(this.state, H.write) - atomicsLoad(this.state, H.read)) >>> 0;
@@ -114,37 +140,52 @@ class InputBuffer implements TerminalInput {
     return atomicsLoad(this.state, H.cancelled) !== 0;
   }
   push(bytes: Uint8Array): number {
-    if (!bytes.length) return 0;
+    if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
+    const length = typedArrayLength(bytes);
+    if (!length) return 0;
     if (this.cancelled()) return CANCELED;
     if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
-    if (atomicsCompareExchange(this.state, H.lock, 0, 1) !== 0) return AGAIN;
+    if (atomicsCompareExchange(this.lock, 0, 0n, 1n) !== 0n) return AGAIN;
     try {
       if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
       const write = atomicsLoad(this.state, H.write);
-      if (bytes.length > this.capacity - this.available()) return AGAIN;
+      if (length > this.capacity - this.available()) return AGAIN;
       copyInto(this.ring, write, bytes);
-      atomicsStore(this.state, H.write, write + bytes.length);
+      atomicsStore(this.state, H.write, write + length);
       this.signal();
-      return bytes.length;
+      return length;
     } finally {
-      atomicsStore(this.state, H.lock, 0);
-      atomicsNotify(this.state, H.lock);
+      atomicsStore(this.lock, 0, 0n);
+      atomicsNotify(this.lock, 0);
     }
   }
-  read(chunks: readonly Uint8Array[], cooked: boolean): number {
-    if (!chunks.some((chunk) => chunk.length)) return 0;
+  read(turn: TerminalTurn, chunks: readonly Uint8Array[], cooked: boolean): number {
+    if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
+    if (!hasBytes(chunks)) return 0;
     if (this.cancelled()) return CANCELED;
-    if (atomicsCompareExchange(this.state, H.lock, 0, 1) !== 0) return AGAIN;
+    const token = atomicsAdd(this.identity, 1, 1n) + 1n;
+    if (token <= 1n) {
+      this.poison();
+      return BADF;
+    }
+    return terminalInputSection(turn, atomicsLoad(this.identity, 0), token, () =>
+      this.lockedRead(chunks, cooked, token),
+    );
+  }
+  private lockedRead(chunks: readonly Uint8Array[], cooked: boolean, token: bigint): number {
+    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) return AGAIN;
     try {
+      if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
       return cooked ? this.readCooked(chunks) : this.readRaw(chunks);
     } finally {
-      atomicsStore(this.state, H.lock, 0);
-      atomicsNotify(this.state, H.lock);
+      atomicsStore(this.lock, 0, 0n);
+      atomicsNotify(this.lock, 0);
     }
   }
   inputReady(cooked: boolean): boolean {
+    if (atomicsLoad(this.state, H.poisoned) !== 0) return true;
     if (this.cancelled()) return true;
     if (atomicsLoad(this.state, H.closed) !== 0 && this.available() === 0) return true;
     if (!cooked) return this.available() > 0;
@@ -164,11 +205,13 @@ class InputBuffer implements TerminalInput {
     let remaining = this.available();
     if (!remaining) return atomicsLoad(this.state, H.closed) !== 0 ? 0 : AGAIN;
     let offset = 0;
-    for (const chunk of chunks) {
-      if (!chunk.length) continue;
-      const length = Math.min(chunk.length, remaining);
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index]!;
+      const capacity = typedArrayLength(chunk);
+      if (!capacity) continue;
+      const length = Math.min(capacity, remaining);
       if (!length) break;
-      chunk.set(copyFrom(this.ring, read + offset, length));
+      typedArraySet(chunk, copyFrom(this.ring, read + offset, length));
       offset += length;
       remaining -= length;
     }
@@ -203,7 +246,7 @@ class InputBuffer implements TerminalInput {
     let destination = 0;
     let offset = 0;
     while (position < outputEnd && destination < chunks.length) {
-      while (destination < chunks.length && offset === chunks[destination]!.length) {
+      while (destination < chunks.length && offset === typedArrayLength(chunks[destination]!)) {
         destination++;
         offset = 0;
       }
@@ -274,6 +317,10 @@ class InputBuffer implements TerminalInput {
   private byteAt(index: number): number {
     return this.ring[(index >>> 0) % this.capacity]!;
   }
+  poison(): void {
+    atomicsStore(this.state, H.poisoned, 1);
+    this.signal();
+  }
   close(): void {
     atomicsStore(this.state, H.closed, 1);
     this.signal();
@@ -293,15 +340,28 @@ class InputBuffer implements TerminalInput {
 }
 
 function inputBuffer(input: TerminalInput | SharedArrayBuffer): InputBuffer {
-  if (input instanceof InputBuffer) return input;
-  const buffer = input instanceof SharedArrayBuffer ? input : input.buffer;
+  if (isInstance(input, InputBuffer)) return input;
+  const buffer = isSharedArrayBuffer(input) ? input : input.buffer;
   return new InputBuffer(buffer);
 }
 
 export function createTerminalInput(options: { readonly capacity?: number } = {}): TerminalInput {
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
   if (!validCapacity(capacity)) throw new RangeError("invalid terminal input capacity");
-  return new InputBuffer(new SharedArrayBufferConstructor(HEADER_BYTES + capacity));
+  const input = new InputBuffer(new SharedArrayBufferConstructor(HEADER_BYTES + capacity));
+  const nonce = cryptoGetRandomValues(new Uint32ArrayConstructor(2));
+  if (nonce[0] === 0 && nonce[1] === 0) nonce[0] = 1;
+  typedArraySet(new Uint32ArrayConstructor(input.buffer, H.nonce * 4, 2), nonce);
+  atomicsStore(input.identity, 1, 1n);
+  return input;
+}
+
+/** Only a captured native owner's successful stop may abandon its exact acquisition token. */
+export function poisonTerminalInput(input: TerminalInput, nonce: bigint, token: bigint): boolean {
+  const buffer = inputBuffer(input);
+  if (atomicsLoad(buffer.identity, 0) !== nonce) return false;
+  if (atomicsLoad(buffer.lock, 0) === token) buffer.poison();
+  return true;
 }
 
 export function attachTerminalInput(buffer: SharedArrayBuffer): TerminalInput {
@@ -321,12 +381,13 @@ export function pushTerminalInput(
   bytes: Uint8Array,
 ): TerminalInputPushResult {
   let offset = 0;
-  while (offset < bytes.length) {
-    const end = Math.min(offset + TERMINAL_SESSION_LIMITS.inputBytesPerTurn, bytes.length);
+  const total = typedArrayLength(bytes);
+  while (offset < total) {
+    const end = Math.min(offset + TERMINAL_SESSION_LIMITS.inputBytesPerTurn, total);
     const length = end - offset;
     let pushed = 0;
     const result = display.input(() => {
-      pushed = input.push(bytes.subarray(offset, end));
+      pushed = input.push(typedArraySubarray(bytes, offset, end));
       return pushed >= 0 ? pushed : 0;
     });
     if (pushed < 0) return { kind: "error", code: pushFailure(pushed), accepted: offset };
@@ -341,7 +402,7 @@ export function createTerminalInputPolicy(options: TerminalInputPolicyOptions): 
   const input = inputBuffer(options.input);
   return {
     tryRead(turn: TerminalTurn, chunks: readonly Uint8Array[]): number {
-      return input.read(chunks, turn.mode === "cooked");
+      return input.read(turn, chunks, turn.mode === "cooked");
     },
     inputReadiness(turn): Pick<Readiness, "readable" | "nbytes"> {
       const available = input.available();
@@ -352,9 +413,7 @@ export function createTerminalInputPolicy(options: TerminalInputPolicyOptions): 
       return { kind: "ok", value: undefined };
     },
     tryWrite(target, chunks): number {
-      return (
-        options.tryWrite?.(target, chunks) ?? (chunks.some((chunk) => chunk.length) ? NOTSUP : 0)
-      );
+      return options.tryWrite?.(target, chunks) ?? (hasBytes(chunks) ? NOTSUP : 0);
     },
     outputReadiness(target): Pick<Readiness, "writable"> {
       return options.outputReadiness?.(target) ?? { writable: false };

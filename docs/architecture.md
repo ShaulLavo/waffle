@@ -252,6 +252,9 @@ readiness. WASI descriptor rights determine whether each bound fd may read; the 
 target number does not prohibit input. Output still uses the policy's target 1 or 2 destination,
 and target 0 remains unwritable.
 
+Terminal stop ordering and the trusted native-death hook are described in
+[Terminal consumer lifetime](terminal-lifetime.md).
+
 `createTerminalInput()` provides the generic foreground input transport. The page keeps the
 returned producer and its `buffer`, and feeds bytes with `pushTerminalInput()`; the helper splits
 large pastes into bounded `TerminalDisplay.input()` turns and returns an accepted prefix alongside
