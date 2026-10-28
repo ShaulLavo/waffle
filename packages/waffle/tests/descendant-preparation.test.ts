@@ -3,6 +3,7 @@ import {
   BrowserProcessBroker,
   type RuntimeDescendant,
   type RuntimeRootOptions,
+  type RootDescendantPreparation,
 } from "../browser/process-broker.js";
 import {
   attachTerminal,
@@ -78,14 +79,14 @@ function fixture(options: { launch?(context: ProcessContext): void } = {}) {
     },
   });
   cleanups.push(() => broker.dispose());
-  async function adopt(rootOptions: RuntimeRootOptions = {}) {
+  async function adopt(options: (root: WorkerProcessTransport) => RuntimeRootOptions = () => ({})) {
     const root = createWorkerProcessTransport({
       pid: identities.pid(),
       job: identities.job(),
       identity: identities.buffer,
     });
     root.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(root, rootOptions);
+    await broker.adoptRuntimeRoot(root, options(root));
     return root;
   }
   /** Reserve in the parent's directory exactly as a guest would, then post to the page. */
@@ -127,34 +128,52 @@ function fixture(options: { launch?(context: ProcessContext): void } = {}) {
 }
 
 /** The Shell recipe: root admission in the hook, one-shot membership cleanup on child exit. */
-async function shellTerminal(f: ReturnType<typeof fixture>, extra: RuntimeRootOptions = {}) {
+async function shellTerminal(
+  f: ReturnType<typeof fixture>,
+  extra: Omit<RuntimeRootOptions, "prepareDescendant"> & {
+    run?: RootDescendantPreparation["run"];
+  } = {},
+) {
   const input = createTerminalInput();
   const policy = createTerminalInputPolicy({ input });
   const groups = new Map<number, TerminalGroup>(),
     members = new Map<number, TerminalMember>(),
     removed: number[] = [],
     seen: RuntimeDescendant[] = [];
-  const shell = {} as { authority: TerminalAuthority };
-  const root = await f.adopt({
-    ...extra,
-    prepareDescendant(descendant) {
-      seen.push(descendant);
-      // Before entry: reserved and admitted, with no adapter launch yet.
-      expect(f.launched).not.toContain(descendant.pid);
-      const group = groups.get(descendant.job);
-      if (group)
-        members.set(
-          descendant.pid,
-          must(shell.authority.admitExisting({ group, pid: descendant.pid })).member,
-        );
-      return extra.prepareDescendant?.(descendant);
-    },
+  let display!: ReturnType<typeof createTerminalSession>;
+  let authority!: TerminalAuthority;
+  const { run, ...options } = extra;
+  const root = await f.adopt((root) => {
+    display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
+    cleanups.push(() => display.close("disposed"));
+    authority = must(
+      claimTerminalAuthority({
+        identity: display.identity,
+        process: root,
+        checkActive() {},
+        policy,
+      }),
+    );
+    return {
+      ...options,
+      prepareDescendant: {
+        terminal: authority,
+        run(descendant, turn) {
+          seen.push(descendant);
+          expect(f.launched).not.toContain(descendant.pid);
+          const group = groups.get(descendant.job);
+          const member = group
+            ? must(authority.admitExisting({ group, pid: descendant.pid })).member
+            : undefined;
+          if (member)
+            turn.publish(() => {
+              members.set(descendant.pid, member);
+            });
+          return run?.(descendant, turn) ?? { kind: "ok", value: undefined };
+        },
+      },
+    };
   });
-  const display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
-  cleanups.push(() => display.close("disposed"));
-  const authority = (shell.authority = must(
-    claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }),
-  ));
   (await f.broker.ready()).onChildExit(({ pid }) => {
     const member = members.get(pid);
     if (!member) return;
@@ -279,11 +298,11 @@ for (const failure of ["throw", "promise", "value"] as const)
   test(`a hook ${failure} fails the start before launch and cleans membership once`, async () => {
     const f = fixture();
     const t = await shellTerminal(f, {
-      prepareDescendant: (() => {
+      run: (() => {
         if (failure === "throw") throw new Error("root refused");
         if (failure === "promise") return Promise.reject(new Error("late root refusal"));
         return { unexpected: true };
-      }) as unknown as RuntimeRootOptions["prepareDescendant"],
+      }) as unknown as RootDescendantPreparation["run"],
     });
     const child = await f.spawn(t.root, {}, t.admitRootJob());
     await child.supervisor.waitForExit(t.root.pid, child.pid);
@@ -292,9 +311,11 @@ for (const failure of ["throw", "promise", "value"] as const)
       "start-failed",
     );
     expect(f.launched).toEqual([]);
-    expect(t.removed).toEqual([child.pid]);
+    expect(t.removed).toEqual([]);
     if (failure === "promise")
-      expect(f.errors.some((error) => String(error).includes("late root refusal"))).toBe(true);
+      expect(f.errors.some((error) => String(error).includes("synchronous TerminalResult"))).toBe(
+        true,
+      );
   });
 
 test("a kill and root exit inside the hook prevent launch; retirement follows cleanup", async () => {
@@ -302,10 +323,10 @@ test("a kill and root exit inside the hook prevent launch; retirement follows cl
   const order: string[] = [];
   const root = { pid: 0 };
   const t = await shellTerminal(f, {
-    prepareDescendant({ pid }) {
+    run({ pid }) {
       void f.broker.kill(pid, 9);
       void f.broker.rootExit(root.pid, 0);
-      return undefined;
+      return { kind: "ok", value: undefined };
     },
     retired() {
       order.push("retired");
@@ -322,7 +343,7 @@ test("a kill and root exit inside the hook prevent launch; retirement follows cl
   await exited.promise;
   await f.broker.dispose();
   expect(f.launched).toEqual([]);
-  expect(t.removed).toEqual([child.pid]);
+  expect(t.removed).toEqual([]);
   expect(order[0]).toBe("child-exit:signaled");
   expect(order).toContain("retired");
 });
@@ -330,13 +351,13 @@ test("a kill and root exit inside the hook prevent launch; retirement follows cl
 test("disposing from inside the hook neither deadlocks nor launches", async () => {
   const f = fixture();
   let disposal: Promise<void> | undefined;
-  const root = await f.adopt({
-    prepareDescendant() {
+  const t = await shellTerminal(f, {
+    run() {
       disposal = f.broker.dispose();
-      return undefined;
+      return { kind: "ok", value: undefined };
     },
   });
-  await f.spawn(root);
+  await f.spawn(t.root);
   await disposal;
   expect(f.launched).toEqual([]);
 });
@@ -360,29 +381,52 @@ test("a kill from another worker after the hook is fenced at guest entry", async
   expect(t.removed).toEqual([child.pid]);
 });
 
-test("only the descendant's own root hook runs, as captured at adoption", async () => {
+test("only the descendant's own preparation runs, as captured at adoption", async () => {
   const f = fixture();
   const calls: string[] = [];
-  const options: RuntimeRootOptions = {
-    prepareDescendant() {
-      calls.push("first");
-      return undefined;
+  let captured!: RuntimeRootOptions;
+  const first = await f.adopt((root) => {
+    const display = createTerminalSession({
+      controller: root,
+      geometry: { columns: 80, rows: 24 },
+    });
+    cleanups.push(() => display.close("disposed"));
+    const policy = createTerminalInputPolicy({ input: createTerminalInput() });
+    const terminal = must(
+      claimTerminalAuthority({
+        identity: display.identity,
+        process: root,
+        checkActive() {},
+        policy,
+      }),
+    );
+    captured = {
+      prepareDescendant: {
+        terminal,
+        run() {
+          calls.push("first");
+          return { kind: "ok", value: undefined };
+        },
+      },
+    };
+    return captured;
+  });
+  captured.prepareDescendant = {
+    terminal: captured.prepareDescendant!.terminal,
+    run() {
+      calls.push("replaced");
+      return { kind: "ok", value: undefined };
     },
   };
-  const first = await f.adopt(options);
-  options.prepareDescendant = () => {
-    calls.push("replaced");
-    return undefined;
-  };
-  const second = await f.adopt({
-    prepareDescendant() {
+  const second = await shellTerminal(f, {
+    run() {
       calls.push("second");
-      return undefined;
+      return { kind: "ok", value: undefined };
     },
   });
   const unprepared = await f.adopt();
   await f.spawn(first);
-  await f.spawn(second);
+  await f.spawn(second.root);
   await f.spawn(unprepared);
   expect(calls).toEqual(["first", "second"]);
   expect(f.launched.length).toBe(3);

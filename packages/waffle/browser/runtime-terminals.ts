@@ -172,6 +172,8 @@ export type {
   TerminalAdmittedMember,
   TerminalMemberUpdate,
   TerminalAuthority,
+  TerminalControlOptions,
+  TerminalControlTurn,
   TerminalGeometrySubscription,
   TerminalControls,
   TerminalAttachment,

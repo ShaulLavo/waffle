@@ -320,16 +320,19 @@ async function fixture() {
   globalThis.Worker = ObservedWorker;
   try {
     const rootOptions: RuntimeRootOptions = {
-      prepareDescendant(descendant) {
-        expect(launched).not.toContain(descendant.pid);
-        const transport = broker.transportFor(descendant.pid)!;
-        expect(startStatus(workerProcessState(transport).signals.outcome)).not.toBe(0);
-        seen.push(descendant);
-        members.set(
-          descendant.pid,
-          must(authority.admitExisting({ group, pid: descendant.pid })).member,
-        );
-        return undefined;
+      prepareDescendant: {
+        terminal: authority,
+        run(descendant, turn) {
+          expect(launched).not.toContain(descendant.pid);
+          const transport = broker.transportFor(descendant.pid)!;
+          expect(startStatus(workerProcessState(transport).signals.outcome)).not.toBe(0);
+          seen.push(descendant);
+          const member = must(authority.admitExisting({ group, pid: descendant.pid })).member;
+          turn.publish(() => {
+            members.set(descendant.pid, member);
+          });
+          return { kind: "ok", value: undefined };
+        },
       },
       retired() {
         unsubscribe();
@@ -425,10 +428,26 @@ test("real Worker same-job descendants inherit identity-only stdin with root adm
     expect(Array.from(f.markers.subarray(0, 2))).toEqual([1, 1]);
     const isolated: number[] = [];
     const other = f.rootTransport();
+    const otherDisplay = createTerminalSession({
+      controller: other,
+      geometry: { columns: 80, rows: 24 },
+    });
+    const otherPolicy = createTerminalInputPolicy({ input: createTerminalInput() });
+    const otherAuthority = must(
+      claimTerminalAuthority({
+        identity: otherDisplay.identity,
+        process: other,
+        checkActive() {},
+        policy: otherPolicy,
+      }),
+    );
     await f.broker.adoptRuntimeRoot(other, {
-      prepareDescendant(descendant) {
-        isolated.push(descendant.pid);
-        throw new Error("isolated root refuses this probe");
+      prepareDescendant: {
+        terminal: otherAuthority,
+        run(descendant) {
+          isolated.push(descendant.pid);
+          throw new Error("isolated root refuses this probe");
+        },
       },
     });
     const before = f.launched.length;
@@ -437,6 +456,7 @@ test("real Worker same-job descendants inherit identity-only stdin with root adm
       kind: "start-failed",
     });
     expect(isolated).toEqual([probe.pid]);
+    otherDisplay.close("disposed");
     expect(f.seen.map(({ pid }) => pid)).toEqual([child.pid, spawned.child]);
     expect(f.launched.length).toBe(before);
     expect(f.errors.map(String)).toEqual(["Error: isolated root refuses this probe"]);
