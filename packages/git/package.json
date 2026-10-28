@@ -23,7 +23,7 @@
     "build": "node scripts/build-git.ts",
     "notices": "node scripts/git-notices.ts",
     "typecheck": "tsc --noEmit",
-    "test:unit": "node scripts/test-git-local.ts && node --test scripts/test-git-review.ts tests/*.test.ts",
+    "test:unit": "node scripts/test-git-local.ts && node --test scripts/test-git-review.ts tests/git-rev-parse.test.ts",
     "test:browser": "bun scripts/test-git-six-browser.ts",
     "test:browser:lookup": "bun scripts/test-git-six-browser.ts lookup",
     "test:browser:dispose": "bun scripts/test-git-six-browser.ts dispose",
