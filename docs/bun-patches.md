@@ -22,6 +22,8 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/licenses/`                                                                                                                     | License copy     | Exact upstream MIT license texts for fluent-langneg 0.13.1 and intl_pluralrules 7.0.2, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                         |
 | `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                   | Adaptation       | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                         |
 
+| `packages/coreutils/crates/echo/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/echo` at `07763857f6b9a547742a994b58aef0ccd036198b`; isolated entry and actual WASI write-failure observation, without flag/output logic. |
+
 ## Node WASI descriptor adapter
 
 `proc/node-wasi.ts` is an explicit Node embedding leaf adapted from bun-wasm `web/scripts/node-process.ts:188-397` at `c16ff39435cc33465b999ea06c1ee9d20b952354`. The moved code owns the private Node WASI descriptor marker and lookup, preopen placement, preview1 descriptor translation, native `path_open` result remapping, file and pipe I/O, metadata, rights, flags, seek behavior, close, renumber and native or mixed `poll_oneoff` handling. Native poll temporarily receives the Node descriptor and restores the guest descriptor subscription before returning.
@@ -233,3 +235,15 @@ Empty byte-delimited items are retained. Default print-only echo and rejected
 replacement/parallel modes remain explicit. No shell, host fallback, copied
 process protocol or new runtime controller is introduced. The controlled C test
 utility is original test-only code, never a shipped command.
+
+## External echo entry
+
+`packages/coreutils/crates/echo` is an original MIT adapter to unchanged
+uutils/coreutils `src/uu/echo` and `src/uucore` at
+`07763857f6b9a547742a994b58aef0ccd036198b`. The source receipt and copied root
+license are in the coreutils family. An echo-only linker observer records actual
+nonempty EBADF writes while preserving syscall results; the existing uucore
+post-hook reports the failure that Rust stdout suppresses. It does not parse
+arguments or duplicate echo output logic. Native closed-stdout suppression remains
+a separately recorded limitation. The runtime, shared process consumer and older
+coreutils implementations are unchanged.

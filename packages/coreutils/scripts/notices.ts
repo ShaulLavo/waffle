@@ -6,7 +6,14 @@ const root = resolve(import.meta.dirname, "..");
 execFileSync("node", ["scripts/notices.mjs"], { cwd: root, stdio: "inherit" });
 generateRustNotices({
   root,
-  packages: ["waffle-coreutils", "waffle-cut", "waffle-tr", "waffle-wc", "waffle-clear"],
+  packages: [
+    "waffle-coreutils",
+    "waffle-cut",
+    "waffle-tr",
+    "waffle-wc",
+    "waffle-clear",
+    "waffle-echo",
+  ],
   features: "cooperative-wasi",
   prefix: readFileSync(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), "utf8"),
 });

@@ -19,6 +19,7 @@ const names = [
   "rm",
   "cp",
   "mv",
+  "echo",
 ] as const;
 
 export const coreutils: ProgramPackage = {
