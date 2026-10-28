@@ -10,8 +10,12 @@ import {
 import {
   attachTerminalOutput,
   createTerminalOutput,
+  TerminalOutputBudget,
+  type TerminalOutputReader,
   type TerminalOutputWriterOptions,
 } from "../browser/terminal-output.js";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { setSignalDisposition, SignalDisposition } from "../proc/signals.js";
 import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import {
   createWorkerProcessTransport,
@@ -58,23 +62,38 @@ const activeWriter: TerminalOutputWriterOptions = {
   doorbell() {},
 };
 
+/** One writer under its own root budget, like a launched Worker before its first write. */
+function single(capacity = 65536, options: Partial<TerminalOutputWriterOptions> = {}) {
+  const budget = new TerminalOutputBudget(capacity);
+  const reader = createTerminalOutput(capacity);
+  budget.readers.add(reader);
+  const writer = attachTerminalOutput(reader.buffer, { ...activeWriter, ...options });
+  return { budget, reader, writer };
+}
+
+/** The same writer after the page granted its whole budget. */
+function granted(capacity: number, options: Partial<TerminalOutputWriterOptions> = {}) {
+  const pair = single(capacity, options);
+  pair.reader.grant(capacity);
+  return pair;
+}
+
+const accept = (_target: 1 | 2, data: Uint8Array) => data.length;
+
 describe("bounded terminal output buffer", () => {
   test("400000 bytes reach a 262144-byte destination exactly, with no drops", () => {
-    const reader = createTerminalOutput();
     let doorbells = 0;
-    const writer = attachTerminalOutput(reader.buffer, {
-      ...activeWriter,
-      doorbell: () => doorbells++,
-    });
+    const { budget, reader, writer } = single(65536, { doorbell: () => doorbells++ });
     const terminal = new BoundedTerminal();
     let written = 0,
       blocked = 0;
     while (written < SIZE) {
       const count = writer.tryWrite(1, [expected.subarray(written)]);
       if (count === -6) {
-        // Writer full: the page drains into the destination. A full destination blocks it.
+        // Out of credit: the page delivers what it can and grants the freed credit.
         expect(writer.writable()).toBe(false);
-        if (reader.drain((_target, data) => terminal.tryWrite(data)) === "blocked") {
+        budget.service((_target, data) => terminal.tryWrite(data));
+        if (reader.pending() && terminal.queuedBytes === RING) {
           blocked++;
           terminal.drain();
         }
@@ -82,31 +101,33 @@ describe("bounded terminal output buffer", () => {
       }
       expect(count).toBeGreaterThan(0);
       expect(count).toBeLessThanOrEqual(65536 - 4);
+      expect(budget.available()).toBeGreaterThanOrEqual(0);
       written += count;
     }
-    while (reader.drain((_target, data) => terminal.tryWrite(data)) === "blocked") terminal.drain();
-    expect(reader.pending()).toBe(0);
+    while (reader.pending()) {
+      terminal.drain();
+      budget.service((_target, data) => terminal.tryWrite(data));
+    }
     expect(blocked).toBeGreaterThan(0);
     expect(doorbells).toBeGreaterThan(0);
     expect(terminal.bytes()).toEqual(expected);
   });
 
   test("short deliveries keep the rest buffered in order, across targets", () => {
-    const reader = createTerminalOutput(64);
-    const writer = attachTerminalOutput(reader.buffer, activeWriter);
+    const { reader, writer } = granted(64);
     expect(writer.tryWrite(1, [Uint8Array.of(1, 2, 3), Uint8Array.of(4)])).toBe(4);
     expect(writer.tryWrite(2, [Uint8Array.of(5, 6)])).toBe(2);
     const seen: [number, number[]][] = [];
-    let budget = 3;
+    let room = 3;
     const deliver = (target: 1 | 2, data: Uint8Array) => {
-      const count = Math.min(budget, data.length);
-      budget -= count;
+      const count = Math.min(room, data.length);
+      room -= count;
       if (count) seen.push([target, Array.from(data.subarray(0, count))]);
       return count;
     };
     expect(reader.drain(deliver)).toBe("blocked");
     expect(reader.pending()).toBe(4 + 1 + 4 + 2);
-    budget = 100;
+    room = 100;
     expect(reader.drain(deliver)).toBe("idle");
     expect(seen).toEqual([
       [1, [1, 2, 3]],
@@ -114,6 +135,7 @@ describe("bounded terminal output buffer", () => {
       [2, [5, 6]],
     ]);
     // The arm consumed by the next write rings exactly one doorbell.
+    expect(reader.park()).toBe(true);
     let doorbells = 0;
     const armed = attachTerminalOutput(reader.buffer, {
       ...activeWriter,
@@ -125,8 +147,7 @@ describe("bounded terminal output buffer", () => {
   });
 
   test("a destination reporting room from inside its delivery does not reenter a record", () => {
-    const reader = createTerminalOutput(64);
-    const writer = attachTerminalOutput(reader.buffer, activeWriter);
+    const { budget, reader, writer } = granted(64);
     writer.tryWrite(1, [Uint8Array.of(1, 2, 3, 4)]);
     const seen: number[] = [];
     let first = true;
@@ -137,46 +158,65 @@ describe("bounded terminal output buffer", () => {
       }
       first = false;
       seen.push(data[0]!);
-      expect(reader.drain(deliver)).toBe("idle");
+      budget.service(deliver);
+      expect(reader.drain(deliver)).toBe("blocked");
       return 1;
     };
-    expect(reader.drain(deliver)).toBe("idle");
+    expect(reader.drain(deliver)).toBe("blocked");
+    expect(seen).toEqual([1]);
+    budget.service(deliver);
     expect(seen).toEqual([1, 2, 3, 4]);
     expect(reader.pending()).toBe(0);
+  });
+
+  test("a reentrant drain while the destination accepts nothing returns at once", () => {
+    // R733: a destination that reports room from inside a refused delivery used to spin.
+    const { budget, reader, writer } = granted(16);
+    writer.tryWrite(1, [Uint8Array.of(1)]);
+    let calls = 0;
+    const deliver = () => {
+      calls++;
+      if (calls > 3) throw new Error("drain spun without progress");
+      budget.service(deliver);
+      reader.drain(deliver);
+      return 0;
+    };
+    budget.service(deliver);
+    expect(calls).toBe(1);
+    expect(reader.drain(deliver)).toBe("blocked");
+    expect(calls).toBe(2);
+    expect(reader.pending()).toBe(5);
   });
 
   test("capacity is a power of two, so wrapped positions stay consistent", () => {
     for (const capacity of [0, 4, 24, 65535, 2 ** 31])
       expect(() => createTerminalOutput(capacity)).toThrow(RangeError);
-    const reader = createTerminalOutput(8);
-    const writer = attachTerminalOutput(reader.buffer, activeWriter);
+    const { budget, reader, writer } = single(8);
     // Start just below the 32-bit wrap: every record crosses it at some point.
     const state = new Int32Array(reader.buffer, 0, 2);
     state[0] = state[1] = -6;
     const seen: number[] = [];
     for (let value = 0; value < 8; value++) {
+      if (writer.tryWrite(1, [Uint8Array.of(value, value + 100)]) === -6) budget.service(accept);
       expect(writer.tryWrite(1, [Uint8Array.of(value, value + 100)])).toBe(2);
-      reader.drain((_target, data) => seen.push(...data) && data.length);
+      budget.service((_target, data) => seen.push(...data) && data.length);
     }
     expect(seen).toEqual(Array.from({ length: 8 }, (_, value) => [value, value + 100]).flat());
   });
 
   test("a full buffer refuses with AGAIN and never reports more than it accepted", () => {
-    const reader = createTerminalOutput(16);
-    const writer = attachTerminalOutput(reader.buffer, activeWriter);
+    const { budget, reader, writer } = granted(16);
     expect(writer.tryWrite(1, [new Uint8Array(100)])).toBe(12);
     expect(writer.tryWrite(1, [new Uint8Array(1)])).toBe(-6);
     expect(writer.writable()).toBe(false);
+    expect(reader.wants()).toBe(true);
     expect(reader.pending()).toBe(16);
+    expect(budget.available()).toBe(0);
   });
 
   test("an interrupted blocking write returns its accepted prefix, or EINTR before any", () => {
-    const reader = createTerminalOutput(16);
     let interrupted = false;
-    const writer = attachTerminalOutput(reader.buffer, {
-      ...activeWriter,
-      interrupted: () => interrupted,
-    });
+    const { reader, writer } = granted(16, { interrupted: () => interrupted });
     interrupted = true;
     expect(writer.write(1, [new Uint8Array(20)])).toBe(12);
     expect(writer.write(1, [new Uint8Array(20)])).toBe(-27);
@@ -184,10 +224,8 @@ describe("bounded terminal output buffer", () => {
   });
 
   test("close and revocation stop writers without discarding accepted bytes", () => {
-    const reader = createTerminalOutput(16);
     let active = true;
-    const writer = attachTerminalOutput(reader.buffer, {
-      ...activeWriter,
+    const { reader, writer } = granted(16, {
       checkActive() {
         if (!active) throw new Error("revoked");
       },
@@ -205,18 +243,17 @@ describe("bounded terminal output buffer", () => {
   });
 
   test("flush waits for delivery and gives up when stopped", () => {
-    const reader = createTerminalOutput(16);
-    const writer = attachTerminalOutput(reader.buffer, activeWriter);
+    const { reader, writer } = granted(16);
     expect(writer.flush(() => false)).toBe(true);
     writer.tryWrite(1, [Uint8Array.of(1)]);
     expect(writer.flush(() => true)).toBe(false);
-    reader.drain((_target, data) => data.length);
+    reader.drain(accept);
     expect(writer.flush(() => false)).toBe(true);
   });
 
   test("an invalid delivery count fails loudly and keeps the bytes", () => {
-    const reader = createTerminalOutput(16);
-    attachTerminalOutput(reader.buffer, activeWriter).tryWrite(1, [Uint8Array.of(1, 2)]);
+    const { reader, writer } = granted(16);
+    writer.tryWrite(1, [Uint8Array.of(1, 2)]);
     for (const count of [3, -1, 0.5, Number.NaN]) {
       const deliver = () => count;
       expect(() => reader.drain(deliver)).toThrow("invalid count");
@@ -224,21 +261,100 @@ describe("bounded terminal output buffer", () => {
     expect(reader.pending()).toBe(6);
   });
 
+  test("a throwing destination keeps the exact record for a later delivery", () => {
+    const { reader, writer } = granted(16);
+    writer.tryWrite(2, [Uint8Array.of(1, 2, 3)]);
+    const fail = () => {
+      throw new Error("destination threw");
+    };
+    expect(() => reader.drain(fail)).toThrow("destination threw");
+    expect(reader.pending()).toBe(7);
+    const received: number[] = [];
+    reader.drain((target, data) => received.push(target, ...data) && data.length);
+    expect(received).toEqual([2, 1, 2, 3]);
+  });
+
   test("the generic codec fallback writes through the bounded buffer with exact counts", () => {
-    const reader = createTerminalOutput(16);
-    const codec = createRuntimeTerminalCodec({
-      fallback: createWorkerPipeCodec(),
-      output: attachTerminalOutput(reader.buffer, activeWriter),
-    });
+    const { budget, writer } = granted(16);
+    const codec = createRuntimeTerminalCodec({ fallback: createWorkerPipeCodec(), output: writer });
     const stream = codec.import({ kind: "web-terminal", target: 2 }, 2).resource as Stream;
     expect(stream.notification).toBeInstanceOf(Int32Array);
     expect(stream.tryWrite!([new Uint8Array(20)])).toBe(12);
     expect(stream.readiness().writable).toBe(false);
     expect(stream.tryWrite!([new Uint8Array(1)])).toBe(-6);
     const targets: number[] = [];
-    reader.drain((target, data) => targets.push(target) && data.length);
+    const seen = Atomics.load(stream.notification!, 0);
+    budget.service((target, data) => targets.push(target) && data.length);
     expect(targets).toEqual([2]);
+    // Readiness asked for credit; the grant notified the stream's readiness word.
+    expect(Atomics.load(stream.notification!, 0)).not.toBe(seen);
     expect(stream.readiness().writable).toBe(true);
+  });
+});
+
+describe("root terminal output budget", () => {
+  test("writers share one budget and an idle writer's credit moves to one that waits", () => {
+    const budget = new TerminalOutputBudget(64);
+    const readers = [createTerminalOutput(64), createTerminalOutput(64)];
+    for (const reader of readers) budget.readers.add(reader);
+    const [first, second] = readers.map((reader) =>
+      attachTerminalOutput(reader.buffer, activeWriter),
+    );
+    expect(first!.tryWrite(1, [Uint8Array.of(1)])).toBe(-6);
+    budget.service(accept);
+    expect(readers[0]!.granted).toBe(64);
+    expect(second!.tryWrite(1, [Uint8Array.of(2)])).toBe(-6);
+    budget.service(accept);
+    expect(readers[0]!.granted + readers[1]!.granted).toBeLessThanOrEqual(64);
+    expect(second!.tryWrite(1, [new Uint8Array(100)])).toBe(60);
+    expect(first!.tryWrite(1, [Uint8Array.of(1)])).toBe(-6);
+    expect(budget.available()).toBe(0);
+  });
+
+  test("a stopped writer's accepted bytes stay owned by the root, within one budget", () => {
+    // R733: every stopped writer used to keep its whole buffer. Now the root's budget bounds
+    // them all, and later writers wait for credit instead of taking new storage.
+    const budget = new TerminalOutputBudget(64);
+    const stopped: { reader: ReturnType<typeof createTerminalOutput>; accepted: number }[] = [];
+    for (let index = 0; index < 8; index++) {
+      const reader = createTerminalOutput(64);
+      budget.readers.add(reader);
+      const writer = attachTerminalOutput(reader.buffer, activeWriter);
+      expect(writer.tryWrite(1, [Uint8Array.of(index)])).toBe(-6);
+      budget.service(() => 0);
+      const accepted = Math.max(0, writer.tryWrite(1, [new Uint8Array(100).fill(index)]));
+      budget.service(() => 0);
+      reader.retire();
+      budget.service(() => 0);
+      stopped.push({ reader, accepted });
+      expect(() => reader.buffer).toThrow("retired");
+      expect(budget.pending()).toBeLessThanOrEqual(64);
+      expect(budget.available()).toBeGreaterThanOrEqual(0);
+    }
+    // Only the first writer got credit; it was promised 60 bytes and keeps them.
+    expect(stopped.map(({ accepted }) => accepted)).toEqual([60, 0, 0, 0, 0, 0, 0, 0]);
+    expect(budget.readers.size).toBe(1);
+    expect(budget.pending()).toBe(64);
+    const delivered: number[] = [];
+    budget.service((_target, data) => delivered.push(...data) && data.length);
+    expect(delivered).toEqual(Array(60).fill(0));
+    expect(budget.readers.size).toBe(0);
+    expect(budget.available()).toBe(64);
+  });
+
+  test("retiring a writer returns credit lost to an unpublished write", () => {
+    const { budget, reader, writer } = granted(64);
+    expect(writer.tryWrite(1, [Uint8Array.of(1, 2)])).toBe(2);
+    // A Worker stopped between taking credit and publishing its record.
+    const state = new Int32Array(reader.buffer);
+    Atomics.sub(state, 5, 20);
+    reader.retire();
+    expect(reader.granted).toBe(6);
+    expect(budget.available()).toBe(58);
+    const delivered: number[] = [];
+    budget.service((_target, data) => delivered.push(...data) && data.length);
+    expect(delivered).toEqual([1, 2]);
+    expect(budget.available()).toBe(64);
   });
 });
 
@@ -286,13 +402,25 @@ test("the resolved terminal session path reports exact accepted prefixes to a bo
   }
 });
 
+/** The broker's own bookkeeping, read by the retention regression. */
+interface BrokerOutputs {
+  readonly children: Map<number, { output?: TerminalOutputReader }>;
+  readonly terminalOutputs: Map<number, TerminalOutputBudget>;
+}
+
 describe("generic preview1 Worker terminal output", () => {
   let runtime: Runtime;
+  let broker: BrokerOutputs;
   beforeEach(() => {
     runtime = createRuntime({
       filesystem: {
         mode: "memory",
         workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
+      },
+      processHost: (options) => {
+        const created = new BrowserProcessBroker(options);
+        broker = created as unknown as BrokerOutputs;
+        return created;
       },
     });
     const workerUrl = new URL("../browser/preview1-worker.ts", import.meta.url).href;
@@ -309,7 +437,10 @@ describe("generic preview1 Worker terminal output", () => {
   });
 
   /** A runtime root whose fd 1 is a host terminal; children inherit it as a terminal token. */
-  async function root(destination: { tryOutput?: BoundedTerminal; output?: Uint8Array[] }) {
+  async function root(destination: {
+    tryOutput?: Pick<BoundedTerminal, "tryWrite">;
+    output?: Uint8Array[];
+  }) {
     await runtime.filesystem.writeFile("/bin/writer", "");
     const service = await runtime.processes();
     const transport = createWorkerProcessTransport({
@@ -349,6 +480,8 @@ describe("generic preview1 Worker terminal output", () => {
       supervisor,
       pid,
       dispose: () => descriptors.dispose(),
+      /** The raw parent wait a shell uses: consumes the exit and frees the slot. */
+      reap: (child: number) => client.wait(pid, child),
       async spawn() {
         const fds = [{ parent: 1, child: 1 }];
         const child = client.spawn(pid, {
@@ -444,6 +577,86 @@ describe("generic preview1 Worker terminal output", () => {
       shell.dispose();
     }
   }, 20_000);
+
+  test("a handled signal ends a blocked write with exactly its accepted prefix", async () => {
+    let open = false;
+    const offered: Uint8Array[] = [];
+    const shell = await root({
+      tryOutput: {
+        tryWrite(data: Uint8Array) {
+          if (!open) return 0;
+          offered.push(data.slice());
+          return data.length;
+        },
+      },
+    });
+    try {
+      const child = await shell.spawn();
+      await until(() => broker.children.get(child)?.output?.pending() === 65536, "a full budget");
+      const state = shell.supervisor.get(child)!;
+      setSignalDisposition(state.signalState, 15, SignalDisposition.HANDLE);
+      await shell.service.kill(child, 15);
+      // fd_write returns its 65532-byte prefix; the guest exits 1 for the short count only
+      // after the page delivered it.
+      await Bun.sleep(50);
+      expect(shell.reap(child)).toBe(null);
+      open = true;
+      shell.service.outputDrained(shell.pid);
+      expect(await shell.supervisor.waitForExit(shell.pid, child)).toMatchObject({
+        kind: "exited",
+        code: 1,
+      });
+      expect(Buffer.concat(offered)).toEqual(Buffer.from(expected.subarray(0, 65532)));
+    } finally {
+      shell.dispose();
+    }
+  }, 20_000);
+
+  test("killed and reaped writers keep at most one budget of accepted output", async () => {
+    // R733: eight blocked children killed, reaped and physically stopped used to keep eight
+    // full buffers. The root's budget now holds every accepted byte, and later writers wait.
+    let open = false;
+    const offered: Uint8Array[] = [];
+    const shell = await root({
+      tryOutput: {
+        tryWrite(data: Uint8Array) {
+          if (!open) return 0;
+          offered.push(data.slice());
+          return data.length;
+        },
+      },
+    });
+    try {
+      for (let index = 0; index < 8; index++) {
+        const child = await shell.spawn();
+        const output = () => broker.children.get(child)?.output;
+        // The first writer fills the budget; every later one waits for credit before storing.
+        await until(
+          () => (index ? !!output()?.wants() : output()?.pending() === 65536),
+          "a blocked writer",
+        );
+        await shell.service.kill(child, 9);
+        expect(await shell.supervisor.waitForExit(shell.pid, child)).toMatchObject({
+          kind: "signaled",
+          code: 9,
+        });
+        shell.reap(child);
+        await until(() => !broker.children.has(child), "physical stop");
+        const budget = broker.terminalOutputs.get(shell.pid)!;
+        expect(broker.children.size).toBe(0);
+        expect(budget.readers.size).toBe(1);
+        expect(budget.pending()).toBe(65536);
+        expect(budget.available()).toBe(0);
+      }
+      open = true;
+      shell.service.outputDrained(shell.pid);
+      // Exactly what the first writer was promised: one record's payload, no more, no less.
+      expect(Buffer.concat(offered)).toEqual(Buffer.from(expected.subarray(0, 65532)));
+      expect(broker.terminalOutputs.has(shell.pid)).toBe(false);
+    } finally {
+      shell.dispose();
+    }
+  }, 30_000);
 
   test("runtime disposal stops a writer blocked on a full destination", async () => {
     const terminal = new BoundedTerminal();

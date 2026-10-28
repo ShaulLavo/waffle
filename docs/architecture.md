@@ -295,13 +295,24 @@ await service.adoptRuntimeRoot(root, {
 service.outputDrained(root.pid);
 ```
 
-A short count keeps the rest in the writer's buffer and holds that writer until
-`outputDrained(rootPid)`. The page never queues more than each Worker's bounded buffer.
-`output(fd, data)` remains for destinations that take every byte. The two are exclusive.
+A short count keeps the rest buffered and holds the writer until `outputDrained(rootPid)`.
+`output(fd, data)` remains for destinations that take every byte. The two are exclusive. A
+call to `outputDrained` from inside `tryOutput` joins the delivery already running; the count
+that `tryOutput` returns decides it, so it cannot loop.
 
-Kill, revocation and disposal wake a blocked writer. Bytes it had already handed over are still
-delivered, in order. A Worker started outside `launchWorker` has no such buffer: its host
-terminal output is posted as `stdout` and `stderr` messages, and that host takes every byte.
+Accepted bytes belong to the root's terminal, not to the process that wrote them. All writers
+under one root share one 64 KiB budget, headers included. A writer stores bytes only with
+credit the page granted it, and asks for more when it runs out; idle writers give unused
+credit back. When a Worker stops, by exit, kill, revocation or disposal, its unused credit
+returns, and the bytes it was told it wrote move from its shared buffer into page memory of
+exactly their size. They are still delivered, in order, and still count against the root's
+budget, so later writers wait for credit instead of taking new storage. Memory per root is
+therefore one budget of accepted output, plus one 64 KiB buffer per live Worker. Accepted
+bytes are discarded only when the root itself retires undelivered; that is reported through
+the broker's `onError`.
+
+A Worker started outside `launchWorker` has no such buffer: its host terminal output is posted
+as `stdout` and `stderr` messages, and that host takes every byte.
 
 Adapter cleanup uses the existing lifecycle, not an extra worker-stop hook. Register a
 `ProcessController` with the browser process service's `registerController(pid, controller)`:

@@ -59,6 +59,7 @@ import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
 import {
   createTerminalOutput,
   deliveredTerminalOutput,
+  TerminalOutputBudget,
   type TerminalOutputDelivery,
   type TerminalOutputReader,
 } from "./terminal-output.js";
@@ -181,10 +182,7 @@ interface RuntimeChild {
   startupStderr?: PipeEndpoint;
   cleanup?(): void;
   wake?(): void;
-}
-interface TerminalOutputOwner {
-  readonly child: RuntimeChild;
-  readonly rootPid: number;
+  output?: TerminalOutputReader;
 }
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
@@ -212,8 +210,8 @@ export class BrowserProcessBroker {
   private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
   private readonly descendantHooks = new Map<number, DescendantHook>();
   private readonly outputs = new Map<number, TerminalOutputDelivery | undefined>();
-  /** Live Workers' buffers, and stopped Workers' buffers still holding accepted bytes. */
-  private readonly terminalOutputs = new Map<TerminalOutputReader, TerminalOutputOwner>();
+  /** Each root's terminal output: live writers and stopped writers' accepted bytes. */
+  private readonly terminalOutputs = new Map<number, TerminalOutputBudget>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
   private readonly fences = new Map<number, Promise<void>>();
@@ -543,9 +541,7 @@ export class BrowserProcessBroker {
       this.revokedControllers?.delete(pid);
       this.roots.delete(pid);
       this.outputs.delete(pid);
-      // The destination is gone; nothing remains to deliver buffered bytes to.
-      for (const [reader, owner] of this.terminalOutputs)
-        if (owner.rootPid === pid) this.terminalOutputs.delete(reader);
+      this.retireTerminalOutput(pid);
       this.registries.delete(pid);
       this.fences.delete(pid);
       this.releaseAcquiredProcess(pid);
@@ -749,26 +745,28 @@ export class BrowserProcessBroker {
   }
   /** A bounded root destination reports room for its writers' buffered terminal output. */
   outputDrained(rootPid: number): void {
-    for (const [reader, owner] of this.terminalOutputs)
-      if (owner.rootPid === rootPid) this.drainTerminalOutput(reader);
+    this.serviceTerminalOutput(rootPid);
   }
-  private drainTerminalOutput(reader: TerminalOutputReader): void {
-    const owner = this.terminalOutputs.get(reader);
-    if (!owner || this.suspended) return;
-    const destination = this.outputs.has(owner.rootPid)
-      ? this.outputs.get(owner.rootPid)
-      : this.outputFor(owner.child.context.pid);
+  private serviceTerminalOutput(rootPid: number): void {
+    const budget = this.terminalOutputs.get(rootPid);
+    if (!budget || this.suspended) return;
+    const destination = this.outputFor(rootPid);
     try {
-      reader.drain(destination ?? ((_target, data) => data.length));
+      budget.service(destination ?? ((_target, data) => data.length));
     } catch (error) {
       this.report(error);
     }
-    this.releaseTerminalOutputs(owner.child);
+    if (!budget.readers.size) this.terminalOutputs.delete(rootPid);
   }
-  private releaseTerminalOutputs(child: RuntimeChild): void {
-    if (this.children.get(child.context.pid) === child) return;
-    for (const [reader, owner] of this.terminalOutputs)
-      if (owner.child === child && !reader.pending()) this.terminalOutputs.delete(reader);
+  private retireTerminalOutput(rootPid: number): void {
+    const budget = this.terminalOutputs.get(rootPid);
+    this.terminalOutputs.delete(rootPid);
+    const pending = budget?.pending();
+    // The destination is gone. Say so instead of dropping accepted bytes silently.
+    if (pending)
+      this.report(
+        new Error(`root ${rootPid} retired with ${pending} terminal output bytes undelivered`),
+      );
   }
   private outputFor(pid: number): TerminalOutputDelivery | undefined {
     const rootPid = this.options.table.get(pid)?.rootPid;
@@ -1067,8 +1065,10 @@ export class BrowserProcessBroker {
     this.children.set(context.pid, child);
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
-    const output = createTerminalOutput();
-    this.terminalOutputs.set(output, { child, rootPid: state.rootPid });
+    const output = (child.output = createTerminalOutput());
+    let budget = this.terminalOutputs.get(state.rootPid);
+    if (!budget) this.terminalOutputs.set(state.rootPid, (budget = new TerminalOutputBudget()));
+    budget.readers.add(output);
     // Revocation refuses further writes and wakes a blocked writer; accepted bytes remain.
     context.registerRevocation(() => output.close());
     try {
@@ -1109,7 +1109,7 @@ export class BrowserProcessBroker {
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       if (data.type === "terminal-output") {
         // Bytes the guest was told it wrote are delivered even after a signal won.
-        this.drainTerminalOutput(output);
+        this.serviceTerminalOutput(state.rootPid);
         return;
       }
       let selected: ReturnType<typeof readOutcome>,
@@ -1335,7 +1335,9 @@ export class BrowserProcessBroker {
       await settleStop(() => child.cleanup?.(), errors);
       if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
       this.children.delete(child.context.pid);
-      this.releaseTerminalOutputs(child);
+      // Its accepted bytes stay with the root; its unused credit returns to other writers.
+      child.output?.retire();
+      this.serviceTerminalOutput(child.identity.rootPid);
       this.retireChildController(child.context.pid);
     };
     const fence = this.quiesceProcess(child.context.pid);

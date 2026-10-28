@@ -1,9 +1,10 @@
-// Original browser adapter: a bounded terminal output buffer between one process Worker and
-// the page. It gives host terminal destinations the flow control of a real TTY: a write
-// waits for room or reports the exact prefix it accepted, and the page never queues more.
+// Original browser adapter: bounded terminal output between process Workers and the page. It
+// gives host terminal destinations the flow control of a real TTY: a write waits for room or
+// reports the exact prefix it accepted, and each root holds at most one budget of bytes.
 import type { Readiness, Stream } from "../core/descriptors.js";
 import {
   atomicsAdd,
+  atomicsCompareExchange,
   atomicsExchange,
   atomicsLoad,
   atomicsNotify,
@@ -11,6 +12,11 @@ import {
   atomicsWait,
   Int32ArrayConstructor,
   isSharedArrayBuffer,
+  SetConstructor,
+  setAdd,
+  setDelete,
+  setForEach,
+  setHas,
   SharedArrayBufferConstructor,
   sharedArrayBufferByteLength,
   typedArrayLength,
@@ -30,7 +36,9 @@ const STDERR = 0x80000000;
 const DEFAULT_CAPACITY = 65536;
 // Signals publish on the process interrupt word, not this buffer's sequence.
 const SIGNAL_RESCAN_MS = 10;
-const H = { write: 0, read: 1, wake: 2, armed: 3, closed: 4 } as const;
+const H = { write: 0, read: 1, wake: 2, armed: 3, closed: 4, credit: 5, want: 6 } as const;
+/** Buffer bytes, headers included, one root's writers may hold accepted and undelivered. */
+const TERMINAL_OUTPUT_BUDGET = 65536;
 
 /** Exact-count host terminal destination. It never drops bytes or reports more than accepted. */
 export interface RuntimeTerminalOutput {
@@ -48,7 +56,7 @@ export interface TerminalOutputWriterOptions {
   checkActive(): void;
   /** A pending signal ends a blocking write with EINTR, or with its accepted prefix. */
   interrupted(): boolean;
-  /** Called after a write when the page has drained everything and waits to be told. */
+  /** Called when the page waits to be told about a write or a credit request. */
   doorbell(): void;
 }
 
@@ -128,8 +136,9 @@ function notify(state: Int32Array): void {
   atomicsNotify(state, H.wake);
 }
 
-/** Page side: allocate one Worker's buffer. The page alone reads it. Positions are 32-bit
- * counters, so the capacity is a power of two that keeps them consistent when they wrap. */
+/** Page side: allocate one Worker's buffer. The page alone reads it and grants its credit.
+ * Positions are 32-bit counters, so the capacity is a power of two that keeps them consistent
+ * when they wrap. */
 export function createTerminalOutput(capacity = DEFAULT_CAPACITY): TerminalOutputReader {
   if (
     !Number.isSafeInteger(capacity) ||
@@ -144,48 +153,67 @@ export function createTerminalOutput(capacity = DEFAULT_CAPACITY): TerminalOutpu
 }
 
 export class TerminalOutputReader {
-  private readonly state: Int32Array;
-  private readonly ring: Uint8Array;
+  private state: Int32Array;
+  private ring: Uint8Array;
+  private shared: SharedArrayBuffer | undefined;
   private draining = false;
-  private again = false;
-  constructor(readonly buffer: SharedArrayBuffer) {
+  /** Credit handed to this writer and not yet returned by delivery, in buffer bytes. */
+  granted = 0;
+  constructor(buffer: SharedArrayBuffer) {
     this.state = words(buffer);
     this.ring = ringOf(buffer);
+    this.shared = buffer;
   }
-  /** Bytes accepted from the Worker and not yet delivered. */
+  /** The Worker's shared buffer, until retire() moves its accepted bytes to page memory. */
+  get buffer(): SharedArrayBuffer {
+    if (!this.shared) throw new TypeError("terminal output was retired");
+    return this.shared;
+  }
+  get retired(): boolean {
+    return !this.shared;
+  }
+  /** Bytes, headers included, accepted from the Worker and not yet delivered. */
   pending(): number {
     return (atomicsLoad(this.state, H.write) - atomicsLoad(this.state, H.read)) >>> 0;
   }
+  /** The writer ran out of credit and waits for a grant. */
+  wants(): boolean {
+    return !this.retired && atomicsLoad(this.state, H.want) !== 0;
+  }
+  /** Gives the writer more credit and wakes it. */
+  grant(units: number): void {
+    atomicsStore(this.state, H.want, 0);
+    atomicsAdd(this.state, H.credit, units);
+    this.granted += units;
+    notify(this.state);
+  }
+  /** Takes back credit the writer has not used. It asks again when it needs more. */
+  reclaim(): void {
+    if (this.retired) return;
+    this.granted -= atomicsExchange(this.state, H.credit, 0);
+  }
   /**
    * Offers buffered records in order. A short delivery keeps the rest buffered and returns
-   * "blocked"; deliver again after the destination reports room. "idle" means the Worker
-   * will ring its doorbell for the next write.
+   * "blocked"; drain again after the destination reports room. A drain requested from inside
+   * a delivery is part of the running pass: that delivery's returned count decides it.
    */
   drain(deliver: TerminalOutputDelivery): "idle" | "blocked" {
-    // A destination may report room from inside its own delivery; finish this pass, then retry.
-    if (this.draining) {
-      this.again = true;
-      return "idle";
-    }
+    if (this.draining) return "blocked";
     this.draining = true;
     try {
-      for (;;) {
-        this.again = false;
-        const result = this.drainOnce(deliver);
-        if (result === "idle" || !this.again) return result;
-      }
+      while (this.pending()) if (!this.deliverRecord(deliver)) return "blocked";
+      return "idle";
     } finally {
       this.draining = false;
     }
   }
-  private drainOnce(deliver: TerminalOutputDelivery): "idle" | "blocked" {
-    for (;;) {
-      while (this.pending()) if (!this.deliverRecord(deliver)) return "blocked";
-      atomicsStore(this.state, H.armed, 1);
-      if (!this.pending()) return "idle";
-      // A write raced the arm. If its writer already took the arm, its doorbell follows.
-      if (atomicsExchange(this.state, H.armed, 0) === 0) return "idle";
-    }
+  /** Arms the doorbell. False when the writer has bytes or a credit request the page must see. */
+  park(): boolean {
+    if (this.retired) return true;
+    atomicsStore(this.state, H.armed, 1);
+    if (!this.pending() && !this.wants()) return true;
+    // If the writer already took the arm, its doorbell follows.
+    return atomicsExchange(this.state, H.armed, 0) === 0;
   }
   private deliverRecord(deliver: TerminalOutputDelivery): boolean {
     const read = atomicsLoad(this.state, H.read);
@@ -198,22 +226,118 @@ export class TerminalOutputReader {
     if (!Number.isSafeInteger(accepted) || accepted < 0 || accepted > length)
       throw new TypeError("terminal output delivery returned an invalid count");
     if (accepted === length) {
-      atomicsStore(this.state, H.read, (read + RECORD_BYTES + length) | 0);
-      notify(this.state);
+      this.release(read, RECORD_BYTES + length);
       return true;
     }
     if (!accepted) return false;
     // Rewrite the shortened record over delivered bytes, then release them to the writer.
-    const next = (read + accepted) | 0;
-    copyIn(this.ring, next, header(target, length - accepted));
-    atomicsStore(this.state, H.read, next);
-    notify(this.state);
+    copyIn(this.ring, read + accepted, header(target, length - accepted));
+    this.release(read, accepted);
     return false;
+  }
+  private release(read: number, bytes: number): void {
+    atomicsStore(this.state, H.read, (read + bytes) | 0);
+    this.granted -= bytes;
+    notify(this.state);
   }
   /** Refuses later writes and wakes a blocked writer. Buffered bytes remain deliverable. */
   close(): void {
     atomicsStore(this.state, H.closed, 1);
     notify(this.state);
+  }
+  /**
+   * The Worker has physically stopped. Return its unused credit and any credit lost to an
+   * unpublished write, and move its accepted bytes into page memory of exactly their size.
+   */
+  retire(): void {
+    if (this.retired) return;
+    atomicsExchange(this.state, H.credit, 0);
+    const pending = this.pending();
+    const bytes = copyOut(this.ring, atomicsLoad(this.state, H.read), pending);
+    this.shared = undefined;
+    this.state = new Int32ArrayConstructor(HEADER_WORDS);
+    atomicsStore(this.state, H.write, pending);
+    atomicsStore(this.state, H.closed, 1);
+    this.ring = bytes;
+    this.granted = pending;
+  }
+}
+
+/**
+ * One root's terminal output: every writer under the root shares one budget, like the buffer
+ * of a TTY. Accepted bytes belong to the root's destination, not to the writing process, so
+ * they outlive it, and the total stays within the budget however many writers stop.
+ */
+export class TerminalOutputBudget {
+  readonly readers = new SetConstructor<TerminalOutputReader>();
+  private servicing = false;
+  constructor(readonly budget = TERMINAL_OUTPUT_BUDGET) {}
+  /** Credit not yet granted to any writer. */
+  available(): number {
+    let granted = 0;
+    setForEach(this.readers, (reader) => {
+      granted += reader.granted;
+    });
+    return this.budget - granted;
+  }
+  pending(): number {
+    let pending = 0;
+    setForEach(this.readers, (reader) => {
+      pending += reader.pending();
+    });
+    return pending;
+  }
+  /**
+   * Delivers, grants credit and re-arms doorbells until nothing can progress. A call from
+   * inside a delivery joins the running pass. Returns without spinning when the destination
+   * is full or no credit is free; a later doorbell, outputDrained or retire resumes it.
+   */
+  service(deliver: TerminalOutputDelivery): void {
+    if (this.servicing) return;
+    this.servicing = true;
+    const blocked = new SetConstructor<TerminalOutputReader>();
+    try {
+      for (;;) {
+        setForEach(this.readers, (reader) => {
+          if (!setHas(blocked, reader) && reader.drain(deliver) === "blocked")
+            setAdd(blocked, reader);
+        });
+        this.distribute();
+        if (!this.parkAll(blocked)) return;
+      }
+    } finally {
+      this.servicing = false;
+      setForEach(this.readers, (reader) => {
+        if (reader.retired && !reader.pending()) setDelete(this.readers, reader);
+      });
+    }
+  }
+  /** True when an unblocked writer has bytes, or wants credit that is now free. */
+  private parkAll(blocked: Set<TerminalOutputReader>): boolean {
+    let again = false;
+    setForEach(this.readers, (reader) => {
+      if (setHas(blocked, reader) || reader.park()) return;
+      if (reader.pending() || (reader.wants() && this.available() > RECORD_BYTES)) again = true;
+    });
+    return again;
+  }
+  private distribute(): void {
+    const wanting: TerminalOutputReader[] = [];
+    setForEach(this.readers, (reader) => {
+      if (reader.wants()) wanting[wanting.length] = reader;
+    });
+    if (!wanting.length) return;
+    // Idle writers give their unused credit back; they ask again when they write.
+    setForEach(this.readers, (reader) => {
+      if (!reader.wants()) reader.reclaim();
+    });
+    let pool = this.available();
+    for (let index = 0; index < wanting.length; index++) {
+      const share = Math.floor(pool / (wanting.length - index));
+      if (share <= RECORD_BYTES) continue;
+      wanting[index]!.grant(share);
+      pool -= share;
+    }
   }
 }
 
@@ -228,14 +352,32 @@ export function attachTerminalOutput(
     notification = new Int32ArrayConstructor(buffer, H.wake * 4, 1);
   const free = () => capacity - ((atomicsLoad(state, H.write) - atomicsLoad(state, H.read)) >>> 0);
   const closed = () => atomicsLoad(state, H.closed) !== 0;
+  const requestCredit = () => {
+    atomicsStore(state, H.want, 1);
+    if (atomicsExchange(state, H.armed, 0) === 1) options.doorbell();
+  };
+  /** Takes credit for one record and returns its payload size, or 0 after asking for more. */
+  const reserve = (total: number): number => {
+    for (;;) {
+      const credit = atomicsLoad(state, H.credit);
+      const space = free();
+      const room = (credit < space ? credit : space) - RECORD_BYTES;
+      if (room <= 0) {
+        requestCredit();
+        return 0;
+      }
+      const count = total < room ? total : room;
+      const next = credit - RECORD_BYTES - count;
+      if (atomicsCompareExchange(state, H.credit, credit, next) === credit) return count;
+    }
+  };
   const tryWrite = (target: 1 | 2, chunks: readonly Uint8Array[]): number => {
     options.checkActive();
     if (closed()) return -BADF;
     const total = totalLength(chunks);
     if (!total) return 0;
-    const room = free() - RECORD_BYTES;
-    if (room <= 0) return -AGAIN;
-    const count = total < room ? total : room;
+    const count = reserve(total);
+    if (!count) return -AGAIN;
     const start = atomicsLoad(state, H.write);
     copyIn(ring, start, header(target, count));
     let at = start + RECORD_BYTES,
@@ -274,13 +416,14 @@ export function attachTerminalOutput(
       atomicsWait(state, H.wake, seen, SIGNAL_RESCAN_MS);
     }
   };
-  return {
-    tryWrite,
-    write,
-    flush,
-    notification,
-    writable: () => !closed() && free() > RECORD_BYTES,
+  const writable = (): boolean => {
+    if (closed()) return false;
+    if (atomicsLoad(state, H.credit) > RECORD_BYTES && free() > RECORD_BYTES) return true;
+    // Readiness waits on this buffer's notification, so a grant must be on its way.
+    requestCredit();
+    return false;
   };
+  return { tryWrite, write, flush, notification, writable };
 }
 
 /** Copies each immediate write to a page or host callback that reports its accepted prefix. */
