@@ -176,8 +176,8 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   initialize?(context: WorkerExecutionContext<R>): void;
   /** Structured-cloneable child metadata; filesystem and pipeRegistry are reserved. */
   spawnData?(): Record<string, unknown>;
-  /** Resolve inherited terminal provenance to a process-local stream. */
-  resolveTerminal?(target: 0 | 1 | 2): Stream;
+  /** Resolve inherited terminal provenance; undefined keeps default EOF input or host output. */
+  resolveTerminal?(target: 0 | 1 | 2): Stream | undefined;
   signal?(signal: number, mode: number): number;
   signalError?(signal: number): never;
   terminalSignal?(error: unknown): number | undefined;
@@ -340,7 +340,8 @@ function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): vo
   if (errors.length) throw new AggregateError(errors, "descriptor release failed");
 }
 
-function transferStdio(stream: Stream, discarded: Stream[]): Stream {
+function transferStdio(stream: Stream | undefined, discarded: Stream[]): Stream | undefined {
+  if (stream === undefined) return;
   for (let index = discarded.length - 1; index >= 0; index--) {
     if (discarded[index] !== stream) continue;
     discarded[index] = discarded[discarded.length - 1]!;

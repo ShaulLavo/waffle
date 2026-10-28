@@ -1235,7 +1235,6 @@ class Endpoint implements Stream {
     if (denied === "CLOSED") return 0;
     if (denied) return errno(denied);
     if (!byteCapacity(chunks)) return 0;
-    if (this.target !== 0) return -ProcessErrno.BADF;
     const result = this.run(() => this.readInput(chunks));
     return result.kind === "ok" ? result.value : result.code === "CLOSED" ? 0 : errno(result.code);
   }
@@ -1287,7 +1286,6 @@ class Endpoint implements Stream {
     const denied = this.check();
     if (denied)
       return { readable: denied === "CLOSED", writable: false, hangup: denied === "CLOSED" };
-    if (this.target !== 0) return this.outputReady();
     const result = this.run(() => {
       if (!this.attachment.selected(this.state)) return ok({ readable: false, nbytes: 0 });
       return ok(
@@ -1296,15 +1294,12 @@ class Endpoint implements Stream {
     });
     const input =
       result.kind === "ok" ? result.value : { readable: result.code === "CLOSED", nbytes: 0 };
-    return { ...input, writable: false, hangup: this.attachment.session.closed() };
+    return { ...input, writable: this.outputReady(), hangup: this.attachment.session.closed() };
   }
-  private outputReady(): Readiness {
+  private outputReady(): boolean {
+    if (this.target === 0) return false;
     try {
-      return {
-        ...this.attachment.policy.outputReadiness(this.target as 1 | 2),
-        readable: false,
-        hangup: false,
-      };
+      return this.attachment.policy.outputReadiness(this.target).writable;
     } catch (cause) {
       this.attachment.session.close();
       throw cause;
