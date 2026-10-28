@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { test, type TestContext } from "node:test";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +10,87 @@ import { runGit } from "../src/git-command";
 import { nodeGitFilesystem as filesystem } from "../src/node-filesystem";
 import { gitSnapshot } from "./helpers/git-snapshot";
 import { captureGit } from "./helpers/git-output";
+
+const commitEnvironment = {
+  ...fixture.provenance.environment,
+  GIT_AUTHOR_NAME: "Release check",
+  GIT_AUTHOR_EMAIL: "release@example.invalid",
+  GIT_COMMITTER_NAME: "Release check",
+  GIT_COMMITTER_EMAIL: "release@example.invalid",
+};
+
+function nativeCommitCommand(root: string, env: Record<string, string>, argv: readonly string[]) {
+  const result = spawnSync("git", argv, { cwd: root, env, encoding: "utf8" });
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+async function datedCommit(context: TestContext, date: string, engine: "waffle" | "native") {
+  const root = await fs.mkdtemp(join(tmpdir(), "waffle-git-date-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const env = { ...commitEnvironment, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
+  const command = async (argv: readonly string[]) => {
+    if (engine === "native") return nativeCommitCommand(root, env, argv);
+    const result = await captureGit((invocation) => runGit(filesystem, invocation), {
+      argv,
+      cwd: root,
+      env,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  await command(["init", "-b", "main"]);
+  await fs.writeFile(`${root}/story`, "base\n", { mode: 0o644 });
+  await command(["add", "story"]);
+  await command(["commit", "-m", "base"]);
+  return {
+    oid: nativeCommitCommand(root, env, ["rev-parse", "HEAD"]).trim(),
+    raw: nativeCommitCommand(root, env, ["cat-file", "commit", "HEAD"]),
+  };
+}
+
+for (const date of [
+  "1700000000 +0000",
+  "1700000000 -0000",
+  "2023-11-14T22:13:20+00:00",
+  "2023-11-14T22:13:20-00:00",
+  "1700000000 +0530",
+  "1700000000 -0330",
+  "2023-11-15T03:43:20+05:30",
+  "2023-11-14T18:43:20-03:30",
+]) {
+  test(`commit object and hash match native Git for date ${date}`, async (context) => {
+    const actual = await datedCommit(context, date, "waffle");
+    const expected = await datedCommit(context, date, "native");
+    assert.deepEqual(actual, expected);
+    assert.match(actual.raw, /^tree 21fdc48c88dd1bcdbd0e939d175bf12a1ea66f0a$/m);
+    if (date === "1700000000 +0000")
+      assert.equal(actual.oid, "d2fc16831e3dc84847f2ee35fbbc3404a682a668");
+  });
+}
+
+for (const kind of ["AUTHOR", "COMMITTER"]) {
+  test(`invalid ${kind.toLowerCase()} date fails without creating a commit`, async (context) => {
+    const { root, ok } = await repository(context);
+    await ok("init");
+    await fs.writeFile(`${root}/story`, "base\n");
+    await ok("add", "story");
+    for (const date of ["not-a-date", "2023-99-14T22:13:20+00:00"]) {
+      const env = { ...commitEnvironment, [`GIT_${kind}_DATE`]: date };
+      const result = await captureGit((invocation) => runGit(filesystem, invocation), {
+        argv: ["commit", "-m", "base"],
+        cwd: root,
+        env,
+      });
+      assert.equal(result.status, 128);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, `git: invalid date '${date}'\n`);
+      await assert.rejects(fs.readFile(`${root}/.git/refs/heads/main`), { code: "ENOENT" });
+      assert.equal((await ok("status")).stdout, "A  story\n");
+    }
+  });
+}
 
 async function repository(context: TestContext) {
   const root = await fs.mkdtemp(join(tmpdir(), "bash-web-git-"));
