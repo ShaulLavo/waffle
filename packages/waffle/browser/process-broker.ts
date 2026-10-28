@@ -366,20 +366,22 @@ export class BrowserProcessBroker {
     }
     const track = (handle: ProcessHandle): ProcessHandle => {
       this.traceProcess(context, "launched");
+      const terminal = this.terminalLifetimes.get(context.pid);
       if (this.children.has(context.pid) || !this.controllers.has(context.pid)) {
         this.launches?.delete(context.pid);
         settled();
-        return handle;
+        return this.children.has(context.pid)
+          ? handle
+          : { terminate: () => stopTerminalConsumer(handle, terminal) };
       }
       acquireLaunch();
-      const terminal = this.terminalLifetimes.get(context.pid);
       // External launchers own their physical handle. Keep controller authority until
       // that handle's asynchronous cleanup settles, not merely its child-exit event.
       return {
         terminate: () => {
           let pending: void | Promise<void>;
           try {
-            pending = handle.terminate();
+            pending = stopTerminalConsumer(handle, terminal);
           } catch (error) {
             settled();
             throw error;
@@ -387,7 +389,6 @@ export class BrowserProcessBroker {
           if (pending) {
             const stopping = pending
               .then(() => {
-                terminal?.stopped();
                 this.controllerStops?.delete(context.pid);
                 this.launches?.delete(context.pid);
                 this.retireChildController(context.pid);
@@ -399,7 +400,6 @@ export class BrowserProcessBroker {
             });
             return stopping;
           }
-          terminal?.stopped();
           this.launches?.delete(context.pid);
           this.retireChildController(context.pid);
           settled();
@@ -1274,7 +1274,8 @@ export class BrowserProcessBroker {
       const notifications = child.notifications;
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(async () => {
-        await child.worker?.terminate();
+        if (!child.worker) return;
+        await child.worker.terminate();
         terminal?.stopped();
       }, errors);
       await settleStop(() => child.cleanup?.(), errors);
@@ -1307,7 +1308,7 @@ export class BrowserProcessBroker {
     if (pending) return pending.pending;
     const controller = this.controllers.get(pid);
     if (!controller) return;
-    const terminal = this.terminalLifetimes.get(pid);
+    const terminal = controller.stop ? this.terminalLifetimes.get(pid) : undefined;
     const stopping = Promise.resolve(this.quiesceProcess(pid))
       .then(() => controller.stop?.())
       .then(() => {
@@ -1517,7 +1518,10 @@ export class BrowserProcessBroker {
     failed: Set<ProcessController>,
   ): Promise<void> {
     const stopping = this.controllerStops?.get(pid);
-    const terminal = this.terminalLifetimes.get(pid);
+    // A controller's auxiliary cleanup cannot certify a separately owned launch handle
+    // or generic Worker, especially when that consumer's stop has failed.
+    const ownsConsumer = controller.stop && !this.launches?.has(pid) && !this.children.has(pid);
+    const terminal = ownsConsumer ? this.terminalLifetimes.get(pid) : undefined;
     const pending = stopping?.controllerStop
       ? stopping.pending
       : Promise.resolve().then(() => controller.stop?.());
@@ -1647,4 +1651,13 @@ async function settleStop(stop: () => void | Promise<void>, errors: unknown[]): 
   } catch (error) {
     errors.push(error);
   }
+}
+
+function stopTerminalConsumer(
+  handle: ProcessHandle,
+  terminal: TerminalProcessLifetime | undefined,
+): void | Promise<void> {
+  const pending = handle.terminate();
+  if (pending) return pending.then(() => terminal?.stopped());
+  terminal?.stopped();
 }

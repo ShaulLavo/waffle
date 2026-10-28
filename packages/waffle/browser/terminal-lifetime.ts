@@ -4,12 +4,12 @@ import {
 } from "../proc/terminal-lifetime.js";
 import type { WorkerProcessTransport } from "../proc/worker-client.js";
 import { terminalStopCapture, type TerminalIdentity } from "./terminal-session.js";
-import { poisonTerminalInput, type TerminalInput } from "./terminal-input.js";
+import { attachTerminalInput, poisonTerminalInput, type TerminalInput } from "./terminal-input.js";
 
 export type { TerminalProcessLifetime } from "../proc/terminal-lifetime.js";
 
 function inputDeath(inputs: readonly TerminalInput[]): (nonce: bigint, token: bigint) => void {
-  const retained = Array.from(inputs);
+  const retained = Array.from(inputs, (input) => attachTerminalInput(input.buffer));
   return (nonce, token) => {
     if (!retained.some((input) => poisonTerminalInput(input, nonce, token)))
       throw new Error("Interrupted terminal input was omitted from the stop capture");

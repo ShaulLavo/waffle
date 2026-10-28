@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { DescriptorTable } from "../core/descriptors.js";
-import { controlLoad } from "../proc/control.js";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessTable } from "../proc/table.js";
+import { controlLoad, packedControl } from "../proc/control.js";
 import { collectDirectoryProcess } from "../proc/directory.js";
 import { claimOutcome } from "../proc/outcome.js";
 import {
@@ -10,6 +15,7 @@ import {
   WorkerProcessClient,
   workerProcessState,
   type WorkerProcessTransport,
+  type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 import {
   attachTerminal,
@@ -31,6 +37,7 @@ function must<T>(result: TerminalResult<T>): T {
 function fixture(input: TerminalInput = createTerminalInput()) {
   const root = createWorkerProcessTransport({ capacity: 4 });
   const descriptors = new DescriptorTable();
+  const messages: WorkerProcessMessage[] = [];
   let child: WorkerProcessTransport | undefined;
   const unused = (): never => {
     throw new Error("unexpected fd transfer");
@@ -40,6 +47,7 @@ function fixture(input: TerminalInput = createTerminalInput()) {
     descriptors,
     codec: { export: unused, import: unused, discard: unused },
     postMessage(message) {
+      messages.push(message);
       if (message.operation === "spawn") child = message.transport;
     },
   });
@@ -72,6 +80,7 @@ function fixture(input: TerminalInput = createTerminalInput()) {
     lifetime,
     state,
     spawn,
+    messages,
     context: member.context,
     restore() {
       const rootGroup = must(authority.createGroup({ initialMode: "raw" }));
@@ -91,7 +100,14 @@ function fixture(input: TerminalInput = createTerminalInput()) {
   };
 }
 
-type Pause = "session" | "input" | "before-entry" | "after-entry" | "after-unlock" | "input-miss";
+type Pause =
+  | "session"
+  | "input"
+  | "before-entry"
+  | "after-entry"
+  | "after-unlock"
+  | "before-leave"
+  | "input-miss";
 interface ProbeData {
   pause: Pause;
   process: WorkerProcessTransport;
@@ -132,6 +148,16 @@ async function probe() {
       typeof replacement === "bigint" &&
       (replacement & 0xffffffffn) === 1n;
     if (entry && data.pause === "before-entry") pause();
+    const leaving =
+      array instanceof BigInt64Array &&
+      array.buffer === data.process.directory &&
+      array.byteOffset === data.admissionOffset &&
+      index === 0 &&
+      typeof expected === "bigint" &&
+      (expected & 0xffffffffn) === 1n &&
+      typeof replacement === "bigint" &&
+      (replacement & 0xffffffffn) === 0n;
+    if (leaving && data.pause === "before-leave") pause();
     const result: unknown = Reflect.apply(nativeCAS, Atomics, args);
     if (entry && data.pause === "after-entry" && result === expected) pause();
     const inputLock =
@@ -149,6 +175,7 @@ async function probe() {
     if (
       data.pause === "after-unlock" &&
       array instanceof BigInt64Array &&
+      array.byteOffset === 64 &&
       array.buffer !== data.input &&
       array.buffer !== data.process.directory &&
       index === 0 &&
@@ -239,7 +266,14 @@ function start(f: ReturnType<typeof fixture>, pause: Pause) {
   };
 }
 
-for (const pause of ["session", "input", "before-entry", "after-entry", "after-unlock"] as const)
+for (const pause of [
+  "session",
+  "input",
+  "before-entry",
+  "after-entry",
+  "after-unlock",
+  "before-leave",
+] as const)
   test(`terminal pre-stop fence joins a live Worker at ${pause}`, async () => {
     const f = fixture();
     expect(f.input.push(Uint8Array.of(65))).toBe(1);
@@ -256,6 +290,7 @@ for (const pause of ["session", "input", "before-entry", "after-entry", "after-u
       expect(controlLoad(f.state.terminalAdmission)).toBe(pause === "before-entry" ? -1 : -2);
       if (pause === "session" || pause === "input")
         expect(f.display.snapshot()).toEqual({ kind: "error", code: "AGAIN" });
+      if (pause === "after-unlock") expect(f.display.snapshot().kind).toBe("ok");
       holder.release();
       expect(await holder.next()).toMatchObject({
         phase: "done",
@@ -361,6 +396,180 @@ test("a stale physical-stop capture cannot change a replacement directory incarn
     expect(controlLoad(state.terminalAdmission)).toBe(0);
     expect(controlLoad(state.terminalStopped)).toBe(0);
   } finally {
+    f.cleanup();
+  }
+});
+
+async function brokerFixture(
+  f: ReturnType<typeof fixture>,
+  launch: ConstructorParameters<typeof BrowserProcessBroker>[0]["launch"],
+) {
+  const identities = new ProcessIdentityAllocator(f.root.identity);
+  const registry = new ExecutableRegistry();
+  registry.register("/child", {
+    adapter: "fixture",
+    module: new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0)),
+  });
+  const errors: unknown[] = [];
+  const broker = new BrowserProcessBroker({
+    identities,
+    registry,
+    table: new ProcessTable(identities),
+    launch,
+    filesystem: {
+      connect() {
+        throw new Error("unused filesystem connection");
+      },
+      revoke: revokeFilesystem,
+      reap: revokeFilesystem,
+      async quiesce() {},
+    },
+    onError(error) {
+      errors.push(error);
+    },
+  });
+  f.root.data = { filesystem: createFilesystemIdentity() };
+  f.process.data = { filesystem: createFilesystemIdentity() };
+  await broker.adoptRuntimeRoot(f.root);
+  const supervisor = await broker.ready();
+  return { broker, supervisor, errors };
+}
+
+async function finishInterrupted(
+  f: ReturnType<typeof fixture>,
+  b: Awaited<ReturnType<typeof brokerFixture>>,
+  holder: ReturnType<typeof start>,
+  whileFenced: () => void,
+): Promise<void> {
+  expect(await holder.next()).toEqual({ phase: "held" });
+  const retired = Promise.withResolvers<void>();
+  const unsubscribe = b.supervisor.onJobRetirement(() => retired.resolve());
+  try {
+    b.supervisor.kill(f.process.pid, 9);
+    expect(controlLoad(f.state.terminalAdmission)).toBe(-2);
+    expect(controlLoad(f.state.terminalStopped)).toBe(0);
+    whileFenced();
+    holder.release();
+    expect(await holder.next()).toMatchObject({ phase: "done", count: 1 });
+    await bounded(retired.promise);
+  } finally {
+    unsubscribe();
+  }
+}
+
+for (const controller of [false, true])
+  test(`broker joins live terminal sections before external native stop, controller=${controller}`, async () => {
+    const f = fixture();
+    let holder: ReturnType<typeof start> | undefined;
+    let stops = 0;
+    const b = await brokerFixture(f, () => {
+      holder = start(f, "session");
+      return {
+        async terminate() {
+          stops++;
+          await holder!.worker.terminate();
+        },
+      };
+    });
+    if (controller) b.broker.registerController(f.process.pid, {});
+    try {
+      expect(f.input.push(Uint8Array.of(65))).toBe(1);
+      await b.broker.runtimeMessage(f.messages[0]!, f.root.pid);
+      await b.supervisor.start(f.process.pid);
+      if (!holder) throw new Error("native handle was not launched");
+      await finishInterrupted(f, b, holder, () => expect(stops).toBe(0));
+      expect(stops).toBe(1);
+      expect(controlLoad(f.state.terminalStopped)).toBe(1);
+      expect(f.display.snapshot().kind).toBe("ok");
+      expect(b.errors).toEqual([]);
+    } finally {
+      holder?.release();
+      await holder?.worker.terminate();
+      await bounded(b.broker.dispose());
+      f.cleanup();
+    }
+  });
+
+test("failed native stop retains the controller and does not acknowledge physical death", async () => {
+  const f = fixture();
+  let holder: ReturnType<typeof start> | undefined;
+  let retiredController = 0;
+  const failure = new Error("native stop refused");
+  const b = await brokerFixture(f, () => {
+    holder = start(f, "input");
+    return {
+      terminate() {
+        throw failure;
+      },
+    };
+  });
+  b.broker.registerController(f.process.pid, {
+    stop() {}, // Auxiliary controller cleanup does not prove the returned native handle stopped.
+    retired() {
+      retiredController++;
+    },
+  });
+  try {
+    expect(f.input.push(Uint8Array.of(65))).toBe(1);
+    await b.broker.runtimeMessage(f.messages[0]!, f.root.pid);
+    await b.supervisor.start(f.process.pid);
+    if (!holder) throw new Error("native handle was not launched");
+    await finishInterrupted(f, b, holder, () => expect(retiredController).toBe(0));
+    expect(controlLoad(f.state.terminalStopped)).toBe(0);
+    expect(retiredController).toBe(0);
+    expect(holder.worker.threadId).toBeGreaterThan(0);
+    expect(f.input.push(Uint8Array.of(66))).toBe(1);
+    expect(b.errors).toContain(failure);
+    await expect(bounded(b.broker.dispose())).rejects.toThrow();
+    expect(retiredController).toBe(0);
+    // Disposal can collect the fenced directory row before the failed native stop settles.
+    expect(Atomics.load(f.state.terminalStopped.cells, 0)).toBe(packedControl(f.process.pid, 0));
+  } finally {
+    holder?.release();
+    await holder?.worker.terminate();
+    await b.broker.dispose().catch(() => {});
+    f.cleanup();
+  }
+});
+
+test("failed launch joins a live terminal holder before its controller stops the native Worker", async () => {
+  const f = fixture();
+  let holder: ReturnType<typeof start> | undefined;
+  let stops = 0;
+  const b = await brokerFixture(f, () => {
+    throw new Error("controller owns launch");
+  });
+  b.broker.registerController(f.process.pid, {
+    async launch() {
+      holder = start(f, "input");
+      expect(await holder.next()).toEqual({ phase: "held" });
+      throw new Error("launcher failed after acquiring its native consumer");
+    },
+    async stop() {
+      stops++;
+      await holder?.worker.terminate();
+    },
+  });
+  const retired = Promise.withResolvers<void>();
+  const unsubscribe = b.supervisor.onJobRetirement(() => retired.resolve());
+  try {
+    expect(f.input.push(Uint8Array.of(65))).toBe(1);
+    await b.broker.runtimeMessage(f.messages[0]!, f.root.pid);
+    await b.supervisor.start(f.process.pid);
+    if (!holder) throw new Error("failed launch did not acquire a native handle");
+    expect(stops).toBe(0);
+    expect(controlLoad(f.state.terminalAdmission)).toBe(-2);
+    holder.release();
+    expect(await holder.next()).toMatchObject({ phase: "done", count: 1 });
+    await bounded(retired.promise);
+    expect(stops).toBe(1);
+    expect(controlLoad(f.state.terminalStopped)).toBe(1);
+    expect(f.display.snapshot().kind).toBe("ok");
+  } finally {
+    unsubscribe();
+    holder?.release();
+    await holder?.worker.terminate();
+    await bounded(b.broker.dispose());
     f.cleanup();
   }
 });
