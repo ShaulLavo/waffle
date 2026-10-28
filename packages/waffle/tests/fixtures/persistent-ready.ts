@@ -10,7 +10,8 @@ export function readyPersistent(
   recoveredCut?: PublicationCut,
 ): Record<string, unknown> {
   const result = record(value);
-  if (result.ready !== true) throw new Error("persistent owner was not ready");
+  if (result.ready !== true)
+    throw new Error(`persistent owner was not ready: ${JSON.stringify(result)}`);
   const ready = record(result.value);
   const notice = recoveredCut
     ? {

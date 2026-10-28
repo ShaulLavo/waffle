@@ -24,7 +24,12 @@ import {
 } from "./protocol.js";
 import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
 import { RingReader } from "./ring.js";
-import { acceptedAddress, loopbackAddress, tcpAddress } from "./address.js";
+import {
+  acceptedAddress,
+  loopbackAddress,
+  tcpAddress,
+  type RuntimeNetworkLookupOptions,
+} from "./address.js";
 
 interface Stream {
   chunks: Uint8Array[];
@@ -35,6 +40,13 @@ interface Stream {
 interface FetchHandle extends Stream {
   kind: "fetch";
   head: Uint8Array | null;
+}
+
+interface LookupHandle {
+  kind: "lookup";
+  chunks: Uint8Array[];
+  head: Uint8Array | null;
+  error: NetError | null;
 }
 
 interface ListenerHandle {
@@ -53,7 +65,7 @@ interface ConnHandle extends Stream {
   writeEnded?: boolean;
 }
 
-type Handle = FetchHandle | ListenerHandle | ConnHandle;
+type Handle = FetchHandle | LookupHandle | ListenerHandle | ConnHandle;
 
 /** Largest write accepted per call; the helper buffers it. */
 const MAX_WRITE = 1 << 20;
@@ -222,11 +234,36 @@ export class NetHost {
     return h.error ? ERROR : AGAIN;
   }
 
+  /** Start runtime-owned name lookup on the same handle/ring transport as fetch. */
+  lookupStart(hostname: string, options: RuntimeNetworkLookupOptions = {}): number {
+    if (this.disposed) return BADF;
+    const captured = { family: options.family, hints: options.hints };
+    if (this.disposed) return BADF;
+    const id = this.nextHandle++;
+    this.handles.set(id, { kind: "lookup", chunks: [], head: null, error: null });
+    try {
+      this.send({ type: "lookup", id, hostname, options: captured });
+    } catch (error) {
+      this.handles.delete(id);
+      throw error;
+    }
+    return id;
+  }
+
+  /** Repeatable UTF-8 JSON result array; AGAIN pending, ERROR failed, BADF wrong/closed handle. */
+  lookupHead(handle: number): Uint8Array | number {
+    this.drain();
+    const h = this.handles.get(handle);
+    if (h?.kind !== "lookup") return BADF;
+    if (h.head) return h.head;
+    return h.error ? ERROR : AGAIN;
+  }
+
   /** Up to cap buffered bytes, zero at EOF, or a protocol error code. */
   read(handle: number, cap: number): Uint8Array | number {
     this.drain();
     const h = this.handles.get(handle);
-    if (!h || h.kind === "listener") return BADF;
+    if (h?.kind !== "conn" && h?.kind !== "fetch") return BADF;
     if (h.kind === "fetch" && !h.head) return h.error ? ERROR : AGAIN;
     if (h.chunks.length > 0) {
       const chunk = this.take(h, cap);
@@ -292,7 +329,7 @@ export class NetHost {
 
   localAddr(handle: number): string | number {
     const h = this.handles.get(handle);
-    if (!h || h.kind === "fetch") return BADF;
+    if (h?.kind !== "conn" && h?.kind !== "listener") return BADF;
     return JSON.stringify(h.local);
   }
 
@@ -495,7 +532,7 @@ export class NetHost {
 
   localPort(handle: number): number {
     const h = this.handles.get(handle);
-    if (!h || h.kind === "fetch") return BADF;
+    if (h?.kind !== "conn" && h?.kind !== "listener") return BADF;
     return h.local.port;
   }
 
@@ -560,10 +597,30 @@ export class NetHost {
     // Events for handles the guest already closed are dropped.
     const h = this.handles.get(handle) ?? this.unaccepted.get(handle);
     if (!h || h.kind === "listener") return;
+    if (h.kind === "lookup") {
+      if (kind === Kind.Data) h.chunks.push(payload);
+      if (kind === Kind.LookupHead) h.head = this.lookupPayload(h, payload);
+      if (kind === Kind.Error)
+        h.error = JSON.parse(decoder.decode(this.lookupPayload(h, payload))) as NetError;
+      return;
+    }
     if (kind === Kind.Head && h.kind === "fetch") h.head = payload;
     else if (kind === Kind.Data) h.chunks.push(payload);
     else if (kind === Kind.End) h.ended = true;
     else if (kind === Kind.Error) h.error = JSON.parse(decoder.decode(payload)) as NetError;
+  }
+
+  private lookupPayload(state: LookupHandle, payload: Uint8Array): Uint8Array {
+    if (state.chunks.length === 0) return payload;
+    state.chunks.push(payload);
+    const bytes = new Uint8Array(state.chunks.reduce((size, chunk) => size + chunk.length, 0));
+    let at = 0;
+    for (const chunk of state.chunks) {
+      bytes.set(chunk, at);
+      at += chunk.length;
+    }
+    state.chunks = [];
+    return bytes;
   }
 
   private receiveFile(kind: number, payload: Uint8Array): void {

@@ -22,8 +22,10 @@ export interface GitProgramInstallation {
 
 export class GitProgramConflictError extends Error {
   readonly code = "GIT_PROGRAM_CONFLICT";
-  constructor(readonly path: string) {
+  readonly path: string;
+  constructor(path: string) {
     super(`Cannot install git: a different filesystem entry already exists at ${path}`);
+    this.path = path;
     this.name = "GitProgramConflictError";
   }
 }

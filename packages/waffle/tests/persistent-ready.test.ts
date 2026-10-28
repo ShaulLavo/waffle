@@ -20,6 +20,13 @@ function ready(notice: unknown) {
   return { ready: true, value: { notice } };
 }
 
+test("persistent readiness preserves the rejected factory result", () => {
+  const result = { ready: false, failure: "FilesystemError: 6", events: [] };
+  expect(() => readyPersistent(result)).toThrow(
+    `persistent owner was not ready: ${JSON.stringify(result)}`,
+  );
+});
+
 test("persistent readiness requires a new history on first open and explicit reset", () => {
   expect(readyPersistent(ready(newHistory))).toEqual({ notice: newHistory });
   expect(() => readyPersistent(ready(recovered))).toThrow("Expected");
