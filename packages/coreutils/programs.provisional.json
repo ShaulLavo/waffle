@@ -5,6 +5,7 @@
     "cat": { "path": "/usr/bin/cat", "aliases": ["/bin/cat"], "execution": "cooperative", "feature": "cooperative-wasi" },
     "cp": { "path": "/usr/bin/cp", "aliases": ["/bin/cp"], "execution": "wasi" },
     "cut": { "path": "/usr/bin/cut", "aliases": ["/bin/cut"], "execution": "wasi", "crate": "crates/cut" },
+    "echo": { "path": "/usr/bin/echo", "aliases": ["/bin/echo"], "execution": "wasi", "crate": "crates/echo" },
     "env": { "path": "/usr/bin/env", "aliases": ["/bin/env"], "execution": "wasi", "source": "qualified-env-95827ca4ef80e367bf0eef7b548b6a58683c8719" },
     "head": { "path": "/usr/bin/head", "aliases": ["/bin/head"], "execution": "wasi" },
     "ls": { "path": "/usr/bin/ls", "aliases": ["/bin/ls"], "execution": "wasi" },

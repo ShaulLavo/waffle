@@ -194,11 +194,47 @@ describe("base closure", () => {
     expect(served.has("/waffle-0.0.91.tgz")).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm.length).toBeGreaterThan(20);
+    expect(wasm).toHaveLength(24);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
-    expect(guests.get("waffle-coreutils")?.descriptor).toHaveLength(18);
+    const coreutilsGuests = [
+      "dist/cat.wasm",
+      "dist/clear.wasm",
+      "dist/cp.wasm",
+      "dist/cut.wasm",
+      "dist/echo.wasm",
+      "dist/env.wasm",
+      "dist/head.wasm",
+      "dist/ls.wasm",
+      "dist/mkdir.wasm",
+      "dist/mv.wasm",
+      "dist/rm.wasm",
+      "dist/seq.wasm",
+      "dist/sort.wasm",
+      "dist/tail.wasm",
+      "dist/touch.wasm",
+      "dist/tr.wasm",
+      "dist/uniq.wasm",
+      "dist/wc.wasm",
+      "dist/which.wasm",
+    ];
+    expect(guests.get("waffle-coreutils")?.descriptor).toEqual(coreutilsGuests);
+    const coreutils = manifest.packages.find((item) => item.name === "waffle-coreutils");
+    if (!coreutils) throw new Error("coreutils is missing from the release");
+    expect(
+      coreutils.artifacts
+        .filter((file) => file.path.endsWith(".wasm"))
+        .map((file) => file.path)
+        .sort(),
+    ).toEqual(coreutilsGuests);
+    const echo = coreutils.artifacts.find((file) => file.path === "dist/echo.wasm");
+    if (!echo) throw new Error("echo is missing from admitted coreutils assets");
+    expect(check.wasm).toContainEqual({
+      specifier: "waffle-coreutils",
+      path: "node_modules/waffle-coreutils/dist/echo.wasm",
+      sha256: echo.sha256,
+    });
     expect(guests.get("waffle-base")).toEqual({ descriptor: [], staticReference: [] });
   });
 

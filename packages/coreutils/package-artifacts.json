@@ -18,6 +18,7 @@
     "dist/rm.wasm",
     "dist/cp.wasm",
     "dist/mv.wasm",
+    "dist/echo.wasm",
     "dist/THIRD_PARTY_NOTICES.txt"
   ]
 }

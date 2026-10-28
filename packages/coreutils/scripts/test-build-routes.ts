@@ -94,9 +94,9 @@ test("artifact receipts preserve names, source identity, verification and stagin
     for (const name of coreutilsNames) writeFileSync(resolve(release, `${name}.wasm`), name);
     const checks: { path: string; options: WasiGuestVerification }[] = [];
     writeCoreutilsArtifacts(workspaceRoot, release, output, verifier(checks));
-    assert.equal(checks.length, 18);
+    assert.equal(checks.length, 19);
     const lines = readFileSync(resolve(output, "source-sha256.txt"), "utf8").split("\n");
-    assert.equal(lines.length, 20);
+    assert.equal(lines.length, 21);
     assert.match(lines[0], /^source [a-f0-9]{40}$/);
     assert.deepEqual(
       lines.slice(1, -1).map((line) => line.split("  ")[1]),
@@ -111,4 +111,16 @@ test("artifact receipts preserve names, source identity, verification and stagin
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test("echo has a separate ordinary WASI route with no old coreutils feature union", async () => {
+  const { buildEcho } = await import("./build-echo.ts");
+  const { calls, execute } = capture();
+  const checks: { path: string; options: WasiGuestVerification }[] = [];
+  buildEcho({ execute, environment, verifier: verifier(checks) });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args.slice(-4), ["-p", "waffle-echo", "--bin", "echo"]);
+  assert.equal(calls[0].args.includes("cooperative-wasi"), false);
+  assert.equal(checks.length, 1);
+  assert.match(checks[0].path, /\/echo\.wasm$/);
 });

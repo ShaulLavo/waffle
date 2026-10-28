@@ -4,6 +4,10 @@ name: Findutils xargs WASI
 # checks stay in the existing programs job rather than running twice here.
 on:
   workflow_call:
+    inputs:
+      test-process:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -72,6 +76,12 @@ jobs:
             .build/wasi-libc
           key: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-${{ hashFiles('packages/findutils/**/*.rs', 'packages/findutils/**/Cargo.toml', 'packages/process-consumer/**', 'packages/program-support/src/**/*.rs', 'packages/program-support/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-findutils-xargs-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}-
+      - name: Cache singular patched libc for dependent guest jobs
+        uses: actions/cache@v4
+        id: libc
+        with:
+          path: .build/wasi-libc
+          key: wasi-libc-34.0-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
       - name: Prepare existing runtime modules without rebuilding its network asset
         run: |
           bun run --cwd packages/waffle tooling/build-network.ts --verify
@@ -83,7 +93,17 @@ jobs:
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
         run: bun run --cwd packages/findutils build:xargs
       - name: Actual WASI argv, outcomes, descriptors, cancellation and cleanup
+        if: inputs.test-process
         run: bun run --cwd packages/findutils test:xargs:wasi
+      - name: Record current producer input and guest identity
+        run: bun packages/findutils/scripts/xargs-artifact.ts .build/xargs-artifact
+      - name: Export this run's qualified xargs guest
+        uses: actions/upload-artifact@v4
+        with:
+          name: xargs-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .build/xargs-artifact
+          if-no-files-found: error
+          retention-days: 7
       - name: Report actual cache hits
         if: always()
         run: |
@@ -91,3 +111,4 @@ jobs:
           echo "Bun=${{ steps.bun-cache.outputs.cache-hit }}"
           echo "SDK=${{ steps.sdk.outputs.cache-hit }}"
           echo "Cargo/sysroot=${{ steps.cargo.outputs.cache-hit }}"
+          echo "shared libc=${{ steps.libc.outputs.cache-hit }}"
