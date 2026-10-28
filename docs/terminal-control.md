@@ -11,7 +11,9 @@ const result = await authority.control(
     if (admitted.kind === "error") return admitted;
     const running = authority.startBackground(created.value);
     if (running.kind === "error") return running;
-    turn.publish(() => members.set(childPid, admitted.value.member));
+    turn.publish(() => {
+      members.set(childPid, admitted.value.member);
+    });
     return { kind: "ok", value: created.value };
   },
   { signal },
