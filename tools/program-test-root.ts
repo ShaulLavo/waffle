@@ -130,7 +130,9 @@ export async function createProgramTestRoot(runtime: Runtime) {
       };
     },
     async dispose() {
-      const stopped = await Promise.allSettled(Array.from(active, (child) => service.kill(child, 9)));
+      const stopped = await Promise.allSettled(
+        Array.from(active, (child) => service.kill(child, 9)),
+      );
       descriptors.dispose();
       if (descriptors.inheritable().length) throw new Error("Test root retained descriptors");
       const failed = stopped.find((result) => result.status === "rejected");
