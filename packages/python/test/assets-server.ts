@@ -18,8 +18,13 @@ function contentType(path: string): string {
 export async function serveTestFiles(root: string): Promise<TestServer> {
   const server = createServer(async (request, response) => {
     const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
-    const path = resolve(root, `.${decodeURIComponent(pathname)}`);
-    if (path !== root && !path.startsWith(root + sep)) {
+    const runtimeRoot = new URL(".", import.meta.resolve("waffle")).pathname;
+    const base = resolve(pathname.startsWith("/waffle-dist/") ? runtimeRoot : root);
+    const suffix = pathname.startsWith("/waffle-dist/")
+      ? pathname.slice("/waffle-dist".length)
+      : pathname;
+    const path = resolve(base, `.${decodeURIComponent(suffix)}`);
+    if (path !== base && !path.startsWith(base + sep)) {
       response.writeHead(403).end();
       return;
     }
@@ -46,7 +51,9 @@ export async function serveTestFiles(root: string): Promise<TestServer> {
     origin: `http://127.0.0.1:${address.port}`,
     async close() {
       server.closeAllConnections();
-      await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
+      await new Promise<void>((done, reject) =>
+        server.close((error) => (error ? reject(error) : done())),
+      );
     },
   };
 }

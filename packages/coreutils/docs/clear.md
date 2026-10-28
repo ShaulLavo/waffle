@@ -1,13 +1,19 @@
 # clear
 
-`installClear` from `bash-web/utilities/clear` registers `/bin/clear` on the caller's existing Waffle Runtime. Installation does not load the program. First spawn loads the separately linked `dist/clear.wasm` through ordinary WASI admission. `WasiUtilityOptions` accepts `wasmUrl` or raw `source` bytes and an optional `workerUrl`. Conflict and disposal rules follow [Install utilities](guides/install-utilities.md).
+Clear the supported browser terminal profiles. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/clear` with a `/bin` alias.
 
 ```ts
-import { installClear } from "bash-web/utilities/clear";
-const clear = await installClear(runtime);
-// Use the same runtime for createShell; dispose after its processes stop.
-await clear.dispose();
+import { coreutils } from "waffle-coreutils";
+import { installPrograms } from "waffle/programs";
+
+const installed = await installPrograms(runtime, [coreutils], { launcher });
+// The caller owns its runtime and generic preview1 launcher.
+await installed.dispose();
 ```
+
+Installing the family does not fetch or start programs. The runtime owns markers, conflicts,
+first-use source admission, process lifetimes and disposal. `waffle-base` includes this
+family with the other everyday programs. See [installing program packages](../../../docs/guides/install-program-packages.md).
 
 ## Fixed terminal profiles
 
@@ -19,8 +25,14 @@ Missing, empty, non-Unicode, and unknown terminal names fail with status 1 and a
 
 This is a fixed VT-compatible implementation, not a terminfo reader or a claim of ncurses parity. It does not search terminal databases, expand terminfo capabilities, send padding, reset terminal modes, or change the browser renderer.
 
-## Source and qualification
+## Source and verification
 
-`shell/clear/src/main.rs` is original bash-web code under the repository MIT license, copied at `shell/clear/LICENSE` for generated notices. No upstream source was adapted. Ncurses clear depends on terminfo setup and capability expansion; carrying that database and library is disproportionate to these three identical browser terminal profiles.
+The current entry is [crates/clear/src/main.rs](../crates/clear/src/main.rs). Prepare this family once with
+`bun run --cwd packages/coreutils prepare:package`. The root `programs:integration`
+command checks the actual public family exports on Waffle after the required assets exist.
+Wrapped uutils guests initialize libc cwd from PWD; keep it aligned with the requested cwd
+when using their relative file operands. Env's child request preserves its own cwd policy.
 
-The qualification compares literal byte/status expectations with the actual WASI program, and compares `xterm`, `xterm-256color`, and `-x` to `/usr/bin/clear` with a controlled environment. It also drives the existing Ghostty terminal with the guest's output, checking the visible display, cursor home, and saved-line behavior. No host executable is used by the production installer.
+[The original transfer guide](../provenance/history/docs/clear.md) is frozen historical
+source/qualification evidence, not current installation or build instructions. Its
+recordings, license identities and observations have not been rerecorded.

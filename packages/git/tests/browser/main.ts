@@ -1,7 +1,7 @@
 import { createRuntime, type Runtime } from "waffle";
 import { installBunAdapters } from "bun-wasm";
-import { installGit } from "../../src/git";
-import { installGitProgram } from "../../src/program";
+import { installGit } from "waffle-git";
+import { installGitProgram, GIT_CLI_URL } from "waffle-git/program";
 import type { GitInvocation } from "../../src/git-types";
 import { processRoot, type Result } from "./process-root";
 
@@ -35,7 +35,10 @@ async function scenario(
   };
   const ok = async (...argv: string[]) => {
     const result = await run(...argv);
-    check(result.status === 0, `${mode} git ${argv.join(" ")} -> ${result.status}: ${result.stderr}`);
+    check(
+      result.status === 0,
+      `${mode} git ${argv.join(" ")} -> ${result.status}: ${result.stderr}`,
+    );
     return result.stdout;
   };
   await fs.mkdirp(dir);
@@ -50,22 +53,38 @@ async function scenario(
   const log = await ok("log");
   const head = /^commit ([0-9a-f]{40})\n/.exec(log)?.[1] ?? "";
   check(
-    log === `commit ${head}\nAuthor: Ada <ada@example.invalid>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    First commit\n`,
+    log ===
+      `commit ${head}\nAuthor: Ada <ada@example.invalid>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    First commit\n`,
     `log author/date/message: ${log}`,
   );
-  check((await fs.lookup(`${dir}/.git/objects/${head.slice(0, 2)}/${head.slice(2)}`))?.kind === "file", "commit object persisted");
+  check(
+    (await fs.lookup(`${dir}/.git/objects/${head.slice(0, 2)}/${head.slice(2)}`))?.kind === "file",
+    "commit object persisted",
+  );
   check((await ok("status")) === "", "clean after commit");
   await fs.writeFile(`${dir}/story.txt`, "first line\nsecond line\n");
   const diff = await ok("diff");
-  check(diff.includes("--- a/story.txt\n+++ b/story.txt\n") && diff.includes("+second line\n"), `diff: ${diff}`);
+  check(
+    diff.includes("--- a/story.txt\n+++ b/story.txt\n") && diff.includes("+second line\n"),
+    `diff: ${diff}`,
+  );
   // A failed command must not touch the index or worktree.
   const indexBefore = await fs.readFile(`${dir}/.git/index`);
   const commitFailure = await run("commit");
-  check(commitFailure.status !== 0 && commitFailure.stderr.includes("git:"), "commit without -m fails");
+  check(
+    commitFailure.status !== 0 && commitFailure.stderr.includes("git:"),
+    "commit without -m fails",
+  );
   const switchFailure = await run("switch", "missing");
   check(switchFailure.status !== 0, "switch to a missing branch fails");
-  check(text(await fs.readFile(`${dir}/.git/index`)) === text(indexBefore), "failed commands kept the index");
-  check(text(await fs.readFile(`${dir}/story.txt`)) === "first line\nsecond line\n", "failed commands kept the worktree");
+  check(
+    text(await fs.readFile(`${dir}/.git/index`)) === text(indexBefore),
+    "failed commands kept the index",
+  );
+  check(
+    text(await fs.readFile(`${dir}/story.txt`)) === "first line\nsecond line\n",
+    "failed commands kept the worktree",
+  );
   await ok("add", "story.txt");
   await ok("commit", "-m", "Second line");
   await ok("branch", "feature");
@@ -121,7 +140,7 @@ async function program(runtime: Runtime) {
     executables: ["/bin/bun"],
   });
   const git = await installGitProgram(runtime, {
-    source: await (await fetch("./git-cli.js")).text(),
+    source: await (await fetch(GIT_CLI_URL)).text(),
   });
   const root = await processRoot(runtime, env);
   try {
@@ -129,16 +148,23 @@ async function program(runtime: Runtime) {
     // The same objects are readable by the in-page API backend: one repository format, one backend.
     const api = await installGit(runtime);
     try {
-      const crossed = await capture((invocation) => api.run(invocation), ["log", "--oneline", "feature"], "/work/cli");
+      const crossed = await capture(
+        (invocation) => api.run(invocation),
+        ["log", "--oneline", "feature"],
+        "/work/cli",
+      );
       check(crossed.stdout === result.history, "API reads the program's repository");
     } finally {
       await api.dispose();
     }
     return { ...result, script: (await runtime.filesystem.readFile("/usr/bin/git"))?.byteLength };
   } finally {
-    root.dispose();
+    await root.dispose();
     await git.dispose();
-    check((await runtime.filesystem.lookup("/usr/bin/git")) === undefined, "dispose removed the owned script");
+    check(
+      (await runtime.filesystem.lookup("/usr/bin/git")) === undefined,
+      "dispose removed the owned script",
+    );
     bun.dispose();
   }
 }
@@ -148,14 +174,25 @@ Reflect.set(globalThis, "gitSix", async () => {
     filesystem: { mode: "memory", workerURL: new URL("./fs-worker.js", location.href) },
   });
   const started = performance.now();
+  await runtime.filesystem.writeFile("/caller-data", "keep Git caller data");
   try {
     const api = await direct(runtime);
     const apiMs = performance.now() - started;
     const cli = await program(runtime);
+    check(api.head === cli.head, "API and CLI commit objects differ");
+    check(
+      text(await runtime.filesystem.readFile("/caller-data")) === "keep Git caller data",
+      "Git disposal removed caller data",
+    );
     return { ok: true, api, cli, apiMs, totalMs: performance.now() - started, steps };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error), steps };
+    return {
+      ok: false,
+      error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
+      steps,
+    };
   } finally {
     await runtime.dispose();
+    document.body.dataset.disposed = String(runtime.disposed);
   }
 });

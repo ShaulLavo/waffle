@@ -2,6 +2,9 @@ import type { Runtime } from "waffle";
 import { FilesystemClient } from "waffle/fs/client";
 import { FilesystemError } from "waffle/fs/protocol";
 
+/** Bundler-visible URL for the prepared CLI script. */
+export const GIT_CLI_URL = new URL("../dist/git-cli.js", import.meta.url);
+
 export interface GitProgramOptions {
   /** The bundled `dist/git-cli.js` text. Callers fetch it from the package asset URL. */
   readonly source: string;
@@ -41,7 +44,13 @@ export async function installGitProgram(
   const path = options.path ?? "/usr/bin/git";
   const interpreter = options.interpreter ?? "/bin/bun";
   for (const name of [path, interpreter]) {
-    if (!name.startsWith("/") || name.slice(1).split("/").some((part) => !part || part === "." || part === ".."))
+    if (
+      !name.startsWith("/") ||
+      name
+        .slice(1)
+        .split("/")
+        .some((part) => !part || part === "." || part === "..")
+    )
       throw new TypeError(`Path must be absolute and canonical: ${name}`);
   }
   const bytes = new TextEncoder().encode(`#!${interpreter}\n${options.source}`);
@@ -60,7 +69,8 @@ export async function installGitProgram(
   return {
     path,
     dispose() {
-      disposal ??= owned === undefined ? Promise.resolve() : removeOwned(runtime, path, owned, bytes);
+      disposal ??=
+        owned === undefined ? Promise.resolve() : removeOwned(runtime, path, owned, bytes);
       return disposal;
     },
   };

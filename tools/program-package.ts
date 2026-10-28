@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  lstatSync,
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -68,12 +76,26 @@ export function admitProgramPackage(root: string): string[] {
 /** Check the actual archive, including files removed by package files/ignore rules. */
 export function verifyProgramTarball(root: string, archive: string): void {
   const files = admitProgramPackage(root);
-  for (const name of files) {
-    const expected = requiredFile(root, name, true);
-    const packed = execFileSync("tar", ["-xOf", archive, `package/${name}`], {
-      maxBuffer: expected.byteLength + 4096,
-    });
-    assert.deepEqual(packed, expected, `Packed asset differs: ${name}`);
+  if (!files.length) return;
+  const parent = resolve(root, ".build");
+  mkdirSync(parent, { recursive: true });
+  const scratch = mkdtempSync(resolve(parent, "pack-readback-"));
+  try {
+    const list = resolve(scratch, "members");
+    writeFileSync(list, files.map((name) => `package/${name}`).join("\0") + "\0");
+    // Extract requested files once; Python has thousands of payload entries.
+    execFileSync("tar", ["-xf", archive, "-C", scratch, "--null", "-T", list], { stdio: "pipe" });
+    for (const name of files) {
+      const packed = localPath(resolve(scratch, "package"), name);
+      assert.ok(lstatSync(packed).isFile(), `Packed asset is not a regular file: ${name}`);
+      assert.deepEqual(
+        readFileSync(packed),
+        requiredFile(root, name, true),
+        `Packed asset differs: ${name}`,
+      );
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 

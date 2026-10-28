@@ -1,18 +1,17 @@
 # Python
 
-`@waffle/python` prepares the official CPython 3.15.2 `wasm32-wasip1` interpreter for the Waffle runtime the page already owns. The family API is `createPythonProgram`; it does not create a runtime or register a process entry.
+`@waffle/python` prepares the official CPython 3.15.2 `wasm32-wasip1` interpreter for the Waffle runtime the page already owns. The public installer is `installPython`; it borrows the caller's runtime and generic launcher.
 
 ```ts
-import { createPythonProgram } from "@waffle/python";
-
-const python = createPythonProgram(runtime, {
-  wasmUrl: new URL("/assets/python.wasm", location.href),
-  payloadUrl: new URL("/assets/python-stdlib.json", location.href),
-});
-// The Waffle package installer consumes python.path, python.argv0 and python.source.
-// Once its processes and registration have stopped:
+import { installPython } from "@waffle/python/install";
+const python = await installPython(runtime, { launcher });
+// Spawn /usr/bin/python with the caller's existing process controller.
 await python.dispose();
 ```
+
+`installPython` is the production composition with Waffle's generic installer. It uses
+`createPythonPackage` and applies `pythonLauncher` so requested cwd wins over missing or
+stale PWD. Lower-level `createPythonProgram` remains the payload/source implementation.
 
 The program path is `/usr/bin/python`, and its fixed CPython argv0 is `/cross-build/wasm32-wasip1/python.wasm`. `createPythonProgram` is lazy: construction does not fetch the interpreter or payload. The first `source()` call loads the interpreter and prepares the payload, and concurrent calls share that work.
 

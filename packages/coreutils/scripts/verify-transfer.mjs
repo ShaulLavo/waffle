@@ -10,10 +10,17 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const maintained = json("provenance/maintained-transfer.json");
 const integration = json("provenance/integration-transfer.json");
 const relocation = json("provenance/relocation.json");
+const liveGuidance = new Map(json("provenance/live-guidance.json").entries.map((entry) => [entry.livePath, entry]));
 const adaptations = new Map(json("provenance/generic-host-port.json").entries.map((entry) => [entry.path, entry]));
 
 for (const entry of maintained.entries) {
-  const bytes = readFileSync(resolve(root, entry.newPath.replace(/^packages\/coreutils\//, "")));
+  const guidance = liveGuidance.get(entry.newPath);
+  const checkedPath = guidance?.historicalPath ?? entry.newPath;
+  const bytes = readFileSync(resolve(root, checkedPath.replace(/^packages\/coreutils\//, "")));
+  if (guidance) {
+    assert.equal(sha256(bytes), guidance.historicalSha256);
+    assert.equal(sha256(readFileSync(resolve(root, entry.newPath.replace(/^packages\/coreutils\//, "")))), guidance.liveSha256);
+  }
   const adaptation = adaptations.get(entry.newPath);
   if (adaptation) assert.equal(adaptation.beforeSha256, entry.transferredSha256, `adaptation source: ${entry.newPath}`);
   assert.equal(sha256(bytes), adaptation?.afterSha256 ?? entry.transferredSha256, `transferred bytes: ${entry.newPath}`);

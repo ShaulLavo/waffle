@@ -1,6 +1,6 @@
 # Grep
 
-`grep` streams matching records from standard input or files as a cooperative WASI program. Waffle's future package installer owns lazy loading, registration and disposal.
+`grep` streams matching records from standard input or files as a cooperative WASI program. Import `grep` from `waffle-grep` and pass it to `installPrograms` from `waffle/programs` with the caller's generic launcher. Waffle owns lazy loading, registration and disposal.
 
 Supported options are `-n`, `-i`, `-v`, `-F`, `-E`, `-c`, `-q`, `-H` and `-h`. Options can be grouped, and `--` ends option parsing. The last `-H` or `-h` wins.
 

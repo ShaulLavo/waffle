@@ -1,20 +1,23 @@
-# Sort utility
+# sort
 
-`sort` runs the upstream uutils sorting program as its own ordinary WASI guest. Import `installSort` from `bash-web/utilities/sort` and install it on the Waffle runtime your shell already uses.
+Sort records with the pinned uutils implementation. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/sort` with a `/bin` alias.
+
+```ts
+import { coreutils } from "waffle-coreutils";
+import { installPrograms } from "waffle/programs";
+
+const installed = await installPrograms(runtime, [coreutils], { launcher });
+// The caller owns its runtime and generic preview1 launcher.
+await installed.dispose();
+```
+
+Installing the family does not fetch or start programs. The runtime owns markers, conflicts,
+first-use source admission, process lifetimes and disposal. `waffle-base` includes this
+family with the other everyday programs. See [installing program packages](../../../docs/guides/install-program-packages.md).
 
 ## Supported behavior
 
 The usage suite compares default line ordering, `-n`, `-r`, `-u`, combined `-nru`, `-c`, named relative inputs, `-o` output files, standard-input pipelines, empty input, and unterminated input against GNU sort with `LC_ALL=C`. Invalid options and missing files return upstream diagnostics and failure statuses. The upstream argument parser and sorting algorithms are unchanged.
-
-```ts
-import { installSort } from "bash-web/utilities/sort";
-
-const sort = await installSort(runtime);
-// The first shell invocation of sort loads its guest.
-await sort.dispose();
-```
-
-`wasmUrl` and `workerUrl` override the packaged URLs. Instead of `wasmUrl`, `source` accepts raw `Uint8Array` bytes or a lazy function returning bytes. Installation does not fetch the guest. Precompiled modules are not accepted, because Waffle needs the bytes to add interruption checks. Disposing this installation removes only sort, not uniq or the borrowed runtime.
 
 ## WASI resource limits
 
@@ -24,8 +27,12 @@ The browser test uses Waffle's filesystem and ordinary process admission. No nat
 
 ## Source and verification
 
-`uu_sort = "=0.12.0"` is an individual registry library, not the coreutils multicall binary. Its source receipt identifies uutils/coreutils revision `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69`, path `src/uu/sort`. [The source receipt](sort-uniq-source.json) records the registry checksum. Cargo.lock pins every transitive dependency. The MIT license and dependency licenses are included by `npm run notices:shell`.
+The current entry is [src/bin/sort.rs](../src/bin/sort.rs). Prepare this family once with
+`bun run --cwd packages/coreutils prepare:package`. The root `programs:integration`
+command checks the actual public family exports on Waffle after the required assets exist.
+Wrapped uutils guests initialize libc cwd from PWD; keep it aligned with the requested cwd
+when using their relative file operands. Env's child request preserves its own cwd policy.
 
-The wrapper calls `uucore::bin!(uu_sort)` after setting WASI libc's cwd from `PWD`. It contains no local sorting algorithm. The existing `buildWasiShell` helper supplies patched wasi-sdk 34.0 libc, the memory cap, and guest verification.
-
-Run `cargo test --locked --manifest-path shell/Cargo.toml -p shell-utilities --test sort_uniq` for native frozen-GNU comparisons. After building the shell, utilities, and Node test bundle, run `node --test scripts/test-own-shell-sort-uniq.ts` for real Waffle comparisons and independent lazy-loading and disposal checks. `npm run test:browser -- tests/sort-uniq.spec.ts` exercises the same usage cases in Chromium and Firefox.
+[The original transfer guide](../provenance/history/docs/sort.md) is frozen historical
+source/qualification evidence, not current installation or build instructions. Its
+recordings, license identities and observations have not been rerecorded.
