@@ -98,3 +98,53 @@ test("pool reuse requires both service retirement and authoritative reap, and fe
   ).toThrow("incarnation");
   release(next);
 });
+
+test("single-thread releases keep physical byte accounting exact", () => {
+  const f = fixture();
+  const live: ReturnType<FilesystemRequestAllocator["allocate"]>[] = [];
+  for (let index = 0; index < 300000; index++) {
+    const buffer = f.allocator.allocate((index * 7919) % 200);
+    releaseRequestBuffer(buffer, REQUEST_CLIENT);
+    live.push(buffer);
+    if (live.length > 64) releaseRequestBuffer(live.shift()!, REQUEST_SERVICE);
+  }
+  for (const buffer of live) releaseRequestBuffer(buffer, REQUEST_SERVICE);
+  expect(requestMemoryResources(f.memory)).toMatchObject({ pendingBytes: 0, requests: 0 });
+});
+
+test("racing client-first and service-last releases preserves physical accounting", async () => {
+  const f = fixture();
+  const ring = new SharedArrayBuffer((4 + 4096 * 3) * 4);
+  const q = new Int32Array(ring);
+  const worker = new Worker(
+    new URL("./fixtures/filesystem-request-release-worker.ts", import.meta.url).href,
+  );
+  const done = Promise.withResolvers<void>();
+  worker.onmessage = () => done.resolve();
+  worker.onerror = (event) => done.reject(new Error(event.message));
+  let written = 0;
+  try {
+    worker.postMessage({ memory: f.memory, ring });
+    while (written < 100000) {
+      while (written - Atomics.load(q, 2) > 64) {}
+      const buffer = f.allocator.allocate((written * 7919) % 200);
+      releaseRequestBuffer(buffer, REQUEST_CLIENT);
+      const slot = 4 + (written % 4096) * 3;
+      q[slot] = buffer.id;
+      q[slot + 1] = buffer.offset;
+      q[slot + 2] = buffer.length;
+      written++;
+      Atomics.store(q, 0, written);
+    }
+    Atomics.store(q, 1, 1);
+    await done.promise;
+  } finally {
+    Atomics.store(q, 1, 1);
+    await worker.terminate();
+  }
+  expect(requestMemoryResources(f.memory)).toMatchObject({
+    pendingBytes: 0,
+    requests: 0,
+    namespaceRequests: 0,
+  });
+}, 10000);

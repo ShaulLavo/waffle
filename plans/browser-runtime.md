@@ -110,3 +110,11 @@ Node exports, generic browser storage/process acceptance, and the gzip core budg
 Approved, in progress in draft PR105 from exact base `d9973ca6b892ecf4b8a210be5328eb2645207d0d`. The first module moves portable queues, nonblocking stream state, native dual-stack bind/fallback and browser virtual namespace rules into Rust. Waffle owns the reference `socket2` import adapter. Helpers retain the existing rings and guest contracts. The lazy boundary remains `runtime.network()`.
 
 Remaining consumer work belongs to the Bun parent lane: wire the explicit module/import bridge, update the exact Waffle pin, and rerun facade fixtures. Asynchronous bind completions, DNS, TLS and close-linger timers are not delivered by the immediate nonblocking host ABI. No native threads run in WASM.
+
+## Bounded filesystem request IDs
+
+Approved for a later protocol change; nonblocking for PR203. A connection currently allocates positive 29-bit request IDs through 536,870,911, then returns filesystem errno 33 on later allocations. This is an explicit bounded contract, not an elapsed-time limit or a measured endurance claim.
+
+A small reproduction sets `FilesystemRequestAllocator.nextId` to `0x1fffffff`, observes the final valid allocation, and observes errno 33 on the next call. A blind wrap is unsafe: `{completed:id}` and discard controls carry no generation, so a delayed old frame could complete or cancel a replacement with the same ID. Safe reuse therefore needs late-frame generation fencing as well as skipping live IDs.
+
+The follow-up must add generation-tagged completion/discard controls (or an equivalent proof), wrap only after skipping every live ID, and test delayed old completion/discard against a replacement, cancellation, stale descriptors, generation/arena reuse and exact resource accounting. No ID wrap belongs in the retirement and release-accounting corrections.

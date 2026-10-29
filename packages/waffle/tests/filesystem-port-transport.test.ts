@@ -6,8 +6,9 @@ import {
   createFilesystemConnection,
   createFilesystemIdentity,
   connectFilesystemIdentity,
+  FilesystemError,
 } from "../fs/index.js";
-import { isRevoked } from "../fs/protocol.js";
+import { isRevoked, reapFilesystem } from "../fs/protocol.js";
 import { requestMemoryRetired, requestMemoryResources } from "../fs/request-memory.js";
 
 async function bounded<T>(pending: Promise<T>): Promise<T> {
@@ -34,6 +35,21 @@ class GatedBackend extends MemoryBackend {
       return super.execute(operation, args, data);
     this.entered.resolve();
     return this.gate.promise.then(() => new Uint8Array([77]));
+  }
+}
+class RejectingBackend extends MemoryBackend {
+  prepare(operation: string, args: any[]): void | Promise<void> {
+    if (operation === "readFile" && args[0] === "/prepare")
+      return Promise.reject(new FilesystemError(2));
+    if (operation === "readFile" && args[0] === "/cancel")
+      return Promise.reject(new FilesystemError(11));
+  }
+  override execute(operation: string, args: any[], data: Uint8Array): unknown {
+    if (operation === "readFile" && args[0] === "/reject")
+      return Promise.reject(new FilesystemError(2));
+    if (operation === "readFile" && args[0] === "/async")
+      return Promise.resolve(new Uint8Array([1]));
+    return super.execute(operation, args, data);
   }
 }
 function fixture(backend = new MemoryBackend()) {
@@ -185,3 +201,36 @@ test("thirty async calls and a large overflow preserve data and release response
     f.cleanup();
   }
 });
+
+for (const [path, expected] of [
+  ["/async", 0],
+  ["/reject", 2],
+  ["/prepare", 2],
+  ["/cancel", 11],
+] as const)
+  test(`retirement joins ${path} backend work and permits arena reuse`, async () => {
+    const f = fixture(new RejectingBackend());
+    const peer = f.peer();
+    try {
+      const outcome = await peer.asyncCall("readFile", [path]).catch((error) => error);
+      if (expected) expect(outcome).toMatchObject({ errno: expected });
+      else expect(outcome).toEqual(new Uint8Array([1]));
+      peer.dispose();
+      reapFilesystem(peer.connection);
+      f.service.sweep();
+      await bounded(
+        (async () => {
+          while (!requestMemoryRetired(peer.connection.requests))
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        })(),
+      );
+      const next = f.root.pool.take(new SharedArrayBuffer(4));
+      expect(next.data).toBe(peer.connection.requests.data);
+      if (expected)
+        expect(await f.service.shutdown().catch((error) => error)).toMatchObject({
+          errno: expected,
+        });
+    } finally {
+      f.cleanup();
+    }
+  }, 10000);

@@ -86,6 +86,7 @@ interface Session {
   connection: FilesystemConnection;
   requests: FilesystemRequestMemory;
   transportRetirement?: Promise<void>;
+  transportJoined?: Set<Promise<unknown>>;
   transportFailed?: boolean;
   handles: Map<number, number>;
   capabilities: Int32Array;
@@ -280,15 +281,17 @@ export class FilesystemService {
   }
   private retireTransport(session: Session): void {
     if (session.transportRetirement) return;
+    const joined = (session.transportJoined ??= new Set());
     const pending = Array.from(this.work)
-      .filter((entry) => entry[1] === session)
+      .filter((entry) => entry[1] === session && !joined.has(entry[0]))
       .map((entry) => entry[0]);
     if (!pending.length) {
       retireRequestMemory(session.requests);
       wake(session.connection);
       return;
     }
-    session.transportRetirement = Promise.all(pending).then(() => {
+    session.transportRetirement = Promise.allSettled(pending).then(() => {
+      for (const done of pending) joined.add(done);
       session.transportRetirement = undefined;
       this.retireTransport(session);
     });

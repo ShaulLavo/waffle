@@ -545,13 +545,14 @@ export function releaseRequestBuffer(
 ): void {
   const words = new BigInt64ArrayConstructor(buffer.memory.data, buffer.offset - 8, 1);
   const identity = ownership(buffer.memory.generation, buffer.id, 0) >> 3n;
+  const bytes = atomicsLoad(prefix(buffer), 1);
   for (;;) {
     const previous = atomicsLoad(words, 0);
     if (previous >> 3n !== identity || !(previous & BigIntConstructor(role))) return;
     const next = previous & ~BigIntConstructor(role);
     if (atomicsCompareExchange(words, 0, previous, next) !== previous) continue;
     if (!(next & 3n)) {
-      releaseCount(buffer.memory, atomicsLoad(prefix(buffer), 1));
+      releaseCount(buffer.memory, bytes);
     }
     return;
   }
