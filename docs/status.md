@@ -5,12 +5,13 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 ## Current delivery
 
 - [PR #207](https://github.com/ShaulLavo/waffle/pull/207) merged memory groups, shared Wasm memory, admission limits, wake handling and cleanup. See [Memory groups](memory-groups.md).
-- Pure search source, matchers and command planners are present. Runtime engine exports are not wired.
+- Opt-in grep and ripgrep host executors use the exported search engine and worker entries. Native guests remain the fallback.
+- Preview upgrades carry structured authority through live owner routes and enforce path, query, header and lifetime guards.
 - No consumer dependency repin is included.
 
 ## Stability
 
-- **Version:** `0.0.101` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
+- **Version:** `0.0.102` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
 - **Distribution:** GitHub release archives of the runtime package (`waffle-v<version>` tags). Existing exact-commit Git pins keep installing their old trees. No npm package.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
