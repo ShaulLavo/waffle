@@ -72,7 +72,10 @@ impl VirtualNet {
         self.insert_pair(
             client,
             Some((dialing, bound)),
-            Some((SocketAddr::new(ip, target.port()), SocketAddr::new(ip, port))),
+            Some((
+                SocketAddr::new(ip, target.port()),
+                SocketAddr::new(ip, port),
+            )),
         );
         Ok(client)
     }
@@ -98,7 +101,8 @@ impl VirtualNet {
         accepted: Option<(SocketAddr, SocketAddr)>,
     ) {
         self.endpoints.insert(client, endpoint(client + 1, dialing));
-        self.endpoints.insert(client + 1, endpoint(client, accepted));
+        self.endpoints
+            .insert(client + 1, endpoint(client, accepted));
     }
     fn endpoint(&self, id: u32) -> io::Result<&Endpoint> {
         self.endpoints
