@@ -5,6 +5,7 @@ export type {
   RuntimeOptions,
   RuntimeNetwork,
   RuntimeNetworkHelper,
+  RuntimeNetworkPathScope,
   RuntimeNetworkLookupErrorCode,
   RuntimeNetworkLookupOptions,
   RuntimeNetworkLookupResult,

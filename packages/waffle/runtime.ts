@@ -1,5 +1,9 @@
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
-export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
+export type {
+  RuntimeNetwork,
+  RuntimeNetworkHelper,
+  RuntimeNetworkPathScope,
+} from "./browser/net/runtime.js";
 export {
   RuntimeNetworkLookupError,
   type RuntimeNetworkLookupErrorCode,
@@ -163,6 +167,7 @@ const processCapabilities = {
   transportFor: "method",
   releaseLegacyJob: "method",
   launchWorker: "method",
+  networkPathScope: "method",
   outputDrained: "method",
   workerMemory: "method",
   takeWorker: "method",
