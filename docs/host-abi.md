@@ -734,3 +734,30 @@ standard 64-byte Preview1 filestat record, perform open-based inference, or fetc
 ## Internal network module
 
 The Rust socket module is not a guest import namespace. Guest network calls, numeric results, ring records, addresses, and JSON errors are unchanged. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.
+
+## Internal filesystem walk operations
+
+Process workers can call `FilesystemClient.walkOpen(directory, plan)`,
+`walkPage(cursor, { grant, maxEntries })`, `walkRelease(grants)` and
+`walkClose(cursor)`. These are service operations, not guest WebAssembly imports
+or page filesystem capabilities. Types live in `fs/walk.ts`; `fs/glob.ts` provides
+the shared pure glob compiler. The existing session and directory capability
+supply all authority.
+
+Each session admits four walks and at most 256 live file grants across all walks
+and in-flight batches. Each page contains at most 128 entries, and its entire
+packed reply, including the next cursor, fits 64 KiB. Release the exact grant
+tokens through `walkRelease`; ordinary handle retains have separate lifetimes.
+A zero-credit or invalid request leaves the cursor unchanged. Page cursors are
+session-local and single-use. Keep the original cursor for `walkClose` in cleanup;
+closing releases all of that walk's grants, including its final page.
+
+The service snapshots each directory's names and inode identities on entry,
+rechecks ancestor and directory read/search permissions, skips symlinks and
+opaque socket entries, and reports removed or replaced paths as `ENOENT` entries.
+Walk state is bounded to 128 directory frames, 65,536 snapshotted entries and
+1,048,576 name/path UTF-16 units per walk; paths are limited to 4,096 units.
+Traversal errors appear as error entries or fail the page without committing it;
+the caller can close the original cursor. Revocation and reap release all walk
+state. Failed or cancelled reply publication rolls back staged grants and cursor
+changes. Cancelling an already published, unconsumed reply closes its walk.

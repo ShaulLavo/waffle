@@ -1,3 +1,4 @@
+import type { WalkPlan, WalkCursor, WalkPage, WalkPageOptions } from "./walk.js";
 import { FilesystemWatch, type WatchOptions } from "./watch.js";
 import { checkDirectoryPage } from "./directory-pages.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
@@ -492,7 +493,10 @@ export class FilesystemClient implements FileSystem {
     operation: string,
     args: unknown[] = [],
     data: Uint8Array = new Uint8ArrayConstructor(),
-    capacity = operation === "read" || operation === "take" || operation === "readdir"
+    capacity = operation === "read" ||
+    operation === "take" ||
+    operation === "readdir" ||
+    operation === "walkPage"
       ? PAGE
       : 1024,
     publication?: PublicationAdmission,
@@ -1668,6 +1672,23 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       return errno(error);
     }
+  }
+  walkOpen(directory: FileHandle, plan: WalkPlan): WalkCursor {
+    return this.call("walkOpen", [directory, plan]);
+  }
+  walkPage(cursor: WalkCursor, options: WalkPageOptions): WalkPage {
+    const completion = this.submit("walkPage", [cursor, options], undefined, PAGE);
+    try {
+      return completion.wait();
+    } finally {
+      completion.release();
+    }
+  }
+  walkRelease(grants: readonly number[]): void {
+    this.call("walkRelease", [grants]);
+  }
+  walkClose(cursor: WalkCursor): void {
+    this.call("walkClose", [cursor]);
   }
   readdirPage(handle: FileHandle, cookie: bigint, byteLength: number): Uint8Array {
     checkDirectoryPage(cookie, byteLength);
