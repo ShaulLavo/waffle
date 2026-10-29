@@ -113,6 +113,44 @@ describe("bounded terminal output buffer", () => {
     expect(terminal.bytes()).toEqual(expected);
   });
 
+  test("a credit request that lands after its grant leaves the next write's doorbell armed", () => {
+    // Firefox, Bun 370 process gate: the writer's readiness check read credit 0, the page
+    // granted the whole budget, then the writer stored its request. The page's park took that
+    // stale request as work, disarmed, found no credit to give and stopped. The exit flush then
+    // waited on 34 undelivered bytes that never rang: [34,0,1,0,0,65502,1,0].
+    const delivered: number[] = [];
+    let doorbells = 0,
+      answering = false;
+    const pair = single(65536, {
+      doorbell() {
+        doorbells++;
+        if (answering)
+          pair.budget.service((_target, data) => delivered.push(...data) && data.length);
+      },
+    });
+    const { reader, writer } = pair;
+    const state = new Int32Array(reader.buffer, 0, 8);
+    // AGAIN records the request and rings the arm; the page answers it below.
+    expect(writer.tryWrite(1, [Uint8Array.of(1)])).toBe(-6);
+    answering = true;
+    expect(doorbells).toBe(1);
+    expect(Array.from(state)).toEqual([0, 0, 0, 0, 0, 0, 1, 0]);
+    // The page's pass grants the whole budget; the late request (want, then the spent arm)
+    // lands before that pass parks.
+    reader.grant(65536);
+    Atomics.store(state, 6, 1);
+    expect(Atomics.exchange(state, 3, 0)).toBe(0);
+    pair.budget.service(accept);
+    expect(writer.tryWrite(1, [new Uint8Array(13).fill(7)])).toBe(13);
+    expect(writer.tryWrite(2, [new Uint8Array(13).fill(8)])).toBe(13);
+    let checks = 0;
+    expect(writer.flush(() => ++checks > 3)).toBe(true);
+    // Each write rang: the page delivered it and armed again.
+    expect(doorbells).toBe(3);
+    expect(delivered).toEqual(Array(13).fill(7).concat(Array(13).fill(8)));
+    expect(reader.wants()).toBe(false);
+  });
+
   test("short deliveries keep the rest buffered in order, across targets", () => {
     const { reader, writer } = granted(64);
     expect(writer.tryWrite(1, [Uint8Array.of(1, 2, 3), Uint8Array.of(4)])).toBe(4);
