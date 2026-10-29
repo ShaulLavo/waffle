@@ -8,6 +8,7 @@ import {
 } from "./metadata.js";
 import { instantiateGroup, type LinkedGroup } from "./group.js";
 import { relayModule } from "./relay.js";
+import { growthFree } from "./code.js";
 
 export type { LinkedGroup } from "./group.js";
 export interface LinkMemberSource {
@@ -72,6 +73,8 @@ export class PreparedLinkPlan {
     for (let index = 0; index < members.length; index++)
       compiled.push(await compile(members[index]!, index !== 0));
     const core = compiled[0]!;
+    if (core.profile.pie)
+      members.forEach((member, index) => groupAdmission(member, compiled[index]!));
     requireSignature(core.profile, core.id, "_start", [], []);
     requireSignature(core.profile, core.id, reserve, [0x7f, 0x7f], [0x7f]);
     const libraries: CompiledMember[] = [];
@@ -81,6 +84,17 @@ export class PreparedLinkPlan {
     plans.set(plan, { core, libraries, reserve, source: owned });
     return plan;
   }
+}
+
+const admitted = new WeakMap<WebAssembly.Module, true>();
+/** W3: images in a memory group cannot grow or re-export the shared memory themselves. */
+function groupAdmission(source: LinkMemberSource, member: CompiledMember): void {
+  if (WebAssembly.Module.exports(member.module).some((entry) => entry.kind === "memory"))
+    invalid(member.id, "a memory group image cannot export the shared memory");
+  if (admitted.has(member.module)) return;
+  if (!growthFree(source.source, member.id))
+    invalid(member.id, "a memory group image cannot use memory.grow; grow through group_grow");
+  admitted.set(member.module, true);
 }
 
 function selfTarget(member: CompiledMember, name: string, kind: string): void {

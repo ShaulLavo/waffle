@@ -6,6 +6,7 @@ import {
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 import type { MemoryGroupHandle, MemoryGroupSnapshot } from "../group/state.js";
+import { prepareLinkPlan } from "../link/index.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -45,6 +46,13 @@ const Op = {
   WATCH: 17,
   UNWATCH: 18,
   POLL: 19,
+  WRITE: 20,
+  READ: 21,
+  CWD: 22,
+  CREATE_RAW: 23,
+  ACCEPT_RAW: 24,
+  ATTACH_RAW: 25,
+  PIN_RAW: 26,
 } as const;
 
 interface Member {
@@ -82,10 +90,28 @@ async function harness() {
   });
   const ready = new Map<number, number>();
   let group: MemoryGroupHandle | undefined;
+  const source = new Uint8Array(await (await fetch("/memory-group-member.wasm")).arrayBuffer());
+  // Group members load through Waffle's link loader, which admits only growth-free images.
+  const plan = await prepareLinkPlan({
+    core: {
+      id: "member",
+      source,
+      cooperative: true,
+      checkpoint: { module: "test", name: "checkpoint" },
+      initialize: ["member_initialize_memory"],
+    },
+    libraries: [],
+    reserve: "member_reserve",
+  });
   runtime.registerAdapter("group", (context, service) =>
     service.launchWorker(context, {
       workerUrl: "/memory-group-worker.js",
-      request: { module: context.module, args: context.request.argv, env: {} },
+      request: {
+        module: context.module,
+        args: context.request.argv,
+        env: {},
+        linkPlan: plan.toSource(),
+      },
       memoryGroup: context.request.argv[0] === "lead" ? "new" : group!,
       onMessage(message) {
         const data = message as { type?: string; command?: number; pid?: number };
@@ -93,9 +119,11 @@ async function harness() {
       },
     }),
   );
-  const source = new Uint8Array(await (await fetch("/memory-group-member.wasm")).arrayBuffer());
-  const module = await WebAssembly.compile(source);
-  runtime.registerProgram("/member", { adapter: "group", module, cooperative: true });
+  runtime.registerProgram("/member", {
+    adapter: "group",
+    module: plan.entryModule,
+    cooperative: true,
+  });
   const root = createWorkerProcessTransport({
     pid: runtime.identities.pid(),
     job: runtime.identities.job(),
@@ -121,12 +149,13 @@ async function harness() {
   await runtime.filesystem.writeFile("/member", source);
   await service.adoptRuntimeRoot(root);
   const supervisor: RuntimeSupervisor = await service.ready();
-  const launch = async (role: string): Promise<number> => {
+  await runtime.filesystem.mkdirp("/tmp");
+  const launch = async (role: string, cwd = "/"): Promise<number> => {
     const pid = client.spawn(root.pid, {
       executable: "/member",
       argv: [role],
       env: {},
-      cwd: "/",
+      cwd,
       job: -1,
       fds: [],
     });
@@ -140,15 +169,15 @@ async function harness() {
     await flush();
     return outcome;
   };
-  const spawn = async (role: string): Promise<Member> => {
-    const pid = await launch(role);
+  const spawn = async (role: string, cwd = "/"): Promise<Member> => {
+    const pid = await launch(role, cwd);
     const command = await until(() => ready.get(pid), `ready ${pid}`);
     if (role === "lead") group = service.memoryGroupOf(pid);
     return { pid, command, seq: 0 };
   };
   const send = (member: Member, op: number, ...args: number[]): Promise<number[]> => {
     const base = member.command / 4;
-    const cells = new Int32Array(group!.memory.buffer);
+    const cells = new Int32Array(group!.buffer());
     for (let i = 0; i < 4; i++) cells[base + 3 + i] = args[i] ?? 0;
     cells[base + 2] = op;
     const seq = ++member.seq;
@@ -210,7 +239,8 @@ type Harness = Awaited<ReturnType<typeof harness>>;
 /** Two relocated images: distinct statics, tables, stacks and concurrent private heaps. */
 async function images(h: Harness, report: Report) {
   const a = await h.spawn("lead");
-  assert(h.group().memory.buffer instanceof SharedArrayBuffer, "no shared group memory");
+  assert(h.group().buffer() instanceof SharedArrayBuffer, "no shared group memory");
+  assert(!("memory" in h.group()), "the page handle exposes a growable Memory");
   const b = await h.spawn("member");
   assert(h.service.memoryGroupOf(b.pid) === h.group(), "second member joined another group");
   const [counterA, addrA, opA, stackA] = await h.call(a, Op.INIT, 1, 0);
@@ -283,9 +313,64 @@ async function watches(h: Harness, a: Member, b: Member, mailbox: number, report
   const [, valueWatch] = await h.call(a, Op.WATCH, watched, 5);
   assert((await h.call(a, Op.POLL, valueWatch!, 0))[0] === 1, "value change did not ready");
   await h.call(a, Op.UNWATCH, valueWatch!);
+  // Successive one-count wakes ready distinct watches; a hit watch is never selected again.
+  const [, first] = await h.call(a, Op.WATCH, watched, 0);
+  const [, second] = await h.call(a, Op.WATCH, watched, 0);
+  const wakes = [(await h.call(b, Op.WAKE, watched, 1))[0]];
+  const firstReady = (await h.call(a, Op.POLL, first!, 0))[0];
+  const secondBefore = (await h.call(a, Op.POLL, second!, 0))[0];
+  wakes.push((await h.call(b, Op.WAKE, watched, 1))[0], (await h.call(b, Op.WAKE, watched, 1))[0]);
+  const secondAfter = (await h.call(a, Op.POLL, second!, 0))[0];
+  const fair = firstReady === 1 && secondBefore === 0 && secondAfter === 1;
+  assert(fair && wakes.join() === "1,1,0", `wake-one starvation ${wakes} ${secondAfter}`);
+  await h.call(a, Op.UNWATCH, first!);
+  await h.call(a, Op.UNWATCH, second!);
   await h.call(b, Op.DETACH, mailbox);
   assert(h.snapshot().watches === 0 && h.snapshot().holds === 1, "unwatch or detach leaked");
-  report.watches = { woken, ready };
+  report.watches = { woken, ready, partialWakes: wakes };
+}
+
+/** F1: members share the tree through their own identities, each with its spawn cwd. */
+async function filesystem(h: Harness, a: Member, b: Member, report: Report) {
+  const text = (address: number, length: number) =>
+    new TextDecoder().decode(new Uint8Array(h.group().buffer(), address, length).slice());
+  assert((await h.call(a, Op.WRITE, 0x1234))[0] === 4, "member write failed");
+  const [read, value] = await h.call(b, Op.READ);
+  assert(read === 4 && value === 0x1234, `completed write not visible: ${read}/${value}`);
+  const elsewhere = await h.spawn("member", "/tmp");
+  const [length, cwd] = await h.call(elsewhere, Op.CWD);
+  const [rootLength, rootCwd] = await h.call(a, Op.CWD);
+  assert(text(cwd!, length!) === "/tmp" && text(rootCwd!, rootLength!) === "/", "cwd snapshot");
+  const [againRead, again] = await h.call(elsewhere, Op.READ);
+  assert(againRead === 4 && again === 0x1234, "a later member does not see the shared tree");
+  await h.exit(elsewhere);
+  await h.reaped(elsewhere.pid);
+  report.filesystem = { value, cwd: text(cwd!, length!) };
+}
+
+/** Invalid output spans fail before the owner changes regions, holds or pins. */
+async function outputs(h: Harness, a: Member, mailbox: number, report: Report) {
+  const counters = () => {
+    const { regions, pins, holds } = h.snapshot();
+    return `${regions}/${pins}/${holds}`;
+  };
+  const before = counters();
+  const bad = [0xfffffff8, 3];
+  for (const out of bad) {
+    assert((await h.call(a, Op.CREATE_RAW, 16, 16, out))[0] === -28, "create accepted bad out");
+    assert((await h.call(a, Op.ATTACH_RAW, mailbox, out))[0] === -28, "attach accepted bad out");
+    assert((await h.call(a, Op.PIN_RAW, mailbox, out))[0] === -28, "pin accepted bad out");
+  }
+  assert(counters() === before, `failed outputs changed owner state ${before} -> ${counters()}`);
+  const [, pin] = await h.call(a, Op.PIN, mailbox);
+  await h.call(a, Op.ROUTE, pin!, a.pid);
+  const pinned = counters();
+  assert((await h.call(a, Op.ACCEPT_RAW, pin!, 0xfffffff8))[0] === -28, "accept bad out");
+  assert(counters() === pinned, "a failed accept consumed its pin");
+  assert((await h.call(a, Op.ACCEPT, pin!))[0] === 0, "pin lost after a failed accept");
+  await h.call(a, Op.DETACH, mailbox);
+  assert(counters() === before, "accept left an extra hold");
+  report.outputs = { counters: before };
 }
 
 /** A member killed while blocked in futex_wait; then its chunks are reused. */
@@ -385,6 +470,8 @@ export async function memoryGroupBrowser(): Promise<Report> {
     await sharing(h, a, b, report);
     const [, mailbox, mailboxAddr] = await h.call(a, Op.CREATE, 256, 16);
     await watches(h, a, b, mailbox!, report);
+    await filesystem(h, a, b, report);
+    await outputs(h, a, mailbox!, report);
     const reused = await killed(h, a, mailbox!, mailboxAddr!, report);
     await churn(h, a, mailbox!, report);
     await limits(h, a, report);

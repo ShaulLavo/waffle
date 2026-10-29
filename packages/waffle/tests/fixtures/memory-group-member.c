@@ -20,8 +20,17 @@ IMPORT("runtime_shm", "futex_watch") int32_t futex_watch(uint32_t addr, int32_t 
 IMPORT("runtime_shm", "futex_unwatch") int32_t futex_unwatch(uint32_t id);
 IMPORT("runtime_proc", "poll") int32_t process_poll(uint32_t subscriptions, uint32_t count, int32_t timeout, uint32_t out);
 IMPORT("runtime_proc", "getpid") int32_t getpid(void);
+IMPORT("runtime_proc", "cwd") int32_t process_cwd(char *buffer, uint32_t capacity);
 IMPORT("wasi_snapshot_preview1", "proc_exit") _Noreturn void proc_exit(int32_t code);
+IMPORT("wasi_snapshot_preview1", "fd_prestat_get") int32_t fd_prestat_get(int32_t fd, uint32_t *out);
+IMPORT("wasi_snapshot_preview1", "fd_prestat_dir_name") int32_t fd_prestat_dir_name(int32_t fd, char *path, uint32_t len);
+IMPORT("wasi_snapshot_preview1", "path_open") int32_t path_open(int32_t fd, uint32_t dirflags, const char *path, uint32_t len, uint32_t oflags, uint64_t base, uint64_t inheriting, uint32_t fdflags, int32_t *out);
+IMPORT("wasi_snapshot_preview1", "fd_write") int32_t fd_write(int32_t fd, const void *iovs, uint32_t count, uint32_t *written);
+IMPORT("wasi_snapshot_preview1", "fd_read") int32_t fd_read(int32_t fd, const void *iovs, uint32_t count, uint32_t *read);
+IMPORT("wasi_snapshot_preview1", "fd_close") int32_t fd_close(int32_t fd);
 IMPORT("test", "ready") void ready(uint32_t command, int32_t pid);
+// Cooperative link-loader trust: the member names a checkpoint and calls it on its idle path.
+IMPORT("test", "checkpoint") void checkpoint(void);
 extern void __wasm_call_ctors(void);
 
 void *memset(void *d, int c, size_t n) { unsigned char *p = d; while (n--) *p++ = (unsigned char)c; return d; }
@@ -41,6 +50,35 @@ static void *allocate(size_t n) {
   heap_cursor += n;
   return p;
 }
+
+// The link loader's reservation export; this image has no libraries, but the plan names one.
+__attribute__((export_name("member_reserve"))) void *member_reserve(size_t n, size_t align) {
+  (void)align;
+  return allocate(n);
+}
+
+// F1: one file in the shared tree, through the member's own preopen and filesystem identity.
+static int32_t root_fd(void) {
+  char name[2];
+  uint32_t prestat[2];
+  for (int32_t fd = 3; fd < 32; fd++) {
+    if (fd_prestat_get(fd, prestat) != 0 || prestat[1] != 1) continue;
+    if (fd_prestat_dir_name(fd, name, 1) == 0 && name[0] == '/') return fd;
+  }
+  return -1;
+}
+static int32_t shared_file(int32_t value, int writing, int32_t *read_value) {
+  int32_t root = root_fd(), fd = -1;
+  if (root < 0) return -44;
+  uint32_t oflags = writing ? 9 : 0;  // CREAT | TRUNC
+  int32_t status = path_open(root, 0, "group-f1", 8, oflags, 0x1fffffffull, 0x1fffffffull, 0, &fd);
+  if (status) return -status;
+  uint32_t iov[2] = {(uint32_t)(uintptr_t)(writing ? &value : read_value), 4}, moved = 0;
+  status = writing ? fd_write(fd, iov, 1, &moved) : fd_read(fd, iov, 1, &moved);
+  fd_close(fd);
+  return status ? -status : (int32_t)moved;
+}
+static char cwd_buffer[64];
 
 static int private_counter = 7;     // .data, per member
 static char *greeting = "hello";    // pointer in .data: a data relocation
@@ -134,6 +172,14 @@ static void run(void) {
       r[1] = (int32_t)event[0];
       break;
     }
+    case 20: r[0] = shared_file(a[0], 1, 0); break;  // WRITE(value)
+    case 21: r[0] = shared_file(0, 0, &r[1]); break;  // READ
+    case 22: r[0] = process_cwd(cwd_buffer, sizeof cwd_buffer); r[1] = (int32_t)(uintptr_t)cwd_buffer; break;
+    // Raw output pointers for negative ABI tests: nothing may change when the span is invalid.
+    case 23: r[0] = shm_create((uint32_t)a[0], (uint32_t)a[1], (uint32_t *)(uintptr_t)(uint32_t)a[2]); break;
+    case 24: r[0] = shm_accept((uint32_t)a[0], (uint32_t *)(uintptr_t)(uint32_t)a[1]); break;
+    case 25: r[0] = shm_attach((uint32_t)a[0], (uint32_t *)(uintptr_t)(uint32_t)a[1]); break;
+    case 26: r[0] = shm_pin((uint32_t)a[0], (uint32_t *)(uintptr_t)(uint32_t)a[1]); break;
     default: r[0] = -28;
   }
 }
@@ -144,8 +190,10 @@ void _start(void) {
   int32_t last = 0;
   for (;;) {
     int32_t seq;
-    while ((seq = __atomic_load_n(&command[0], __ATOMIC_SEQ_CST)) == last)
+    while ((seq = __atomic_load_n(&command[0], __ATOMIC_SEQ_CST)) == last) {
+      checkpoint();
       futex_wait32((uint32_t)(uintptr_t)&command[0], last, -1);
+    }
     last = seq;
     run();
     __atomic_store_n(&command[1], seq, __ATOMIC_SEQ_CST);

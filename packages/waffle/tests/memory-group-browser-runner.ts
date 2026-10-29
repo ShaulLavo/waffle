@@ -1,24 +1,28 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, type Browser } from "playwright";
+import { buildFixture, verifiedFixture } from "../scripts/build-memory-group-fixture.ts";
 
-// Chromium acceptance for memory groups: two relocated PIE member images in one group.
-// Requires WASI_SDK_PATH (wasi-sdk 34). PROCESS_SCRATCH_ROOT selects the scratch parent.
+// Chromium acceptance for memory groups: relocated PIE member images through Waffle's real
+// runtime, broker, bootstrap and link loader. The fixture is built once by the libc producer:
+// MEMORY_GROUP_FIXTURE_DIR names its verified artifact. Without it, WASI_SDK_PATH builds one
+// into this run's scratch. PROCESS_SCRATCH_ROOT selects the scratch parent.
 // MEMORY_GROUP_PORT picks the loopback port; 0 lets the OS choose.
-const sdk = process.env.WASI_SDK_PATH;
-if (!sdk) throw new Error("WASI_SDK_PATH must name a wasi-sdk 34 installation");
+const fixtureDirectory = process.env.MEMORY_GROUP_FIXTURE_DIR;
+if (!fixtureDirectory && !process.env.WASI_SDK_PATH)
+  throw new Error(
+    "set MEMORY_GROUP_FIXTURE_DIR to the built fixture, or WASI_SDK_PATH to build it",
+  );
 const scratchRoot = process.env.PROCESS_SCRATCH_ROOT;
 if (!scratchRoot) throw new Error("PROCESS_SCRATCH_ROOT must name a scratch directory");
 const port = Number(process.env.MEMORY_GROUP_PORT ?? 0);
+const engines = process.argv.slice(2);
+if (engines.some((engine) => engine !== "chromium"))
+  throw new Error("the memory group runner covers Chromium");
 
 let scratch: string | undefined;
 let browser: Browser | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
-
-async function run(command: string[]): Promise<void> {
-  const child = Bun.spawn(command, { stdout: "inherit", stderr: "inherit" });
-  if ((await child.exited) !== 0) throw new Error(`${command[0]} failed`);
-}
 
 async function bundle(entry: string): Promise<Blob> {
   const build = await Bun.build({
@@ -47,36 +51,12 @@ process.once("SIGTERM", onSignal);
 
 try {
   scratch = await mkdtemp(join(scratchRoot, "wgroup-"));
-  const object = join(scratch, "member.o"),
-    wasm = join(scratch, "member.wasm");
-  await run([
-    `${sdk}/bin/clang`,
-    "--target=wasm32-wasip1",
-    "-nostdlib",
-    "-O2",
-    "-fPIC",
-    "-matomics",
-    "-mbulk-memory",
-    "-c",
-    resolve(import.meta.dir, "fixtures/memory-group-member.c"),
-    "-o",
-    object,
-  ]);
-  await run([
-    `${sdk}/bin/wasm-ld`,
-    "-pie",
-    "--experimental-pic",
-    "--import-memory",
-    "--shared-memory",
-    "--max-memory=4294967296",
-    "--import-table",
-    "--no-entry",
-    "--export=_start",
-    object,
-    "-o",
-    wasm,
-  ]);
-  const member = await readFile(wasm);
+  let built = fixtureDirectory;
+  if (!built) {
+    built = join(scratch, "fixture");
+    buildFixture(built);
+  }
+  const member = verifiedFixture(built);
   const [page, worker, fsWorker] = await Promise.all([
     bundle("memory-group-browser.ts"),
     bundle("fixtures/memory-group-worker.ts"),

@@ -722,6 +722,9 @@ termination of the member's worker is the cancellation path for a blocked wait.
 
 Poll subscription **kind 7, FUTEX**, uses a watch ID. It is ready while `*addr != expected`, and
 from the first `futex_wake` that hits the watch until `futex_unwatch`. Readiness consumes nothing.
+Each watch is hit once: a wake selects only pending watches, so successive or concurrent partial
+wakes reach distinct watches. Output records are validated before any owner state changes; an
+invalid span returns `-EINVAL` with nothing created, held, pinned or consumed.
 A hit increments the process directory's common wake word, so a member polling on that word parks
 until it. Kind 7 is `-EINVAL` in a process that is not a group member.
 

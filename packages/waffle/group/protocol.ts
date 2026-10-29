@@ -37,9 +37,10 @@ export const REPLY_WORDS = 5;
 /**
  * Watch table in the control buffer. Owned by the group owner, never guest memory.
  * Header word 0 is the registration sequence. Each slot is four i32 words:
- * state (0 free, (member + 1) << 1 claimed, | 1 live), address, registration sequence,
- * wake generation. Members claim and release only their own slots. The owner clears a
- * stopped member's slots before its index can be admitted again.
+ * state (0 free, (member + 1) << 1 claimed, | 1 live), address, registration tag, and the
+ * pending word: the tag until the first wake claims the hit by swapping it to 0. Members claim
+ * and release only their own slots. The owner clears a stopped member's slots before its index
+ * can be admitted again.
  */
 export const WATCH_HEADER_WORDS = 4;
 export const WATCH_SLOT_WORDS = 4;

@@ -1101,6 +1101,10 @@ async function attachGroupMember(
   runtime: typeof import("../proc/worker-client.js") | null,
 ): Promise<GroupAttachment> {
   if (!req.memoryGroup) return noGroup;
+  // Only the link loader admits group images: it rejects raw memory.grow and memory exports,
+  // so every byte of group backing is charged by the owner (W3).
+  if (!("linkPlan" in req))
+    throw new ExecutableFormatError("memory group members load through waffle/link plans");
   const { createGroupMember } = await import("../group/member.js");
   const transport = req.runtimeProcess;
   return createGroupMember(req.memoryGroup, {

@@ -1438,8 +1438,13 @@ export class BrowserProcessBroker {
       group: lease.group,
       request,
       transfer: Object.freeze(transfer),
-      stopped: () => lease.stopped(),
+      stopped: () => this.settleRootGroup(pid, lease),
     });
+  }
+  /** A settled root lease must not keep its group's backing reachable; debt stays tracked. */
+  private settleRootGroup(pid: number, lease: MemberLease): void {
+    lease.stopped();
+    if (lease.settled() && this.rootGroups?.get(pid) === lease) this.rootGroups.delete(pid);
   }
   private admitGroupMember(
     pid: number,
@@ -1840,7 +1845,7 @@ export class BrowserProcessBroker {
     return pending
       .then(() => {
         terminal?.stopped();
-        group?.stopped();
+        if (group) this.settleRootGroup(pid, group);
       })
       .catch((error) => {
         group?.failed();

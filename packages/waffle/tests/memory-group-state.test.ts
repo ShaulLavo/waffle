@@ -85,7 +85,7 @@ test("regions free after the last hold and their bytes are reused zeroed", () =>
   expect(status).toBe(0);
   expect(addr! % PAGE_BYTES).toBe(0);
   expect(op(b, GroupOp.ATTACH, handle!)).toEqual([0, addr!, 8]);
-  new Int32Array(a.group.memory.buffer, addr!, 2)[1] = 42;
+  new Int32Array(a.group.buffer(), addr!, 2)[1] = 42;
   expect(op(a, GroupOp.DETACH, handle!)[0]).toBe(0);
   expect(op(a, GroupOp.DETACH, handle!)[0]).toBe(-8);
   expect(snapshot(a).regions).toBe(1);
@@ -93,7 +93,7 @@ test("regions free after the last hold and their bytes are reused zeroed", () =>
   expect(snapshot(a)).toMatchObject({ regions: 0, holds: 0, freeBytes: PAGE_BYTES });
   const [, , again] = op(a, GroupOp.CREATE, 8, 8);
   expect(again).toBe(addr!);
-  expect(new Int32Array(a.group.memory.buffer, again!, 2)[1]).toBe(0);
+  expect(new Int32Array(a.group.buffer(), again!, 2)[1]).toBe(0);
 });
 
 test("transit pins have one owner and settle exactly once", () => {
@@ -183,12 +183,12 @@ test("an exited member's chunks are reused and committed backing stays flat", ()
   const leader = join(1);
   const first = join(2, leader);
   const page = op(first, GroupOp.GROW, 8)[0]!;
-  new Uint8Array(leader.group.memory.buffer, page * PAGE_BYTES, 8)[3] = 9;
+  new Uint8Array(leader.group.buffer(), page * PAGE_BYTES, 8)[3] = 9;
   first.stopped();
   const committed = groups.budget.committed;
   const second = join(3, leader);
   expect(op(second, GroupOp.GROW, 8)[0]).toBe(page);
-  expect(new Uint8Array(leader.group.memory.buffer, page * PAGE_BYTES, 8)[3]).toBe(0);
+  expect(new Uint8Array(leader.group.buffer(), page * PAGE_BYTES, 8)[3]).toBe(0);
   expect(groups.budget.committed).toBe(committed);
 });
 
