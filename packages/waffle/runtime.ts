@@ -477,7 +477,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (networkActivation) return networkActivation;
       const pending = import("./browser/net/runtime.js").then(({ createRuntimeNetwork }) =>
-        disposed ? undefined : createRuntimeNetwork(assertLive),
+        disposed
+          ? undefined
+          : createRuntimeNetwork(assertLive, (guest, directory) =>
+              filesystem.attachSocketScope(guest, directory),
+            ),
       );
       ownedNetwork = pending;
       networkActivation = pending.then((owner) => {

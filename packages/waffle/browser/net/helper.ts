@@ -27,6 +27,7 @@ import {
   type TcpRequest,
 } from "./protocol.js";
 import {
+  errnoOf,
   socketPathError,
   type HelperPaths,
   type SocketLease,
@@ -503,9 +504,7 @@ export class NetHelper {
     } catch {
       work = Promise.resolve(ECANCELED);
     }
-    void work
-      .catch(() => ECANCELED)
-      .then((errno) => tcpReply(req.reply, errno ? ERROR : OK, errno));
+    void work.catch(errnoOf).then((errno) => tcpReply(req.reply, errno ? ERROR : OK, errno));
   }
 
   private executeUnix(req: UnixRequest): Promise<number> {

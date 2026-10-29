@@ -3,119 +3,76 @@ import { createRuntimeNetwork, type RuntimeNetworkHelper } from "../browser/net/
 import { createRing } from "../browser/net/ring.js";
 import { AGAIN, ERROR, OK, UNSUPPORTED } from "../browser/net/protocol.js";
 import { NetHost } from "../browser/net/host.js";
-import type { SocketLease, SocketScope } from "../browser/net/unix-paths.js";
+import type { AttachedSocketScope } from "../browser/net/unix-paths.js";
+import type { SocketBinding } from "../core/filesystem.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
-import type { GuestCall, GuestMessage } from "./network-unix-guest.js";
+import { disposeLive, Guest, live } from "./network-unix-support.js";
 
 const noFetch = async () => {
   throw Error("External fetch forbidden");
 };
 const EIO = 29;
 
-/** Names and leases only; the real filesystem walk is covered with the FS-backed scope. */
+/** A fake socket-only FS session: names and leases only. The real walk, permissions and
+ * exact-edge cleanup are covered against the real filesystem in network-unix-fs.test.ts. */
 class FakeTree {
   nodes = new Map<string, { kind: "socket" | "file"; ino: number; lease?: number }>();
   next = 1;
   unbinds: { path: string; unlink: boolean }[] = [];
   failUnbinds = 0;
   gate: Promise<void> | undefined;
-  scope(rootIno: number): SocketScope {
-    return {
-      bind: async (path) => {
+  closed = 0;
+  scope(rootIno: number): AttachedSocketScope {
+    const calls: Record<string, (...args: any[]) => Promise<unknown>> = {
+      bindSocketPath: async (_root: number, path: string, lease: number) => {
         await this.gate;
-        if (this.nodes.has(path)) return 3;
+        if (this.nodes.has(path)) return { error: 20 };
         const ino = this.next++;
-        this.nodes.set(path, { kind: "socket", ino, lease: ino });
-        return { key: { rootIno, ino }, path } satisfies SocketLease;
+        this.nodes.set(path, { kind: "socket", ino, lease });
+        return { binding: { node: ino, parent: 0, ino, parentIno: rootIno }, name: path };
       },
-      target: async (path) => {
+      connectSocket: async (_root: number, path: string) => {
         const node = this.nodes.get(path);
-        if (!node) return 44;
-        return node.kind === "socket" ? { rootIno, ino: node.ino } : 14;
+        if (!node) return { error: 44 };
+        return node.kind === "socket" ? { ino: node.ino } : { error: 14 };
       },
-      unbind: async (lease, unlink) => {
-        this.unbinds.push({ path: lease.path, unlink });
+      unbindSocket: async (
+        binding: SocketBinding,
+        name: string,
+        lease: number,
+        unlink: boolean,
+      ) => {
+        this.unbinds.push({ path: name, unlink });
         if (this.failUnbinds > 0) {
           this.failUnbinds--;
           return EIO;
         }
-        const node = this.nodes.get(lease.path);
-        if (unlink && node?.lease === lease.key.ino) this.nodes.delete(lease.path);
+        const node = this.nodes.get(name);
+        if (node?.ino !== binding.ino || node.lease !== lease) return 44;
+        if (unlink) this.nodes.delete(name);
         return 0;
       },
-      close: async () => {},
+    };
+    return {
+      root: 0,
+      rootIno,
+      client: {
+        asyncCall: (operation, args) => calls[operation]!(...args),
+        dispose: () => this.closed++,
+      },
     };
   }
 }
 
 const identity = {} as FilesystemIdentity;
-const live: { dispose(): void }[] = [];
-afterEach(() => {
-  for (const item of live.splice(0)) item.dispose();
-});
+afterEach(disposeLive);
 
 function runtime(tree = new FakeTree()) {
   const owner = createRuntimeNetwork(
     () => {},
-    async (scope) => tree.scope(scope.directory),
+    async (_identity, directory) => tree.scope(directory),
   );
   return { tree, owner, network: owner.network };
-}
-
-class Guest {
-  private worker = new Worker(new URL("./network-unix-guest.ts", import.meta.url), {
-    type: "module",
-  });
-  private calls = new Map<number, PromiseWithResolvers<unknown>>();
-  private next = 0;
-  lastMs = 0;
-  constructor(
-    readonly helper: RuntimeNetworkHelper,
-    ring: SharedArrayBuffer,
-  ) {
-    this.worker.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
-      if (data.kind === "net") return this.helper.handle(data.request);
-      const call = this.calls.get(data.id)!;
-      this.calls.delete(data.id);
-      if (data.kind === "throw") return call.reject(Error(data.message));
-      this.lastMs = data.ms;
-      call.resolve(data.value);
-    };
-    this.worker.postMessage({ kind: "start", ring });
-    live.push({ dispose: () => this.worker.terminate() });
-  }
-  call<T = number>(method: GuestCall["method"], ...args: unknown[]): Promise<T> {
-    const id = this.next++;
-    const pending = Promise.withResolvers<unknown>();
-    this.calls.set(id, pending);
-    this.worker.postMessage({ kind: "call", id, method, args } satisfies GuestCall);
-    return pending.promise as Promise<T>;
-  }
-  async error(handle = 0): Promise<{ code?: string; syscall?: string }> {
-    return JSON.parse(await this.call<string>("error", handle));
-  }
-  async readAll(handle: number, size: number): Promise<Uint8Array> {
-    const out = new Uint8Array(size);
-    let at = 0;
-    while (at < size) {
-      const chunk = await this.call<Uint8Array | number>("read", handle, size - at);
-      if (chunk === AGAIN) {
-        await this.call("poll", 1000);
-        continue;
-      }
-      if (typeof chunk === "number" || chunk.length === 0) throw Error(`read stopped: ${chunk}`);
-      out.set(chunk, at);
-      at += chunk.length;
-    }
-    return out;
-  }
-  async accept(listener: number): Promise<number> {
-    for (;;) {
-      const conn = await this.call("accept", listener);
-      if (conn !== AGAIN) return conn;
-      await this.call("poll", 1000);
-    }
-  }
 }
 
 function guest(network: ReturnType<typeof runtime>["network"], directory: number | null = 1) {

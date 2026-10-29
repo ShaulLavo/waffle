@@ -1,11 +1,39 @@
 // Owner-side pathname socket state: path checks, the per-helper filesystem scope seam, and the
 // runtime-retained cleanup set. Loaded only with runtime.network().
 
+import type { FileHandle, SocketBinding } from "../../core/filesystem.js";
 import type { SocketKey } from "./namespace.js";
-import { ECANCELED, EINVAL, ENAMETOOLONG, ENOENT, PATH_LIMIT } from "./unix-status.js";
+import {
+  EADDRINUSE,
+  EBADF,
+  ECANCELED,
+  EEXIST,
+  EINVAL,
+  ENAMETOOLONG,
+  ENOENT,
+  PATH_LIMIT,
+} from "./unix-status.js";
 
 const encoder = new TextEncoder();
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** The socket-only filesystem session admitted for one helper's scope. */
+export interface SocketClient {
+  asyncCall(operation: string, args: unknown[]): Promise<any>;
+  dispose(): void;
+}
+export interface AttachedSocketScope {
+  readonly client: SocketClient;
+  readonly root: FileHandle;
+  readonly rootIno: number;
+}
+
+/** WASI errno of a rejected filesystem call. */
+export function errnoOf(error: unknown): number {
+  if (error && typeof error === "object" && "errno" in error && typeof error.errno === "number")
+    return error.errno;
+  return ECANCELED;
+}
 
 /** A helper's view of its runtime's path state. */
 export interface HelperPaths {
@@ -151,4 +179,53 @@ export class PathCleanup {
     this.failures = [];
     if (failures.length) throw new AggregateError(failures, "Socket cleanup failed");
   }
+}
+
+interface Binding {
+  readonly binding: SocketBinding;
+  readonly name: string;
+  readonly lease: number;
+}
+
+/** Scope over the filesystem's socket session. Leases name the original parent edge, so cleanup
+ * never re-resolves the path the guest passed. */
+export function filesystemScope({ client, root, rootIno }: AttachedSocketScope): SocketScope {
+  const bindings = new WeakMap<SocketLease, Binding>();
+  let nextLease = 1;
+  return {
+    async bind(path) {
+      const lease = nextLease++;
+      const result: { binding: SocketBinding; name: string } | { error: number } =
+        await client.asyncCall("bindSocketPath", [root, path, lease]);
+      if ("error" in result) return result.error === EEXIST ? EADDRINUSE : result.error;
+      const socket: SocketLease = Object.freeze({
+        key: Object.freeze({ rootIno, ino: result.binding.ino }),
+        path,
+      });
+      bindings.set(socket, { binding: result.binding, name: result.name, lease });
+      return socket;
+    },
+    async target(path) {
+      const result: { ino: number } | { error: number } = await client.asyncCall("connectSocket", [
+        root,
+        path,
+      ]);
+      return "error" in result ? result.error : { rootIno, ino: result.ino };
+    },
+    async unbind(socket, unlink) {
+      const entry = bindings.get(socket);
+      if (!entry) return EBADF;
+      const status: number = await client.asyncCall("unbindSocket", [
+        entry.binding,
+        entry.name,
+        entry.lease,
+        unlink,
+      ]);
+      // ENOENT: the original edge no longer names this lease (moved or replaced). Settled.
+      return status === ENOENT ? 0 : status;
+    },
+    async close() {
+      client.dispose();
+    },
+  };
 }

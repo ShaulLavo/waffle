@@ -2,7 +2,14 @@ import { NetHelper, NetNamespace, type NetFetch, type NetHelperHooks } from "./h
 import { CAPACITY } from "./ring.js";
 import type { FileHandle } from "../../core/filesystem.js";
 import type { FilesystemIdentity } from "../../fs/protocol.js";
-import { PathCleanup, type HelperPaths, type SocketScope } from "./unix-paths.js";
+import {
+  errnoOf,
+  filesystemScope,
+  PathCleanup,
+  type AttachedSocketScope,
+  type HelperPaths,
+  type SocketScope,
+} from "./unix-paths.js";
 import { ECANCELED, ENOTCAPABLE } from "./unix-status.js";
 import {
   lookupAddress,
@@ -31,7 +38,10 @@ export interface RuntimeNetwork {
   }): RuntimeNetworkHelper;
 }
 /** Trusted page-side attach. Rejects with a FilesystemError errno for a pair it cannot authenticate. */
-export type AttachSocketScope = (scope: RuntimeNetworkPathScope) => Promise<SocketScope>;
+export type AttachSocketScope = (
+  guest: FilesystemIdentity,
+  directory: FileHandle,
+) => Promise<AttachedSocketScope>;
 
 function snapshot(options: Parameters<RuntimeNetwork["createHelper"]>[0]) {
   const ring = options.ring;
@@ -67,12 +77,6 @@ function snapshotScope(scope: RuntimeNetworkPathScope | undefined) {
   return Object.freeze({ filesystem, directory });
 }
 
-function errnoOf(error: unknown): number {
-  if (error && typeof error === "object" && "errno" in error && typeof error.errno === "number")
-    return error.errno;
-  return ECANCELED;
-}
-
 /** One helper's lazily attached scope. Attach failures are final for that helper. */
 function helperPaths(
   cleanup: PathCleanup,
@@ -86,7 +90,9 @@ function helperPaths(
     scope() {
       if (retired) return Promise.resolve(ECANCELED);
       if (!scope || !attach) return Promise.resolve(ENOTCAPABLE);
-      attached ??= cleanup.track(attach(scope).catch(errnoOf));
+      attached ??= cleanup.track(
+        attach(scope.filesystem, scope.directory).then(filesystemScope, errnoOf),
+      );
       return attached;
     },
     retire() {
