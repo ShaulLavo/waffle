@@ -7,6 +7,7 @@ import { FilesystemService } from "../../fs/service.js";
 export function symlinkSnapshotValue(node: Node) {
   if (node.kind === "file") return Array.from(node.data);
   if (node.kind === "symlink") return node.target;
+  if (node.kind === "socket") return node.kind;
   return Array.from(node.children.keys());
 }
 

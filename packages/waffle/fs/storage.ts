@@ -22,7 +22,7 @@ interface PersistedMetadata {
   data?: string;
 }
 export type PersistedNode = PersistedMetadata &
-  ({ kind: "file" | "dir"; target?: never } | { kind: "symlink"; target: string });
+  ({ kind: "file" | "dir" | "socket"; target?: never } | { kind: "symlink"; target: string });
 
 export interface CheckpointPublication {
   readonly kind: "settled-publication-v1";
@@ -118,6 +118,26 @@ function validateSymlink(node: PersistedNode): void {
     invalid();
 }
 
+function validateFile(node: PersistedNode): void {
+  if (
+    node.target !== undefined ||
+    node.children !== undefined ||
+    (node.data !== undefined && (typeof node.data !== "string" || !node.data)) ||
+    (node.size > 0 && node.data === undefined)
+  )
+    invalid();
+}
+
+function validateSocket(node: PersistedNode): void {
+  if (
+    node.target !== undefined ||
+    node.children !== undefined ||
+    node.data !== undefined ||
+    node.size !== 0
+  )
+    invalid();
+}
+
 export function validatePersistedNode(value: unknown): asserts value is PersistedNode {
   if (!value || typeof value !== "object") invalid();
   const node = value as PersistedNode;
@@ -126,13 +146,7 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
   validateMode(node);
   if (node.identity !== undefined) parseStoredIdentity(node.identity);
   if (node.kind === "file") {
-    if (
-      node.target !== undefined ||
-      node.children !== undefined ||
-      (node.data !== undefined && (typeof node.data !== "string" || !node.data)) ||
-      (node.size > 0 && node.data === undefined)
-    )
-      invalid();
+    validateFile(node);
   } else if (node.kind === "dir") {
     if (node.target !== undefined || node.data !== undefined || !Array.isArray(node.children))
       invalid();
@@ -152,6 +166,8 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
         invalid();
       names.add(name);
     }
+  } else if (node.kind === "socket") {
+    validateSocket(node);
   } else if (node.kind === "symlink") {
     validateSymlink(node);
   } else invalid();
@@ -190,7 +206,7 @@ export function validatePersistedIndex(value: unknown): asserts value is Persist
     const node = nodes.get(ino);
     if (!node) invalid();
     if (seen.has(ino)) {
-      if (node.kind === "dir") invalid();
+      if (node.kind === "dir" || node.kind === "socket") invalid();
       continue;
     }
     seen.add(ino);

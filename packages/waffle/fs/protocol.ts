@@ -69,6 +69,7 @@ export const CAPABILITY_SLOTS = 4096;
 // One candidate-count word, then reusable [handle, open-reference count, transfer count] records. A negative
 // reference count revokes an entry. Handles never recycle, but these per-session entries do.
 export const CAPABILITY_HEADER = 1;
+export const FILESYSTEM_SECTION_BYTES = 8;
 export const CAPABILITY_WORDS = 3;
 export const MAX_CONNECTION_OWNERS = 65536;
 export const CONNECTION_SHARED_BYTES = 64 * 1024 * 1024;
@@ -95,7 +96,7 @@ export interface FilesystemConnection {
   segments: SharedArrayBuffer[];
   /** Private to this connection, not its descendants: capabilities and local open references. */
   capabilities: SharedArrayBuffer;
-  /** Active synchronous host filesystem sections, private to this connection. Never reused. */
+  /** Active sections in word 0; service-only identity probe in word 1. Never reused. */
   sections: SharedArrayBuffer;
   /** Nonzero lock owner token; service clears it when this identity is reaped. */
   owner: number;
@@ -127,7 +128,8 @@ export function filesystemOwnerPlan(publication: PublicationConfiguration) {
     bytes:
       MAX_CONNECTION_OWNERS * 4 +
       CAPABILITY_LENGTH * 4 +
-      16 +
+      12 +
+      FILESYSTEM_SECTION_BYTES +
       arena.bytes +
       REQUEST_BUDGET_BYTES +
       REQUEST_CONTROL_BYTES,
@@ -189,7 +191,7 @@ export function createFilesystemIdentity(
     shared,
     segments,
     capabilities,
-    sections: allocate(4),
+    sections: allocate(FILESYSTEM_SECTION_BYTES),
     owner,
     maxBytes,
     ownerStates,
@@ -245,6 +247,84 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
       reservation.sourceKey + 2,
       1,
     );
+}
+export function reserveIdentityCapability(
+  source: FilesystemIdentity,
+  handle: number,
+  target: FilesystemIdentity,
+): FilesystemReservation {
+  const section = new FilesystemSection(source);
+  section.enter();
+  try {
+    return reserveCapability(source, handle, target);
+  } finally {
+    section.exit();
+  }
+}
+function reserveCapability(
+  source: FilesystemIdentity,
+  handle: number,
+  target: FilesystemIdentity,
+): FilesystemReservation {
+  const entries = new Int32Array(source.capabilities, 0, CAPABILITY_LENGTH);
+  const destination = new Int32Array(target.capabilities, 0, CAPABILITY_LENGTH);
+  let sourceKey = CAPABILITY_HEADER;
+  while (
+    sourceKey < entries.length &&
+    (Atomics.load(entries, sourceKey) !== handle || Atomics.load(entries, sourceKey + 1) < 0)
+  )
+    sourceKey += CAPABILITY_WORDS;
+  if (sourceKey === entries.length) throw new FilesystemError(76);
+  Atomics.add(entries, sourceKey + 2, 1);
+  try {
+    if (Atomics.load(entries, sourceKey) !== handle || Atomics.load(entries, sourceKey + 1) < 0)
+      throw new FilesystemError(76);
+    let targetKey = CAPABILITY_HEADER;
+    while (targetKey < destination.length && Atomics.load(destination, targetKey + 1) >= 0)
+      targetKey += CAPABILITY_WORDS;
+    if (targetKey === destination.length) throw new FilesystemError(51);
+    const reservation = {
+      handle,
+      source: source.capabilities,
+      sourceKey,
+      target: target.capabilities,
+      targetKey,
+      targetOwner: target.owner,
+      state: new SharedArrayBuffer(8),
+    };
+    Atomics.store(destination, targetKey, handle);
+    Atomics.store(destination, targetKey + 2, 0);
+    Atomics.store(destination, targetKey + 1, 1);
+    target.reservations.push(reservation);
+    return reservation;
+  } catch (error) {
+    Atomics.sub(entries, sourceKey + 2, 1);
+    throw error;
+  }
+}
+export function sameFilesystemIdentity(
+  expected: FilesystemIdentity,
+  incoming: Pick<FilesystemIdentity, "owner" | "sections">,
+): boolean {
+  if (
+    expected.owner !== incoming.owner ||
+    incoming.sections.byteLength !== FILESYSTEM_SECTION_BYTES
+  )
+    return false;
+  const own = new Int32Array(expected.sections),
+    other = new Int32Array(incoming.sections);
+  const previous = Atomics.load(own, 1);
+  const challenges = crypto.getRandomValues(new Int32Array(2));
+  const first = challenges[0]!;
+  const second = challenges[1] === first ? first ^ -1 : challenges[1]!;
+  try {
+    Atomics.store(own, 1, first);
+    if (Atomics.load(other, 1) !== first) return false;
+    Atomics.store(own, 1, second);
+    return Atomics.load(other, 1) === second;
+  } finally {
+    Atomics.store(own, 1, previous);
+  }
 }
 export function connectFilesystemIdentity(
   identity: FilesystemIdentity,

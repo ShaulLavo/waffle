@@ -26,6 +26,7 @@ export default {
         "tooling/check-network-rust.ts",
         "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport}-browser-runner.ts",
         "tests/filesystem-transport-browser{,-driver}.ts",
+        "tests/fs-socket-browser-runner.ts",
         "tests/fixtures/filesystem-port-service.ts",
         "tests/interrupt-browser.ts",
         "tests/filesystem-{shutdown,ready-disposal}-browser-runner.ts",

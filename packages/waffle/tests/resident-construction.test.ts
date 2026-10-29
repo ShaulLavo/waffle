@@ -3,7 +3,7 @@ import { createPersistentResidentOwner } from "../browser/persistent-resident-ow
 import { MemoryBackend } from "../fs/backend";
 import { MemoryBudget, type MemoryAllocator, type MemoryBackingSpec } from "../fs/memory-budget";
 import { FilesystemService } from "../fs/service";
-import type { FilesystemConnection } from "../fs/protocol";
+import { FILESYSTEM_SECTION_BYTES, type FilesystemConnection } from "../fs/protocol";
 import { publicationBufferPlan } from "../fs/publication";
 import { OPFS_FORMAT } from "../fs/vfs-format";
 import { identityOpfsFixture } from "./fixtures/durable-identity-opfs";
@@ -199,8 +199,8 @@ test("resident retains all 118 allocation/reference records and two holding leas
   try {
     await owner.ready;
     expect(allocator.specs).toHaveLength(117);
-    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(62_848_168);
-    expect(budget.snapshot().allocated - before.allocated).toBe(62_848_680);
+    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(62_848_172);
+    expect(budget.snapshot().allocated - before.allocated).toBe(62_848_684);
     expect(budget.snapshot().producerFree).toEqual({ allocations: 0, references: 0, leases: 0 });
     expect(budget.snapshot().obligations).toBe(0);
     const published = budget.snapshot();
@@ -235,7 +235,8 @@ function rootCharge(): number {
 const fixedBytes =
   262144 +
   49156 +
-  16 +
+  12 +
+  FILESYSTEM_SECTION_BYTES +
   98304 +
   limits.sessions * 8 +
   44 +

@@ -796,7 +796,7 @@ export class SharedFilesystemState {
         Atomics.store(
           this.slots,
           this.at(slot, 0),
-          stat.kind === "file" ? 1 : stat.kind === "symlink" ? 3 : 2,
+          stat.kind === "file" ? 1 : stat.kind === "symlink" ? 3 : stat.kind === "socket" ? 4 : 2,
         );
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), stat.size);
         Atomics.store(this.slots, this.at(slot, INO), stat.ino);
@@ -1089,7 +1089,7 @@ export class SharedFilesystemState {
       const kind = Atomics.load(this.slots, this.at(slot, 0));
       if (!kind || Atomics.load(this.slots, this.at(slot, HANDLE)) !== handle + 1) return undefined;
       return {
-        kind: kind === 1 ? "file" : kind === 3 ? "symlink" : "directory",
+        kind: kind === 1 ? "file" : kind === 3 ? "symlink" : kind === 4 ? "socket" : "directory",
         ino: Atomics.load(this.slots, this.at(slot, INO)),
         nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: kind !== 2 ? Atomics.load(this.slots, this.at(slot, FILE_SIZE)) : 0,

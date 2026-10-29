@@ -756,3 +756,31 @@ test("cold read denial settles without loading data or retaining a request", asy
   expect(store.reads).toBe(0);
   expect(client.completions.size).toBe(0);
 });
+
+test("socket metadata persists without payload or live lease state", async () => {
+  const store = new Store();
+  const first = await fixture(store);
+  const root = await first.client.asyncCall("preopen", ["/"]);
+  first.backend.execute("bindSocketPath", [root, "/listener", 7], new Uint8Array());
+  const path = await first.client.asyncCall("resolve", [root, "listener"]);
+  const node = path.node;
+  expect(typeof node).toBe("number");
+  expect(await first.client.asyncCall("setMode", [node, 0o200])).toBe(0);
+  await first.client.asyncCall("flush");
+  const stored = store.index.nodes.find((entry: { kind: string }) => entry.kind === "socket");
+  expect(stored).toMatchObject({ kind: "socket", mode: 0o200, size: 0 });
+  expect(stored.data).toBeUndefined();
+  expect(stored.lease).toBeUndefined();
+  expect(store.payloads.size).toBe(0);
+  const second = await fixture(store);
+  const restoredRoot = await second.client.asyncCall("preopen", ["/"]);
+  const restored = await second.client.asyncCall("resolve", [restoredRoot, "listener"]);
+  expect(await second.client.asyncCall("stat", [restored.node])).toMatchObject({
+    kind: "socket",
+    mode: 0o200,
+    size: 0,
+    ino: stored.ino,
+  });
+  expect(second.backend.fs.nodeForHandle(restored.node)).not.toHaveProperty("lease");
+  expect(store.reads).toBe(0);
+});
