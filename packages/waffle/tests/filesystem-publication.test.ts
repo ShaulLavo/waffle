@@ -1315,7 +1315,9 @@ test("production publication oracle detects a disabled direct commit and a stale
 });
 
 test("production current cached and host reads recheck traversal permissions and metadata", async () => {
-  const fixture = await localPublicationFixture();
+  const backend = new MemoryBackend();
+  backend.fs.mkdirp("/dir");
+  const fixture = await localPublicationFixture(backend);
   const originalNow = Date.now;
   let clock = originalNow();
   Date.now = () => ++clock;
