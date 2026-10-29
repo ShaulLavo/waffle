@@ -140,6 +140,8 @@ export const enforcedModules = [
   "browser/terminal-lifetime.ts",
   "browser/terminal-output.ts",
   "core/descriptors.ts",
+  "group/member.ts",
+  "group/protocol.ts",
   "proc/abi.ts",
   "proc/access.ts",
   "proc/admission.ts",

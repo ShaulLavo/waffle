@@ -122,6 +122,8 @@ export interface ProcessABIOptions {
   /** Synchronous wait hook, primarily for embedders and deterministic tests. poll and blocking wait_job call it. */
   wait?(milliseconds: number, word: ControlCells, expected: number): void;
   now?(): number;
+  /** Poll kind 7: a memory group FUTEX watch by id. Undefined for an unknown watch. */
+  futexReady?(id: number): boolean | undefined;
 }
 
 /** Explicit default-action unwind; an unrelated WASM trap must never be treated as a signal. */
@@ -662,7 +664,12 @@ export class ProcessABI {
     ownership: "local" | "shared" = "local",
   ): PollWakeRegistration {
     for (const subscription of subscriptions) {
-      if (!Number.isInteger(subscription.kind) || subscription.kind < 0 || subscription.kind > 6)
+      if (
+        !Number.isInteger(subscription.kind) ||
+        subscription.kind < 0 ||
+        subscription.kind > 7 ||
+        (subscription.kind === 7 && !this.options.futexReady)
+      )
         throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription kind");
       if (!Number.isInteger(subscription.id) || subscription.id < 0 || subscription.id > 0xffffffff)
         throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription id");
@@ -703,12 +710,19 @@ export class ProcessABI {
   private sharedPollSource(sub: PollSubscription, wake: Int32Array | undefined): boolean {
     if (!wake || sub.kind === 3 || sub.kind === 6) return false;
     if (sub.kind === 5) return true;
-    if (sub.kind === 2 || sub.kind === 4) return sameWord(this.options.service.wake, wake);
+    // A wake that hits a watch increments the group's process directory word.
+    if (sub.kind === 2 || sub.kind === 4 || sub.kind === 7)
+      return sameWord(this.options.service.wake, wake);
     const stream = this.descriptor(sub.id, POLL).resource;
     if (stream.kind === "file" || stream.kind === "directory") return false;
     return sameWord(stream.notification, wake);
   }
   private readiness(sub: Subscription): Readiness | null {
+    if (sub.kind === 7) {
+      const ready = this.options.futexReady?.(sub.id);
+      if (ready === undefined) throw new ProcessError(ProcessErrno.BADF, "unknown futex watch");
+      return ready ? { readable: true, writable: false, hangup: false } : null;
+    }
     if (sub.kind === 6)
       return this.options.service.startStatus(this.options.pid, sub.id) !== -ProcessErrno.AGAIN
         ? { readable: true, writable: false, hangup: false }
@@ -771,7 +785,7 @@ export class ProcessABI {
   ): boolean {
     // accessStart received this ABI's wake and publishes its result before notification.
     if (sub.kind === 5) return true;
-    if (sub.kind === 2) return directory;
+    if (sub.kind === 2 || sub.kind === 7) return directory;
     if (sub.kind === 3) return false;
     if (sub.kind === 4 || sub.kind === 6) {
       // Early directory startup failures can publish before the cleanup fence wakes this word.
@@ -827,7 +841,7 @@ export class ProcessABI {
         id: dataViewGetUint32(input, at + 4, true),
         userdata: dataViewGetBigUint64(input, at + 8, true),
       };
-      if (sub.kind > 6) return -ProcessErrno.INVAL;
+      if (sub.kind > 7 || (sub.kind === 7 && !this.options.futexReady)) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
     }
     if (this.pending()) return 0;

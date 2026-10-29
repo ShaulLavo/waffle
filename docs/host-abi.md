@@ -691,6 +691,43 @@ The external owner must call and await `bridge.dispose()` before terminating the
 guest or releasing its resources. The broker performs that ownership work for
 its launched Workers.
 
+## Memory group imports
+
+`runtime_shm` exists only for a member of a [memory group](memory-groups.md). Addresses are
+guest addresses in the shared group memory. Every import returns a negative WASI errno on failure:
+`-EAGAIN` (`-6`) for a full metadata table, `-EBADF` (`-8`) for an unknown or unowned handle or pin,
+`-EINVAL` (`-28`), `-ENOMEM` (`-48`) when the page budget or group address space is exhausted, and
+`-ESRCH` (`-71`) for a target that is not a live member. Output records are little-endian u32.
+
+```text
+group_grow(pages) -> old page index of a fresh member-owned chunk
+shm_create(len, align, out{handle, addr}) -> 0        caller holds the zeroed region
+shm_attach(handle, out{addr}) -> 0                    +1 hold for the caller
+shm_detach(handle) -> 0                               -1 hold
+shm_pin(handle, out{pin}) -> 0                        caller must hold; pin owned by caller
+shm_route(pin, pid) -> 0                              owner hands the delivery to member pid
+shm_accept(pin, out{handle, addr, len}) -> 0          owner only: +1 hold, pin consumed
+shm_unpin(pin) -> 0                                   owner only: delivery discarded
+futex_wait32(addr, expected: i32, timeout_ns: i64) -> 0 ok, 1 not-equal, 2 timed-out
+futex_wait64(addr, expected: i64, timeout_ns: i64) -> same
+futex_wake(addr, count) -> number woken (sync waiters, then watches in registration order)
+futex_watch(addr, expected: i32, out{id}) -> 0
+futex_unwatch(id) -> 0
+parallelism() -> the group's reported parallelism
+```
+
+`group_grow` chunks need not be contiguous with earlier ones. A negative `timeout_ns` waits
+forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned. Hard
+termination of the member's worker is the cancellation path for a blocked wait.
+
+Poll subscription **kind 7, FUTEX**, uses a watch ID. It is ready while `*addr != expected`, and
+from the first `futex_wake` that hits the watch until `futex_unwatch`. Readiness consumes nothing.
+Each watch is hit once: a wake selects only pending watches, so successive or concurrent partial
+wakes reach distinct watches. Output records are validated before any owner state changes; an
+invalid span returns `-EINVAL` with nothing created, held, pinned or consumed.
+A hit increments the process directory's common wake word, so a member polling on that word parks
+until it. Kind 7 is `-EINVAL` in a process that is not a group member.
+
 ## Network and preview
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.
@@ -734,3 +771,30 @@ standard 64-byte Preview1 filestat record, perform open-based inference, or fetc
 ## Internal network module
 
 The Rust socket module is not a guest import namespace. Guest network calls, numeric results, ring records, addresses, and JSON errors are unchanged. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.
+
+## Internal filesystem walk operations
+
+Process workers can call `FilesystemClient.walkOpen(directory, plan)`,
+`walkPage(cursor, { grant, maxEntries })`, `walkRelease(grants)` and
+`walkClose(cursor)`. These are service operations, not guest WebAssembly imports
+or page filesystem capabilities. Types live in `fs/walk.ts`; `fs/glob.ts` provides
+the shared pure glob compiler. The existing session and directory capability
+supply all authority.
+
+Each session admits four walks and at most 256 live file grants across all walks
+and in-flight batches. Each page contains at most 128 entries, and its entire
+packed reply, including the next cursor, fits 64 KiB. Release the exact grant
+tokens through `walkRelease`; ordinary handle retains have separate lifetimes.
+A zero-credit or invalid request leaves the cursor unchanged. Page cursors are
+session-local and single-use. Keep the original cursor for `walkClose` in cleanup;
+closing releases all of that walk's grants, including its final page.
+
+The service snapshots each directory's names and inode identities on entry,
+rechecks ancestor and directory read/search permissions, skips symlinks and
+opaque socket entries, and reports removed or replaced paths as `ENOENT` entries.
+Walk state is bounded to 128 directory frames, 65,536 snapshotted entries and
+1,048,576 name/path UTF-16 units per walk; paths are limited to 4,096 units.
+Traversal errors appear as error entries or fail the page without committing it;
+the caller can close the original cursor. Revocation and reap release all walk
+state. Failed or cancelled reply publication rolls back staged grants and cursor
+changes. Cancelling an already published, unconsumed reply closes its walk.

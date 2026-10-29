@@ -45,6 +45,10 @@ export interface ModuleProfile {
   readonly globalExports: ReadonlyMap<string, GlobalType>;
   readonly importInfo: readonly ImportInfo[];
   readonly immutableI32Exports: ReadonlySet<string>;
+  /** A position-independent executable core: imports memory, table, bases and stack. */
+  readonly pie: boolean;
+  /** PIE core exports whose constant value is an address relative to __memory_base. */
+  readonly relativeExports: ReadonlySet<string>;
 }
 
 export function invalid(member: string, message: string): never {
@@ -93,11 +97,13 @@ class Reader {
   }
 }
 
-function limits(reader: Reader): void {
+/** Relocatable images may import a shared memory (flags 3); memory64 stays unsupported. */
+function limits(reader: Reader, shared = false): void {
   const flags = reader.u32();
-  if (flags > 1) invalid(reader.member, "shared/memory64 limits are unsupported");
+  if (flags > 1 && !(shared && flags === 3))
+    invalid(reader.member, "shared/memory64 limits are unsupported");
   reader.u32();
-  if (flags === 1) reader.u32();
+  if (flags & 1) reader.u32();
 }
 
 function importGlobal(
@@ -150,7 +156,7 @@ function imports(reader: Reader, side: boolean, types: readonly FunctionSignatur
       if (side && (namespace !== "env" || name !== "__indirect_function_table"))
         invalid(reader.member, "side table must import env.__indirect_function_table");
     } else if (kind === 2) {
-      limits(reader);
+      limits(reader, side);
       memories++;
       if (side && (namespace !== "env" || name !== "memory"))
         invalid(reader.member, "side memory must import env.memory");
@@ -388,6 +394,7 @@ function definedGlobals(
   const globals = section ?? new Reader(new Uint8Array([0]), member);
   const result: GlobalType[] = [];
   const offsets = { memory: 0, table: 0 };
+  const constant: boolean[] = [];
   const count = globals.u32();
   for (let index = 0; index < count; index++) {
     const value = globals.byte(),
@@ -395,6 +402,7 @@ function definedGlobals(
     if (value !== 0x7f || mutable > 1) invalid(member, "only defined i32 globals are supported");
     result.push({ value, mutable: mutable === 1 });
     const opcode = globals.byte();
+    constant.push(opcode === 0x41);
     const message = "globals require i32.const or imported-base relative initializers";
     if (opcode === 0x23) relativeGlobal(globals, bases, offsets, message);
     else if (opcode !== 0x41) invalid(member, message);
@@ -403,7 +411,7 @@ function definedGlobals(
       invalid(member, "unsupported global initializer");
   }
   globals.done();
-  return { globals: result, offsets };
+  return { globals: result, offsets, constant };
 }
 
 function coreLayout(sections: Map<number, Reader>, member: string): void {
@@ -452,6 +460,25 @@ function importedBases(imports: readonly GlobalImport[], memory: MemoryInfo | un
   return bases;
 }
 
+/** PIE core immutable exports with a constant initializer: addresses relative to __memory_base. */
+function relativeConstantExports(
+  section: Reader | undefined,
+  imported: number,
+  defined: { readonly globals: readonly GlobalType[]; readonly constant: readonly boolean[] },
+  member: string,
+): ReadonlySet<string> {
+  const relative = new Set<string>();
+  const exports = new Reader(section?.bytes ?? new Uint8Array([0]), member);
+  for (let index = 0, size = exports.u32(); index < size; index++) {
+    const name = exports.name(),
+      kind = exports.byte(),
+      local = exports.u32() - imported;
+    if (kind === 3 && local >= 0 && defined.constant[local] && !defined.globals[local]!.mutable)
+      relative.add(name);
+  }
+  return relative;
+}
+
 export function inspectProfile(bytes: Uint8Array, member: string, side: boolean): ModuleProfile {
   const reader = new Reader(bytes, member);
   const header = reader.take(8).bytes;
@@ -474,14 +501,12 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   }
   if (sections.has(8)) invalid(member, "true Wasm start sections are unsupported");
   if (sections.has(13)) invalid(member, "exception tags are unsupported");
-  if (side !== Boolean(memory))
-    invalid(
-      member,
-      side ? "side requires dylink.0" : "core must own its static layout, not dylink",
-    );
+  if (side && !memory) invalid(member, "side requires dylink.0");
+  // A core with dylink.0 is a PIE member image: relocated like a side, entered like a core.
+  const relocatable = Boolean(memory);
   const imported = sections.get(2);
   const types = functionTypes(new Reader(sections.get(1)?.bytes ?? new Uint8Array([0]), member));
-  const entries = imported ? imports(imported, side, types) : { globals: [], functions: [] };
+  const entries = imported ? imports(imported, relocatable, types) : { globals: [], functions: [] };
   const functionImports = bindImports(entries.functions, importInfo, member);
   const globalImports = entries.globals;
   const functions = functionExports(sections, types, functionImports, member);
@@ -494,7 +519,13 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   for (const [name, type] of exportedGlobals) {
     if (!type.mutable) immutableI32Exports.add(name);
   }
+  const relativeExports =
+    relocatable && !side
+      ? relativeConstantExports(sections.get(7), importedGlobals.length, defined, member)
+      : new Set<string>();
   const profile = {
+    pie: relocatable && !side,
+    relativeExports,
     baseOffsets: defined.offsets,
     functions,
     functionImports,
@@ -504,7 +535,7 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
     importInfo,
     immutableI32Exports,
   };
-  if (!side) {
+  if (!relocatable) {
     coreLayout(sections, member);
     return { ...profile, passiveData: false };
   }
