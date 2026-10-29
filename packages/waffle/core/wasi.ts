@@ -53,6 +53,7 @@ const EFAULT = 21;
 const EINTR = 27;
 const EINVAL = 28;
 const EIO = 29;
+type FdWrite = (fd: number, iovs: number, count: number, nwritten: number) => number;
 const EISDIR = 31;
 const ELOOP = 32;
 const ENOENT = 44;
@@ -196,6 +197,7 @@ export class Wasi {
   readonly descriptors = new DescriptorTable();
   private importedMemory?: WebAssembly.Memory;
   private boundMemory?: WebAssembly.Memory;
+  private hostWrite?: FdWrite;
   private args: Uint8Array[];
   private env: Uint8Array[];
 
@@ -366,6 +368,12 @@ export class Wasi {
       throw new TypeError("cannot replace bound WASI memory");
     this.boundMemory = memory;
     this.memory = memoryViews(memory);
+  }
+
+  /** Preview1 `fd_write` over the bound memory, for a host program that owns no instance. */
+  fdWrite(fd: number, iovs: number, count: number, nwritten: number): number {
+    this.hostWrite ??= this.wrap("fd_write", this.functions().fd_write) as FdWrite;
+    return this.hostWrite(fd, iovs, count, nwritten);
   }
 
   /** Link preview1, inode permission queries and explicit adapter imports, including memory. */
