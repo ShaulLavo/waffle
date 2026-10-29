@@ -7,6 +7,16 @@ from capture import BoundedFile, Capture, JoinedCalls, ProtocolWindow
 
 
 class CaptureTests(unittest.TestCase):
+    def test_ubuntu_padded_pid_joins_the_actual_server_write_return(self):
+        calls = JoinedCalls()
+        first = '4740  1793283716.882169 sendto(12<TCP:[127.0.0.1:33305->127.0.0.1:48374]>, "HTTP/1.1 200 OK", 287, MSG_DONTWAIT|MSG_NOSIGNAL, NULL, 0 <unfinished ...>\n'
+        last = '4740  1793283716.882211 <... sendto resumed>) = 287 <0.000042>\n'
+        self.assertEqual(calls.consume(first), '')
+        result = calls.consume(last)
+        self.assertIn('TCP:[127.0.0.1:33305->127.0.0.1:48374]', result)
+        self.assertIn(') = 287', result)
+        self.assertEqual(calls.pending, {})
+
     def test_resumed_read_preserves_original_socket_identity(self):
         calls = JoinedCalls()
         first = '12 100.000 recvfrom(18<TCP:[127.0.0.1:5000->127.0.0.1:6000]>, <unfinished ...>\n'

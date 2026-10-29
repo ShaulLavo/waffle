@@ -59,7 +59,7 @@ class JoinedCalls:
         self.pending = {}
 
     def consume(self, line):
-        match = re.match(r"(\d+) (\d+\.\d+) (.*)", line)
+        match = re.match(r"(\d+)\s+(\d+\.\d+)\s+(.*)", line)
         if not match:
             return line
         pid, timestamp, body = match.groups()
