@@ -72,7 +72,9 @@ function fixture(Client = FilesystemClient) {
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const client = new Client(connection.client, { connect: filesystemHostConnector(service, connection.pool) });
+  const client = new Client(connection.client, {
+    connect: filesystemHostConnector(service, connection.pool),
+  });
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -533,7 +535,10 @@ test("service memory accounting enumerates capability table metadata", () => {
   expect(resources.metadataBytes).toBeGreaterThanOrEqual(cells.byteLength);
   const backendResources = backend.shared.resources();
   expect(resources.bytes).toBe(
-    backendResources.bytes + resources.ownerStateBytes + resources.capabilityBytes + resources.requestTransportBytes,
+    backendResources.bytes +
+      resources.ownerStateBytes +
+      resources.capabilityBytes +
+      resources.requestTransportBytes,
   );
   expect(resources.metadataBytes).toBe(
     backendResources.metadataBytes + resources.ownerStateBytes + resources.capabilityBytes,

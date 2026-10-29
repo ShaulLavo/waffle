@@ -22,22 +22,22 @@ function fixture() {
   const connection = (): protocol.FilesystemConnection => {
     const requestBudget = requests.createRequestBudget();
     const revocation = new native.SharedArrayBufferConstructor(4);
-    return ({
-    requestBudget,
-    requests: new requests.FilesystemRequestPool(requestBudget).take(revocation),
-    port: { start() {}, close() {}, postMessage() {} } as unknown as MessagePort,
-    epoch: new native.SharedArrayBufferConstructor(4),
-    signal: new native.SharedArrayBufferConstructor(4),
-    revocations: [revocation],
-    shared: new native.SharedArrayBufferConstructor(4),
-    segments: [],
-    capabilities: new native.SharedArrayBufferConstructor(protocol.CAPABILITY_LENGTH * 4),
-    sections: new native.SharedArrayBufferConstructor(4),
-    owner: 1,
-    maxBytes: protocol.PAGE,
-    ownerStates: new native.SharedArrayBufferConstructor(8),
-    reservations: [],
-  });
+    return {
+      requestBudget,
+      requests: new requests.FilesystemRequestPool(requestBudget).take(revocation),
+      port: { start() {}, close() {}, postMessage() {} } as unknown as MessagePort,
+      epoch: new native.SharedArrayBufferConstructor(4),
+      signal: new native.SharedArrayBufferConstructor(4),
+      revocations: [revocation],
+      shared: new native.SharedArrayBufferConstructor(4),
+      segments: [],
+      capabilities: new native.SharedArrayBufferConstructor(protocol.CAPABILITY_LENGTH * 4),
+      sections: new native.SharedArrayBufferConstructor(4),
+      owner: 1,
+      maxBytes: protocol.PAGE,
+      ownerStates: new native.SharedArrayBufferConstructor(8),
+      reservations: [],
+    };
   };
   const source = connection(),
     target = connection();
@@ -56,9 +56,7 @@ function fixture() {
     native.atomicsNotify(signal, 0);
   };
   // Predeclare every allocation so the observer recognizes buffers created after poisoning.
-  const allocations = [
-    new native.SharedArrayBufferConstructor(8),
-  ];
+  const allocations = [new native.SharedArrayBufferConstructor(8)];
   let allocation = 0;
   const captures = {
     ...native,
@@ -104,7 +102,9 @@ function fixture() {
   };
   const client = new exports.FilesystemClient(source);
   const buffers = allocations.concat([
-    source.requests.data, source.requests.control, source.requestBudget,
+    source.requests.data,
+    source.requests.control,
+    source.requestBudget,
     source.capabilities,
     source.epoch,
     source.signal,
@@ -134,20 +134,14 @@ test("filesystem client keeps completion, capability, and revocation views out o
     complete.cells[0] = protocol.State.Complete;
     complete.cells[2] = 2;
     complete.cells[4] = 1;
-    native.typedArraySet(
-      requests.requestBytes(complete.buffer),
-      payload,
-    );
+    native.typedArraySet(requests.requestBytes(complete.buffer), payload);
     copied = complete.wait();
 
     const completeAsync = client.submit("read", [], payload, 4);
     completeAsync.cells[0] = protocol.State.Complete;
     completeAsync.cells[2] = 2;
     completeAsync.cells[4] = 1;
-    native.typedArraySet(
-      requests.requestBytes(completeAsync.buffer),
-      payload,
-    );
+    native.typedArraySet(requests.requestBytes(completeAsync.buffer), payload);
     copiedAsync = await completeAsync.value();
     completeAsync.release();
 

@@ -14,7 +14,6 @@ import {
   requestCancelled,
   receiveRequestBuffer,
   releaseRequestBuffer,
-  requestMemoryResources,
   REQUEST_SERVICE,
   type FilesystemRequestMemory,
   type FilesystemRequestBuffer,
@@ -43,7 +42,6 @@ import {
   CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
-  HEADER,
   TRANSIENT_HANDLES,
   State,
   FilesystemError,
@@ -1290,6 +1288,7 @@ export class FilesystemService {
     this.stopSessionReader(session);
     if (!session.transportFailed) revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
+    if (session.quiescing) return;
     // Revocation precedes the admission-count observation. Looking only at held locks misses
     // an entrant between admission and acquisition, which may still be touching a pin or page.
     if (session.transportFailed && ownRevocation !== 2 && requestMemorySections(session.requests)) {

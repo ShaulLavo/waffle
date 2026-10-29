@@ -51,7 +51,6 @@ import {
   PAGE,
   State,
   isRevoked,
-  revokeFilesystem,
   pack,
   unpack,
   wake,
@@ -65,7 +64,6 @@ import {
 } from "./protocol.js";
 
 const NativeChannel = globalThis.BroadcastChannel;
-const NativeMessageChannel = globalThis.MessageChannel;
 const NativeMessagePort = globalThis.MessagePort;
 const continuityKey = (workspace: string): string => `waffle:publication:continuity:${workspace}`;
 const callBound = 3000;
@@ -718,15 +716,25 @@ export function createResidentHost(value: ResidentDescriptor) {
   const bridge =
     descriptor.kind === "workspace" ? new WorkspaceBridge(connection.server) : undefined;
   if (!bridge) connection.server.port.close();
-  const attach = bridge ? (child: FilesystemConnection): void => {
-    connection.pool.assertBudget(child.requestBudget);
-    bridge.connect(child);
-  } : undefined;
-  const connect = attach ? (childIdentity: FilesystemIdentity): FilesystemConnection => {
-    const child = connectFilesystemIdentity(childIdentity, connection.pool);
-    try { attach(child.server); return child.client; }
-    catch (error) { child.client.port.close(); child.server.port.close(); throw error; }
-  } : undefined;
+  const attach = bridge
+    ? (child: FilesystemConnection): void => {
+        connection.pool.assertBudget(child.requestBudget);
+        bridge.connect(child);
+      }
+    : undefined;
+  const connect = attach
+    ? (childIdentity: FilesystemIdentity): FilesystemConnection => {
+        const child = connectFilesystemIdentity(childIdentity, connection.pool);
+        try {
+          attach(child.server);
+          return child.client;
+        } catch (error) {
+          child.client.port.close();
+          child.server.port.close();
+          throw error;
+        }
+      }
+    : undefined;
   return { connection: connection.client, pool: connection.pool, connect, attach };
 }
 
@@ -1173,7 +1181,6 @@ class WorkspaceBridge {
     buffer: FilesystemRequestBuffer,
     signal: AbortSignal,
   ): Promise<void> {
-    const cells = requestCells(buffer);
     const lengths = requestLengths(buffer);
     const inputLength = integer(lengths.inputLength, 8192),
       dataLength = integer(lengths.dataLength, PAGE);

@@ -10,7 +10,6 @@ import {
 import {
   CAPABILITY_LENGTH,
   FilesystemSection,
-  HEADER,
   isRevoked,
   pack,
   reapFilesystem,
@@ -18,6 +17,13 @@ import {
   revokeFilesystem,
   State,
 } from "../fs/protocol";
+import {
+  requestCells,
+  requestBytes,
+  releaseRequestBuffer,
+  REQUEST_CLIENT,
+  type FilesystemRequestAllocator,
+} from "../fs/request-memory";
 import { installFilesystemWorker } from "../fs/service";
 import type { FilesystemBackend } from "../fs/backend";
 import { SLOT_WORDS } from "../fs/shared";
@@ -300,7 +306,7 @@ test("late request traffic cancels and wakes without new backend work", async ()
     held = false;
   });
   try {
-    owned.connect();
+    const client = owned.connect();
     section.enter();
     held = true;
     const stopping = owned.service.shutdown();
@@ -309,25 +315,38 @@ test("late request traffic cancels and wakes without new backend work", async ()
     owned.backend.onPrepare = () => {
       prepares++;
     };
-    const input = pack({ operation: "listFiles", args: ["/"] });
-    const buffer = new SharedArrayBuffer(HEADER + 1024);
-    const cells = new Int32Array(buffer, 0, HEADER / 4);
-    cells[1] = input.length;
-    new Uint8Array(buffer, HEADER).set(input);
-    const completion = Promise.withResolvers<void>();
+    const notified = Promise.withResolvers<void>();
+    let id = 0;
     owned.root.client.port.onmessage = ({ data }: MessageEvent<{ completed?: number }>) => {
-      if (data.completed === 9001) completion.resolve();
+      if (data.completed === id) notified.resolve();
     };
     const signal = Atomics.load(new Int32Array(owned.root.client.signal), 0);
     owned.root.client.port.postMessage({ trim: true });
     owned.root.client.port.postMessage({ sweep: true });
-    owned.root.client.port.postMessage({ id: 9001, buffer });
-    await completion.promise;
-    expect(cells[0]).toBe(State.Cancelled);
-    expect(cells[6]).toBe(1);
-    expect(Atomics.load(new Int32Array(owned.root.client.signal), 0)).toBeGreaterThan(signal);
-    expect(prepares).toBe(0);
-    expect(owned.backend.closes).toBe(0);
+    const allocator = Reflect.get(client, "requests") as FilesystemRequestAllocator;
+    const input = pack({ operation: "listFiles", args: ["/"] });
+    const buffer = allocator.allocate(1024);
+    const cells = requestCells(buffer);
+    cells[1] = input.length;
+    requestBytes(buffer).set(input);
+    id = buffer.id;
+    owned.root.client.port.postMessage({
+      id,
+      generation: buffer.memory.generation,
+      offset: buffer.offset,
+      length: buffer.length,
+    });
+    try {
+      await notified.promise;
+      expect(cells[0]).toBe(State.Cancelled);
+      expect(cells[6]).toBe(1);
+      expect(Atomics.load(new Int32Array(owned.root.client.signal), 0)).toBeGreaterThan(signal);
+      expect(prepares).toBe(0);
+      expect(owned.backend.closes).toBe(0);
+    } finally {
+      releaseRequestBuffer(buffer, REQUEST_CLIENT);
+      owned.root.client.port.postMessage({ discard: id });
+    }
     section.exit();
     held = false;
     await stopping;
@@ -582,13 +601,16 @@ test("worker failure ACK keeps a nonempty diagnostic for an empty original rejec
     scope.onmessage?.(new MessageEvent("message", { data: { connect: pair.server } }));
     await checkpoint();
     scope.onmessage?.(new MessageEvent("message", { data: { dispose: true } }));
-    await checkpoint();
-    const terminal = messages.find(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        Reflect.get(message, "type") === "filesystem-disposed",
-    );
+    let terminal: unknown;
+    for (let turns = 0; turns < 20 && !terminal; turns++) {
+      await checkpoint();
+      terminal = messages.find(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          Reflect.get(message, "type") === "filesystem-disposed",
+      );
+    }
     if (typeof terminal !== "object" || terminal === null) throw new Error("missing shutdown ACK");
     expect(Reflect.get(terminal, "error")).toBeTruthy();
     expect(backend.closes).toBe(1);

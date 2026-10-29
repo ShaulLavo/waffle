@@ -136,6 +136,18 @@ export function filesystemOwnerPlan(publication: PublicationConfiguration) {
     leases: 0,
   };
 }
+function identitySegments(
+  parent: FilesystemIdentity | undefined,
+  maxBytes: number,
+  construction: FilesystemOwnerConstruction | undefined,
+): SharedArrayBuffer[] {
+  return (
+    parent?.segments ??
+    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
+      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
+    )
+  );
+}
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
  * Firefox does not activate guest-created channels until that guest returns to its event loop.
  */
@@ -151,11 +163,7 @@ export function createFilesystemIdentity(
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared =
     parent?.shared ?? construction?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
-  const segments =
-    parent?.segments ??
-    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
-      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
-    );
+  const segments = identitySegments(parent, maxBytes, construction);
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)
     throw new FilesystemError(33, "filesystem identity table exhausted");

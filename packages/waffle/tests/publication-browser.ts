@@ -3,6 +3,8 @@ import {
   FilesystemClient,
   type FilesystemCompletion,
   createFilesystemConnection,
+  createFilesystemIdentity,
+  connectFilesystemIdentity,
   revokeFilesystem,
   reapFilesystem,
   waitForFilesystemQuiescence,
@@ -675,7 +677,10 @@ async function serviceFixture(cold: boolean) {
     const directory: number = await client.asyncCall("preopen", ["/"]);
     const path: { node: number } = await client.asyncCall("resolve", [directory, "file"]);
     client.retain(path.node);
-    sibling = new FilesystemClient(client.fork());
+    const identity = createFilesystemIdentity(client.connection);
+    const pair = connectFilesystemIdentity(identity, connection.pool);
+    await message(owner.worker, { connect: pair.server }, [pair.server.port]);
+    sibling = new FilesystemClient(pair.client);
     const peerDir: number = await sibling.asyncCall("preopen", ["/"]);
     const peerPath: { node: number } = await sibling.asyncCall("resolve", [peerDir, "file"]);
     sibling.retain(peerPath.node);

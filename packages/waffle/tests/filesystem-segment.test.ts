@@ -1,7 +1,6 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { afterEach, expect, test } from "bun:test";
 import {
-  FilesystemClient,
   FilesystemService,
   MemoryBackend,
   SharedFilesystemState,

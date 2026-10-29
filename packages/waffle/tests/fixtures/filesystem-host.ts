@@ -33,8 +33,15 @@ export function hostFilesystemClient(
   });
 }
 
-export function workspaceFilesystemHost(descriptor: import("../../fs/publication-grant.js").ResidentDescriptor) {
+export function workspaceFilesystemHost(
+  descriptor: import("../../fs/publication-grant.js").ResidentDescriptor,
+) {
   const host = createResidentHost(descriptor);
   if (!host.connect || !host.attach) throw new Error("workspace host capability required");
-  return { connection: host.connection, pool: host.pool, connect: host.connect, attach: host.attach };
+  return {
+    connection: host.connection,
+    pool: host.pool,
+    connect: host.connect,
+    attach: host.attach,
+  };
 }

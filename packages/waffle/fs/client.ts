@@ -32,7 +32,6 @@ import {
   atomicsLoad,
   atomicsStore,
   atomicsAdd,
-  atomicsExchange,
   atomicsCompareExchange,
   atomicsNotify,
   atomicsWait,
@@ -40,7 +39,6 @@ import {
   typedArrayLength,
   typedArraySet,
   typedArraySubarray,
-  sharedArrayBufferByteLength,
   MapConstructor,
   SetConstructor,
   mapGet,
@@ -73,13 +71,11 @@ import {
   State,
   FilesystemError,
   FilesystemSection,
-  createFilesystemConnection,
   createFilesystemIdentity,
   errno,
   isRevoked,
   pack,
   reapFilesystem,
-  revokeFilesystem,
   unpack,
   wake,
   releaseFilesystemReservation,
@@ -198,6 +194,11 @@ export class FilesystemCompletion {
   private decode(bytes: Uint8Array): unknown {
     return this.cells[4] ? bytes : unpack(bytes);
   }
+  private inlineBytes(): Uint8Array {
+    const size = this.cells[2]!;
+    const available = Math.min(size, this.buffer.length - HEADER);
+    return new Uint8ArrayConstructor(typedArraySubarray(requestBytes(this.buffer), 0, available));
+  }
   wait(): any {
     const signal = new Int32ArrayConstructor(this.client.connection.signal);
     while (!this.ready) {
@@ -208,9 +209,7 @@ export class FilesystemCompletion {
     this.check();
     if (this.consumed) return this.decoded;
     const size = this.cells[2]!;
-    let bytes = new Uint8ArrayConstructor(
-      typedArraySubarray(requestBytes(this.buffer), 0, Math.min(size, this.buffer.length - HEADER)),
-    );
+    let bytes = this.inlineBytes();
     if (this.cells[0] === State.Overflow) {
       bytes = new Uint8ArrayConstructor(size);
       for (let at = 0; at < size; at += PAGE)
@@ -236,9 +235,7 @@ export class FilesystemCompletion {
   }
   private async load(): Promise<unknown> {
     const size = this.cells[2]!;
-    let bytes = new Uint8ArrayConstructor(
-      typedArraySubarray(requestBytes(this.buffer), 0, Math.min(size, this.buffer.length - HEADER)),
-    );
+    let bytes = this.inlineBytes();
     if (this.cells[0] === State.Overflow) {
       bytes = new Uint8ArrayConstructor(size);
       for (let at = 0; at < size; at += PAGE) {

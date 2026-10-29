@@ -1,5 +1,11 @@
 import { workspaceFilesystemHost } from "./fixtures/filesystem-host.js";
-import { FilesystemRequestAllocator, requestCells, requestBytes, releaseRequestBuffer, REQUEST_CLIENT } from "../fs/request-memory.js";
+import {
+  FilesystemRequestAllocator,
+  requestCells,
+  requestBytes,
+  releaseRequestBuffer,
+  REQUEST_CLIENT,
+} from "../fs/request-memory.js";
 import { expect, test } from "bun:test";
 import {
   failWorkspaceCleanupPost,
@@ -32,7 +38,6 @@ import {
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
   CONNECTION_SHARED_BYTES,
-  HEADER,
   State,
   pack,
   type FilesystemConnection,
@@ -489,14 +494,22 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
 const bridgeAllocators = new WeakMap<FilesystemConnection, FilesystemRequestAllocator>();
 async function bridgeRequest(connection: FilesystemConnection, operation: string, args: unknown[]) {
   let allocator = bridgeAllocators.get(connection);
-  if (!allocator) { allocator = new FilesystemRequestAllocator(connection.requests); bridgeAllocators.set(connection, allocator); }
+  if (!allocator) {
+    allocator = new FilesystemRequestAllocator(connection.requests);
+    bridgeAllocators.set(connection, allocator);
+  }
   const input = pack({ operation, args });
   const buffer = allocator.allocate(Math.max(input.length, 1024));
   const cells = requestCells(buffer);
   cells[1] = input.length;
   requestBytes(buffer).set(input);
   try {
-    connection.port.postMessage({ id: buffer.id, generation: buffer.memory.generation, offset: buffer.offset, length: buffer.length });
+    connection.port.postMessage({
+      id: buffer.id,
+      generation: buffer.memory.generation,
+      offset: buffer.offset,
+      length: buffer.length,
+    });
     for (;;) {
       const state = Atomics.load(cells, 0);
       if (state !== State.Pending) return { state, errno: cells[3] };
@@ -662,7 +675,10 @@ test("parent stopping joins a proven cancelled connect delivered during an older
   }
 });
 
-type InvalidConnection = (child: FilesystemConnection, parent: FilesystemConnection) => unknown;
+type InvalidConnection = (
+  child: FilesystemConnection,
+  parent: FilesystemConnection,
+) => FilesystemConnection;
 const invalidCleanupConnections: readonly [string, InvalidConnection][] = [
   ["copied shared backing", (child) => ({ ...child, shared: child.shared.slice(0) })],
   ["copied owner backing", (child) => ({ ...child, ownerStates: child.ownerStates.slice(0) })],
@@ -1193,7 +1209,7 @@ for (const operation of ["stat", "missing-operation"]) {
   test(`workspace cleanup joins a timed-out ${operation} terminal reply without inventing cleanup failure`, async () => {
     const f = await fixture();
     const host = workspaceFilesystemHost(f.session.descriptor);
-  const connection = host.connection;
+    const connection = host.connection;
     const client = new FilesystemClient({ ...connection, residentPublication: undefined });
     const clock = transportClock();
     let held: ReturnType<typeof holdTransportReplies> | undefined;

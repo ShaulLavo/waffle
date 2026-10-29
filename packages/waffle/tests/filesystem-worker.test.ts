@@ -8,7 +8,7 @@ import {
   revokeFilesystem,
   type FilesystemBackend,
 } from "../fs";
-import { HEADER, PAGE, State, pack } from "../fs/protocol";
+import { PAGE, State, pack } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -628,9 +628,14 @@ async function dedicatedService() {
   const worker = new Worker(new URL("./fixtures/filesystem-service.ts", import.meta.url).href);
   cleanups.push(() => worker.terminate());
   const connection = createFilesystemConnection();
-  const client = hostFilesystemClient({ connect(server) {
-    worker.postMessage({ connect: server, silent: true }, [server.port]);
-  } }, connection);
+  const client = hostFilesystemClient(
+    {
+      connect(server) {
+        worker.postMessage({ connect: server, silent: true }, [server.port]);
+      },
+    },
+    connection,
+  );
   cleanups.push(() => client.dispose());
   const connected = nextMessage(worker);
   worker.postMessage({ connect: connection.server }, [connection.server.port]);

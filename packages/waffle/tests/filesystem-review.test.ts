@@ -14,6 +14,16 @@ import { PAGE } from "../fs/protocol";
 
 const empty = new Uint8Array();
 
+function serviceQuiescence(service: FilesystemService): Promise<void> {
+  const sessions = Reflect.get(service, "sessions");
+  if (!(sessions instanceof Set)) throw new Error("missing service sessions");
+  for (const session of sessions) {
+    const done = Reflect.get(session, "quiescing");
+    if (done instanceof Promise) return done;
+  }
+  throw new Error("missing service quiescence");
+}
+
 test("recursive directory removal returns descendant shared pages", () => {
   const backend = new MemoryBackend();
   backend.execute("writeFile", ["/dir/file"], new Uint8Array(PAGE));
@@ -159,11 +169,13 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
     await client.asyncCall("retain", [path.node]);
     const handle = path.node as number;
     const epoch = new Int32Array(pair.client.epoch);
+    let quiescing: Promise<void> | undefined;
     class InterruptedBytes extends Uint8Array {
       subarray(start?: number, end?: number): Uint8Array<ArrayBuffer> {
         revokeFilesystem(pair.client);
         backend.shared.unlink(handle);
         service.sweep();
+        quiescing = serviceQuiescence(service);
         expect(Atomics.load(backend.shared.cells, 1)).toBe(pair.client.owner);
         expect(service.resources().retained).toBeGreaterThan(0);
         expect(backend.shared.resources().usedBytes).toBe(PAGE);
@@ -174,6 +186,7 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
     client.shared.mutate(epoch, undefined, () =>
       client.shared.write(handle, [new InterruptedBytes([90])], 0),
     );
+    await quiescing;
     service.sweep();
     expect(Atomics.load(epoch, 0) & 1).toBe(0);
     expect(Atomics.load(backend.shared.cells, 1)).toBe(0);

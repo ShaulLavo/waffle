@@ -24,11 +24,10 @@ import {
 export const REQUEST_HEADER = 32;
 export const REQUEST_BUDGET_BYTES = 32;
 export const REQUEST_CONTROL_BYTES = 64;
-const MAX_BYTES = 2 ** 31 - 4096,
-  MAX_OUTSTANDING = 1024;
+/** @public Hard transport bounds; retained backing and live request counts are separate quotas. */
 export const FILESYSTEM_REQUEST_LIMITS = objectFreeze({
   bytes: 8 * 2 ** 30,
-  connectionBytes: MAX_BYTES,
+  connectionBytes: 2 ** 31 - 4096,
   connections: 65536,
   outstanding: 1024,
   totalOutstanding: 4096,
@@ -353,7 +352,8 @@ export class FilesystemRequestPool {
   private create(revocation: SharedArrayBuffer, construction?: Construction): Arena {
     const control = this.createControl(construction);
     const data =
-      construction?.allocateShared(0, MAX_BYTES) ?? createGrowableSharedArrayBuffer(0, MAX_BYTES);
+      construction?.allocateShared(0, FILESYSTEM_REQUEST_LIMITS.connectionBytes) ??
+      createGrowableSharedArrayBuffer(0, FILESYSTEM_REQUEST_LIMITS.connectionBytes);
     const arena = { control, data, revocation, generation: 0 };
     this.arenas[this.arenas.length] = arena;
     return arena;
@@ -411,7 +411,7 @@ export class FilesystemRequestAllocator {
     if (failure) throw failure;
     if (!Number.isSafeInteger(capacity) || capacity < 0) throw new FilesystemError(28);
     if (this.nextId > 0x1fffffff) throw new FilesystemError(33);
-    if (get(this.memory, C.count) >= MAX_OUTSTANDING)
+    if (get(this.memory, C.count) >= FILESYSTEM_REQUEST_LIMITS.outstanding)
       throw new FilesystemError(6, "filesystem outstanding request quota exhausted");
     claimRequest(this.memory.budget);
     try {
@@ -430,15 +430,15 @@ export class FilesystemRequestAllocator {
       const length = atomicsLoad(block, 1);
       if (!Number(atomicsLoad(new BigInt64ArrayConstructor(this.memory.data, at + 8, 1), 0) & 3n)) {
         const available = this.coalesce(at, length, used);
-        if (available >= needed) return this.bind(at, needed, available);
+        if (available >= needed) return this.bind(at, needed, available, capacity);
       }
       at += atomicsLoad(block, 1);
     }
-    if (needed > MAX_BYTES - used)
+    if (needed > FILESYSTEM_REQUEST_LIMITS.connectionBytes - used)
       throw new FilesystemError(48, "filesystem connection request memory exhausted");
     this.grow(used + needed);
     update(this.memory, C.used, () => used + needed);
-    return this.bind(used, needed, needed);
+    return this.bind(used, needed, needed, capacity);
   }
   private coalesce(at: number, length: number, used: number): number {
     let total = length;
@@ -463,7 +463,12 @@ export class FilesystemRequestAllocator {
       throw error;
     }
   }
-  private bind(at: number, needed: number, available: number): FilesystemRequestBuffer {
+  private bind(
+    at: number,
+    needed: number,
+    available: number,
+    capacity: number,
+  ): FilesystemRequestBuffer {
     const id = this.nextId++;
     const block = new Int32ArrayConstructor(this.memory.data, at, PREFIX / 4);
     if (available > needed) {
@@ -482,7 +487,7 @@ export class FilesystemRequestAllocator {
       memory: this.memory,
       id,
       offset: at + PREFIX,
-      length: needed - PREFIX,
+      length: REQUEST_HEADER + capacity,
     });
     const cells = requestCells(buffer);
     for (let i = 0; i < REQUEST_HEADER / 4; i++) atomicsStore(cells, i, 0);
@@ -516,7 +521,7 @@ export function receiveRequestBuffer(
   const meta = prefix(buffer);
   if (
     atomicsLoad(meta, 0) !== id ||
-    atomicsLoad(meta, 1) !== length + PREFIX ||
+    atomicsLoad(meta, 1) < length + PREFIX ||
     atomicsLoad(new BigInt64ArrayConstructor(memory.data, offset - 8, 1), 0) >> 3n !==
       ownership(memory.generation, id, 0) >> 3n ||
     !(
@@ -546,7 +551,7 @@ export function releaseRequestBuffer(
     const next = previous & ~BigIntConstructor(role);
     if (atomicsCompareExchange(words, 0, previous, next) !== previous) continue;
     if (!(next & 3n)) {
-      releaseCount(buffer.memory, buffer.length + PREFIX);
+      releaseCount(buffer.memory, atomicsLoad(prefix(buffer), 1));
     }
     return;
   }

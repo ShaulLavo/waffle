@@ -1,6 +1,11 @@
 import { FilesystemError } from "../core/filesystem.js";
 import type { FilesystemIdentity } from "./protocol.js";
-import { Int32ArrayConstructor, atomicsLoad, atomicsAdd, atomicsNotify } from "../proc/intrinsics.js";
+import {
+  Int32ArrayConstructor,
+  atomicsLoad,
+  atomicsAdd,
+  atomicsNotify,
+} from "../proc/intrinsics/core.js";
 
 export function isRevoked(connection: FilesystemIdentity): boolean {
   if (

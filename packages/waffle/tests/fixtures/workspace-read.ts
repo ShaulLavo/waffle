@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./filesystem-host.js";
 import { createFilesystemIdentity, connectFilesystemIdentity } from "../../fs/protocol";
 import {
   createFilesystemConnection,
@@ -37,7 +38,7 @@ export async function residentReadFixture(size: number, maxBytes?: number, input
   };
   try {
     service.connect(pair.server);
-    client = new FilesystemClient(pair.client);
+    client = hostFilesystemClient(service, pair);
     workspace = createWorkspaceVfs(client);
     const directory = await client.asyncCall("preopen", ["/"]);
     const handle = (await client.asyncCall("resolve", [directory, "file"])).node;
@@ -78,7 +79,7 @@ export function publicReadFixture(backend: MemoryBackend) {
   };
   try {
     service.connect(pair.server);
-    client = new FilesystemClient(pair.client);
+    client = hostFilesystemClient(service, pair);
     workspace = createWorkspaceVfs(client);
     return { backend, client, service, workspace, close };
   } catch (error) {

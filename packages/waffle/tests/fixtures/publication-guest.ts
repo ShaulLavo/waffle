@@ -165,7 +165,8 @@ interface ServiceSetup {
 }
 type ServiceControl =
   | { readonly control: "releaseLoad" | "serviceState" | "deliverResponse" }
-  | { readonly control: "holdResponse"; readonly id: number };
+  | { readonly control: "holdResponse"; readonly id: number }
+  | { readonly connect: FilesystemConnection };
 let service: FilesystemService | undefined;
 let backend: MemoryBackend | undefined;
 let releaseLoad: (() => void) | undefined;
@@ -228,6 +229,11 @@ async function installService(request: ServiceSetup): Promise<void> {
   self.postMessage({ ready: true });
 }
 async function serviceControl(request: ServiceControl): Promise<void> {
+  if ("connect" in request) {
+    service?.connect(request.connect);
+    self.postMessage({ ready: true });
+    return;
+  }
   if (request.control === "releaseLoad") {
     releaseLoad?.();
     if (backend instanceof PersistentBackend) await backend.prepare("read", [fixtureHandle()]);
@@ -277,7 +283,7 @@ self.onmessage = ({
       initialize(data);
       return;
     }
-    if ("control" in data) {
+    if ("control" in data || "connect" in data) {
       void serviceControl(data).catch((error) => self.postMessage({ failure: String(error) }));
       return;
     }
