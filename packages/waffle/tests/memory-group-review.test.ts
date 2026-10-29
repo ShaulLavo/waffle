@@ -222,21 +222,19 @@ test("invalid output spans leave regions, holds and pins unchanged", async () =>
 
 test("a settled external root no longer retains its group lease", async () => {
   const identities = new ProcessIdentityAllocator();
+  const refuse = (): never => {
+    throw new Error("unused");
+  };
+  const quiet = () => {};
+  const filesystem = { connect: refuse, revoke: quiet, reap: quiet, quiesce: async () => {} };
+  const table = new ProcessTable(identities);
+  const registry = new ExecutableRegistry();
   const broker = new BrowserProcessBroker({
     identities,
-    table: new ProcessTable(identities),
-    registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
-    launch() {
-      throw new Error("unused");
-    },
+    table,
+    registry,
+    filesystem,
+    launch: refuse,
   });
   try {
     const root = createWorkerProcessTransport({
