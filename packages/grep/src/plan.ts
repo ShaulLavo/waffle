@@ -7,6 +7,7 @@ type OptionResult = { readonly kind: "parsed"; readonly consumeNext: boolean } |
 type ParseResult = { readonly kind: "parsed"; readonly invocation: Invocation } | Fallback;
 type WalkResult = { readonly kind: "walk"; readonly plan: SearchPlan["walk"] } | Fallback;
 type Glob = SearchPlan["walk"]["include"][number];
+type CompiledGlob = ReturnType<typeof compileGlob>;
 type FilenameMode = "automatic" | "always" | "never";
 type FileFilterKind = "include" | "exclude";
 
@@ -230,6 +231,24 @@ function isProvenGlob(pattern: Glob): boolean {
   return true;
 }
 
+function operandRootName(operand: string): string | null {
+  let end = operand.length;
+  while (end > 1 && operand[end - 1] === "/") end--;
+  const root = operand.slice(0, end);
+  if (root === "" || root === "/") return null;
+  return root.slice(root.lastIndexOf("/") + 1);
+}
+
+function rootPruned(operands: readonly string[], prunes: readonly CompiledGlob[]): boolean {
+  if (prunes.length === 0) return false;
+  for (const operand of operands) {
+    const root = operandRootName(operand);
+    if (root === null) return true;
+    if (prunes.some((prune) => prune(root))) return true;
+  }
+  return false;
+}
+
 function walkPlan(invocation: Invocation): WalkResult {
   if (!hasCanonicalFileFilterOrder(invocation.fileFilterOrder)) {
     return fallback("include/exclude ordering exceeds the canonical walk semantics");
@@ -241,7 +260,11 @@ function walkPlan(invocation: Invocation): WalkResult {
   const filters = invocation.include.concat(invocation.exclude, invocation.excludeDirectories);
   if (!filters.every(isProvenGlob)) return fallback("glob syntax exceeds the proven GNU/S1 subset");
   try {
-    for (const filter of filters) compileGlob(filter);
+    for (const filter of invocation.include.concat(invocation.exclude)) compileGlob(filter);
+    const prunes = invocation.excludeDirectories.map(compileGlob);
+    if (rootPruned(invocation.operands, prunes)) {
+      return fallback("an exclude-directory filter would prune an operand root");
+    }
   } catch {
     return fallback("canonical walk compiler rejected a filter");
   }

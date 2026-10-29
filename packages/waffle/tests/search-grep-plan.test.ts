@@ -185,6 +185,23 @@ test("unproved GNU glob dialect and directory pruning fall back", () => {
   for (const option of options) fallback(["-ralF", option, "needle", "."]);
 });
 
+test.each(["--exclude-dir=.", "--exclude-dir=*"])(
+  "directory filters that prune the default root fall back: %s",
+  (option) => {
+    fallback(["-r", "-a", "-c", "-F", option, "--", "hit", "."]);
+  },
+);
+
+test("directory filters cannot prune any explicit operand root after admission", () => {
+  fallback(["-raHF", "--exclude-dir=src", "needle", "src"]);
+  fallback(["-raHF", "--exclude-dir=src", "needle", "src/"]);
+  fallback(["-raF", "--exclude-dir=src", "needle", ".", "src"]);
+  fallback(["-raHF", "--exclude-dir=node_modules", "needle", "/"]);
+  expect(fast(["-raF", "--exclude-dir=node_modules", "needle", "."]).walk).toEqual(
+    walk([], [], ["node_modules"]),
+  );
+});
+
 test("line, count and file-list output preserve grep precedence", () => {
   expect(fast(["-ran", "needle", "."]).output).toEqual({
     kind: "lines",
