@@ -171,11 +171,14 @@ function sideImports(
   slots: SelfSlots,
   ranges: Range[],
   coreBase: number,
+  coreEnv: WebAssembly.ModuleImports | undefined,
 ): WebAssembly.Imports {
   const env: WebAssembly.ModuleImports = Object.create(null);
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "env") continue;
-    const value = core.exports[entry.name];
+    const shared = coreEnv?.[entry.name];
+    const value =
+      core.exports[entry.name] ?? (shared instanceof WebAssembly.Global ? shared : undefined);
     const slot = member.self.targetSlots.get(entry.name);
     if (entry.name === "memory") env[entry.name] = memory;
     else if (entry.name === "__indirect_function_table") env[entry.name] = table;
@@ -233,6 +236,7 @@ function linkLibrary(
   ranges: Range[],
   got: WebAssembly.ModuleImports,
   coreBase: number,
+  coreEnv: WebAssembly.ModuleImports | undefined,
 ): void {
   host.checkActive();
   const memoryBase = reserveMemory(core, member, plan.reserve, memory, libraries);
@@ -259,6 +263,7 @@ function linkLibrary(
     slots,
     ranges,
     coreBase,
+    coreEnv,
   );
   host.checkActive();
   const instance = instantiate(member, imports);
@@ -294,7 +299,9 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   const coreImports = host.coreImports ?? host.wasi.imports(plan.core.module);
   const core = instantiate(plan.core, coreImports);
   const memory = pie ? coreImports.env!.memory : core.exports.memory,
-    table = pie ? coreImports.env!.__indirect_function_table : core.exports.__indirect_function_table;
+    table = pie
+      ? coreImports.env!.__indirect_function_table
+      : core.exports.__indirect_function_table;
   if (!(memory instanceof WebAssembly.Memory)) invalid(plan.core.id, "core must export memory");
   if (!(table instanceof WebAssembly.Table))
     invalid(plan.core.id, "core must export __indirect_function_table");
@@ -320,7 +327,19 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   };
   try {
     for (const member of plan.libraries)
-      linkLibrary(member, plan, core, host, memory, table, libraries, ranges, got, coreBase);
+      linkLibrary(
+        member,
+        plan,
+        core,
+        host,
+        memory,
+        table,
+        libraries,
+        ranges,
+        got,
+        coreBase,
+        pie ? coreImports.env : undefined,
+      );
     host.checkActive();
   } catch (error) {
     dispose();

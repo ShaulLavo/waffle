@@ -34,7 +34,7 @@ export interface MemoryGroupPolicy {
 }
 export type MemoryGroupPolicyOptions = Partial<MemoryGroupPolicy>;
 
-export const defaultMemoryGroupPolicy: MemoryGroupPolicy = Object.freeze({
+const defaultMemoryGroupPolicy: MemoryGroupPolicy = Object.freeze({
   members: 16,
   parallelism: 1,
   budgetBytes: 2 * 1024 ** 3,
@@ -46,7 +46,7 @@ export const defaultMemoryGroupPolicy: MemoryGroupPolicy = Object.freeze({
   stackBytes: 1024 * 1024,
 });
 
-export function memoryGroupPolicy(options: MemoryGroupPolicyOptions = {}): MemoryGroupPolicy {
+function memoryGroupPolicy(options: MemoryGroupPolicyOptions = {}): MemoryGroupPolicy {
   const policy = { ...defaultMemoryGroupPolicy, ...options };
   for (const [name, value] of Object.entries(policy)) {
     if (!Number.isSafeInteger(value) || value < 1)
@@ -54,7 +54,8 @@ export function memoryGroupPolicy(options: MemoryGroupPolicyOptions = {}): Memor
   }
   if (policy.maximumPages > MAX_GROUP_PAGES)
     throw new RangeError("memory group maximumPages exceeds the wasm32 address space");
-  if (policy.stackBytes % 16) throw new RangeError("memory group stackBytes must be 16-byte aligned");
+  if (policy.stackBytes % 16)
+    throw new RangeError("memory group stackBytes must be 16-byte aligned");
   return Object.freeze(policy);
 }
 
@@ -369,7 +370,10 @@ export class MemoryGroupOwner {
     if (len < 1 || len > 0x7fffffff || align < 1 || align > PAGE_BYTES || align & (align - 1))
       return [-GroupErrno.INVAL];
     if (this.regions.size >= this.policy.regions) return [-GroupErrno.AGAIN];
-    const placed = len <= SMALL_REGION && align <= SMALL_REGION ? this.placeSmall(len, align) : this.placeLarge(len);
+    const placed =
+      len <= SMALL_REGION && align <= SMALL_REGION
+        ? this.placeSmall(len, align)
+        : this.placeLarge(len);
     if (!placed) return [-GroupErrno.NOMEM];
     const handle = this.nextHandle++;
     if (this.nextHandle > 0xffffffff) this.nextHandle = 1;
@@ -445,7 +449,8 @@ export class MemoryGroupOwner {
     if (!pin || pin.owner !== member) return -GroupErrno.BADF;
     const target = this.members.find(
       (candidate) =>
-        candidate?.pid === pid && (candidate.phase === "launched" || candidate.phase === "reserved"),
+        candidate?.pid === pid &&
+        (candidate.phase === "launched" || candidate.phase === "reserved"),
     );
     if (!target) return -GroupErrno.SRCH;
     pin.owner = target;
@@ -557,7 +562,10 @@ export class MemoryGroups {
     if (!group || !this.groups.has(group.id))
       throw new ProcessError(ProcessErrno.SRCH, "memory group has ended");
     if (group.directory !== directory)
-      throw new ProcessError(ProcessErrno.INVAL, "memory group members share one process directory");
+      throw new ProcessError(
+        ProcessErrno.INVAL,
+        "memory group members share one process directory",
+      );
     return group.reserve(pid);
   }
   groupOf(pid: number): MemoryGroupHandle | undefined {

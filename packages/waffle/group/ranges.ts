@@ -17,8 +17,10 @@ export class RangeAllocator {
       const end = range.start + range.size;
       if (start + size > end) continue;
       this.free.splice(index, 1);
-      if (end > start + size) this.free.splice(index, 0, { start: start + size, size: end - start - size });
-      if (start > range.start) this.free.splice(index, 0, { start: range.start, size: start - range.start });
+      if (end > start + size)
+        this.free.splice(index, 0, { start: start + size, size: end - start - size });
+      if (start > range.start)
+        this.free.splice(index, 0, { start: range.start, size: start - range.start });
       return start;
     }
     return undefined;
@@ -29,8 +31,7 @@ export class RangeAllocator {
     while (index < this.free.length && this.free[index]!.start < start) index++;
     const previous = this.free[index - 1];
     const next = this.free[index];
-    if (previous && previous.start + previous.size > start)
-      throw new Error("range released twice");
+    if (previous && previous.start + previous.size > start) throw new Error("range released twice");
     if (next && start + size > next.start) throw new Error("range released twice");
     if (previous && previous.start + previous.size === start) {
       previous.size += size;
@@ -46,10 +47,5 @@ export class RangeAllocator {
       return;
     }
     this.free.splice(index, 0, { start, size });
-  }
-
-  /** True when [start, start + size) is entirely free. */
-  covers(start: number, size: number): boolean {
-    return this.free.some((range) => range.start <= start && start + size <= range.start + range.size);
   }
 }

@@ -5,7 +5,9 @@ const post = globalThis.postMessage.bind(globalThis);
 globalThis.onmessage = ({ data }: MessageEvent<RuntimeWorkerRequest>) => {
   void bootstrap(data, {
     namespaces: () => ({
-      test: { ready: (command: number, pid: number) => post({ type: "group-ready", command, pid }) },
+      test: {
+        ready: (command: number, pid: number) => post({ type: "group-ready", command, pid }),
+      },
     }),
     run: (_context, exited) => exited ?? 0,
   });

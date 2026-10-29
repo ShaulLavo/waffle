@@ -664,8 +664,12 @@ export class ProcessABI {
     ownership: "local" | "shared" = "local",
   ): PollWakeRegistration {
     for (const subscription of subscriptions) {
-      if (!Number.isInteger(subscription.kind) || subscription.kind < 0 || subscription.kind > 7 ||
-        (subscription.kind === 7 && !this.options.futexReady))
+      if (
+        !Number.isInteger(subscription.kind) ||
+        subscription.kind < 0 ||
+        subscription.kind > 7 ||
+        (subscription.kind === 7 && !this.options.futexReady)
+      )
         throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription kind");
       if (!Number.isInteger(subscription.id) || subscription.id < 0 || subscription.id > 0xffffffff)
         throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription id");
@@ -707,7 +711,8 @@ export class ProcessABI {
     if (!wake || sub.kind === 3 || sub.kind === 6) return false;
     if (sub.kind === 5) return true;
     // A wake that hits a watch increments the group's process directory word.
-    if (sub.kind === 2 || sub.kind === 4 || sub.kind === 7) return sameWord(this.options.service.wake, wake);
+    if (sub.kind === 2 || sub.kind === 4 || sub.kind === 7)
+      return sameWord(this.options.service.wake, wake);
     const stream = this.descriptor(sub.id, POLL).resource;
     if (stream.kind === "file" || stream.kind === "directory") return false;
     return sameWord(stream.notification, wake);

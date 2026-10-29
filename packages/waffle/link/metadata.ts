@@ -465,6 +465,25 @@ function importedBases(imports: readonly GlobalImport[], memory: MemoryInfo | un
   return bases;
 }
 
+/** PIE core immutable exports with a constant initializer: addresses relative to __memory_base. */
+function relativeConstantExports(
+  section: Reader | undefined,
+  imported: number,
+  defined: { readonly globals: readonly GlobalType[]; readonly constant: readonly boolean[] },
+  member: string,
+): ReadonlySet<string> {
+  const relative = new Set<string>();
+  const exports = new Reader(section?.bytes ?? new Uint8Array([0]), member);
+  for (let index = 0, size = exports.u32(); index < size; index++) {
+    const name = exports.name(),
+      kind = exports.byte(),
+      local = exports.u32() - imported;
+    if (kind === 3 && local >= 0 && defined.constant[local] && !defined.globals[local]!.mutable)
+      relative.add(name);
+  }
+  return relative;
+}
+
 export function inspectProfile(bytes: Uint8Array, member: string, side: boolean): ModuleProfile {
   const reader = new Reader(bytes, member);
   const header = reader.take(8).bytes;
@@ -492,9 +511,7 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   const relocatable = Boolean(memory);
   const imported = sections.get(2);
   const types = functionTypes(new Reader(sections.get(1)?.bytes ?? new Uint8Array([0]), member));
-  const entries = imported
-    ? imports(imported, relocatable, types)
-    : { globals: [], functions: [] };
+  const entries = imported ? imports(imported, relocatable, types) : { globals: [], functions: [] };
   const functionImports = bindImports(entries.functions, importInfo, member);
   const globalImports = entries.globals;
   const functions = functionExports(sections, types, functionImports, member);
@@ -507,18 +524,10 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   for (const [name, type] of exportedGlobals) {
     if (!type.mutable) immutableI32Exports.add(name);
   }
-  const relativeExports = new Set<string>();
-  if (relocatable && !side) {
-    const exports = new Reader(sections.get(7)?.bytes ?? new Uint8Array([0]), member);
-    for (let index = 0, size = exports.u32(); index < size; index++) {
-      const name = exports.name(),
-        kind = exports.byte(),
-        target = exports.u32();
-      const local = target - importedGlobals.length;
-      if (kind === 3 && local >= 0 && defined.constant[local] && !defined.globals[local]!.mutable)
-        relativeExports.add(name);
-    }
-  }
+  const relativeExports =
+    relocatable && !side
+      ? relativeConstantExports(sections.get(7), importedGlobals.length, defined, member)
+      : new Set<string>();
   const profile = {
     pie: relocatable && !side,
     relativeExports,

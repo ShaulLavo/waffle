@@ -127,7 +127,12 @@ async function selectProviders(core: CompiledMember, member: CompiledMember): Pr
   for (const entry of member.profile.globalImports) {
     if (entry.module === "env" && ["__memory_base", "__table_base"].includes(entry.name)) continue;
     if (entry.module === "GOT.func") continue;
-    const provider = core.profile.globalExports.get(entry.name);
+    // A PIE core imports its stack pointer; a side shares that same imported global.
+    const provider =
+      core.profile.globalExports.get(entry.name) ??
+      (core.profile.pie && entry.module === "env"
+        ? core.profile.globalImports.find((g) => g.module === "env" && g.name === entry.name)
+        : undefined);
     const mutable = entry.module === "GOT.mem" ? false : entry.mutable;
     if (!provider || provider.value !== entry.value || provider.mutable !== mutable)
       invalid(

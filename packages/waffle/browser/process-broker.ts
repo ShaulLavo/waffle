@@ -1244,7 +1244,8 @@ export class BrowserProcessBroker {
     join: MemoryGroupLaunch,
   ): MemberLease {
     const groups = (this.groups ??= new MemoryGroups(this.options.memoryGroups));
-    const target = join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
+    const target =
+      join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
     if (!target) throw new ProcessError(ProcessErrno.SRCH, "parent has no memory group");
     return groups.admit(pid, workerProcessDirectoryId(transport), target);
   }

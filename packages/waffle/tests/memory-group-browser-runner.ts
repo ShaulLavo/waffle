@@ -21,7 +21,10 @@ async function run(command: string[]): Promise<void> {
 }
 
 async function bundle(entry: string): Promise<Blob> {
-  const build = await Bun.build({ entrypoints: [resolve(import.meta.dir, entry)], target: "browser" });
+  const build = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, entry)],
+    target: "browser",
+  });
   if (!build.success) throw new AggregateError(build.logs, `bundle ${entry} failed`);
   return build.outputs[0]!;
 }
@@ -34,7 +37,8 @@ async function cleanup(): Promise<void> {
   } catch (error) {
     errors.push(error);
   }
-  if (scratch) await rm(scratch, { recursive: true, force: true }).catch((error) => errors.push(error));
+  if (scratch)
+    await rm(scratch, { recursive: true, force: true }).catch((error) => errors.push(error));
   if (errors.length) throw new AggregateError(errors, "memory group runner cleanup failed");
 }
 const onSignal = () => void cleanup().finally(() => process.exit(1));
@@ -46,12 +50,31 @@ try {
   const object = join(scratch, "member.o"),
     wasm = join(scratch, "member.wasm");
   await run([
-    `${sdk}/bin/clang`, "--target=wasm32-wasip1", "-nostdlib", "-O2", "-fPIC", "-matomics",
-    "-mbulk-memory", "-c", resolve(import.meta.dir, "fixtures/memory-group-member.c"), "-o", object,
+    `${sdk}/bin/clang`,
+    "--target=wasm32-wasip1",
+    "-nostdlib",
+    "-O2",
+    "-fPIC",
+    "-matomics",
+    "-mbulk-memory",
+    "-c",
+    resolve(import.meta.dir, "fixtures/memory-group-member.c"),
+    "-o",
+    object,
   ]);
   await run([
-    `${sdk}/bin/wasm-ld`, "-pie", "--experimental-pic", "--import-memory", "--shared-memory",
-    "--max-memory=4294967296", "--import-table", "--no-entry", "--export=_start", object, "-o", wasm,
+    `${sdk}/bin/wasm-ld`,
+    "-pie",
+    "--experimental-pic",
+    "--import-memory",
+    "--shared-memory",
+    "--max-memory=4294967296",
+    "--import-table",
+    "--no-entry",
+    "--export=_start",
+    object,
+    "-o",
+    wasm,
   ]);
   const member = await readFile(wasm);
   const [page, worker, fsWorker] = await Promise.all([
@@ -74,7 +97,9 @@ try {
       if (path === "/memory-group-worker.js") return new Response(worker, { headers: script });
       if (path === "/fs-worker.js") return new Response(fsWorker, { headers: script });
       if (path === "/memory-group-member.wasm")
-        return new Response(member, { headers: { ...headers, "Content-Type": "application/wasm" } });
+        return new Response(member, {
+          headers: { ...headers, "Content-Type": "application/wasm" },
+        });
       if (path === "/")
         return new Response("<!doctype html><title>Memory groups</title>", {
           headers: { ...headers, "Content-Type": "text/html" },
@@ -90,9 +115,9 @@ try {
   });
   await tab.goto(`http://127.0.0.1:${server.port}/`);
   const report = await tab.evaluate(async () => {
-    const tests = (await import("/memory-group-browser.js" as string)) as typeof import(
-      "./memory-group-browser.js"
-    );
+    const tests = (await import(
+      "/memory-group-browser.js" as string
+    )) as typeof import("./memory-group-browser.js");
     return tests.memoryGroupBrowser();
   });
   if (typeof report.disposal !== "string" || !report.disposal.includes("memory group members"))

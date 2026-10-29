@@ -26,8 +26,22 @@ function flatten(error: unknown): string[] {
 }
 
 const Op = {
-  INIT: 1, INFO: 2, CHURN: 3, CREATE: 4, ATTACH: 5, DETACH: 6, PIN: 7, ROUTE: 8,
-  ACCEPT: 9, UNPIN: 10, WAIT32: 11, STORE: 12, LOAD: 13, WAKE: 14, EXIT: 15, GROW: 16,
+  INIT: 1,
+  INFO: 2,
+  CHURN: 3,
+  CREATE: 4,
+  ATTACH: 5,
+  DETACH: 6,
+  PIN: 7,
+  ROUTE: 8,
+  ACCEPT: 9,
+  UNPIN: 10,
+  WAIT32: 11,
+  STORE: 12,
+  LOAD: 13,
+  WAKE: 14,
+  EXIT: 15,
+  GROW: 16,
 } as const;
 
 interface Member {
@@ -36,7 +50,7 @@ interface Member {
   seq: number;
 }
 
-/** Runs the J1 acceptance through the real runtime, broker, worker bootstrap and PIE loader. */
+/** @browserEntry Runs the J1 acceptance through the real runtime, broker, worker bootstrap and PIE loader. */
 export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
   const NativeWorker = globalThis.Worker;
   const failing = new Set<number>();
@@ -52,7 +66,8 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
     }
     override terminate() {
       for (const [pid, worker] of workers)
-        if (worker === this && failing.has(pid)) throw new Error(`injected terminate failure ${pid}`);
+        if (worker === this && failing.has(pid))
+          throw new Error(`injected terminate failure ${pid}`);
       super.terminate();
     }
   };
@@ -65,7 +80,12 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
   runtime.registerAdapter("group", (context, service) =>
     service.launchWorker(context, {
       workerUrl: "/memory-group-worker.js",
-      request: { module: context.module, args: context.request.argv, env: {}, interruptible: false },
+      request: {
+        module: context.module,
+        args: context.request.argv,
+        env: {},
+        interruptible: false,
+      },
       memoryGroup: context.request.argv[0] === "lead" ? "new" : group!,
       onMessage(message) {
         const data = message as { type?: string; command?: number; pid?: number };
@@ -189,7 +209,11 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
       return left;
     });
     assert(churnA === 0 && lowA! < highA!, `member A heap churn ${churnA}`);
-    report.images = { counters: [counterA, counterB], statics: [addrA, addrB], stacks: [stackA, stackB] };
+    report.images = {
+      counters: [counterA, counterB],
+      statics: [addrA, addrB],
+      stacks: [stackA, stackB],
+    };
 
     // Real shared bytes, transit pin, cross-member futex.
     const [created, handle, addr] = await call(a, Op.CREATE, 64, 16);
@@ -237,7 +261,10 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
     await reaped(blocked.pid);
     const afterKill = snapshot();
     assert(afterKill.pins === 0 && afterKill.regions === 1 && afterKill.holds === 1, "kill leaked");
-    assert(afterKill.committedBytes === beforeKill.committedBytes, "kill changed committed backing");
+    assert(
+      afterKill.committedBytes === beforeKill.committedBytes,
+      "kill changed committed backing",
+    );
     assert(afterKill.freeBytes > beforeKill.freeBytes, "killed member chunks were not freed");
     // The freed first region may have been reused; wait on the live mailbox instead.
     assert((await call(a, Op.WAIT32, mailboxAddr!, 0, 5))[0] === 2, "group unusable after kill");
@@ -253,7 +280,11 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
       "heap did not reuse freed chunks",
     );
     assert(snapshot().committedBytes === afterKill.committedBytes, "reuse grew the group");
-    report.reuse = { command: reused.command, killedHeapPage: blockedPage, reusedHeapPage: reusedPage };
+    report.reuse = {
+      command: reused.command,
+      killedHeapPage: blockedPage,
+      reusedHeapPage: reusedPage,
+    };
 
     // Repeated spawn/send/kill returns to baseline without ending the group.
     const baseline = snapshot();
@@ -274,7 +305,9 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
       await reaped(target.pid);
       const now = snapshot();
       assert(
-        now.regions === baseline.regions && now.pins === baseline.pins && now.holds === baseline.holds,
+        now.regions === baseline.regions &&
+          now.pins === baseline.pins &&
+          now.holds === baseline.holds,
         `round ${round} leaked ${JSON.stringify(now)}`,
       );
       if (round === 0) committed = now.committedBytes;
@@ -303,7 +336,10 @@ export async function memoryGroupBrowser(): Promise<Record<string, unknown>> {
     await kill(fourth);
     await until(() => snapshot().retained === 1, "retained debt");
     const debt = snapshot();
-    assert(debt.pids.includes(fourth.pid) && debt.freeBytes === beforeFailure.freeBytes, "debt freed");
+    assert(
+      debt.pids.includes(fourth.pid) && debt.freeBytes === beforeFailure.freeBytes,
+      "debt freed",
+    );
     const stillFull = await launch("member");
     await supervisor.waitForExit(root.pid, stillFull);
     client.wait(root.pid, stillFull);

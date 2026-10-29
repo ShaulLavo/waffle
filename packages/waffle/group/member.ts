@@ -42,8 +42,10 @@ export interface GroupMember {
   readonly memory: WebAssembly.Memory;
   /** The runtime_shm namespace. */
   readonly imports: Record<string, (...args: any[]) => number>;
-  /** env imports for a PIE image: imported memory, own table, bases and stack. */
-  image(module: WebAssembly.Module): Record<string, WebAssembly.ImportValue>;
+  /** The runtime_shm namespace, keyed for Wasi namespaces. */
+  readonly namespaces: WebAssembly.Imports;
+  /** env bindings for a PIE image: imported memory, own table, bases and stack. */
+  bindings(module: WebAssembly.Module): { env: WebAssembly.ModuleImports };
   /** Poll kind 7 readiness, or undefined for an unknown watch. */
   watchReady(id: number): boolean | undefined;
   dispose(): void;
@@ -83,7 +85,12 @@ export function createGroupMember(
       atomicsWait(reply, 0, current, 50);
       hooks.checkActive();
     }
-    return [atomicsLoad(reply, 1), atomicsLoad(reply, 2), atomicsLoad(reply, 3), atomicsLoad(reply, 4)];
+    return [
+      atomicsLoad(reply, 1),
+      atomicsLoad(reply, 2),
+      atomicsLoad(reply, 3),
+      atomicsLoad(reply, 4),
+    ];
   };
   const inBounds = (addr: number, size: number) =>
     addr % size === 0 && addr + size <= memory.buffer.byteLength;
@@ -170,7 +177,9 @@ export function createGroupMember(
       addr >>>= 0;
       if (!inBounds(addr, 8)) return -GroupErrno.INVAL;
       const cells = new BigInt64ArrayConstructor(memory.buffer);
-      return status(atomicsWait(cells as never, addr / 8, BigInt.asIntN(64, expected) as never, timeout(ns)));
+      return status(
+        atomicsWait(cells as never, addr / 8, BigInt.asIntN(64, expected) as never, timeout(ns)),
+      );
     },
     futex_wake(addr: number, count: number): number {
       hooks.checkActive();
@@ -218,52 +227,58 @@ export function createGroupMember(
   return {
     memory,
     imports,
-    image(module) {
-      const sections = reflectApply(customSections, WebAssembly.Module, [module, "dylink.0"]);
-      if (sections.length !== 1) throw new TypeError("memory group image requires one dylink.0 section");
-      const info = dylinkMemoryInfo(new NativeUint8Array(sections[0]!), "member");
-      if (info.memoryAlignment > 16) throw new TypeError("member data alignment exceeds a page");
-      const dataPages = Math.max(1, Math.ceil(info.memorySize / PAGE_BYTES));
-      const stackPages = Math.ceil(request.stackBytes / PAGE_BYTES);
-      const data = chunk(dataPages);
-      if (data < 0) throw new RangeError("memory group could not carve member data");
-      const stack = chunk(stackPages);
-      if (stack < 0) throw new RangeError("memory group could not carve member stack");
-      // Slot 0 stays null so a zero function pointer never calls into the image.
-      const alignment = 2 ** info.tableAlignment;
-      const tableBase = Math.ceil(1 / alignment) * alignment;
-      const env: Record<string, WebAssembly.ImportValue> = {
-        memory,
-        __indirect_function_table: new NativeTable({
-          element: "anyfunc",
-          initial: tableBase + info.tableSize,
-        }),
-        __memory_base: new NativeGlobal({ value: "i32", mutable: false }, data * PAGE_BYTES),
-        __table_base: new NativeGlobal({ value: "i32", mutable: false }, tableBase),
-        __stack_pointer: new NativeGlobal(
-          { value: "i32", mutable: true },
-          (stack + stackPages) * PAGE_BYTES,
-        ),
-      };
-      const wanted = new Set(
-        reflectApply(moduleImports, WebAssembly.Module, [module])
-          .filter((entry) => entry.module === "env")
-          .map((entry) => entry.name),
-      );
-      for (const name of Object.keys(env)) if (!wanted.has(name)) delete env[name];
-      return env;
-    },
-    watchReady(id) {
-      const watch = watches.get(id);
-      if (!watch) return undefined;
-      const at = WATCH_HEADER_WORDS + watch.slot * WATCH_SLOT_WORDS;
-      if (atomicsLoad(table, at + 3) !== watch.generation) return true;
-      return atomicsLoad(words(), watch.addr / 4) !== watch.expected;
-    },
+    namespaces: { runtime_shm: imports },
+    bindings: (module) => ({ env: image(module) }),
+    watchReady,
     dispose() {
       if (disposed) return;
       disposed = true;
       reflectApply(closePort, port, []);
     },
   };
+
+  function image(module: WebAssembly.Module): WebAssembly.ModuleImports {
+    const sections = reflectApply(customSections, WebAssembly.Module, [module, "dylink.0"]);
+    if (sections.length !== 1)
+      throw new TypeError("memory group image requires one dylink.0 section");
+    const info = dylinkMemoryInfo(new NativeUint8Array(sections[0]!), "member");
+    if (info.memoryAlignment > 16) throw new TypeError("member data alignment exceeds a page");
+    const dataPages = Math.max(1, Math.ceil(info.memorySize / PAGE_BYTES));
+    const stackPages = Math.ceil(request.stackBytes / PAGE_BYTES);
+    const data = chunk(dataPages);
+    if (data < 0) throw new RangeError("memory group could not carve member data");
+    const stack = chunk(stackPages);
+    if (stack < 0) throw new RangeError("memory group could not carve member stack");
+    // Slot 0 stays null so a zero function pointer never calls into the image.
+    const alignment = 2 ** info.tableAlignment;
+    const tableBase = Math.ceil(1 / alignment) * alignment;
+    const env: WebAssembly.ModuleImports = {
+      memory,
+      __indirect_function_table: new NativeTable({
+        element: "anyfunc",
+        initial: tableBase + info.tableSize,
+      }),
+      __memory_base: new NativeGlobal({ value: "i32", mutable: false }, data * PAGE_BYTES),
+      __table_base: new NativeGlobal({ value: "i32", mutable: false }, tableBase),
+      __stack_pointer: new NativeGlobal(
+        { value: "i32", mutable: true },
+        (stack + stackPages) * PAGE_BYTES,
+      ),
+    };
+    const wanted = new Set(
+      reflectApply(moduleImports, WebAssembly.Module, [module])
+        .filter((entry) => entry.module === "env")
+        .map((entry) => entry.name),
+    );
+    for (const name of Object.keys(env)) if (!wanted.has(name)) delete env[name];
+    return env;
+  }
+
+  function watchReady(id: number): boolean | undefined {
+    const watch = watches.get(id);
+    if (!watch) return undefined;
+    const at = WATCH_HEADER_WORDS + watch.slot * WATCH_SLOT_WORDS;
+    if (atomicsLoad(table, at + 3) !== watch.generation) return true;
+    return atomicsLoad(words(), watch.addr / 4) !== watch.expected;
+  }
 }
