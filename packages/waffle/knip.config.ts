@@ -27,6 +27,7 @@ export default {
         "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport,search-executor}-browser-runner.ts",
         "tests/search-executor-browser.ts",
         "search/{search,shard}-worker.ts",
+        "tests/fixtures/search-fault-shard.ts",
         "tests/filesystem-transport-browser{,-driver}.ts",
         "tests/fs-socket-browser-runner.ts",
         "tests/fixtures/filesystem-port-service.ts",

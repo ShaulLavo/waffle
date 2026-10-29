@@ -16,6 +16,7 @@ import {
   defaultShardCount,
   errnoOf,
   nestedWorkersAvailable,
+  processFence,
   processIdentity,
   readAndScan,
   type BatchExecutor,
@@ -209,13 +210,19 @@ async function executor(
     return new InlineExecutor(COUNT, cells, FILE_BYTES, (file, chunk, offset) =>
       context.fs.read(file.handle, [chunk], offset),
     );
-  return ShardPool.start(options.shardWorker, count, {
-    type: "start",
-    identity: processIdentity(connection),
-    control,
-    program: COUNT,
-    fileBytes: FILE_BYTES,
-    heartbeat: options.diagnostics,
+  const identity = processIdentity(connection);
+  return ShardPool.start({
+    url: options.shardWorker,
+    count,
+    start: {
+      type: "start",
+      identity,
+      control,
+      program: COUNT,
+      fileBytes: FILE_BYTES,
+      heartbeat: options.diagnostics,
+    },
+    fence: () => processFence(identity),
   });
 }
 

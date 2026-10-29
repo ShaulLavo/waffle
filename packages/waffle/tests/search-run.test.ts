@@ -202,3 +202,137 @@ test("a failed delivery still releases the delivered candidate once", async () =
   expect(source.released.size).toBe(10);
   expect([...source.released.values()].every((count) => count === 1)).toBe(true);
 });
+
+const noFallback = { deliver: () => {}, fallback: () => ({ kind: "error" as const, errno: 29 }) };
+async function settle(run: SearchRun): Promise<unknown> {
+  return run.run().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+}
+
+test("a rejected executor close still releases grants and closes the source", async () => {
+  const source = new FakeSource(files(300));
+  const executor = new FakeExecutor(2);
+  const order: string[] = [];
+  const stop = new Error("helpers fenced");
+  executor.close = async () => {
+    order.push("executor");
+    throw stop;
+  };
+  const release = source.release.bind(source);
+  source.release = (released) => {
+    order.push("release");
+    release(released);
+  };
+  const run = new SearchRun(source, executor, noFallback, limits, () => {
+    throw new Error("signal");
+  });
+  const error = await settle(run);
+  expect(error).toBeInstanceOf(AggregateError);
+  const errors = (error as AggregateError).errors;
+  expect(errors.map(String)).toEqual(["Error: signal", "Error: helpers fenced"]);
+  expect((error as AggregateError).cause).toBe(errors[0]);
+  expect(source.closed).toBe(1);
+  expect(order[0]).toBe("executor");
+});
+
+test("a throwing grant release cannot skip the original-cursor close", async () => {
+  const source = new FakeSource(files(600));
+  const executor = new FakeExecutor(1);
+  let releases = 0;
+  const release = source.release.bind(source);
+  source.release = (released) => {
+    if (++releases === 1) throw new Error("walkRelease EBADF");
+    release(released);
+  };
+  let steps = 0;
+  const run = new SearchRun(source, executor, noFallback, limits, () => {
+    if (++steps === 2) throw new Error("signal");
+  });
+  const error = await settle(run);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).errors.map(String)).toContain("Error: signal");
+  expect((error as AggregateError).errors.map(String)).toContain("Error: walkRelease EBADF");
+  expect(executor.closed).toBe(1);
+  expect(source.closed).toBe(1);
+});
+
+test("every outstanding chunk is released even when one release throws", async () => {
+  const source = new FakeSource(files(256));
+  const executor = new FakeExecutor(0);
+  let calls = 0;
+  const release = source.release.bind(source);
+  source.release = (released) => {
+    calls++;
+    if (released.some((file) => file.path === "f0")) throw new Error("first chunk");
+    release(released);
+  };
+  // Capacity 0 never dispatches: the run fills its whole window, then is cancelled.
+  let checks = 0;
+  const run = new SearchRun(source, executor, noFallback, limits, () => {
+    if (++checks === 2) throw new Error("cancel");
+  });
+  const error = await settle(run);
+  expect((error as AggregateError).errors.map(String)).toEqual([
+    "Error: cancel",
+    "Error: first chunk",
+  ]);
+  expect(calls).toBe(1);
+  expect(source.closed).toBe(1);
+});
+
+test("a source close failure is reported with the original cause first", async () => {
+  const source = new FakeSource(files(10));
+  source.close = () => {
+    throw new Error("walkClose failed");
+  };
+  const executor = new FakeExecutor(1);
+  const run = new SearchRun(
+    source,
+    executor,
+    {
+      deliver: () => {
+        throw new Error("EPIPE");
+      },
+      fallback: () => ({ kind: "error", errno: 29 }),
+    },
+    limits,
+    () => {},
+  );
+  const error = await settle(run);
+  expect((error as AggregateError).errors.map(String)).toEqual([
+    "Error: EPIPE",
+    "Error: walkClose failed",
+  ]);
+  expect(executor.closed).toBe(1);
+  expect(source.outstanding).toBe(0);
+});
+
+test("a delivery failure and its release failure are both kept", async () => {
+  const source = new FakeSource(files(4));
+  const release = source.release.bind(source);
+  source.release = (released) => {
+    if (released.length === 1) throw new Error("release failed");
+    release(released);
+  };
+  const run = new SearchRun(
+    source,
+    new FakeExecutor(1),
+    {
+      deliver: () => {
+        throw new Error("EPIPE");
+      },
+      fallback: () => ({ kind: "error", errno: 29 }),
+    },
+    limits,
+    () => {},
+  );
+  const error = await settle(run);
+  expect(error).toBeInstanceOf(AggregateError);
+  expect((error as AggregateError).errors.map(String)).toEqual([
+    "Error: EPIPE",
+    "Error: release failed",
+  ]);
+  expect(source.closed).toBe(1);
+});

@@ -14,6 +14,7 @@ await runIsolatedPages({
     "/tests.js": "search-executor-browser.ts",
     "/search-worker.js": "../search/search-worker.ts",
     "/shard-worker.js": "../search/shard-worker.ts",
+    "/fault-shard.js": "fixtures/search-fault-shard.ts",
     "/fs-worker.js": "../browser/fs-worker.ts",
   },
   names: process.argv.length > 2 ? process.argv.slice(2) : Object.keys(engines),
