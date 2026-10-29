@@ -16,7 +16,8 @@ const runners = [
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";
 const recovery = "recovery-r42";
-const chromiumOnly = [continuity, rootContinuity];
+const memoryGroup = "memory-group";
+const chromiumOnly = [continuity, rootContinuity, memoryGroup];
 const socket = "fs-socket";
 const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -37,7 +38,7 @@ if (${JSON.stringify(chromiumOnly.concat([socket]))}.includes(name)) {
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
   if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
-  const predecessor = name === "workspace-continuity" ? "recovery-r42" : name === "root-continuity" ? "workspace-continuity" : "root-continuity";
+  const predecessor = { "workspace-continuity": "recovery-r42", "root-continuity": "workspace-continuity", "memory-group": "root-continuity" }[name] ?? "memory-group";
   if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
   appendFileSync("isolated.order", name + "\\n");
   writeFileSync(name + ".scratch", scratch);
