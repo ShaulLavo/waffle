@@ -70,7 +70,12 @@ export function storageNavigationResponse(
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
       "cache-control": "no-store",
-      "content-type": path.endsWith(".js") ? "text/javascript" : "text/html",
+      "content-type":
+        body instanceof Blob && body.type
+          ? body.type
+          : path.endsWith(".js")
+            ? "text/javascript"
+            : "text/html",
     },
   });
   emitNavigationEvent(observe, { kind: "response-constructed", path, status: response.status });

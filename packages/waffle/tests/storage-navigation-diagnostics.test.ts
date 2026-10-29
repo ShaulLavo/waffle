@@ -195,6 +195,67 @@ test("request abort is recorded once without changing the constructed response",
   ]);
 });
 
+const navigationResponseCases = [
+  {
+    path: "/module.wasm",
+    body: new Blob(["wasm fixture"], { type: "application/wasm" }),
+    status: 200,
+    contentType: "application/wasm",
+    text: "wasm fixture",
+  },
+  {
+    path: "/data.bin",
+    body: new Blob(["binary fixture"], { type: "application/octet-stream" }),
+    status: 200,
+    contentType: "application/octet-stream",
+    text: "binary fixture",
+  },
+  {
+    path: "/index.js",
+    body: "export {}",
+    status: 200,
+    contentType: "text/javascript",
+    text: "export {}",
+  },
+  {
+    path: "/",
+    body: "<!doctype html><title>Storage tests</title>",
+    status: 200,
+    contentType: "text/html",
+    text: "<!doctype html><title>Storage tests</title>",
+  },
+  {
+    path: "/missing",
+    body: undefined,
+    status: 404,
+    contentType: "text/html",
+    text: "Not found",
+  },
+];
+
+for (const testCase of navigationResponseCases)
+  test(`navigation response ${testCase.path} preserves its body, headers, and events`, async () => {
+    const events: NavigationServerEvent[] = [];
+    const routes = testCase.body === undefined ? {} : { [testCase.path]: testCase.body };
+
+    const response = storageNavigationResponse(
+      new Request(`http://127.0.0.1${testCase.path}`),
+      routes,
+      (event) => events.push(event),
+    );
+
+    expect(response.status).toBe(testCase.status);
+    expect(response.headers.get("content-type")).toBe(testCase.contentType);
+    expect(response.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin");
+    expect(response.headers.get("Cross-Origin-Embedder-Policy")).toBe("require-corp");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe(testCase.text);
+    expect(events).toEqual([
+      { kind: "request", method: "GET", path: testCase.path },
+      { kind: "response-constructed", path: testCase.path, status: testCase.status },
+    ]);
+  });
+
 test("real loopback preserves the root response and records only local server milestones", async () => {
   const interruptListeners = process.listenerCount("SIGINT");
   const terminateListeners = process.listenerCount("SIGTERM");
