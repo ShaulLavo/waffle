@@ -28,8 +28,13 @@ export type MatcherAdmission =
 
 export interface CompiledMatcher {
   readonly tool: SearchPlan["tool"];
-  readonly patterns: readonly string[];
-  readonly ignoreCase: boolean;
+  readonly needles: readonly CompiledNeedle[];
+  readonly fold: "none" | "ascii" | "rg-unicode" | "grep-utf8";
+}
+
+export interface CompiledNeedle {
+  readonly bytes: Uint8Array;
+  readonly failure: Uint16Array;
 }
 
 export interface FileSearchResult {

@@ -1,3 +1,4 @@
+import type { WalkStep } from "./walk.js";
 import { truncateBoundaryEnd } from "./shared-version-pages.js";
 import type { ReaderMetadataBudget } from "./storage.js";
 import type { ReadBacking } from "./workspace-read.js";
@@ -318,6 +319,31 @@ export class MemoryBackend implements FilesystemBackend {
       return;
     }
     throw new FilesystemError(44);
+  }
+  walkLookup(root: number, steps: readonly WalkStep[]) {
+    this.check(root, "directory");
+    let node = this.fs.nodeForHandle(root);
+    for (const step of steps) {
+      if (node.kind !== "dir") throw new FilesystemError(44);
+      if (((node.mode >>> 6) & 5) !== 5) throw new FilesystemError(2);
+      const child = node.children.get(step.name);
+      if (!child || child.ino !== step.ino) throw new FilesystemError(44);
+      node = child;
+    }
+    const handle = this.fs.handleForNode(node);
+    this.check(handle);
+    if (node.kind === "dir" && ((node.mode >>> 6) & 5) !== 5) throw new FilesystemError(2);
+    if (node.kind === "file" && !(this.fs.permissions(handle).access & 4))
+      throw new FilesystemError(2);
+    const stat = this.shared.stat(handle)!;
+    return { handle, kind: stat.kind, size: stat.size };
+  }
+  walkSnapshot(root: number, steps: readonly WalkStep[]) {
+    const node = this.walkLookup(root, steps);
+    if (node.kind !== "directory") throw new FilesystemError(54);
+    return this.fs
+      .readdir(node.handle)
+      .filter((entry) => entry.name !== "." && entry.name !== "..");
   }
   private executeOperation(operation: string, args: any[], _data: Uint8Array): unknown {
     const [a, b, c] = args;
