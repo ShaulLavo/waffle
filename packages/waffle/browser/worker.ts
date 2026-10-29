@@ -421,6 +421,7 @@ function closeDiscardedStdio(discarded: readonly Stream[], tableOwned: ReadonlyS
 function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): void {
   const tableOwned = tableOwnedStdio(wasi.descriptors, discarded);
   const errors: unknown[] = [];
+  wasi.dropWatches();
   try {
     wasi.descriptors.dispose();
   } catch (error) {

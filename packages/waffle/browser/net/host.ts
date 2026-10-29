@@ -1,6 +1,11 @@
 import {
+  afterMicrotask,
+  afterNativePromise,
   atomicsAdd,
+  atomicsLoad,
   atomicsNotify,
+  atomicsWaitAsync,
+  scheduleTimeout,
   SetConstructor,
   setAdd,
   setDelete,
@@ -26,6 +31,8 @@ import {
 import { ENOTSUP, unixCode } from "./unix-status.js";
 import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
 import { RingReader } from "./ring.js";
+import type { NotificationWaitSet } from "../notification-wait.js";
+import type { GuestWatchReadiness } from "../../fs/guest-watch.js";
 import {
   acceptedAddress,
   loopbackAddress,
@@ -84,6 +91,14 @@ const canParse = (url: string) => {
   }
 };
 const decoder = new TextDecoder();
+const now = performance.now.bind(performance);
+// Private wait loops schedule through captured natives; their waits never reject.
+const ignore = () => {};
+
+interface AttachedNotifications {
+  readonly set: NotificationWaitSet;
+  readonly watches: () => GuestWatchReadiness | undefined;
+}
 
 export class NetHost {
   private ring: RingReader;
@@ -101,6 +116,9 @@ export class NetHost {
   private localNews = false;
   private readonly notificationSinks = new SetConstructor<Int32Array>();
   private fileWrite: { path: string; bytes: Uint8Array; offset: number } | null = null;
+  private notifications: AttachedNotifications | undefined;
+  /** The filesystem word the onNews loop waits on, while that wait is pending. */
+  private filesystemWait: Int32Array | undefined;
 
   constructor(
     sab: SharedArrayBuffer,
@@ -135,6 +153,18 @@ export class NetHost {
     if (this.disposed) return;
     this.newsCallback = cb;
     this.watchRing();
+    this.watchFilesystem();
+  }
+
+  /** Wait on the guest's armed set, which covers this host and the filesystem watch counter.
+   * `poll` then also returns when a guest filesystem watch has something to read. */
+  attachNotifications(
+    set: NotificationWaitSet,
+    watches: () => GuestWatchReadiness | undefined,
+  ): void {
+    if (this.disposed) throw new Error("network host is disposed");
+    this.notifications = { set, watches };
+    this.watchFilesystem();
   }
 
   private newsCallback: (() => void) | null = null;
@@ -163,29 +193,64 @@ export class NetHost {
       this.watchRing();
     };
     const waiting = this.ring.waitAsync(seen);
-    if (waiting) waiting.then(again);
-    else setTimeout(again, 4);
+    if (waiting) afterNativePromise(waiting, again, ignore);
+    else scheduleTimeout(again, 4);
+  }
+
+  /** Wake the engine when a guest watch becomes readable. Each commit in the root costs one
+   * readiness check; there is no timer. Runs once both the callback and readiness exist. */
+  private watchFilesystem(): void {
+    if (this.disposed || this.filesystemWait || !this.newsCallback) return;
+    const word = this.notifications?.watches()?.word;
+    if (!word) return;
+    this.filesystemWait = word;
+    const turn = (): void => {
+      if (this.disposed) return;
+      const seen = atomicsLoad(word, 3);
+      if (this.notifications?.watches()?.pending()) this.newsCallback?.();
+      const waiting = atomicsWaitAsync(word, 3, seen);
+      if (waiting.async) afterNativePromise(waiting.value, turn, ignore);
+      else afterMicrotask(turn);
+    };
+    turn();
   }
 
   // ---------- handle operations ----------
 
   poll(timeoutMs: number): number {
     if (this.disposed) return 0;
-    this.drain();
-    if (this.localNews) {
-      this.localNews = false;
-      return 1;
-    }
-    const generation = this.ring.generation();
-    if (generation !== this.seenGeneration) {
-      this.seenGeneration = generation;
-      return 1;
-    }
+    if (this.notifications) return this.pollNotifications(this.notifications, timeoutMs);
+    if (this.ready()) return 1;
     if (timeoutMs === 0) return 0;
-    if (this.ring.wait(generation, timeoutMs) === "timed-out") return 0;
+    if (this.ring.wait(this.seenGeneration, timeoutMs) === "timed-out") return 0;
     this.seenGeneration = this.ring.generation();
     this.drain();
     return 1;
+  }
+
+  /** Sample before every readiness check so a publication racing the check ends the wait. */
+  private pollNotifications(notifications: AttachedNotifications, timeoutMs: number): number {
+    const deadline = timeoutMs < 0 ? Infinity : now() + timeoutMs;
+    for (;;) {
+      const sample = notifications.set.sample();
+      if (this.ready() || notifications.watches()?.pending()) return 1;
+      if (timeoutMs === 0) return 0;
+      const result = notifications.set.wait(sample, deadline);
+      if (result === "closed" || (result === "timed-out" && now() >= deadline)) return 0;
+    }
+  }
+
+  /** Consumes local news or a ring generation change, after delivering ring records. */
+  private ready(): boolean {
+    this.drain();
+    if (this.localNews) {
+      this.localNews = false;
+      return true;
+    }
+    const generation = this.ring.generation();
+    if (generation === this.seenGeneration) return false;
+    this.seenGeneration = generation;
+    return true;
   }
 
   /** Start a request, copying body bytes before handing them to the message transport. */
@@ -517,6 +582,10 @@ export class NetHost {
     if (this.disposed) return;
     this.disposed = true;
     this.newsCallback = null;
+    this.notifications = undefined;
+    // Settle the pending onNews filesystem wait; other waiters on the word re-check and re-wait.
+    if (this.filesystemWait) atomicsNotify(this.filesystemWait, 3);
+    this.filesystemWait = undefined;
     setForEach(this.notificationSinks, (wake) => setDelete(this.notificationSinks, wake));
     const failures: unknown[] = [];
     for (const handle of Array.from(this.handles.keys())) this.closeForDispose(handle, failures);
