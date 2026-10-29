@@ -1,6 +1,13 @@
 {
-  "reason": "Move obsolete Bash installation/build guidance to byte-frozen history and document current ProgramPackage exports. Existing transfer receipts remain unchanged.",
+  "reason": "Move obsolete Bash installation/build guidance and the original JavaScript notice generator to byte-frozen history. Check current TypeScript sources separately. Existing transfer receipts remain unchanged.",
   "entries": [
+    {
+      "transferredPath": "packages/coreutils/scripts/notices.mjs",
+      "livePath": "packages/coreutils/scripts/notices.ts",
+      "historicalPath": "packages/coreutils/provenance/history/scripts/notices.mjs.txt",
+      "historicalSha256": "a132db20914f3369723eb159d21efda9584b66a541ce76047f44d5186553944f",
+      "liveSha256": "b2fb48501bf441d0c2d3f22bb6deccf1d52b953f78596a02488d30b097475a2d"
+    },
     {
       "livePath": "packages/coreutils/docs/cut.md",
       "historicalPath": "packages/coreutils/provenance/history/docs/cut.md",

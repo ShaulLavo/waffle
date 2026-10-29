@@ -26,8 +26,7 @@ source-only consumers and the generated Node exports working together.
   browser bundles. Keep Bun APIs, JSON errors, public handles and engine policy in Bun.
   The Rust exception and source-install toolchain are recorded in ADR 005.
   Do not check in compiled JavaScript, `dist/`, binaries,
-  screenshots or test evidence: consumers clone this repository. The existing
-  `packages/waffle/core/memory-views.js` source exception is recorded in `docs/bun-patches.md`.
+  screenshots or test evidence: consumers clone this repository.
 - Preserve pay-for-use loading: do not load the process implementation before the
   first spawn. Keep bundle-size gates and the core gzip budget in
   `packages/waffle/tooling/runtime-size.ts`.

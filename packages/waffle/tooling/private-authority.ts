@@ -42,7 +42,7 @@ const trustedModules: Readonly<Record<string, string>> = {
   "fs/indexeddb.ts": "Storage backend used by the dedicated filesystem service.",
   "fs/opfs.ts": "Storage backend used by the dedicated filesystem service.",
   "fs/storage.ts": "Storage interface for the dedicated filesystem service.",
-  "core/memory-views.js":
+  "core/memory-views.ts":
     "Guest-owned WebAssembly memory view helpers; no private runtime buffers.",
 };
 

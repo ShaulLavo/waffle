@@ -42,7 +42,7 @@ for (const name of ["browser", "libc"]) {
   test(`${name} selects runtime, dependency and workflow inputs`, () => {
     for (const path of [
       "packages/waffle/core/wasi.ts",
-      "packages/waffle/core/memory-views.js",
+      "packages/waffle/core/memory-views.ts",
       "packages/waffle/fs/persistent.ts",
       "packages/waffle/proc/abi.ts",
       "packages/waffle/interrupt/rewriter.ts",

@@ -6,9 +6,7 @@ const publicSources = Array.from(
   new Set(Object.values(manifest.exports).map((entry) => entry.types.replace(/^\.\//, ""))),
 );
 const publicIssues = Object.fromEntries(
-  publicSources
-    .concat(["core/memory-views.d.ts"])
-    .map((path) => [path, ["exports", "types"] as const]),
+  publicSources.map((path) => [path, ["exports", "types"] as const]),
 );
 
 export default {

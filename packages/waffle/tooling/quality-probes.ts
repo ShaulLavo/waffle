@@ -56,6 +56,7 @@ try {
     javascript,
     "// @ts-check\n/** @type {number} */\nconst qualityProbe = 'not a number';\nconsole.log(qualityProbe);\n",
   );
+  await mustFail("handwritten JavaScript", ["check:source"], "Handwritten JavaScript");
   await mustFail("authored JavaScript type check", ["check:tooling"], "TS2322");
   await rm(javascript);
   await writeFile(site, "export const qualityProbe: number = 'not a number';\n");

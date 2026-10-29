@@ -16,6 +16,8 @@
     "*.ts",
     "../packages/base/src",
     "../packages/coreutils/src/index.ts",
+    "../packages/coreutils/scripts/notices.ts",
+    "../packages/coreutils/scripts/verify-transfer.ts",
     "../packages/findutils/src/index.ts",
     "../packages/grep/src/index.ts",
     "../packages/sed/src/index.ts",
