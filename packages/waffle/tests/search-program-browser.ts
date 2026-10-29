@@ -215,7 +215,13 @@ export async function searchProgramBrowserCases() {
       programs: pkg.programs.map((program) => ({
         ...program,
         launch: async (context, service, original) => {
-          observations.push({ pid: context.pid, module: context.module, context, fallback: false });
+          observations.push({
+            pid: context.pid,
+            module: context.module,
+            context,
+            fallback: false,
+            transport: false,
+          });
           check(context.module instanceof WebAssembly.Module, "real module was not admitted");
           check(program.launch, "missing opt-in launch hook");
           return program.launch(context, service, original);
