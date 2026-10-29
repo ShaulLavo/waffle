@@ -211,6 +211,20 @@ const navigationResponseCases = [
     text: "binary fixture",
   },
   {
+    path: "/empty.js",
+    body: new Blob(["empty JS"]),
+    status: 200,
+    contentType: "text/javascript",
+    text: "empty JS",
+  },
+  {
+    path: "/empty.wasm",
+    body: new Blob(["empty WASM"]),
+    status: 200,
+    contentType: "text/html",
+    text: "empty WASM",
+  },
+  {
     path: "/index.js",
     body: "export {}",
     status: 200,
@@ -255,6 +269,57 @@ for (const testCase of navigationResponseCases)
       { kind: "response-constructed", path: testCase.path, status: testCase.status },
     ]);
   });
+
+test("navigation response preserves a real Bun WASM build artifact MIME", async () => {
+  const wasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+  const build = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "entry.ts")],
+    target: "browser",
+    plugins: [
+      {
+        name: "navigation-wasm-fixture",
+        setup(builder) {
+          builder.onResolve({ filter: /.*/ }, ({ path }) => ({
+            path,
+            namespace: "navigation-wasm-fixture",
+          }));
+          builder.onLoad({ filter: /entry\.ts$/, namespace: "navigation-wasm-fixture" }, () => ({
+            contents: 'import url from "./module.wasm"; console.log(url);',
+            loader: "ts",
+          }));
+          builder.onLoad({ filter: /module\.wasm$/, namespace: "navigation-wasm-fixture" }, () => ({
+            contents: wasm,
+            loader: "file",
+          }));
+        },
+      },
+    ],
+  });
+  expect(build.success).toBe(true);
+  const artifact = build.outputs.find((output) => output.path.endsWith(".wasm"));
+  expect(artifact).toBeDefined();
+  if (!artifact) return;
+  expect(artifact.type).toBe("application/wasm");
+  expect(artifact instanceof Blob).toBe(false);
+  const events: NavigationServerEvent[] = [];
+
+  const response = storageNavigationResponse(
+    new Request("http://127.0.0.1/module.wasm"),
+    { "/module.wasm": artifact },
+    (event) => events.push(event),
+  );
+
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("application/wasm");
+  expect(response.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin");
+  expect(response.headers.get("Cross-Origin-Embedder-Policy")).toBe("require-corp");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(wasm);
+  expect(events).toEqual([
+    { kind: "request", method: "GET", path: "/module.wasm" },
+    { kind: "response-constructed", path: "/module.wasm", status: 200 },
+  ]);
+});
 
 test("real loopback preserves the root response and records only local server milestones", async () => {
   const interruptListeners = process.listenerCount("SIGINT");

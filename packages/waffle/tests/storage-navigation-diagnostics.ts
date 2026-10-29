@@ -71,7 +71,7 @@ export function storageNavigationResponse(
       "Cross-Origin-Embedder-Policy": "require-corp",
       "cache-control": "no-store",
       "content-type":
-        body instanceof Blob && body.type
+        typeof body !== "string" && body !== undefined && body.type
           ? body.type
           : path.endsWith(".js")
             ? "text/javascript"
