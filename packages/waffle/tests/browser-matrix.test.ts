@@ -17,14 +17,15 @@ const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";
 const recovery = "recovery-r42";
 const chromiumOnly = [continuity, rootContinuity];
+const socket = "fs-socket";
 const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
 const name = process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
 const engines = process.argv.slice(2).join(",");
-if (${JSON.stringify(chromiumOnly)}.includes(name)) {
+if (${JSON.stringify(chromiumOnly.concat([socket]))}.includes(name)) {
   appendFileSync(name + ".invocations", engines + "\\n");
-  if (engines !== "chromium") throw Error("continuity engine repeated or changed");
+  if (engines !== (name === "fs-socket" ? "firefox" : "chromium")) throw Error("isolated engine repeated or changed");
   if (existsSync(name + ".finished")) throw Error("continuity repeated");
   const scratch = process.env.STORAGE_SCRATCH_ROOT;
   if (scratch !== process.cwd() && !scratch?.startsWith(process.cwd() + "/wb-")) throw Error("scratch missing");
@@ -36,7 +37,7 @@ if (${JSON.stringify(chromiumOnly)}.includes(name)) {
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
   if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
-  const predecessor = name === "workspace-continuity" ? "recovery-r42" : "workspace-continuity";
+  const predecessor = name === "workspace-continuity" ? "recovery-r42" : name === "root-continuity" ? "workspace-continuity" : "root-continuity";
   if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
   appendFileSync("isolated.order", name + "\\n");
   writeFileSync(name + ".scratch", scratch);
@@ -106,7 +107,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     for (const name of ["browser-command.ts", "browser-supervisor.ts"])
       await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
     await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
-    for (const runner of runners.concat(chromiumOnly))
+    for (const runner of runners.concat(chromiumOnly, [socket]))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
     let failure: unknown;
@@ -139,11 +140,12 @@ async function matrix(failing: readonly string[]): Promise<void> {
         (process.platform !== "linux" && recoveryScratch === root),
     ).toBe(true);
     expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
-      [recovery].concat(chromiumOnly).join("\n") + "\n",
+      [recovery].concat(chromiumOnly, [socket]).join("\n") + "\n",
     );
-    for (const runner of chromiumOnly) {
-      expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("chromium");
-      expect(await readFile(join(root, `${runner}.invocations`), "utf8")).toBe("chromium\n");
+    for (const runner of chromiumOnly.concat([socket])) {
+      const engine = runner === socket ? "firefox" : "chromium";
+      expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe(engine);
+      expect(await readFile(join(root, `${runner}.invocations`), "utf8")).toBe(engine + "\n");
       const scratch = await readFile(join(root, `${runner}.scratch`), "utf8");
       expect(
         scratch.startsWith(root + "/wb-") || (process.platform !== "linux" && scratch === root),
@@ -158,6 +160,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
         [`${recovery}:chromium`],
         runners.map((runner) => `${runner}:webkit`),
         chromiumOnly.map((runner) => `${runner}:chromium`),
+        [`${socket}:firefox`],
       );
     expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
       order
@@ -222,4 +225,8 @@ test("combined isolated Chromium failures retain supervised order and cleanup", 
     `${recovery}:chromium`,
     "storage:chromium,firefox",
   ]);
+}, 15_000);
+
+test("socket Firefox attachment failure remains blocking in its single invocation", async () => {
+  await matrix([`${socket}:firefox`]);
 }, 15_000);

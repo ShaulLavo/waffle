@@ -1751,9 +1751,8 @@ function attachSocketScopeControl(
     data.connect.port.close();
     retireRequestMemory(captureRequestMemory(data.connect.requests));
     data.reply.postMessage({ error: errno(error) });
-  } finally {
-    data.reply.close();
   }
+  // The page closes its receiving port after delivery; closing this sender can discard replies.
 }
 
 function failureDiagnostic(error: unknown) {

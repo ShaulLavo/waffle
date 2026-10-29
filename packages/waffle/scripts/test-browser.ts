@@ -18,6 +18,7 @@ const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firef
   runners.map((runner) => [{ runner, engines: ["webkit"] }]),
   [[{ runner: "tests/workspace-continuity-browser-runner.ts", engines: ["chromium"] }]],
   [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],
+  [[{ runner: "tests/fs-socket-browser-runner.ts", engines: ["firefox"] }]],
 );
 let failures: Error[] = [];
 try {
