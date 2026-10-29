@@ -262,3 +262,9 @@ export function afterNativePromise<T>(
 ): void {
   apply(promiseThenMethod, promise, [fulfilled, rejected]);
 }
+
+const settledPromise = Promise.resolve();
+/** Run a private callback in a later microtask without a guest-replaceable scheduler. */
+export function afterMicrotask(callback: () => void): void {
+  apply(promiseThenMethod, settledPromise, [callback]);
+}

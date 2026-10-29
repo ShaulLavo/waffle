@@ -108,18 +108,22 @@ export class GuestWatchTable implements GuestWatchReadiness {
     return take(watch, capacity);
   }
 
+  /** Throws FilesystemError when the service close fails; the id then stays open for a retry. */
   close(id: number): number {
     const watch = mapGet(this.watches, id);
     if (!watch) return EBADF;
+    if (!this.fs.revoked) this.closeService(watch.service);
     mapDelete(this.watches, id);
-    if (this.fs.revoked) return 0;
+    return 0;
+  }
+
+  private closeService(service: number): void {
     try {
-      this.fs.close(watch.service);
+      this.fs.close(service);
     } catch (error) {
       // Revoked meanwhile: the session's close releases the subscription.
       if (!(error instanceof FilesystemError) || error.errno !== ECANCELED) throw error;
     }
-    return 0;
   }
 
   /** Forget every id without service calls; the session's close releases subscriptions. */
@@ -131,9 +135,17 @@ export class GuestWatchTable implements GuestWatchReadiness {
     if (this.fs.revoked) return failure(ECANCELED);
     const generation = atomicsLoad(this.fs.cells, 3);
     if (generation === watch.observed) return failure(EAGAIN);
-    // Set before the call: a commit after the service drains moves the counter again.
+    // Set before the call: a commit after the service drains moves the counter again. A failed
+    // call drained nothing, so the watch stays pending for the retry.
+    const previous = watch.observed;
     watch.observed = generation;
-    const batch = this.fs.read(watch.service);
+    let batch: WatchBatch;
+    try {
+      batch = this.fs.read(watch.service);
+    } catch (error) {
+      watch.observed = previous;
+      throw error;
+    }
     if (batch.kind === "closed") {
       watch.ended = true;
       return END;

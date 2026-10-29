@@ -16,6 +16,16 @@ import { FilesystemError, type FileSystem, type WatchFileSystem } from "../core/
 import type { Resource } from "../core/descriptors.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import { watchGuest, watchGuestModule } from "./fixtures/watch-guest.js";
+import {
+  FILESYSTEM_REQUEST_LIMITS,
+  FilesystemRequestAllocator,
+  FilesystemRequestPool,
+  REQUEST_CLIENT,
+  REQUEST_SERVICE,
+  createRequestBudget,
+  releaseRequestBuffer,
+  type FilesystemRequestBuffer,
+} from "../fs/request-memory.js";
 
 async function fixture(backend = new MemoryBackend()) {
   const pair = createFilesystemConnection();
@@ -532,7 +542,8 @@ const CHANGE = 1;
 const RENAME = 2;
 const OVERFLOW = 3;
 
-/** The real WASI adapter and watch service in one thread; calls are counted at the service. */
+/** The real WASI adapter and watch service in one thread; calls are counted at the service.
+ * Each call takes a request buffer from a real allocator, as FilesystemClient's calls do. */
 function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
   const backend = new MemoryBackend();
   backend.execute("mkdirp", ["/dir/sub"], new Uint8Array());
@@ -543,28 +554,52 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
   const service = new WatchService(backend);
   const calls = { open: 0, read: 0, close: 0 };
   const state = { revoked: false };
+  const pool = new FilesystemRequestPool(createRequestBudget());
+  const allocator = new FilesystemRequestAllocator(pool.take(new SharedArrayBuffer(4)));
+  const release = (buffer: FilesystemRequestBuffer) => {
+    releaseRequestBuffer(buffer, REQUEST_CLIENT);
+    releaseRequestBuffer(buffer, REQUEST_SERVICE);
+  };
+  const request = <T>(call: () => T): T => {
+    const buffer = allocator.allocate(64);
+    try {
+      return call();
+    } finally {
+      release(buffer);
+    }
+  };
+  /** Occupy every outstanding request slot until the returned release runs. */
+  const saturate = () => {
+    const held = Array.from({ length: FILESYSTEM_REQUEST_LIMITS.outstanding }, () =>
+      allocator.allocate(64),
+    );
+    return () => held.forEach(release);
+  };
   const source: WatchFileSystem = {
     cells: backend.shared.watch.cells,
     get revoked() {
       return state.revoked;
     },
-    open(handle, recursive) {
-      calls.open++;
-      if (state.revoked) throw new FilesystemError(11);
-      const id = service.open(1, handle, recursive, () => false);
-      hooks.afterOpen?.();
-      return id;
-    },
-    read(id) {
-      calls.read++;
-      const batch = service.read(1, id);
-      hooks.duringRead?.();
-      return batch;
-    },
-    close(id) {
-      calls.close++;
-      service.close(1, id);
-    },
+    open: (handle, recursive) =>
+      request(() => {
+        calls.open++;
+        if (state.revoked) throw new FilesystemError(11);
+        const id = service.open(1, handle, recursive, () => false);
+        hooks.afterOpen?.();
+        return id;
+      }),
+    read: (id) =>
+      request(() => {
+        calls.read++;
+        const batch = service.read(1, id);
+        hooks.duringRead?.();
+        return batch;
+      }),
+    close: (id) =>
+      request(() => {
+        calls.close++;
+        service.close(1, id);
+      }),
   };
   const fs: FileSystem = Object.assign(backend.fs, { watches: source });
   const wasi = new Wasi({
@@ -589,7 +624,7 @@ function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
         : { kind: "file", handle, offset: 0, append: false };
     return wasi.descriptors.open(resource, RIGHTS_ALL, RIGHTS_ALL);
   };
-  return { backend, calls, state, wasi, guest: watchGuest(instance), write, descriptor };
+  return { backend, calls, state, wasi, guest: watchGuest(instance), write, descriptor, saturate };
 }
 
 test("guest watch imports report direct, recursive and file names as packed records", () => {
@@ -767,4 +802,29 @@ test("proc_exit drops guest watch ids without service calls", () => {
   expect(h.wasi.filesystemWatches?.active).toBe(false);
   expect(h.guest.read(id).errno).toBe(8);
   expect(h.calls.close).toBe(0);
+});
+
+test("a guest watch read refused at request admission stays pending and delivers on retry", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  const release = h.saturate();
+  h.write("/dir/a", 2);
+  expect(h.guest.read(id).errno).toBe(6);
+  expect(h.calls.read).toBe(0);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(true);
+  release();
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.calls.read).toBe(1);
+});
+
+test("a guest watch close refused at request admission keeps its id for a retry", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  const release = h.saturate();
+  expect(h.guest.close(id)).toBe(6);
+  expect(Atomics.load(h.backend.shared.watch.cells, 0)).toBe(1);
+  release();
+  expect(h.guest.close(id)).toBe(0);
+  expect(Atomics.load(h.backend.shared.watch.cells, 0)).toBe(0);
+  expect(h.guest.close(id)).toBe(8);
 });

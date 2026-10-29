@@ -1,8 +1,11 @@
 import {
+  afterMicrotask,
+  afterNativePromise,
   atomicsAdd,
   atomicsLoad,
   atomicsNotify,
   atomicsWaitAsync,
+  scheduleTimeout,
   SetConstructor,
   setAdd,
   setDelete,
@@ -89,6 +92,8 @@ const canParse = (url: string) => {
 };
 const decoder = new TextDecoder();
 const now = performance.now.bind(performance);
+// Private wait loops schedule through captured natives; their waits never reject.
+const ignore = () => {};
 
 interface AttachedNotifications {
   readonly set: NotificationWaitSet;
@@ -188,8 +193,8 @@ export class NetHost {
       this.watchRing();
     };
     const waiting = this.ring.waitAsync(seen);
-    if (waiting) waiting.then(again);
-    else setTimeout(again, 4);
+    if (waiting) afterNativePromise(waiting, again, ignore);
+    else scheduleTimeout(again, 4);
   }
 
   /** Wake the engine when a guest watch becomes readable. Each commit in the root costs one
@@ -204,8 +209,8 @@ export class NetHost {
       const seen = atomicsLoad(word, 3);
       if (this.notifications?.watches()?.pending()) this.newsCallback?.();
       const waiting = atomicsWaitAsync(word, 3, seen);
-      if (waiting.async) void waiting.value.then(turn);
-      else queueMicrotask(turn);
+      if (waiting.async) afterNativePromise(waiting.value, turn, ignore);
+      else afterMicrotask(turn);
     };
     turn();
   }

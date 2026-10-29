@@ -49,6 +49,9 @@ function readiness(cells: Int32Array, pending = false): GuestWatchReadiness & { 
 }
 
 const counter = () => new Int32Array(new SharedArrayBuffer(16));
+/** Install a then that a guest could have replaced after runtime modules loaded. */
+const replaceThen = (then: typeof Promise.prototype.then) =>
+  Reflect.set(Promise.prototype, "then", then);
 
 test("a pending guest watch ends poll(60000) without waiting", () => {
   const cells = counter();
@@ -147,4 +150,53 @@ test("onNews wakes the engine on a commit only while a guest watch is pending", 
   } finally {
     host.dispose();
   }
+});
+
+test("onNews wait loops never hand their callbacks to guest-replaceable schedulers", async () => {
+  const cells = counter();
+  const host = new NetHost(createRing(), () => {});
+  const originalThen = Promise.prototype.then;
+  const originalQueue = globalThis.queueMicrotask;
+  const originalTimeout = globalThis.setTimeout;
+  const observed: string[] = [];
+  let news = 0;
+  // A pending check that commits forces the not-equal branch on every turn until it stops.
+  let commits = 3;
+  try {
+    const watches = readiness(cells);
+    watches.pending = () => {
+      if (commits-- > 0) Atomics.add(cells, 3, 1);
+      return false;
+    };
+    const observedThen = function (this: Promise<unknown>, ...args: never[]) {
+      if (args.length) observed.push("then");
+      return Reflect.apply(originalThen, this, args);
+    };
+    replaceThen(observedThen);
+    globalThis.queueMicrotask = (callback) => {
+      observed.push("queueMicrotask");
+      originalQueue(callback);
+    };
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      observed.push("setTimeout");
+      return originalTimeout(...args);
+    }) as typeof setTimeout;
+    host.attachNotifications(waitSet(cells).set, () => watches);
+    host.onNews(() => news++);
+    const settle = () => new Promise((resolve) => originalTimeout(resolve, 20));
+    await settle();
+    watches.ready = true;
+    watches.pending = () => watches.ready;
+    Atomics.add(cells, 3, 1);
+    Atomics.notify(cells, 3);
+    await settle();
+  } finally {
+    replaceThen(originalThen);
+    globalThis.queueMicrotask = originalQueue;
+    globalThis.setTimeout = originalTimeout;
+    host.dispose();
+  }
+  expect(commits).toBeLessThan(0);
+  expect(news).toBe(1);
+  expect(observed).toEqual([]);
 });
