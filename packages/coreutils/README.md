@@ -16,8 +16,8 @@ From the scratch workspace, with Rust 1.98.1 and cached dependencies:
 
 ```sh
 cargo test --offline -p waffle-program-support -p waffle-coreutils -p waffle-clear
-node scripts/verify-transfer.mjs
-node scripts/notices.mjs
+node scripts/verify-transfer.ts
+node scripts/notices.ts
 node scripts/build.ts
 ```
 

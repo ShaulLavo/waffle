@@ -1,16 +1,19 @@
-// @ts-check
-/** @typedef {{ bytes(): Uint8Array, view(): DataView, range(ptr: number, length: number): Uint8Array }} Views */
-/** @type {WeakMap<WebAssembly.Memory, Views>} */
-const hosts = new WeakMap();
+export interface MemoryViews {
+  bytes(): Uint8Array;
+  view(): DataView;
+  range(ptr: number, length: number): Uint8Array;
+}
 
-/** @param {WebAssembly.Memory & { toResizableBuffer?(): ArrayBuffer | SharedArrayBuffer }} memory
- * @returns {Views}
- */
-export function memoryViews(memory) {
+type ResizableMemory = WebAssembly.Memory & {
+  toResizableBuffer?(): ArrayBuffer | SharedArrayBuffer;
+};
+
+const hosts = new WeakMap<WebAssembly.Memory, MemoryViews>();
+
+export function memoryViews(memory: ResizableMemory): MemoryViews {
   const existing = hosts.get(memory);
   if (existing) return existing;
-  /** @type {Views | undefined} */
-  let views;
+  let views: MemoryViews | undefined;
   if (typeof memory.toResizableBuffer === "function") {
     try {
       // This also returns a growable SharedArrayBuffer for shared wasm memories.

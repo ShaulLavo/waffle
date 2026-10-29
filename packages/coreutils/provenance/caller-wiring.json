@@ -27,7 +27,7 @@
     "rule": "Transferred test-own-shell-* scripts retain their frozen cases and oracles but still need the singular harness and family artifact caller wiring. No scoreboard, parser, runtime or worker source is transferred."
   },
   "notices": {
-    "familyGenerator": "scripts/notices.mjs",
+    "familyGenerator": "scripts/notices.ts",
     "output": "generated dist/THIRD_PARTY_NOTICES.txt; never checked in",
     "consumer": "Existing browser aggregation remains outside the family."
   },

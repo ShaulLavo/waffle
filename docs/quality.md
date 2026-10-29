@@ -22,12 +22,15 @@ the separate site build remain blocking jobs. Quality checks do not replace them
   are forbidden so a misspelled local parameter cannot silently read a worker/window name.
 - `format:check` runs pinned Oxfmt across owned supported formats, including Astro.
   `bun run format` applies the same configuration.
+- `check:source` rejects tracked and untracked `.js`, `.mjs` and `.cjs` files across
+  the repository. Only exact paths declared as generated output or deliberate
+  JavaScript test inputs can pass. The current tree needs no exceptions, and ignored
+  build output remains exempt.
 - `check` and `check:nodenext` retain the strict bundler and NodeNext configurations.
-  `check:tooling` adds all test/worker fixtures, build/prepare scripts, tooling and
-  the authored `core/memory-views.js`. That JavaScript file opts into checking with
-  JSDoc and `@ts-check`. Generated `dist` JavaScript can be imported by Node fixtures
-  without checking generated code a second time. Four JavaScript tests are now
-  strict TypeScript tests. No additional `any` or type-ignore directives were added.
+  `check:tooling` adds all test/worker fixtures, build/prepare scripts and tooling.
+  Deliberate JavaScript test inputs can still opt into checking with `@ts-check`.
+  Generated `dist` JavaScript can be imported by Node fixtures without checking
+  generated code a second time. No additional `any` or type-ignore directives were added.
 - The site's own `astro check` uses its separate TypeScript version and dependencies.
   It checks Astro templates, first-party scripts and authored site tooling. Root
   Knip treats `site` as a separate workspace, including its dependencies and Astro
@@ -93,9 +96,9 @@ same PR. Do not increase thresholds or refresh a baseline simply to clear CI.
 ## Gate regression probes
 
 `tooling/quality-probes.ts` creates fresh synthetic files and verifies actual gate
-failures for lint, accidental browser-global `name` references, formatting, strict
-TypeScript, checked JavaScript, site types, unused files, unused exports in test
-entries, exact clones, structural clones and empty duplicate scans. It checks diagnostic evidence as well as exit status, so a
+failures for lint, handwritten JavaScript, accidental browser-global `name` references,
+formatting, strict TypeScript, checked JavaScript test inputs, site types, unused files,
+unused exports in test entries, exact clones, structural clones and empty duplicate scans. It checks diagnostic evidence as well as exit status, so a
 missing tool or an unrelated failure cannot satisfy a probe. Child timeouts and
 interrupt signals reach cleanup. Each command owns a process group, and cleanup
 retires descendants even after their command leader exits. `finally` removes every

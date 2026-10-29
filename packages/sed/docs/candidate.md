@@ -12,4 +12,4 @@ The small shared test helper at `tools/source-contract-test.ts` must accompany s
 
 Historical build, installed-package browser test and feature/install documentation remain byte-identical under `provenance/bash/`. They require Waffle's real contracts before becoming current package commands. WASI still rejects execution commands and in-place edits; native upstream behavior differs intentionally. Native tests cannot qualify those WASI restrictions.
 
-The package has no runtime entry, worker or installer. See the candidate root's `programs-search-candidate/INTEGRATION.md` and `BUILD-TOOLS.md` for the exact remaining work and notice requirements.
+The package has no runtime entry, worker or installer.

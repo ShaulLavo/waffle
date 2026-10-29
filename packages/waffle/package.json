@@ -74,11 +74,11 @@
       "default": "./core/filesystem.ts"
     },
     "./core/memory-views": {
-      "types": "./core/memory-views.js",
+      "types": "./core/memory-views.ts",
       "node": "./dist/core/memory-views.js",
-      "bun": "./core/memory-views.js",
-      "browser": "./core/memory-views.js",
-      "default": "./core/memory-views.js"
+      "bun": "./core/memory-views.ts",
+      "browser": "./core/memory-views.ts",
+      "default": "./core/memory-views.ts"
     },
     "./core/open-file": {
       "types": "./core/open-file.ts",
@@ -565,9 +565,10 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check:tooling": "tsc -p tsconfig.tooling.json",
+    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts",
     "unused": "knip --no-progress",
     "duplicates": "jscpd --fail-on-new-clones 0",
-    "quality": "bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
+    "quality": "bun run check:source && bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
     "build:network": "bun tooling/build-network.ts",
     "size:network": "bun tooling/network-size.ts",
     "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked",
