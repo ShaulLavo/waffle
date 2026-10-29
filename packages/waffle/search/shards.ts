@@ -43,8 +43,8 @@ export type ShardProgram =
 export interface ProgramLimits {
   readonly fileBytes: number;
   readonly pathBytes: number;
-  /** Upper bound on the bytes one file's result can emit, reserved before dispatch. */
-  outputBound(size: number, pathBytes: number): number;
+  /** Upper bound at the enforced input limit, reserved before dispatch even if a file grows. */
+  outputBound(fileBytes: number, pathBytes: number): number;
 }
 
 export interface ShardFile {
@@ -324,7 +324,10 @@ export class SearchRun {
     let bytes = 0;
     while (this.pending.length && batch.length < BATCH_FILES) {
       const file = this.pending[0]!;
-      const bound = this.limits.outputBound(file.size, encoder.encode(file.path).length);
+      const bound = this.limits.outputBound(
+        this.limits.fileBytes,
+        encoder.encode(file.path).length,
+      );
       if (this.reservedBytes && this.reservedBytes + bound > OUTPUT_WINDOW_BYTES) break;
       if (batch.length && bytes + file.size > BATCH_BYTES) break;
       this.pending.shift();
