@@ -90,6 +90,24 @@ test("the scan decodes immediates instead of matching a 0x40 byte", () => {
   expect(() => growthFree(code([0xfb, 0]), "probe")).toThrow("unsupported opcode");
 });
 
+test("reference instructions without immediates cannot hide a following memory.grow", () => {
+  // (func (param externref) local.get 0 ref.as_non_null ref.is_null memory.grow drop): valid
+  // Wasm whose grow is at most one page. 0xd4 has no immediate, so the grow must be seen.
+  const asNonNull = new Uint8Array([
+    0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 1, 111, 0, 3, 2, 1, 0, 5, 4, 1, 3, 1, 8, 10, 11, 1, 9,
+    0, 32, 0, 212, 209, 64, 0, 26, 11,
+  ]);
+  expect(WebAssembly.validate(asNonNull)).toBe(true);
+  expect(growthFree(asNonNull, "reference")).toBe(false);
+  // Without the grow, the same reference sequence decodes as growth-free.
+  const benign = new Uint8Array([
+    0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 1, 111, 0, 3, 2, 1, 0, 10, 9, 1, 7, 0, 32, 0, 212,
+    209, 26, 11,
+  ]);
+  expect(WebAssembly.validate(benign)).toBe(true);
+  expect(growthFree(benign, "reference")).toBe(true);
+});
+
 test("growth around the owner is charged truthfully and closes the group to growth", () => {
   const groups = new MemoryGroups({ budgetBytes: 2 * PAGE_BYTES, maximumPages: 8 });
   const lease = groups.admit(1, "d", "new");
