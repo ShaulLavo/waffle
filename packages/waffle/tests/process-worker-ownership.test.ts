@@ -1011,6 +1011,25 @@ test("queued worker reap notices retain authority after their caller is itself r
   expect(f.broker.get(childPid)).toBeUndefined();
 });
 
+test("reaping one job keeps another directly reaped process collectable by its own notice", async () => {
+  const f = fixture();
+  const reapedPid = f.root.spawn(1, request()),
+    claimedPid = f.root.spawn(1, request());
+  await f.flush();
+  const reaped = f.client(f.broker.get(reapedPid)!),
+    claimed = f.client(f.broker.get(claimedPid)!);
+  reaped.exit(0);
+  claimed.exit(0);
+  await f.flush();
+  // The process notice is handled while the other job's guest claim is still unacknowledged.
+  expect(f.root.wait(1, reapedPid)?.status).toBe(0);
+  expect(f.root.waitJob(1, claimed.job)?.status).toBe(0);
+  await f.flush();
+  expect(f.supervisor.get(reapedPid)).toBeUndefined();
+  expect(f.supervisor.get(claimedPid)).toBeUndefined();
+  expect(f.broker.get(reapedPid)).toBeUndefined();
+});
+
 test("accepted separate-job spawns keep their descriptors after the parent job is reaped", async () => {
   const f = fixture();
   const ownerPid = f.root.spawn(1, request());
