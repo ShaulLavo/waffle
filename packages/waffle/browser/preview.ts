@@ -49,7 +49,11 @@ export class PreviewRouter {
     const host = createPreviewHostRelay(
       { connect: (port, sink) => this.servers.get(port)?.connect(port, sink) ?? null },
       this.owner,
-      binding,
+      {
+        ...binding,
+        originPort: (origin) =>
+          Array.from(this.hosts).find(([, host]) => !host.closed && host.origin === origin)?.[0],
+      },
     );
     for (const [port, other] of this.hosts) {
       if (port === binding.port || other.closed || other.origin !== host.origin) continue;

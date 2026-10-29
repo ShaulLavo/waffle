@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 import { PreviewRouter, type PreviewServer } from "../browser/preview";
+import type { PreviewSocketRequest } from "../browser/preview-host";
 import type { ConnectionSink } from "../browser/net/helper";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const origin = "https://preview.example.test";
+
+function socketRequest(url = origin, headers: [string, string][] = []): PreviewSocketRequest {
+  return { url, method: "GET", headers };
+}
 
 function fixture(reply?: string) {
   const origins = new Map([
@@ -126,7 +131,7 @@ test("owner, virtual port, capability, and exact HTTP/socket origin are checked 
       { ...host.authorization, capability: "wrong" },
     ]) {
       await expect(host.fetch(grant, new Request(origin))).rejects.toThrow("Unauthorized");
-      expect(() => host.connect(grant, origin, sink)).toThrow("Unauthorized");
+      expect(() => host.connect(grant, socketRequest(), sink)).toThrow("Unauthorized");
     }
     for (const url of [
       "https://foreign.test/",
@@ -135,7 +140,9 @@ test("owner, virtual port, capability, and exact HTTP/socket origin are checked 
       "https://user@preview.example.test/",
       "ws://preview.example.test/",
     ]) {
-      expect(() => host.connect(host.authorization, url, sink)).toThrow("bound origin");
+      expect(() => host.connect(host.authorization, socketRequest(url), sink)).toThrow(
+        "bound origin",
+      );
     }
     expect(f.opened).toBe(0);
   } finally {
@@ -150,18 +157,26 @@ test("duplex connections retain upgrade bytes and are revoked with their binding
   const host = await f.router.bindHost({ port: 3137, signal: lifetime.signal });
   const chunks: string[] = [];
   const failures: string[] = [];
-  const connection = host.connect(host.authorization, "wss://preview.example.test/hmr?token=abc", {
-    data: (bytes) => {
-      chunks.push(decoder.decode(bytes));
+  const connection = host.connect(
+    host.authorization,
+    socketRequest("wss://preview.example.test/hmr?token=abc", [
+      ["Host", "preview.example.test"],
+      ["Origin", origin],
+      ["Connection", "Upgrade"],
+      ["Upgrade", "websocket"],
+    ]),
+    {
+      data: (bytes) => {
+        chunks.push(decoder.decode(bytes));
+      },
+      end() {},
+      error: (message) => {
+        failures.push(message);
+      },
     },
-    end() {},
-    error: (message) => {
-      failures.push(message);
-    },
-  });
+  );
   const upgrade =
-    "GET /hmr?token=abc HTTP/1.1\r\nHost: preview.example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
-  connection?.write(encoder.encode(upgrade));
+    "GET /hmr?token=abc HTTP/1.1\r\nHost: localhost:3137\r\nOrigin: http://localhost:3137\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
   await f.peer?.data(encoder.encode("HTTP/1.1 101 Switching Protocols\r\n\r\nframe"));
   expect(f.received).toBe(upgrade);
   expect(chunks).toEqual(["HTTP/1.1 101 Switching Protocols\r\n\r\nframe"]);
@@ -172,7 +187,7 @@ test("duplex connections retain upgrade bytes and are revoked with their binding
   connection?.write(encoder.encode("late"));
   expect(f.received).toBe(upgrade);
   expect(() =>
-    host.connect(host.authorization, origin, { data() {}, end() {}, error() {} }),
+    host.connect(host.authorization, socketRequest(), { data() {}, end() {}, error() {} }),
   ).toThrow("closed");
 });
 
@@ -251,10 +266,10 @@ test("two virtual ports have distinct root origins and cannot reuse each other's
     expect(f.router.url(3137)).toBe(`${origin}/`);
     expect(f.router.url(3138)).toBe("https://second.example.test/");
     const sink: ConnectionSink = { data() {}, end() {}, error() {} };
-    expect(() => two.connect(one.authorization, "https://second.example.test/", sink)).toThrow(
-      "Unauthorized",
-    );
-    two.connect(two.authorization, "https://second.example.test/", sink);
+    expect(() =>
+      two.connect(one.authorization, socketRequest("https://second.example.test/"), sink),
+    ).toThrow("Unauthorized");
+    two.connect(two.authorization, socketRequest("https://second.example.test/"), sink);
     expect(secondPort).toBe(3138);
     f.origins.set(3138, origin);
     await expect(f.router.bindHost({ port: 3138 })).rejects.toThrow("already bound");
@@ -362,7 +377,7 @@ test("wire socket acceptance precedes synchronous bytes and end", async () => {
   const messages: string[] = [];
   try {
     await host.dispatch(
-      { type: "socket", authorization: host.authorization, url: origin + "/hmr" },
+      { type: "socket", authorization: host.authorization, ...socketRequest(origin + "/hmr") },
       {
         onmessage: null,
         close() {},
@@ -435,7 +450,7 @@ for (const protocol of ["http:", "https:"]) {
     const host = await f.router.bindHost({ port: 3137 });
     try {
       expect(() =>
-        host.connect(host.authorization, `blob:${boundOrigin}/another`, {
+        host.connect(host.authorization, socketRequest(`blob:${boundOrigin}/another`), {
           data() {},
           end() {},
           error() {},
@@ -461,7 +476,7 @@ for (const protocol of ["http:", "https:"]) {
       expect(response.status).toBe(200);
       expect(f.received).toStartWith("GET /route?q=1 HTTP/1.1\r\nhost: preview.example.test\r\n");
       const socketURL = boundOrigin.replace(/^http/, "ws") + "/hmr?q=2";
-      const connection = host.connect(host.authorization, socketURL, {
+      const connection = host.connect(host.authorization, socketRequest(socketURL), {
         data() {},
         end() {},
         error() {},
@@ -502,7 +517,7 @@ async function wireHTTP(
   return messages;
 }
 
-test("authenticated wire headers preserve Origin, Cookie, duplicates and repeated native Set-Cookie", async () => {
+test("W10 authenticated wire headers preserve Origin, Cookie, duplicates and repeated native Set-Cookie", async () => {
   const f = fixture(
     "HTTP/1.1 201 Created\r\nSet-Cookie: first=1; Path=/\r\nSet-Cookie: second=2; Path=/\r\nX-Repeat: a\r\nX-Repeat: b\r\nContent-Length: 2\r\n\r\nok",
   );
