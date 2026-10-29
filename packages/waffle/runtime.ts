@@ -1,5 +1,9 @@
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
-export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
+export type {
+  RuntimeNetwork,
+  RuntimeNetworkHelper,
+  RuntimeNetworkPathScope,
+} from "./browser/net/runtime.js";
 export {
   RuntimeNetworkLookupError,
   type RuntimeNetworkLookupErrorCode,
@@ -163,6 +167,7 @@ const processCapabilities = {
   transportFor: "method",
   releaseLegacyJob: "method",
   launchWorker: "method",
+  networkPathScope: "method",
   outputDrained: "method",
   workerMemory: "method",
   takeWorker: "method",
@@ -472,7 +477,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (networkActivation) return networkActivation;
       const pending = import("./browser/net/runtime.js").then(({ createRuntimeNetwork }) =>
-        disposed ? undefined : createRuntimeNetwork(assertLive),
+        disposed
+          ? undefined
+          : createRuntimeNetwork(assertLive, (guest, directory) =>
+              filesystem.attachSocketScope(guest, directory),
+            ),
       );
       ownedNetwork = pending;
       networkActivation = pending.then((owner) => {
@@ -640,12 +649,16 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           stops.map(([owner, stop]) => joinStop({ owner, stop, physicalStops, cleanupDebt })),
         );
         failures.push(...stopFailures(stopped));
-        if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
+        let network: RuntimeNetworkOwner | undefined;
+        if (ownedNetwork) await attempt(async () => (network = await ownedNetwork));
+        if (network) await attempt(() => network?.dispose());
+        // Unsettled socket cleanup needs the filesystem: retain it like a failed physical stop.
+        const networkFailed = network?.retained() ?? false;
         if (hostOwner && hostStop)
           await attempt(() =>
             joinStop({ owner: hostOwner, stop: hostStop, physicalStops, cleanupDebt }),
           );
-        if (cleanupDebt.size) throwFailures();
+        if (networkFailed || cleanupDebt.size) throwFailures();
         consumers.clear();
         const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());

@@ -28,6 +28,8 @@ Native outgoing and accepted connections enable TCP_NODELAY. Unix listeners use 
 
 `net_listen(kind, port)` reserves a virtual port. Kind 4 means IPv4 loopback, 40 IPv4-any, 6 IPv6 loopback, and 60 IPv6-any. `net_connect(kind, port)` creates paired endpoint tokens; `net_peer(id)` finds the other endpoint. Other kinds are unsupported. Rust rejects real interfaces.
 
+`net_pair()` creates an addressless connected pair for pathname sockets and returns the dialing token; it uses no port, and `net_address` on either token is unsupported.
+
 `net_write`, `net_take`, `net_consumed`, `net_writable`, `net_ended`, `net_shutdown`, `net_close`, `net_address`, and `net_unlisten` support the existing helper callbacks. Taking bytes for ring publication does not release credit. Guest consumption releases credit and generates the existing writable event. Each direction permits 1 MiB outstanding. Closed tokens ignore late credit receipts. Accepted sockets survive listener removal.
 
 The native write queue retains PR116's 1 MiB high-water mark and 64 KiB minimum acceptance when any room remains. Read queues stop at 1 MiB. Browser virtual credit remains strictly 1 MiB to preserve its existing contract.
