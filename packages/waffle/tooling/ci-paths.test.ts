@@ -366,3 +366,58 @@ test("the browser gate runs memory groups on the fixture built once by libc", ()
     .find((step) => String(step.run).startsWith("bun run test:browser"));
   expect(record(gate?.env).MEMORY_GROUP_FIXTURE_DIR).toBeDefined();
 });
+
+test("a browser-only rerun downloads the reused producer's exact fixture artifact", () => {
+  const upload = artifactStep(stepsFor("libc"), "${{ runner.temp }}/memory-group-fixture");
+  const context: Record<string, string> = {
+    "github.run_id": "40899462745",
+    "github.run_attempt": "1",
+    "steps.memory-group-artifact.outputs.artifact-id": "12345",
+    "needs.libc.outputs.memory-group-artifact-id": "12345",
+  };
+  const expand = (value: unknown) =>
+    String(value).replace(/\$\{\{\s*([^{}]+?)\s*\}\}/g, (_, key: string) => {
+      const resolved = context[key];
+      if (resolved === undefined) throw new Error(`unexpected workflow expression: ${key}`);
+      return resolved;
+    });
+  const artifact = { id: "12345", name: expand(record(upload.with).name) };
+  context["github.run_attempt"] = "2";
+
+  const download = stepsFor("browser").find((step) => step.uses === "actions/download-artifact@v4");
+  const inputs = record(download?.with);
+  expect(artifact.name).toBe("memory-group-fixture-40899462745-1");
+  expect(expand(inputs.name ?? inputs["artifact-ids"])).toBe(
+    inputs.name ? artifact.name : artifact.id,
+  );
+  expect(upload.id).toBe("memory-group-artifact");
+  expect(record(upload.with)["if-no-files-found"]).toBe("error");
+  const output = record(record(jobs.libc).outputs)["memory-group-artifact-id"];
+  expect(output).toBe("${{ steps.memory-group-artifact.outputs.artifact-id }}");
+  expect(expand(output)).toBe(artifact.id);
+  expect(inputs["artifact-ids"]).toBe("${{ needs.libc.outputs.memory-group-artifact-id }}");
+  expect(expand(inputs["artifact-ids"])).toBe(artifact.id);
+  expect(inputs.name).toBeUndefined();
+  expect(inputs.pattern).toBeUndefined();
+  expect(inputs["merge-multiple"]).toBe(true);
+  expect(inputs.path).toBe(record(upload.with).path);
+});
+
+test("the browser rejects a missing fixture artifact ID before download", () => {
+  const steps = stepsFor("browser");
+  const guard = steps.find((step) => step.name === "Require the producer's fixture artifact ID");
+  expect(record(guard?.env).MEMORY_GROUP_ARTIFACT_ID).toBe(
+    "${{ needs.libc.outputs.memory-group-artifact-id }}",
+  );
+  expect(guard?.if).toBeUndefined();
+  expect(guard?.["continue-on-error"]).toBeUndefined();
+  const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v4");
+  expect(guard).toBeDefined();
+  expect(steps.indexOf(record(guard))).toBeLessThan(downloadIndex);
+  for (const id of ["", "12345"]) {
+    const result = Bun.spawnSync(["bash", "-e", "-c", String(guard?.run)], {
+      env: { ...process.env, MEMORY_GROUP_ARTIFACT_ID: id },
+    });
+    expect(result.exitCode).toBe(id ? 0 : 1);
+  }
+});
