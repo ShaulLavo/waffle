@@ -1,3 +1,5 @@
+import { workspaceFilesystemHost } from "./fixtures/filesystem-host.js";
+import { FilesystemRequestAllocator, requestCells, requestBytes, releaseRequestBuffer, REQUEST_CLIENT } from "../fs/request-memory.js";
 import { expect, test } from "bun:test";
 import {
   failWorkspaceCleanupPost,
@@ -42,6 +44,7 @@ import {
   createProcessFilesystemIdentity,
   isRevoked,
   revokeFilesystem,
+  reapFilesystem,
   releaseFilesystemReservation,
 } from "../fs/protocol";
 import { ResidentGrantCell } from "../fs/publication-grant";
@@ -285,11 +288,12 @@ function observeTransferStores(
 
 test("legitimate workspace reservation transfer never changes live ownership controls", async () => {
   const f = await fixture();
-  const connection = createResidentConnection(f.session.descriptor);
+  const host = workspaceFilesystemHost(f.session.descriptor);
+  const connection = host.connection;
   // Bind issued authority sessions directly: this unit exercises the real page bridge, not Web Locks.
   const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
   const childIdentity = createProcessFilesystemIdentity(connection);
-  const childPair = connectFilesystemIdentity(childIdentity);
+  const childPair = connectFilesystemIdentity(childIdentity, host.pool);
   const child = new FilesystemClient({ ...childPair.client, residentPublication: undefined });
   const childChannel = new ResidentChannel(f.session.descriptor.workspace);
   const childSession = residentSession(await childChannel.call("open", f.session.descriptor));
@@ -305,7 +309,7 @@ test("legitimate workspace reservation transfer never changes live ownership con
     const sourceCount = Atomics.load(new Int32Array(connection.capabilities), 0);
     const targetCount = Atomics.load(new Int32Array(childIdentity.capabilities), 0);
     observeTransferStores(connection, childIdentity, sourceCount, targetCount, changed);
-    connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
+    host.attach(childPair.server);
     await child.asyncCall("workspaceBind", [childSession]);
     childBound = true;
     Atomics.store = originalStore;
@@ -446,11 +450,12 @@ function observeBridgeStop() {
 test("parent cleanup joins a pre-bind child cancelled after stopping is observed", async () => {
   const f = await fixture();
   const observation = observeBridgeStop();
-  const connection = createResidentConnection(f.session.descriptor);
+  const host = workspaceFilesystemHost(f.session.descriptor);
+  const connection = host.connection;
   const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
   observation.restore();
   const childIdentity = createProcessFilesystemIdentity(connection);
-  const childPair = connectFilesystemIdentity(childIdentity);
+  const childPair = connectFilesystemIdentity(childIdentity, host.pool);
   const child = new FilesystemClient({ ...childPair.client, residentPublication: undefined });
   let joined: Promise<void> | undefined;
   try {
@@ -458,7 +463,7 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
     await parent.asyncCall("preopen", ["/"]);
     await parent.asyncCall("resolve", [f.directory, "dir/a"]);
     const reservation = parent.reserve(f.file, childIdentity);
-    connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
+    host.attach(childPair.server);
     await rejectsErrno(child.asyncCall("stat", [f.file]), 11);
     await parent.asyncCall("stat", [f.file]);
     joined = stopWorkspaceBridge(parent.connection);
@@ -481,23 +486,29 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
   }
 });
 
+const bridgeAllocators = new WeakMap<FilesystemConnection, FilesystemRequestAllocator>();
 async function bridgeRequest(connection: FilesystemConnection, operation: string, args: unknown[]) {
-  const bytes = pack({ operation, args });
-  const buffer = new SharedArrayBuffer(HEADER + bytes.length);
-  const cells = new Int32Array(buffer, 0, HEADER / 4);
-  cells[1] = bytes.length;
-  new Uint8Array(buffer, HEADER).set(bytes);
-  const completed = Promise.withResolvers<void>();
-  const receive = () => completed.resolve();
-  connection.port.addEventListener("message", receive, { once: true });
+  let allocator = bridgeAllocators.get(connection);
+  if (!allocator) { allocator = new FilesystemRequestAllocator(connection.requests); bridgeAllocators.set(connection, allocator); }
+  const input = pack({ operation, args });
+  const buffer = allocator.allocate(Math.max(input.length, 1024));
+  const cells = requestCells(buffer);
+  cells[1] = input.length;
+  requestBytes(buffer).set(input);
   try {
-    connection.port.postMessage({ id: 1, buffer });
-    await completed.promise;
-    return { state: cells[0], errno: cells[3] };
+    connection.port.postMessage({ id: buffer.id, generation: buffer.memory.generation, offset: buffer.offset, length: buffer.length });
+    for (;;) {
+      const state = Atomics.load(cells, 0);
+      if (state !== State.Pending) return { state, errno: cells[3] };
+      const waiting = Atomics.waitAsync(cells, 0, state);
+      if (waiting.async) await waiting.value;
+    }
   } finally {
-    connection.port.removeEventListener("message", receive);
+    releaseRequestBuffer(buffer, REQUEST_CLIENT);
+    connection.port.postMessage({ discard: buffer.id });
   }
 }
+
 function observeReceiverInstalls() {
   const descriptor = Object.getOwnPropertyDescriptor(MessagePort.prototype, "onmessage");
   const setter = descriptor?.set;
@@ -518,19 +529,21 @@ function observeReceiverInstalls() {
 async function cleanupFixture() {
   const f = await fixture();
   const stopping = observeBridgeStop();
-  const connection = createResidentConnection(f.session.descriptor);
+  const host = workspaceFilesystemHost(f.session.descriptor);
+  const connection = host.connection;
   stopping.restore();
   const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
   await parent.asyncCall("workspaceBind", [f.session]);
   await parent.asyncCall("preopen", ["/"]);
   await parent.asyncCall("resolve", [f.directory, "dir/a"]);
   const identity = createProcessFilesystemIdentity(connection);
-  const pair = connectFilesystemIdentity(identity);
+  const pair = connectFilesystemIdentity(identity, host.pool);
   const reservation = parent.reserve(f.file, identity);
   return {
     f,
     parent,
     connection,
+    host,
     identity,
     pair,
     reservation,
@@ -540,7 +553,7 @@ async function cleanupFixture() {
       releaseFilesystemReservation(reservation);
     },
     connect() {
-      connection.port.postMessage({ connect: pair.server }, [pair.server.port]);
+      host.attach(pair.server);
     },
     async close() {
       pair.client.port.close();
@@ -553,7 +566,6 @@ async function cleanupFixture() {
 
 test("released pre-connect child has cleanup only and parent waits for its actual stop", async () => {
   const f = await cleanupFixture();
-  const child = new FilesystemClient(f.pair.client);
   let joined: Promise<void> | undefined;
   const post = BroadcastChannel.prototype.postMessage;
   const authorityRequests: unknown[] = [];
@@ -581,10 +593,10 @@ test("released pre-connect child has cleanup only and parent waits for its actua
     void joined.catch(() => {});
     await f.stopping.started;
     expect(parentStopped).toBe(false);
-    await child.stopResidentPublication();
-    await child.stopResidentPublication();
-    child.dispose();
-    await child.stopResidentPublication();
+    await stopWorkspaceBridge(f.pair.client);
+    await stopWorkspaceBridge(f.pair.client);
+    reapFilesystem(f.pair.client);
+    await stopWorkspaceBridge(f.pair.client);
     await joined;
     expect(parentStopped).toBe(true);
     expect(Array.from(new Int32Array(f.reservation.state))).toEqual([1, 2]);
@@ -594,7 +606,7 @@ test("released pre-connect child has cleanup only and parent waits for its actua
   } finally {
     BroadcastChannel.prototype.postMessage = post;
     await joined?.catch(() => {});
-    child.dispose();
+    reapFilesystem(f.pair.client);
     await f.close();
   }
 });
@@ -618,11 +630,11 @@ test("revoked parent still receives its proven cancelled child without live admi
 test("parent stopping joins a proven cancelled connect delivered during an older child join", async () => {
   const f = await cleanupFixture();
   const older = createProcessFilesystemIdentity(f.connection);
-  const olderPair = connectFilesystemIdentity(older);
+  const olderPair = connectFilesystemIdentity(older, f.host.pool);
   const olderReservation = f.parent.reserve(f.f.file, older);
   let joined: Promise<void> | undefined;
   try {
-    f.connection.port.postMessage({ connect: olderPair.server }, [olderPair.server.port]);
+    f.host.attach(olderPair.server);
     await f.parent.asyncCall("stat", [f.f.file]);
     let parentStopped = false;
     joined = stopWorkspaceBridge(f.connection).then(() => {
@@ -722,9 +734,7 @@ for (const [name, invalid] of invalidCleanupConnections) {
     const observer = observeReceiverInstalls();
     try {
       f.cancel();
-      f.connection.port.postMessage({ connect: invalid(f.pair.server, f.connection) }, [
-        f.pair.server.port,
-      ]);
+      expect(() => f.host.attach(invalid(f.pair.server, f.connection))).toThrow();
       await f.parent.asyncCall("stat", [f.f.file]);
       expect(observer.observation.installed).toBe(0);
       expect(Array.from(new Int32Array(f.reservation.state))).toEqual([1, 2]);
@@ -972,7 +982,8 @@ test("unresolved timeout identities keep the original sixteen-call admission bou
 test("original bridge stop joins unknown cancellation and actual service preparation", async () => {
   const backend = new PausedBackend();
   const f = await fixture(backend);
-  const connection = createResidentConnection(f.session.descriptor);
+  const host = workspaceFilesystemHost(f.session.descriptor);
+  const connection = host.connection;
   const client = new FilesystemClient({ ...connection, residentPublication: undefined });
   const clock = transportClock();
   let stopping: Promise<void> | undefined;
@@ -1181,7 +1192,8 @@ test("late prepared grant is cancelled and settled by the original stop without 
 for (const operation of ["stat", "missing-operation"]) {
   test(`workspace cleanup joins a timed-out ${operation} terminal reply without inventing cleanup failure`, async () => {
     const f = await fixture();
-    const connection = createResidentConnection(f.session.descriptor);
+    const host = workspaceFilesystemHost(f.session.descriptor);
+  const connection = host.connection;
     const client = new FilesystemClient({ ...connection, residentPublication: undefined });
     const clock = transportClock();
     let held: ReturnType<typeof holdTransportReplies> | undefined;

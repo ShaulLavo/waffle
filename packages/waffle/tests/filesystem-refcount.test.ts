@@ -1,3 +1,5 @@
+import * as requests from "../fs/request-memory.js";
+import { filesystemHostConnector } from "./fixtures/filesystem-host.js";
 import { SLOT_WORDS } from "../fs/shared.js";
 import { readFileSync } from "node:fs";
 import * as protocol from "../fs/protocol.ts";
@@ -45,6 +47,7 @@ function isolatedClient() {
     ...protocol,
     ...shared,
     ...native,
+    ...requests,
     atomicsCompareExchange: ((...args: unknown[]) =>
       Reflect.apply(
         hooks.compareExchange,
@@ -69,7 +72,7 @@ function fixture(Client = FilesystemClient) {
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const client = new Client(connection.client);
+  const client = new Client(connection.client, { connect: filesystemHostConnector(service, connection.pool) });
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -530,7 +533,7 @@ test("service memory accounting enumerates capability table metadata", () => {
   expect(resources.metadataBytes).toBeGreaterThanOrEqual(cells.byteLength);
   const backendResources = backend.shared.resources();
   expect(resources.bytes).toBe(
-    backendResources.bytes + resources.ownerStateBytes + resources.capabilityBytes,
+    backendResources.bytes + resources.ownerStateBytes + resources.capabilityBytes + resources.requestTransportBytes,
   );
   expect(resources.metadataBytes).toBe(
     backendResources.metadataBytes + resources.ownerStateBytes + resources.capabilityBytes,

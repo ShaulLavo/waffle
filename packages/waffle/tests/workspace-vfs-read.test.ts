@@ -575,7 +575,7 @@ test("all public projections of one actual root share the lease budget", async (
   let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;
   try {
     value.service.connect(pair.server);
-    peer = hostFilesystemClient(service, pair);
+    peer = hostFilesystemClient(value.service, pair);
     workspace = createWorkspaceVfs(peer);
     const held = await value.workspace.pin("/file");
     if (held.kind !== "ok") throw new Error(held.kind);

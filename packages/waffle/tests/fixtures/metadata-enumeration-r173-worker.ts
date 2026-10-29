@@ -6,7 +6,7 @@ import {
   metadataGuest,
 } from "./metadata-enumeration-r173-wasi.js";
 
-type Input = { connection: FilesystemConnection } & (
+type Input = { connection: FilesystemConnection; peer: FilesystemConnection } & (
   | { scenario: "links"; root: string }
   | { scenario: "directory"; count: number; capacity?: number }
   | { scenario: "reload" }
@@ -54,7 +54,7 @@ self.onmessage = (event: MessageEvent<Input>) => {
       self.postMessage(deleteFiles(fs, event.data.count));
       return;
     }
-    const peer = new FilesystemClient(fs.fork());
+    const peer = new FilesystemClient(event.data.peer);
     const observer = metadataGuest(peer, event.data.root);
     try {
       self.postMessage(linkLifecycle(fs, event.data.root, observer));
@@ -66,5 +66,6 @@ self.onmessage = (event: MessageEvent<Input>) => {
     self.postMessage({ error: error instanceof Error ? error.stack : String(error) });
   } finally {
     fs.dispose();
+    event.data.peer.port.close();
   }
 };

@@ -1,3 +1,4 @@
+import type { FilesystemRequestBuffer } from "../fs/request-memory.js";
 // A blocking descriptor read that meets another owner's shared global lock waits for it.
 // The lock is held by a real second thread, taken between readMetadata's stat() and identity(),
 // which is where browser `next build` saw EAGAIN on waffle 0.0.90.
@@ -96,6 +97,7 @@ interface Hold {
   owner: number;
   holdMs?: number;
   signal?: { buffer: SharedArrayBuffer; index: number; value: number; afterMs: number };
+  cancelRequest?: { buffer: FilesystemRequestBuffer; afterMs: number };
   keep?: boolean;
   secondSignal?: {
     buffer: SharedArrayBuffer;
@@ -164,7 +166,7 @@ test("cancelling a read while it waits for the lock ends it Cancelled, not EAGAI
       owner: connection.owner,
       holdMs: 2000,
       // Another thread cancels the request while the service waits.
-      signal: { buffer: completion.buffer, index: 6, value: 1, afterMs: 20 },
+      cancelRequest: { buffer: completion.buffer, afterMs: 20 },
     });
     const started = performance.now();
     const result = await outcome(completion.value().finally(() => completion.release()));
@@ -287,7 +289,7 @@ test("second readMetadata identity wait observes request cancellation", async ()
       {
         owner: connection.owner,
         holdMs: 800,
-        signal: { buffer: completion.buffer, index: 6, value: 1, afterMs: 20 },
+        cancelRequest: { buffer: completion.buffer, afterMs: 20 },
       },
       1,
     );

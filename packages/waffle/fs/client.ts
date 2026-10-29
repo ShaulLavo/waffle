@@ -39,6 +39,7 @@ import {
   atomicsWaitAsync,
   typedArrayLength,
   typedArraySet,
+  typedArraySubarray,
   sharedArrayBufferByteLength,
   MapConstructor,
   SetConstructor,
@@ -208,7 +209,7 @@ export class FilesystemCompletion {
     if (this.consumed) return this.decoded;
     const size = this.cells[2]!;
     let bytes = new Uint8ArrayConstructor(
-      requestBytes(this.buffer).subarray(0, Math.min(size, this.buffer.length - HEADER)),
+      typedArraySubarray(requestBytes(this.buffer), 0, Math.min(size, this.buffer.length - HEADER)),
     );
     if (this.cells[0] === State.Overflow) {
       bytes = new Uint8ArrayConstructor(size);
@@ -236,7 +237,7 @@ export class FilesystemCompletion {
   private async load(): Promise<unknown> {
     const size = this.cells[2]!;
     let bytes = new Uint8ArrayConstructor(
-      requestBytes(this.buffer).subarray(0, Math.min(size, this.buffer.length - HEADER)),
+      typedArraySubarray(requestBytes(this.buffer), 0, Math.min(size, this.buffer.length - HEADER)),
     );
     if (this.cells[0] === State.Overflow) {
       bytes = new Uint8ArrayConstructor(size);

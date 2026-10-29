@@ -718,21 +718,16 @@ export function createResidentHost(value: ResidentDescriptor) {
   const bridge =
     descriptor.kind === "workspace" ? new WorkspaceBridge(connection.server) : undefined;
   if (!bridge) connection.server.port.close();
-  return {
-    connection: connection.client,
-    connect(childIdentity: FilesystemIdentity): FilesystemConnection {
-      if (!bridge) throw new FilesystemError(58, "file grants cannot fork a workspace namespace");
-      const child = connectFilesystemIdentity(childIdentity, connection.pool);
-      try {
-        bridge.connect(child.server);
-        return child.client;
-      } catch (error) {
-        child.client.port.close();
-        child.server.port.close();
-        throw error;
-      }
-    },
-  };
+  const attach = bridge ? (child: FilesystemConnection): void => {
+    connection.pool.assertBudget(child.requestBudget);
+    bridge.connect(child);
+  } : undefined;
+  const connect = attach ? (childIdentity: FilesystemIdentity): FilesystemConnection => {
+    const child = connectFilesystemIdentity(childIdentity, connection.pool);
+    try { attach(child.server); return child.client; }
+    catch (error) { child.client.port.close(); child.server.port.close(); throw error; }
+  } : undefined;
+  return { connection: connection.client, pool: connection.pool, connect, attach };
 }
 
 export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
@@ -901,7 +896,7 @@ class WorkspaceBridge {
     const signal = new Int32ArrayConstructor(this.connection.signal);
     while (!this.stopping) {
       const observed = atomicsLoad(signal, 0);
-      if (requestTransportError(this.connection.requests) || isRevoked(this.connection)) {
+      if (requestTransportError(this.connection.requests)) {
         this.replyStopped();
         return;
       }

@@ -126,6 +126,7 @@ export const payloadExceptions: readonly PayloadException[] = [
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
 export const enforcedModules = [
   "fs/request-memory.ts",
+  "fs/section.ts",
   "proc/intrinsics.ts",
   "proc/intrinsics/core.ts",
   "proc/intrinsics/host.ts",

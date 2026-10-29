@@ -1,3 +1,4 @@
+import { cancelRequestBuffer, type FilesystemRequestBuffer } from "../../fs/request-memory.js";
 // Holds the shared filesystem global lock from another thread, as a guest's direct I/O does.
 // control: [0] command (1 = hold), [1] state (1 = held, 2 = released), [2] early release.
 
@@ -8,6 +9,7 @@ interface Hold {
   holdMs: number;
   /** Words to set while the lock is held, after afterMs, as another thread would. */
   signal?: { buffer: SharedArrayBuffer; index: number; value: number; afterMs: number };
+  cancelRequest?: { buffer: FilesystemRequestBuffer; afterMs: number };
   /** Never release: the holder dies with the lock. */
   keep?: boolean;
   secondSignal?: {
@@ -31,6 +33,10 @@ self.onmessage = ({ data }: MessageEvent<Hold>) => {
   if (data.signal) {
     Atomics.wait(control, 2, 0, data.signal.afterMs);
     Atomics.store(new Int32Array(data.signal.buffer), data.signal.index, data.signal.value);
+  }
+  if (data.cancelRequest) {
+    Atomics.wait(control, 2, 0, data.cancelRequest.afterMs);
+    cancelRequestBuffer(data.cancelRequest.buffer);
   }
   if (data.secondSignal) {
     Atomics.wait(control, 2, 0, data.secondSignal.afterMs);

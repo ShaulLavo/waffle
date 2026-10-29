@@ -1,3 +1,4 @@
+import { createResidentHost } from "../../fs/publication-attachment.js";
 import { FilesystemClient, type FilesystemService } from "../../fs/index.js";
 import {
   connectFilesystemIdentity,
@@ -30,4 +31,10 @@ export function hostFilesystemClient(
   return new FilesystemClient(connection.client, {
     connect: filesystemHostConnector(service, connection.pool),
   });
+}
+
+export function workspaceFilesystemHost(descriptor: import("../../fs/publication-grant.js").ResidentDescriptor) {
+  const host = createResidentHost(descriptor);
+  if (!host.connect || !host.attach) throw new Error("workspace host capability required");
+  return { connection: host.connection, pool: host.pool, connect: host.connect, attach: host.attach };
 }

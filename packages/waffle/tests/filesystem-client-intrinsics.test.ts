@@ -1,3 +1,4 @@
+import * as requests from "../fs/request-memory.js";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { FilesystemClient, FilesystemCompletion } from "../fs/client.ts";
@@ -18,11 +19,16 @@ const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
  * their own shared-state responsibilities; their implementations are not under test here.
  * No ports, services, module mocks, or background workers are created by this fixture. */
 function fixture() {
-  const connection = (): protocol.FilesystemConnection => ({
+  const connection = (): protocol.FilesystemConnection => {
+    const requestBudget = requests.createRequestBudget();
+    const revocation = new native.SharedArrayBufferConstructor(4);
+    return ({
+    requestBudget,
+    requests: new requests.FilesystemRequestPool(requestBudget).take(revocation),
     port: { start() {}, close() {}, postMessage() {} } as unknown as MessagePort,
     epoch: new native.SharedArrayBufferConstructor(4),
     signal: new native.SharedArrayBufferConstructor(4),
-    revocations: [new native.SharedArrayBufferConstructor(4)],
+    revocations: [revocation],
     shared: new native.SharedArrayBufferConstructor(4),
     segments: [],
     capabilities: new native.SharedArrayBufferConstructor(protocol.CAPABILITY_LENGTH * 4),
@@ -32,6 +38,7 @@ function fixture() {
     ownerStates: new native.SharedArrayBufferConstructor(8),
     reservations: [],
   });
+  };
   const source = connection(),
     target = connection();
   const targetCapabilities = new native.Int32ArrayConstructor(target.capabilities);
@@ -50,9 +57,6 @@ function fixture() {
   };
   // Predeclare every allocation so the observer recognizes buffers created after poisoning.
   const allocations = [
-    new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
-    new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
-    new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
     new native.SharedArrayBufferConstructor(8),
   ];
   let allocation = 0;
@@ -71,6 +75,7 @@ function fixture() {
     localPublication,
     mutationIntent,
     ...protocol,
+    ...requests,
     ...captures,
     pack: () => new native.Uint8ArrayConstructor(),
     unpack: (bytes: Uint8Array) => bytes,
@@ -99,6 +104,7 @@ function fixture() {
   };
   const client = new exports.FilesystemClient(source);
   const buffers = allocations.concat([
+    source.requests.data, source.requests.control, source.requestBudget,
     source.capabilities,
     source.epoch,
     source.signal,
@@ -129,7 +135,7 @@ test("filesystem client keeps completion, capability, and revocation views out o
     complete.cells[2] = 2;
     complete.cells[4] = 1;
     native.typedArraySet(
-      new native.Uint8ArrayConstructor(complete.buffer, protocol.HEADER),
+      requests.requestBytes(complete.buffer),
       payload,
     );
     copied = complete.wait();
@@ -139,7 +145,7 @@ test("filesystem client keeps completion, capability, and revocation views out o
     completeAsync.cells[2] = 2;
     completeAsync.cells[4] = 1;
     native.typedArraySet(
-      new native.Uint8ArrayConstructor(completeAsync.buffer, protocol.HEADER),
+      requests.requestBytes(completeAsync.buffer),
       payload,
     );
     copiedAsync = await completeAsync.value();
