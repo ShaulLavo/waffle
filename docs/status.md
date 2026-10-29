@@ -7,6 +7,7 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 - [PR #207](https://github.com/ShaulLavo/waffle/pull/207) merged memory groups, shared Wasm memory, admission limits, wake handling and cleanup. See [Memory groups](memory-groups.md).
 - Opt-in grep and ripgrep host executors use the exported search engine and worker entries. Native guests remain the fallback.
 - Preview upgrades carry structured authority through live owner routes and enforce path, query, header and lifetime guards.
+- Synchronous guests can open, read and close filesystem watches through three `runtime_fs` imports. Mixed network/filesystem readiness wakes blocked guests. Bun adapter wiring is separate.
 - No consumer dependency repin is included.
 
 ## Stability
