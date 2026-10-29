@@ -1,8 +1,8 @@
-import { FilesystemError } from "../../waffle/core/filesystem.js";
-import { compileGlob } from "../../waffle/fs/glob.js";
-import type { GlobPattern, WalkPlan } from "../../waffle/fs/walk.js";
-import { compileMatcher } from "../../waffle/search/matcher.js";
-import type { MatcherPlan, OutputPlan, SearchPlan } from "../../waffle/search/types.js";
+import { FilesystemError } from "waffle/core/filesystem";
+import { compileGlob } from "waffle/search";
+import type { GlobPattern, WalkPlan } from "waffle/search";
+import { compileMatcher, supportsSearchOperands } from "waffle/search";
+import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
 
 export type RgPlanAdmission =
   | { readonly kind: "supported"; readonly plan: SearchPlan }
@@ -27,7 +27,11 @@ class RgArguments {
   text = false;
   colorNever = false;
 
-  constructor(private readonly argv: readonly string[]) {}
+  private readonly argv: readonly string[];
+
+  constructor(argv: readonly string[]) {
+    this.argv = argv;
+  }
 
   parse(): string | null {
     while (this.index < this.argv.length) {
@@ -202,6 +206,11 @@ export function planRg(
     parsed.patterns.push(pattern);
   }
   const operands = parsed.operands;
+  if (!supportsSearchOperands(operands, env.PWD || "/"))
+    return {
+      kind: "fallback",
+      reason: "process-local descriptor paths require the original launcher",
+    };
   if (!operands.length || operands.some((path) => !path || path === "-"))
     return { kind: "fallback", reason: "stdin or an implicit search root requires rg" };
   const rootIsCwd = operands.length === 1 && operands[0] === ".";

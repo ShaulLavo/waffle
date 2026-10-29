@@ -68,17 +68,22 @@ function start(request: Extract<ShardRequest, { type: "start" }>): void {
 function scan(active: Shard, file: ShardFile): IndexedResult {
   const slot = active.state.fileSlot(file.handle);
   if (!slot) return { index: file.index, kind: "fallback" };
-  const result = readAndScan(active.reader, active.program, (chunk, offset) => {
-    active.alive();
-    return active.state.directRead(
-      slot,
-      file.handle,
-      [chunk],
-      offset,
-      active.revoked,
-      active.identity.owner,
-    );
-  });
+  const result = readAndScan(
+    active.reader,
+    active.program,
+    (chunk, offset) => {
+      active.alive();
+      return active.state.directRead(
+        slot,
+        file.handle,
+        [chunk],
+        offset,
+        active.revoked,
+        active.identity.owner,
+      );
+    },
+    file.path,
+  );
   return { index: file.index, ...result };
 }
 

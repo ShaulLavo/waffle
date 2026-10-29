@@ -437,3 +437,37 @@ test("a rolled-back install runs each package dispose hook once", async () => {
   expect(state).toEqual({ prepares: 0, disposals: 1, payloadAtDispose: false });
   expect(await runtime.filesystem.lookup("/usr/bin/pcat")).toBeUndefined();
 });
+
+test("program launch hooks receive the admitted real module and the installation fallback", async () => {
+  let hookCalls = 0;
+  let original: Parameters<GuestLauncher>[0] | undefined;
+  const fallback: GuestLauncher = (context, service) => {
+    if (!original) throw new Error("hook did not run");
+    expect(context).toBe(original);
+    return launcher(context, service);
+  };
+  const hooked: ProgramPackage = {
+    name: "hooked",
+    programs: [
+      {
+        path: "/bin/hooked",
+        wasm: asset("cat.wasm"),
+        launch(context, service, installationLauncher) {
+          hookCalls++;
+          original = context;
+          expect(context.module).toBeInstanceOf(WebAssembly.Module);
+          expect(installationLauncher).toBe(fallback);
+          return installationLauncher(context, service);
+        },
+      },
+    ],
+  };
+  const installed = await installPrograms(runtime, [hooked, textutils], { launcher: fallback });
+  const process = await root();
+  expect((await process.exec("/bin/hooked", ["custom", "/missing"], { PROOF: "same" })).code).toBe(
+    1,
+  );
+  expect(hookCalls).toBe(1);
+  expect(launches).toEqual([{ argv: ["custom", "/missing"], env: { PROOF: "same" }, cwd: "/" }]);
+  await installed.dispose();
+});

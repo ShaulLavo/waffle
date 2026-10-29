@@ -1,3 +1,4 @@
+import { verifyPackedSearchHooks } from "./search-packed-hooks.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -41,6 +42,7 @@ try {
     ),
   );
   execFileSync("bun", ["install", "--ignore-scripts"], { cwd: consumer, stdio: "inherit" });
+  await verifyPackedSearchHooks(consumer);
   const entry = resolve(consumer, "acceptance.js");
   const bundle = await Bun.build({
     entrypoints: [resolve(root, "tools/family-packed-app.ts")],

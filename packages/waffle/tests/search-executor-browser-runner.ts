@@ -12,7 +12,7 @@ await runIsolatedPages({
   port: 0,
   sources: {
     "/tests.js": "search-executor-browser.ts",
-    "/search-worker.js": "../search/search-worker.ts",
+    "/search-worker.js": "fixtures/search-count-worker.ts",
     "/shard-worker.js": "../search/shard-worker.ts",
     "/fault-shard.js": "fixtures/search-fault-shard.ts",
     "/fs-worker.js": "../browser/fs-worker.ts",
