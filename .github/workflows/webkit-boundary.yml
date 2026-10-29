@@ -22,11 +22,13 @@ jobs:
       - name: Stage diagnostic tooling and verify canonical image
         shell: bash
         run: |
-          test "$ImageOS" = ubuntu24
-          test "$ImageVersion" = 20261025.353.1
           mkdir "$RUNNER_TEMP/webkit-boundary-tools"
           cp tools/webkit-boundary/*.py "$RUNNER_TEMP/webkit-boundary-tools/"
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/webkit-boundary-tools/tooling-head.txt"
+          printf 'ImageOS=%s ImageVersion=%s\n' "$ImageOS" "$ImageVersion"
+          cat /etc/os-release
+          python3 -c 'import platform; assert platform.freedesktop_os_release()["VERSION_ID"] == "24.04"'
+          test "$ImageVersion" = 20261025.353.1
       - uses: actions/checkout@v4
         with:
           ref: ac9f79bcd247a0a528120879169d72f2cb884493
