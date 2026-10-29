@@ -1,3 +1,5 @@
+import { searchFile } from "./matcher.js";
+import type { CompiledMatcher, OutputPlan } from "./types.js";
 import { FilesystemError } from "../core/filesystem.js";
 import {
   revokeFilesystem,
@@ -35,7 +37,9 @@ const WASI_EIO = 29;
 const WASI_ENAMETOOLONG = 37;
 
 /** What a shard computes for one complete file. Matching programs join this union. */
-export type ShardProgram = { readonly kind: "count-lines" };
+export type ShardProgram =
+  | { readonly kind: "count-lines" }
+  | { readonly kind: "search"; readonly matcher: CompiledMatcher; readonly output: OutputPlan };
 export interface ProgramLimits {
   readonly fileBytes: number;
   readonly pathBytes: number;
@@ -133,10 +137,16 @@ export class FileReader {
   }
 }
 
-function scanFile(program: ShardProgram, bytes: Uint8Array): FileResult {
+function scanFile(program: ShardProgram, bytes: Uint8Array, path: string): FileResult {
   switch (program.kind) {
     case "count-lines":
       return { kind: "done", matched: countLines(bytes), output: null };
+    case "search":
+      return { kind: "done", ...searchFile(bytes, path, program.matcher, program.output) };
+    default: {
+      const exhaustive: never = program;
+      return exhaustive;
+    }
   }
 }
 
@@ -151,14 +161,17 @@ export function readAndScan(
   reader: FileReader,
   program: ShardProgram,
   read: (chunk: Uint8Array, offset: number) => number,
+  path: string,
 ): FileResult {
   try {
     const bytes = reader.read(read);
     if (typeof bytes === "number") return { kind: "error", errno: bytes };
-    return scanFile(program, bytes);
+    return scanFile(program, bytes, path);
   } catch (error) {
     if (error instanceof MissingSegmentError || error instanceof MissingDataError)
       return { kind: "fallback" };
+    if (program.kind === "search" && error instanceof RangeError)
+      return { kind: "error", errno: WASI_EFBIG };
     return { kind: "error", errno: errnoOf(error) };
   }
 }
@@ -416,7 +429,12 @@ export class InlineExecutor implements BatchExecutor {
     this.queued = undefined;
     const results = batch.files.map((file) => ({
       index: file.index,
-      ...readAndScan(this.reader, this.program, (chunk, offset) => this.read(file, chunk, offset)),
+      ...readAndScan(
+        this.reader,
+        this.program,
+        (chunk, offset) => this.read(file, chunk, offset),
+        file.path,
+      ),
     }));
     return { id: batch.id, results };
   }

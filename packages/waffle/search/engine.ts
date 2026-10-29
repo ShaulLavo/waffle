@@ -13,6 +13,7 @@ import {
   errnoOf,
   nestedWorkersAvailable,
   processIdentity,
+  processFence,
   readAndScan,
   type BatchExecutor,
   type Candidate,
@@ -52,13 +53,15 @@ interface ActiveWalk {
   grants: number;
 }
 
-function displayPath(root: string, relative: string): string {
-  return root.endsWith("/") ? `${root}${relative}` : `${root}/${relative}`;
+function displayPath(root: string, relative: string, tool: SearchPlan["tool"]): string {
+  const prefix = tool === "grep" ? root.replace(/\/+$/, "/") : root;
+  return prefix.endsWith("/") ? `${prefix}${relative}` : `${prefix}/${relative}`;
 }
 
 /** One source belongs to one SearchRun. Its entry sequence is SearchRun's candidate index. */
 export class WalkSource implements CandidateSource {
   private readonly leases = new Map<number, Lease>();
+  private readonly operandErrors = new Set<number>();
   private index = 0;
   private operand = 0;
   private walk: ActiveWalk | undefined;
@@ -79,6 +82,10 @@ export class WalkSource implements CandidateSource {
     };
   }
 
+  isOperandError(index: number): boolean {
+    return this.operandErrors.has(index);
+  }
+
   release(files: readonly Candidate[]): void {
     const errors: unknown[] = [];
     this.releaseIndices(
@@ -86,6 +93,7 @@ export class WalkSource implements CandidateSource {
       errors,
     );
     this.retireWalk(errors);
+    for (const file of files) this.operandErrors.delete(file.index);
     if (errors.length) throw new AggregateError(errors, "search candidate release failed");
   }
 
@@ -107,6 +115,7 @@ export class WalkSource implements CandidateSource {
     try {
       const opened = this.context.open(path);
       if (typeof opened === "number") {
+        this.operandErrors.add(this.index);
         this.add(entries, { kind: "error", path, errno: -opened });
         return;
       }
@@ -120,6 +129,7 @@ export class WalkSource implements CandidateSource {
       }
       this.openWalk(path, opened.handle);
     } catch (error) {
+      this.operandErrors.add(this.index);
       this.add(entries, { kind: "error", path, errno: errnoOf(error) });
     }
   }
@@ -151,7 +161,7 @@ export class WalkSource implements CandidateSource {
   }
 
   private walkEntry(entries: SourceEntry[], walk: ActiveWalk, entry: WalkEntry): void {
-    const path = displayPath(walk.path, entry.path);
+    const path = displayPath(walk.path, entry.path, this.context.request.plan.tool);
     if (entry.kind === "error") {
       this.add(entries, { ...entry, path });
       return;
@@ -241,6 +251,7 @@ class MatchSink {
   constructor(
     private readonly context: SearchContext,
     private readonly program: ShardProgram,
+    private readonly source: WalkSource,
     cells: Int32Array,
   ) {
     this.reader = new FileReader(cells, SEARCH_LIMITS.fileBytes);
@@ -259,9 +270,15 @@ class MatchSink {
     const errno = result.kind === "error" ? result.errno : 29;
     const error = ERRORS[errno] ?? [`errno ${errno}`, 5];
     const suffix = this.context.request.plan.tool === "rg" ? ` (os error ${error[1]})` : "";
+    const operation =
+      this.context.request.plan.tool === "rg" && this.source.isOperandError(file.index)
+        ? `IO error for operation on ${file.path}: `
+        : "";
     this.write(
       2,
-      encoder.encode(`${this.context.request.plan.tool}: ${file.path}: ${error[0]}${suffix}\n`),
+      encoder.encode(
+        `${this.context.request.plan.tool}: ${file.path}: ${operation}${error[0]}${suffix}\n`,
+      ),
     );
   }
   fallback(file: ShardFile): FileResult {
@@ -294,13 +311,19 @@ async function executor(
       SEARCH_LIMITS.fileBytes,
       (file, chunk, offset) => context.fs.read(file.handle, [chunk], offset),
     );
-  return ShardPool.start(options.shardWorker, count, {
-    type: "start",
-    identity: processIdentity(context.request.filesystem),
-    control,
-    program,
-    fileBytes: SEARCH_LIMITS.fileBytes,
-    heartbeat: options.diagnostics,
+  const identity = processIdentity(context.request.filesystem);
+  return ShardPool.start({
+    url: options.shardWorker,
+    count,
+    start: {
+      type: "start",
+      identity,
+      control,
+      program,
+      fileBytes: SEARCH_LIMITS.fileBytes,
+      heartbeat: options.diagnostics,
+    },
+    fence: () => processFence(identity),
   });
 }
 
@@ -316,14 +339,20 @@ export async function runSearch(context: SearchContext): Promise<number> {
   const program: ShardProgram = { kind: "search", matcher: admission.matcher, output: plan.output };
   const control = new SharedArrayBuffer(CONTROL_WORDS * 4);
   const source = new WalkSource(context);
-  const batches = await executor(context, control, program);
+  let batches: BatchExecutor;
+  try {
+    batches = await executor(context, control, program);
+  } catch (error) {
+    source.close();
+    throw error;
+  }
   if (context.request.search.diagnostics)
     globalThis.postMessage({
       type: "search-diagnostics",
       control,
       shards: batches instanceof InlineExecutor ? 0 : batches.capacity / BATCHES_PER_SHARD,
     });
-  const sink = new MatchSink(context, program, new Int32Array(control));
+  const sink = new MatchSink(context, program, source, new Int32Array(control));
   const limits: ProgramLimits = {
     fileBytes: SEARCH_LIMITS.fileBytes,
     pathBytes: SEARCH_LIMITS.pathBytes,

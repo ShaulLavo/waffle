@@ -6,6 +6,7 @@ import { engines, runIsolatedPages } from "./isolated-page-runner.js";
 const fixture = mkdtempSync("/work/tmp/wsearch-oracle-");
 const vectors: {
   tool: "rg" | "grep";
+  pipe?: boolean;
   argv: string[];
   env: Record<string, string>;
   expected: { stdout: string; stderr: string; status: number };
@@ -16,7 +17,7 @@ function oracle(
   expected?: { stdout: string; stderr: string; status: number },
 ) {
   if (expected) {
-    vectors.push({ tool, argv, env: { LC_ALL: "C" }, expected });
+    vectors.push({ tool, argv, env: { LC_ALL: "C", PWD: "/fixture" }, expected });
     return;
   }
   try {
@@ -26,7 +27,12 @@ function oracle(
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    vectors.push({ tool, argv, env: { LC_ALL: "C" }, expected: { stdout, stderr: "", status: 0 } });
+    vectors.push({
+      tool,
+      argv,
+      env: { LC_ALL: "C", PWD: "/fixture" },
+      expected: { stdout, stderr: "", status: 0 },
+    });
   } catch (error) {
     if (
       !error ||
@@ -39,7 +45,7 @@ function oracle(
     vectors.push({
       tool,
       argv,
-      env: { LC_ALL: "C" },
+      env: { LC_ALL: "C", PWD: "/fixture" },
       expected: {
         stdout: String(error.stdout),
         stderr: String(error.stderr),
@@ -69,6 +75,9 @@ try {
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "file-link"]));
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "missing"]));
   oracle("rg", ["-F", "needle", "a.txt"]);
+  vectors.at(-1)!.pipe = true;
+  oracle("rg", rg.concat(["-nF", "needle", "."]));
+  vectors.at(-1)!.pipe = true;
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "dir-link"]));
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "./sub/"]));
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "./sub//"]));
@@ -80,6 +89,7 @@ try {
   oracle("grep", ["-r", "-a", "-n", "-H", "-F", "needle", "file-link"]);
   oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "missing"]);
   oracle("grep", ["-F", "needle", "a.txt"]);
+  vectors.at(-1)!.pipe = true;
   oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "dir-link"]);
   oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "./sub/"]);
   oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "./sub//"]);
@@ -94,11 +104,24 @@ try {
       "/tests.js": "search-program-browser.ts",
       "/search-worker.js": "../search/search-worker.ts",
       "/shard-worker.js": "../search/shard-worker.ts",
-      "/fs-worker.js": "../browser/fs-worker.ts",
+      "/fs-worker.js": "fixtures/search-program-fs-worker.ts",
+      "/fault-shard.js": "fixtures/search-fault-shard.ts",
       "/preview1-worker.js": "../browser/preview1-worker.ts",
     },
     route(path, headers) {
       if (path === "/vectors.json") return Response.json(vectors, { headers });
+      const frozen =
+        path === "/frozen/manifest.json"
+          ? process.env.SEARCH_CORPUS_MANIFEST
+          : path === "/frozen/census.json"
+            ? process.env.SEARCH_CORPUS_CENSUS
+            : path === "/frozen/payload.bin"
+              ? process.env.SEARCH_CORPUS_PAYLOAD
+              : undefined;
+      if (frozen)
+        return new Response(Bun.file(frozen), {
+          headers: { ...headers, "Content-Type": "application/octet-stream" },
+        });
       const guest = path.endsWith("/rg.wasm")
         ? process.env.SEARCH_RG_WASM
         : path.endsWith("/grep.wasm")

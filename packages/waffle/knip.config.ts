@@ -29,6 +29,8 @@ export default {
         "tests/search-program-browser.ts",
         "search/{search,shard}-worker.ts",
         "tests/fixtures/search-fault-shard.ts",
+        "tests/fixtures/search-count-worker.ts",
+        "tests/fixtures/search-program-fs-worker.ts",
         "tests/filesystem-transport-browser{,-driver}.ts",
         "tests/fs-socket-browser-runner.ts",
         "tests/fixtures/filesystem-port-service.ts",

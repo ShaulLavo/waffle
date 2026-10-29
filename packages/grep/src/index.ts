@@ -14,6 +14,7 @@ export const grep: ProgramPackage = {
 
 export function fastGrep(workers: SearchWorkers): ProgramPackage {
   const launch: ProgramLaunch = async (context, service, fallback) => {
+    if ((context.request.env.PWD || "/") !== context.request.cwd) return fallback(context, service);
     const { planGrep } = await import("./plan.js");
     const admitted = planGrep(context.request.argv.slice(1), context.request.env);
     if (admitted.kind === "fallback") return fallback(context, service);

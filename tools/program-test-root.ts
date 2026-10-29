@@ -108,6 +108,26 @@ function preparePipeChild(
   }
 }
 
+async function drainPipe(
+  reader: ReturnType<WorkerPipeHost["createPipe"]>[0],
+  output: Uint8Array[],
+  stop: () => Promise<boolean>,
+): Promise<void> {
+  const buffer = new Uint8Array(4096);
+  try {
+    for (;;) {
+      const count = reader.tryRead!([buffer]);
+      if (count === 0) return;
+      if (count < 0) await new Promise((resolve) => setTimeout(resolve, 1));
+      if (count < 0) continue;
+      output.push(buffer.slice(0, count));
+      if (await stop()) return;
+    }
+  } finally {
+    reader.close();
+  }
+}
+
 /** Test-only page/root controller; all process, descriptor and worker behavior is Waffle's. */
 export async function createProgramTestRoot(runtime: Runtime) {
   const service = await runtime.processes();
@@ -155,7 +175,7 @@ export async function createProgramTestRoot(runtime: Runtime) {
   const flush = async () => {
     while (notices.length) await service.runtimeMessage(notices.shift()!.message, transport.pid);
   };
-  const spawn = (request: TestRequest) => {
+  const spawn = (request: TestRequest, stdoutFd = 1) => {
     const input =
       request.input === undefined
         ? undefined
@@ -168,7 +188,10 @@ export async function createProgramTestRoot(runtime: Runtime) {
         env: request.env,
         cwd: request.cwd,
         job: -1,
-        fds: [0, 1, 2].map((fd) => ({ child: fd, parent: fd === 0 ? (input?.fd ?? fd) : fd })),
+        fds: [0, 1, 2].map((fd) => ({
+          child: fd,
+          parent: fd === 0 ? (input?.fd ?? fd) : fd === 1 ? stdoutFd : fd,
+        })),
       });
       reserved = true;
       return child;
@@ -176,31 +199,59 @@ export async function createProgramTestRoot(runtime: Runtime) {
       releaseInput(descriptors, input, notices, !reserved);
     }
   };
+  async function execute(
+    request: TestRequest,
+    stdoutFd = 1,
+    drained?: Promise<void>,
+    started?: (pid: number) => void,
+  ): Promise<TestExecution> {
+    output.stdout.length = 0;
+    output.stderr.length = 0;
+    const child = spawn(request, stdoutFd);
+    started?.(child);
+    active.add(child);
+    await flush();
+    await supervisor.start(child);
+    const exit = await supervisor.waitForExit(transport.pid, child);
+    const deadline = performance.now() + 5000;
+    while (!client.childExited(transport.pid, child)) {
+      if (performance.now() > deadline) throw new Error(`Child ${child} did not physically retire`);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    client.wait(transport.pid, child);
+    await flush();
+    active.delete(child);
+    await drained;
+    return {
+      status: exit.kind === "start-failed" ? 127 : (exit.status ?? 128),
+      stdout: decode(output.stdout),
+      stderr:
+        (exit.kind === "start-failed" ? `start-failed ${exit.error}\n` : "") +
+        decode(output.stderr),
+    };
+  }
   return {
-    async exec(request: TestRequest): Promise<TestExecution> {
-      output.stdout.length = 0;
-      output.stderr.length = 0;
-      const child = spawn(request);
-      active.add(child);
-      await flush();
-      await supervisor.start(child);
-      const exit = await supervisor.waitForExit(transport.pid, child);
-      const deadline = performance.now() + 5000;
-      while (!client.childExited(transport.pid, child)) {
-        if (performance.now() > deadline)
-          throw new Error(`Child ${child} did not physically retire`);
-        await new Promise((resolve) => setTimeout(resolve, 1));
+    exec: (request: TestRequest) => execute(request),
+    async execPipe(
+      request: TestRequest,
+      stop?: { readonly kind: "head" } | { readonly kind: "signal"; readonly signal: number },
+    ): Promise<TestExecution> {
+      const [reader, writer] = pipes.createPipe();
+      const fd = descriptors.open(writer, 127n, 63n);
+      let child = 0;
+      const drain = drainPipe(reader, output.stdout, async () => {
+        if (stop?.kind === "signal") await service.kill(child, stop.signal);
+        return stop !== undefined;
+      });
+      try {
+        const result = execute(request, fd, drain, (pid) => {
+          child = pid;
+        });
+        descriptors.close(fd);
+        return await result;
+      } finally {
+        reader.close();
       }
-      client.wait(transport.pid, child);
-      await flush();
-      active.delete(child);
-      return {
-        status: exit.kind === "start-failed" ? 127 : (exit.status ?? 128),
-        stdout: decode(output.stdout),
-        stderr:
-          (exit.kind === "start-failed" ? `start-failed ${exit.error}\n` : "") +
-          decode(output.stderr),
-      };
     },
     async dispose() {
       const stopped = await Promise.allSettled(

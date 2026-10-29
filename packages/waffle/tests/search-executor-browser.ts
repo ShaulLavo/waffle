@@ -19,7 +19,10 @@ import {
   processFence,
   type ShardFailureReason,
 } from "../search/shards.js";
-import type { SearchDiagnosticsMessage, SearchWorkerRequest } from "../search/search-worker.js";
+import type {
+  SearchDiagnosticsMessage,
+  SearchWorkerRequest,
+} from "./fixtures/search-count-worker.js";
 
 // Shared-slot field and global-lock cell of fs/shared.ts, read only to audit lock words.
 const FILE_LOCK = 8;
