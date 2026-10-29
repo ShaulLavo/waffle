@@ -119,7 +119,7 @@ export class FileReader {
       Atomics.add(this.control, CONTROL_CHUNKS, 1);
       if (count < 0) return -count;
       length += count;
-      if (count < READ_CHUNK_BYTES) break;
+      if (count === 0) break;
     }
     if (length > this.fileBytes) return WASI_EFBIG;
     Atomics.add(this.control, CONTROL_FILES, 1);
