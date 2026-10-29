@@ -8,8 +8,8 @@ pub const LIMIT: usize = 1 << 20;
 const FIRST_PORT: u16 = 49152;
 struct Endpoint {
     peer: u32,
-    local: SocketAddr,
-    remote: SocketAddr,
+    /// Local and remote TCP addresses; None for an addressless path pair.
+    addresses: Option<(SocketAddr, SocketAddr)>,
     received: ByteQueue,
     in_flight: usize,
     write_ended: bool,
@@ -64,32 +64,41 @@ impl VirtualNet {
             .ok_or(io::ErrorKind::ConnectionRefused)?;
         let ip = accepted_ip(bind.ip(), target.ip())?;
         let port = self.available(self.next_port)?;
+        let client = self.ids()?;
+        self.next_port = if port == 65535 { FIRST_PORT } else { port + 1 };
+        self.clients.insert(port);
+        let dialing = SocketAddr::new(loopback(target.ip()), port);
+        let bound = SocketAddr::new(loopback(target.ip()), target.port());
+        self.insert_pair(
+            client,
+            Some((dialing, bound)),
+            Some((SocketAddr::new(ip, target.port()), SocketAddr::new(ip, port))),
+        );
+        Ok(client)
+    }
+    /// Addressless connected pair for pathname sockets. Returns the dialing (odd) id.
+    pub fn pair(&mut self) -> io::Result<u32> {
+        let client = self.ids()?;
+        self.insert_pair(client, None, None);
+        Ok(client)
+    }
+    fn ids(&mut self) -> io::Result<u32> {
         let client = self
             .next
             .checked_add(1)
             .filter(|id| *id < i32::MAX as u32 - 1)
             .ok_or(io::ErrorKind::OutOfMemory)?;
-        let server = client + 1;
-        self.next = server;
-        self.next_port = if port == 65535 { FIRST_PORT } else { port + 1 };
-        self.clients.insert(port);
-        self.endpoints.insert(
-            client,
-            endpoint(
-                server,
-                SocketAddr::new(loopback(target.ip()), port),
-                SocketAddr::new(loopback(target.ip()), target.port()),
-            ),
-        );
-        self.endpoints.insert(
-            server,
-            endpoint(
-                client,
-                SocketAddr::new(ip, target.port()),
-                SocketAddr::new(ip, port),
-            ),
-        );
+        self.next = client + 1;
         Ok(client)
+    }
+    fn insert_pair(
+        &mut self,
+        client: u32,
+        dialing: Option<(SocketAddr, SocketAddr)>,
+        accepted: Option<(SocketAddr, SocketAddr)>,
+    ) {
+        self.endpoints.insert(client, endpoint(client + 1, dialing));
+        self.endpoints.insert(client + 1, endpoint(client, accepted));
     }
     fn endpoint(&self, id: u32) -> io::Result<&Endpoint> {
         self.endpoints
@@ -100,11 +109,16 @@ impl VirtualNet {
     pub fn peer(&self, id: u32) -> io::Result<u32> {
         Ok(self.endpoint(id)?.peer)
     }
+    fn addresses(&self, id: u32) -> io::Result<(SocketAddr, SocketAddr)> {
+        self.endpoint(id)?
+            .addresses
+            .ok_or_else(|| io::ErrorKind::Unsupported.into())
+    }
     pub fn local_addr(&self, id: u32) -> io::Result<SocketAddr> {
-        Ok(self.endpoint(id)?.local)
+        Ok(self.addresses(id)?.0)
     }
     pub fn peer_addr(&self, id: u32) -> io::Result<SocketAddr> {
-        Ok(self.endpoint(id)?.remote)
+        Ok(self.addresses(id)?.1)
     }
     pub fn write(&mut self, id: u32, bytes: &[u8]) -> io::Result<usize> {
         let source = self.endpoint(id)?;
@@ -173,8 +187,8 @@ impl VirtualNet {
         endpoint.received = ByteQueue::default();
         let peer = endpoint.peer;
         // The odd token is the dialing endpoint and owns the ephemeral port.
-        if id % 2 == 1 {
-            self.clients.remove(&endpoint.local.port());
+        if let (1, Some((local, _))) = (id % 2, endpoint.addresses) {
+            self.clients.remove(&local.port());
         }
         if self
             .endpoints
@@ -187,11 +201,10 @@ impl VirtualNet {
         self.endpoints.remove(&peer);
     }
 }
-fn endpoint(peer: u32, local: SocketAddr, remote: SocketAddr) -> Endpoint {
+fn endpoint(peer: u32, addresses: Option<(SocketAddr, SocketAddr)>) -> Endpoint {
     Endpoint {
         peer,
-        local,
-        remote,
+        addresses,
         received: ByteQueue::default(),
         in_flight: 0,
         write_ended: false,

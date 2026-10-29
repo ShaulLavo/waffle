@@ -2,6 +2,7 @@ import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js"
 import { AGAIN, ERROR, UNSUPPORTED, type PeerAddr } from "./protocol.js";
 import { loadNetworkModule, type NetworkModule } from "./module.js";
 import { tcpAddress } from "./address.js";
+import { ECONNREFUSED, EADDRINUSE, ENOBUFS } from "./unix-status.js";
 
 // This module is reached by runtime.network(), never by the core or process entries.
 const compiled = await loadNetworkModule();
@@ -16,6 +17,23 @@ type Listener = {
   local: PeerAddr;
   accept(peer: PeerAddr, local: PeerAddr, socket: LoopbackSocket): void;
 };
+/** Backend node identity of a socket, scoped by the root of the path scope that reached it. */
+export interface SocketKey {
+  readonly rootIno: number;
+  readonly ino: number;
+}
+export interface PathListener {
+  owner: object;
+  handle: number;
+  /** Connections announced to the guest and not accepted yet. */
+  pending(): number;
+  accept(socket: LoopbackSocket): void;
+}
+/** Runtime-wide caps for pathname sockets. Unaccepted connections count as pairs. */
+export const PATH_LISTENERS = 128;
+export const PATH_PAIRS = 128;
+export const PATH_BACKLOG = 64;
+const bindingKey = (key: SocketKey) => `${key.rootIno}:${key.ino}`;
 function status(value: number): number {
   switch (value) {
     case -1:
@@ -139,6 +157,64 @@ export class NetNamespace {
   private module = compiled.create();
   private listeners = new Map<number, Listener>();
   private sockets = new Set<LoopbackSocket>();
+  private bindings = new Map<string, PathListener>();
+  /** Listener slots promised to binds still waiting on the filesystem. */
+  private reservedListeners = 0;
+  private pathPairs = 0;
+  /** Take a listener slot before any FS work, so a refused bind creates nothing. */
+  reservePathListener(): boolean {
+    if (this.bindings.size + this.reservedListeners >= PATH_LISTENERS) return false;
+    this.reservedListeners++;
+    return true;
+  }
+  releasePathListener(): void {
+    this.reservedListeners--;
+  }
+  /** Consumes one reservation. The FS created the node exclusively, so a live key is a bug. */
+  listenPath(key: SocketKey, listener: PathListener): number {
+    this.reservedListeners--;
+    const name = bindingKey(key);
+    if (this.bindings.has(name)) return EADDRINUSE;
+    this.bindings.set(name, listener);
+    return 0;
+  }
+  unlistenPath(owner: object, handle: number): void {
+    for (const [name, listener] of this.bindings)
+      if (listener.owner === owner && listener.handle === handle) this.bindings.delete(name);
+  }
+  /** Atomic: refusals and exhaustion allocate nothing. */
+  connectPath(key: SocketKey, sink: SocketSink): LoopbackSocket | number {
+    const listener = this.bindings.get(bindingKey(key));
+    if (!listener || listener.pending() >= PATH_BACKLOG) return ECONNREFUSED;
+    if (this.pathPairs >= PATH_PAIRS) return ENOBUFS;
+    const id = status(this.module.call("net_pair"));
+    if (id < 0) return ENOBUFS;
+    this.pathPairs++;
+    let open = 2;
+    const closed = () => {
+      if (--open === 0) this.pathPairs--;
+    };
+    const [client, server] = this.pair(id, closed);
+    client.receive(sink);
+    listener.accept(server);
+    return client;
+  }
+  private pair(id: number, closed: () => void): [LoopbackSocket, LoopbackSocket] {
+    const peer = this.module.call("net_peer", id);
+    const client = new LoopbackSocket(this.module, id, () => {
+      this.sockets.delete(client);
+      closed();
+    });
+    const server = new LoopbackSocket(this.module, peer, () => {
+      this.sockets.delete(server);
+      closed();
+    });
+    client.pair(server);
+    server.pair(client);
+    this.sockets.add(client);
+    this.sockets.add(server);
+    return [client, server];
+  }
   listen(port: number, listener: Listener): number {
     if (!Number.isInteger(port) || port < 0 || port > 65535) return TCP_INVALID;
     const bound = status(this.module.call("net_listen", kind(listener.local), port));
@@ -159,6 +235,8 @@ export class NetNamespace {
       this.module.call("net_unlisten", port);
       this.listeners.delete(port);
     }
+    for (const [name, listener] of this.bindings)
+      if (listener.owner === owner) this.bindings.delete(name);
   }
   has(port: number): boolean {
     return this.listeners.has(port);
@@ -176,13 +254,8 @@ export class NetNamespace {
     const id = status(this.module.call("net_connect", target(host, listener.local), port));
     if (id < 0) return id;
     const peer = this.module.call("net_peer", id);
-    const client = new LoopbackSocket(this.module, id, () => this.sockets.delete(client));
-    const server = new LoopbackSocket(this.module, peer, () => this.sockets.delete(server));
-    client.pair(server);
-    server.pair(client);
+    const [client, server] = this.pair(id, () => {});
     client.receive(sink);
-    this.sockets.add(client);
-    this.sockets.add(server);
     const local = address(this.module.address(id));
     listener.accept(
       address(this.module.address(peer, true)),
@@ -197,6 +270,7 @@ export class NetNamespace {
     } finally {
       this.sockets.clear();
       this.listeners.clear();
+      this.bindings.clear();
       this.module.dispose();
     }
   }

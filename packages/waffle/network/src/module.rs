@@ -218,6 +218,10 @@ pub extern "C" fn net_connect(kind: u32, port: u32) -> i32 {
     run(|module| module.net.connect(virtual_addr(kind, port)?))
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn net_pair() -> i32 {
+    run(|module| module.net.pair())
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn net_peer(id: u32) -> i32 {
     run(|module| module.net.peer(id))
 }

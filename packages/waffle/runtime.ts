@@ -640,12 +640,16 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           stops.map(([owner, stop]) => joinStop({ owner, stop, physicalStops, cleanupDebt })),
         );
         failures.push(...stopFailures(stopped));
-        if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
+        let network: RuntimeNetworkOwner | undefined;
+        if (ownedNetwork) await attempt(async () => (network = await ownedNetwork));
+        if (network) await attempt(() => network?.dispose());
+        // Unsettled socket cleanup needs the filesystem: retain it like a failed physical stop.
+        const networkFailed = network?.retained() ?? false;
         if (hostOwner && hostStop)
           await attempt(() =>
             joinStop({ owner: hostOwner, stop: hostStop, physicalStops, cleanupDebt }),
           );
-        if (cleanupDebt.size) throwFailures();
+        if (networkFailed || cleanupDebt.size) throwFailures();
         consumers.clear();
         const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());

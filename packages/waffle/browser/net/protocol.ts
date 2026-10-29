@@ -66,16 +66,29 @@ export interface PeerAddr {
   family: "IPv4" | "IPv6";
 }
 
-export interface NewConn {
-  conn: number;
-  peer: PeerAddr;
-  local: PeerAddr;
+/** Pathname socket address. `null` is an unnamed endpoint (the client side of a connection). */
+export interface UnixAddr {
+  family: "Unix";
+  path: string | null;
 }
 
+export type SocketAddr = PeerAddr | UnixAddr;
+
+export interface NewConn {
+  conn: number;
+  peer: SocketAddr;
+  local: SocketAddr;
+}
+
+/** unix-* replies use status OK or ERROR; on ERROR the value is a WASI errno. */
 export type TcpCommand =
   | { type: "tcp-listen"; id: number; port: number; host: string }
   | { type: "tcp-connect"; id: number; port: number; host: string }
-  | { type: "tcp-write"; id: number; data: Uint8Array };
+  | { type: "tcp-write"; id: number; data: Uint8Array }
+  | { type: "unix-listen"; id: number; path: string; unlinkOnClose: boolean }
+  | { type: "unix-connect"; id: number; path: string }
+  /** Acknowledged path-listener close: replies after the requested unlink settles. */
+  | { type: "unix-close"; id: number };
 
 export type TcpRequest = TcpCommand & { reply: SharedArrayBuffer };
 
