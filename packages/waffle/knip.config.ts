@@ -24,7 +24,9 @@ export default {
         "tests/fixtures/interrupt-dom-consumer.ts",
         "scripts/browser-supervisor.ts",
         "tooling/check-network-rust.ts",
-        "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport}-browser-runner.ts",
+        "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport,search-executor}-browser-runner.ts",
+        "tests/search-executor-browser.ts",
+        "search/{search,shard}-worker.ts",
         "tests/filesystem-transport-browser{,-driver}.ts",
         "tests/fs-socket-browser-runner.ts",
         "tests/fixtures/filesystem-port-service.ts",
@@ -51,7 +53,10 @@ export default {
         "tests/storage-lock-recovery-worker.ts",
         "tests/storage-open-worker.ts",
       ],
-      project: ["*.ts", "{browser,core,fs,proc,interrupt,scripts,tooling,tests}/**/*.{ts,js}"],
+      project: [
+        "*.ts",
+        "{browser,core,fs,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
+      ],
     },
   },
 } satisfies KnipConfig;
