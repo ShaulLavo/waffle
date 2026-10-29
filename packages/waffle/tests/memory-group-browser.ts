@@ -6,7 +6,7 @@ import {
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 import type { MemoryGroupHandle, MemoryGroupSnapshot } from "../group/state.js";
-import { prepareLinkPlan } from "../link/index.js";
+import { prepareLinkPlan, type LinkedWorkerRequest } from "../link/index.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -104,7 +104,7 @@ async function harness() {
     reserve: "member_reserve",
   });
   runtime.registerAdapter("group", (context, service) =>
-    service.launchWorker(context, {
+    service.launchWorker<LinkedWorkerRequest>(context, {
       workerUrl: "/memory-group-worker.js",
       request: {
         module: context.module,

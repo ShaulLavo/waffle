@@ -56,7 +56,7 @@ try {
     built = join(scratch, "fixture");
     buildFixture(built);
   }
-  const member = verifiedFixture(built);
+  const member = new Uint8Array(verifiedFixture(built));
   const [page, worker, fsWorker] = await Promise.all([
     bundle("memory-group-browser.ts"),
     bundle("fixtures/memory-group-worker.ts"),
