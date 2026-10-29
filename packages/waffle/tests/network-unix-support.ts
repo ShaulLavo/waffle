@@ -1,4 +1,4 @@
-import { AGAIN } from "../browser/net/protocol.js";
+import { AGAIN, type NetRequest } from "../browser/net/protocol.js";
 import type { RuntimeNetworkHelper } from "../browser/net/runtime.js";
 import type { GuestCall, GuestMessage } from "./network-unix-guest.js";
 
@@ -16,12 +16,30 @@ export class Guest {
   private calls = new Map<number, PromiseWithResolvers<unknown>>();
   private next = 0;
   lastMs = 0;
+  /** Requests as sent, without reply cells, and each reply cell once it completes. */
+  readonly requests: unknown[] = [];
+  readonly replies: Promise<number[]>[] = [];
+  private forward(request: NetRequest): void {
+    const { ...captured } = request;
+    if ("reply" in request) {
+      Reflect.deleteProperty(captured, "reply");
+      const cells = new Int32Array(request.reply);
+      this.replies.push(
+        (async () => {
+          while (Atomics.load(cells, 0) === 0) await Atomics.waitAsync(cells, 0, 0).value;
+          return Array.from(cells);
+        })(),
+      );
+    }
+    this.requests.push(captured);
+    this.helper.handle(request);
+  }
   constructor(
     readonly helper: RuntimeNetworkHelper,
     ring: SharedArrayBuffer,
   ) {
     this.worker.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
-      if (data.kind === "net") return this.helper.handle(data.request);
+      if (data.kind === "net") return this.forward(data.request);
       const call = this.calls.get(data.id)!;
       this.calls.delete(data.id);
       if (data.kind === "throw") return call.reject(Error(data.message));

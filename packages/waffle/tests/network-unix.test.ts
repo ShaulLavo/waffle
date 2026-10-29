@@ -369,3 +369,32 @@ test("a blocked poll wakes for accept, data and EOF without periodic polling", a
   expect(await end).toBe(1);
   expect(await server.call("read", accepted, 1)).toBe(0);
 });
+
+test("literal unix-* requests and reply cells", async () => {
+  const { network } = runtime();
+  const server = guest(network);
+  const client = guest(network);
+  const listener = await server.call("listenPath", "/w.sock");
+  const conn = await client.call("connectPath", "/w.sock");
+  expect(await client.call("connectPath", "/missing")).toBe(ERROR);
+  await server.accept(listener);
+  expect(await server.call("close", listener)).toBe(OK);
+  expect(
+    server.requests.filter((r) => String((r as { type: string }).type).startsWith("unix")),
+  ).toEqual([
+    { type: "unix-listen", id: listener, path: "/w.sock", unlinkOnClose: true },
+    { type: "unix-close", id: listener },
+  ]);
+  expect(client.requests.slice(0, 2)).toEqual([
+    { type: "unix-connect", id: conn, path: "/w.sock" },
+    { type: "unix-connect", id: conn + 1, path: "/missing" },
+  ]);
+  expect(await Promise.all(client.replies)).toEqual([
+    [1, 0, 0],
+    [1, ERROR, 44],
+  ]);
+  expect(await Promise.all(server.replies)).toEqual([
+    [1, 0, 0],
+    [1, 0, 0],
+  ]);
+});
