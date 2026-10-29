@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { MemFS, newDir } from "../fs/memory.js";
+import { MemFS, newDir, nodeMetadata } from "../fs/memory.js";
 
 test("socket nodes have their own kind and private metadata", () => {
   const fs = new MemFS(newDir());
@@ -14,7 +14,6 @@ test("socket nodes have their own kind and private metadata", () => {
 import { openInode } from "../core/fd-reopen.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemoryBackend } from "../fs/backend.js";
-import { nodeMetadata } from "../fs/memory.js";
 
 function socketFixture() {
   const fs = new MemFS();
@@ -77,7 +76,7 @@ test("rename preserves the socket inode and permissions", () => {
   const ino = fs.stat(node).ino;
   expect(fs.setMode(node, 0o400)).toBe(0);
   expect(fs.rename(path, target)).toBe(0);
-  expect(fs.lookup("/renamed")).toBe(fs.nodeForHandle(node));
+  expect(fs.nodeForHandle(node) === fs.lookup("/renamed")).toBe(true);
   expect(fs.stat(node)).toMatchObject({ ino, kind: "socket", mode: 0o400, nlink: 1 });
 });
 
@@ -119,6 +118,6 @@ test("the executable registry rejects sockets without reading their bytes", asyn
       throw new Error("socket bytes must not be read");
     },
   );
-  const error = await registry.admit("/listener", "/", () => {}).catch((error: unknown) => error);
+  const error = await registry.resolve("/listener").catch((error: unknown) => error);
   expect(error).toMatchObject({ code: "EACCES" });
 });

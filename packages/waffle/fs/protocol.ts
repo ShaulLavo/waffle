@@ -302,7 +302,7 @@ function reserveCapability(
 }
 export function sameFilesystemIdentity(
   expected: FilesystemIdentity,
-  incoming: FilesystemIdentity,
+  incoming: Pick<FilesystemIdentity, "owner" | "sections">,
 ): boolean {
   if (expected.owner !== incoming.owner || incoming.sections.byteLength !== 8) return false;
   const own = new Int32Array(expected.sections),
@@ -311,7 +311,7 @@ export function sameFilesystemIdentity(
   Atomics.store(own, 1, previous ^ -1);
   const same = Atomics.load(other, 1) === (previous ^ -1);
   Atomics.store(own, 1, previous);
-  return same;
+  return same && Atomics.load(other, 1) === previous;
 }
 export function connectFilesystemIdentity(
   identity: FilesystemIdentity,

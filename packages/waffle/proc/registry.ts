@@ -19,6 +19,14 @@ const MAX_SHEBANG_DEPTH = 4;
 const MAX_SHEBANG_BYTES = 256;
 const MAX_SYMLINK_EXPANSIONS = 40;
 
+function rejectNonExecutableNode(file: {
+  readonly kind: "file" | "dir" | "symlink" | "socket";
+  readonly path: string;
+}): void {
+  if (file.kind === "dir") throw new ExecutableNotRunnable(file.path, true);
+  if (file.kind === "socket") throw new ExecutableNotRunnable(file.path, false);
+}
+
 function symlinkTarget(file: {
   readonly kind: "file" | "dir" | "symlink" | "socket";
 }): string | undefined {
@@ -209,7 +217,7 @@ export class ExecutableRegistry {
     }
     assertActive();
     if (!file) throw new ExecutableNotFound(absolute);
-    if (file.kind === "dir") throw new ExecutableNotRunnable(file.path, true);
+    rejectNonExecutableNode(file);
     const target = symlinkTarget(file);
     if (target) {
       if (symlinkExpansionBlocked(file.path, seen, symlinks))
@@ -229,7 +237,6 @@ export class ExecutableRegistry {
     }
     const resolved = file.path === predicted ? registered : this.entries.get(file.path);
     if (resolved && file.kind === "file") return { entry: resolved, ...(argv ? { argv } : {}) };
-    if (file.kind === "socket") throw new ExecutableNotRunnable(file.path, false);
     if (!this.read) throw this.notRunnable(file.path, mode);
     if (seen.has(file.path) || depth >= MAX_SHEBANG_DEPTH)
       throw new ExecutableNotRunnable(file.path, false, "ELOOP");

@@ -610,6 +610,7 @@ export class MemFS implements FileSystem {
     return this.handle(node);
   }
   resolveSocket(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
+    if (typeof path !== "string") return 28;
     if (!path || path.includes("\0") || /\p{Surrogate}/u.test(path)) return path ? 28 : 44;
     if (utf8ByteLength(path) > 4096) return 37;
     const result = this.walk(
