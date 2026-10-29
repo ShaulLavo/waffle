@@ -8,6 +8,7 @@ import {
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
   Uint8ArrayConstructor,
+  objectDefineProperty,
 } from "../proc/intrinsics.js";
 import type { ResidentDescriptor } from "./publication-grant.js";
 import {
@@ -18,6 +19,14 @@ import {
 } from "./publication.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { FilesystemError } from "../core/filesystem.js";
+import {
+  createRequestBudget,
+  FilesystemRequestPool,
+  REQUEST_BUDGET_BYTES,
+  REQUEST_CONTROL_BYTES,
+  REQUEST_HEADER,
+  type FilesystemRequestMemory,
+} from "./request-memory.js";
 import {
   DEFAULT_SHARED_MAX_BYTES,
   SHARED_SEGMENT_BYTES,
@@ -54,7 +63,7 @@ export function normalizeSharedMaxBytes(maxBytes: number): number {
     SHARED_SEGMENT_BYTES
   );
 }
-export const HEADER = 32;
+export const HEADER = REQUEST_HEADER;
 export const TRANSIENT_HANDLES = 256;
 export const CAPABILITY_SLOTS = 4096;
 // One candidate-count word, then reusable [handle, open-reference count, transfer count] records. A negative
@@ -75,6 +84,8 @@ export interface FilesystemConnection {
   residentPublication?: ResidentDescriptor;
   publication?: PublicationConnection;
   port: MessagePort;
+  requests: FilesystemRequestMemory;
+  requestBudget: SharedArrayBuffer;
   epoch: SharedArrayBuffer;
   signal: SharedArrayBuffer;
   /** This connection's revocation word, then its ancestors. Never reused. */
@@ -104,20 +115,38 @@ export interface FilesystemReservation {
   /** Closed once; transfer state: 0 pending, 1 adopted, 2 cancelled. */
   state: SharedArrayBuffer;
 }
-export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
+export type FilesystemIdentity = Omit<FilesystemConnection, "port" | "requests">;
 export interface FilesystemOwnerConstruction {
   readonly shared: SharedArrayBuffer;
   allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
 }
 export function filesystemOwnerPlan(publication: PublicationConfiguration) {
   const arena = publicationBufferPlan(publication.limits, publication.observe);
-  const allocations = 6 + MAX_SHARED_SEGMENTS - 1 + arena.allocations;
+  const allocations = 9 + MAX_SHARED_SEGMENTS - 1 + arena.allocations;
   return {
-    bytes: MAX_CONNECTION_OWNERS * 4 + CAPABILITY_LENGTH * 4 + 16 + arena.bytes,
+    bytes:
+      MAX_CONNECTION_OWNERS * 4 +
+      CAPABILITY_LENGTH * 4 +
+      16 +
+      arena.bytes +
+      REQUEST_BUDGET_BYTES +
+      REQUEST_CONTROL_BYTES,
     allocations,
     references: allocations,
     leases: 0,
   };
+}
+function identitySegments(
+  parent: FilesystemIdentity | undefined,
+  maxBytes: number,
+  construction: FilesystemOwnerConstruction | undefined,
+): SharedArrayBuffer[] {
+  return (
+    parent?.segments ??
+    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
+      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
+    )
+  );
 }
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
  * Firefox does not activate guest-created channels until that guest returns to its event loop.
@@ -134,11 +163,7 @@ export function createFilesystemIdentity(
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared =
     parent?.shared ?? construction?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
-  const segments =
-    parent?.segments ??
-    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
-      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
-    );
+  const segments = identitySegments(parent, maxBytes, construction);
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)
     throw new FilesystemError(33, "filesystem identity table exhausted");
@@ -157,6 +182,7 @@ export function createFilesystemIdentity(
     ...(domain ? { publication: domain } : {}),
     ...(parent?.residentPublication ? { residentPublication: parent.residentPublication } : {}),
     epoch: parent?.epoch ?? allocate(4),
+    requestBudget: parent?.requestBudget ?? createRequestBudget(construction),
     // Every descendant waits here too, so root revocation can wake blocked guests after a crash.
     signal: parent?.signal ?? allocate(4),
     revocations: [allocate(4)].concat(parent?.revocations ?? []),
@@ -220,21 +246,30 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
       1,
     );
 }
-export function connectFilesystemIdentity(identity: FilesystemIdentity) {
+export function connectFilesystemIdentity(
+  identity: FilesystemIdentity,
+  pool = new FilesystemRequestPool(identity.requestBudget),
+  construction?: FilesystemOwnerConstruction,
+) {
+  pool.assertBudget(identity.requestBudget);
+  const requests = pool.take(identity.revocations[0]!, construction);
   const channel = new NativeMessageChannel();
-  return {
-    client: { ...identity, port: channel.port1 },
-    server: { ...identity, port: channel.port2 },
+  const pair = {
+    client: { ...identity, port: channel.port1, requests },
+    server: { ...identity, port: channel.port2, requests },
+    pool,
   };
+  const descriptor = { __proto__: null, value: pool, enumerable: false };
+  objectDefineProperty(pair, "pool", descriptor);
+  return pair;
 }
 export function createFilesystemConnection(
   parent?: FilesystemIdentity,
   publication?: PublicationConfiguration | WorkspaceConfiguration,
   construction?: FilesystemOwnerConstruction,
 ) {
-  return connectFilesystemIdentity(
-    createFilesystemIdentity(parent, undefined, publication, construction),
-  );
+  const identity = createFilesystemIdentity(parent, undefined, publication, construction);
+  return connectFilesystemIdentity(identity, undefined, construction);
 }
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {
@@ -392,8 +427,8 @@ function transportBytes(value: unknown): Uint8Array {
   return new Uint8ArrayConstructor(value);
 }
 export type RequestMessage =
-  | { id: number; buffer: SharedArrayBuffer }
-  | { connect: FilesystemConnection }
+  | { id: number; generation: number; offset: number; length: number }
+  | { transportClosed: true }
   | { sweep: true }
   | { trim: true }
   | { discard: number };

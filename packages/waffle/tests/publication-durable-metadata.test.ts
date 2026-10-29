@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import {
   MemoryBackend,
@@ -43,7 +44,7 @@ async function fixture(options = limits, seed?: string) {
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits: options, observe: true });
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   const root: number = await client.asyncCall("preopen", ["/"]);
   const observer = publicationObserver(client);
   const resolve = (name: string) => client.asyncCall("resolve", [root, name]);

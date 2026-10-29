@@ -4,6 +4,20 @@ import { DirtyCapacityError } from "./dirty-admission.js";
 import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
 import {
+  FilesystemRequestAllocator,
+  FilesystemTransportSection,
+  requestCells,
+  requestBytes,
+  requestCancelled,
+  cancelRequestBuffer,
+  releaseRequestBuffer,
+  requestTransportError,
+  closeRequestMemory,
+  REQUEST_CLIENT,
+  REQUEST_SERVICE,
+  type FilesystemRequestBuffer,
+} from "./request-memory.js";
+import {
   mutationIntent,
   type PublicationAdmission,
   type MutationIntent,
@@ -18,14 +32,13 @@ import {
   atomicsLoad,
   atomicsStore,
   atomicsAdd,
-  atomicsExchange,
   atomicsCompareExchange,
   atomicsNotify,
   atomicsWait,
   atomicsWaitAsync,
   typedArrayLength,
   typedArraySet,
-  sharedArrayBufferByteLength,
+  typedArraySubarray,
   MapConstructor,
   SetConstructor,
   mapGet,
@@ -58,7 +71,7 @@ import {
   State,
   FilesystemError,
   FilesystemSection,
-  createFilesystemConnection,
+  createFilesystemIdentity,
   errno,
   isRevoked,
   pack,
@@ -111,14 +124,19 @@ export class FilesystemCompletion {
   private consumed = false;
   constructor(
     readonly id: number,
-    readonly buffer: SharedArrayBuffer,
+    readonly buffer: FilesystemRequestBuffer,
     private client: FilesystemClient,
     readonly publication?: PublicationAdmission,
   ) {
-    this.cells = new Int32ArrayConstructor(buffer, 0, HEADER / 4);
+    this.cells = requestCells(buffer);
   }
   get ready(): boolean {
-    return isRevoked(this.client.connection) || atomicsLoad(this.cells, 0) !== State.Pending;
+    return (
+      !!this.client.transportError() ||
+      isRevoked(this.client.connection) ||
+      requestCancelled(this.buffer) ||
+      atomicsLoad(this.cells, 0) !== State.Pending
+    );
   }
   get epoch(): number {
     return this.cells[5]!;
@@ -130,8 +148,11 @@ export class FilesystemCompletion {
   }
   cancel(): void {
     if (this.publication) this.client.cancelPublication(this.publication);
-    if (atomicsExchange(this.cells, 6, 1)) return;
-    atomicsCompareExchange(this.cells, 0, State.Pending, State.Cancelled);
+    if (requestCancelled(this.buffer)) {
+      this.notify();
+      return;
+    }
+    cancelRequestBuffer(this.buffer);
     atomicsNotify(this.cells, 0);
     wake(this.client.connection);
     this.client.connection.port.postMessage({ discard: this.id });
@@ -145,6 +166,7 @@ export class FilesystemCompletion {
     if (!this.consumed) this.cancel();
     else this.client.connection.port.postMessage({ discard: this.id });
     mapDelete(this.client.completions, this.id);
+    releaseRequestBuffer(this.buffer, REQUEST_CLIENT);
     if (!mapSize(this.client.completions)) wake(this.client.connection);
   }
   /** Release a ready result that the caller does not need, while still delivering failures.
@@ -159,12 +181,23 @@ export class FilesystemCompletion {
     }
   }
   private check(): void {
-    if (isRevoked(this.client.connection) || this.cells[6] || this.cells[0] === State.Cancelled)
+    const failure = this.client.transportError();
+    if (failure) throw failure;
+    if (
+      isRevoked(this.client.connection) ||
+      requestCancelled(this.buffer) ||
+      this.cells[0] === State.Cancelled
+    )
       throw new FilesystemError(11);
     if (this.cells[0] === State.Failed) throw new FilesystemError(this.cells[3]!);
   }
   private decode(bytes: Uint8Array): unknown {
     return this.cells[4] ? bytes : unpack(bytes);
+  }
+  private inlineBytes(): Uint8Array {
+    const size = this.cells[2]!;
+    const available = Math.min(size, this.buffer.length - HEADER);
+    return new Uint8ArrayConstructor(typedArraySubarray(requestBytes(this.buffer), 0, available));
   }
   wait(): any {
     const signal = new Int32ArrayConstructor(this.client.connection.signal);
@@ -176,13 +209,7 @@ export class FilesystemCompletion {
     this.check();
     if (this.consumed) return this.decoded;
     const size = this.cells[2]!;
-    let bytes = new Uint8ArrayConstructor(
-      new Uint8ArrayConstructor(
-        this.buffer,
-        HEADER,
-        Math.min(size, sharedArrayBufferByteLength(this.buffer) - HEADER),
-      ),
-    );
+    let bytes = this.inlineBytes();
     if (this.cells[0] === State.Overflow) {
       bytes = new Uint8ArrayConstructor(size);
       for (let at = 0; at < size; at += PAGE)
@@ -208,13 +235,7 @@ export class FilesystemCompletion {
   }
   private async load(): Promise<unknown> {
     const size = this.cells[2]!;
-    let bytes = new Uint8ArrayConstructor(
-      new Uint8ArrayConstructor(
-        this.buffer,
-        HEADER,
-        Math.min(size, sharedArrayBufferByteLength(this.buffer) - HEADER),
-      ),
-    );
+    let bytes = this.inlineBytes();
     if (this.cells[0] === State.Overflow) {
       bytes = new Uint8ArrayConstructor(size);
       for (let at = 0; at < size; at += PAGE) {
@@ -240,9 +261,13 @@ export class FilesystemCompletion {
  * Read/stat caches are validated by the service's global seqlock. A concurrent mutation invalidates
  * before changing data; a cached read that overlaps it is discarded, never returned as fresh.
  */
+export interface FilesystemClientOptions {
+  /** Trusted host capability; never included in a serialized connection or supplied to a guest. */
+  readonly connect?: (identity: FilesystemIdentity) => FilesystemConnection;
+}
 export class FilesystemClient implements FileSystem {
   readonly completions = new MapConstructor<number, FilesystemCompletion>();
-  private nextRequest = 1;
+  private readonly requests: FilesystemRequestAllocator;
   private reads = new Map<number, { offset: number; bytes: Uint8Array; epoch: number }>();
   private stats = new Map<number, { stat: FileStat; epoch: number }>();
   private paths = new Map<string, { path: ResolvedPath | number; epoch: number }>();
@@ -273,13 +298,18 @@ export class FilesystemClient implements FileSystem {
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;
-  constructor(readonly connection: FilesystemConnection) {
+  constructor(
+    readonly connection: FilesystemConnection,
+    private readonly options: FilesystemClientOptions = {},
+  ) {
+    this.requests = new FilesystemRequestAllocator(connection.requests);
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
-    this.revoked = sharedRevoked(connection);
+    const revoked = sharedRevoked(connection);
+    this.revoked = () => revoked() || !!this.transportError();
     if (connection.residentPublication)
       this.resident = new ResidentAttachment(connection.residentPublication, this.revoked);
-    this.section = new FilesystemSection(connection, this.revoked);
+    this.section = new FilesystemTransportSection(connection, this.requests.memory, this.revoked);
     this.shared = new SharedFilesystemState(
       connection.shared,
       connection.maxBytes,
@@ -289,10 +319,21 @@ export class FilesystemClient implements FileSystem {
       connection.publication?.buffers,
     );
     connection.port.onmessage = ({ data }) => {
-      if (data.segment) this.shared.addSegment(data.segment, data.index);
+      if (data.segment)
+        this.shared.addSegment(connection.segments[data.segment - 1]!, data.segment);
       else mapGet(this.completions, data.completed)?.notify();
     };
+    connection.port.onmessageerror = () => {
+      closeRequestMemory(this.requests.memory);
+      wake(connection);
+      mapForEach(this.completions, (completion) => completion.notify());
+      connection.port.postMessage({ transportClosed: true });
+      connection.port.close();
+    };
     connection.port.start();
+  }
+  transportError() {
+    return requestTransportError(this.requests.memory);
   }
   async attachResidentPublication(): Promise<void> {
     await this.resident?.attach();
@@ -342,11 +383,14 @@ export class FilesystemClient implements FileSystem {
     }
   }
   fork(): FilesystemConnection {
+    const failure = this.transportError();
+    if (failure) throw failure;
+    if (this.revoked()) throw new FilesystemError(11);
+    const connect = this.options.connect;
+    if (!connect) throw new FilesystemError(58, "filesystem fork requires a host connector");
     this.section.enter();
     try {
-      const connection = createFilesystemConnection(this.connection);
-      this.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
-      return connection.client;
+      return connect(createFilesystemIdentity(this.connection));
     } finally {
       this.section.exit();
     }
@@ -453,6 +497,8 @@ export class FilesystemClient implements FileSystem {
       : 1024,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
+    const failure = this.transportError();
+    if (failure) throw failure;
     if (this.revoked()) throw new FilesystemError(11);
     if (this.resident && this.connection.residentPublication?.kind !== "workspace")
       throw new FilesystemError(58, "resident grant namespace is unsupported");
@@ -494,23 +540,42 @@ export class FilesystemClient implements FileSystem {
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
     const input = pack({ operation, args, publication });
-    const buffer = new SharedArrayBufferConstructor(
-      HEADER + Math.max(input.length + data.length, capacity),
-    );
-    const completion = new FilesystemCompletion(this.nextRequest++, buffer, this, publication);
-    completion.cells[1] = input.length;
-    completion.cells[2] = data.length;
-    typedArraySet(new Uint8ArrayConstructor(buffer, HEADER), input);
-    typedArraySet(new Uint8ArrayConstructor(buffer, HEADER + input.length), data);
-    mapSet(this.completions, completion.id, completion);
+    this.section.enter();
     try {
-      this.connection.port.postMessage({ id: completion.id, buffer });
+      return this.postRequest(input, data, capacity, publication);
+    } finally {
+      this.section.exit();
+    }
+  }
+  private postRequest(
+    input: Uint8Array,
+    data: Uint8Array,
+    capacity: number,
+    publication?: PublicationAdmission,
+  ): FilesystemCompletion {
+    const buffer = this.requests.allocate(Math.max(input.length + data.length, capacity));
+    try {
+      const completion = new FilesystemCompletion(buffer.id, buffer, this, publication);
+      completion.cells[1] = input.length;
+      completion.cells[2] = data.length;
+      typedArraySet(requestBytes(buffer), input);
+      typedArraySet(requestBytes(buffer), data, input.length);
+      mapSet(this.completions, completion.id, completion);
+      this.connection.port.postMessage({
+        id: completion.id,
+        generation: buffer.memory.generation,
+        offset: buffer.offset,
+        length: buffer.length,
+      });
+      return completion;
     } catch (error) {
-      mapDelete(this.completions, completion.id);
+      mapDelete(this.completions, buffer.id);
+      releaseRequestBuffer(buffer, REQUEST_CLIENT);
+      releaseRequestBuffer(buffer, REQUEST_SERVICE);
       throw error;
     }
-    return completion;
   }
+
   cancelPublication(admission: PublicationAdmission): void {
     const connection = this.connection.publication;
     if (connection) this.shared.publication!.cancel(connection.session, admission);
@@ -559,7 +624,7 @@ export class FilesystemClient implements FileSystem {
     setForEach(this.watchers, (watcher) => {
       void watcher.close();
     });
-    mapForEach(this.completions, (completion) => completion.cancel());
+    mapForEach(this.completions, (completion) => completion.release());
     mapClear(this.completions);
     mapClear(this.ioPreparations);
     this.reads.clear();
@@ -753,12 +818,15 @@ export class FilesystemClient implements FileSystem {
     const completion = pending.completion;
     if (!completion.ready) return -6;
     mapDelete(this.ioPreparations, handle);
-    completion.releaseReady();
-    const count = completion.cells[2]!;
-    if (completion.cells[0] !== State.Complete || !completion.cells[4] || count > pending.length)
-      throw new FilesystemError(29);
-    const bytes = new Uint8ArrayConstructor(completion.buffer, HEADER, Math.min(count, length));
-    return this.copyReadResult(chunks, bytes);
+    try {
+      const count = completion.cells[2]!;
+      if (completion.cells[0] !== State.Complete || !completion.cells[4] || count > pending.length)
+        throw new FilesystemError(29);
+      const bytes: Uint8Array = completion.wait();
+      return this.copyReadResult(chunks, bytes.subarray(0, Math.min(count, length)));
+    } finally {
+      completion.release();
+    }
   }
   private copyReadResult(chunks: readonly Uint8Array[], bytes: Uint8Array): number {
     let at = 0;

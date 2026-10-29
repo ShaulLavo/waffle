@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { afterEach, expect, test } from "bun:test";
 import {
   FilesystemService,
@@ -7,7 +8,7 @@ import {
   revokeFilesystem,
   type FilesystemBackend,
 } from "../fs";
-import { HEADER, PAGE, State, pack } from "../fs/protocol";
+import { PAGE, State, pack } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -17,7 +18,7 @@ function fixture(backend: FilesystemBackend = new MemoryBackend()) {
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -371,7 +372,7 @@ test("unaligned large request buffers do not break the cancellation guard", asyn
   const inputLength = pack({ operation, args, publication: undefined }).length;
   const bytes = new Uint8Array(PAGE + 5 - (inputLength % 4)).fill(91);
   const request = client.submit(operation, args, bytes);
-  expect((request.buffer.byteLength - HEADER) % 4).not.toBe(0);
+  expect((inputLength + bytes.byteLength) % 4).not.toBe(0);
   await request.value();
   request.release();
   expect(await client.asyncCall("readFile", ["/unaligned"])).toEqual(bytes);
@@ -627,7 +628,14 @@ async function dedicatedService() {
   const worker = new Worker(new URL("./fixtures/filesystem-service.ts", import.meta.url).href);
   cleanups.push(() => worker.terminate());
   const connection = createFilesystemConnection();
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(
+    {
+      connect(server) {
+        worker.postMessage({ connect: server, silent: true }, [server.port]);
+      },
+    },
+    connection,
+  );
   cleanups.push(() => client.dispose());
   const connected = nextMessage(worker);
   worker.postMessage({ connect: connection.server }, [connection.server.port]);

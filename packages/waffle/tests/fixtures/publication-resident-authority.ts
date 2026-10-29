@@ -1,9 +1,13 @@
+import { filesystemHostConnector } from "./filesystem-host.js";
 import { residentMemory } from "./resident-memory";
 import {
   FilesystemClient,
   FilesystemService,
   MemoryBackend,
   createFilesystemConnection,
+  createFilesystemIdentity,
+  createProcessFilesystemIdentity,
+  type FilesystemConnection,
 } from "../../fs";
 import { publicationObserver, type PublicationLimits } from "../../fs/publication-internal";
 import { publicationCut } from "../../fs/publication";
@@ -82,9 +86,11 @@ const limits: PublicationLimits = {
 };
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
+let hostConnect: ReturnType<typeof filesystemHostConnector> | undefined;
 let handle = 0,
   rootHandle = 0;
 let ordinaryPort: MessagePort | undefined;
+let ordinaryConnection: FilesystemConnection | undefined;
 let holdReply: "open" | "prepare" | undefined;
 let heldReply: (() => void) | undefined;
 const post = BroadcastChannel.prototype.postMessage;
@@ -117,7 +123,8 @@ async function initialize(): Promise<void> {
   service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
-  root = new FilesystemClient(connection.client);
+  hostConnect = filesystemHostConnector(service, connection.pool);
+  root = new FilesystemClient(connection.client, { connect: hostConnect });
   const dir: number = await root.asyncCall("preopen", ["/"]);
   rootHandle = dir;
   const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);
@@ -331,6 +338,22 @@ async function persistentOperation(operation: string, body: unknown): Promise<un
   }
   throw new Error(`unknown persistent operation ${operation}`);
 }
+async function ordinaryControl(operation: string): Promise<unknown> {
+  if (operation === "ordinaryRoot") {
+    await initialize();
+    const identity = createFilesystemIdentity(root!.connection);
+    root!.reserve(handle, identity);
+    const connection = hostConnect!(identity);
+    ordinaryConnection = connection;
+    ordinaryPort = connection.port;
+    return { connection, handle };
+  }
+  const identity = createProcessFilesystemIdentity(ordinaryConnection!);
+  root!.reserve(handle, identity);
+  const connection = hostConnect!(identity);
+  ordinaryPort = connection.port;
+  return connection;
+}
 async function execute(operation: string, body: unknown): Promise<unknown> {
   if (operation.startsWith("persistent")) return persistentOperation(operation, body);
   if (operation === "beginGuard") {
@@ -381,16 +404,7 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     await initialize();
     return enable(text(body));
   }
-  if (operation === "ordinaryRoot") {
-    await initialize();
-    const connection = root!.fork();
-    const sibling = new FilesystemClient(connection);
-    const directory: number = await sibling.asyncCall("preopen", ["/"]);
-    const file: { node: number } = await sibling.asyncCall("resolve", [directory, "file"]);
-    sibling.retain(file.node);
-    ordinaryPort = connection.port;
-    return { connection, handle: file.node };
-  }
+  if (["ordinaryRoot", "ordinaryDescendant"].includes(operation)) return ordinaryControl(operation);
   if (operation === "enable") return enable(text(body));
   if (!root || !backend || !service) throw new Error("authority not started");
   if (operation === "holdOpen" || operation === "holdPrepare") {
@@ -439,7 +453,10 @@ self.onmessage = ({ data }: MessageEvent<unknown>) => {
     id = text(message.id);
   void execute(text(message.operation), message.body).then(
     (value) => {
-      const transfer = message.operation === "ordinaryRoot" && ordinaryPort ? [ordinaryPort] : [];
+      const transfer =
+        ["ordinaryRoot", "ordinaryDescendant"].includes(text(message.operation)) && ordinaryPort
+          ? [ordinaryPort]
+          : [];
       self.postMessage({ id, value }, transfer);
     },
     (error: unknown) => self.postMessage({ id, failure: String(error) }),

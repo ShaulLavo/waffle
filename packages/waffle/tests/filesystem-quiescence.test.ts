@@ -19,6 +19,37 @@ import {
 import { SLOT_WORDS } from "../fs/shared";
 import { FilesystemSection } from "../fs/protocol";
 
+function serviceQuiescence(service: FilesystemService): Promise<void> {
+  const sessions = Reflect.get(service, "sessions");
+  if (!(sessions instanceof Set)) throw new Error("missing service sessions");
+  for (const session of sessions) {
+    const done = Reflect.get(session, "quiescing");
+    if (done instanceof Promise) return done;
+  }
+  throw new Error("missing service quiescence");
+}
+
+function raceSectionRevocation(client: FilesystemClient, race: () => void) {
+  const section = Reflect.get(client, "section") as object;
+  const revoked = Reflect.get(section, "revoked") as () => boolean;
+  let raced = false;
+  Reflect.set(section, "revoked", () => {
+    if (!raced) {
+      raced = true;
+      race();
+    }
+    return revoked();
+  });
+  return {
+    get raced() {
+      return raced;
+    },
+    restore() {
+      Reflect.set(section, "revoked", revoked);
+    },
+  };
+}
+
 for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"] as const)
   test(`quiescence waits for ${operation}'s held lock, then permits another owner`, async () => {
     const { client, cleanup } = retainedClientFixture();
@@ -78,19 +109,10 @@ for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"
 
 test("revocation between section admission and its check cannot acquire a lock or mutate pages", async () => {
   const { client, cleanup } = retainedClientFixture();
-  const add = Atomics.add;
-  let raced = false;
-  Atomics.add = ((...args: any[]) => {
-    const result = Reflect.apply(add, Atomics, args);
-    if (!raced && args[0].buffer === client.connection.sections && args[2] === 1) {
-      raced = true;
-      revokeFilesystem(client.connection);
-    }
-    return result;
-  }) as typeof Atomics.add;
+  const race = raceSectionRevocation(client, () => revokeFilesystem(client.connection));
   try {
     expect(client.write(0, [new Uint8Array([90])], 0)).toBe(-11);
-    expect(raced).toBe(true);
+    expect(race.raced).toBe(true);
     await waitForFilesystemQuiescence(client.connection);
     expect(Atomics.load(client.shared.cells, 1)).toBe(0);
     expect(Atomics.load(client.shared.slots, SLOT_WORDS + 8)).toBe(0);
@@ -107,7 +129,7 @@ test("revocation between section admission and its check cannot acquire a lock o
     expect(other.read(0, [bytes], 0)).toBe(4);
     expect(Array.from(bytes)).toEqual([65, 66, 67, 68]);
   } finally {
-    Atomics.add = add;
+    race.restore();
     cleanup();
   }
 });
@@ -119,33 +141,30 @@ test("the service keeps capabilities until an admitted entrant finishes its revo
   const service = new FilesystemService(backend);
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
-  const add = Atomics.add;
+  let race: ReturnType<typeof raceSectionRevocation> | undefined;
+  let quiescing: Promise<void> | undefined;
   try {
     const root = await client.asyncCall("preopen", ["/"]);
     const path = await client.asyncCall("resolve", [root, "held"]);
     const retained = service.resources().retained;
-    let raced = false;
-    Atomics.add = ((...args: any[]) => {
-      const result = Reflect.apply(add, Atomics, args);
-      if (!raced && args[0].buffer === client.connection.sections && args[2] === 1) {
-        raced = true;
-        revokeFilesystem(client.connection);
-        service.sweep();
-        // No owner lock exists yet. Checking locks alone would drop these capabilities.
-        expect(backend.shared.ownerActive(client.connection.owner)).toBe(false);
-        expect(service.resources().clients).toBe(1);
-        expect(service.resources().retained).toBe(retained);
-      }
-      return result;
-    }) as typeof Atomics.add;
+    race = raceSectionRevocation(client, () => {
+      revokeFilesystem(client.connection);
+      service.sweep();
+      quiescing = serviceQuiescence(service);
+      // No owner lock exists yet. Checking locks alone would drop these capabilities.
+      expect(backend.shared.ownerActive(client.connection.owner)).toBe(false);
+      expect(service.resources().clients).toBe(1);
+      expect(service.resources().retained).toBe(retained);
+    });
     expect(() => client.retain(path.node)).toThrow();
-    expect(raced).toBe(true);
+    expect(race.raced).toBe(true);
     await waitForFilesystemQuiescence(client.connection);
+    await quiescing;
     service.sweep();
     expect(service.resources().clients).toBe(0);
     expect(service.resources().retained).toBe(0);
   } finally {
-    Atomics.add = add;
+    race?.restore();
     client.dispose();
     service.dispose();
   }

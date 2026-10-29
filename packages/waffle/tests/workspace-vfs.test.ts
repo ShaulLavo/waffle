@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, expectTypeOf, test } from "bun:test";
 import {
   createFilesystemConnection,
@@ -43,7 +44,7 @@ async function fixture(backend = new MemoryBackend(), limits?: PublicationLimits
     : createFilesystemConnection(undefined, publicConfiguration);
   const service = new FilesystemService(backend);
   service.connect(pair.server);
-  const client = new FilesystemClient(pair.client);
+  const client = hostFilesystemClient(service, pair);
   const workspace = createWorkspaceVfs(client);
   return {
     backend,

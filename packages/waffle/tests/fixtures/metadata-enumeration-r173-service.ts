@@ -1,5 +1,9 @@
 import { FilesystemService } from "../../fs/service.js";
-import { createFilesystemConnection } from "../../fs/protocol.js";
+import {
+  createFilesystemIdentity,
+  connectFilesystemIdentity,
+  createFilesystemConnection,
+} from "../../fs/protocol.js";
 import type { MemoryBackend } from "../../fs/backend.js";
 
 function checkCleanup(service: FilesystemService) {
@@ -31,6 +35,11 @@ export async function metadataWorker<T>(
       pinBytes: 256,
     },
   });
+  const peer = connectFilesystemIdentity(
+    createFilesystemIdentity(connection.client),
+    connection.pool,
+  );
+  service.connect(peer.server);
   let worker: Worker | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -45,13 +54,18 @@ export async function metadataWorker<T>(
       active.onerror = reject;
       active.onmessage = (event: MessageEvent<T>) => resolve(event.data);
     });
-    active.postMessage({ ...scenario, connection: connection.client }, [connection.client.port]);
+    active.postMessage({ ...scenario, connection: connection.client, peer: peer.client }, [
+      connection.client.port,
+      peer.client.port,
+    ]);
     return await result;
   } finally {
     clearTimeout(timer);
     await worker?.terminate();
     service.dispose();
     connection.server.port.close();
+    peer.client.port.close();
+    peer.server.port.close();
     checkCleanup(service);
   }
 }

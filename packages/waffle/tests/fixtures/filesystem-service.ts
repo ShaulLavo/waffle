@@ -11,7 +11,7 @@ class GatedBackend extends MemoryBackend {
   }
 }
 const service = new FilesystemService(new GatedBackend());
-self.onmessage = ({ data }: MessageEvent<{ connect: FilesystemConnection }>) => {
+self.onmessage = ({ data }: MessageEvent<{ connect: FilesystemConnection; silent?: boolean }>) => {
   service.connect(data.connect);
-  self.postMessage({ connected: true });
+  if (!data.silent) self.postMessage({ connected: true });
 };

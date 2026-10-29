@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -33,7 +34,7 @@ for (const phase of ["contention", "capture"] as const) {
     const backend = new MemoryBackend();
     const service = new FilesystemService(backend);
     service.connect(pair.server);
-    const page = new FilesystemClient(pair.client);
+    const page = hostFilesystemClient(service, pair);
     const guest = new FilesystemClient(page.fork());
     const ensureIdentity = backend.ensureIdentity.bind(backend);
     let interrupted = false;

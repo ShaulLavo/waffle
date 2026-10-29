@@ -10,7 +10,11 @@ WASI. Enable it before the filesystem worker starts with
 Low-level owners can import `createFilesystemConnection`, `FilesystemService`,
 `FilesystemClient`, and `createWorkspaceVfs` from `waffle/fs`. A root connection
 created with `createFilesystemConnection(undefined, { workspace: true })` grants
-observer access. Guest forks do not inherit that grant. Activation after writers
+observer access. Guest forks do not inherit that grant. Low-level `client.fork()`
+also requires the trusted `FilesystemClientOptions.connect` capability and fails
+with `ENOTSUP` before allocation when it is absent; ordinary
+`SharedFilesystem.fork()` supplies it through the dedicated filesystem Worker.
+Activation after writers
 start is not supported. The root package exports the public contract types.
 
 ## Reads and stat

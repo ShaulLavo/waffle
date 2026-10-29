@@ -566,7 +566,10 @@ When a blocked guest spawns a child, it creates only a `FilesystemIdentity`. The
 uses `connectFilesystemIdentity` to create the MessageChannel and attach the service endpoint,
 then transfers the client endpoint to the child. Creating a new channel in a blocked guest
 would deadlock Firefox. `createFilesystemConnection`/`client.fork()` are for runnable controllers
-and non-blocking setup, not that guest spawn path.
+and non-blocking setup, not that guest spawn path. A low-level `FilesystemClient` also needs the
+trusted `FilesystemClientOptions.connect` capability before `fork()` can allocate an identity or
+channel; without it, `fork()` fails with `ENOTSUP`. Ordinary `SharedFilesystem.fork()` supplies
+that connector through the dedicated filesystem Worker and is unchanged.
 
 Every fd belongs to `wasi.descriptors`. A binding holds its own rights and optional preopen name;
 it references an `OpenDescription` holding a file, directory, pipe or terminal resource. `dup`

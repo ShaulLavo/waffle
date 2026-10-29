@@ -6,6 +6,7 @@ import {
   acquirePublicationGuard,
   attachResidentPublication,
   createResidentConnection,
+  createResidentHost,
   encodeResidentOutcome,
   record,
   residentDescriptor,
@@ -19,9 +20,11 @@ import {
   text,
 } from "../fs/publication-attachment";
 import {
+  connectFilesystemIdentity,
   revokeFilesystem,
   releaseFilesystemReservation,
   type FilesystemConnection,
+  type FilesystemIdentity,
 } from "../fs/protocol";
 import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
 
@@ -225,7 +228,33 @@ class FixtureWorker {
 let authority: FixtureWorker | undefined,
   attachment: ResidentAttachment | ResidentGrantClient | undefined;
 let descriptor: ResidentDescriptor | undefined;
-const guests = new Map<string, { worker: FixtureWorker; connection: FilesystemConnection }>();
+interface WorkspaceGuest {
+  worker: FixtureWorker;
+  connection: FilesystemConnection;
+  host?: ReturnType<typeof createResidentHost>;
+}
+const guests = new Map<string, WorkspaceGuest>();
+function workspaceChild(parent: WorkspaceGuest, identity: FilesystemIdentity) {
+  const host = parent.host;
+  if (!host?.attach) throw new Error("missing workspace host");
+  const attach = host.attach;
+  const pair = connectFilesystemIdentity(identity, host.pool);
+  return {
+    pair,
+    attach: () => {
+      const observer = Reflect.get(globalThis, "__workspaceChannelCounts");
+      const admit =
+        observer && typeof observer === "object"
+          ? Reflect.get(observer, "admitConnect")
+          : undefined;
+      if (typeof admit === "function") {
+        admit(() => attach(pair.server));
+        return;
+      }
+      attach(pair.server);
+    },
+  };
+}
 let claimGate: Int32Array | undefined;
 let workspaceClient: FilesystemClient | undefined;
 async function ordinarySurvivorControl(): Promise<unknown> {
@@ -245,7 +274,9 @@ async function ordinarySurvivorControl(): Promise<unknown> {
       await owner.request("enable", `ordinary-${crypto.randomUUID()}`),
     );
     const activated = record(await worker.request("call", request)).result;
-    const descendantConnection = (await worker.request("descendant")) as FilesystemConnection;
+    const descendantConnection = (await owner.request(
+      "ordinaryDescendant",
+    )) as FilesystemConnection;
     await descendantWorker.request(
       "start",
       { mode: "proc", connection: descendantConnection, handle: result.handle },
@@ -606,8 +637,9 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
         body.failSetup === true,
         body.cleanupFailure === true,
       ),
-      connection = createResidentConnection(descriptor);
-    guests.set(text(body.key), { worker, connection });
+      host = createResidentHost(descriptor),
+      connection = host.connection;
+    guests.set(text(body.key), { worker, connection, host });
     await worker.request(
       "start",
       {
@@ -632,7 +664,9 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     const parent = guests.get(text(body.parent));
     if (!parent) throw new Error("missing source guest");
     const inherited = record(await parent.worker.request("descendantCodec"));
-    const connection = inherited.connection as FilesystemConnection;
+    const child = workspaceChild(parent, inherited.identity as FilesystemIdentity);
+    const connection = child.pair.client;
+    child.attach();
     if (operation === "workspaceDescendantReserve") {
       reservedWorkspaceChildren.set(text(body.key), connection);
       return null;
@@ -644,7 +678,9 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     const parent = guests.get(text(body.parent));
     if (!parent) throw new Error("missing source guest");
     const inherited = record(await parent.worker.request("descendantCodec"));
-    const connection = inherited.connection as FilesystemConnection;
+    const child = workspaceChild(parent, inherited.identity as FilesystemIdentity);
+    const connection = child.pair.client;
+    child.attach();
     const worker = new FixtureWorker("/resident-guest.js");
     guests.set(text(body.key), { worker, connection });
     await worker.request("start", { mode: text(body.mode), connection, token: inherited.token }, [

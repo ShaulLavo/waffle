@@ -51,6 +51,20 @@ async function fixture() {
   };
 }
 
+async function workerFixture() {
+  const f = await fixture();
+  const identity = createProcessFilesystemIdentity(f.client.connection);
+  const exporter = createFilesystemDescriptorCodec(f.client, identity);
+  const token = exporter.export(f.parent.get(f.fd)!, 2) as FilesystemDescriptorToken;
+  const pair = connectFilesystemIdentity(identity);
+  f.service.connect(pair.server);
+  cleanups.push(() => {
+    pair.client.port.close();
+    pair.server.port.close();
+  });
+  return { ...f, guestConnection: pair.client, guestToken: token };
+}
+
 test("transferred file shares offset and append flags without sharing descriptor bindings", async () => {
   const { parent, fd, resource } = await fixture();
   const original = parent.get(fd)!.resource as Extract<Resource, { kind: "file" }>;
@@ -117,11 +131,11 @@ test("a revoked offset waiter clears admission without acquiring the held lock",
 });
 
 test("concurrent parent and worker writes consume one shared open-file offset", async () => {
-  const { parent, fd, client, child, token } = await fixture();
+  const { parent, fd, client, guestConnection, guestToken } = await workerFixture();
   const guest = new Worker(new URL("./fixtures/filesystem-offset-guest.ts", import.meta.url).href);
   cleanups.push(() => {
     guest.terminate();
-    reapFilesystem(child.connection);
+    reapFilesystem(guestConnection);
   });
   const start = new SharedArrayBuffer(8);
   const gate = new Int32Array(start);
@@ -129,8 +143,8 @@ test("concurrent parent and worker writes consume one shared open-file offset", 
     guest.onmessage = ({ data }) => resolve(data);
     guest.onerror = reject;
   });
-  guest.postMessage({ connection: child.connection, token, count: 2000, start }, [
-    child.connection.port,
+  guest.postMessage({ connection: guestConnection, token: guestToken, count: 2000, start }, [
+    guestConnection.port,
   ]);
   const waiting = (
     Atomics as typeof Atomics & {
@@ -163,26 +177,32 @@ test("concurrent parent and worker writes consume one shared open-file offset", 
 });
 
 test("reaping a worker stopped inside its offset transaction recovers the lock", async () => {
-  const { parent, fd, client, child, token } = await fixture();
+  const { parent, fd, client, guestConnection, guestToken } = await workerFixture();
   const guest = new Worker(new URL("./fixtures/filesystem-offset-guest.ts", import.meta.url).href);
   cleanups.push(() => {
     guest.terminate();
-    reapFilesystem(child.connection);
+    reapFilesystem(guestConnection);
   });
   const result = new Promise<unknown>((resolve, reject) => {
     guest.onmessage = ({ data }) => resolve(data);
     guest.onerror = reject;
   });
   guest.postMessage(
-    { connection: child.connection, token, count: 0, start: new SharedArrayBuffer(8), crash: true },
-    [child.connection.port],
+    {
+      connection: guestConnection,
+      token: guestToken,
+      count: 0,
+      start: new SharedArrayBuffer(8),
+      crash: true,
+    },
+    [guestConnection.port],
   );
   expect(await result).toEqual({ locked: true });
-  expect(new Int32Array(child.connection.sections)[0]).toBe(1);
+  expect(new Int32Array(guestConnection.sections)[0]).toBe(1);
   const file = parent.get(fd)!.resource as Extract<Resource, { kind: "file" }>;
   expect(withFileOffset(file, () => 1, true)).toBe(-6);
   guest.terminate();
-  reapFilesystem(child.connection);
+  reapFilesystem(guestConnection);
   expect(
     withFileOffset(
       file,

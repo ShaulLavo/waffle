@@ -8,11 +8,7 @@ import {
 import { shareFileResource } from "../../core/open-file";
 import type { Resource } from "../../core/descriptors";
 import { createWorkerProcessTransport } from "../../proc/worker-client";
-import {
-  createProcessFilesystemIdentity,
-  connectFilesystemIdentity,
-  type FilesystemConnection,
-} from "../../fs/protocol";
+import { createProcessFilesystemIdentity, type FilesystemConnection } from "../../fs/protocol";
 import { integer, record, residentRequest, text } from "../../fs/publication-attachment";
 import { guestFunction, publicationProcModule, publicationWasiModule } from "./publication-wasm";
 
@@ -220,26 +216,12 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return null;
   }
   if (operation === "defensiveResult") return defensiveResult();
-  if (operation === "descendant") {
-    if (!resource) throw new Error("missing inherited file");
-    const identity = createProcessFilesystemIdentity(current.fs.connection);
-    current.fs.reserve(resource.handle, identity);
-    const connection = connectFilesystemIdentity(identity);
-    current.fs.connection.port.postMessage({ connect: connection.server }, [
-      connection.server.port,
-    ]);
-    return connection.client;
-  }
   if (operation === "descendantCodec") {
     const identity = createProcessFilesystemIdentity(current.fs.connection);
     const descriptor = current.wasi.descriptors.get(fd);
     if (!descriptor) throw new Error("missing real descriptor");
     const token = createFilesystemDescriptorCodec(current.fs, identity).export(descriptor, 2);
-    const connection = connectFilesystemIdentity(identity);
-    current.fs.connection.port.postMessage({ connect: connection.server }, [
-      connection.server.port,
-    ]);
-    return { connection: connection.client, token };
+    return { identity, token };
   }
   if (operation === "workspace") return workspaceCall(body);
   if (operation === "beginPending") {
@@ -312,7 +294,6 @@ type GuestMessage =
       operation:
         | "armDefensiveHooks"
         | "defensiveResult"
-        | "descendant"
         | "descendantCodec"
         | "workspace"
         | "observerDenied"
@@ -339,14 +320,7 @@ self.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
   }
   void execute(data.operation, data.body).then(
     (value) => {
-      const connection = value as FilesystemConnection;
-      const transfers =
-        data.operation === "descendant"
-          ? [connection.port]
-          : data.operation === "descendantCodec"
-            ? [(value as { connection: FilesystemConnection }).connection.port]
-            : [];
-      self.postMessage({ id, value }, transfers);
+      self.postMessage({ id, value });
     },
     (error: unknown) => self.postMessage({ id, failure: String(error) }),
   );

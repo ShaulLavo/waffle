@@ -1,3 +1,20 @@
+import {
+  REQUEST_BUDGET_BYTES,
+  requestLengths,
+  captureRequestMemory,
+  requestCells,
+  requestBytes,
+  requestCancelled,
+  receiveRequestBuffer,
+  releaseRequestBuffer,
+  closeRequestMemory,
+  retireRequestMemory,
+  requestTransportError,
+  requestMemoryRetired,
+  requestMemoryRetirementError,
+  REQUEST_SERVICE,
+  type FilesystemRequestBuffer,
+} from "./request-memory.js";
 import { parseFileIdentity } from "./file-identity.js";
 import {
   Int32ArrayConstructor,
@@ -6,6 +23,7 @@ import {
   atomicsLoad,
   atomicsStore,
   sharedArrayBufferByteLength,
+  atomicsWaitAsync,
 } from "../proc/intrinsics.js";
 import { FilesystemError } from "../core/filesystem.js";
 import {
@@ -46,7 +64,6 @@ import {
 } from "./protocol.js";
 
 const NativeChannel = globalThis.BroadcastChannel;
-const NativeMessageChannel = globalThis.MessageChannel;
 const NativeMessagePort = globalThis.MessagePort;
 const continuityKey = (workspace: string): string => `waffle:publication:continuity:${workspace}`;
 const callBound = 3000;
@@ -681,7 +698,7 @@ function workspaceIdentityBuffer(source: SharedArrayBuffer, words: number): Shar
 }
 /** Synthetic local liveness/capabilities, never an authority backend or writable tree.
  * Workspace buffers append three non-operational backing-identity words, twelve bytes total. */
-export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
+export function createResidentHost(value: ResidentDescriptor) {
   const descriptor = residentDescriptor(value);
   const identity = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES);
   identity.residentPublication = descriptor;
@@ -696,9 +713,33 @@ export function createResidentConnection(value: ResidentDescriptor): FilesystemC
   entries[CAPABILITY_HEADER + 1] = 0;
   entries[CAPABILITY_HEADER + 2] = 0;
   const connection = connectFilesystemIdentity(identity);
-  if (descriptor.kind === "workspace") installWorkspaceBridge(connection.server);
-  else connection.server.port.close();
-  return connection.client;
+  const bridge =
+    descriptor.kind === "workspace" ? new WorkspaceBridge(connection.server) : undefined;
+  if (!bridge) connection.server.port.close();
+  const attach = bridge
+    ? (child: FilesystemConnection): void => {
+        connection.pool.assertBudget(child.requestBudget);
+        bridge.connect(child);
+      }
+    : undefined;
+  const connect = attach
+    ? (childIdentity: FilesystemIdentity): FilesystemConnection => {
+        const child = connectFilesystemIdentity(childIdentity, connection.pool);
+        try {
+          attach(child.server);
+          return child.client;
+        } catch (error) {
+          child.client.port.close();
+          child.server.port.close();
+          throw error;
+        }
+      }
+    : undefined;
+  return { connection: connection.client, pool: connection.pool, connect, attach };
+}
+
+export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
+  return createResidentHost(value).connection;
 }
 
 const requestBound = PAGE + 8192;
@@ -744,38 +785,19 @@ function identity(value: unknown): MutationId {
   const data = record(value);
   return { session: integer(data.session), sequence: integer(data.sequence) };
 }
-type WorkspaceCleanupResult =
-  | { readonly kind: "workspace-stopped" }
-  | { readonly kind: "workspace-stop-failed"; readonly errno: number };
-
-function receiveWorkspaceCleanup(
-  value: unknown,
-  answer: ReturnType<typeof Promise.withResolvers<void>>,
-): void {
-  try {
-    const result = record(value);
-    if (result.kind === "workspace-stopped") answer.resolve();
-    else if (result.kind === "workspace-stop-failed")
-      answer.reject(new FilesystemError(integer(result.errno, 76)));
-    else answer.reject(new FilesystemError(28));
-  } catch (error) {
-    answer.reject(error);
-  }
-}
-/** Join only this connection's local bridge after its data identity is revoked. */
+/** Join this exact bridge's stable shared retirement receipt, even after its port closes. */
 export async function stopWorkspaceBridge(connection: FilesystemConnection): Promise<void> {
-  const ports = new NativeMessageChannel();
-  const answer = Promise.withResolvers<void>();
-  try {
-    ports.port1.onmessage = ({ data }: MessageEvent<unknown>) =>
-      receiveWorkspaceCleanup(data, answer);
-    ports.port1.onmessageerror = () => answer.reject(new FilesystemError(29));
-    ports.port1.start();
-    connection.port.postMessage({ stopWorkspace: ports.port2 }, [ports.port2]);
-    await answer.promise;
-  } finally {
-    ports.port1.close();
-    ports.port2.close();
+  connection.port.postMessage({ stopWorkspace: true });
+  const signal = new Int32ArrayConstructor(connection.signal);
+  for (;;) {
+    const observed = atomicsLoad(signal, 0);
+    if (requestMemoryRetired(connection.requests)) {
+      const failure = requestMemoryRetirementError(connection.requests);
+      if (failure) throw new FilesystemError(failure);
+      return;
+    }
+    const waiting = atomicsWaitAsync(signal, 0, observed);
+    if (waiting.async) await waiting.value;
   }
 }
 type WorkspaceEndpoint =
@@ -823,6 +845,8 @@ function workspaceConnection(value: unknown, parent: FilesystemConnection): File
     throw new FilesystemError(28);
   return {
     residentPublication: descriptor,
+    requests: captureRequestMemory(data.requests),
+    requestBudget: workspaceBuffer(data.requestBudget, REQUEST_BUDGET_BYTES),
     port: data.port,
     epoch: workspaceBuffer(data.epoch, 4),
     signal: workspaceBuffer(data.signal, 4),
@@ -839,7 +863,7 @@ function workspaceConnection(value: unknown, parent: FilesystemConnection): File
 }
 interface BridgeOperation {
   readonly abort: AbortController;
-  readonly buffer: SharedArrayBuffer;
+  readonly buffer: FilesystemRequestBuffer;
   readonly joined: Promise<void>;
 }
 interface BridgeParent {
@@ -856,6 +880,7 @@ class WorkspaceBridge {
   private children = new Set<WorkspaceBridge>();
   private transfer = Promise.withResolvers<void>();
   private stopping: Promise<void> | undefined;
+  private watching: Promise<void> | undefined;
   constructor(
     private connection: FilesystemConnection,
     private parent?: BridgeParent,
@@ -867,13 +892,31 @@ class WorkspaceBridge {
         : { kind: "live", channel: new ResidentChannel(connection.residentPublication!.workspace) };
     void this.transfer.promise.catch(() => {});
     connection.port.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(data);
+    connection.port.onmessageerror = () => {
+      closeRequestMemory(connection.requests);
+      wake(connection);
+      this.replyStopped();
+    };
     connection.port.start();
+    this.watching = this.watchConnection();
+  }
+  private async watchConnection(): Promise<void> {
+    const signal = new Int32ArrayConstructor(this.connection.signal);
+    while (!this.stopping) {
+      const observed = atomicsLoad(signal, 0);
+      if (requestTransportError(this.connection.requests)) {
+        this.replyStopped();
+        return;
+      }
+      const waiting = atomicsWaitAsync(signal, 0, observed);
+      if (waiting.async) await waiting.value;
+    }
   }
   private get channel(): ResidentChannel {
     if (this.endpoint.kind !== "live") throw new FilesystemError(11);
     return this.endpoint.channel;
   }
-  private connect(value: unknown): void {
+  connect(value: unknown): void {
     const child = workspaceConnection(value, this.connection);
     if (
       !sameWorkspaceBacking(child.shared, this.connection.shared, "shared") ||
@@ -959,16 +1002,13 @@ class WorkspaceBridge {
     try {
       this.message(record(value));
     } catch {
-      /* Malformed local data owns no request. */
+      closeRequestMemory(this.connection.requests);
+      wake(this.connection);
+      this.replyStopped();
     }
   }
   private message(data: Record<string, unknown>): void {
-    if ("stopWorkspace" in data) return this.replyStopped(data.stopWorkspace);
-    if ("connect" in data && this.endpoint.kind === "live") return this.connect(data.connect);
-    if (this.stopping || this.endpoint.kind === "cleanup-only") {
-      if (data.buffer instanceof SharedArrayBuffer) this.fail(integer(data.id), data.buffer, 11);
-      return;
-    }
+    if ("stopWorkspace" in data) return this.replyStopped();
     if ("discard" in data) {
       const id = integer(data.discard);
       this.pending.get(id)?.abort.abort();
@@ -979,35 +1019,54 @@ class WorkspaceBridge {
       for (const child of this.children) child.cancelTransferred();
       return;
     }
+    if ("transportClosed" in data) {
+      closeRequestMemory(this.connection.requests);
+      wake(this.connection);
+      return this.replyStopped();
+    }
     const id = integer(data.id);
-    if (!(data.buffer instanceof SharedArrayBuffer)) throw new FilesystemError(28);
-    const buffer = data.buffer;
-    if (buffer.byteLength > requestBound || this.pending.size >= 16)
-      return this.fail(id, buffer, 6);
-    const abort = new AbortController();
-    const joined = this.execute(id, buffer, abort.signal).catch((error: unknown) =>
-      this.fail(id, buffer, error instanceof FilesystemError ? error.errno : 29),
+    const buffer = receiveRequestBuffer(
+      this.connection.requests,
+      id,
+      integer(data.generation),
+      integer(data.offset),
+      integer(data.length),
     );
+    if (this.stopping || this.endpoint.kind === "cleanup-only") return this.refuse(id, buffer, 11);
+    if (buffer.length > requestBound || this.pending.size >= 16) return this.refuse(id, buffer, 6);
+    const abort = new AbortController();
+    const joined = this.execute(id, buffer, abort.signal)
+      .catch((error: unknown) =>
+        this.fail(id, buffer, error instanceof FilesystemError ? error.errno : 29),
+      )
+      .finally(() => releaseRequestBuffer(buffer, REQUEST_SERVICE));
     this.pending.set(id, { abort, buffer, joined });
     void joined.finally(() => this.pending.delete(id));
   }
-  private fail(id: number, buffer: SharedArrayBuffer, errno: number): void {
+  private refuse(id: number, buffer: FilesystemRequestBuffer, errno: number): void {
+    try {
+      this.fail(id, buffer, errno);
+    } finally {
+      releaseRequestBuffer(buffer, REQUEST_SERVICE);
+    }
+  }
+  private fail(id: number, buffer: FilesystemRequestBuffer, errno: number): void {
     this.complete(id, buffer, undefined, errno);
   }
-  private complete(id: number, buffer: SharedArrayBuffer, value: unknown, errno = 0): void {
-    const cells = new Int32Array(buffer, 0, HEADER / 4);
-    if (Atomics.load(cells, 6) || isRevoked(this.connection)) errno = 11;
+  private complete(id: number, buffer: FilesystemRequestBuffer, value: unknown, errno = 0): void {
+    const cells = requestCells(buffer);
+    if (requestCancelled(buffer) || isRevoked(this.connection)) errno = 11;
     const binary = value instanceof Uint8Array;
     const bytes = binary ? value : pack(value);
     cells[3] = errno;
     cells[4] = binary ? 1 : 0;
     cells[2] = bytes.length;
     let state = errno === 11 ? State.Cancelled : errno ? State.Failed : State.Complete;
-    if (!errno && bytes.length > buffer.byteLength - HEADER) {
+    if (!errno && bytes.length > buffer.length - HEADER) {
       if (this.responses.size >= 16 || bytes.length > requestBound) return this.fail(id, buffer, 6);
       this.responses.set(id, bytes);
       state = State.Overflow;
-    } else if (!errno) new Uint8Array(buffer, HEADER).set(bytes);
+    } else if (!errno) requestBytes(buffer).set(bytes);
     Atomics.store(cells, 0, state);
     Atomics.notify(cells, 0);
     wake(this.connection);
@@ -1078,32 +1137,27 @@ class WorkspaceBridge {
     Atomics.store(entries, free + 1, 0);
     Atomics.add(entries, 0, 1);
   }
-  private replyStopped(value: unknown): void {
-    if (!(value instanceof NativeMessagePort)) throw new FilesystemError(28);
-    const stopped = this.stop();
-    void stopped.then(
-      () => this.cleanupReply(value, { kind: "workspace-stopped" }),
-      (error: unknown) =>
-        this.cleanupReply(value, {
-          kind: "workspace-stop-failed",
-          errno: error instanceof FilesystemError ? error.errno : 29,
-        }),
+  private replyStopped(): void {
+    void this.stop().then(
+      () => {
+        retireRequestMemory(this.connection.requests);
+        wake(this.connection);
+      },
+      (error: unknown) => {
+        retireRequestMemory(
+          this.connection.requests,
+          error instanceof FilesystemError ? error.errno : 29,
+        );
+        wake(this.connection);
+      },
     );
-  }
-  private cleanupReply(port: MessagePort, result: WorkspaceCleanupResult): void {
-    try {
-      port.postMessage(result);
-    } catch {
-      // A vanished receiver cannot turn a failed join into successful cleanup.
-    } finally {
-      port.close();
-    }
   }
   private stop(): Promise<void> {
     if (this.stopping) return this.stopping;
     const answer = Promise.withResolvers<void>();
     this.stopping = answer.promise;
-    void this.stopOwned().then(answer.resolve, answer.reject);
+    wake(this.connection);
+    void Promise.all([this.stopOwned(), this.watching]).then(() => answer.resolve(), answer.reject);
     return this.stopping;
   }
   private async stopOwned(): Promise<void> {
@@ -1118,14 +1172,20 @@ class WorkspaceBridge {
     this.responses.clear();
     if (this.endpoint.kind === "live") this.endpoint.channel.close();
     this.connection.port.close();
+    retireRequestMemory(this.connection.requests);
+    wake(this.connection);
     if (!this.bindingStarted) this.transfer.resolve();
   }
-  private async execute(id: number, buffer: SharedArrayBuffer, signal: AbortSignal): Promise<void> {
-    const cells = new Int32Array(buffer, 0, HEADER / 4);
-    const inputLength = integer(cells[1], 8192),
-      dataLength = integer(cells[2], PAGE);
-    if (inputLength + dataLength > buffer.byteLength - HEADER) throw new FilesystemError(28);
-    const input: unknown = unpack(new Uint8Array(buffer, HEADER, inputLength));
+  private async execute(
+    id: number,
+    buffer: FilesystemRequestBuffer,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const lengths = requestLengths(buffer);
+    const inputLength = integer(lengths.inputLength, 8192),
+      dataLength = integer(lengths.dataLength, PAGE);
+    if (inputLength + dataLength > buffer.length - HEADER) throw new FilesystemError(28);
+    const input: unknown = unpack(requestBytes(buffer).subarray(0, inputLength));
     const call = record(input),
       operation = text(call.operation);
     if (!Array.isArray(call.args)) throw new FilesystemError(28);
@@ -1148,7 +1208,7 @@ class WorkspaceBridge {
     }
     await this.bound;
     const session = this.session;
-    if (!session || signal.aborted || Atomics.load(cells, 6)) throw new FilesystemError(11);
+    if (!session || signal.aborted || requestCancelled(buffer)) throw new FilesystemError(11);
     const token = session.token;
     if (
       operation === "workspaceNext" ||
@@ -1170,17 +1230,16 @@ class WorkspaceBridge {
         request: {
           operation: actualOperation,
           args: actualArgs,
-          input: new Uint8Array(new Uint8Array(buffer, HEADER + inputLength, dataLength)),
+          input: new Uint8Array(
+            requestBytes(buffer).subarray(inputLength, inputLength + dataLength),
+          ),
           id: mutationId,
         },
       },
       signal,
     );
-    if (signal.aborted || Atomics.load(cells, 6) || isRevoked(this.connection))
+    if (signal.aborted || requestCancelled(buffer) || isRevoked(this.connection))
       throw new FilesystemError(11);
     this.complete(id, buffer, this.mirror(value));
   }
-}
-function installWorkspaceBridge(connection: FilesystemConnection): void {
-  new WorkspaceBridge(connection);
 }

@@ -50,6 +50,7 @@ export {
   bigintToString,
   DataViewConstructor,
   SharedArrayBufferConstructor,
+  createGrowableSharedArrayBuffer,
   sharedArrayBufferByteLength,
   wasmMemoryByteLength,
   wasmModuleImports,

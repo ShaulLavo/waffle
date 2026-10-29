@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent.js";
 import { nextReservation } from "../fs/file-identity.js";
@@ -14,7 +15,7 @@ async function fixture(backend = new MemoryBackend()) {
   const pair = createFilesystemConnection();
   const service = new FilesystemService(backend);
   service.connect(pair.server);
-  const page = new FilesystemClient(pair.client);
+  const page = hostFilesystemClient(service, pair);
   const guest = new FilesystemClient(page.fork());
   const root = await page.asyncCall("preopen", ["/"]);
   const guestRoot = await guest.asyncCall("preopen", ["/"]);

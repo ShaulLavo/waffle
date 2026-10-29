@@ -1,11 +1,13 @@
 export {
   FilesystemClient,
   FilesystemCompletion,
+  type FilesystemClientOptions,
   resolveWriteFileMode,
   type WriteFileOptions,
   type WriteFileMode,
 } from "./client.js";
 export { FilesystemService, installFilesystemWorker } from "./service.js";
+export { FilesystemTransportError, FILESYSTEM_REQUEST_LIMITS } from "./request-memory.js";
 export { MemoryBackend, type FilesystemBackend } from "./backend.js";
 export {
   createFilesystemConnection,

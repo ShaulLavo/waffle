@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { SLOT_WORDS } from "../fs/shared.js";
@@ -21,7 +22,7 @@ async function fixture(cold = false) {
   const service = new FilesystemService(backend);
   const pair = createFilesystemConnection();
   service.connect(pair.server);
-  const client = new FilesystemClient(pair.client);
+  const client = hostFilesystemClient(service, pair);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -190,7 +191,7 @@ async function persistentFixture(failure = false) {
   const service = new FilesystemService(backend);
   const pair = createFilesystemConnection();
   service.connect(pair.server);
-  const client = new FilesystemClient(pair.client);
+  const client = hostFilesystemClient(service, pair);
   cleanups.push(() => {
     release();
     client.dispose();

@@ -1,3 +1,4 @@
+import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
@@ -35,7 +36,7 @@ function fixture(backend = new MemoryBackend()) {
   // Use a connected root client to create sibling sessions with the same epoch.
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   const sibling = new FilesystemClient(client.fork());
   cleanups.push(() => {
     sibling.dispose();
@@ -496,7 +497,7 @@ test("a WASI fd_write returns ENOSPC when the configured shared pool is full", a
   const service = new FilesystemService(backend);
   const connection = connectFilesystemIdentity(createFilesystemIdentity(undefined, PAGE * 256));
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = hostFilesystemClient(service, connection);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
