@@ -151,7 +151,7 @@ export class FilesystemService {
   private watchService?: WatchService;
   constructor(private backend: FilesystemBackend) {}
   attachSocketScope(
-    guest: FilesystemIdentity,
+    guest: Pick<FilesystemIdentity, "owner" | "sections">,
     directory: number,
     connection: FilesystemConnection,
   ) {
@@ -1541,12 +1541,16 @@ export class FilesystemService {
   }
   resources() {
     const backend = this.backend.resources?.() ?? {};
+    let socketLeases = 0,
+      socketScopes = 0;
     let workspaceCursors = 0;
     let retained = 0,
       transient = 0,
       responses = 0,
       capabilityBytes = 0;
     for (const session of this.sessions) {
+      socketScopes += session.socketScope ? 1 : 0;
+      socketLeases += session.socketScope?.leases.size ?? 0;
       workspaceCursors += session.namespace?.size ?? 0;
       retained += session.handles.size;
       responses += session.responses.size;
@@ -1564,6 +1568,8 @@ export class FilesystemService {
         ...backend,
         requestTransportBytes,
         workspaceCursors,
+        socketLeases,
+        socketScopes,
         ownerStateBytes,
         clients: this.sessions.size,
         retained,

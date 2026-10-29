@@ -1,3 +1,4 @@
+import { isRevoked } from "../fs/protocol.js";
 import { type FilesystemRequestPool } from "../fs/request-memory.js";
 import {
   localMemory,
@@ -75,7 +76,7 @@ interface EntryStat {
   ino: number;
   mtime: number;
 }
-type LeafEntry = EntryStat & ({ kind: "file" | "socket" } | { kind: "symlink"; target: string });
+type LeafEntry = EntryStat & ({ kind: "file" } | { kind: "socket" } | { kind: "symlink"; target: string });
 export interface RemoveCondition {
   /** Remove only a regular file whose bytes equal these. */
   readonly ifContent: Uint8Array;
@@ -323,12 +324,14 @@ export class SharedFilesystem {
     directory: number,
   ): Promise<{ client: FilesystemClient; root: number; rootIno: number }> {
     this.assertLive();
+    if (isRevoked(guest)) throw new FilesystemError(11);
     const identity = createProcessFilesystemIdentity(guest);
     delete identity.residentPublication;
     let pair;
     try {
       pair = connectFilesystemIdentity(identity, this.requestPool);
-    } catch {
+    } catch (error) {
+      if (error instanceof FilesystemError && error.errno === 11) throw error;
       throw new FilesystemError(76);
     }
     const client = new FilesystemClient(pair.client);
@@ -336,7 +339,11 @@ export class SharedFilesystem {
     try {
       const attached = await this.socketAttachment(channel.port1, () =>
         this.worker.postMessage(
-          { connect: pair.server, socketScope: { guest, directory }, reply: channel.port2 },
+          {
+            connect: pair.server,
+            socketScope: { guest: { owner: guest.owner, sections: guest.sections }, directory },
+            reply: channel.port2,
+          },
           [pair.server.port, channel.port2],
         ),
       );
@@ -357,25 +364,39 @@ export class SharedFilesystem {
     rootIno: number;
     reservation: import("../fs/protocol.js").FilesystemReservation;
   }> {
-    return new Promise((resolve, reject) => {
-      const finish = (error?: Error) => {
-        port.close();
-        this.socketAttachments.delete(finish);
-        if (error) reject(error);
-      };
-      this.socketAttachments.add(finish);
-      port.onmessage = ({ data }) => {
-        finish();
-        if (data.error) reject(new FilesystemError(data.error));
-        else resolve(data.value);
-      };
-      try {
-        send();
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)));
-      }
+    let resolve!: (value: {
+      root: number;
+      rootIno: number;
+      reservation: import("../fs/protocol.js").FilesystemReservation;
+    }) => void;
+    let reject!: (error: Error) => void;
+    const result = new Promise<{
+      root: number;
+      rootIno: number;
+      reservation: import("../fs/protocol.js").FilesystemReservation;
+    }>((done, failed) => {
+      resolve = done;
+      reject = failed;
     });
+    const finish = (error?: Error) => {
+      port.close();
+      this.socketAttachments.delete(finish);
+      if (error) reject(error);
+    };
+    this.socketAttachments.add(finish);
+    port.onmessage = ({ data }) => {
+      finish();
+      if (data.error) reject(new FilesystemError(data.error));
+      else resolve(data.value);
+    };
+    try {
+      send();
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)));
+    }
+    return result;
   }
+
   createIdentity(): FilesystemIdentity {
     this.assertLive();
     return createFilesystemIdentity(this.client.connection);

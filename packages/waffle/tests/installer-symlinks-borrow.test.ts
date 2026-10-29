@@ -75,7 +75,7 @@ function snapshotNode(node: Node): unknown {
       ...metadata,
       children: Array.from(node.children, ([name, child]) => [name, snapshotNode(child)]),
     };
-  return { ...metadata, value: node.kind === "symlink" ? node.target : Array.from(node.data) };
+  return { ...metadata, value: node.kind === "file" ? Array.from(node.data) : node.kind === "symlink" ? node.target : undefined };
 }
 function node(path: ResolvedPath): number {
   if (path.node === undefined) throw new Error("missing node");

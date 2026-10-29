@@ -68,7 +68,7 @@ async function bind(
 
 test("ordinary guest sessions cannot nominate socket authority", async () => {
   const f = await fixture();
-  for (const operation of ["bindSocket", "unbindSocket", "connectSocket"]) {
+  for (const operation of ["bindSocket", "bindSocketPath", "unbindSocket", "connectSocket"]) {
     const error = await f.guest
       .asyncCall(operation, [f.directory, "listener", 1])
       .catch((error: unknown) => error);
@@ -86,6 +86,8 @@ test("scope admission authenticates actual sessions and live directory membershi
   });
   await expect(attach(f, f.directory, foreign.client)).rejects.toMatchObject({ errno: 76 });
   const forged = { ...f.guest.connection, sections: new SharedArrayBuffer(8) };
+  await expect(attach(f, f.directory, forged)).rejects.toMatchObject({ errno: 76 });
+  new Int32Array(forged.sections)[1] = -1;
   await expect(attach(f, f.directory, forged)).rejects.toMatchObject({ errno: 76 });
   const absent = f.fs.handleForNode(f.fs.lookup("/outside")!);
   await expect(attach(f, absent)).rejects.toMatchObject({ errno: 76 });
@@ -212,4 +214,48 @@ test("atomic pathname bind returns the actual symlink-sensitive parent and name"
   expect(await scope.client.asyncCall("unbindSocket", [value.binding, value.name, 5, true])).toBe(
     0,
   );
+});
+
+test("socket bind and unlink publish actual inode and edge changes and wake watchers", async () => {
+  const f = await fixture(true);
+  const scope = await attach(f);
+  const watch = await f.guest.watch(f.root, { recursive: true });
+  try {
+    const domain = f.backend.shared.publication!;
+    const before = domain.cut();
+    const value = await scope.client.asyncCall("bindSocketPath", [scope.root, "/listener", 1]);
+    const inserted = await watch.read();
+    expect(inserted.events).toContainEqual(
+      expect.objectContaining({ type: "rename", name: "scope/listener" }),
+    );
+    const page = domain.changes(before, domain.limits.logBytes);
+    if (page.kind !== "changes") throw new Error("publication gap");
+    const effects = page.publications.flatMap((publication) => publication.changes);
+    expect(effects).toContainEqual(expect.objectContaining({ kind: "inode", nodeKind: "socket" }));
+    expect(effects).toContainEqual(
+      expect.objectContaining({ kind: "entry", name: "listener", before: null }),
+    );
+    expect(await scope.client.asyncCall("unbindSocket", [value.binding, value.name, 1, true])).toBe(
+      0,
+    );
+    const removed = await watch.read();
+    expect(removed.events).toContainEqual(
+      expect.objectContaining({ type: "rename", name: "scope/listener" }),
+    );
+    expect(f.service.resources().socketLeases).toBe(0);
+  } finally {
+    await watch.close();
+  }
+});
+
+test("a directory moved out of an admitted scope cannot be used for a later bind", async () => {
+  const f = await fixture();
+  const scope = await attach(f);
+  const path = await scope.client.asyncCall("resolve", [scope.root, "/child/listener"]);
+  await f.guest.asyncCall("move", ["/scope/child", "/outside/child"]);
+  const error = await scope.client
+    .asyncCall("bindSocket", [path.parent, path.name, 1])
+    .catch((error: unknown) => error);
+  expect(error).toMatchObject({ errno: 76 });
+  expect(f.fs.lookup("/outside/child/listener")).toBeUndefined();
 });

@@ -45,6 +45,26 @@ interface CheckpointCapture {
 
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
  * no lock or guest request is held across a background commit. */
+function restoreNode(entry: PersistedNode): Node {
+  const metadata = {
+    ino: entry.ino,
+    identity: entry.identity && restoreIdentity(entry.identity),
+    mtime: entry.mtime,
+  };
+  if (entry.kind === "dir")
+    return { ...metadata, kind: "dir", mode: entry.mode ?? 0o700, children: new Map() };
+  if (entry.kind === "socket") return { ...metadata, kind: "socket", mode: entry.mode ?? 0o600 };
+  if (entry.kind === "symlink")
+    return { ...metadata, kind: "symlink", mode: entry.mode ?? 0o600, target: entry.target };
+  return {
+    ...metadata,
+    kind: "file",
+    mode: entry.mode ?? 0o600,
+    size: entry.size,
+    data: new Uint8Array(),
+  };
+}
+
 export class PersistentBackend extends MemoryBackend {
   private readonly pressure: CheckpointPressure;
   private nodes = new Map<number, Node>();
@@ -138,45 +158,7 @@ export class PersistentBackend extends MemoryBackend {
         options.startupRoot,
       );
     const nodes = new Map<number, Node>();
-    for (const entry of index.nodes)
-      nodes.set(
-        entry.ino,
-        entry.kind === "dir"
-          ? {
-              kind: "dir",
-              ino: entry.ino,
-              identity: entry.identity && restoreIdentity(entry.identity),
-              mtime: entry.mtime,
-              mode: entry.mode ?? 0o700,
-              children: new Map(),
-            }
-          : entry.kind === "socket"
-            ? {
-                kind: "socket",
-                ino: entry.ino,
-                identity: entry.identity && restoreIdentity(entry.identity),
-                mtime: entry.mtime,
-                mode: entry.mode ?? 0o600,
-              }
-            : entry.kind === "symlink"
-              ? {
-                  kind: "symlink",
-                  ino: entry.ino,
-                  identity: entry.identity && restoreIdentity(entry.identity),
-                  mtime: entry.mtime,
-                  mode: entry.mode ?? 0o600,
-                  target: entry.target,
-                }
-              : {
-                  kind: "file",
-                  ino: entry.ino,
-                  identity: entry.identity && restoreIdentity(entry.identity),
-                  mtime: entry.mtime,
-                  mode: entry.mode ?? 0o600,
-                  size: entry.size,
-                  data: new Uint8Array(),
-                },
-      );
+    for (const entry of index.nodes) nodes.set(entry.ino, restoreNode(entry));
     for (const entry of index.nodes)
       if (entry.kind === "dir") {
         const node = nodes.get(entry.ino) as DirNode;
