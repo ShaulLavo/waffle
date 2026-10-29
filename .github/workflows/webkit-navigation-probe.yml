@@ -1,0 +1,54 @@
+name: WebKit navigation stall probe
+
+on:
+  push:
+    branches: [wave/1029-webkit-stall-probe]
+    paths:
+      - .github/workflows/webkit-navigation-probe.yml
+      - tools/webkit-navigation-probe/**
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [coop, plain]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-1.4.4-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('node_modules/playwright-core/browsers.json') }}
+      - name: Use Ubuntu HTTPS archives for browser dependencies
+        run: |
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+          test -s /etc/apt/apt-mirrors.txt
+      - run: bunx playwright install --with-deps webkit
+      - run: command -v gdb || sudo apt-get install -y gdb
+      - name: Navigate without Waffle for eight minutes
+        run: bun tools/webkit-navigation-probe/probe.ts "$RUNNER_TEMP/probe" ${{ matrix.variant }} 480
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-navigation-probe-${{ matrix.variant }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/probe
+          if-no-files-found: ignore
+          retention-days: 7
