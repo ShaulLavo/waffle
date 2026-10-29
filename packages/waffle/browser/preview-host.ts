@@ -1,5 +1,10 @@
 import type { ConnectionSink, PreviewConnection } from "./net/helper.js";
-import { ResponseParser, serializeRequest, type ResponseHead } from "./net/http1.js";
+import {
+  ResponseParser,
+  serializeRequest,
+  serializeUpgrade,
+  type ResponseHead,
+} from "./net/http1.js";
 import type { PreviewServer } from "./preview.js";
 
 export interface PreviewHostOptions {
@@ -15,14 +20,25 @@ export interface PreviewHostAuthorization {
   readonly capability: string;
 }
 
+/** Waffle serializes this head before forwarding later socket data. */
+export interface PreviewSocketRequest {
+  url: string;
+  method: string;
+  headers: [string, string][];
+}
+
 /** Host adapters authenticate their owner connection before installing this grant. */
 export interface PreviewHostRelay extends PreviewHostDispatcher {
   readonly authorization: PreviewHostAuthorization;
   readonly origin: string;
   readonly closed: boolean;
   fetch(authorization: unknown, request: Request): Promise<Response>;
-  /** Raw HTTP upgrade/duplex bytes. The host owns the native WebSocket upgrade adapter. */
-  connect(authorization: unknown, url: string, sink: ConnectionSink): PreviewConnection | null;
+  /** Opens an upgrade with its guest-view request head already written. */
+  connect(
+    authorization: unknown,
+    request: PreviewSocketRequest,
+    sink: ConnectionSink,
+  ): PreviewConnection | null;
   close(): void;
 }
 
@@ -36,9 +52,9 @@ export type PreviewHostOpen =
       headers: [string, string][];
       body: ArrayBuffer | null;
     }
-  | { type: "socket"; authorization: PreviewHostAuthorization; url: string };
+  | ({ type: "socket"; authorization: PreviewHostAuthorization } & PreviewSocketRequest);
 
-/** One pull acknowledges one HTTP body chunk. Socket data carries raw HTTP upgrade/TCP bytes. */
+/** One pull acknowledges one HTTP body chunk. Socket data carries trailing upgrade bytes and later TCP bytes. */
 export type PreviewHostInput =
   | { type: "pull" }
   | { type: "data"; chunk: Uint8Array<ArrayBuffer> }
@@ -144,6 +160,23 @@ function headerPairs(headers: readonly [string, string][]): [string, string][] {
   });
 }
 
+function upgradeHeaders(
+  headers: [string, string][],
+  originPort: (origin: string) => number | undefined,
+): [string, string][] {
+  const hosts = headers.filter(([name]) => name.toLowerCase() === "host");
+  const origins = headers.filter(([name]) => name.toLowerCase() === "origin");
+  if (hosts.length > 1 || origins.length > 1)
+    throw new TypeError("Duplicate preview upgrade authority");
+  const source = origins[0];
+  if (!source) return headers;
+  const port = originPort(source[1]);
+  if (port === undefined) throw new TypeError("Unauthorized preview upgrade Origin");
+  const rest = headers.filter(([name]) => name.toLowerCase() !== "origin");
+  const translated: [string, string][] = [["Origin", `http://localhost:${port}`]];
+  return translated.concat(rest);
+}
+
 function responseHead(head: ResponseHead): ResponseHead {
   if (
     head.status < 200 ||
@@ -160,7 +193,7 @@ function responseHead(head: ResponseHead): ResponseHead {
 export function createPreviewHostRelay(
   server: Pick<PreviewServer, "connect">,
   owner: string,
-  options: PreviewHostOptions & { origin: string },
+  options: PreviewHostOptions & { origin: string; originPort(origin: string): number | undefined },
 ): PreviewHostRelay {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)
     throw new TypeError("Invalid preview port");
@@ -192,7 +225,7 @@ export function createPreviewHostRelay(
     else item.sink.end();
   }
 
-  function connect(input: unknown, url: string, sink: ConnectionSink): PreviewConnection | null {
+  function open(input: unknown, url: string, sink: ConnectionSink): PreviewConnection | null {
     check(input, url);
     const item: ActiveConnection = { connection: null, sink, closed: false };
     active.add(item);
@@ -217,6 +250,24 @@ export function createPreviewHostRelay(
       },
       close: () => finish(item),
     };
+  }
+
+  function connect(
+    input: unknown,
+    request: PreviewSocketRequest,
+    sink: ConnectionSink,
+  ): PreviewConnection | null {
+    const url = check(input, request.url);
+    const headers = upgradeHeaders(headerPairs(request.headers), options.originPort);
+    if (typeof request.method !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(request.method))
+      throw new TypeError("Invalid preview HTTP method");
+    const head = serializeUpgrade(
+      { method: request.method, target: url.pathname + url.search, headers },
+      `localhost:${authorization.port}`,
+    );
+    const connection = open(input, request.url, sink);
+    connection?.write(head);
+    return connection;
   }
 
   async function fetchResponse(input: unknown, request: Request): Promise<Response> {
@@ -298,7 +349,7 @@ export function createPreviewHostRelay(
       );
       request.signal.addEventListener("abort", abort, { once: true });
       try {
-        connection = connect(input, request.url, {
+        connection = open(input, request.url, {
           data: (bytes) => {
             parser.push(bytes);
             return credit?.promise;
@@ -491,7 +542,7 @@ function dispatchSocket(
     };
     lifetime.addEventListener("abort", abort, { once: true });
     try {
-      connection = relay.connect(open.authorization, open.url, {
+      connection = relay.connect(open.authorization, open, {
         data: (bytes) => {
           if (!ended) send({ type: "data", chunk: bytes.slice() });
         },

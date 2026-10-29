@@ -12,6 +12,7 @@ import { PreviewRouter } from "waffle/browser/preview";
 import type {
   PreviewHostAuthorization,
   PreviewHostOpen,
+  PreviewSocketRequest,
   PreviewHostInput,
   PreviewHostOutput,
   PreviewHostExchange,
@@ -43,9 +44,11 @@ The concrete direct relay API is:
   over the existing virtual server's raw connection, using the public Host header.
   Response bodies stream. Redirect locations retain their application meaning.
   Request abort and response cancellation close the virtual connection.
-- `relay.connect(authorization: unknown, url: string, sink: ConnectionSink)` returns
-  `PreviewConnection | null`. The native host sends the original HTTP upgrade
-  request and duplex bytes. Waffle does not implement the native WebSocket server.
+- `relay.connect(authorization: unknown, request: PreviewSocketRequest, sink: ConnectionSink)`
+  returns `PreviewConnection | null`. The request contains `url`, `method`, and
+  header pairs. Waffle validates and writes the upgrade head before returning the
+  connection. The native host then sends only trailing upgrade bytes and later
+  duplex data. Waffle does not implement the native WebSocket server.
 - `relay.close()` revokes the grant and closes outstanding connections. The owner
   AbortSignal, a replacement binding, or server unregister also revokes it.
 - `relay.authorization` is immutable `{owner, port, origin, capability}`. It is
@@ -58,7 +61,8 @@ framing to `PreviewHostExchange`; Waffle does not open a native listener.
 
 The exported wire shapes are `PreviewHostOpen`, `PreviewHostInput`,
 `PreviewHostOutput`, and `PreviewHostExchange`. Each HTTP open includes a URL,
-method, header pairs, and `ArrayBuffer | null` body. Socket opens include the URL.
+method, header pairs, and `ArrayBuffer | null` body. Socket opens include the URL,
+method, and header pairs.
 Both carry the private authorization on the authenticated owner connection.
 Outputs carry acceptance, response head, data, end, or error. HTTP acceptance
 precedes the response head; socket acceptance precedes all raw output.
@@ -66,13 +70,33 @@ precedes the response head; socket acceptance precedes all raw output.
 An HTTP end input cancels its request. Host lifetime revocation also interrupts
 a response waiting for pull credit. Inputs carry pull,
 data, or end. One pull acknowledges one HTTP data chunk. Socket data is raw
-HTTP upgrade/TCP bytes, not decoded WebSocket messages. Body buffers can transfer
+trailing upgrade bytes and later TCP bytes, not decoded WebSocket messages. Body buffers can transfer
 ownership; native wire adapters must copy or encode bytes when transfer is not
 available. Request/Response/ReadableStream objects do not cross the wire.
 Request bodies are buffered; response chunks stream with pull credit. Raw sockets
 rely on the authenticated native transport to bound its send queue and propagate
-disconnect. The host must restrict URLs to this grant before serializing upgrade
-bytes and must not interpret arbitrary browser input as a host-control message.
+disconnect. Waffle restricts request URLs to the grant before serializing an
+upgrade. The host must not interpret arbitrary browser input as a host-control message.
+
+Upgrades use the guest authority `localhost:<target port>` for Host. An exact
+Origin lookup in the same router's live host bindings supplies the source port,
+so Origin becomes `http://localhost:<source port>`. A same-owner sibling keeps
+its own port. The lookup never normalizes the Origin or derives a port from a
+header. HTTP Host and Origin retain their public values.
+
+| Socket input                                                                | Relay behavior before connecting         |
+| --------------------------------------------------------------------------- | ---------------------------------------- |
+| Exact target Origin                                                         | Translate to the target's guest origin   |
+| Live same-router sibling Origin                                             | Translate to that sibling's guest origin |
+| No Origin                                                                   | Keep Origin absent                       |
+| Foreign, cross-owner, closed, unregistered, or replaced Origin              | Reject                                   |
+| `null`, guest-shaped Origin, or non-exact spelling such as a trailing slash | Reject                                   |
+| Duplicate Host or Origin pairs, invalid header syntax, or invalid method    | Reject                                   |
+
+Other upgrade header pairs retain their case, order, and values, including
+Connection and Upgrade. Rejection emits an error without acceptance or a virtual
+connection. Unregister, rebind, and source closure affect the next lookup.
+Retiring a source binding does not close sockets already admitted to another target.
 
 The direct relay, wire dispatcher, and loopback reference host are implemented.
 `packages/waffle/tests/preview-host-reference.ts` adapts HTTP requests through the wire protocol

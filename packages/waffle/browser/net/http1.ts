@@ -39,6 +39,19 @@ export function serializeRequest(req: PreviewRequest, host: string): Uint8Array 
   return out;
 }
 
+/** Upgrade requests retain Connection and Upgrade fields and have no synthesized body framing. */
+export function serializeUpgrade(
+  request: Pick<PreviewRequest, "method" | "target" | "headers">,
+  host: string,
+): Uint8Array {
+  const lines = [`${request.method} ${request.target} HTTP/1.1`, `Host: ${host}`];
+  for (const [name, value] of request.headers) {
+    if (name.toLowerCase() !== "host") lines.push(`${name}: ${value}`);
+  }
+  lines.push("", "");
+  return encoder.encode(lines.join("\r\n"));
+}
+
 export interface ResponseHead {
   status: number;
   statusText: string;
