@@ -54,6 +54,8 @@ async function run(): Promise<void> {
     "dist/link/relay.js",
     "group/state.ts",
     "dist/group/state.js",
+    "search/matcher.ts",
+    "dist/search/matcher.js",
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
