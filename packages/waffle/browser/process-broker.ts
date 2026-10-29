@@ -17,6 +17,14 @@ import { ReadyWorkerPool } from "./worker-pool.js";
 import { createNotificationBridge, type NotificationBridge } from "./notification-relay.js";
 import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
+import {
+  MemoryGroups,
+  type MemberLease,
+  type MemoryGroupHandle,
+  type MemoryGroupPolicyOptions,
+  type MemoryGroupSnapshot,
+} from "../group/state.js";
+import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
 import {
   directoryGroups,
@@ -84,14 +92,6 @@ import {
   type TerminalOutputReader,
 } from "./terminal-output.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
-import {
-  MemoryGroups,
-  type MemberLease,
-  type MemoryGroupHandle,
-  type MemoryGroupPolicyOptions,
-  type MemoryGroupSnapshot,
-} from "../group/state.js";
-import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
@@ -1213,42 +1213,6 @@ export class BrowserProcessBroker {
       return { ...child.identity, bytes: bytes < 0n ? null : Number(bytes) };
     });
   }
-  /** The group whose launched member runs as `pid`. Trusted embedder use only. */
-  memoryGroupOf(pid: number): MemoryGroupHandle | undefined {
-    return this.groups?.groupOf(pid);
-  }
-  /** Owner-side counters for every live group on this page. */
-  memoryGroups(): readonly MemoryGroupSnapshot[] {
-    return this.groups?.snapshot() ?? [];
-  }
-  /** Admit an adopted runtime root before posting its worker request. Successful disposal
-   * stop of a root with `stop`, or the embedder's `stopped()`, settles it once. */
-  admitRootMemoryGroup(pid: number, join: MemoryGroupLaunch = "new"): RootMemoryGroupMember {
-    if (this.suspended) throw new Error("Process broker is disposed");
-    const transport = this.roots.get(pid);
-    if (!transport) throw new Error(`Unknown runtime root ${pid}`);
-    if (this.rootGroups?.has(pid)) throw new Error(`Root ${pid} already has a memory group`);
-    const lease = this.admitGroupMember(pid, transport, join);
-    const { request, transfer } = lease.launch();
-    (this.rootGroups ??= new Map()).set(pid, lease);
-    return Object.freeze({
-      group: lease.group,
-      request,
-      transfer: Object.freeze(transfer),
-      stopped: () => lease.stopped(),
-    });
-  }
-  private admitGroupMember(
-    pid: number,
-    transport: WorkerProcessTransport,
-    join: MemoryGroupLaunch,
-  ): MemberLease {
-    const groups = (this.groups ??= new MemoryGroups(this.options.memoryGroups));
-    const target =
-      join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
-    if (!target) throw new ProcessError(ProcessErrno.SRCH, "parent has no memory group");
-    return groups.admit(pid, workerProcessDirectoryId(transport), target);
-  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
@@ -1429,6 +1393,42 @@ export class BrowserProcessBroker {
       throw error;
     }
     return { terminate: () => this.stop(child) };
+  }
+  /** The group whose launched member runs as `pid`. Trusted embedder use only. */
+  memoryGroupOf(pid: number): MemoryGroupHandle | undefined {
+    return this.groups?.groupOf(pid);
+  }
+  /** Owner-side counters for every live group on this page. */
+  memoryGroups(): readonly MemoryGroupSnapshot[] {
+    return this.groups?.snapshot() ?? [];
+  }
+  /** Admit an adopted runtime root before posting its worker request. Successful disposal
+   * stop of a root with `stop`, or the embedder's `stopped()`, settles it once. */
+  admitRootMemoryGroup(pid: number, join: MemoryGroupLaunch = "new"): RootMemoryGroupMember {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    const transport = this.roots.get(pid);
+    if (!transport) throw new Error(`Unknown runtime root ${pid}`);
+    if (this.rootGroups?.has(pid)) throw new Error(`Root ${pid} already has a memory group`);
+    const lease = this.admitGroupMember(pid, transport, join);
+    const { request, transfer } = lease.launch();
+    (this.rootGroups ??= new Map()).set(pid, lease);
+    return Object.freeze({
+      group: lease.group,
+      request,
+      transfer: Object.freeze(transfer),
+      stopped: () => lease.stopped(),
+    });
+  }
+  private admitGroupMember(
+    pid: number,
+    transport: WorkerProcessTransport,
+    join: MemoryGroupLaunch,
+  ): MemberLease {
+    const groups = (this.groups ??= new MemoryGroups(this.options.memoryGroups));
+    const target =
+      join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
+    if (!target) throw new ProcessError(ProcessErrno.SRCH, "parent has no memory group");
+    return groups.admit(pid, workerProcessDirectoryId(transport), target);
   }
   private writeStartupDiagnostic(
     pid: number,

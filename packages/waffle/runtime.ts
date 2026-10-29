@@ -1,5 +1,4 @@
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
-import type { MemoryGroupPolicyOptions } from "./group/state.js";
 export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
 export {
   RuntimeNetworkLookupError,
@@ -18,6 +17,13 @@ import type {
   BrowserProcessBrokerOptions,
 } from "./browser/process-broker.js";
 export type { WorkerMemoryObservation } from "./browser/process-broker.js";
+export type { MemoryGroupLaunch, RootMemoryGroupMember } from "./browser/process-broker.js";
+import type { MemoryGroupPolicyOptions } from "./group/state.js";
+export type {
+  MemoryGroupHandle,
+  MemoryGroupPolicyOptions,
+  MemoryGroupSnapshot,
+} from "./group/state.js";
 import {
   createProcessIdentity,
   snapshotHostIdentity,
