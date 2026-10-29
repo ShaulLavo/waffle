@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Stage diagnostic tooling and verify canonical image
+      - name: Stage tooling and qualify Ubuntu platform provenance
         shell: bash
         run: |
           mkdir "$RUNNER_TEMP/webkit-boundary-tools"
@@ -27,8 +27,7 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/webkit-boundary-tools/tooling-head.txt"
           printf 'ImageOS=%s ImageVersion=%s\n' "$ImageOS" "$ImageVersion"
           cat /etc/os-release
-          python3 -c 'import platform; assert platform.freedesktop_os_release()["VERSION_ID"] == "24.04"'
-          test "$ImageVersion" = 20261025.353.1
+          python3 "$RUNNER_TEMP/webkit-boundary-tools/identity.py" platform "$RUNNER_TEMP/webkit-boundary-tools/platform.json"
       - uses: actions/checkout@v4
         with:
           ref: ac9f79bcd247a0a528120879169d72f2cb884493
@@ -55,15 +54,13 @@ jobs:
           test "$(bun --version)" = 1.4.4
           test "$(git rev-parse HEAD)" = ac9f79bcd247a0a528120879169d72f2cb884493
           bun -e 'const p=require("./packages/waffle/node_modules/playwright/package.json");const b=require("./packages/waffle/node_modules/playwright-core/browsers.json");if(p.version!=="1.64.1"||b.browsers.find(x=>x.name==="webkit").revision!=="2370")throw Error("Unexpected browser inputs")'
-          python3 - <<'PY'
-          import hashlib,json,os,pathlib,platform,subprocess
-          root=pathlib.Path('.')
-          names=['bun.lock','packages/waffle/tests/storage-lock-browser-runner.ts','packages/waffle/tests/storage-lock-browser.ts','packages/waffle/tests/storage-lock-recovery-worker.ts','packages/waffle/tests/fixtures/storage-lock-startup.ts','packages/waffle/scripts/browser-supervisor.ts','packages/waffle/node_modules/playwright-core/browsers.json']
-          value={'imageOS':os.environ['ImageOS'],'imageVersion':os.environ['ImageVersion'],'platform':platform.platform(),'source':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'toolingHead':(pathlib.Path(os.environ['RUNNER_TEMP'])/'webkit-boundary-tools/tooling-head.txt').read_text().strip(),'strace':subprocess.check_output(['strace','--version'],text=True),'hashes':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in names},'disk':subprocess.check_output(['df','-h',os.environ['RUNNER_TEMP']],text=True)}
-          (pathlib.Path(os.environ['RUNNER_TEMP'])/'webkit-boundary-tools/environment.json').write_text(json.dumps(value,indent=2)+'\n')
-          PY
+          df -h "$RUNNER_TEMP"
+          python3 "$RUNNER_TEMP/webkit-boundary-tools/identity.py" runtime "$RUNNER_TEMP/webkit-boundary-tools/environment.json" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/webkit-boundary-report"
       - name: Capture the actual storage-lock WebKit suite once
         run: python3 "$RUNNER_TEMP/webkit-boundary-tools/capture.py" "$RUNNER_TEMP/webkit-boundary-report" "$GITHUB_WORKSPACE"
+      - name: Record actual mapped library identities after teardown
+        if: always()
+        run: python3 "$RUNNER_TEMP/webkit-boundary-tools/identity.py" runtime "$RUNNER_TEMP/webkit-boundary-tools/environment-after.json" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/webkit-boundary-report"
       - name: Retain bounded first-failure evidence or nonreproduction
         if: always()
         uses: actions/upload-artifact@v4
@@ -71,7 +68,8 @@ jobs:
           name: webkit-boundary-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/webkit-boundary-report
-            ${{ runner.temp }}/webkit-boundary-tools/environment.json
+            ${{ runner.temp }}/webkit-boundary-tools/*.json
+            ${{ runner.temp }}/webkit-boundary-tools/installed-packages.tsv
             ${{ runner.temp }}/webkit-boundary-tools/tooling-head.txt
           if-no-files-found: error
           retention-days: 7

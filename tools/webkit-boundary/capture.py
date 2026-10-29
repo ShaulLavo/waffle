@@ -100,6 +100,8 @@ class Capture:
         self.owned = set()
         self.failure = None
         self.target_case_passed = False
+        self.library_paths = set()
+        self.initial_maps = False
         self.freeze_at = float("inf")
         self.errors = []
 
@@ -110,6 +112,18 @@ class Capture:
         self.freeze_at = time.monotonic() + 1
         write_json(self.directory / "first-failure.json", self.failure)
         write_json(self.directory / "failure-processes.json", {str(pid): process_record(pid) for pid in tuple(self.owned)})
+        self.sample_mappings("failure-mappings.json")
+
+    def sample_mappings(self, name):
+        mappings = {}
+        for pid in tuple(self.owned):
+            try:
+                text = Path(f"/proc/{pid}/maps").read_text()
+                self.library_paths.update(re.findall(r"^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(/[^\n]+)", text, re.M))
+                mappings[str(pid)] = text[:65536]
+            except OSError:
+                continue
+        write_json(self.directory / name, mappings)
 
     def syscall(self, raw):
         line = self.calls.consume(raw)
@@ -140,6 +154,9 @@ class Capture:
         request = re.search(r'"GET (\S+) HTTP/1\.1', line)
         if request and request[1] in ("/", "/blank"):
             self.root_flows.add(flow)
+            if not self.initial_maps:
+                self.initial_maps = True
+                self.sample_mappings("initial-mappings.json")
         elif request:
             self.root_flows.discard(flow)
         if flow in self.root_flows:
@@ -170,6 +187,7 @@ class Capture:
         for file in (self.transport, self.processes, self.stdout, self.stderr):
             file.close()
         (self.directory / "protocol-window.log").write_text("".join(self.protocol.lines))
+        write_json(self.directory / "mapped-files.json", sorted(self.library_paths))
         live = {str(pid): process_record(pid) for pid in self.owned if Path(f"/proc/{pid}").exists()}
         scratch_after = {p.name for p in scratch_root.glob("wb-*")}
         receipt = {"suiteExit": status, "failure": self.failure, "collectorErrors": self.errors,
