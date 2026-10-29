@@ -6,7 +6,7 @@ import { NetHost } from "../browser/net/host.js";
 import type { AttachedSocketScope } from "../browser/net/unix-paths.js";
 import type { SocketBinding } from "../core/filesystem.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
-import { disposeLive, Guest, live } from "./network-unix-support.js";
+import { disposeLive, Guest, live, readEnd } from "./network-unix-support.js";
 
 const noFetch = async () => {
   throw Error("External fetch forbidden");
@@ -22,7 +22,10 @@ class FakeTree {
   failUnbinds = 0;
   gate: Promise<void> | undefined;
   closed = 0;
+  /** Scope attaches: abstract names must never cause one. */
+  attaches = 0;
   scope(rootIno: number): AttachedSocketScope {
+    this.attaches++;
     const calls: Record<string, (...args: any[]) => Promise<unknown>> = {
       bindSocketPath: async (_root: number, path: string, lease: number) => {
         await this.gate;
@@ -414,4 +417,178 @@ test("a scope attach that never answers does not hold owner disposal", async () 
     Bun.sleep(1000).then(() => "stuck"),
   ]);
   expect(settled).toBe("disposed");
+});
+
+const ABSTRACT = "\0nuxt-vite-node-a.sock";
+
+async function failsWith(guest: Guest, call: Promise<number>, code: string, syscall: string) {
+  expect(await call).toBe(ERROR);
+  expect(await guest.error()).toMatchObject({ code, syscall });
+}
+
+test("abstract names stream across helpers with NUL addresses and no filesystem work", async () => {
+  const { network, tree } = runtime();
+  const { server, client, listener, conn, accepted } = await connected(network, ABSTRACT);
+  const named = { family: "Unix", path: ABSTRACT };
+  const unnamed = { family: "Unix", path: null };
+  expect(await server.call<string>("localAddr", listener)).toBe(JSON.stringify(named));
+  expect(JSON.parse(await server.call("localAddr", accepted))).toEqual(named);
+  expect(JSON.parse(await server.call("peerAddr", accepted))).toEqual(unnamed);
+  expect(JSON.parse(await client.call("localAddr", conn))).toEqual(unnamed);
+  expect(JSON.parse(await client.call("peerAddr", conn))).toEqual(named);
+  expect(await client.call("write", conn, new TextEncoder().encode("ping"))).toBe(4);
+  expect(await client.call("shutdown", conn)).toBe(OK);
+  expect(new TextDecoder().decode(await server.readAll(accepted, 4))).toBe("ping");
+  expect(await readEnd(server, accepted)).toBe(0);
+  expect(await server.call("write", accepted, new TextEncoder().encode("pong"))).toBe(4);
+  expect(new TextDecoder().decode(await client.readAll(conn, 4))).toBe("pong");
+  expect(tree.attaches).toBe(0);
+  expect(tree.nodes.size).toBe(0);
+  expect(server.requests.find((r) => (r as { type: string }).type === "unix-listen")).toEqual({
+    type: "unix-listen",
+    id: listener,
+    path: ABSTRACT,
+    unlinkOnClose: true,
+  });
+});
+
+test("abstract listener close frees the name at once and keeps accepted streams", async () => {
+  const { network, tree } = runtime();
+  const { server, client, listener, conn, accepted } = await connected(network, ABSTRACT);
+  const late = await client.call("connectPath", ABSTRACT);
+  expect(late).toBeGreaterThan(0);
+  expect(await server.call("close", listener)).toBe(OK);
+  expect(await readEnd(client, late)).toBe(0);
+  expect(await client.call("write", conn, new Uint8Array([3]))).toBe(1);
+  expect(await server.readAll(accepted, 1)).toEqual(new Uint8Array([3]));
+  await failsWith(client, client.call("connectPath", ABSTRACT), "ECONNREFUSED", "connect");
+  // No stale name: another helper rebinds immediately. unlinkOnClose is accepted and ignored.
+  const rebound = await client.call("listenPath", ABSTRACT, { unlinkOnClose: false });
+  expect(rebound).toBeGreaterThan(0);
+  expect(await server.call("connectPath", ABSTRACT)).toBeGreaterThan(0);
+  expect(await client.call("close", rebound)).toBe(OK);
+  expect(await server.call("listenPath", ABSTRACT)).toBeGreaterThan(0);
+  expect(tree.unbinds).toEqual([]);
+  expect(tree.attaches).toBe(0);
+});
+
+test("abstract names need no path scope; that helper's pathname calls stay ENOTCAPABLE", async () => {
+  const { network, tree } = runtime();
+  const unscoped = guest(network, null);
+  const peer = guest(network, null);
+  const listener = await unscoped.call("listenPath", ABSTRACT);
+  expect(listener).toBeGreaterThan(0);
+  const conn = await peer.call("connectPath", ABSTRACT);
+  expect(conn).toBeGreaterThan(0);
+  expect(await unscoped.accept(listener)).toBeGreaterThan(0);
+  await failsWith(unscoped, unscoped.call("listenPath", "/s"), "ENOTCAPABLE", "listen");
+  await failsWith(unscoped, unscoped.call("connectPath", "/s"), "ENOTCAPABLE", "connect");
+  expect(tree.attaches).toBe(0);
+});
+
+test("abstract identity is the exact string; only a leading NUL is abstract", async () => {
+  const { network, tree } = runtime();
+  const server = guest(network);
+  const client = guest(network);
+  const invalid = [
+    "\0",
+    "\0" + "x".repeat(108),
+    "\0" + "é".repeat(54),
+    "\0\uD800",
+    "\0a\uDC00b",
+    "/tmp/a\0b",
+    "rel\0x",
+  ];
+  for (const name of invalid) {
+    await failsWith(server, server.call("listenPath", name), "EINVAL", "listen");
+    await failsWith(client, client.call("connectPath", name), "EINVAL", "connect");
+  }
+  const names = [
+    "\0" + "x".repeat(107),
+    "\0" + "é".repeat(53) + "x",
+    "\0a",
+    "\0A",
+    "\0a\0",
+    "\0a\0b",
+    "\0/x",
+    "\0x",
+  ];
+  const listeners = new Map<string, number>();
+  for (const name of names.concat("/x")) listeners.set(name, await server.call("listenPath", name));
+  expect(Array.from(listeners.values()).every((handle) => handle > 0)).toBe(true);
+  await failsWith(client, client.call("listenPath", "\0a"), "EADDRINUSE", "listen");
+  for (const name of names) expect(await client.call("connectPath", name)).toBeGreaterThan(0);
+  for (const name of names) {
+    const accepted = await server.accept(listeners.get(name)!);
+    expect(JSON.parse(await server.call("localAddr", accepted))).toEqual({
+      family: "Unix",
+      path: name,
+    });
+  }
+  expect(Array.from(tree.nodes.keys())).toEqual(["/x"]);
+});
+
+test("abstract refusals: missing name, another runtime, standalone host", async () => {
+  const { network } = runtime();
+  const server = guest(network);
+  const client = guest(network);
+  expect(await server.call("listenPath", ABSTRACT)).toBeGreaterThan(0);
+  await failsWith(client, client.call("connectPath", "\0missing"), "ECONNREFUSED", "connect");
+  const second = runtime();
+  const foreign = guest(second.network);
+  await failsWith(foreign, foreign.call("connectPath", ABSTRACT), "ECONNREFUSED", "connect");
+  expect(await foreign.call("listenPath", ABSTRACT)).toBeGreaterThan(0);
+  const host = new NetHost(createRing(), () => {});
+  expect(host.listenPath(ABSTRACT)).toBe(UNSUPPORTED);
+  expect(JSON.parse(host.error(0) as string)).toMatchObject({ code: "ENOTSUP", syscall: "listen" });
+  expect(host.connectPath(ABSTRACT)).toBe(UNSUPPORTED);
+  expect(JSON.parse(host.error(0) as string)).toMatchObject({
+    code: "ENOTSUP",
+    syscall: "connect",
+  });
+  host.dispose();
+});
+
+test("abstract and pathname sockets share the listener, pair and backlog caps", async () => {
+  const { network, tree } = runtime();
+  const server = guest(network);
+  const client = guest(network);
+  const abstract = await server.call("listenPath", "\0backlog");
+  for (let i = 0; i < 64; i++)
+    expect(await client.call("connectPath", "\0backlog")).toBeGreaterThan(0);
+  await failsWith(client, client.call("connectPath", "\0backlog"), "ECONNREFUSED", "connect");
+  expect(await server.call("listenPath", "/more")).toBeGreaterThan(0);
+  for (let i = 0; i < 64; i++) expect(await client.call("connectPath", "/more")).toBeGreaterThan(0);
+  // 128 pairs across both kinds: accepting frees backlog but not the shared pair cap.
+  await server.accept(abstract);
+  await failsWith(client, client.call("connectPath", "\0backlog"), "ENOBUFS", "connect");
+  const extra: number[] = [];
+  for (let i = 0; i < 63; i++) {
+    extra.push(await server.call("listenPath", `\0l${i}`));
+    expect(await server.call("listenPath", `/l${i}`)).toBeGreaterThan(0);
+  }
+  expect(extra.every((handle) => handle > 0)).toBe(true);
+  const nodes = tree.nodes.size;
+  await failsWith(server, server.call("listenPath", "\0over"), "ENOBUFS", "listen");
+  await failsWith(server, server.call("listenPath", "/over"), "ENOBUFS", "listen");
+  expect(tree.nodes.size).toBe(nodes);
+  expect(await server.call("close", extra[0])).toBe(OK);
+  expect(await server.call("listenPath", "/over")).toBeGreaterThan(0);
+  await failsWith(server, server.call("listenPath", "\0over"), "ENOBUFS", "listen");
+});
+
+test("helper disposal and runtime end release abstract names synchronously", async () => {
+  const { network, owner, tree } = runtime();
+  const { server, client, conn } = await connected(network, ABSTRACT);
+  const kept = await server.call("listenPath", "\0second");
+  expect(kept).toBeGreaterThan(0);
+  server.helper.dispose();
+  const next = guest(network);
+  expect(await next.call("listenPath", ABSTRACT)).toBeGreaterThan(0);
+  expect(await next.call("listenPath", "\0second")).toBeGreaterThan(0);
+  expect(await readEnd(client, conn)).toBe(0);
+  await owner.dispose();
+  expect(owner.retained()).toBe(false);
+  expect(tree.unbinds).toEqual([]);
+  expect(tree.attaches).toBe(0);
 });

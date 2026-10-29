@@ -4,6 +4,9 @@ import { createRing } from "../browser/net/ring.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
 import { createRuntime } from "../index.js";
 import { FilesystemClient } from "../fs/client.js";
+import { ERROR } from "../browser/net/protocol.js";
+import { EBADF, ECANCELED, ECONNREFUSED } from "../browser/net/unix-status.js";
+import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 
 function fixture() {
   const gate = Promise.withResolvers<void>();
@@ -305,5 +308,63 @@ test("TCP requests cannot take a handle owned by a pending or live path resource
   } finally {
     f.helper.dispose();
     await f.owner.dispose();
+  }
+});
+
+test("abstract requests cannot reuse a claimed handle and never reach the path scope", async () => {
+  const f = fixture();
+  try {
+    expect(await replied(f.listen(1, "\0a"))).toEqual([1, 0, 0]);
+    expect(await replied(f.listen(1, "\0b"))).toEqual([1, ERROR, EBADF]);
+    expect(await replied(f.connect(1, "\0a"))).toEqual([1, ERROR, EBADF]);
+    expect(await replied(f.connect(2, "\0a"))).toEqual([1, 0, 0]);
+    expect(await replied(f.listen(2, "\0c"))).toEqual([1, ERROR, EBADF]);
+    const pending = f.listen(3, "/path");
+    expect(await replied(f.listen(3, "\0d"))).toEqual([1, ERROR, EBADF]);
+    f.gate.resolve();
+    expect(await replied(pending)).toEqual([1, 0, 0]);
+    expect(f.binds()).toBe(1);
+    expect(f.targets()).toBe(0);
+    // Unclaimed handles 4 and 5 still fail: the listener at 1 owns "\0a" until it closes.
+    expect(await replied(f.listen(4, "\0a"))).toEqual([1, ERROR, 3]);
+    f.helper.dispose();
+    await f.owner.dispose();
+    expect(Array.from(f.nodes.keys())).toEqual([]);
+  } finally {
+    f.gate.resolve();
+    f.helper.dispose();
+    await f.owner.dispose();
+  }
+});
+
+test("an abstract request reaching a shut-down helper replies ECANCELED and binds nothing", async () => {
+  const namespace = new NetNamespace();
+  let ended = false;
+  const noFetch = async () => {
+    throw Error("No external requests");
+  };
+  const owner = new NetHelper(createRing(), noFetch, {}, namespace, () => {
+    if (ended) throw Error("Runtime ended");
+  });
+  const other = new NetHelper(createRing(), noFetch, {}, namespace);
+  const request = (helper: NetHelper, id: number, type: "unix-listen" | "unix-connect") => {
+    const reply = new SharedArrayBuffer(12);
+    if (type === "unix-listen")
+      helper.handle({ type, id, path: "\0gone", unlinkOnClose: true, reply });
+    else helper.handle({ type, id, path: "\0gone", reply });
+    return replied(new Int32Array(reply));
+  };
+  try {
+    ended = true;
+    expect(await request(owner, 1, "unix-listen")).toEqual([1, ERROR, ECANCELED]);
+    ended = false;
+    owner.dispose();
+    expect(await request(owner, 2, "unix-listen")).toEqual([1, ERROR, ECANCELED]);
+    expect(await request(other, 1, "unix-connect")).toEqual([1, ERROR, ECONNREFUSED]);
+    expect(await request(other, 2, "unix-listen")).toEqual([1, 0, 0]);
+  } finally {
+    owner.dispose();
+    other.dispose();
+    namespace.dispose();
   }
 });

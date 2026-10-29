@@ -561,11 +561,7 @@ export class NetHelper {
     return Promise.resolve(this.pathOperations.delete(id) ? 0 : EBADF);
   }
 
-  private async withScope(
-    paths: HelperPaths,
-    req: UnixOpen,
-    operation: object,
-  ): Promise<number> {
+  private async withScope(paths: HelperPaths, req: UnixOpen, operation: object): Promise<number> {
     const scope = await paths.scope();
     if (typeof scope === "number") return scope;
     if (!this.current(req.id, operation)) return ECANCELED;
