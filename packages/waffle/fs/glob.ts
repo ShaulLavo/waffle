@@ -81,9 +81,10 @@ class GlobParser {
     if (character === "[") return [[this.characterClass()]];
     if (character === "{") return this.alternatives(depth + 1);
     if (character === "\\") {
-      const escaped = this.source[this.position++];
+      const escaped = this.source.codePointAt(this.position);
       if (escaped === undefined) throw new FilesystemError(28, "trailing glob escape");
-      return [[literal(escaped)]];
+      this.position += escaped > 0xffff ? 2 : 1;
+      return [[literal(String.fromCodePoint(escaped))]];
     }
     if (character === "}") throw new FilesystemError(28, "unexpected glob brace");
     const point = this.source.codePointAt(this.position - 1)!;
@@ -118,6 +119,13 @@ class GlobParser {
       const character = this.source[this.position++]!;
       if (character === "]" && this.position > start + 1) return classToken(content);
       if (character === "/") throw new FilesystemError(28, "slash in glob class");
+      if (character === "\\") {
+        const escaped = this.source[this.position++];
+        if (escaped === undefined || escaped === "/")
+          throw new FilesystemError(28, "invalid glob class escape");
+        content += escaped.replace(/[\\\]^-]/g, "\\$&");
+        continue;
+      }
       content +=
         character === "\\" || character === "[" || character === "]" ? `\\${character}` : character;
     }

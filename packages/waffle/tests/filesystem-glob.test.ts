@@ -19,6 +19,9 @@ const cases: readonly [GlobPattern["kind"], string, string, boolean][] = [
   ["path", "a.b", "axb", false],
   ["path", "?", "💡", true],
   ["path", "💡", "💡", true],
+  ["path", "\\💡", "💡", true],
+  ["path", "[\\]]", "]", true],
+  ["path", "[a\\-z]", "-", true],
 ];
 for (const [kind, glob, path, matched] of cases) {
   test(`${kind} ${glob} matches ${path}: ${matched}`, () => {

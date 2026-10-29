@@ -486,3 +486,39 @@ test("failed output publication rolls back the page and its exact grant referenc
   expect(page.entries[0]?.path).toBe("a");
   await client.asyncCall("walkClose", [cursor]);
 });
+
+test("depth-limited and glob-excluded entries are pruned before their access checks", async () => {
+  const { client, backend } = fixture();
+  await client.asyncCall("mkdirp", ["/denied"]);
+  await client.asyncCall("writeFile", ["/ignored.txt"], new Uint8Array());
+  await client.asyncCall("writeFile", ["/ok.ts"], new Uint8Array());
+  backend.fs.lookup("/denied")!.mode = 0;
+  backend.fs.lookup("/ignored.txt")!.mode = 0;
+  const root = await client.asyncCall("preopen", ["/"]);
+  const cursor = await client.asyncCall("walkOpen", [
+    root,
+    { ...plan, maxDepth: 1, include: [{ kind: "basename", glob: "*.ts" }] },
+  ]);
+  const page = await walkPage(client, cursor, { grant: true, maxEntries: 128 });
+  expect(page.entries).toEqual([
+    { kind: "file", path: "ok.ts", size: 0, handle: expect.any(Number), grant: expect.any(Number) },
+  ]);
+  await client.asyncCall("walkClose", [cursor]);
+});
+
+test("cancelling a published page releases its final-page grants and cursor", async () => {
+  const { client, service, backend } = fixture();
+  await client.asyncCall("writeFile", ["/a"], new Uint8Array());
+  const root = await client.asyncCall("preopen", ["/"]);
+  const baseline = Array.from(backend.pins);
+  const cursor = await client.asyncCall("walkOpen", [root, plan]);
+  const pending = client.submit("walkPage", [cursor, { grant: true, maxEntries: 128 }]);
+  await pending.value();
+  expect(service.resources().walkGrants).toBe(1);
+  pending.cancel();
+  pending.release();
+  await client.asyncCall("stat", [root]);
+  expect(service.resources().walkGrants).toBe(0);
+  expect(service.resources().walks).toBe(0);
+  expect(Array.from(backend.pins)).toEqual(baseline);
+});

@@ -230,6 +230,12 @@ export class WalkTable {
     if (walk.plan.maxDepth !== null && frame.steps.length >= walk.plan.maxDepth) return;
     if (!traversable(child.kind)) return;
     if (child.kind === "directory" && matches(walk.plan.prune, path)) return;
+    if (
+      child.kind === "directory" &&
+      walk.plan.maxDepth !== null &&
+      frame.steps.length + 1 >= walk.plan.maxDepth
+    )
+      return;
     if (child.kind === "file" && matches(walk.plan.exclude, path)) return;
     if (child.kind === "file" && walk.plan.include.length && !matches(walk.plan.include, path))
       return;
@@ -251,7 +257,6 @@ export class WalkTable {
     const node = this.backend.walkLookup(walk.root, steps);
     if (node.kind !== kind) throw new FilesystemError(44);
     if (kind === "directory") {
-      if (walk.plan.maxDepth !== null && steps.length >= walk.plan.maxDepth) return;
       const entries = this.backend.walkSnapshot(walk.root, steps);
       const frame = { steps, path, entries, index: 0 };
       checkSnapshots(frames.concat([frame]));
