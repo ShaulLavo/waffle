@@ -50,8 +50,13 @@ export default {
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
         "tests/storage-open-worker.ts",
+        "tests/memory-group-browser{,-runner}.ts",
+        "tests/fixtures/memory-group-worker.ts",
       ],
-      project: ["*.ts", "{browser,core,fs,proc,interrupt,scripts,tooling,tests}/**/*.{ts,js}"],
+      project: [
+        "*.ts",
+        "{browser,core,fs,group,proc,interrupt,scripts,tooling,tests}/**/*.{ts,js}",
+      ],
     },
   },
 } satisfies KnipConfig;

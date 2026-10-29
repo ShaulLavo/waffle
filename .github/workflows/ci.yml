@@ -145,11 +145,14 @@ jobs:
               - "packages/waffle/proc/**"
               - "packages/waffle/interrupt/**"
               - "packages/waffle/browser/**"
+              - "packages/waffle/group/**"
+              - "packages/waffle/link/**"
               - "packages/waffle/runtime.ts"
               - "packages/waffle/index.ts"
               - "package.json"
               - "packages/waffle/package.json"
               - "bun.lock"
+              - "packages/waffle/scripts/build-memory-group-fixture.ts"
               - "packages/waffle/scripts/test-browser.ts"
               - "packages/waffle/scripts/browser-command.ts"
               - "packages/waffle/scripts/browser-supervisor.ts"
@@ -173,6 +176,7 @@ jobs:
               - 'bun.lock'
               - 'packages/waffle/tests/wasi-libc.test.ts'
               - 'packages/waffle/tests/fixtures/**'
+              - 'packages/waffle/scripts/build-memory-group-fixture.ts'
   network-wasm:
     needs: changes
     if: ${{ !cancelled() }}
@@ -271,8 +275,11 @@ jobs:
       - run: test -z "$(git ls-files packages/waffle/dist)"
   libc:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true') }}
+    # Also the single producer of the memory group fixture that the browser gate consumes.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
+    env:
+      RUN_LIBC: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -295,6 +302,11 @@ jobs:
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
       - uses: actions/cache@v4
+        id: group-fixture
+        with:
+          path: ${{ runner.temp }}/memory-group-fixture
+          key: ${{ runner.os }}-memory-group-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/memory-group-member.c', 'packages/waffle/scripts/build-memory-group-fixture.ts') }}
+      - uses: actions/cache@v4
         id: fixtures
         with:
           path: ${{ runner.temp }}/libc-fixtures
@@ -305,20 +317,33 @@ jobs:
           path: ${{ runner.temp }}/libc-sysroot
           key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
       - uses: actions/cache@v4
-        if: steps.fixtures.outputs.cache-hit != 'true'
+        if: steps.fixtures.outputs.cache-hit != 'true' || steps.group-fixture.outputs.cache-hit != 'true'
         id: sdk
         with:
           path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
       - name: Install pinned wasi-sdk 34
-        if: steps.fixtures.outputs.cache-hit != 'true' && steps.sdk.outputs.cache-hit != 'true'
+        if: (steps.fixtures.outputs.cache-hit != 'true' || steps.group-fixture.outputs.cache-hit != 'true') && steps.sdk.outputs.cache-hit != 'true'
         run: |
           cd "$RUNNER_TEMP"
           curl -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
           echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
           tar -xzf wasi-sdk.tar.gz
           rm wasi-sdk.tar.gz
+      - name: Build the memory group fixture once
+        if: steps.group-fixture.outputs.cache-hit != 'true'
+        run: bun packages/waffle/scripts/build-memory-group-fixture.ts "$RUNNER_TEMP/memory-group-fixture"
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+      - run: bun packages/waffle/scripts/build-memory-group-fixture.ts --verify "$RUNNER_TEMP/memory-group-fixture"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memory-group-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/memory-group-fixture
+          if-no-files-found: error
+          retention-days: 7
       - run: bun run test:libc
+        if: env.RUN_LIBC == 'true'
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
@@ -328,7 +353,7 @@ jobs:
   browser:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-    needs: [changes, network-wasm]
+    needs: [changes, network-wasm, libc]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
     steps:
@@ -363,9 +388,14 @@ jobs:
           test -s /etc/apt/apt-mirrors.txt
           cat /etc/apt/apt-mirrors.txt
       - run: bunx playwright install --with-deps chromium firefox webkit
+      - uses: actions/download-artifact@v4
+        with:
+          name: memory-group-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/memory-group-fixture
       - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
         shell: bash
         env:
+          MEMORY_GROUP_FIXTURE_DIR: ${{ runner.temp }}/memory-group-fixture
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}

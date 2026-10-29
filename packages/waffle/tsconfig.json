@@ -20,6 +20,7 @@
     "fs",
     "proc",
     "interrupt",
+    "group",
     "link",
     "programs",
     "browser",

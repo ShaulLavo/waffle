@@ -17,6 +17,14 @@ import { ReadyWorkerPool } from "./worker-pool.js";
 import { createNotificationBridge, type NotificationBridge } from "./notification-relay.js";
 import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
+import {
+  MemoryGroups,
+  type MemberLease,
+  type MemoryGroupHandle,
+  type MemoryGroupPolicyOptions,
+  type MemoryGroupSnapshot,
+} from "../group/state.js";
+import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
 import {
   directoryGroups,
@@ -122,6 +130,19 @@ export interface BrowserProcessBrokerOptions {
   onError?(error: unknown): void;
   /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
+  /** Memory group policy (W1-W3). Groups are created only by a launch that asks for one. */
+  memoryGroups?: MemoryGroupPolicyOptions;
+}
+/** "new" leads a fresh group; "inherit" joins the parent's group; a handle joins that group. */
+export type MemoryGroupLaunch = "new" | "inherit" | MemoryGroupHandle;
+/** An external root's group membership. Settle it only after the root's agent physically stopped. */
+export interface RootMemoryGroupMember {
+  readonly group: MemoryGroupHandle;
+  /** Broker-owned request field for the root worker; transfer `transfer` with it. */
+  readonly request: MemoryGroupMemberRequest;
+  readonly transfer: readonly Transferable[];
+  /** The embedder proved its root worker physically stopped. Idempotent. */
+  stopped(): void;
 }
 /** A reserved, admitted descendant of a runtime root whose adapter has not launched. */
 export interface RuntimeDescendant {
@@ -178,7 +199,10 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
     | "notifications"
     | "memoryObservation"
     | "terminalOutput"
+    | "memoryGroup"
   >;
+  /** Join a memory group. Admission is reserved before the Worker is constructed. */
+  memoryGroup?: MemoryGroupLaunch;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
   wake?(): void;
@@ -224,6 +248,7 @@ interface RuntimeChild {
   cleanup?(): void;
   wake?(): void;
   output?: TerminalOutputReader;
+  group?: MemberLease;
 }
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
@@ -262,6 +287,8 @@ export class BrowserProcessBroker {
   private cleanupCodec?: WorkerDescriptorCodec;
   private readonly acquiredProcesses = new Map<number, string>();
   private readonly terminalLifetimes = new Map<number, TerminalProcessLifetime>();
+  private groups?: MemoryGroups;
+  private rootGroups?: Map<number, MemberLease>;
   private readonly stopTrackingConsumers: () => void;
   private readonly accesses = new WorkerExecutableAccess({
     active: (sender) => !this.suspended && !isRevoked(this.filesystem(sender)),
@@ -1262,9 +1289,13 @@ export class BrowserProcessBroker {
         this.revokeRuntimeProcess(context.pid);
         this.options.filesystem.revoke(filesystem);
       });
+      if (options.memoryGroup)
+        child.group = this.admitGroupMember(context.pid, transport, options.memoryGroup);
       connection = this.options.filesystem.connect(filesystem);
       worker = child.worker = this.workers.take(options.workerUrl);
     } catch (error) {
+      // No Worker exists yet: the group reservation returns exactly once.
+      child.group?.abort();
       child.failed = true;
       this.disposeNotifications(child);
       connection?.port.close();
@@ -1281,6 +1312,8 @@ export class BrowserProcessBroker {
       notifications: child.notifications?.connection,
       terminalOutput: output.buffer,
     };
+    const group = child.group?.launch();
+    if (group) Object.assign(request, { memoryGroup: group.request });
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       if (data.type === "terminal-output") {
@@ -1372,9 +1405,9 @@ export class BrowserProcessBroker {
       else context.fail(new Error(event.message));
     };
     try {
-      const ports = [request.filesystem.port];
+      const ports: Transferable[] = [request.filesystem.port];
       if (request.notifications) ports.push(request.notifications.port);
-      worker.postMessage(request, ports);
+      worker.postMessage(request, group ? ports.concat(group.transfer) : ports);
     } catch (error) {
       child.failed = true;
       this.disposeNotifications(child);
@@ -1382,6 +1415,47 @@ export class BrowserProcessBroker {
       throw error;
     }
     return { terminate: () => this.stop(child) };
+  }
+  /** The group whose launched member runs as `pid`. Trusted embedder use only. */
+  memoryGroupOf(pid: number): MemoryGroupHandle | undefined {
+    return this.groups?.groupOf(pid);
+  }
+  /** Owner-side counters for every live group on this page. */
+  memoryGroups(): readonly MemoryGroupSnapshot[] {
+    return this.groups?.snapshot() ?? [];
+  }
+  /** Admit an adopted runtime root before posting its worker request. Successful disposal
+   * stop of a root with `stop`, or the embedder's `stopped()`, settles it once. */
+  admitRootMemoryGroup(pid: number, join: MemoryGroupLaunch = "new"): RootMemoryGroupMember {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    const transport = this.roots.get(pid);
+    if (!transport) throw new Error(`Unknown runtime root ${pid}`);
+    if (this.rootGroups?.has(pid)) throw new Error(`Root ${pid} already has a memory group`);
+    const lease = this.admitGroupMember(pid, transport, join);
+    const { request, transfer } = lease.launch();
+    (this.rootGroups ??= new Map()).set(pid, lease);
+    return Object.freeze({
+      group: lease.group,
+      request,
+      transfer: Object.freeze(transfer),
+      stopped: () => this.settleRootGroup(pid, lease),
+    });
+  }
+  /** A settled root lease must not keep its group's backing reachable; debt stays tracked. */
+  private settleRootGroup(pid: number, lease: MemberLease): void {
+    lease.stopped();
+    if (lease.settled() && this.rootGroups?.get(pid) === lease) this.rootGroups.delete(pid);
+  }
+  private admitGroupMember(
+    pid: number,
+    transport: WorkerProcessTransport,
+    join: MemoryGroupLaunch,
+  ): MemberLease {
+    const groups = (this.groups ??= new MemoryGroups(this.options.memoryGroups));
+    const target =
+      join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
+    if (!target) throw new ProcessError(ProcessErrno.SRCH, "parent has no memory group");
+    return groups.admit(pid, workerProcessDirectoryId(transport), target);
   }
   private writeStartupDiagnostic(
     pid: number,
@@ -1512,7 +1586,12 @@ export class BrowserProcessBroker {
         terminal?.stopped();
       }, errors);
       await settleStop(() => child.cleanup?.(), errors);
-      if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
+      if (errors.length) {
+        // Cleanup after a failed terminate proves nothing: keep group memory and capacity.
+        child.group?.failed();
+        throw new AggregateError(errors, "Child physical stop failed");
+      }
+      child.group?.stopped();
       this.children.delete(child.context.pid);
       // Its accepted bytes stay with the root; its unused credit returns to other writers.
       child.output?.retire();
@@ -1762,9 +1841,14 @@ export class BrowserProcessBroker {
     const pending = stopping?.controllerStop
       ? stopping.pending
       : Promise.resolve().then(() => controller.stop?.());
+    const group = ownsConsumer ? this.rootGroups?.get(pid) : undefined;
     return pending
-      .then(() => terminal?.stopped())
+      .then(() => {
+        terminal?.stopped();
+        if (group) this.settleRootGroup(pid, group);
+      })
       .catch((error) => {
+        group?.failed();
         failed.add(controller);
         throw error;
       });
@@ -1848,6 +1932,9 @@ export class BrowserProcessBroker {
         errors.push(error);
       }
       this.retireDisposedControllers(failedControllers, errors);
+      const unsettled = this.groups?.unsettled() ?? 0;
+      if (unsettled)
+        errors.push(new Error(`${unsettled} memory group members have no proven physical stop`));
       if (errors.length) {
         const failure = new AggregateError(errors, "Process broker cleanup failed");
         this.retirementGate.reject(failure);

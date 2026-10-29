@@ -167,14 +167,18 @@ function sideImports(
   memoryBase: number,
   tableBase: number,
   got: WebAssembly.ModuleImports,
-  immutableI32Exports: ReadonlySet<string>,
+  coreProfile: CompiledMember["profile"],
   slots: SelfSlots,
   ranges: Range[],
+  coreBase: number,
+  coreEnv: WebAssembly.ModuleImports | undefined,
 ): WebAssembly.Imports {
   const env: WebAssembly.ModuleImports = Object.create(null);
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "env") continue;
-    const value = core.exports[entry.name];
+    const shared = coreEnv?.[entry.name];
+    const value =
+      core.exports[entry.name] ?? (shared instanceof WebAssembly.Global ? shared : undefined);
     const slot = member.self.targetSlots.get(entry.name);
     if (entry.name === "memory") env[entry.name] = memory;
     else if (entry.name === "__indirect_function_table") env[entry.name] = table;
@@ -188,12 +192,14 @@ function sideImports(
   }
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "GOT.mem" || Object.hasOwn(got, entry.name)) continue;
-    if (!immutableI32Exports.has(entry.name))
+    if (!coreProfile.immutableI32Exports.has(entry.name))
       invalid(member.id, `GOT.mem.${entry.name} requires an immutable core i32 address export`);
     const symbol = core.exports[entry.name];
     if (!(symbol instanceof WebAssembly.Global) || typeof symbol.value !== "number")
       invalid(member.id, `GOT.mem.${entry.name} requires a core i32 address export`);
-    const address = symbol.value >>> 0;
+    // PIE data exports without extended-const are relative to the core's __memory_base.
+    const relative = coreProfile.relativeExports.has(entry.name) ? coreBase : 0;
+    const address = (symbol.value + relative) >>> 0;
     if (!dataAddress(entry.name, address, memory))
       invalid(member.id, `GOT.mem.${entry.name} address is outside core memory`);
     got[entry.name] = new WebAssembly.Global({ value: "i32", mutable: true }, address);
@@ -229,6 +235,8 @@ function linkLibrary(
   libraries: LinkedLibrary[],
   ranges: Range[],
   got: WebAssembly.ModuleImports,
+  coreBase: number,
+  coreEnv: WebAssembly.ModuleImports | undefined,
 ): void {
   host.checkActive();
   const memoryBase = reserveMemory(core, member, plan.reserve, memory, libraries);
@@ -251,9 +259,11 @@ function linkLibrary(
     memoryBase,
     tableBase,
     got,
-    plan.core.profile.immutableI32Exports,
+    plan.core.profile,
     slots,
     ranges,
+    coreBase,
+    coreEnv,
   );
   host.checkActive();
   const instance = instantiate(member, imports);
@@ -282,9 +292,16 @@ function initializeLibraries(
 
 export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   host.checkActive();
-  const core = instantiate(plan.core, host.coreImports ?? host.wasi.imports(plan.core.module));
-  const memory = core.exports.memory,
-    table = core.exports.__indirect_function_table;
+  const pie = plan.core.profile.pie;
+  // A PIE core runs in a memory group: its env image (shared memory, own table) is supplied.
+  if (pie && !host.coreImports?.env?.memory)
+    invalid(plan.core.id, "PIE core requires a memory group");
+  const coreImports = host.coreImports ?? host.wasi.imports(plan.core.module);
+  const core = instantiate(plan.core, coreImports);
+  const memory = pie ? coreImports.env!.memory : core.exports.memory,
+    table = pie
+      ? coreImports.env!.__indirect_function_table
+      : core.exports.__indirect_function_table;
   if (!(memory instanceof WebAssembly.Memory)) invalid(plan.core.id, "core must export memory");
   if (!(table instanceof WebAssembly.Table))
     invalid(plan.core.id, "core must export __indirect_function_table");
@@ -296,6 +313,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   const libraries: LinkedLibrary[] = [];
   const ranges: Range[] = [];
   const got: WebAssembly.ModuleImports = Object.create(null);
+  const coreBase = pie ? (coreImports.env!.__memory_base as WebAssembly.Global).value : 0;
   const lifecycle: { state: "linked" | "initializing" | "ready" | "poisoned" | "disposed" } = {
     state: "linked",
   };
@@ -309,7 +327,19 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   };
   try {
     for (const member of plan.libraries)
-      linkLibrary(member, plan, core, host, memory, table, libraries, ranges, got);
+      linkLibrary(
+        member,
+        plan,
+        core,
+        host,
+        memory,
+        table,
+        libraries,
+        ranges,
+        got,
+        coreBase,
+        pie ? coreImports.env : undefined,
+      );
     host.checkActive();
   } catch (error) {
     dispose();
