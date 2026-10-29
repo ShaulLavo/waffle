@@ -31,6 +31,7 @@ Dry and exact. Each page mirrors the code it describes.
 - [Permissions](permissions.md): mode bits and effective access.
 - [Process identity](process-context.md): `hostIdentity` and process metadata.
 - [Runtime startup](runtime-startup.md): `onStartupStage` stages and timestamps.
+- [Memory groups](memory-groups.md): shared Wasm memory across member processes, limits and lifetime.
 - [Networking](network.md): runtime-scoped loopback sockets, helpers and previews.
 - [Browser TCP addresses](browser-network-addresses.md): bind rules and address reporting.
 - [Guest libc](wasi-libc.md): descriptor placement and the patched preopen scan.

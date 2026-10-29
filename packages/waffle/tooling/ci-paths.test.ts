@@ -30,9 +30,11 @@ function selected(name: string, path: string): boolean {
 for (const name of ["browser", "libc"]) {
   test(`${name} waits for paths and runs on manual dispatch or filter failure`, () => {
     const job = record(jobs[name]);
-    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm"] : "changes");
+    // libc is also the single producer of the memory group fixture the browser gate consumes.
+    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm", "libc"] : "changes");
+    const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
     expect(job.if).toBe(
-      `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true') }}`,
+      `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer}) }}`,
     );
     expect(record(changes.outputs)[name]).toBe(`\${{ steps.paths.outputs.${name} }}`);
   });
@@ -341,4 +343,26 @@ test("programs normal CI runs the release closure test from the folded source ch
   expect(
     stepsFor("programs").some((step) => step.run === "bun test scripts/program-release.test.ts"),
   ).toBe(true);
+});
+
+test("the browser gate runs memory groups on the fixture built once by libc", () => {
+  for (const path of [
+    "packages/waffle/group/state.ts",
+    "packages/waffle/link/code.ts",
+    "packages/waffle/scripts/build-memory-group-fixture.ts",
+    "packages/waffle/tests/fixtures/memory-group-member.c",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const libc = record(jobs.libc).steps as unknown[];
+  const browser = record(jobs.browser).steps as unknown[];
+  const run = (steps: unknown[]) => steps.map((step) => String(record(step).run ?? ""));
+  const uses = (steps: unknown[]) => steps.map((step) => String(record(step).uses ?? ""));
+  expect(run(libc).filter((line) => line.includes("build-memory-group-fixture.ts")).length).toBe(2);
+  expect(uses(libc)).toContain("actions/upload-artifact@v4");
+  expect(uses(browser)).toContain("actions/download-artifact@v4");
+  expect(run(browser).some((line) => line.includes("build-memory-group-fixture.ts"))).toBe(false);
+  const gate = browser
+    .map(record)
+    .find((step) => String(step.run).startsWith("bun run test:browser"));
+  expect(record(gate?.env).MEMORY_GROUP_FIXTURE_DIR).toBeDefined();
 });

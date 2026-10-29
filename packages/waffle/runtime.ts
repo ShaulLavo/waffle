@@ -21,6 +21,13 @@ import type {
   BrowserProcessBrokerOptions,
 } from "./browser/process-broker.js";
 export type { WorkerMemoryObservation } from "./browser/process-broker.js";
+export type { MemoryGroupLaunch, RootMemoryGroupMember } from "./browser/process-broker.js";
+import type { MemoryGroupPolicyOptions } from "./group/state.js";
+export type {
+  MemoryGroupHandle,
+  MemoryGroupPolicyOptions,
+  MemoryGroupSnapshot,
+} from "./group/state.js";
 import {
   createProcessIdentity,
   snapshotHostIdentity,
@@ -102,6 +109,8 @@ export interface RuntimeOptions {
   onProcessAdmission?: ProcessAdmissionObserver;
   /** Optional filesystem startup milestones, never awaited. See docs/runtime-startup.md. */
   onStartupStage?: RuntimeStartupObserver;
+  /** Memory group limits: members, parallelism, page budget. See docs/memory-groups.md. */
+  memoryGroups?: MemoryGroupPolicyOptions;
 }
 export interface Runtime {
   readonly hostIdentity: RuntimeHostIdentity | null;
@@ -170,6 +179,9 @@ const processCapabilities = {
   networkPathScope: "method",
   outputDrained: "method",
   workerMemory: "method",
+  memoryGroupOf: "method",
+  memoryGroups: "method",
+  admitRootMemoryGroup: "method",
   takeWorker: "method",
   isIdleWorker: "method",
   kill: "async",
@@ -518,6 +530,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           registry,
           table,
           onProcessAdmission: options.onProcessAdmission,
+          memoryGroups: options.memoryGroups,
           launch: (context) => {
             assertLive();
             const launch = adapters.get(context.adapter);

@@ -13,6 +13,7 @@
     "fs/**/*.ts",
     "proc/**/*.ts",
     "interrupt/**/*.ts",
+    "group/**/*.ts",
     "link/**/*.ts",
     "programs/**/*.ts",
     "search/**/*.ts",

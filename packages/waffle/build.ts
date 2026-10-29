@@ -277,6 +277,7 @@ export async function buildNodeModules(
     "proc",
     "interrupt",
     "browser",
+    "group",
     "link",
     "programs",
     "search",

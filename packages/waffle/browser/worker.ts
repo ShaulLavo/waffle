@@ -75,6 +75,9 @@ import {
   wasmMemoryBuffer,
 } from "../proc/intrinsics.ts";
 
+import type { MemoryGroupMemberRequest } from "../group/protocol.js";
+import type { GroupMember } from "../group/member.js";
+
 export interface RuntimeWorkerRequest {
   /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
   memoryObservation?: SharedArrayBuffer;
@@ -92,6 +95,8 @@ export interface RuntimeWorkerRequest {
   outcome?: OutcomeTransfer;
   /** Broker-owned bounded buffer for host terminal output. Without it, output is posted. */
   terminalOutput?: SharedArrayBuffer;
+  /** Broker-owned memory group membership. Its PIE image links into the shared group memory. */
+  memoryGroup?: MemoryGroupMemberRequest;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
   interruptible?: boolean;
   trace?: boolean;
@@ -537,6 +542,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let wasi: Wasi | null = null;
   let hostOutput: TerminalOutputWriter | undefined;
   let memorySampler: ReturnType<typeof createWorkerMemorySampler> | undefined;
+  let groupMember: GroupAttachment = noGroup;
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
@@ -587,6 +593,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       }
     };
     attempt(() => notifications?.dispose());
+    // The page reclaims group memory only after this agent physically stops.
+    attempt(() => groupMember.dispose());
     if (runtimeDiagnostic && "error" in result) {
       try {
         const bytes = new TextEncoder().encode(`${describeWorkerError(result.error)}\n`);
@@ -822,6 +830,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (done) return;
     const namespaces = executor.namespaces?.(context);
     if (done) return;
+    groupMember = await attachGroupMember(req, checkActive, runtime);
     // Launch descriptors, snapshotted after bindings and before the guest can open its own.
     let inherited: readonly number[] = [];
     const processImports: Record<string, (...args: number[]) => number | void> = {
@@ -903,7 +912,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         controlWait(word, 0, expected, ms);
         checkActive();
       },
-      namespaces: { ...namespaces, runtime_proc: processImports },
+      namespaces: { ...namespaces, ...groupMember.namespaces, runtime_proc: processImports },
       trace: req.trace ? (line) => console.debug(`[wasi] ${line}`) : undefined,
     });
     let boundMemory: WebAssembly.Memory | undefined;
@@ -1008,6 +1017,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         service: runtimeProcess,
         signals: runtimeProcess.signals,
         wake: runtimeProcess.wake,
+        futexReady: groupMember.watchReady,
         createPipe: () => runtimeProcess!.createPipe(),
         wait: (ms, word, expected) => {
           checkActive();
@@ -1049,7 +1059,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     inherited = wasi.descriptors.inheritable();
     const instantiating = perfNow();
-    const imports = wasi.imports(req.module);
+    // A group member's PIE image imports the shared memory, its own table, bases and stack.
+    const imports = wasi.imports(req.module, groupMember.bindings(req.module));
     // Linking binds WASI views for a real Wasm start section, which runs inside instantiation.
     // Snapshot before a hook can mutate in place; memory replacement cannot preserve those views.
     const memories = executor.imports
@@ -1079,9 +1090,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       : new WebAssembly.Instance(req.module, memorySampler?.imports(req.module, linked) ?? linked);
     if (done) return;
     checkActive();
-    if (!(instance.exports.memory instanceof WebAssembly.Memory))
-      throw new ExecutableFormatError("guest has no memory");
-    bindMemory(instance.exports.memory);
+    bindMemory(entryMemory(instance, groupMember.memory));
     if (typeof instance.exports._start !== "function")
       throw new ExecutableFormatError("guest has no _start entry point");
     postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
@@ -1178,6 +1187,47 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
     return -WASI_ENOTCAPABLE;
   };
   return { ...context, cwd, write, open };
+}
+
+type GroupAttachment = Pick<GroupMember, "namespaces" | "dispose"> & {
+  readonly memory?: WebAssembly.Memory;
+  readonly watchReady?: GroupMember["watchReady"];
+  bindings(module: WebAssembly.Module): { env: WebAssembly.ModuleImports } | undefined;
+};
+const noGroup: GroupAttachment = {
+  namespaces: {},
+  bindings: () => undefined,
+  dispose() {},
+};
+
+/** Members load the group module only when the broker admitted them to a group. */
+async function attachGroupMember(
+  req: RuntimeWorkerRequest,
+  checkActive: () => void,
+  runtime: typeof import("../proc/worker-client.js") | null,
+): Promise<GroupAttachment> {
+  if (!req.memoryGroup) return noGroup;
+  // Only the link loader admits group images: it rejects raw memory.grow and memory exports,
+  // so every byte of group backing is charged by the owner (W3).
+  if (!("linkPlan" in req))
+    throw new ExecutableFormatError("memory group members load through waffle/link plans");
+  const { createGroupMember } = await import("../group/member.js");
+  const transport = req.runtimeProcess;
+  return createGroupMember(req.memoryGroup, {
+    checkActive,
+    wake: transport && runtime ? () => runtime.wakeWorkerProcess(transport) : undefined,
+  });
+}
+
+/** A group member's PIE image imports its memory instead of exporting one. */
+function entryMemory(
+  instance: WebAssembly.Instance,
+  imported: WebAssembly.Memory | undefined,
+): WebAssembly.Memory {
+  const memory = instance.exports.memory;
+  if (memory instanceof WebAssembly.Memory) return memory;
+  if (imported) return imported;
+  throw new ExecutableFormatError("guest has no memory");
 }
 
 /** Plain preview1 commands have no engine, native slots or module-cache policy. */

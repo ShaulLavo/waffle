@@ -56,10 +56,12 @@ export default {
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
         "tests/storage-open-worker.ts",
+        "tests/memory-group-browser{,-runner}.ts",
+        "tests/fixtures/memory-group-worker.ts",
       ],
       project: [
         "*.ts",
-        "{browser,core,fs,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
+        "{browser,core,fs,group,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
       ],
     },
   },
