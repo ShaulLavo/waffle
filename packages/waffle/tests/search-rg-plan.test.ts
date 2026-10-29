@@ -6,7 +6,7 @@ import { FilesystemClient } from "../fs/client.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
-import type { WalkCursor, WalkPage } from "../fs/walk.js";
+import type { WalkCursor, WalkPage, WalkPlan } from "../fs/walk.js";
 import { compileMatcher, searchFile } from "../search/matcher.js";
 import type { CompiledMatcher, OutputPlan, SearchPlan } from "../search/types.js";
 import { planRg } from "../../ripgrep/src/plan.js";
@@ -115,6 +115,49 @@ test("glob translation keeps basenames separate from rooted paths", () => {
     { kind: "path", glob: "node_modules" },
   ]);
 });
+
+const alternativeOverflow = "**/".repeat(8) + "a.js";
+const tokenOverflow = "**/".repeat(6) + "a".repeat(64) + ".js";
+const walkBudgetCases: readonly [string, string, string][] = [
+  ["positive alternatives", alternativeOverflow, alternativeOverflow],
+  ["anchored alternatives", "/" + alternativeOverflow, alternativeOverflow],
+  ["negative alternatives", "!" + alternativeOverflow, alternativeOverflow],
+  ["expanded tokens", tokenOverflow, tokenOverflow],
+];
+
+for (const [label, source, glob] of walkBudgetCases) {
+  test(`canonical S1 ${label} rejection falls back before host selection`, async () => {
+    const service = new FilesystemService(new MemoryBackend());
+    const pair = createFilesystemConnection();
+    service.connect(pair.server);
+    const client = new FilesystemClient(pair.client);
+    const pattern = { kind: "path", glob } satisfies WalkPlan["include"][number];
+    const negative = source.startsWith("!");
+    const walk: WalkPlan = {
+      include: negative ? [] : [pattern],
+      exclude: negative ? [pattern] : [],
+      excludeDirectories: negative ? [pattern] : [],
+      hidden: true,
+      maxDepth: null,
+    };
+    try {
+      const root: number = await client.asyncCall("preopen", ["/"]);
+      const failure = await client
+        .asyncCall("walkOpen", [root, walk])
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({ errno: 28 });
+      expect(planRg(required.concat(["-l", "-g", source, "hit", "."]))).toEqual({
+        kind: "fallback",
+        reason: "walk glob admission failed: glob alternatives exceed bound",
+      });
+      expect(service.resources().walks).toBe(0);
+      expect(service.resources().walkGrants).toBe(0);
+    } finally {
+      client.dispose();
+      service.dispose();
+    }
+  });
+}
 
 test("strict option, environment, glob and matcher boundaries fall back", () => {
   const cases = [
@@ -326,6 +369,7 @@ test.skipIf(Bun.which("rg") === null)(
         "sub/**",
         "/sub/**",
         "sub/**/a.js",
+        "**/".repeat(7) + "a.js",
         "!*.js",
         "!sub",
         "!**/a.js",

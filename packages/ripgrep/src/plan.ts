@@ -1,3 +1,5 @@
+import { FilesystemError } from "../../waffle/core/filesystem.js";
+import { compileGlob } from "../../waffle/fs/glob.js";
 import type { GlobPattern, WalkPlan } from "../../waffle/fs/walk.js";
 import { compileMatcher } from "../../waffle/search/matcher.js";
 import type { MatcherPlan, OutputPlan, SearchPlan } from "../../waffle/search/types.js";
@@ -151,8 +153,14 @@ function walkPlan(globs: readonly string[]): WalkAdmission {
     if (!negative) include.push(pattern);
     else addExclusion(pattern, exclude, excludeDirectories);
   }
-  if (include.length > 128 || excludeDirectories.length > 128)
+  if (include.length > 128 || exclude.length > 128 || excludeDirectories.length > 128)
     return { kind: "fallback", reason: "glob count exceeds the walk limit" };
+  try {
+    for (const pattern of include.concat(exclude, excludeDirectories)) compileGlob(pattern);
+  } catch (error) {
+    if (!(error instanceof FilesystemError)) throw error;
+    return { kind: "fallback", reason: `walk glob admission failed: ${error.message}` };
+  }
   return {
     kind: "supported",
     walk: { include, exclude, excludeDirectories, hidden: true, maxDepth: null },
