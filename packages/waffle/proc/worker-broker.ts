@@ -200,13 +200,19 @@ export class WorkerProcessBroker {
     if (shared && controlLoad(shared.group.pending) === 0)
       collectDirectoryJob(shared.root.directory, shared.group.slot, job);
     for (const [pid, transport] of this.transports) {
-      try {
-        if (workerProcessState(transport).job !== job) continue;
-      } catch (error) {
-        if (!(error instanceof ProcessError)) throw error;
-      }
+      if (this.transportJob(pid, transport, job) !== job) continue;
       this.transports.delete(pid);
       this.failedCleanup.delete(pid);
+    }
+  }
+  /** A directly reaped row no longer names its job, but its host record does until pump()
+   * removes both. Dropping that transport for another job's reap would orphan the record. */
+  private transportJob(pid: number, transport: WorkerProcessTransport, reaped: number): number {
+    try {
+      return workerProcessState(transport).job;
+    } catch (error) {
+      if (!(error instanceof ProcessError)) throw error;
+      return this.supervisor?.get(pid)?.job ?? reaped;
     }
   }
   private codec(transport: WorkerProcessTransport): WorkerDescriptorCodec {
