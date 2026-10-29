@@ -336,3 +336,31 @@ test("a delivery failure and its release failure are both kept", async () => {
   ]);
   expect(source.closed).toBe(1);
 });
+
+test("output reservations cover files that grow after enumeration", async () => {
+  const actualBytes = OUTPUT_WINDOW_BYTES / 4;
+  const source = new FakeSource(files(8, 0));
+  let pendingBytes = 0;
+  let peakBytes = 0;
+  const executor = new FakeExecutor(8, () => {
+    const output = new Uint8Array(actualBytes);
+    pendingBytes += output.byteLength;
+    peakBytes = Math.max(peakBytes, pendingBytes);
+    return { kind: "done", matched: 1, output };
+  });
+  await new SearchRun(
+    source,
+    executor,
+    {
+      deliver: (_file, result) => {
+        if (result.kind === "done") pendingBytes -= result.output?.byteLength ?? 0;
+      },
+      fallback: () => ({ kind: "error", errno: 29 }),
+    },
+    { ...limits, fileBytes: actualBytes },
+    () => {},
+  ).run();
+  expect(peakBytes).toBeLessThanOrEqual(OUTPUT_WINDOW_BYTES);
+  expect(pendingBytes).toBe(0);
+  expect([source.closed, executor.closed]).toEqual([1, 1]);
+});
