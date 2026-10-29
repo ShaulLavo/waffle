@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.100",
+  "version": "0.0.101",
   "private": true,
   "files": [
     "dist",
@@ -12,9 +12,9 @@
     "interrupt",
     "group",
     "link",
+    "search",
     "proc",
     "programs",
-    "search",
     "tests",
     "tooling",
     "index.ts",

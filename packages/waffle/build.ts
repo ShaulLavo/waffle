@@ -279,8 +279,8 @@ export async function buildNodeModules(
     "browser",
     "group",
     "link",
-    "programs",
     "search",
+    "programs",
   ])
     await visit(directory);
   for (const file of ["index.ts", "runtime.ts"]) if (existsSync(join(root, file))) await emit(file);
