@@ -8,11 +8,12 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 - Opt-in grep and ripgrep host executors use the exported search engine and worker entries. Native guests remain the fallback.
 - Preview upgrades carry structured authority through live owner routes and enforce path, query, header and lifetime guards.
 - Synchronous guests can open, read and close filesystem watches through three `runtime_fs` imports. Mixed network/filesystem readiness wakes blocked guests. Bun adapter wiring is separate.
+- Abstract Unix socket names share a runtime-scoped namespace without creating filesystem nodes. See [Unix sockets](unix-sockets.md).
 - No consumer dependency repin is included.
 
 ## Stability
 
-- **Version:** `0.0.102` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
+- **Version:** `0.0.103` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
 - **Distribution:** GitHub release archives of the runtime package (`waffle-v<version>` tags). Existing exact-commit Git pins keep installing their old trees. No npm package.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
