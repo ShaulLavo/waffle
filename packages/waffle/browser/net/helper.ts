@@ -35,6 +35,7 @@ import {
 } from "./unix-paths.js";
 import { EBADF, ECANCELED, ENOBUFS, ENOTCAPABLE } from "./unix-status.js";
 import { RingWriter } from "./ring.js";
+import { TCP_INVALID } from "./tcp-status.js";
 import {
   acceptedAddress,
   loopbackAddress,
@@ -151,7 +152,7 @@ export class NetHelper {
         this.close(req.id);
         return;
       case "listen":
-        this.listen(req.id, req.port, req.host);
+        if (!this.claimed(req.id)) this.listen(req.id, req.port, req.host);
         return;
       case "tcp-accept":
         this.pending.get(req.listener)?.delete(req.id);
@@ -528,7 +529,8 @@ export class NetHelper {
     });
   }
 
-  /** A handle id names at most one listener, socket or pending path operation. */
+  /** Every allocating request checks this: a handle id names at most one listener, socket,
+   * connection or pending path operation, so no request can overwrite another's resource. */
   private claimed(id: number): boolean {
     return (
       this.pathOperations.has(id) ||
@@ -639,6 +641,7 @@ export class NetHelper {
   }
 
   private executeTcp(req: Exclude<TcpRequest, UnixRequest>): [number, number] {
+    if (req.type !== "tcp-write" && this.claimed(req.id)) return [TCP_INVALID, 0];
     if (req.type === "tcp-listen") {
       const port = this.listen(req.id, req.port, req.host, true);
       return [port < 0 ? port : 0, port];

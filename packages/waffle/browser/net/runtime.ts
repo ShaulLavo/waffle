@@ -90,8 +90,10 @@ function helperPaths(
     scope() {
       if (retired) return Promise.resolve(ECANCELED);
       if (!scope || !attach) return Promise.resolve(ENOTCAPABLE);
-      // Not joined by disposal: an unanswered attach holds no filesystem state, and the
-      // filesystem cancels it when it closes after the network.
+      // Not joined by disposal. The filesystem may already have admitted the scope session
+      // and its root reservation when the reply is late; the filesystem service owns that
+      // undelivered session, cancels the pending attach and tears the session down when it
+      // closes after the network. A reply that does arrive is closed through retire().
       attached ??= attach(scope.filesystem, scope.directory).then(filesystemScope, errnoOf);
       return attached;
     },

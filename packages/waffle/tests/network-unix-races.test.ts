@@ -275,3 +275,35 @@ test("runtime disposal racing a first path request's scope attach leaves nothing
   // The page guard was released: no retained scope, pin or cleanup debt kept the runtime.
   await createRuntime(options).dispose();
 });
+
+test("TCP requests cannot take a handle owned by a pending or live path resource", async () => {
+  const f = fixture();
+  try {
+    const pending = f.listen(1, "/first");
+    const tcpOnPending = new SharedArrayBuffer(12);
+    f.helper.handle({ type: "tcp-listen", id: 1, port: 0, host: "localhost", reply: tcpOnPending });
+    expect(Atomics.load(new Int32Array(tcpOnPending), 1)).toBeLessThan(0);
+    f.gate.resolve();
+    expect(await replied(pending)).toEqual([1, 0, 0]);
+    const tcpOnListener = new SharedArrayBuffer(12);
+    f.helper.handle({
+      type: "tcp-connect",
+      id: 1,
+      port: 1,
+      host: "localhost",
+      reply: tcpOnListener,
+    });
+    expect(Atomics.load(new Int32Array(tcpOnListener), 1)).toBeLessThan(0);
+    expect(await replied(f.connect(2, "/first"))).toEqual([1, 0, 0]);
+    const tcpOnSocket = new SharedArrayBuffer(12);
+    f.helper.handle({ type: "tcp-listen", id: 2, port: 0, host: "localhost", reply: tcpOnSocket });
+    expect(Atomics.load(new Int32Array(tcpOnSocket), 1)).toBeLessThan(0);
+    f.helper.dispose();
+    await f.owner.dispose();
+    expect(f.owner.retained()).toBe(false);
+    expect(Array.from(f.nodes.keys())).toEqual([]);
+  } finally {
+    f.helper.dispose();
+    await f.owner.dispose();
+  }
+});
