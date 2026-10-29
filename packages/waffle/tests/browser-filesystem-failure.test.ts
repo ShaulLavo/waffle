@@ -25,6 +25,7 @@ function fixture() {
       },
     },
     writes: Promise.resolve(),
+    socketAttachments: new Set(),
     _state: { status: "opening" },
   }) as unknown as { fail(error: Error): void; dispose(): void };
   cleanups.push(() => {
