@@ -21,7 +21,7 @@ import {
 import { atomicsWaitAsync } from "../proc/intrinsics.js";
 import { WatchService } from "./watch-service.js";
 import { checkDirectoryPage } from "./directory-pages.js";
-import type { ResolvedPath } from "../core/filesystem.js";
+import type { SocketBinding, ResolvedPath } from "../core/filesystem.js";
 import { ReaderLifetime } from "./workspace-protocol.js";
 import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
@@ -53,12 +53,19 @@ import {
   waitForFilesystemQuiescence,
   unpack,
   wake,
+  sameFilesystemIdentity,
+  reserveIdentityCapability,
+  releaseFilesystemReservation,
+  type FilesystemIdentity,
   type FilesystemConnection,
   type RequestMessage,
 } from "./protocol.js";
 
 const mutations = new Set([
   "preopen",
+  "bindSocket",
+  "bindSocketPath",
+  "unbindSocket",
   "release",
   "write",
   "append",
@@ -82,7 +89,12 @@ type ResponsePayload =
 type Response =
   | { kind: "bytes"; bytes: Uint8Array }
   | { kind: "resolve"; references: Map<number, number>; payload: ResponsePayload };
+interface SocketScopeState {
+  readonly root: number;
+  readonly leases: Map<number, { binding: SocketBinding; name: string }>;
+}
 interface Session {
+  socketScope?: SocketScopeState;
   connection: FilesystemConnection;
   requests: FilesystemRequestMemory;
   transportRetirement?: Promise<void>;
@@ -138,6 +150,38 @@ export class FilesystemService {
   residentPublication: ResidentGrantAuthority | undefined;
   private watchService?: WatchService;
   constructor(private backend: FilesystemBackend) {}
+  attachSocketScope(
+    guest: FilesystemIdentity,
+    directory: number,
+    connection: FilesystemConnection,
+  ) {
+    const source = Array.from(this.sessions).find((session) =>
+      sameFilesystemIdentity(session.connection, guest),
+    );
+    if (!source) throw new FilesystemError(76);
+    if (sessionRevoked(source)) throw new FilesystemError(11);
+    if (!source.handles.has(directory)) throw new FilesystemError(76);
+    this.check(source, directory);
+    if (
+      !(this.backend instanceof MemoryBackend) ||
+      this.backend.fs.stat(directory).kind !== "directory"
+    )
+      throw new FilesystemError(76);
+    if (isRevoked(connection)) throw new FilesystemError(11);
+    if (connection.revocations.length !== 1) throw new FilesystemError(76);
+    if (!(this.backend.fs.permissions(directory).access & 1)) throw new FilesystemError(2);
+    const reservation = reserveIdentityCapability(source.connection, directory, connection);
+    try {
+      this.connect(connection);
+      const target = Array.from(this.sessions).find((session) => session.connection === connection);
+      if (!target) throw new FilesystemError(11);
+      target.socketScope = { root: directory, leases: new Map() };
+      return { root: directory, rootIno: this.backend.fs.stat(directory).ino, reservation };
+    } catch (error) {
+      releaseFilesystemReservation(reservation);
+      throw error;
+    }
+  }
   connect(connection: FilesystemConnection): void {
     if (this.ownerStopping) {
       this.refuseConnection(connection);
@@ -571,6 +615,55 @@ export class FilesystemService {
   }
   private checkRequest(session: Session, operation: string, args: any[], held?: number[]): void {
     const [a, b] = args;
+    const scope = session.socketScope;
+    if (
+      scope &&
+      ![
+        "resolve",
+        "bindSocket",
+        "bindSocketPath",
+        "unbindSocket",
+        "connectSocket",
+        "stat",
+        "permissions",
+        "retain",
+        "release",
+        "take",
+      ].includes(operation)
+    )
+      throw new FilesystemError(76);
+    if (
+      ["bindSocket", "bindSocketPath", "unbindSocket", "connectSocket"].includes(operation) &&
+      !scope
+    )
+      throw new FilesystemError(76);
+    if (
+      scope &&
+      (operation === "resolve" ||
+        operation === "connectSocket" ||
+        operation === "bindSocketPath") &&
+      a !== scope.root
+    )
+      throw new FilesystemError(76);
+    if (operation === "bindSocket" || operation === "bindSocketPath") {
+      this.check(session, a, held);
+      if (scope!.leases.has(args[2])) throw new FilesystemError(28);
+      if (scope!.leases.size >= 128) throw new FilesystemError(42);
+      if (session.freeEntries.length < 2) throw new FilesystemError(51);
+    }
+    if (operation === "unbindSocket") {
+      const owned = scope!.leases.get(args[2]);
+      if (
+        !owned ||
+        owned.name !== b ||
+        owned.binding.node !== a.node ||
+        owned.binding.parent !== a.parent ||
+        owned.binding.ino !== a.ino ||
+        owned.binding.parentIno !== a.parentIno
+      )
+        throw new FilesystemError(76);
+    }
+    if (operation === "connectSocket") this.check(session, a, held);
     if (operation === "watchOpen") {
       if (typeof a !== "number" || !Number.isSafeInteger(a) || typeof b !== "boolean")
         throw new FilesystemError(28);
@@ -652,6 +745,7 @@ export class FilesystemService {
     data: Uint8Array,
   ): unknown | Promise<unknown> {
     const [a, b, c] = args;
+    this.checkSocketTree(session, operation, args);
     if (operation.startsWith("watch")) return this.watchRequest(session, operation, args);
     if (operation === "take") {
       const response = session.responses.get(a);
@@ -714,14 +808,25 @@ export class FilesystemService {
         this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
       );
     }
+    if (operation === "resolve" && session.socketScope && this.backend instanceof MemoryBackend) {
+      const result = this.backend.fs.resolveSocket(a, b, c === true);
+      return this.finishResult(session, id, operation, result, args);
+    }
     const result = this.backend.execute(operation, args, data);
     if (result instanceof Promise)
       return this.trackWork(session, result).then((value) =>
-        this.finishResult(session, id, operation, value),
+        this.finishResult(session, id, operation, value, args),
       );
-    return this.finishResult(session, id, operation, result);
+    return this.finishResult(session, id, operation, result, args);
   }
-  private finishResult(session: Session, id: number, operation: string, result: any): unknown {
+  private finishResult(
+    session: Session,
+    id: number,
+    operation: string,
+    result: any,
+    args: any[] = [],
+  ): unknown {
+    this.finishSocketOperation(session, operation, result, args);
     const pending = session.pending.get(id);
     if (
       sessionRevoked(session) ||
@@ -740,6 +845,44 @@ export class FilesystemService {
       for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
     } else this.trim(session);
     return result;
+  }
+  private checkSocketTree(session: Session, operation: string, args: any[]): void {
+    if (
+      operation !== "bindSocket" ||
+      !session.socketScope ||
+      !(this.backend instanceof MemoryBackend)
+    )
+      return;
+    const error = this.backend.fs.socketParentAccess(session.socketScope.root, args[0]);
+    if (error) throw new FilesystemError(error);
+  }
+  private finishSocketOperation(
+    session: Session,
+    operation: string,
+    result: any,
+    args: any[],
+  ): void {
+    const scope = session.socketScope;
+    if (!scope) return;
+    if (
+      (operation === "bindSocket" || operation === "bindSocketPath") &&
+      result &&
+      !("error" in result)
+    ) {
+      const binding = operation === "bindSocketPath" ? result.binding : result;
+      const name = operation === "bindSocketPath" ? result.name : args[1];
+      this.backend.retain(binding.parent);
+      this.backend.retain(binding.node);
+      scope.leases.set(args[2], { binding, name });
+      this.pin(session, binding.parent);
+      this.pin(session, binding.node);
+    }
+    if (operation !== "unbindSocket" || (result !== 0 && result !== 44)) return;
+    const owned = scope.leases.get(args[2]);
+    if (!owned) return;
+    scope.leases.delete(args[2]);
+    this.backend.release(owned.binding.node);
+    this.backend.release(owned.binding.parent);
   }
   private assertBackendAccess(): void {
     if (this.backend instanceof MemoryBackend) this.backend.shared.publication?.assertAccess();
@@ -1021,6 +1164,7 @@ export class FilesystemService {
     backend.shared.beginServiceMutation(new Int32Array(session.connection.epoch));
     try {
       domain.assertLive();
+      this.checkSocketTree(session, operation, args);
       if (operation.startsWith("publication"))
         return this.publicationControl(session, operation, args);
       const intent = mutationIntent(operation, args);
@@ -1049,7 +1193,7 @@ export class FilesystemService {
         backend.discardPublication(plan);
         throw error;
       }
-      return this.applyPublication(session, id, operation, plan, publication);
+      return this.applyPublication(session, id, operation, plan, publication, args);
     } finally {
       backend.shared.endServiceMutation(new Int32Array(session.connection.epoch));
     }
@@ -1060,6 +1204,7 @@ export class FilesystemService {
     operation: string,
     plan: import("./backend.js").LocalMutationPlan,
     publication: import("./publication.js").PreparedPublication,
+    args: any[],
   ): unknown {
     if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
     const domain = this.backend.shared.publication!;
@@ -1071,7 +1216,7 @@ export class FilesystemService {
       domain.stop();
       throw error;
     }
-    return this.finishResult(session, id, operation, mutationValue(plan.result));
+    return this.finishResult(session, id, operation, mutationValue(plan.result), args);
   }
   private namespaceControl(
     backend: MemoryBackend,
@@ -1340,6 +1485,11 @@ export class FilesystemService {
       session.handles.delete(handle);
     }
     Atomics.store(session.capabilities, 0, 0);
+    for (const lease of session.socketScope?.leases.values() ?? []) {
+      this.backend.release(lease.binding.node);
+      this.backend.release(lease.binding.parent);
+    }
+    session.socketScope?.leases.clear();
     session.preopens.clear();
     session.transient.clear();
     session.references.clear();
@@ -1665,7 +1815,22 @@ export function installFilesystemWorker(
           data.connect?.port.close();
           return;
         }
-        if (data.connect) {
+        if (data.socketScope && data.connect && data.reply) {
+          try {
+            data.reply.postMessage({
+              value: owner.attachSocketScope(
+                data.socketScope.guest,
+                data.socketScope.directory,
+                data.connect,
+              ),
+            });
+          } catch (error) {
+            data.connect.port.close();
+            data.reply.postMessage({ error: errno(error) });
+          } finally {
+            data.reply.close();
+          }
+        } else if (data.connect) {
           owner.connect(data.connect);
           scope.postMessage({ type: "filesystem-state", status: "ready" });
           reportRuntimeStartup(onStartupStage, "filesystem-ready");

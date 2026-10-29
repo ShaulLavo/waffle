@@ -67,7 +67,7 @@ const FT_CHAR = 2;
 const FT_DIR = 3;
 const FT_FILE = 4;
 const filetype = (kind: FileStat["kind"]) =>
-  kind === "directory" ? FT_DIR : kind === "symlink" ? 7 : FT_FILE;
+  kind === "directory" ? FT_DIR : kind === "symlink" ? 7 : kind === "socket" ? 6 : FT_FILE;
 
 // oflags / fdflags
 const O_CREAT = 1;
@@ -951,6 +951,7 @@ export class Wasi {
           if (typeof result !== "number") return result.error;
           node = result;
         }
+        if (this.opts.fs.stat(node).kind === "socket") return 60;
         return this.writeResult(
           openInode(
             this.descriptors,

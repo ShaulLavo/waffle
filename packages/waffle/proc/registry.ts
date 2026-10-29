@@ -6,9 +6,11 @@ import { dirname, normalize } from "../core/path.js";
 export type ExecutableLookup = (
   path: string,
 ) =>
-  | { readonly path: string; readonly kind: "file" | "dir" | "symlink" }
+  | { readonly path: string; readonly kind: "file" | "dir" | "symlink" | "socket" }
   | undefined
-  | Promise<{ readonly path: string; readonly kind: "file" | "dir" | "symlink" } | undefined>;
+  | Promise<
+      { readonly path: string; readonly kind: "file" | "dir" | "symlink" | "socket" } | undefined
+    >;
 export type ExecutableRead = (
   path: string,
 ) => Uint8Array | undefined | Promise<Uint8Array | undefined>;
@@ -17,7 +19,9 @@ const MAX_SHEBANG_DEPTH = 4;
 const MAX_SHEBANG_BYTES = 256;
 const MAX_SYMLINK_EXPANSIONS = 40;
 
-function symlinkTarget(file: { readonly kind: "file" | "dir" | "symlink" }): string | undefined {
+function symlinkTarget(file: {
+  readonly kind: "file" | "dir" | "symlink" | "socket";
+}): string | undefined {
   if (file.kind !== "symlink" || !("target" in file) || typeof file.target !== "string") return;
   return file.target;
 }
@@ -225,6 +229,7 @@ export class ExecutableRegistry {
     }
     const resolved = file.path === predicted ? registered : this.entries.get(file.path);
     if (resolved && file.kind === "file") return { entry: resolved, ...(argv ? { argv } : {}) };
+    if (file.kind === "socket") throw new ExecutableNotRunnable(file.path, false);
     if (!this.read) throw this.notRunnable(file.path, mode);
     if (seen.has(file.path) || depth >= MAX_SHEBANG_DEPTH)
       throw new ExecutableNotRunnable(file.path, false, "ELOOP");

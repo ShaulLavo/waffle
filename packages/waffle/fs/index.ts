@@ -14,6 +14,7 @@ export {
   createFilesystemIdentity,
   createProcessFilesystemIdentity,
   releaseFilesystemReservation,
+  reserveIdentityCapability,
   connectFilesystemIdentity,
   revokeFilesystemService,
   revokeFilesystem,

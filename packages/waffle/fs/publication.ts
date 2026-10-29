@@ -20,7 +20,7 @@ import {
   typedArraySet,
 } from "../proc/intrinsics.js";
 import type { FilesystemSection } from "./protocol.js";
-import { FilesystemError, type ResolvedPath } from "../core/filesystem.js";
+import { FilesystemError, type ResolvedPath, type SocketBinding } from "../core/filesystem.js";
 import type {
   PublicationBuffers,
   PublicationConnection,
@@ -42,6 +42,25 @@ export interface FileKey {
   readonly ino: number;
 }
 export type MutationIntent =
+  | {
+      readonly kind: "bindSocketPath";
+      readonly directory: number;
+      readonly path: string;
+      readonly lease: number;
+    }
+  | {
+      readonly kind: "bindSocket";
+      readonly parent: number;
+      readonly name: string;
+      readonly lease: number;
+    }
+  | {
+      readonly kind: "unbindSocket";
+      readonly binding: SocketBinding;
+      readonly name: string;
+      readonly lease: number;
+      readonly unlink: boolean;
+    }
   | { readonly kind: "write"; readonly handle: number; readonly offset: number }
   | { readonly kind: "append"; readonly handle: number }
   | {
@@ -65,13 +84,15 @@ export type MutationIntent =
   | {
       readonly kind: "create";
       readonly path: ResolvedPath;
-      readonly nodeKind: "file" | "directory";
+      readonly nodeKind: "file" | "directory" | "socket";
       readonly exclusive: boolean;
     }
   | { readonly kind: "symlink"; readonly path: ResolvedPath; readonly target: string }
   | { readonly kind: "link" | "rename"; readonly from: ResolvedPath; readonly to: ResolvedPath }
   | { readonly kind: "removePath"; readonly path: ResolvedPath; readonly directory: boolean };
 export type MutationResult =
+  | { readonly kind: "socket-path-binding"; readonly binding: SocketBinding; readonly name: string }
+  | { readonly kind: "socket-binding"; readonly binding: SocketBinding }
   | { readonly kind: "void" }
   | { readonly kind: "number"; readonly value: number }
   | { readonly kind: "boolean"; readonly value: boolean }
@@ -369,6 +390,14 @@ function json(value: unknown, bound: number): Uint8Array {
 function parseResult(bytes: Uint8Array): MutationResult {
   const value: unknown = parse(decodeText(bytes));
   if (!value || typeof value !== "object" || !("kind" in value)) throw new FilesystemError(29);
+  if (value.kind === "socket-path-binding" && "binding" in value && "name" in value)
+    return {
+      kind: "socket-path-binding",
+      binding: socketBinding(value.binding),
+      name: text(value.name),
+    };
+  if (value.kind === "socket-binding" && "binding" in value)
+    return { kind: "socket-binding", binding: socketBinding(value.binding) };
   if (value.kind === "void") return { kind: "void" };
   if (value.kind === "number" && "value" in value && typeof value.value === "number")
     return { kind: "number", value: value.value };
@@ -1552,7 +1581,7 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
 function decodeInodeMetadata(value: object): InodeMetadata {
   if (!("nodeKind" in value)) throw new FilesystemError(29);
   const target = "target" in value ? value.target : undefined;
-  if (value.nodeKind === "file" || value.nodeKind === "directory") {
+  if (value.nodeKind === "file" || value.nodeKind === "directory" || value.nodeKind === "socket") {
     if (target !== undefined) throw new FilesystemError(29);
     return { nodeKind: value.nodeKind };
   }
@@ -1641,6 +1670,18 @@ export function mutationIntent(
 ): MutationIntent | undefined {
   const [a, b, c] = args;
   switch (operation) {
+    case "bindSocketPath":
+      return { kind: "bindSocketPath", directory: integer(a), path: text(b), lease: integer(c) };
+    case "bindSocket":
+      return { kind: "bindSocket", parent: integer(a), name: text(b), lease: integer(c) };
+    case "unbindSocket":
+      return {
+        kind: "unbindSocket",
+        binding: socketBinding(a),
+        name: text(b),
+        lease: integer(c),
+        unlink: args[3] === true,
+      };
     case "write":
       return { kind: "write", handle: integer(a), offset: integer(b) };
     case "append":
@@ -1662,7 +1703,7 @@ export function mutationIntent(
     case "move":
       return { kind: "move", from: text(a), to: text(b) };
     case "create":
-      if (b !== "file" && b !== "directory") throw new FilesystemError(28);
+      if (b !== "file" && b !== "directory" && b !== "socket") throw new FilesystemError(28);
       return { kind: "create", path: path(a), nodeKind: b, exclusive: c !== false };
     case "symlink":
       return { kind: "symlink", path: path(a), target: text(b) };
@@ -1707,10 +1748,38 @@ export function publicationCut(value: unknown): PublicationCut {
     throw new FilesystemError(28);
   return { history: text(value.history), generation: integer(value.generation) };
 }
+export function socketBinding(value: unknown): SocketBinding {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("node" in value) ||
+    !("parent" in value) ||
+    !("ino" in value) ||
+    !("parentIno" in value)
+  )
+    throw new FilesystemError(28);
+  return {
+    node: integer(value.node),
+    parent: integer(value.parent),
+    ino: integer(value.ino),
+    parentIno: integer(value.parentIno),
+  };
+}
 export function mutationValue(
   result: MutationResult,
-): number | boolean | { written: number; offset: number } | { error: number } | undefined {
+):
+  | number
+  | boolean
+  | SocketBinding
+  | { binding: SocketBinding; name: string }
+  | { written: number; offset: number }
+  | { error: number }
+  | undefined {
   switch (result.kind) {
+    case "socket-path-binding":
+      return { binding: result.binding, name: result.name };
+    case "socket-binding":
+      return result.binding;
     case "void":
       return;
     case "number":

@@ -84,7 +84,10 @@ function encodeEntry(output: Uint8Array, offset: number, entry: Entry): number {
   view.setBigUint64(0, entry.cookie, true);
   view.setBigUint64(8, BigInt(entry.ino), true);
   view.setUint32(16, entry.bytes.length, true);
-  view.setUint8(20, entry.kind === "directory" ? 3 : entry.kind === "symlink" ? 7 : 4);
+  view.setUint8(
+    20,
+    entry.kind === "directory" ? 3 : entry.kind === "symlink" ? 7 : entry.kind === "socket" ? 6 : 4,
+  );
   const headerLength = Math.min(header.length, output.length - offset);
   output.set(header.subarray(0, headerLength), offset);
   offset += headerLength;

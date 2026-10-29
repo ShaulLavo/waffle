@@ -28,7 +28,7 @@ export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermis
 }
 
 export interface FileStat {
-  kind: "file" | "directory" | "symlink";
+  kind: "file" | "directory" | "socket" | "symlink";
   ino: number;
   nlink: number;
   size: number;
@@ -40,6 +40,12 @@ export interface DirectoryEntry {
   name: string;
   ino: number;
   kind: FileStat["kind"];
+}
+export interface SocketBinding {
+  readonly node: FileHandle;
+  readonly parent: FileHandle;
+  readonly ino: number;
+  readonly parentIno: number;
 }
 export interface ResolvedPath {
   parent: FileHandle | undefined;
@@ -87,9 +93,12 @@ export interface FileSystem {
    * creation returns the current entry, even if it appeared after resolve. */
   create(
     path: ResolvedPath,
-    kind: "file" | "directory",
+    kind: "file" | "directory" | "socket",
     exclusive?: boolean,
   ): FileHandle | { error: number };
+  bindSocket(parent: FileHandle, name: string, lease: number): SocketBinding | { error: number };
+  unbindSocket(binding: SocketBinding, name: string, lease: number, unlink: boolean): number;
+  connectSocket(directory: FileHandle, path: string): { ino: number } | { error: number };
   link(from: ResolvedPath, to: ResolvedPath): number;
   removePath(path: ResolvedPath, directory: boolean): number;
   rename(from: ResolvedPath, to: ResolvedPath): number;

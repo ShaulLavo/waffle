@@ -1700,7 +1700,7 @@ export class FilesystemClient implements FileSystem {
   }
   create(
     path: ResolvedPath,
-    kind: "file" | "directory",
+    kind: "file" | "directory" | "socket",
     exclusive = true,
   ): FileHandle | { error: number } {
     try {
@@ -1718,6 +1718,36 @@ export class FilesystemClient implements FileSystem {
   }
   readlink(handle: FileHandle): string {
     return this.call("readlink", [handle]);
+  }
+  bindSocket(
+    parent: FileHandle,
+    name: string,
+    lease: number,
+  ): import("../core/filesystem.js").SocketBinding | { error: number } {
+    try {
+      return this.call("bindSocket", [parent, name, lease]);
+    } catch (error) {
+      return { error: errno(error) };
+    }
+  }
+  unbindSocket(
+    binding: import("../core/filesystem.js").SocketBinding,
+    name: string,
+    lease: number,
+    unlink: boolean,
+  ): number {
+    try {
+      return this.call("unbindSocket", [binding, name, lease, unlink]);
+    } catch (error) {
+      return errno(error);
+    }
+  }
+  connectSocket(directory: FileHandle, path: string): { ino: number } | { error: number } {
+    try {
+      return this.call("connectSocket", [directory, path]);
+    } catch (error) {
+      return { error: errno(error) };
+    }
   }
   link(from: ResolvedPath, to: ResolvedPath): number {
     try {

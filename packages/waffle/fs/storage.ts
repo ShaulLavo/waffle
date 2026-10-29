@@ -22,7 +22,7 @@ interface PersistedMetadata {
   data?: string;
 }
 export type PersistedNode = PersistedMetadata &
-  ({ kind: "file" | "dir"; target?: never } | { kind: "symlink"; target: string });
+  ({ kind: "file" | "dir" | "socket"; target?: never } | { kind: "symlink"; target: string });
 
 export interface CheckpointPublication {
   readonly kind: "settled-publication-v1";
@@ -152,6 +152,14 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
         invalid();
       names.add(name);
     }
+  } else if (node.kind === "socket") {
+    if (
+      node.target !== undefined ||
+      node.children !== undefined ||
+      node.data !== undefined ||
+      node.size !== 0
+    )
+      invalid();
   } else if (node.kind === "symlink") {
     validateSymlink(node);
   } else invalid();

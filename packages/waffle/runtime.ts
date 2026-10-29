@@ -53,7 +53,7 @@ export interface RuntimeConsumer {
 }
 
 /** Filesystem authority is borrowed. Only the page runtime can close its service. */
-export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose">;
+export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose" | "attachSocketScope">;
 export type RuntimeSupervisor = Omit<
   ProcessSupervisor,
   "dispose" | "registerOwnedJobCleanup" | "onJobRetirement" | "jobRetired" | "retireFencedProcesses"
@@ -126,6 +126,7 @@ type CapabilityKind = "method" | "async" | "readonly" | "callback";
 // Positive, exhaustive projections: a new public owner member requires an explicit capability
 // decision here. TypeScript-private owner fields and future implementation details never leak.
 const filesystemCapabilities = {
+  directoryHandle: "async",
   createIdentity: "method",
   fork: "method",
   connect: "method",

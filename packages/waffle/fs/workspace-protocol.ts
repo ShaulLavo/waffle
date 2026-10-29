@@ -111,7 +111,7 @@ function cut(value: unknown): NamespaceCut {
   };
 }
 export function nodeMetadata(value: Record<string, unknown>): NodeMetadata {
-  if (value.kind === "file" || value.kind === "directory") {
+  if (value.kind === "file" || value.kind === "directory" || value.kind === "socket") {
     if (value.target !== undefined) throw new FilesystemError(29);
     return { kind: value.kind };
   }

@@ -150,24 +150,32 @@ export class PersistentBackend extends MemoryBackend {
               mode: entry.mode ?? 0o700,
               children: new Map(),
             }
-          : entry.kind === "symlink"
+          : entry.kind === "socket"
             ? {
-                kind: "symlink",
+                kind: "socket",
                 ino: entry.ino,
                 identity: entry.identity && restoreIdentity(entry.identity),
                 mtime: entry.mtime,
                 mode: entry.mode ?? 0o600,
-                target: entry.target,
               }
-            : {
-                kind: "file",
-                ino: entry.ino,
-                identity: entry.identity && restoreIdentity(entry.identity),
-                mtime: entry.mtime,
-                mode: entry.mode ?? 0o600,
-                size: entry.size,
-                data: new Uint8Array(),
-              },
+            : entry.kind === "symlink"
+              ? {
+                  kind: "symlink",
+                  ino: entry.ino,
+                  identity: entry.identity && restoreIdentity(entry.identity),
+                  mtime: entry.mtime,
+                  mode: entry.mode ?? 0o600,
+                  target: entry.target,
+                }
+              : {
+                  kind: "file",
+                  ino: entry.ino,
+                  identity: entry.identity && restoreIdentity(entry.identity),
+                  mtime: entry.mtime,
+                  mode: entry.mode ?? 0o600,
+                  size: entry.size,
+                  data: new Uint8Array(),
+                },
       );
     for (const entry of index.nodes)
       if (entry.kind === "dir") {
@@ -810,25 +818,34 @@ export class PersistentBackend extends MemoryBackend {
             size: 0,
             children: Array.from(node.children, ([name, child]) => [name, child.ino]),
           }
-        : node.kind === "symlink"
+        : node.kind === "socket"
           ? {
               ino: node.ino,
               identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-              kind: "symlink",
+              kind: "socket",
               mtime: node.mtime,
               mode: node.mode,
-              size: new TextEncoder().encode(node.target).length,
-              target: node.target,
+              size: 0,
             }
-          : {
-              ino: node.ino,
-              identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-              kind: "file",
-              mtime: node.mtime,
-              mode: node.mode,
-              size: node.size ?? node.data.length,
-              data: this.keys.get(node.ino),
-            },
+          : node.kind === "symlink"
+            ? {
+                ino: node.ino,
+                identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+                kind: "symlink",
+                mtime: node.mtime,
+                mode: node.mode,
+                size: new TextEncoder().encode(node.target).length,
+                target: node.target,
+              }
+            : {
+                ino: node.ino,
+                identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+                kind: "file",
+                mtime: node.mtime,
+                mode: node.mode,
+                size: node.size ?? node.data.length,
+                data: this.keys.get(node.ino),
+              },
     );
     this.dirty.clear();
     const removes = Array.from(this.removed);

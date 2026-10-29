@@ -127,7 +127,7 @@ export function filesystemOwnerPlan(publication: PublicationConfiguration) {
     bytes:
       MAX_CONNECTION_OWNERS * 4 +
       CAPABILITY_LENGTH * 4 +
-      16 +
+      20 +
       arena.bytes +
       REQUEST_BUDGET_BYTES +
       REQUEST_CONTROL_BYTES,
@@ -189,7 +189,7 @@ export function createFilesystemIdentity(
     shared,
     segments,
     capabilities,
-    sections: allocate(4),
+    sections: allocate(8),
     owner,
     maxBytes,
     ownerStates,
@@ -245,6 +245,73 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
       reservation.sourceKey + 2,
       1,
     );
+}
+export function reserveIdentityCapability(
+  source: FilesystemIdentity,
+  handle: number,
+  target: FilesystemIdentity,
+): FilesystemReservation {
+  const section = new FilesystemSection(source);
+  section.enter();
+  try {
+    return reserveCapability(source, handle, target);
+  } finally {
+    section.exit();
+  }
+}
+function reserveCapability(
+  source: FilesystemIdentity,
+  handle: number,
+  target: FilesystemIdentity,
+): FilesystemReservation {
+  const entries = new Int32Array(source.capabilities, 0, CAPABILITY_LENGTH);
+  const destination = new Int32Array(target.capabilities, 0, CAPABILITY_LENGTH);
+  let sourceKey = CAPABILITY_HEADER;
+  while (
+    sourceKey < entries.length &&
+    (Atomics.load(entries, sourceKey) !== handle || Atomics.load(entries, sourceKey + 1) < 0)
+  )
+    sourceKey += CAPABILITY_WORDS;
+  if (sourceKey === entries.length) throw new FilesystemError(76);
+  Atomics.add(entries, sourceKey + 2, 1);
+  try {
+    if (Atomics.load(entries, sourceKey) !== handle || Atomics.load(entries, sourceKey + 1) < 0)
+      throw new FilesystemError(76);
+    let targetKey = CAPABILITY_HEADER;
+    while (targetKey < destination.length && Atomics.load(destination, targetKey + 1) >= 0)
+      targetKey += CAPABILITY_WORDS;
+    if (targetKey === destination.length) throw new FilesystemError(51);
+    const reservation = {
+      handle,
+      source: source.capabilities,
+      sourceKey,
+      target: target.capabilities,
+      targetKey,
+      targetOwner: target.owner,
+      state: new SharedArrayBuffer(8),
+    };
+    Atomics.store(destination, targetKey, handle);
+    Atomics.store(destination, targetKey + 2, 0);
+    Atomics.store(destination, targetKey + 1, 1);
+    target.reservations.push(reservation);
+    return reservation;
+  } catch (error) {
+    Atomics.sub(entries, sourceKey + 2, 1);
+    throw error;
+  }
+}
+export function sameFilesystemIdentity(
+  expected: FilesystemIdentity,
+  incoming: FilesystemIdentity,
+): boolean {
+  if (expected.owner !== incoming.owner || incoming.sections.byteLength !== 8) return false;
+  const own = new Int32Array(expected.sections),
+    other = new Int32Array(incoming.sections);
+  const previous = Atomics.load(own, 1);
+  Atomics.store(own, 1, previous ^ -1);
+  const same = Atomics.load(other, 1) === (previous ^ -1);
+  Atomics.store(own, 1, previous);
+  return same;
 }
 export function connectFilesystemIdentity(
   identity: FilesystemIdentity,

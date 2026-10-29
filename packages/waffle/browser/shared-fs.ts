@@ -19,6 +19,7 @@ import {
   resolveWriteFileMode,
   createFilesystemConnection,
   createFilesystemIdentity,
+  createProcessFilesystemIdentity,
   connectFilesystemIdentity,
   revokeFilesystemService,
   revokeFilesystem,
@@ -42,6 +43,10 @@ import {
 export { getVfsDescriptor, VfsError } from "../fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "../fs/vfs.js";
 
+export interface DirectoryHandleLease {
+  readonly handle: import("../core/filesystem.js").FileHandle;
+  release(): void;
+}
 export type SharedFilesystemStatus = "opening" | "waiting" | "ready" | "failed" | "disposed";
 export interface SharedFilesystemState {
   readonly status: SharedFilesystemStatus;
@@ -63,14 +68,14 @@ export type SharedFilesystemOptions = VfsSelection & {
 };
 
 export type ResolvedEntry = { readonly path: string } & (
-  | { readonly kind: "file" | "dir" }
+  | { readonly kind: "file" | "dir" | "socket" }
   | { readonly kind: "symlink"; readonly target: string }
 );
 interface EntryStat {
   ino: number;
   mtime: number;
 }
-type LeafEntry = EntryStat & ({ kind: "file" } | { kind: "symlink"; target: string });
+type LeafEntry = EntryStat & ({ kind: "file" | "socket" } | { kind: "symlink"; target: string });
 export interface RemoveCondition {
   /** Remove only a regular file whose bytes equal these. */
   readonly ifContent: Uint8Array;
@@ -113,6 +118,7 @@ export class SharedFilesystem {
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
+  private socketAttachments = new Set<(error: Error) => void>();
   private fatal: Error | undefined;
   private _state: SharedFilesystemState = Object.freeze({ status: "opening" });
   private startupComplete = false;
@@ -249,6 +255,7 @@ export class SharedFilesystem {
     }
   }
   private fail(error: Error): void {
+    for (const cancel of this.socketAttachments) cancel(error);
     if (this.stopped) return;
     if (this.disposal && this.joinedReady()) {
       this.finishDisposal?.(error);
@@ -286,6 +293,88 @@ export class SharedFilesystem {
   private assertLive(): void {
     if (this.fatal) throw this.fatal;
     if (this.disposal && this.joinedReady()) throw new FilesystemError(11);
+  }
+  async directoryHandle(path: string): Promise<DirectoryHandleLease> {
+    this.assertLive();
+    const root = await this.request("preopen", ["/"]);
+    const resolved = await this.request("resolve", [root, path.replace(/^\/+/, "") || ".", true]);
+    if (typeof resolved === "number") throw new FilesystemError(resolved);
+    if (resolved.node === undefined) throw new FilesystemError(44);
+    this.client.retain(resolved.node);
+    try {
+      const stat = await this.request("stat", [resolved.node]);
+      if (stat.kind !== "directory") throw new FilesystemError(54);
+    } catch (error) {
+      this.client.release(resolved.node);
+      throw error;
+    }
+    let retained = true;
+    return {
+      handle: resolved.node,
+      release: () => {
+        if (!retained) return;
+        retained = false;
+        if (!this.clientStopped) this.client.release(resolved.node);
+      },
+    };
+  }
+  async attachSocketScope(
+    guest: FilesystemIdentity,
+    directory: number,
+  ): Promise<{ client: FilesystemClient; root: number; rootIno: number }> {
+    this.assertLive();
+    const identity = createProcessFilesystemIdentity(guest);
+    delete identity.residentPublication;
+    let pair;
+    try {
+      pair = connectFilesystemIdentity(identity, this.requestPool);
+    } catch {
+      throw new FilesystemError(76);
+    }
+    const client = new FilesystemClient(pair.client);
+    const channel = new MessageChannel();
+    try {
+      const attached = await this.socketAttachment(channel.port1, () =>
+        this.worker.postMessage(
+          { connect: pair.server, socketScope: { guest, directory }, reply: channel.port2 },
+          [pair.server.port, channel.port2],
+        ),
+      );
+      client.adopt(attached.reservation);
+      return { client, root: attached.root, rootIno: attached.rootIno };
+    } catch (error) {
+      client.dispose();
+      pair.server.port.close();
+      channel.port2.close();
+      throw error;
+    }
+  }
+  private socketAttachment(
+    port: MessagePort,
+    send: () => void,
+  ): Promise<{
+    root: number;
+    rootIno: number;
+    reservation: import("../fs/protocol.js").FilesystemReservation;
+  }> {
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error) => {
+        port.close();
+        this.socketAttachments.delete(finish);
+        if (error) reject(error);
+      };
+      this.socketAttachments.add(finish);
+      port.onmessage = ({ data }) => {
+        finish();
+        if (data.error) reject(new FilesystemError(data.error));
+        else resolve(data.value);
+      };
+      try {
+        send();
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
   }
   createIdentity(): FilesystemIdentity {
     this.assertLive();
@@ -462,6 +551,7 @@ export class SharedFilesystem {
   /** Revoke synchronously. Ready joined storage retains its original owner until the
    * service ACK and root section fence. Startup cancellation still awaits its abort ACK. */
   dispose(): Promise<void> {
+    for (const cancel of this.socketAttachments) cancel(new FilesystemError(11));
     if (this.disposal) return this.disposal;
     if (this.joinedReady() && !this.stopped) return this.disposeReady(this.fatal);
     let finish!: (error?: Error) => void;
