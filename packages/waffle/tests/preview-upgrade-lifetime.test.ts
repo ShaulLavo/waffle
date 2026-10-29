@@ -16,7 +16,9 @@ async function fixture(mode: TransportMode) {
   const state = { connects: 0, closes: 0, writes: 0 };
   const router = new PreviewRouter({ mode: "root", originForPort: () => origin });
   router.register(3000, {
-    request() { throw new Error("unexpected HTTP path"); },
+    request() {
+      throw new Error("unexpected HTTP path");
+    },
     connect(_port, output) {
       state.connects++;
       if (mode === "connect-throw") throw connectError;
@@ -24,7 +26,9 @@ async function fixture(mode: TransportMode) {
         write() {
           state.writes++;
           if (mode !== "sync") throw writeError;
-          void output.data(encoder.encode(state.writes === 1 ? "head-response" : "duplex-response"));
+          void output.data(
+            encoder.encode(state.writes === 1 ? "head-response" : "duplex-response"),
+          );
         },
         close() {
           state.closes++;
@@ -37,7 +41,13 @@ async function fixture(mode: TransportMode) {
 }
 
 function exchange(messages: PreviewHostOutput[]): PreviewHostExchange {
-  return { onmessage: null, close() {}, postMessage(message) { messages.push(message); } };
+  return {
+    onmessage: null,
+    close() {},
+    postMessage(message) {
+      messages.push(message);
+    },
+  };
 }
 
 for (const mode of ["write-throw", "write-and-close-throw"] satisfies TransportMode[]) {
@@ -46,7 +56,9 @@ for (const mode of ["write-throw", "write-and-close-throw"] satisfies TransportM
     try {
       expect(() => f.host.connect(f.host.authorization, request, sink)).toThrow(writeError);
       expect(f.state).toEqual({ connects: 1, closes: 1, writes: 1 });
-    } finally { f.host.close(); }
+    } finally {
+      f.host.close();
+    }
     expect(f.state.closes).toBe(1);
   });
 
@@ -54,10 +66,15 @@ for (const mode of ["write-throw", "write-and-close-throw"] satisfies TransportM
     const f = await fixture(mode);
     const messages: PreviewHostOutput[] = [];
     try {
-      await f.host.dispatch({ type: "socket", authorization: f.host.authorization, ...request }, exchange(messages));
+      await f.host.dispatch(
+        { type: "socket", authorization: f.host.authorization, ...request },
+        exchange(messages),
+      );
       expect(messages).toEqual([{ type: "error", message: writeError.message }]);
       expect(f.state).toEqual({ connects: 1, closes: 1, writes: 1 });
-    } finally { f.host.close(); }
+    } finally {
+      f.host.close();
+    }
     expect(f.state.closes).toBe(1);
   });
 }
@@ -66,10 +83,15 @@ test("synchronous connection failure emits its error without acceptance", async 
   const f = await fixture("connect-throw");
   const messages: PreviewHostOutput[] = [];
   try {
-    await f.host.dispatch({ type: "socket", authorization: f.host.authorization, ...request }, exchange(messages));
+    await f.host.dispatch(
+      { type: "socket", authorization: f.host.authorization, ...request },
+      exchange(messages),
+    );
     expect(messages).toEqual([{ type: "error", message: connectError.message }]);
     expect(f.state).toEqual({ connects: 1, closes: 0, writes: 0 });
-  } finally { f.host.close(); }
+  } finally {
+    f.host.close();
+  }
 });
 
 for (const trigger of ["accepted", "head-response"]) {
@@ -88,9 +110,14 @@ for (const trigger of ["accepted", "head-response"]) {
       },
     };
     try {
-      await f.host.dispatch({ type: "socket", authorization: f.host.authorization, ...request }, wire);
+      await f.host.dispatch(
+        { type: "socket", authorization: f.host.authorization, ...request },
+        wire,
+      );
       expect(messages).toEqual(["accepted", "head-response", "duplex-response", "end"]);
       expect(f.state).toEqual({ connects: 1, closes: 1, writes: 2 });
-    } finally { f.host.close(); }
+    } finally {
+      f.host.close();
+    }
   });
 }

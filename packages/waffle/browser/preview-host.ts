@@ -189,6 +189,21 @@ function responseHead(head: ResponseHead): ResponseHead {
   return { status: head.status, statusText: head.statusText, headers };
 }
 
+function writeUpgradeHead(
+  connection: PreviewConnection | null,
+  head: Uint8Array,
+): PreviewConnection | null {
+  try {
+    connection?.write(head);
+    return connection;
+  } catch (error) {
+    try {
+      connection?.close();
+    } catch {}
+    throw error;
+  }
+}
+
 /** The router calls this lazily; it opens only its existing virtual network connections. */
 export function createPreviewHostRelay(
   server: Pick<PreviewServer, "connect">,
@@ -265,9 +280,7 @@ export function createPreviewHostRelay(
       { method: request.method, target: url.pathname + url.search, headers },
       `localhost:${authorization.port}`,
     );
-    const connection = open(input, request.url, sink);
-    connection?.write(head);
-    return connection;
+    return writeUpgradeHead(open(input, request.url, sink), head);
   }
 
   async function fetchResponse(input: unknown, request: Request): Promise<Response> {
@@ -530,7 +543,7 @@ function dispatchSocket(
       lifetime.removeEventListener("abort", abort);
       send(message);
       connection?.close();
-      resolve();
+      if (ready) resolve();
     };
     const abort = () => finish({ type: "error", message: "Preview host relay closed" });
     exchange.onmessage = (message) => {
@@ -550,10 +563,13 @@ function dispatchSocket(
         error: (message) => finish({ type: "error", message }),
       });
       if (!connection) throw new Error("No preview server is listening");
-      ready = true;
       exchange.postMessage({ type: "accepted" });
-      for (const message of pending) send(message);
+      for (const message of pending)
+        exchange.postMessage(message, message.type === "data" ? [message.chunk.buffer] : []);
+      pending.length = 0;
+      ready = true;
       if (ended) connection.close();
+      if (ended) resolve();
     } catch (error) {
       fail(error);
     }
