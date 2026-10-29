@@ -69,12 +69,22 @@ try {
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "file-link"]));
   oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "missing"]));
   oracle("rg", ["-F", "needle", "a.txt"]);
+  oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "dir-link"]));
+  oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "./sub/"]));
+  oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "./sub//"]));
+  oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "././sub"]));
+  oracle("rg", rg.concat(["-c", "-H", "-F", "needle", "sub", "sub"]));
   oracle("grep", ["-r", "-a", "-c", "-F", "needle", "."]);
   oracle("grep", ["-r", "-a", "-l", "-F", "needle", "."]);
   oracle("grep", ["-r", "-a", "-c", "-F", "no_match", "."]);
   oracle("grep", ["-r", "-a", "-n", "-H", "-F", "needle", "file-link"]);
   oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "missing"]);
   oracle("grep", ["-F", "needle", "a.txt"]);
+  oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "dir-link"]);
+  oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "./sub/"]);
+  oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "./sub//"]);
+  oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "././sub"]);
+  oracle("grep", ["-r", "-a", "-c", "-H", "-F", "needle", "sub", "sub"]);
   await runIsolatedPages({
     label: "search-program-browser",
     scratchRoot: resolve(process.env.SEARCH_SCRATCH_ROOT ?? "/work/tmp"),

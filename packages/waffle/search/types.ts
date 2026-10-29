@@ -17,11 +17,6 @@ export type OutputPlan =
   | { readonly kind: "count"; readonly withFilename: boolean; readonly zeroCounts: boolean }
   | { readonly kind: "files-with-matches" };
 
-export interface SearchWorkers {
-  readonly search: string;
-  readonly shard: string;
-}
-
 export type MatcherAdmission =
   | { readonly kind: "supported"; readonly matcher: CompiledMatcher }
   | { readonly kind: "fallback"; readonly reason: string };
