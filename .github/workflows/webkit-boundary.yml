@@ -1,0 +1,75 @@
+name: One Ubuntu WebKit storage-lock boundary capture
+
+on:
+  push:
+    branches: [wave/1029-webkit-ubuntu-capture]
+    paths:
+      - .github/workflows/webkit-boundary.yml
+      - tools/webkit-boundary/**
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    if: github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage diagnostic tooling and verify canonical image
+        shell: bash
+        run: |
+          test "$ImageOS" = ubuntu24
+          test "$ImageVersion" = 20261025.353.1
+          mkdir "$RUNNER_TEMP/webkit-boundary-tools"
+          cp tools/webkit-boundary/*.py "$RUNNER_TEMP/webkit-boundary-tools/"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/webkit-boundary-tools/tooling-head.txt"
+      - uses: actions/checkout@v4
+        with:
+          ref: ac9f79bcd247a0a528120879169d72f2cb884493
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - name: Restore exact browser cache used by the failed job
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: Linux-playwright-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Use the same Ubuntu HTTPS archives and Playwright dependencies
+        shell: bash
+        run: |
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+          test -s /etc/apt/apt-mirrors.txt
+          bunx playwright install --with-deps chromium firefox webkit
+          command -v strace || sudo apt-get install -y strace
+      - name: Record exact tool and source identities
+        shell: bash
+        run: |
+          test "$(bun --version)" = 1.4.4
+          test "$(git rev-parse HEAD)" = ac9f79bcd247a0a528120879169d72f2cb884493
+          bun -e 'const p=require("./packages/waffle/node_modules/playwright/package.json");const b=require("./packages/waffle/node_modules/playwright-core/browsers.json");if(p.version!=="1.64.1"||b.browsers.find(x=>x.name==="webkit").revision!=="2370")throw Error("Unexpected browser inputs")'
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,platform,subprocess
+          root=pathlib.Path('.')
+          names=['bun.lock','packages/waffle/tests/storage-lock-browser-runner.ts','packages/waffle/tests/storage-lock-browser.ts','packages/waffle/tests/storage-lock-recovery-worker.ts','packages/waffle/tests/fixtures/storage-lock-startup.ts','packages/waffle/scripts/browser-supervisor.ts','packages/waffle/node_modules/playwright-core/browsers.json']
+          value={'imageOS':os.environ['ImageOS'],'imageVersion':os.environ['ImageVersion'],'platform':platform.platform(),'source':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'toolingHead':(pathlib.Path(os.environ['RUNNER_TEMP'])/'webkit-boundary-tools/tooling-head.txt').read_text().strip(),'strace':subprocess.check_output(['strace','--version'],text=True),'hashes':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in names},'disk':subprocess.check_output(['df','-h',os.environ['RUNNER_TEMP']],text=True)}
+          (pathlib.Path(os.environ['RUNNER_TEMP'])/'webkit-boundary-tools/environment.json').write_text(json.dumps(value,indent=2)+'\n')
+          PY
+      - name: Capture the actual storage-lock WebKit suite once
+        run: python3 "$RUNNER_TEMP/webkit-boundary-tools/capture.py" "$RUNNER_TEMP/webkit-boundary-report" "$GITHUB_WORKSPACE"
+      - name: Retain bounded first-failure evidence or nonreproduction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webkit-boundary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/webkit-boundary-report
+            ${{ runner.temp }}/webkit-boundary-tools/environment.json
+            ${{ runner.temp }}/webkit-boundary-tools/tooling-head.txt
+          if-no-files-found: error
+          retention-days: 7
