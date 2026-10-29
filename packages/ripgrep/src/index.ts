@@ -18,7 +18,7 @@ export function fastRipgrep(
 ): ProgramPackage {
   const launch: ProgramLaunch = async (context, service, fallback) => {
     if ((context.request.env.PWD || "/") !== context.request.cwd) return fallback(context, service);
-    const { planRg } = await import("./plan.js");
+    const { planRg } = await import("./plan.ts");
     const admitted = planRg(context.request.argv.slice(1), context.request.env, options);
     if (admitted.kind === "fallback") return fallback(context, service);
     return service.launchWorker<SearchWorkerRequest>(context, {

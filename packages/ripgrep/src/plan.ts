@@ -27,7 +27,11 @@ class RgArguments {
   text = false;
   colorNever = false;
 
-  constructor(private readonly argv: readonly string[]) {}
+  private readonly argv: readonly string[];
+
+  constructor(argv: readonly string[]) {
+    this.argv = argv;
+  }
 
   parse(): string | null {
     while (this.index < this.argv.length) {
