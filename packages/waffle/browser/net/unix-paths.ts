@@ -18,12 +18,11 @@ const encoder = new TextEncoder();
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /** The socket-only filesystem session admitted for one helper's scope. */
-export interface SocketClient {
-  asyncCall(operation: string, args: unknown[]): Promise<any>;
-  dispose(): void;
-}
 export interface AttachedSocketScope {
-  readonly client: SocketClient;
+  readonly client: {
+    asyncCall(operation: string, args: unknown[]): Promise<any>;
+    dispose(): void;
+  };
   readonly root: FileHandle;
   readonly rootIno: number;
 }
@@ -86,7 +85,7 @@ interface Unbind {
  * its lease and its scope open until a later dispose retries it.
  */
 /** Runtime-wide cap on admitted path requests that have not finished. */
-export const PATH_PENDING = 128;
+const PATH_PENDING = 128;
 
 export class PathCleanup {
   private pending = 0;

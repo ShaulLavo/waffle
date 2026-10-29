@@ -1,16 +1,16 @@
 // WASI errno values carried in unix-* reply cells. No namespace, FS or loader dependencies.
-export const EACCES = 2;
+const EACCES = 2;
 export const EADDRINUSE = 3;
 export const EBADF = 8;
 export const ECANCELED = 11;
 export const ECONNREFUSED = 14;
 export const EEXIST = 20;
 export const EINVAL = 28;
-export const ELOOP = 32;
+const ELOOP = 32;
 export const ENAMETOOLONG = 37;
 export const ENOBUFS = 42;
 export const ENOENT = 44;
-export const ENOTDIR = 54;
+const ENOTDIR = 54;
 export const ENOTSUP = 58;
 export const ENOTCAPABLE = 76;
 

@@ -30,9 +30,9 @@ export interface PathListener {
   accept(socket: LoopbackSocket): void;
 }
 /** Runtime-wide caps for pathname sockets. Unaccepted connections count as pairs. */
-export const PATH_LISTENERS = 128;
-export const PATH_PAIRS = 128;
-export const PATH_BACKLOG = 64;
+const PATH_LISTENERS = 128;
+const PATH_PAIRS = 128;
+const PATH_BACKLOG = 64;
 const bindingKey = (key: SocketKey) => `${key.rootIno}:${key.ino}`;
 function status(value: number): number {
   switch (value) {
