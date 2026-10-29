@@ -384,9 +384,7 @@ test("a browser-only rerun downloads the reused producer's exact fixture artifac
   const artifact = { id: "12345", name: expand(record(upload.with).name) };
   context["github.run_attempt"] = "2";
 
-  const download = stepsFor("browser").find(
-    (step) => step.uses === "actions/download-artifact@v4",
-  );
+  const download = stepsFor("browser").find((step) => step.uses === "actions/download-artifact@v4");
   const inputs = record(download?.with);
   expect(artifact.name).toBe("memory-group-fixture-40899462745-1");
   expect(expand(inputs.name ?? inputs["artifact-ids"])).toBe(
@@ -413,9 +411,7 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
   );
   expect(guard?.if).toBeUndefined();
   expect(guard?.["continue-on-error"]).toBeUndefined();
-  const downloadIndex = steps.findIndex(
-    (step) => step.uses === "actions/download-artifact@v4",
-  );
+  const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v4");
   expect(guard).toBeDefined();
   expect(steps.indexOf(record(guard))).toBeLessThan(downloadIndex);
   for (const id of ["", "12345"]) {
