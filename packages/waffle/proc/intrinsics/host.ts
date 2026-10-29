@@ -212,6 +212,10 @@ export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer 
 
 const wasmMemoryBufferGetter = descriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
 const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLength")!.get!;
+/** The memory's current buffer through the captured native getter. */
+export function wasmMemoryBuffer(memory: WebAssembly.Memory): ArrayBuffer | SharedArrayBuffer {
+  return apply(wasmMemoryBufferGetter, memory, []);
+}
 /** Read the current buffer through captured natives, including after memory.grow. */
 export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
   const buffer: ArrayBuffer | SharedArrayBuffer = apply(wasmMemoryBufferGetter, memory, []);

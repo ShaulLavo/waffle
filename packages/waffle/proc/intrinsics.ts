@@ -52,6 +52,7 @@ export {
   SharedArrayBufferConstructor,
   createGrowableSharedArrayBuffer,
   sharedArrayBufferByteLength,
+  wasmMemoryBuffer,
   wasmMemoryByteLength,
   wasmModuleImports,
   PromiseConstructor,

@@ -66,6 +66,13 @@ import {
   setHas,
   setAdd,
   arrayAppend,
+  DataViewConstructor,
+  Uint8ArrayConstructor,
+  dataViewGetUint32,
+  dataViewSetUint32,
+  typedArraySet,
+  typedArraySubarray,
+  wasmMemoryBuffer,
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
@@ -167,6 +174,7 @@ export interface WorkerExecutionContext<
 /** Guest policy stays with the executor, without making its engine bindings, transports or
  * module cache part of the bootstrap. Optional hooks run only in the spawned worker. */
 export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
+  readonly kind?: "wasm";
   hostCallFd?: number;
   env?(request: R): Record<string, string>;
   outcome?: SharedArrayBuffer | OutcomeWord;
@@ -207,6 +215,33 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   instantiated?(context: WorkerExecutionContext<R>): void | Promise<void>;
   run(context: WorkerExecutionContext<R>, exited: number | null): number | Promise<number>;
 }
+
+/** A Waffle-authored program that runs in the process worker in place of request.module: the
+ * same admission, pid, descriptors, filesystem identity, signals and exit path, with no guest
+ * instance. Its I/O goes through preview1 fd_write on a private two-page memory. */
+export interface HostProgramContext<
+  R extends RuntimeWorkerRequest = RuntimeWorkerRequest,
+> extends WorkerBindingsContext<R> {
+  /** The process's working directory at admission. */
+  readonly cwd: string;
+  /** Writes every byte with preview1 fd semantics, blocking on pipe backpressure. Returns
+   * bytes.length or a negative WASI errno; EPIPE is the caller's to turn into SIGPIPE. */
+  write(fd: number, bytes: Uint8Array): number;
+  /** Resolves a path against cwd and the root preopen, following symlinks, and retains the
+   * node. The caller releases handle through fs.release. Returns a negative WASI errno. */
+  open(path: string): HostOpenFile | number;
+}
+export interface HostOpenFile {
+  readonly handle: number;
+  readonly kind: "file" | "directory";
+  readonly size: number;
+}
+type GuestOnlyHooks = Exclude<keyof WorkerExecutor, "kind" | "setup" | "run">;
+export type HostProgramExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> = {
+  readonly kind: "host";
+  setup?(context: WorkerSetupContext<R>): void;
+  run(context: HostProgramContext<R>): number | Promise<number>;
+} & { readonly [K in GuestOnlyHooks]?: never };
 
 export class RuntimeWorkerSignal extends ExecutionUnwind {
   constructor(readonly signal: number) {
@@ -414,7 +449,7 @@ function adoptStdio(descriptors: Wasi["descriptors"], discarded: Stream[]): void
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
-  executor: WorkerExecutor<R>,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
   const { postToHost, addListener, removeListener } = captureWorkerHost(host);
@@ -824,13 +859,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         }
       },
     };
-    let reservedFds: number[] | undefined;
-    if (req.runtimeProcess) {
-      reservedFds = [];
-      for (let index = 0; index < req.runtimeProcess.bindings.length; index++) {
-        reservedFds[index] = req.runtimeProcess.bindings[index]!.fd;
-      }
-    }
+    const reservedFds = bindingTargets(req.runtimeProcess);
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
       args: req.args,
@@ -1001,6 +1030,23 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
+    const enter = () => {
+      checkActive();
+      const committed = runtimeProcess
+        ? runtimeProcess.started()
+        : outcome
+          ? markStarted(outcome)
+          : true;
+      if (!committed) checkActive();
+      releaseStartupStderr?.();
+      started = true;
+    };
+    if (executor.kind === "host") {
+      // No realm error listeners: finish() reaps the identity, which only run() may allow
+      // after it has stopped its helpers. Errors outside run() stay worker failures.
+      finish({ code: await executor.run(hostProgramContext(bindingsContext, bindMemory, enter)) });
+      return;
+    }
     inherited = wasi.descriptors.inheritable();
     const instantiating = perfNow();
     const imports = wasi.imports(req.module);
@@ -1046,17 +1092,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     executor.initialize?.(executionContext);
     if (done) return;
     checkActive();
-    const exited = wasi.launch(instance, () => {
-      checkActive();
-      const committed = runtimeProcess
-        ? runtimeProcess.started()
-        : outcome
-          ? markStarted(outcome)
-          : true;
-      if (!committed) checkActive();
-      releaseStartupStderr?.();
-      started = true;
-    });
+    const exited = wasi.launch(instance, enter);
     if (addListener) reflectApply(addListener, host, ["error", onError]);
     if (addListener) reflectApply(addListener, host, ["unhandledrejection", onRejection]);
     const completion = executor.run(executionContext, exited);
@@ -1072,6 +1108,76 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       if (removeListener) reflectApply(removeListener, host, ["unhandledrejection", onRejection]);
     }
   }
+}
+
+/** Child descriptor numbers the process's bindings reserve before preopens are placed. */
+function bindingTargets(transport: WorkerProcessTransport | undefined): number[] | undefined {
+  if (!transport) return undefined;
+  const fds: number[] = [];
+  for (let index = 0; index < transport.bindings.length; index++)
+    fds[index] = transport.bindings[index]!.fd;
+  return fds;
+}
+
+// Iovec and nwritten in the first page, payload in the second.
+const HOST_PAYLOAD = 65536;
+const WASI_EIO = 29;
+const WASI_ENOENT = 44;
+const WASI_ENOTCAPABLE = 76;
+
+/** Binds the private memory and commits process entry; the caller runs the program next. */
+function hostProgramContext<R extends RuntimeWorkerRequest>(
+  context: WorkerBindingsContext<R>,
+  bindMemory: (memory: WebAssembly.Memory) => void,
+  enter: () => void,
+): HostProgramContext<R> {
+  const { wasi, fs, checkActive } = context;
+  const cwd = context.request.runtimeProcess?.cwd ?? "/";
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  bindMemory(memory);
+  enter();
+  const buffer = wasmMemoryBuffer(memory);
+  const view = new DataViewConstructor(buffer);
+  const payload = new Uint8ArrayConstructor(buffer, HOST_PAYLOAD, HOST_PAYLOAD);
+  const write = (fd: number, bytes: Uint8Array): number => {
+    const length = typedArrayLength(bytes);
+    for (let offset = 0; offset < length; ) {
+      checkActive();
+      const count = Math.min(HOST_PAYLOAD, length - offset);
+      typedArraySet(payload, typedArraySubarray(bytes, offset, offset + count));
+      dataViewSetUint32(view, 0, HOST_PAYLOAD, true);
+      dataViewSetUint32(view, 4, count, true);
+      const errno = wasi.fdWrite(fd, 0, 1, 8);
+      if (errno !== 0) return -errno;
+      const written = dataViewGetUint32(view, 8, true);
+      if (written === 0) return -WASI_EIO;
+      offset += written;
+    }
+    return length;
+  };
+  const open = (path: string): HostOpenFile | number => {
+    checkActive();
+    const root = wasi.descriptors.rootPreopen();
+    if (root?.resource.kind !== "directory") return -WASI_ENOTCAPABLE;
+    const absolute = path.startsWith("/") ? path : `${cwd}/${path}`;
+    const relative = absolute.replace(/^\/+/, "") || ".";
+    const resolved = fs.resolve(root.resource.handle, relative, true);
+    if (typeof resolved === "number") return -resolved;
+    if (resolved.node === undefined) return -WASI_ENOENT;
+    const handle = resolved.node;
+    fs.retain(handle);
+    try {
+      const stat = fs.stat(handle);
+      if (stat.kind === "file" || stat.kind === "directory")
+        return { handle, kind: stat.kind, size: stat.size };
+    } catch (error) {
+      fs.release(handle);
+      throw error;
+    }
+    fs.release(handle);
+    return -WASI_ENOTCAPABLE;
+  };
+  return { ...context, cwd, write, open };
 }
 
 /** Plain preview1 commands have no engine, native slots or module-cache policy. */

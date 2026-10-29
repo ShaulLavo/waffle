@@ -12,6 +12,7 @@ const runners = [
   "network",
   "publication",
   "publication-cross-tab",
+  "search-executor",
 ];
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";
