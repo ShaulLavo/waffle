@@ -7,7 +7,12 @@ import {
   atomicsWait,
   BigInt64ArrayConstructor,
   Int32ArrayConstructor,
+  dataViewSetUint32,
+  mapDelete,
+  mapGet,
+  mapSet,
   reflectApply,
+  sharedArrayBufferByteLength,
 } from "../proc/intrinsics.js";
 import { dylinkMemoryInfo } from "../link/metadata.js";
 import {
@@ -28,9 +33,15 @@ const NativeTable = WebAssembly.Table;
 const NativeGlobal = WebAssembly.Global;
 const NativeUint8Array = Uint8Array;
 const NativeDataView = DataView;
+const memoryBuffer = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
+const { ceil, max, min } = Math;
+const toNumber = Number;
+const asIntN = BigInt.asIntN;
 
+// group_grow serves sbrk from a member-owned lease, so most calls need no owner round trip.
+// Unused lease pages stay charged to the member until its physical stop.
 const LEASE_MIN = 16,
-  LEASE_MAX = 256;
+  LEASE_MAX = 64;
 
 export interface GroupMemberHooks {
   checkActive(): void;
@@ -72,8 +83,9 @@ export function createGroupMember(
     leaseSize = LEASE_MIN;
   let disposed = false;
 
-  const words = () => new Int32ArrayConstructor(memory.buffer);
-  const view = () => new NativeDataView(memory.buffer);
+  const buffer = (): SharedArrayBuffer => reflectApply(memoryBuffer, memory, []);
+  const bytes = () => sharedArrayBufferByteLength(buffer());
+  const words = () => new Int32ArrayConstructor(buffer());
   const call = (op: number, a = 0, b = 0, c = 0): number[] => {
     hooks.checkActive();
     if (disposed) return [-GroupErrno.BADF];
@@ -92,36 +104,49 @@ export function createGroupMember(
       atomicsLoad(reply, 4),
     ];
   };
-  const inBounds = (addr: number, size: number) =>
-    addr % size === 0 && addr + size <= memory.buffer.byteLength;
-  const write = (out: number, values: readonly number[]): boolean => {
-    if (!inBounds(out, 4) || out + values.length * 4 > memory.buffer.byteLength) return false;
-    const data = view();
-    for (let index = 0; index < values.length; index++)
-      data.setUint32(out + index * 4, values[index]! >>> 0, true);
+  const inBounds = (addr: number, size: number) => addr % size === 0 && addr + size <= bytes();
+  /** Writes values[from..from+count) as little-endian u32 at out. */
+  const write = (out: number, values: readonly number[], from: number, count: number): boolean => {
+    if (!inBounds(out, 4) || out + count * 4 > bytes()) return false;
+    const data = new NativeDataView(buffer());
+    for (let index = 0; index < count; index++)
+      dataViewSetUint32(data, out + index * 4, values[from + index]! >>> 0, true);
     return true;
   };
   const result = (values: number[], out: number, count: number): number => {
     if (values[0]! < 0) return values[0]!;
-    return write(out, values.slice(1, 1 + count)) ? 0 : -GroupErrno.INVAL;
+    return write(out, values, 1, count) ? 0 : -GroupErrno.INVAL;
   };
   const chunk = (pages: number): number => call(GroupOp.GROW, pages)[0]!;
-  const timeout = (ns: bigint): number => (ns < 0n ? Infinity : Number(ns) / 1e6);
+  const timeout = (ns: bigint): number => (ns < 0n ? Infinity : toNumber(ns) / 1e6);
   const status = (value: string): number => (value === "ok" ? 0 : value === "not-equal" ? 1 : 2);
 
   /** Sync waiters first, then watchers in registration order. */
-  const wakeWatchers = (addr: number, budget: number): number => {
-    const hits: { at: number; seq: number }[] = [];
+  const nextWatch = (addr: number, after: number): number => {
+    let found = -1,
+      lowest = Infinity;
     for (let slot = 0; slot < request.watches; slot++) {
       const at = WATCH_HEADER_WORDS + slot * WATCH_SLOT_WORDS;
       if ((atomicsLoad(table, at) & 1) === 0 || atomicsLoad(table, at + 1) !== addr) continue;
-      hits.push({ at, seq: atomicsLoad(table, at + 2) });
+      const seq = atomicsLoad(table, at + 2);
+      if (seq <= after || seq >= lowest) continue;
+      found = at;
+      lowest = seq;
     }
-    hits.sort((left, right) => left.seq - right.seq);
-    const woken = hits.slice(0, budget);
-    for (const hit of woken) atomicsAdd(table, hit.at + 3, 1);
-    if (woken.length) hooks.wake?.();
-    return woken.length;
+    return found;
+  };
+  const wakeWatchers = (addr: number, budget: number): number => {
+    let woken = 0,
+      after = -1;
+    while (woken < budget) {
+      const at = nextWatch(addr, after);
+      if (at < 0) break;
+      after = atomicsLoad(table, at + 2);
+      atomicsAdd(table, at + 3, 1);
+      woken++;
+    }
+    if (woken) hooks.wake?.();
+    return woken;
   };
 
   const imports = {
@@ -129,7 +154,7 @@ export function createGroupMember(
       pages >>>= 0;
       if (pages === 0) return -GroupErrno.INVAL;
       if (pages > lease.pages) {
-        const wanted = Math.max(pages, leaseSize);
+        const wanted = max(pages, leaseSize);
         let page = chunk(wanted);
         let granted = wanted;
         if (page < 0 && wanted > pages) {
@@ -138,7 +163,7 @@ export function createGroupMember(
         }
         if (page < 0) return page;
         lease = { page, pages: granted };
-        leaseSize = Math.min(LEASE_MAX, leaseSize * 2);
+        leaseSize = min(LEASE_MAX, leaseSize * 2);
       }
       const page = lease.page;
       lease = { page: page + pages, pages: lease.pages - pages };
@@ -176,9 +201,9 @@ export function createGroupMember(
       hooks.checkActive();
       addr >>>= 0;
       if (!inBounds(addr, 8)) return -GroupErrno.INVAL;
-      const cells = new BigInt64ArrayConstructor(memory.buffer);
+      const cells = new BigInt64ArrayConstructor(buffer());
       return status(
-        atomicsWait(cells as never, addr / 8, BigInt.asIntN(64, expected) as never, timeout(ns)),
+        atomicsWait(cells as never, addr / 8, asIntN(64, expected) as never, timeout(ns)),
       );
     },
     futex_wake(addr: number, count: number): number {
@@ -203,17 +228,17 @@ export function createGroupMember(
         const generation = atomicsLoad(table, at + 3);
         atomicsStore(table, at, claim | 1);
         const id = slot + 1;
-        watches.set(id, { slot, addr, expected: expected | 0, generation });
-        write(out >>> 0, [id]);
+        mapSet(watches, id, { slot, addr, expected: expected | 0, generation });
+        write(out >>> 0, [id], 0, 1);
         return 0;
       }
       return -GroupErrno.AGAIN;
     },
     futex_unwatch(id: number): number {
       hooks.checkActive();
-      const watch = watches.get(id >>> 0);
+      const watch = mapGet(watches, id >>> 0);
       if (!watch) return -GroupErrno.BADF;
-      watches.delete(id >>> 0);
+      mapDelete(watches, id >>> 0);
       const at = WATCH_HEADER_WORDS + watch.slot * WATCH_SLOT_WORDS;
       atomicsStore(table, at + 1, 0);
       atomicsStore(table, at, 0);
@@ -243,15 +268,15 @@ export function createGroupMember(
       throw new TypeError("memory group image requires one dylink.0 section");
     const info = dylinkMemoryInfo(new NativeUint8Array(sections[0]!), "member");
     if (info.memoryAlignment > 16) throw new TypeError("member data alignment exceeds a page");
-    const dataPages = Math.max(1, Math.ceil(info.memorySize / PAGE_BYTES));
-    const stackPages = Math.ceil(request.stackBytes / PAGE_BYTES);
+    const dataPages = max(1, ceil(info.memorySize / PAGE_BYTES));
+    const stackPages = ceil(request.stackBytes / PAGE_BYTES);
     const data = chunk(dataPages);
     if (data < 0) throw new RangeError("memory group could not carve member data");
     const stack = chunk(stackPages);
     if (stack < 0) throw new RangeError("memory group could not carve member stack");
     // Slot 0 stays null so a zero function pointer never calls into the image.
     const alignment = 2 ** info.tableAlignment;
-    const tableBase = Math.ceil(1 / alignment) * alignment;
+    const tableBase = ceil(1 / alignment) * alignment;
     const env: WebAssembly.ModuleImports = {
       memory,
       __indirect_function_table: new NativeTable({
@@ -275,7 +300,7 @@ export function createGroupMember(
   }
 
   function watchReady(id: number): boolean | undefined {
-    const watch = watches.get(id);
+    const watch = mapGet(watches, id);
     if (!watch) return undefined;
     const at = WATCH_HEADER_WORDS + watch.slot * WATCH_SLOT_WORDS;
     if (atomicsLoad(table, at + 3) !== watch.generation) return true;

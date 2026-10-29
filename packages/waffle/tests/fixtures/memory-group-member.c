@@ -16,6 +16,9 @@ IMPORT("runtime_shm", "shm_unpin") int32_t shm_unpin(uint32_t pin);
 IMPORT("runtime_shm", "futex_wait32") int32_t futex_wait32(uint32_t addr, int32_t expected, int64_t ns);
 IMPORT("runtime_shm", "futex_wake") int32_t futex_wake(uint32_t addr, uint32_t count);
 IMPORT("runtime_shm", "parallelism") int32_t parallelism(void);
+IMPORT("runtime_shm", "futex_watch") int32_t futex_watch(uint32_t addr, int32_t expected, uint32_t *out);
+IMPORT("runtime_shm", "futex_unwatch") int32_t futex_unwatch(uint32_t id);
+IMPORT("runtime_proc", "poll") int32_t process_poll(uint32_t subscriptions, uint32_t count, int32_t timeout, uint32_t out);
 IMPORT("runtime_proc", "getpid") int32_t getpid(void);
 IMPORT("wasi_snapshot_preview1", "proc_exit") _Noreturn void proc_exit(int32_t code);
 IMPORT("test", "ready") void ready(uint32_t command, int32_t pid);
@@ -121,6 +124,16 @@ static void run(void) {
     case 14: r[0] = futex_wake((uint32_t)a[0], (uint32_t)a[1]); break;
     case 15: proc_exit(a[0]);
     case 16: r[0] = group_grow((uint32_t)a[0]); break;
+    case 17: r[0] = futex_watch((uint32_t)a[0], a[1], out); r[1] = (int32_t)out[0]; break;
+    case 18: r[0] = futex_unwatch((uint32_t)a[0]); break;
+    case 19: {  // POLL(watch id, timeout ms): one FUTEX (kind 7) subscription
+      static uint64_t subscription[2], event[2];
+      subscription[0] = 7u | ((uint64_t)(uint32_t)a[0] << 32);
+      subscription[1] = 0x5157;
+      r[0] = process_poll((uint32_t)(uintptr_t)subscription, 1, a[1], (uint32_t)(uintptr_t)event);
+      r[1] = (int32_t)event[0];
+      break;
+    }
     default: r[0] = -28;
   }
 }
