@@ -8,7 +8,17 @@ import {
 import { WorkerPipeHost } from "../proc/worker-pipes.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
 import { SLOT_WORDS, SharedFilesystemState } from "../fs/shared.js";
-import { CONTROL_CHUNKS, CONTROL_HEARTBEAT, CONTROL_LIVE_SHARDS } from "../search/shards.js";
+import {
+  CONTROL_CHUNKS,
+  CONTROL_FENCED,
+  CONTROL_HEARTBEAT,
+  CONTROL_LIVE_SHARDS,
+  CONTROL_WORDS,
+  ShardPool,
+  ShardPoolError,
+  processFence,
+  type ShardFailureReason,
+} from "../search/shards.js";
 import type { SearchDiagnosticsMessage, SearchWorkerRequest } from "../search/search-worker.js";
 
 // Shared-slot field and global-lock cell of fs/shared.ts, read only to audit lock words.
@@ -39,6 +49,7 @@ function admittedModule(): Uint8Array {
 interface Termination {
   readonly sections: number;
   readonly liveShards: number;
+  readonly fenced: boolean;
   readonly revocation: number;
   readonly fileLocks: number;
   readonly globalLock: boolean;
@@ -51,6 +62,8 @@ interface Launch {
   /** Audited when the exit acknowledgement arrives, before the page reaps the identity. */
   acknowledged?: Termination;
   terminated?: Termination;
+  /** How long helper activity continued after the process Worker was stopped. */
+  quietMs?: number;
 }
 
 function audit(identity: FilesystemIdentity, control: Int32Array): Termination {
@@ -61,6 +74,7 @@ function audit(identity: FilesystemIdentity, control: Int32Array): Termination {
   return {
     sections: Atomics.load(new Int32Array(identity.sections), 0),
     liveShards: Atomics.load(control, CONTROL_LIVE_SHARDS),
+    fenced: Atomics.load(control, CONTROL_FENCED) === 1,
     revocation: Atomics.load(new Int32Array(identity.revocations[0]!), 0),
     fileLocks,
     globalLock: Atomics.load(state.cells, GLOBAL_LOCK) === identity.owner,
@@ -111,6 +125,7 @@ class Harness {
   readonly descriptors = new DescriptorTable();
   private readonly notices: WorkerProcessMessage[] = [];
   shards: number | null = 4;
+  shardWorker = "/shard-worker.js";
   private supervisor!: RuntimeSupervisor;
   private client!: WorkerProcessClient;
   pipes!: WorkerPipeHost;
@@ -141,7 +156,7 @@ class Harness {
           args: context.request.argv,
           env: context.request.env,
           interruptible: context.interruptible,
-          search: { shardWorker: "/shard-worker.js", shards: this.shards, diagnostics: true },
+          search: { shardWorker: this.shardWorker, shards: this.shards, diagnostics: true },
         },
         onMessage: (message) => {
           const data = message as SearchDiagnosticsMessage;
@@ -286,16 +301,34 @@ async function assertStopped(launch: Launch, label: string): Promise<void> {
   // A process that acknowledged exit reaped its own identity in fs.dispose(); every shard must
   // have acknowledged stop before that. Without an acknowledgement the page fence stopped it.
   const ack = launch.acknowledged;
-  check(!ack || ack.liveShards === 0, `${label}: exit with ${ack?.liveShards} live shards`);
-  const control = launch.control!;
-  const beat = Atomics.load(control, CONTROL_HEARTBEAT);
-  const chunks = Atomics.load(control, CONTROL_CHUNKS);
-  await pause(250);
   check(
-    Atomics.load(control, CONTROL_HEARTBEAT) === beat,
-    `${label}: a shard outlived its process`,
+    !ack || ack.liveShards === 0 || ack.fenced,
+    `${label}: exit with ${ack?.liveShards} live shards and no fence`,
   );
-  check(Atomics.load(control, CONTROL_CHUNKS) === chunks, `${label}: a shard read after stop`);
+  const control = launch.control!;
+  const sections = new Int32Array(launch.filesystem.sections);
+  launch.quietMs = await quiet(
+    () => Atomics.load(control, CONTROL_HEARTBEAT) + Atomics.load(control, CONTROL_CHUNKS),
+    () => check(Atomics.load(sections, 0) === 0, `${label}: a helper entered a section after stop`),
+    label,
+  );
+}
+
+/** Browsers stop nested workers asynchronously after terminate() returns. Safety was already
+ * proven at the termination instant; this waits for helper activity to cease and checks that
+ * none of it reached a filesystem section. Returns how long activity continued. */
+async function quiet(activity: () => number, sample: () => void, label: string): Promise<number> {
+  const started = performance.now();
+  let last = activity();
+  let since = started;
+  while (performance.now() - since < 100) {
+    sample();
+    if (performance.now() - started > 5_000) throw new Error(`${label}: helpers kept running`);
+    await pause(5);
+    const now = activity();
+    if (now !== last) [last, since] = [now, performance.now()];
+  }
+  return Math.round(since - started);
 }
 
 /** Returns once a shard has read and the process's section word is nonzero. The page spins in
@@ -372,7 +405,8 @@ async function killCase(harness: Harness, signal: 9 | 2): Promise<Record<string,
 
 function auditSummary(launch: Launch): string {
   const ack = launch.acknowledged;
-  return ack ? `exit-ack liveShards=${ack.liveShards}` : "fence-terminated";
+  if (!ack) return `fence-terminated quietMs=${launch.quietMs}`;
+  return ack.fenced ? "exit-ack after shard fence" : `exit-ack liveShards=${ack.liveShards}`;
 }
 
 async function revokeCase(harness: Harness): Promise<Record<string, unknown>> {
@@ -388,6 +422,25 @@ async function revokeCase(harness: Harness): Promise<Record<string, unknown>> {
   check(code !== 0, "revoked search reported success");
   await assertStopped(launch, "revoke");
   return { code, audits: auditSummary(launch) };
+}
+
+/** A helper whose stop handler throws: the process must exit with an error, never hang or
+ * acknowledge exit while that helper or a sibling could still enter a section. */
+async function helperFaultCase(harness: Harness): Promise<Record<string, unknown>> {
+  harness.resetOutput();
+  harness.shardWorker = "/fault-shard.js?mode=stop-throws";
+  try {
+    const pid = await harness.spawn(["count", "/small"]);
+    const code = await harness.wait(pid);
+    const launch = harness.launch(pid);
+    await assertStopped(launch, "helper fault");
+    check(code === 1, `helper fault exited ${code}`);
+    check(launch.acknowledged?.fenced === true, "helper fault exited without the shard fence");
+    check(launch.acknowledged.sections === 0, "helper fault exit inside a section");
+    return { code, audits: auditSummary(launch) };
+  } finally {
+    harness.shardWorker = "/shard-worker.js";
+  }
 }
 
 async function pipeCase(harness: Harness): Promise<Record<string, unknown>> {
@@ -409,6 +462,130 @@ async function pipeCase(harness: Harness): Promise<Record<string, unknown>> {
   };
 }
 
+/** Helpers the page creates directly, with the moment each was terminated. */
+function trackHelpers() {
+  const NativeWorker = globalThis.Worker;
+  const created: Worker[] = [];
+  const terminated = new Set<Worker>();
+  globalThis.Worker = class extends NativeWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      created.push(this);
+    }
+    override terminate() {
+      terminated.add(this);
+      super.terminate();
+    }
+  };
+  return {
+    created,
+    terminated,
+    restore: () => {
+      globalThis.Worker = NativeWorker;
+      for (const worker of created) worker.terminate();
+    },
+  };
+}
+
+const FAULT_TIMING = { startup: 10_000, liveness: 300, stopAck: 600, poll: 20 };
+
+/** One real ShardPool with a fault in helper 0. close() must not settle until every helper is
+ * terminated, must fence the process identity first, and no helper may run afterwards. */
+async function poolFault(
+  runtime: Runtime,
+  mode: "stop-throws" | "silent" | "mute" | "lose-batch" | "none",
+  count: number,
+  expected: ShardFailureReason | null,
+): Promise<Record<string, unknown>> {
+  const helpers = trackHelpers();
+  const identity = runtime.filesystem.createIdentity();
+  const control = new SharedArrayBuffer(CONTROL_WORDS * 4);
+  const cells = new Int32Array(control);
+  try {
+    const pool = await ShardPool.start({
+      url: `/fault-shard.js?mode=${mode}`,
+      count,
+      start: {
+        type: "start",
+        identity,
+        control,
+        program: { kind: "count-lines" },
+        fileBytes: 16,
+        heartbeat: true,
+      },
+      fence: () => processFence(identity),
+      timing: FAULT_TIMING,
+    });
+    let running: string | null = null;
+    if (mode === "lose-batch") {
+      pool.submit(1, [{ index: 0, path: "lost", handle: 0x7ffffff0, size: 1 }]);
+      running = await pool.next().then(
+        () => "resolved",
+        (error) =>
+          error instanceof ShardPoolError
+            ? `${error.retirement}:${error.failures[0]?.reason}`
+            : String(error),
+      );
+      check(running === "owned:unresponsive", `${mode}: next() ${running}`);
+    }
+    const started = performance.now();
+    const outcome = await pool.close().then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const closeMs = Math.round(performance.now() - started);
+    const terminated = helpers.terminated.size;
+    check(terminated === count, `${mode}: ${terminated}/${count} helpers terminated at close`);
+    const quietMs = await quiet(
+      () => Atomics.load(cells, CONTROL_HEARTBEAT),
+      () => {},
+      mode,
+    );
+    const revoked = Atomics.load(new Int32Array(identity.revocations[0]!), 0);
+    const sections = Atomics.load(new Int32Array(identity.sections), 0);
+    check(sections === 0, `${mode}: ${sections} sections after close`);
+    if (expected === null) {
+      check(outcome === null, `${mode}: clean close rejected ${String(outcome)}`);
+      check(
+        revoked === 0 && Atomics.load(cells, CONTROL_FENCED) === 0,
+        `${mode}: clean close fenced`,
+      );
+      check(Atomics.load(cells, CONTROL_LIVE_SHARDS) === 0, `${mode}: a helper missed stop`);
+      return { closeMs, quietMs, fenced: false };
+    }
+    check(outcome instanceof ShardPoolError, `${mode}: close ${String(outcome)}`);
+    check(outcome.retirement === "fenced", `${mode}: retirement ${outcome.retirement}`);
+    check(
+      outcome.failures.some((failure) => failure.reason === expected),
+      `${mode}: ${outcome.message}`,
+    );
+    check(
+      revoked !== 0 && Atomics.load(cells, CONTROL_FENCED) === 1,
+      `${mode}: terminated without the fence`,
+    );
+    return {
+      closeMs,
+      quietMs,
+      fenced: true,
+      running,
+      failures: outcome.failures.map((failure) => failure.reason),
+    };
+  } finally {
+    helpers.restore();
+    runtime.filesystem.reap(identity);
+  }
+}
+
+async function poolFaultCases(runtime: Runtime): Promise<Record<string, unknown>> {
+  return {
+    clean: await poolFault(runtime, "none", 2, null),
+    stopThrows: await poolFault(runtime, "stop-throws", 2, "error"),
+    silent: await poolFault(runtime, "silent", 1, "unresponsive"),
+    mute: await poolFault(runtime, "mute", 2, "stop-unacknowledged"),
+    loseBatch: await poolFault(runtime, "lose-batch", 1, "unresponsive"),
+  };
+}
+
 /** @browserEntry Called by the browser bundle through its runtime URL. */
 export async function searchExecutorBrowserCases(): Promise<Record<string, unknown>> {
   const launches = new Map<SharedArrayBuffer, Launch>();
@@ -416,8 +593,10 @@ export async function searchExecutorBrowserCases(): Promise<Record<string, unkno
   const harness = await Harness.create(launches);
   try {
     const stage = (name: string) => console.log(`search case ${name}`);
+    stage("pool faults");
+    const results: Record<string, unknown> = { poolFaults: await poolFaultCases(harness.runtime) };
     stage("count");
-    const results: Record<string, unknown> = { count: await countCase(harness) };
+    results.count = await countCase(harness);
     stage("write big");
     await writeTree(harness.runtime, "/big", BIG_FILES, BIG);
     stage("sigkill");
@@ -426,6 +605,8 @@ export async function searchExecutorBrowserCases(): Promise<Record<string, unkno
     results.sigint = await killCase(harness, 2);
     stage("revoke");
     results.revoke = await revokeCase(harness);
+    stage("helper fault");
+    results.helperFault = await helperFaultCase(harness);
     stage("pipe");
     results.pipe = await pipeCase(harness);
     results.nestedWorkers = (results.count as { shards4: { shards: number } }).shards4.shards;

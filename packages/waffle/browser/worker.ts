@@ -1141,7 +1141,7 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
   const payload = new Uint8ArrayConstructor(buffer, HOST_PAYLOAD, HOST_PAYLOAD);
   const write = (fd: number, bytes: Uint8Array): number => {
     const length = typedArrayLength(bytes);
-    for (let offset = 0; offset < length; ) {
+    for (let offset = 0; offset < length;) {
       checkActive();
       const count = Math.min(HOST_PAYLOAD, length - offset);
       typedArraySet(payload, typedArraySubarray(bytes, offset, offset + count));
