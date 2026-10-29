@@ -16,7 +16,7 @@ self.onmessage = ({
   let read = 0;
   for (;;) {
     while (waiting(q, read)) {}
-    if (Atomics.load(q, 1)) {
+    if (Atomics.load(q, 0) === read && Atomics.load(q, 1)) {
       postMessage("done");
       return;
     }
