@@ -15,7 +15,15 @@ export interface ProgramPackage {
   readonly dispose?: () => Promise<void>;
 }
 
+export type ProgramLaunch = (
+  context: Parameters<GuestLauncher>[0],
+  service: Parameters<GuestLauncher>[1],
+  fallback: GuestLauncher,
+) => ReturnType<GuestLauncher>;
+
 export type PackageProgram = {
+  /** Selects a process worker after real module admission. Fallback uses this installation's launcher. */
+  readonly launch?: ProgramLaunch;
   /** Canonical absolute path, for example /usr/bin/ls. */
   readonly path: string;
   /** More absolute paths that run the same program, for example /bin/ls. */
@@ -70,6 +78,7 @@ interface Entry {
   readonly marker: Uint8Array;
   readonly source: () => Promise<Uint8Array>;
   readonly argv0: string | undefined;
+  readonly launch: ProgramLaunch | undefined;
 }
 
 interface Installed {
@@ -120,7 +129,7 @@ export async function installPrograms(
   try {
     const adapters = registerAdapters(installed, entries, options.launcher);
     for (const entry of entries) {
-      const adapter = adapters.get(entry.argv0)!;
+      const adapter = adapters.get(entry.launch)!.get(entry.argv0)!;
       installed.leases.push(runtime.registerProgram(entry.path, { adapter, source: entry.source }));
     }
     await provision(runtime, entries, installed.created);
@@ -161,7 +170,7 @@ function programPaths(name: string, program: PackageProgram, activity: Activity)
   const argv0 = program.argv0;
   return [program.path]
     .concat(program.aliases ?? [])
-    .map((path) => ({ path, marker, source, argv0 }));
+    .map((path) => ({ path, marker, source, argv0, launch: program.launch }));
 }
 
 function programLoader(program: PackageProgram): () => Promise<Uint8Array> {
@@ -195,13 +204,16 @@ function trackedSource(load: () => Promise<Uint8Array>, activity: Activity) {
 function registerAdapters(installed: Installed, entries: readonly Entry[], launch: GuestLauncher) {
   if (typeof launch !== "function") throw new TypeError("Program launcher is required");
   const install = ++installs;
-  const adapters = new Map<string | undefined, string>();
-  for (const { argv0 } of entries) {
-    if (adapters.has(argv0)) continue;
-    const name = `waffle:programs:${install}:${adapters.size}`;
-    const launcher = trackedLauncher(launch, argv0, installed.activity);
+  const adapters = new Map<ProgramLaunch | undefined, Map<string | undefined, string>>();
+  let serial = 0;
+  for (const { argv0, launch: hook } of entries) {
+    let group = adapters.get(hook);
+    if (!group) adapters.set(hook, (group = new Map()));
+    if (group.has(argv0)) continue;
+    const name = `waffle:programs:${install}:${serial++}`;
+    const launcher = trackedLauncher(launch, argv0, installed.activity, hook);
     installed.leases.push(installed.runtime.registerAdapter(name, launcher));
-    adapters.set(argv0, name);
+    group.set(argv0, name);
   }
   return adapters;
 }
@@ -210,6 +222,7 @@ function trackedLauncher(
   launch: GuestLauncher,
   argv0: string | undefined,
   activity: Activity,
+  hook: ProgramLaunch | undefined,
 ): GuestLauncher {
   return async (context, service) => {
     if (activity.fenced) throw new Error("Program was uninstalled");
@@ -218,7 +231,7 @@ function trackedLauncher(
     try {
       const argv = argv0 === undefined ? undefined : [argv0].concat(context.request.argv.slice(1));
       const launched = argv ? { ...context, request: { ...context.request, argv } } : context;
-      handle = await launch(launched, service);
+      handle = await (hook ? hook(launched, service, launch) : launch(launched, service));
       if (!handle || typeof handle.terminate !== "function")
         throw new TypeError("Program launcher must return a process handle");
     } catch (error) {

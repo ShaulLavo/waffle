@@ -13,6 +13,7 @@
     "link",
     "proc",
     "programs",
+    "search",
     "tests",
     "tooling",
     "index.ts",
@@ -529,6 +530,27 @@
       "bun": "./programs/index.ts",
       "browser": "./programs/index.ts",
       "default": "./programs/index.ts"
+    },
+    "./search": {
+      "types": "./search/index.ts",
+      "node": "./dist/search/index.js",
+      "bun": "./search/index.ts",
+      "browser": "./search/index.ts",
+      "default": "./search/index.ts"
+    },
+    "./search/search-worker": {
+      "types": "./search/search-worker.ts",
+      "node": "./dist/search/search-worker.js",
+      "bun": "./search/search-worker.ts",
+      "browser": "./search/search-worker.ts",
+      "default": "./search/search-worker.ts"
+    },
+    "./search/shard-worker": {
+      "types": "./search/shard-worker.ts",
+      "node": "./dist/search/shard-worker.js",
+      "bun": "./search/shard-worker.ts",
+      "browser": "./search/shard-worker.ts",
+      "default": "./search/shard-worker.ts"
     }
   },
   "scripts": {
