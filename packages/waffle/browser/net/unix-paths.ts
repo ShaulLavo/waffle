@@ -85,13 +85,29 @@ interface Unbind {
  * is retained here and joined by the runtime before filesystem destruction. A failed unbind keeps
  * its lease and its scope open until a later dispose retries it.
  */
+/** Runtime-wide cap on admitted path requests that have not finished. */
+export const PATH_PENDING = 128;
+
 export class PathCleanup {
+  private pending = 0;
   private debt = new Set<Unbind>();
   private busy = new Map<SocketScope, number>();
   private work = new Set<Promise<unknown>>();
   private retired = new Set<SocketScope>();
   private closing = new Map<SocketScope, Promise<void>>();
   private failures: unknown[] = [];
+
+  /** Admit one path request before any await; the returned release runs at most once. */
+  admit(): (() => void) | undefined {
+    if (this.pending >= PATH_PENDING) return undefined;
+    this.pending++;
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      this.pending--;
+    };
+  }
 
   /** Keep an admitted path operation (bind, attach) joined by dispose. */
   track<T>(operation: Promise<T>): Promise<T> {

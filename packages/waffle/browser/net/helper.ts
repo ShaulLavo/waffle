@@ -117,6 +117,8 @@ export class NetHelper {
   private sockets = new Map<number, LoopbackSocket>();
   private pending = new Map<number, Set<number>>();
   private pathListeners = new Map<number, PathBinding>();
+  /** Path requests in flight, by guest handle. Close or disposal drops the token. */
+  private pathOperations = new Map<number, object>();
   private fileWrites: Promise<void> = Promise.resolve();
 
   constructor(
@@ -179,6 +181,7 @@ export class NetHelper {
     const ports = Array.from(this.listeners.values());
     const bindings = Array.from(this.pathListeners.values());
     this.pathListeners.clear();
+    this.pathOperations.clear();
     this.sockets.clear();
     this.pending.clear();
     this.fetches.clear();
@@ -508,24 +511,56 @@ export class NetHelper {
   }
 
   private executeUnix(req: UnixRequest): Promise<number> {
-    if (req.type === "unix-close") return this.closePath(req.id) ?? Promise.resolve(EBADF);
+    if (req.type === "unix-close") return this.closeUnix(req.id);
     if (!this.live()) return Promise.resolve(ECANCELED);
     const invalid = socketPathError(req.path);
     if (invalid) return Promise.resolve(invalid);
     const paths = this.paths;
     if (!paths) return Promise.resolve(ENOTCAPABLE);
-    return this.withScope(paths, req);
+    if (this.claimed(req.id)) return Promise.resolve(EBADF);
+    const release = paths.cleanup.admit();
+    if (!release) return Promise.resolve(ENOBUFS);
+    const operation = {};
+    this.pathOperations.set(req.id, operation);
+    return this.withScope(paths, req, operation).finally(() => {
+      release();
+      if (this.pathOperations.get(req.id) === operation) this.pathOperations.delete(req.id);
+    });
   }
 
-  private async withScope(paths: HelperPaths, req: UnixRequest): Promise<number> {
+  /** A handle id names at most one listener, socket or pending path operation. */
+  private claimed(id: number): boolean {
+    return (
+      this.pathOperations.has(id) ||
+      this.pathListeners.has(id) ||
+      this.sockets.has(id) ||
+      this.listeners.has(id) ||
+      this.connections.has(id)
+    );
+  }
+
+  /** The operation still owns its handle: not closed, not disposed. */
+  private current(id: number, operation: object): boolean {
+    return this.open() && this.pathOperations.get(id) === operation;
+  }
+
+  private closeUnix(id: number): Promise<number> {
+    const closing = this.closePath(id);
+    if (closing) return closing;
+    return Promise.resolve(this.pathOperations.delete(id) ? 0 : EBADF);
+  }
+
+  private async withScope(
+    paths: HelperPaths,
+    req: UnixRequest & { type: "unix-listen" | "unix-connect" },
+    operation: object,
+  ): Promise<number> {
     const scope = await paths.scope();
     if (typeof scope === "number") return scope;
-    if (!this.open()) return ECANCELED;
+    if (!this.current(req.id, operation)) return ECANCELED;
     if (req.type === "unix-listen")
-      return paths.cleanup.use(scope, () => this.listenPath(paths, scope, req));
-    if (req.type === "unix-connect")
-      return paths.cleanup.use(scope, () => this.connectPath(scope, req.id, req.path));
-    return EBADF;
+      return paths.cleanup.use(scope, () => this.listenPath(paths, scope, req, operation));
+    return paths.cleanup.use(scope, () => this.connectPath(scope, req.id, req.path, operation));
   }
 
   private open(): boolean {
@@ -540,6 +575,7 @@ export class NetHelper {
     paths: HelperPaths,
     scope: SocketScope,
     req: UnixRequest & { type: "unix-listen" },
+    operation: object,
   ): Promise<number> {
     if (!this.namespace.reservePathListener()) return ENOBUFS;
     let lease: SocketLease | number;
@@ -551,10 +587,10 @@ export class NetHelper {
     }
     if (typeof lease === "number") {
       this.namespace.releasePathListener();
-      return lease;
+      return this.current(req.id, operation) ? lease : ECANCELED;
     }
-    if (!this.open()) {
-      // Late bind: the node was never handed out, so roll back by exact lease.
+    if (!this.current(req.id, operation)) {
+      // Late bind after close or disposal: the node was never handed out; roll back by lease.
       this.namespace.releasePathListener();
       void paths.cleanup.unbind(scope, lease, true);
       return ECANCELED;
@@ -576,10 +612,15 @@ export class NetHelper {
     return 0;
   }
 
-  private async connectPath(scope: SocketScope, id: number, path: string): Promise<number> {
+  private async connectPath(
+    scope: SocketScope,
+    id: number,
+    path: string,
+    operation: object,
+  ): Promise<number> {
     const key = await scope.target(path);
+    if (!this.current(id, operation)) return ECANCELED;
     if (typeof key === "number") return key;
-    if (!this.open()) return ECANCELED;
     const socket = this.namespace.connectPath(key, this.socketSink(id));
     if (typeof socket === "number") return socket;
     this.sockets.set(id, socket);
@@ -875,6 +916,7 @@ export class NetHelper {
 
   private close(id: number): void {
     if (this.lookups.delete(id)) return;
+    if (this.pathOperations.delete(id)) return;
     if (this.closePath(id)) return;
     const socket = this.sockets.get(id);
     if (socket) {

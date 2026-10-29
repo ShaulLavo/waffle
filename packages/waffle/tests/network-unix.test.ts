@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { createRuntimeNetwork, type RuntimeNetworkHelper } from "../browser/net/runtime.js";
+import { createRuntimeNetwork } from "../browser/net/runtime.js";
 import { createRing } from "../browser/net/ring.js";
 import { AGAIN, ERROR, OK, UNSUPPORTED } from "../browser/net/protocol.js";
 import { NetHost } from "../browser/net/host.js";
