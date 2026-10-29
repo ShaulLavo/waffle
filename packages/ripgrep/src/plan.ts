@@ -1,7 +1,7 @@
 import { FilesystemError } from "waffle/core/filesystem";
 import { compileGlob } from "waffle/search";
 import type { GlobPattern, WalkPlan } from "waffle/search";
-import { compileMatcher } from "waffle/search";
+import { compileMatcher, supportsSearchOperands } from "waffle/search";
 import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
 
 export type RgPlanAdmission =
@@ -202,6 +202,11 @@ export function planRg(
     parsed.patterns.push(pattern);
   }
   const operands = parsed.operands;
+  if (!supportsSearchOperands(operands, env.PWD || "/"))
+    return {
+      kind: "fallback",
+      reason: "process-local descriptor paths require the original launcher",
+    };
   if (!operands.length || operands.some((path) => !path || path === "-"))
     return { kind: "fallback", reason: "stdin or an implicit search root requires rg" };
   const rootIsCwd = operands.length === 1 && operands[0] === ".";

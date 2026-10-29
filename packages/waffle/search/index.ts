@@ -8,3 +8,4 @@ export interface SearchWorkers {
   readonly search: string;
   readonly shard: string;
 }
+export { supportsSearchOperands } from "./paths.js";

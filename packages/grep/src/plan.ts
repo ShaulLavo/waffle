@@ -1,5 +1,5 @@
 import { compileGlob } from "waffle/search";
-import { compileMatcher } from "waffle/search";
+import { compileMatcher, supportsSearchOperands } from "waffle/search";
 import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
 
 type Fallback = { readonly kind: "fallback"; readonly reason: string };
@@ -306,6 +306,8 @@ export function planGrep(
   const parsed = parseArgv(argv);
   if (parsed.kind === "fallback") return parsed;
   const invocation = parsed.invocation;
+  if (!supportsSearchOperands(invocation.operands, env.PWD || "/"))
+    return fallback("process-local descriptor paths require the original launcher");
   if (!invocation.recursive) return fallback("non-recursive grep stays on the real program");
   if (!invocation.text) return fallback("binary matching requires the real program without -a");
   if (invocation.fixed && invocation.extended)
