@@ -121,7 +121,7 @@
     },
     "packages/waffle": {
       "name": "waffle",
-      "version": "0.0.100",
+      "version": "0.0.101",
       "devDependencies": {
         "@astrojs/compiler-rs": "0.5.2",
         "@types/bun": "^1.4.3",

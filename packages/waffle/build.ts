@@ -279,6 +279,7 @@ export async function buildNodeModules(
     "browser",
     "group",
     "link",
+    "search",
     "programs",
   ])
     await visit(directory);
