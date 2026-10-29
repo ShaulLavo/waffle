@@ -9,7 +9,15 @@ import {
   FilesystemError,
 } from "../fs/index.js";
 import { isRevoked, reapFilesystem } from "../fs/protocol.js";
-import { requestMemoryRetired, requestMemoryResources } from "../fs/request-memory.js";
+import {
+  requestMemoryRetired,
+  requestMemoryResources,
+  type FilesystemRequestMemory,
+} from "../fs/request-memory.js";
+
+async function waitForRetirement(memory: FilesystemRequestMemory): Promise<void> {
+  while (!requestMemoryRetired(memory)) await new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 async function bounded<T>(pending: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -218,12 +226,7 @@ for (const [path, expected] of [
       peer.dispose();
       reapFilesystem(peer.connection);
       f.service.sweep();
-      await bounded(
-        (async () => {
-          while (!requestMemoryRetired(peer.connection.requests))
-            await new Promise((resolve) => setTimeout(resolve, 0));
-        })(),
-      );
+      await bounded(waitForRetirement(peer.connection.requests));
       const next = f.root.pool.take(new SharedArrayBuffer(4));
       expect(next.data).toBe(peer.connection.requests.data);
       if (expected)

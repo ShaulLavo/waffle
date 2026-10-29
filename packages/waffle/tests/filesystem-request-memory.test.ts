@@ -112,6 +112,10 @@ test("single-thread releases keep physical byte accounting exact", () => {
   expect(requestMemoryResources(f.memory)).toMatchObject({ pendingBytes: 0, requests: 0 });
 });
 
+function drainBacklog(q: Int32Array, written: number): void {
+  while (written - Atomics.load(q, 2) > 64) {}
+}
+
 test("racing client-first and service-last releases preserves physical accounting", async () => {
   const f = fixture();
   const ring = new SharedArrayBuffer((4 + 4096 * 3) * 4);
@@ -126,7 +130,7 @@ test("racing client-first and service-last releases preserves physical accountin
   try {
     worker.postMessage({ memory: f.memory, ring });
     while (written < 100000) {
-      while (written - Atomics.load(q, 2) > 64) {}
+      drainBacklog(q, written);
       const buffer = f.allocator.allocate((written * 7919) % 200);
       releaseRequestBuffer(buffer, REQUEST_CLIENT);
       const slot = 4 + (written % 4096) * 3;
