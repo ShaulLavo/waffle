@@ -44,6 +44,7 @@ import {
 } from "./filesystem.js";
 import { DescriptorTable, MAX_DESCRIPTOR, type Resource, type Stream } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
+import { GuestWatchTable, type GuestWatchReadiness } from "../fs/guest-watch.js";
 
 // errno
 const SUCCESS = 0;
@@ -56,6 +57,7 @@ const EIO = 29;
 type FdWrite = (fd: number, iovs: number, count: number, nwritten: number) => number;
 const EISDIR = 31;
 const ELOOP = 32;
+const ENOBUFS = 42;
 const ENOENT = 44;
 const ENOSYS = 52;
 const ENOTDIR = 54;
@@ -195,6 +197,7 @@ export class Wasi {
    */
   hostCall: ((slot: number, args: number[]) => number) | null = null;
   readonly descriptors = new DescriptorTable();
+  private watches?: GuestWatchTable;
   private importedMemory?: WebAssembly.Memory;
   private boundMemory?: WebAssembly.Memory;
   private hostWrite?: FdWrite;
@@ -388,6 +391,9 @@ export class Wasi {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
     const filesystem: Record<string, (...args: never[]) => number> = {
       path_permissions_get: this.pathPermissions.bind(this),
+      watch_open: this.watchOpen.bind(this),
+      watch_read: this.watchRead.bind(this),
+      watch_close: (id: number) => this.watches?.close(id >>> 0) ?? EBADF,
     };
     const out: WebAssembly.Imports = Object.create(null);
     this.importedMemory = undefined;
@@ -484,6 +490,63 @@ export class Wasi {
     if (dir.resource.kind !== "directory") return ENOTDIR;
     if ((dir.rightsBase & right) !== right) return ENOTCAPABLE;
     return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len), followFinal);
+  }
+
+  /** Readiness of this process's guest watches, when its filesystem can watch. */
+  get filesystemWatches(): GuestWatchReadiness | undefined {
+    return this.watchTable();
+  }
+
+  /** Forget guest watch ids at exit. The filesystem session's close releases subscriptions. */
+  dropWatches(): void {
+    this.watches?.drop();
+  }
+
+  private watchTable(): GuestWatchTable | undefined {
+    const source = this.opts.fs.watches;
+    if (!source) return;
+    return (this.watches ??= new GuestWatchTable(source));
+  }
+
+  private watchOpen(fd: number, flags: number, out: number): number {
+    out >>>= 0;
+    if (out + 4 > this.bytes().length) return EFAULT;
+    if ((flags >>> 0) & ~1) return EINVAL;
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    const resource = entry.resource;
+    if (resource.kind !== "file" && resource.kind !== "directory") return EINVAL;
+    const table = this.watchTable();
+    if (!table) return ENOTSUP;
+    const id = table.open(resource.handle, (flags & 1) !== 0);
+    // Reacquire after the service round trip; another thread may have grown shared memory.
+    this.view().setUint32(out, id, true);
+    return SUCCESS;
+  }
+
+  private watchRead(id: number, buf: number, len: number, out: number): number {
+    buf >>>= 0;
+    len >>>= 0;
+    out >>>= 0;
+    const size = this.bytes().length;
+    if (buf + len > size || out + 4 > size) return EFAULT;
+    const result = this.watches?.read(id >>> 0, len);
+    if (!result) return EBADF;
+    if (result.kind === "error") return result.errno;
+    if (result.kind === "short") {
+      this.view().setUint32(out, result.needed, true);
+      return ENOBUFS;
+    }
+    // Reacquire after the service round trip; another thread may have grown shared memory.
+    const bytes = this.bytes();
+    let at = buf;
+    for (let index = 0; index < result.records.length; index++) {
+      const record = result.records[index]!;
+      bytes.set(record, at);
+      at += record.length;
+    }
+    this.view().setUint32(out, result.length, true);
+    return SUCCESS;
   }
 
   private pathPermissions(
@@ -1191,6 +1254,7 @@ export class Wasi {
       },
 
       proc_exit: (code: number) => {
+        this.dropWatches();
         this.descriptors.dispose();
         // Match native process exits; negative i32 values must not alias child-control errors.
         throw new WasiExit(code & 0xff);

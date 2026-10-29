@@ -768,6 +768,103 @@ Unsupported adapter metadata returns `ENOTSUP`, errno 58. Invalid pointers retur
 errno 21. Errors leave the output unchanged. This import does not extend or reinterpret the
 standard 64-byte Preview1 filestat record, perform open-based inference, or fetch payloads.
 
+## Guest filesystem watches
+
+A synchronous guest reads committed watch events through three `runtime_fs` imports. The WASI
+adapter supplies them without activating process services; they need a filesystem that offers
+watches (`FileSystem.watches`, which `FilesystemClient` provides), and return `ENOTSUP`, errno 58,
+otherwise. All three return a **positive WASI errno, 0 on success**. Arguments are unsigned i32.
+Each call validates every output span before any state changes (`EFAULT` 21). Output is
+little-endian. Ids are process-local positive u32 values, never reused within the process. They
+are not descriptors: `fd_kind`, `dup`, `fd_close`, spawn bindings, `/dev/fd` and `poll` don't see
+them.
+
+```text
+runtime_fs.watch_open(fd: u32, flags: u32, out_id_ptr: u32) -> errno
+  fd     an open file or directory descriptor of the caller; the watch follows that node's identity
+  flags  bit0 RECURSIVE (descendants of a directory; ignored for a file). Other bits: EINVAL 28
+  out    u32 id
+
+runtime_fs.watch_read(id: u32, buf_ptr: u32, buf_len: u32, out_len_ptr: u32) -> errno
+  0        out_len > 0: that many bytes of whole records written
+           out_len = 0: end of stream (the overflow record was already returned). Close the id
+  6        EAGAIN: open, nothing pending. Nothing written. No service round trip if the
+           filesystem counter hasn't moved since this watch's last service read
+  42       ENOBUFS: the first pending record doesn't fit; out_len = its size; nothing consumed
+  8        EBADF: unknown or closed id
+  11       ECANCELED: the filesystem connection was revoked (the id stays closable)
+
+runtime_fs.watch_close(id: u32) -> errno       0, or 8 for an unknown or already closed id
+```
+
+Record (stride = `8 + ((name_len + 3) & ~3)`, or `8` when the name is null):
+
+```text
+u8  type      1 change, 2 rename, 3 overflow (terminal)
+u8  0
+u16 0
+u32 name_len  UTF-8 byte length; 0xffffffff = null (file watch, or overflow)
+u8[name_len]  relative path, '/'-separated, no NUL, lossless UTF-8; zero padding to 4
+```
+
+The largest record is 8 + 12,288 bytes (4,096 UTF-16 units at no more than 3 bytes each), so a
+64 KiB buffer always fits.
+
+`watch_open` errors: `EBADF` 8 (bad fd), `EINVAL` 28 (fd is not a file or directory, or bad flags),
+`EFAULT` 21. The rest pass through from the service: `EACCES` 2 (read permission, plus search for a
+directory), `ENOENT` 44 (detached node), `EAGAIN` 6 (128 watches per root across all processes, or the
+graph/namespace bounds), `ENOTSUP` 58 (backend can't watch), and `ECANCELED` 11 (revoked). No
+descriptor rights are required. The authority is the caller's own open description plus the
+service's capability and inode checks.
+
+Each watch keeps its own `observed` copy of the root's commit counter (`cells[3]`), sampled before
+the open's service call. `watch_read` first copies whole records from the watch's local queue.
+With an empty queue, an unchanged counter returns `EAGAIN` without a service call. A moved counter
+updates `observed` before one synchronous service read, whose batch fills the queue; an overflow
+batch becomes the single type-3 record. A false `EAGAIN` would need exactly 2^32 commits between
+two reads of one watch.
+
+### Delivery guarantee
+
+> Let process P hold watch W (opened successfully, still open, not ended, connection not revoked).
+> Let mutation M be a filesystem call that **began after `watch_open` returned** and **returned success
+> to its caller**: a WASI call in any guest of the same runtime root, or a settled page
+> `SharedFilesystem`/`FilesystemClient` call. M must change something W reports: the watched node
+> itself, a direct child, or (with RECURSIVE) a descendant reachable through directories readable and
+> searchable from the root, with the root's mode still allowing read (and search, for a directory)
+> and the name within bounds. Then a **drain** of W (consecutive `watch_read` calls by P, the first
+> beginning after M's call returned, continuing until `EAGAIN` or end) returns a record of M's
+> type and name, or an overflow record.
+
+- The unit is the **drain, not one read**. Records queued earlier come first, and a buffer can end
+  before M's record.
+- **Coalescing.** M's event merges with an identical (type, identity, name) event still queued unread
+  in the service. The drain then returns that earlier record, which already stands for M. Events
+  that have moved to P's local queue are not merged, so a later identical event produces another
+  record. Neither one record per write nor an exact count is promised.
+- **Not covered:** an M that overlaps `watch_open` (it may fall into the baseline), failed or uncommitted
+  calls, writes to another root, aliases outside the watched root, persistence or flush completion,
+  ordering between independent writers, and ordering against any non-watch source.
+
+### Readiness
+
+There is no watch poll subscription and no timer. `Wasi.filesystemWatches` exposes the process's
+`GuestWatchReadiness`: `pending()` is true while a watch has local records, or its `observed`
+differs from the counter and it hasn't ended. It is false after revocation.
+
+- A blocking guest arms its [mixed notification set](#mixed-notification-waits) with its
+  `NetHost`, then calls `NetHost.attachNotifications(set, () => wasi.filesystemWatches)`. `poll`
+  then waits on that set, which already covers `cells[3]`, and returns 1 when a watch is pending.
+  A counter move with no pending watch keeps waiting on the same deadline; a closed set returns 0.
+- A nonblocking host using `NetHost.onNews` also gets its callback when a commit leaves a watch
+  pending. That costs one readiness check per commit in the root.
+- `runtime_proc.poll` is unchanged; a watch never covers or appears in its subscriptions.
+
+`proc_exit` and process descriptor disposal forget the ids locally. The filesystem session's close
+releases the service subscriptions, including after forced termination. Ids are not inherited by
+spawned processes. The service, bounds and overflow rules are in
+[committed filesystem watches](filesystem-watch.md).
+
 ## Internal network module
 
 The Rust socket module is not a guest import namespace. Guest network calls, numeric results, ring records, addresses, and JSON errors are unchanged. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.

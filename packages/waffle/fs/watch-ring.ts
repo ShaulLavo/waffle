@@ -9,6 +9,7 @@ const NAME_OFFSET = 20;
 const WATCH_NAME_BYTES = 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+const nameScratch = new Uint8Array(WATCH_NAME_BYTES);
 export type WatchRecord =
   | { kind: "overflow" }
   | { kind: "change"; file: bigint }
@@ -107,12 +108,13 @@ export class WatchRing {
       this.records[at] = 0;
       return;
     }
-    const destination = new Uint8Array(
+    // Chromium and Firefox reject shared views in encodeInto and decode: stage unshared bytes.
+    const encoded = encoder.encodeInto(effect.name, nameScratch);
+    new Uint8Array(
       this.records.buffer,
       this.records.byteOffset + (at + NAME_OFFSET) * 4,
       WATCH_NAME_BYTES,
-    );
-    const encoded = encoder.encodeInto(effect.name, destination);
+    ).set(nameScratch.subarray(0, encoded.written));
     this.records[at + 13] = encoded.written;
     if (encoded.read !== effect.name.length) this.records[at] = 0;
   }
@@ -178,7 +180,7 @@ export class WatchRing {
               this.records.buffer,
               this.records.byteOffset + (at + NAME_OFFSET) * 4,
               this.records[at + 13]!,
-            ),
+            ).slice(),
           ),
         };
     }

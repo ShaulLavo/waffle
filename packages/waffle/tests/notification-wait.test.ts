@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mixedNotificationCases } from "./notification-mixed-cases.js";
+import { guestWatchCase } from "./guest-watch-browser-cases.js";
 
 test("real blocked Worker composes filesystem, network and process notifications", async () => {
   const result = await mixedNotificationCases(
@@ -67,3 +68,14 @@ test("scope disposal closes its real port after a throwing send and settles pend
   const module = new URL("./fixtures/notification-send-failure-worker.ts", import.meta.url).href;
   expect(await scopeSendFailureCase(module, helper)).toMatchObject({ sendFailed: true, closes: 1 });
 }, 10000);
+
+test("a broker-armed guest in NetHost.poll drains each commit no later than the writer's byte", async () => {
+  const result = await guestWatchCase(
+    new URL("./fixtures/guest-watch-runtime-worker.ts", import.meta.url).href,
+    helperWorker,
+    new URL("./fixtures/guest-watch-writer-worker.ts", import.meta.url).href,
+  );
+  console.log(JSON.stringify({ guestWatch: result }));
+  expect(result).toMatchObject({ directWrites: 100, pageWrites: 100 });
+  expect(result.early + result.late).toBe(200);
+}, 30000);

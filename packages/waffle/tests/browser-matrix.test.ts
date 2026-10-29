@@ -13,6 +13,7 @@ const runners = [
   "publication",
   "publication-cross-tab",
   "search-executor",
+  "guest-watch",
 ];
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";

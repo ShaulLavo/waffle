@@ -61,6 +61,7 @@ export {
   unlistenAbort,
   observeRejectedPromise,
   afterNativePromise,
+  afterMicrotask,
   sharedArrayBufferMaxByteLength,
   sharedArrayBufferGrow,
   dataViewGetUint32,

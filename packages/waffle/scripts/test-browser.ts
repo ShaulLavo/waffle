@@ -13,6 +13,7 @@ const runners = [
   "tests/publication-browser-runner.ts",
   "tests/publication-cross-tab-browser-runner.ts",
   "tests/search-executor-browser-runner.ts",
+  "tests/guest-watch-browser-runner.ts",
 ];
 const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat(
   [[{ runner: "tests/recovery-r42-browser-runner.ts", engines: ["chromium"] }]],

@@ -25,7 +25,7 @@ import {
   type MutationId,
   type AdmissionResult,
 } from "./publication.js";
-import { permissionsFor } from "../core/filesystem.js";
+import { permissionsFor, type WatchFileSystem } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
@@ -258,6 +258,27 @@ export class FilesystemCompletion {
     return this.decoded;
   }
 }
+/** Blocking watch calls for a synchronous guest; each one is a service round trip. */
+function clientWatches(
+  cells: () => Int32Array,
+  revoked: () => boolean,
+  call: (operation: string, args: unknown[]) => any,
+): WatchFileSystem {
+  return {
+    get cells() {
+      return cells();
+    },
+    get revoked() {
+      return revoked();
+    },
+    open: (handle, recursive) => call("watchOpen", [handle, recursive]),
+    read: (id) => call("watchRead", [id]),
+    close: (id) => {
+      call("watchClose", [id]);
+    },
+  };
+}
+
 /** Blocking preview1 adapter and non-blocking request/completion API for the async host.
  * Read/stat caches are validated by the service's global seqlock. A concurrent mutation invalidates
  * before changing data; a cached read that overlaps it is discarded, never returned as fresh.
@@ -296,6 +317,7 @@ export class FilesystemClient implements FileSystem {
   private revoked: () => boolean;
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
+  readonly watches: WatchFileSystem;
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private workspaceStop: Promise<void> | undefined;
@@ -318,6 +340,11 @@ export class FilesystemClient implements FileSystem {
       connection.segments,
       this.section,
       connection.publication?.buffers,
+    );
+    this.watches = clientWatches(
+      () => this.shared.watch.cells,
+      this.revoked,
+      (operation, args) => this.call(operation, args),
     );
     connection.port.onmessage = ({ data }) => {
       if (data.segment)
