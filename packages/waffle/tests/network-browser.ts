@@ -1,4 +1,10 @@
-import { createRuntime, type RuntimeNetwork } from "../index.js";
+import {
+  createRuntime,
+  type Runtime,
+  type RuntimeNetwork,
+  type RuntimeNetworkPathScope,
+} from "../index.js";
+import { FilesystemClient } from "../fs/client.js";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 import { networkFlowCases } from "./network-flow-cases.js";
 import { createRing } from "../browser/net/ring.js";
@@ -37,6 +43,7 @@ function guest(
   router: PreviewRouter,
   startupFailurePort = 0,
   failPublication = false,
+  pathScope?: RuntimeNetworkPathScope,
 ) {
   const ring = createRing();
   const worker = new Worker("/network-worker.js", {
@@ -55,6 +62,7 @@ function guest(
       throw Error("External fetch forbidden");
     },
     hooks,
+    pathScope,
   });
   const pending = new Map<
     number,
@@ -155,6 +163,62 @@ async function read(guest: Guest, handle: number): Promise<unknown> {
     () => guest.call({ op: "read", handle, cap: 65536 }),
     (v) => v !== -2,
   );
+}
+
+/** Real FS socket nodes between two scoped workers; unscoped and external connects are denied. */
+async function unixCases(runtime: Runtime, make: (scope?: RuntimeNetworkPathScope) => Guest) {
+  await runtime.filesystem.mkdirp("/tmp");
+  const root = await runtime.filesystem.directoryHandle("/");
+  const clients: FilesystemClient[] = [];
+  const scope = async () => {
+    const filesystem = runtime.filesystem.createIdentity();
+    const client = new FilesystemClient(runtime.filesystem.connect(filesystem));
+    clients.push(client);
+    await client.asyncCall("preopen", ["/"]);
+    return { filesystem, directory: root.handle };
+  };
+  try {
+    const server = make(await scope()),
+      client = make(await scope()),
+      unscoped = make();
+    await Promise.all([server.ready, client.ready, unscoped.ready]);
+    const listener = number(await server.call({ op: "listenPath", path: "/tmp/w.sock" }));
+    check(listener > 0, "Path listener failed");
+    check((await runtime.filesystem.lookup("/tmp/w.sock"))?.kind === "socket", "No socket node");
+    const conn = number(await client.call({ op: "connectPath", path: "/tmp/w.sock" }));
+    check(conn > 0, "Path connect failed");
+    const accepted = number(
+      await until(
+        () => server.call({ op: "accept", handle: listener }),
+        (v) => typeof v === "number" && v > 0,
+      ),
+    );
+    check(
+      (await client.call({ op: "peer", handle: conn })) ===
+        JSON.stringify({ family: "Unix", path: "/tmp/w.sock" }),
+      "Path peer address differs",
+    );
+    await client.call({ op: "write", handle: conn, bytes: bytes("over a path") });
+    await client.call({ op: "shutdown", handle: conn });
+    check(text(await read(server, accepted)) === "over a path", "Path stream lost bytes");
+    check((await read(server, accepted)) === 0, "Path half-close EOF missing");
+    await server.call({ op: "write", handle: accepted, bytes: bytes("back") });
+    check(text(await read(client, conn)) === "back", "Path reverse direction lost bytes");
+    check((await server.call({ op: "close", handle: listener })) === 0, "Path close failed");
+    check((await runtime.filesystem.lookup("/tmp/w.sock")) === undefined, "Close did not unlink");
+    check((await unscoped.call({ op: "connectPath", path: "/tmp/w.sock" })) === -1, "No scope");
+    check(
+      String(await unscoped.call({ op: "error", handle: 0 })).includes("ENOTCAPABLE"),
+      "Unscoped path call was not ENOTCAPABLE",
+    );
+    check(
+      (await client.call({ op: "connect", host: "192.0.2.1", port: 80 })) === -4,
+      "External TCP connect was not denied",
+    );
+  } finally {
+    for (const client of clients) client.dispose();
+    root.release();
+  }
 }
 
 async function addressCases(server: Guest, client: Guest): Promise<void> {
@@ -327,8 +391,13 @@ export async function networkBrowserCases(): Promise<string[]> {
   let registration: ServiceWorkerRegistration | undefined;
   const route = (event: MessageEvent<PreviewMessage>) => router.onMessage(event);
   navigator.serviceWorker.addEventListener("message", route);
-  const make = (space = network, startupFailurePort = 0, failPublication = false) => {
-    const item = guest(space, router, startupFailurePort, failPublication);
+  const make = (
+    space = network,
+    startupFailurePort = 0,
+    failPublication = false,
+    pathScope?: RuntimeNetworkPathScope,
+  ) => {
+    const item = guest(space, router, startupFailurePort, failPublication, pathScope);
     guests.push(item);
     return item;
   };
@@ -338,6 +407,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     isolated = make(isolatedNetwork);
   try {
     await Promise.all(guests.map((item) => item.ready));
+    await unixCases(runtime, (scope) => make(network, 0, false, scope));
     await addressCases(server, client);
     await fetchAddressCases(server, client);
     const p = await pair(server, client, 32130);
@@ -454,6 +524,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
     return [
+      "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied",
       "runtime-owned IPv4 localhost lookup before any helper or worker exists",
       "IPv6 wildcard, loopback, mapped addresses and HTTP destination families across real workers",
       "paused HTTP bounded credit, read wakeups, streaming EOF and cancellation across workers and within one worker",
