@@ -1,8 +1,8 @@
-import { FilesystemError } from "../../waffle/core/filesystem.js";
-import { compileGlob } from "../../waffle/fs/glob.js";
-import type { GlobPattern, WalkPlan } from "../../waffle/fs/walk.js";
-import { compileMatcher } from "../../waffle/search/matcher.js";
-import type { MatcherPlan, OutputPlan, SearchPlan } from "../../waffle/search/types.js";
+import { FilesystemError } from "waffle/core/filesystem";
+import { compileGlob } from "waffle/search";
+import type { GlobPattern, WalkPlan } from "waffle/search";
+import { compileMatcher } from "waffle/search";
+import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
 
 export type RgPlanAdmission =
   | { readonly kind: "supported"; readonly plan: SearchPlan }

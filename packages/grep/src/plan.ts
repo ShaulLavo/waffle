@@ -1,6 +1,6 @@
-import { compileGlob } from "../../waffle/fs/glob.js";
-import { compileMatcher } from "../../waffle/search/matcher.js";
-import type { MatcherPlan, OutputPlan, SearchPlan } from "../../waffle/search/types.js";
+import { compileGlob } from "waffle/search";
+import { compileMatcher } from "waffle/search";
+import type { MatcherPlan, OutputPlan, SearchPlan } from "waffle/search";
 
 type Fallback = { readonly kind: "fallback"; readonly reason: string };
 type OptionResult = { readonly kind: "parsed"; readonly consumeNext: boolean } | Fallback;

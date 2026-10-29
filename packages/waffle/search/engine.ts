@@ -3,10 +3,25 @@ import { WasiExit } from "../core/wasi.js";
 import type { WalkCursor, WalkEntry } from "../fs/walk.js";
 import { compileMatcher } from "./matcher.js";
 import {
-  BATCHES_PER_SHARD, CONTROL_WORDS, FileReader, InlineExecutor, SearchRun, ShardPool,
-  defaultShardCount, errnoOf, nestedWorkersAvailable, processIdentity, readAndScan,
-  type BatchExecutor, type Candidate, type CandidateSource, type FileResult,
-  type ProgramLimits, type ShardFile, type ShardProgram, type SourceEntry,
+  BATCHES_PER_SHARD,
+  CONTROL_WORDS,
+  FileReader,
+  InlineExecutor,
+  SearchRun,
+  ShardPool,
+  defaultShardCount,
+  errnoOf,
+  nestedWorkersAvailable,
+  processIdentity,
+  readAndScan,
+  type BatchExecutor,
+  type Candidate,
+  type CandidateSource,
+  type FileResult,
+  type ProgramLimits,
+  type ShardFile,
+  type ShardProgram,
+  type SourceEntry,
 } from "./shards.js";
 import { SEARCH_LIMITS, type OutputPlan, type SearchPlan } from "./types.js";
 
@@ -22,9 +37,14 @@ export interface SearchWorkerRequest extends RuntimeWorkerRequest {
 type SearchContext = HostProgramContext<SearchWorkerRequest>;
 type SourceContext = Pick<SearchContext, "open" | "checkActive"> & {
   readonly request: Pick<SearchWorkerRequest, "plan">;
-  readonly fs: Pick<SearchContext["fs"], "walkOpen" | "walkPage" | "walkRelease" | "walkClose" | "release">;
+  readonly fs: Pick<
+    SearchContext["fs"],
+    "walkOpen" | "walkPage" | "walkRelease" | "walkClose" | "release"
+  >;
 };
-type Lease = { readonly kind: "open"; readonly handle: number } | { readonly kind: "walk"; readonly token: number };
+type Lease =
+  | { readonly kind: "open"; readonly handle: number }
+  | { readonly kind: "walk"; readonly token: number };
 interface ActiveWalk {
   readonly original: WalkCursor;
   readonly path: string;
@@ -53,19 +73,25 @@ export class WalkSource implements CandidateSource {
       else break;
       if (this.walk?.cursor === null) break;
     }
-    return { entries, done: !this.walk && this.operand >= this.context.request.plan.operands.length };
+    return {
+      entries,
+      done: !this.walk && this.operand >= this.context.request.plan.operands.length,
+    };
   }
 
   release(files: readonly Candidate[]): void {
     const errors: unknown[] = [];
-    for (const file of files) this.releaseIndex(file.index, errors);
+    this.releaseIndices(
+      files.map((file) => file.index),
+      errors,
+    );
     this.retireWalk(errors);
     if (errors.length) throw new AggregateError(errors, "search candidate release failed");
   }
 
   close(): void {
     const errors: unknown[] = [];
-    for (const index of this.leases.keys()) this.releaseIndex(index, errors);
+    this.releaseIndices(Array.from(this.leases.keys()), errors);
     if (this.walk) this.closeWalk(errors);
     if (errors.length) throw new AggregateError(errors, "search source close failed");
   }
@@ -85,7 +111,11 @@ export class WalkSource implements CandidateSource {
         return;
       }
       if (opened.kind === "file") {
-        this.add(entries, { kind: "file", path, handle: opened.handle, size: opened.size }, { kind: "open", handle: opened.handle });
+        this.add(
+          entries,
+          { kind: "file", path, handle: opened.handle, size: opened.size },
+          { kind: "open", handle: opened.handle },
+        );
         return;
       }
       this.openWalk(path, opened.handle);
@@ -107,7 +137,10 @@ export class WalkSource implements CandidateSource {
     const walk = this.walk;
     if (!walk?.cursor) return;
     try {
-      const page = this.context.fs.walkPage(walk.cursor, { grant: true, maxEntries: Math.min(128, credits) });
+      const page = this.context.fs.walkPage(walk.cursor, {
+        grant: true,
+        maxEntries: Math.min(128, credits),
+      });
       walk.cursor = page.next;
       for (const entry of page.entries) this.walkEntry(entries, walk, entry);
     } catch (error) {
@@ -123,19 +156,42 @@ export class WalkSource implements CandidateSource {
       this.add(entries, { ...entry, path });
       return;
     }
-    if (entry.handle === null || entry.grant === null) throw new Error("search walk omitted a grant");
+    if (entry.handle === null || entry.grant === null)
+      throw new Error("search walk omitted a grant");
     walk.grants++;
-    this.add(entries, { kind: "file", path, handle: entry.handle, size: entry.size }, { kind: "walk", token: entry.grant });
+    this.add(
+      entries,
+      { kind: "file", path, handle: entry.handle, size: entry.size },
+      { kind: "walk", token: entry.grant },
+    );
   }
 
-  private releaseIndex(index: number, errors: unknown[]): void {
-    const lease = this.leases.get(index);
-    if (!lease) return;
+  private releaseIndices(indices: readonly number[], errors: unknown[]): void {
+    const tokens: number[] = [];
+    const granted: number[] = [];
+    for (const index of indices) {
+      const lease = this.leases.get(index);
+      if (!lease) continue;
+      if (lease.kind === "open") this.releaseOpen(index, lease.handle, errors);
+      else {
+        tokens.push(lease.token);
+        granted.push(index);
+      }
+    }
+    if (!tokens.length) return;
     try {
-      if (lease.kind === "open") this.context.fs.release(lease.handle);
-      else this.context.fs.walkRelease([lease.token]);
+      this.context.fs.walkRelease(tokens);
+      for (const index of granted) this.leases.delete(index);
+      if (this.walk) this.walk.grants -= tokens.length;
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  private releaseOpen(index: number, handle: number, errors: unknown[]): void {
+    try {
+      this.context.fs.release(handle);
       this.leases.delete(index);
-      if (lease.kind === "walk" && this.walk) this.walk.grants--;
     } catch (error) {
       errors.push(error);
     }
@@ -160,10 +216,15 @@ export class WalkSource implements CandidateSource {
 
 const encoder = new TextEncoder();
 const ERRORS: Readonly<Record<number, readonly [string, number]>> = {
-  2: ["Permission denied", 13], 6: ["Resource temporarily unavailable", 11],
-  8: ["Bad file descriptor", 9], 22: ["File too large", 27], 29: ["Input/output error", 5],
-  37: ["File name too long", 36], 44: ["No such file or directory", 2],
-  54: ["Not a directory", 20], 76: ["Permission denied", 13],
+  2: ["Permission denied", 13],
+  6: ["Resource temporarily unavailable", 11],
+  8: ["Bad file descriptor", 9],
+  22: ["File too large", 27],
+  29: ["Input/output error", 5],
+  37: ["File name too long", 36],
+  44: ["No such file or directory", 2],
+  54: ["Not a directory", 20],
+  76: ["Permission denied", 13],
 };
 
 export function outputBound(output: OutputPlan, size: number, pathBytes: number): number {
@@ -177,10 +238,16 @@ class MatchSink {
   private matched = false;
   private failed = false;
   private readonly reader: FileReader;
-  constructor(private readonly context: SearchContext, private readonly program: ShardProgram, cells: Int32Array) {
+  constructor(
+    private readonly context: SearchContext,
+    private readonly program: ShardProgram,
+    cells: Int32Array,
+  ) {
     this.reader = new FileReader(cells, SEARCH_LIMITS.fileBytes);
   }
-  get status(): number { return this.failed ? 2 : this.matched ? 0 : 1; }
+  get status(): number {
+    return this.failed ? 2 : this.matched ? 0 : 1;
+  }
   deliver(file: Candidate, result: FileResult): void {
     this.context.checkActive();
     if (result.kind === "done") {
@@ -192,10 +259,18 @@ class MatchSink {
     const errno = result.kind === "error" ? result.errno : 29;
     const error = ERRORS[errno] ?? [`errno ${errno}`, 5];
     const suffix = this.context.request.plan.tool === "rg" ? ` (os error ${error[1]})` : "";
-    this.write(2, encoder.encode(`${this.context.request.plan.tool}: ${file.path}: ${error[0]}${suffix}\n`));
+    this.write(
+      2,
+      encoder.encode(`${this.context.request.plan.tool}: ${file.path}: ${error[0]}${suffix}\n`),
+    );
   }
   fallback(file: ShardFile): FileResult {
-    return readAndScan(this.reader, this.program, (chunk, offset) => this.context.fs.read(file.handle, [chunk], offset), file.path);
+    return readAndScan(
+      this.reader,
+      this.program,
+      (chunk, offset) => this.context.fs.read(file.handle, [chunk], offset),
+      file.path,
+    );
   }
   private write(fd: 1 | 2, bytes: Uint8Array): void {
     const written = this.context.write(fd, bytes);
@@ -205,31 +280,55 @@ class MatchSink {
   }
 }
 
-async function executor(context: SearchContext, control: SharedArrayBuffer, program: ShardProgram): Promise<BatchExecutor> {
+async function executor(
+  context: SearchContext,
+  control: SharedArrayBuffer,
+  program: ShardProgram,
+): Promise<BatchExecutor> {
   const options = context.request.search;
   const count = options.shards ?? defaultShardCount();
   if (count === 0 || !nestedWorkersAvailable() || context.request.filesystem.residentPublication)
-    return new InlineExecutor(program, new Int32Array(control), SEARCH_LIMITS.fileBytes,
-      (file, chunk, offset) => context.fs.read(file.handle, [chunk], offset));
+    return new InlineExecutor(
+      program,
+      new Int32Array(control),
+      SEARCH_LIMITS.fileBytes,
+      (file, chunk, offset) => context.fs.read(file.handle, [chunk], offset),
+    );
   return ShardPool.start(options.shardWorker, count, {
-    type: "start", identity: processIdentity(context.request.filesystem), control, program,
-    fileBytes: SEARCH_LIMITS.fileBytes, heartbeat: options.diagnostics,
+    type: "start",
+    identity: processIdentity(context.request.filesystem),
+    control,
+    program,
+    fileBytes: SEARCH_LIMITS.fileBytes,
+    heartbeat: options.diagnostics,
   });
 }
 
 export async function runSearch(context: SearchContext): Promise<number> {
   const { plan, env } = context.request;
-  const admission = compileMatcher(plan.matcher, plan.tool, env.LC_ALL || env.LC_CTYPE || env.LANG || "C");
-  if (admission.kind === "fallback") throw new Error("search plan was not admitted before host launch");
+  const admission = compileMatcher(
+    plan.matcher,
+    plan.tool,
+    env.LC_ALL || env.LC_CTYPE || env.LANG || "C",
+  );
+  if (admission.kind === "fallback")
+    throw new Error("search plan was not admitted before host launch");
   const program: ShardProgram = { kind: "search", matcher: admission.matcher, output: plan.output };
   const control = new SharedArrayBuffer(CONTROL_WORDS * 4);
   const source = new WalkSource(context);
   const batches = await executor(context, control, program);
   if (context.request.search.diagnostics)
-    globalThis.postMessage({ type: "search-diagnostics", control, shards: batches instanceof InlineExecutor ? 0 : batches.capacity / BATCHES_PER_SHARD });
+    globalThis.postMessage({
+      type: "search-diagnostics",
+      control,
+      shards: batches instanceof InlineExecutor ? 0 : batches.capacity / BATCHES_PER_SHARD,
+    });
   const sink = new MatchSink(context, program, new Int32Array(control));
-  const limits: ProgramLimits = { fileBytes: SEARCH_LIMITS.fileBytes, pathBytes: SEARCH_LIMITS.pathBytes,
-    outputBound: (size, pathBytes) => outputBound(plan.output, size, pathBytes) };
+  const limits: ProgramLimits = {
+    fileBytes: SEARCH_LIMITS.fileBytes,
+    pathBytes: SEARCH_LIMITS.pathBytes,
+    outputBound: (size, pathBytes) => outputBound(plan.output, size, pathBytes),
+  };
   await new SearchRun(source, batches, sink, limits, context.checkActive).run();
   return sink.status;
 }

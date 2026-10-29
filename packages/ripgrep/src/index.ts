@@ -12,7 +12,10 @@ export const ripgrep: ProgramPackage = {
   ],
 };
 
-export function fastRipgrep(workers: SearchWorkers, options: { readonly stdoutIsTTY?: boolean } = {}): ProgramPackage {
+export function fastRipgrep(
+  workers: SearchWorkers,
+  options: { readonly stdoutIsTTY?: boolean } = {},
+): ProgramPackage {
   const launch: ProgramLaunch = async (context, service, fallback) => {
     const { planRg } = await import("./plan.js");
     const admitted = planRg(context.request.argv.slice(1), context.request.env, options);

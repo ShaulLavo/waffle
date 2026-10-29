@@ -15,6 +15,7 @@
     "interrupt/**/*.ts",
     "link/**/*.ts",
     "programs/**/*.ts",
+    "search/**/*.ts",
     "tests/interrupt-browser-runner-control.ts",
     "tests/storage-browser.ts",
     "tests/opfs-storage-browser.ts",
