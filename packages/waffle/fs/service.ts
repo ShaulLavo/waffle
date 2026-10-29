@@ -1,3 +1,4 @@
+import { WalkTable, type WalkTransaction } from "./walk.js";
 import {
   requestMemorySections,
   waitForRequestQuiescence,
@@ -94,6 +95,9 @@ interface SocketScopeState {
   readonly leases: Map<number, { binding: SocketBinding; name: string }>;
 }
 interface Session {
+  walks?: WalkTable;
+  walkTransactions: Map<number, WalkTransaction>;
+  walkResponses: Map<number, () => void>;
   socketScope?: SocketScopeState;
   connection: FilesystemConnection;
   requests: FilesystemRequestMemory;
@@ -205,6 +209,8 @@ export class FilesystemService {
     assertRequestBudget(connection.requestBudget, connection.requests.budget);
     const session: Session = {
       connection,
+      walkTransactions: new Map(),
+      walkResponses: new Map(),
       requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
@@ -509,6 +515,10 @@ export class FilesystemService {
   private discardResponse(session: Session, id: number): void {
     this.releaseResponseMemory(session, id);
     const retained = session.retainedRequests.get(id);
+    const cancelledWalk = retained && requestCancelled(retained);
+    const cancelWalk = session.walkResponses.get(id);
+    session.walkResponses.delete(id);
+    if (cancelledWalk) cancelWalk?.();
     if (retained) releaseRequestBuffer(retained, REQUEST_SERVICE);
     session.retainedRequests.delete(id);
     const response = session.responses.get(id);
@@ -671,6 +681,7 @@ export class FilesystemService {
         throw new FilesystemError(28);
       this.check(session, a, held);
     }
+    this.checkWalkRoot(session, operation, a, held);
     if (operation === "readdirPage") checkDirectoryPage(b, args[2]);
     if (operation === "publicationPin") {
       const grant = session.connection.publication?.observer;
@@ -709,6 +720,17 @@ export class FilesystemService {
       }
     }
   }
+  private checkWalkRoot(
+    session: Session,
+    operation: string,
+    directory: unknown,
+    held?: number[],
+  ): void {
+    if (operation !== "walkOpen") return;
+    if (typeof directory !== "number" || !Number.isSafeInteger(directory))
+      throw new FilesystemError(28);
+    this.check(session, directory, held);
+  }
   private releasePrepared(session: Session, prepared: PreparedRequest | undefined): void {
     for (const handle of prepared?.handles ?? []) {
       const count = session.preparingHandles.get(handle) ?? 0;
@@ -739,6 +761,60 @@ export class FilesystemService {
     }
     throw new FilesystemError(58);
   }
+  private walkReference(session: Session, handle: number): () => void {
+    const references = new Map<number, number>();
+    this.holdResponseReference(session, references, handle);
+    const key = references.get(handle)!;
+    return () => {
+      this.dropResponseReference(session, handle, key);
+      if (session.handles.get(handle) !== key || session.preopens.has(handle)) return;
+      if (Atomics.compareExchange(session.capabilities, key + 1, 0, -1) !== 0) return;
+      if (Atomics.load(session.capabilities, key + 2) > 0) {
+        Atomics.store(session.capabilities, key + 1, 0);
+        return;
+      }
+      this.forget(session, handle, key);
+    };
+  }
+  private walkRequest(session: Session, id: number, operation: string, args: unknown[]): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const backend = this.backend;
+    const execute = () => {
+      if (sessionRevoked(session)) throw new FilesystemError(11);
+      const table = (session.walks ??= new WalkTable(backend, (handle) =>
+        this.walkReference(session, handle),
+      ));
+      if (operation === "walkRelease") return table.release(args[0]);
+      if (operation === "walkClose") return table.close(args[0]);
+      const pending = session.pending.get(id);
+      if (!pending) throw new FilesystemError(11);
+      const capacity = requestBytes(pending).length;
+      const directory = args[0];
+      if (operation === "walkOpen" && typeof directory !== "number") throw new FilesystemError(28);
+      const transaction =
+        operation === "walkOpen" && typeof directory === "number"
+          ? table.open(directory, args[1])
+          : operation === "walkPage"
+            ? table.page(args[0], args[1], capacity)
+            : undefined;
+      if (!transaction) throw new FilesystemError(52);
+      session.walkTransactions.set(id, transaction);
+      if (pack(transaction.value).length > capacity) throw new FilesystemError(28);
+      return transaction.value;
+    };
+    return backend.shared.ownsServiceMutation
+      ? execute()
+      : backend.shared.mutate(undefined, () => sessionRevoked(session), execute);
+  }
+  private settleWalk(session: Session, id: number, success: boolean): void {
+    const transaction = session.walkTransactions.get(id);
+    if (!transaction) return;
+    session.walkTransactions.delete(id);
+    if (success) {
+      transaction.commit();
+      session.walkResponses.set(id, transaction.cancel);
+    } else transaction.rollback();
+  }
   private execute(
     session: Session,
     id: number,
@@ -748,6 +824,7 @@ export class FilesystemService {
   ): unknown | Promise<unknown> {
     const [a, b, c] = args;
     this.checkSocketTree(session, operation, args);
+    if (operation.startsWith("walk")) return this.walkRequest(session, id, operation, args);
     if (operation.startsWith("watch")) return this.watchRequest(session, operation, args);
     if (operation === "take") {
       const response = session.responses.get(a);
@@ -982,12 +1059,12 @@ export class FilesystemService {
           this.discardResponse(session, id);
           state = State.Cancelled;
         }
+        this.settleWalk(session, id, state === State.Complete);
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
         session.pending.delete(id);
-        if (session.responses.has(id)) session.retainedRequests.set(id, buffer);
-        else releaseRequestBuffer(buffer, REQUEST_SERVICE);
+        this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
         this.sweep();
       }
@@ -999,6 +1076,13 @@ export class FilesystemService {
       );
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
+  }
+  private retainRequestReply(session: Session, id: number, buffer: FilesystemRequestBuffer): void {
+    if (session.responses.has(id) || session.walkResponses.has(id)) {
+      session.retainedRequests.set(id, buffer);
+      return;
+    }
+    releaseRequestBuffer(buffer, REQUEST_SERVICE);
   }
   private writeResponse(
     session: Session,
@@ -1480,6 +1564,9 @@ export class FilesystemService {
     }
     session.pending.clear();
     wake(session.connection);
+    for (const id of session.walkTransactions.keys()) this.settleWalk(session, id, false);
+    session.walks?.dispose();
+    session.walkResponses.clear();
     for (const key of session.handles.values()) Atomics.store(session.capabilities, key + 1, -1);
     for (const handle of Array.from(session.handles.keys())) {
       if (Atomics.load(session.capabilities, session.handles.get(handle)! + 2) > 0) continue;
@@ -1545,7 +1632,9 @@ export class FilesystemService {
     const backend = this.backend.resources?.() ?? {};
     let socketLeases = 0,
       socketScopes = 0;
-    let workspaceCursors = 0;
+    let workspaceCursors = 0,
+      walks = 0,
+      walkGrants = 0;
     let retained = 0,
       transient = 0,
       responses = 0,
@@ -1554,6 +1643,8 @@ export class FilesystemService {
       socketScopes += session.socketScope ? 1 : 0;
       socketLeases += session.socketScope?.leases.size ?? 0;
       workspaceCursors += session.namespace?.size ?? 0;
+      walks += session.walks?.size ?? 0;
+      walkGrants += session.walks?.liveGrants ?? 0;
       retained += session.handles.size;
       responses += session.responses.size;
       capabilityBytes += session.connection.capabilities.byteLength;
@@ -1570,6 +1661,8 @@ export class FilesystemService {
         ...backend,
         requestTransportBytes,
         workspaceCursors,
+        walks,
+        walkGrants,
         socketLeases,
         socketScopes,
         ownerStateBytes,

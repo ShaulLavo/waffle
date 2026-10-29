@@ -1315,7 +1315,12 @@ test("production publication oracle detects a disabled direct commit and a stale
 });
 
 test("production current cached and host reads recheck traversal permissions and metadata", async () => {
-  const fixture = await localPublicationFixture();
+  const backend = new MemoryBackend();
+  backend.fs.mkdirp("/dir");
+  const fixture = await localPublicationFixture(backend);
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => ++clock;
   try {
     await fixture.root.asyncCall("writeFile", ["/dir/child"], new Uint8Array([4]));
     const parent = await fixture.root.asyncCall("preopen", ["/dir"]);
@@ -1342,6 +1347,7 @@ test("production current cached and host reads recheck traversal permissions and
     expect((await fixture.root.asyncCall("lookup", ["/dir"])).children.size).toBe(1);
     expect((await fixture.changes(before)).kind).toBe("gap");
   } finally {
+    Date.now = originalNow;
     fixture.stop();
   }
 });
