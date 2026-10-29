@@ -230,6 +230,11 @@ function dylink(reader: Reader): { memory: MemoryInfo; importInfo: readonly Impo
   return { memory: info, importInfo };
 }
 
+/** Memory-info of a `dylink.0` custom section payload, as returned by `customSections`. */
+export function dylinkMemoryInfo(payload: Uint8Array, member: string): MemoryInfo {
+  return dylink(new Reader(payload, member)).memory;
+}
+
 function signed32(reader: Reader): number {
   let result = 0,
     shift = 0,
