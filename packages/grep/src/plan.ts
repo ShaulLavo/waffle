@@ -1,10 +1,14 @@
+import { compileGlob } from "../../waffle/fs/glob.js";
 import { compileMatcher } from "../../waffle/search/matcher.js";
 import type { MatcherPlan, OutputPlan, SearchPlan } from "../../waffle/search/types.js";
 
 type Fallback = { readonly kind: "fallback"; readonly reason: string };
 type OptionResult = { readonly kind: "parsed"; readonly consumeNext: boolean } | Fallback;
 type ParseResult = { readonly kind: "parsed"; readonly invocation: Invocation } | Fallback;
+type WalkResult = { readonly kind: "walk"; readonly plan: SearchPlan["walk"] } | Fallback;
 type Glob = SearchPlan["walk"]["include"][number];
+type FilenameMode = "automatic" | "always" | "never";
+type FileFilterKind = "include" | "exclude";
 
 interface ParserState {
   readonly patterns: string[];
@@ -12,13 +16,13 @@ interface ParserState {
   readonly include: Glob[];
   readonly exclude: Glob[];
   readonly excludeDirectories: Glob[];
+  readonly fileFilterOrder: FileFilterKind[];
   recursive: boolean;
   text: boolean;
   count: boolean;
   filesWithMatches: boolean;
   lineNumbers: boolean;
-  forceFilename: boolean;
-  suppressFilename: boolean;
+  filenameMode: FilenameMode;
   ignoreCase: boolean;
   fixed: boolean;
   extended: boolean;
@@ -29,6 +33,8 @@ interface Invocation extends ParserState {
 }
 
 const BRE_METACHARACTERS = new Set(["\\", ".", "[", "*", "^", "$"]);
+const UNSUPPORTED_GLOB_CHARACTERS = new Set(["?", "[", "]", "{", "}", "\\", "/"]);
+const MAX_WALK_FILTERS = 128;
 
 function fallback(reason: string): Fallback {
   return { kind: "fallback", reason };
@@ -45,13 +51,13 @@ function initialState(): ParserState {
     include: [],
     exclude: [],
     excludeDirectories: [],
+    fileFilterOrder: [],
     recursive: false,
     text: false,
     count: false,
     filesWithMatches: false,
     lineNumbers: false,
-    forceFilename: false,
-    suppressFilename: false,
+    filenameMode: "automatic",
     ignoreCase: false,
     fixed: false,
     extended: false,
@@ -61,10 +67,12 @@ function initialState(): ParserState {
 function parseLongOption(argument: string, state: ParserState): OptionResult {
   if (argument.startsWith("--include=")) {
     state.include.push(basename(argument.slice("--include=".length)));
+    state.fileFilterOrder.push("include");
     return { kind: "parsed", consumeNext: false };
   }
   if (argument.startsWith("--exclude=")) {
     state.exclude.push(basename(argument.slice("--exclude=".length)));
+    state.fileFilterOrder.push("exclude");
     return { kind: "parsed", consumeNext: false };
   }
   if (argument.startsWith("--exclude-dir=")) {
@@ -114,10 +122,10 @@ function parseShortOptions(
         state.lineNumbers = true;
         break;
       case "H":
-        state.forceFilename = true;
+        state.filenameMode = "always";
         break;
       case "h":
-        state.suppressFilename = true;
+        state.filenameMode = "never";
         break;
       case "i":
         state.ignoreCase = true;
@@ -208,9 +216,57 @@ function matcherPlan(invocation: Invocation): MatcherPlan {
   return { kind: "literal", patterns: invocation.patterns, ignoreCase: invocation.ignoreCase };
 }
 
-function outputPlan(invocation: Invocation): OutputPlan {
+function hasCanonicalFileFilterOrder(order: readonly FileFilterKind[]): boolean {
+  const firstExclude = order.indexOf("exclude");
+  const lastInclude = order.lastIndexOf("include");
+  return firstExclude === -1 || lastInclude === -1 || lastInclude < firstExclude;
+}
+
+function isProvenGlob(pattern: Glob): boolean {
+  for (const character of pattern.glob) {
+    const value = character.charCodeAt(0);
+    if (value < 32 || value > 126 || UNSUPPORTED_GLOB_CHARACTERS.has(character)) return false;
+  }
+  return true;
+}
+
+function walkPlan(invocation: Invocation): WalkResult {
+  if (!hasCanonicalFileFilterOrder(invocation.fileFilterOrder)) {
+    return fallback("include/exclude ordering exceeds the canonical walk semantics");
+  }
+  const lists = [invocation.include, invocation.exclude, invocation.excludeDirectories];
+  if (lists.some((patterns) => patterns.length > MAX_WALK_FILTERS)) {
+    return fallback("walk filter count exceeds the canonical limit");
+  }
+  const filters = invocation.include.concat(invocation.exclude, invocation.excludeDirectories);
+  if (!filters.every(isProvenGlob)) return fallback("glob syntax exceeds the proven GNU/S1 subset");
+  try {
+    for (const filter of filters) compileGlob(filter);
+  } catch {
+    return fallback("canonical walk compiler rejected a filter");
+  }
+  return {
+    kind: "walk",
+    plan: {
+      include: invocation.include,
+      exclude: invocation.exclude,
+      excludeDirectories: invocation.excludeDirectories,
+      hidden: true,
+      maxDepth: null,
+    },
+  };
+}
+
+function outputPlan(invocation: Invocation): OutputPlan | Fallback {
   if (invocation.filesWithMatches) return { kind: "files-with-matches" };
-  const withFilename = invocation.forceFilename || !invocation.suppressFilename;
+  if (
+    invocation.filenameMode === "automatic" &&
+    invocation.operands.length === 1 &&
+    invocation.operands[0] !== "."
+  ) {
+    return fallback("one ambiguous operand requires explicit -H or -h");
+  }
+  const withFilename = invocation.filenameMode !== "never";
   if (invocation.count) return { kind: "count", withFilename, zeroCounts: true };
   return { kind: "lines", lineNumbers: invocation.lineNumbers, withFilename };
 }
@@ -237,20 +293,18 @@ export function planGrep(
   const matcher = matcherPlan(invocation);
   const admission = compileMatcher(matcher, "grep", locale);
   if (admission.kind === "fallback") return admission;
+  const walk = walkPlan(invocation);
+  if (walk.kind === "fallback") return walk;
+  const output = outputPlan(invocation);
+  if (output.kind === "fallback") return output;
   return {
     kind: "fast",
     plan: {
       tool: "grep",
       operands: invocation.operands,
-      walk: {
-        include: invocation.include,
-        exclude: invocation.exclude,
-        excludeDirectories: invocation.excludeDirectories,
-        hidden: true,
-        maxDepth: null,
-      },
+      walk: walk.plan,
       matcher,
-      output: outputPlan(invocation),
+      output,
     },
   };
 }

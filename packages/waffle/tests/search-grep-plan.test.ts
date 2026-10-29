@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { planGrep } from "../../grep/src/plan.js";
+import { compileGlob } from "../fs/glob.js";
 import type { SearchPlan } from "../search/types.js";
 
 const utf8 = { LC_ALL: "C.UTF-8" };
@@ -7,6 +8,11 @@ const utf8 = { LC_ALL: "C.UTF-8" };
 function fast(argv: readonly string[], env: Readonly<Record<string, string>> = utf8): SearchPlan {
   const result = planGrep(argv, env);
   if (result.kind === "fallback") throw new Error(result.reason);
+  const filters = result.plan.walk.include.concat(
+    result.plan.walk.exclude,
+    result.plan.walk.excludeDirectories,
+  );
+  for (const filter of filters) compileGlob(filter);
   return result.plan;
 }
 
@@ -127,12 +133,12 @@ test("separate, attached and repeated -e patterns retain their order", () => {
 });
 
 test("options after operands and -- follow GNU argv boundaries", () => {
-  expect(fast(["-ra", "needle", "src", "-n"]).output).toEqual({
+  expect(fast(["-ra", "needle", ".", "-n"]).output).toEqual({
     kind: "lines",
     lineNumbers: true,
     withFilename: true,
   });
-  const plan = fast(["-raF", "--", "-needle", "-path"]);
+  const plan = fast(["-raHF", "--", "-needle", "-path"]);
   expect(plan.matcher).toEqual({ kind: "literal", patterns: ["-needle"], ignoreCase: false });
   expect(plan.operands).toEqual(["-path"]);
 });
@@ -151,6 +157,34 @@ test("all include and exclude filters are basename globs and hidden files stay i
   expect(plan.walk).toEqual(walk(["*.js", "*.mjs"], ["*.min.js"], ["node_modules", ".git"]));
 });
 
+test("only include-then-exclude filter order enters the canonical walk", () => {
+  expect(fast(["-raF", "--include=*.js", "--exclude=*.min.js", "needle", "."]).walk).toEqual(
+    walk(["*.js"], ["*.min.js"]),
+  );
+  expect(fast(["-raF", "--exclude=*.js", "needle", "."]).walk).toEqual(walk([], ["*.js"]));
+  for (const argv of [
+    ["-ralF", "--exclude=*.js", "--include=*.js", "needle", "."],
+    ["-ralF", "--exclude=*.txt", "--include=*.js", "needle", "."],
+    ["-raF", "--include=*.js", "--exclude=*.min.js", "--include=*.mjs", "needle", "."],
+  ]) {
+    fallback(argv);
+  }
+});
+
+test("unproved GNU glob dialect and directory pruning fall back", () => {
+  const options = [
+    "--include=*.{js,txt}",
+    "--include=[[:alpha:]].js",
+    "--include=?",
+    "--exclude=?",
+    "--exclude=a\\",
+    "--exclude-dir=sub/",
+    "--exclude-dir={sub,other}",
+    "--exclude-dir=[s]ub",
+  ];
+  for (const option of options) fallback(["-ralF", option, "needle", "."]);
+});
+
 test("line, count and file-list output preserve grep precedence", () => {
   expect(fast(["-ran", "needle", "."]).output).toEqual({
     kind: "lines",
@@ -167,19 +201,47 @@ test("line, count and file-list output preserve grep precedence", () => {
   }
 });
 
-test("-H wins over -h in either order and recursive output names files by default", () => {
-  for (const flags of ["-rahH", "-raHh"]) {
-    expect(fast([flags, "needle", "."]).output).toEqual({
-      kind: "lines",
-      lineNumbers: false,
-      withFilename: true,
-    });
+test("the last -H or -h controls line and count filenames", () => {
+  const cases = [
+    { argv: ["-raHhF", "needle", "."], withFilename: false },
+    { argv: ["-rahHF", "needle", "."], withFilename: true },
+    { argv: ["-ra", "-H", "-h", "-F", "needle", "."], withFilename: false },
+    { argv: ["-ra", "-h", "-H", "-F", "needle", "."], withFilename: true },
+  ];
+  for (const { argv, withFilename } of cases) {
+    expect(fast(argv).output).toEqual({ kind: "lines", lineNumbers: false, withFilename });
   }
-  expect(fast(["-rah", "needle", "."]).output).toEqual({
-    kind: "lines",
-    lineNumbers: false,
+  expect(fast(["-racHhF", "needle", "."]).output).toEqual({
+    kind: "count",
     withFilename: false,
+    zeroCounts: true,
   });
+  expect(fast(["-rachHF", "needle", "."]).output).toEqual({
+    kind: "count",
+    withFilename: true,
+    zeroCounts: true,
+  });
+});
+
+test("automatic filenames require a known directory or multiple operands", () => {
+  for (const argv of [
+    ["-raF", "needle"],
+    ["-raF", "needle", "."],
+    ["-racF", "needle", "a.js", "b.js"],
+  ]) {
+    expect(fast(argv).output).toMatchObject({ withFilename: true });
+  }
+  for (const operand of ["a.js", "src", "file-link", "dir-link"]) {
+    fallback(["-raF", "needle", operand]);
+    fallback(["-racF", "needle", operand]);
+  }
+});
+
+test("explicit -H and -h qualify single file, directory and symlink operands", () => {
+  for (const operand of ["a.js", "src", "file-link", "dir-link"]) {
+    expect(fast(["-raHF", "needle", operand]).output).toMatchObject({ withFilename: true });
+    expect(fast(["-rahF", "needle", operand]).output).toMatchObject({ withFilename: false });
+  }
 });
 
 test("plain BRE punctuation is literal and BRE operators fall back", () => {
@@ -219,6 +281,21 @@ test("matcher size admission is delegated to S3", () => {
   fallback(["-raF", "a".repeat(4097), "."]);
   const patterns = Array.from({ length: 65 }, () => ["-e", "x"]).flat();
   fallback(["-raF"].concat(patterns, ["."]));
+});
+
+test("walk filters satisfy canonical compiler and count bounds before admission", () => {
+  expect(
+    fast(["-raF", `--include=${"a".repeat(1024)}`, "needle", "."]).walk.include[0]?.glob,
+  ).toHaveLength(1024);
+  for (const option of ["--include=[", "--include=a\\", `--include=${"a".repeat(1025)}`]) {
+    fallback(["-raF", option, "needle", "."]);
+  }
+  for (const name of ["include", "exclude", "exclude-dir"]) {
+    const accepted = Array.from({ length: 128 }, (_, index) => `--${name}=file${index}`);
+    expect(fast(["-raF"].concat(accepted, ["needle", "."])).tool).toBe("grep");
+    const rejected = Array.from({ length: 129 }, (_, index) => `--${name}=file${index}`);
+    fallback(["-raF"].concat(rejected, ["needle", "."]));
+  }
 });
 
 test("only qualified grep locales enter the fast path", () => {
