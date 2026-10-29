@@ -10,6 +10,12 @@ import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemClient } from "../fs/client.js";
 import { FilesystemService } from "../fs/service.js";
 import { createFilesystemConnection, revokeFilesystem, reapFilesystem } from "../fs/protocol.js";
+import { WatchService } from "../fs/watch-service.js";
+import { Wasi } from "../core/wasi.js";
+import { FilesystemError, type FileSystem, type WatchFileSystem } from "../core/filesystem.js";
+import type { Resource } from "../core/descriptors.js";
+import { RIGHTS_ALL } from "../core/rights.js";
+import { watchGuest, watchGuestModule } from "./fixtures/watch-guest.js";
 
 async function fixture(backend = new MemoryBackend()) {
   const pair = createFilesystemConnection();
@@ -520,3 +526,245 @@ test("namespace event names preserve a leading UTF8 BOM", async () => {
     await f.close();
   }
 }, 10000);
+
+const RECURSIVE = 1;
+const CHANGE = 1;
+const RENAME = 2;
+const OVERFLOW = 3;
+
+/** The real WASI adapter and watch service in one thread; calls are counted at the service. */
+function guestWatches(hooks: { afterOpen?(): void; duringRead?(): void } = {}) {
+  const backend = new MemoryBackend();
+  backend.execute("mkdirp", ["/dir/sub"], new Uint8Array());
+  const write = (path: string, byte = 1) =>
+    backend.execute("writeFile", [path, false], new Uint8Array([byte]));
+  write("/dir/a");
+  write("/dir/sub/b");
+  const service = new WatchService(backend);
+  const calls = { open: 0, read: 0, close: 0 };
+  const state = { revoked: false };
+  const source: WatchFileSystem = {
+    cells: backend.shared.watch.cells,
+    get revoked() {
+      return state.revoked;
+    },
+    open(handle, recursive) {
+      calls.open++;
+      if (state.revoked) throw new FilesystemError(11);
+      const id = service.open(1, handle, recursive, () => false);
+      hooks.afterOpen?.();
+      return id;
+    },
+    read(id) {
+      calls.read++;
+      const batch = service.read(1, id);
+      hooks.duringRead?.();
+      return batch;
+    },
+    close(id) {
+      calls.close++;
+      service.close(1, id);
+    },
+  };
+  const fs: FileSystem = Object.assign(backend.fs, { watches: source });
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs,
+    preopens: { "/": "/" },
+    stdout() {},
+    stderr() {},
+    sleep() {},
+  });
+  const module = watchGuestModule();
+  const instance = new WebAssembly.Instance(module, wasi.imports(module));
+  wasi.start(instance);
+  const descriptor = (path: string) => {
+    const node = backend.fs.lookup(path)!;
+    const handle = backend.fs.handleForNode(node);
+    backend.fs.retain(handle);
+    const resource: Resource =
+      node.kind === "dir"
+        ? { kind: "directory", handle }
+        : { kind: "file", handle, offset: 0, append: false };
+    return wasi.descriptors.open(resource, RIGHTS_ALL, RIGHTS_ALL);
+  };
+  return { backend, calls, state, wasi, guest: watchGuest(instance), write, descriptor };
+}
+
+test("guest watch imports report direct, recursive and file names as packed records", () => {
+  const h = guestWatches();
+  const direct = h.guest.open(h.descriptor("/dir"));
+  const recursive = h.guest.open(h.descriptor("/dir"), RECURSIVE);
+  const file = h.guest.open(h.descriptor("/dir/a"), RECURSIVE);
+  expect([direct.errno, recursive.errno, file.errno]).toEqual([0, 0, 0]);
+  expect([direct.id, recursive.id, file.id]).toEqual([1, 2, 3]);
+  expect(h.guest.read(direct.id).errno).toBe(6);
+  h.write("/dir/a", 2);
+  h.write("/dir/sub/b", 3);
+  expect(h.guest.drain(direct.id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.guest.drain(recursive.id).records).toEqual([
+    { type: CHANGE, name: "a" },
+    { type: CHANGE, name: "sub/b" },
+  ]);
+  expect(h.guest.drain(file.id).records).toEqual([{ type: CHANGE, name: null }]);
+  h.write("/dir/né");
+  expect(h.guest.drain(recursive.id).records).toContainEqual({ type: RENAME, name: "né" });
+  expect(h.guest.close(direct.id)).toBe(0);
+  expect(h.guest.close(direct.id)).toBe(8);
+  expect(h.guest.read(direct.id).errno).toBe(8);
+  expect(h.guest.open(h.descriptor("/dir")).id).toBe(4);
+  expect(h.wasi.filesystemWatches?.active).toBe(true);
+});
+
+test("guest watch read returns ENOBUFS with the needed size and loses nothing", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"), RECURSIVE);
+  h.write("/dir/a", 2);
+  h.write("/dir/sub/b", 3);
+  const short = h.guest.read(id, 11);
+  expect(short).toMatchObject({ errno: 42, length: 12 });
+  const one = h.guest.read(id, 23);
+  expect(one).toMatchObject({ errno: 0, length: 12, records: [{ type: CHANGE, name: "a" }] });
+  const reads = h.calls.read;
+  expect(h.guest.read(id).records).toEqual([{ type: CHANGE, name: "sub/b" }]);
+  expect(h.calls.read).toBe(reads);
+});
+
+test("guest watch EAGAIN makes no service call while the commit counter is unchanged", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"), RECURSIVE);
+  h.write("/dir/a", 2);
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  const reads = h.calls.read;
+  for (let index = 0; index < 100; index++) expect(h.guest.read(id).errno).toBe(6);
+  expect(h.calls.read).toBe(reads);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+  h.write("/dir/a", 3);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(true);
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.calls.read).toBe(reads + 1);
+});
+
+test("each guest watch keeps its own observed counter across interleaved reads", () => {
+  const h = guestWatches();
+  const first = h.guest.open(h.descriptor("/dir")).id;
+  const second = h.guest.open(h.descriptor("/dir")).id;
+  h.write("/dir/a", 2);
+  // Reading `first` drains the shared ring into `second`'s service queue without a new commit.
+  expect(h.guest.drain(first).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(true);
+  expect(h.guest.drain(second).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+});
+
+test("a commit between service activation and watch_open's return reaches the first read", () => {
+  let inject = true;
+  const h = guestWatches({
+    afterOpen() {
+      if (!inject) return;
+      inject = false;
+      h.write("/dir/a", 9);
+    },
+  });
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  expect(h.wasi.filesystemWatches?.pending()).toBe(true);
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+});
+
+test("guest watch coalescing merges only events still unread in the service", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  h.write("/dir/a", 2);
+  h.write("/dir/a", 3);
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  h.write("/dir/a", 4);
+  expect(h.guest.drain(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+});
+
+test("a full guest watch queue yields one terminal overflow record, then end of stream", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  for (let index = 0; index <= 128; index++) h.write(`/dir/f${index}`);
+  const read = h.guest.read(id);
+  expect(read).toMatchObject({ errno: 0, length: 8, records: [{ type: OVERFLOW, name: null }] });
+  expect(h.guest.read(id)).toMatchObject({ errno: 0, length: 0 });
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+  expect(h.wasi.filesystemWatches?.active).toBe(false);
+  expect(h.guest.close(id)).toBe(0);
+  expect(h.calls.close).toBe(1);
+});
+
+test("guest watch imports validate before changing state and pass service errnos through", () => {
+  const h = guestWatches();
+  const root = h.descriptor("/dir");
+  expect(h.guest.open(99).errno).toBe(8);
+  expect(h.guest.open(1).errno).toBe(28);
+  expect(h.guest.open(root, 2).errno).toBe(28);
+  expect(h.guest.open(root, 0, 65534).errno).toBe(21);
+  expect(h.calls.open).toBe(0);
+  // Only the first subscription's capture can miss a node; later graphs keep detached history.
+  const detached = h.descriptor("/dir/sub/b");
+  h.backend.execute("remove", ["/dir/sub/b"], new Uint8Array());
+  expect(h.guest.open(detached).errno).toBe(44);
+  const { id } = h.guest.open(root);
+  h.write("/dir/a", 2);
+  expect(h.guest.read(id, 16, 65530).errno).toBe(21);
+  expect(h.guest.read(id, 16, 1024, 65534).errno).toBe(21);
+  expect(h.calls.read).toBe(0);
+  expect(h.guest.read(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  const locked = h.descriptor("/dir/sub");
+  const sub = h.backend.fs.handleForNode(h.backend.fs.lookup("/dir/sub")!);
+  h.backend.execute("setMode", [sub, 0o300], new Uint8Array());
+  expect(h.guest.open(locked).errno).toBe(2);
+  for (let index = 1; index < 128; index++) expect(h.guest.open(root).errno).toBe(0);
+  expect(h.guest.open(root).errno).toBe(6);
+  h.state.revoked = true;
+  expect(h.guest.read(id).errno).toBe(11);
+  expect(h.wasi.filesystemWatches?.pending()).toBe(false);
+  expect(h.guest.close(id)).toBe(0);
+  expect(h.guest.close(id)).toBe(8);
+});
+
+test("a filesystem without watches reports ENOTSUP and offers no readiness", () => {
+  const fs = new MemFS();
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs,
+    preopens: { "/": "/" },
+    stdout() {},
+    stderr() {},
+    sleep() {},
+  });
+  const module = watchGuestModule();
+  const instance = new WebAssembly.Instance(module, wasi.imports(module));
+  wasi.start(instance);
+  const guest = watchGuest(instance);
+  expect(guest.open(3).errno).toBe(58);
+  expect(guest.read(1).errno).toBe(8);
+  expect(guest.close(1)).toBe(8);
+  expect(wasi.filesystemWatches).toBeUndefined();
+});
+
+test("guest watch_read writes records through memory views reacquired after the service call", () => {
+  const h = guestWatches({
+    duringRead: () => {
+      h.guest.memory.grow(1);
+    },
+  });
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  h.write("/dir/a", 2);
+  const before = h.guest.memory.buffer.byteLength;
+  expect(h.guest.read(id).records).toEqual([{ type: CHANGE, name: "a" }]);
+  expect(h.guest.memory.buffer.byteLength).toBe(before + 65536);
+});
+
+test("proc_exit drops guest watch ids without service calls", () => {
+  const h = guestWatches();
+  const { id } = h.guest.open(h.descriptor("/dir"));
+  h.wasi.dropWatches();
+  expect(h.wasi.filesystemWatches?.active).toBe(false);
+  expect(h.guest.read(id).errno).toBe(8);
+  expect(h.calls.close).toBe(0);
+});

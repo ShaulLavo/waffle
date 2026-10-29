@@ -1,9 +1,9 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// Descriptor reopening and process-local paths: 9,588 B gzip on Bun 1.4.2 (2026-10-21),
-// up from 8,382 B at 45c14a1. Increase by the measured 1,206 B, preserving the 194 B margin.
-export const CORE_BUDGET_BYTES = 9_782;
+// Guest filesystem watch imports: 10,640 B gzip on Bun 1.4.4 (2026-10-29), up from 9,614 B
+// at 0ac89e7. Increase by the measured 1,026 B, preserving the 168 B margin.
+export const CORE_BUDGET_BYTES = 10_808;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
     throw new Error(
