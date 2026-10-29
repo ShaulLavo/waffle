@@ -48,11 +48,11 @@ unlink.
 
 Addresses are JSON `{ "family": "Unix", "path": string | null }`:
 
-| Handle   | `localAddr`          | `peerAddr`           |
-| -------- | -------------------- | -------------------- |
-| listener | the bound path       | `BADF`               |
-| accepted | the bound path       | `null` path          |
-| client   | `null` path          | the connected path   |
+| Handle   | `localAddr`    | `peerAddr`         |
+| -------- | -------------- | ------------------ |
+| listener | the bound path | `BADF`             |
+| accepted | the bound path | `null` path        |
+| client   | `null` path    | the connected path |
 
 ## Names
 
@@ -81,24 +81,27 @@ Addresses are JSON `{ "family": "Unix", "path": string | null }`:
   `ECONNRESET` to those peers.
 - One runtime allows 128 path listeners and 128 path connections. A listener holds at most 64
   connections it has not accepted; the next connect fails with `ECONNREFUSED`. Exhaustion fails
-  with `ENOBUFS` and creates nothing. A connection counts until both ends close.
+  with `ENOBUFS` and creates nothing. A connection counts until both ends close. At most 128 path
+  requests may be waiting on the filesystem at once across the runtime; the next one fails with
+  `ENOBUFS`.
 
 ## Errors
 
-| Code           | When                                                                    |
-| -------------- | ----------------------------------------------------------------------- |
-| `EINVAL`       | NUL, unpaired surrogate, or a relative path                             |
-| `ENOENT`       | empty path, missing name or parent                                      |
-| `ENAMETOOLONG` | more than 4096 UTF-8 bytes                                              |
-| `ENOTDIR`      | a parent is not a directory                                             |
+| Code           | When                                                                     |
+| -------------- | ------------------------------------------------------------------------ |
+| `EINVAL`       | NUL, unpaired surrogate, or a relative path                              |
+| `ENOENT`       | empty path, missing name or parent                                       |
+| `ENAMETOOLONG` | more than 4096 UTF-8 bytes                                               |
+| `ENOTDIR`      | a parent is not a directory                                              |
 | `EACCES`       | no search on a parent, no write on the parent (bind) or socket (connect) |
-| `ELOOP`        | symlink loop                                                            |
-| `ENOTCAPABLE`  | no path scope, a scope that failed its check, or a path leaving it      |
-| `EADDRINUSE`   | the name exists                                                         |
-| `ECONNREFUSED` | not a socket, no live listener, another scope root, or a full backlog   |
-| `ENOBUFS`      | runtime listener or connection limit                                    |
-| `ECANCELED`    | the helper or runtime shut down during the call                         |
-| `ENOTSUP`      | standalone host                                                         |
+| `ELOOP`        | symlink loop                                                             |
+| `ENOTCAPABLE`  | no path scope, a scope that failed its check, or a path leaving it       |
+| `EADDRINUSE`   | the name exists                                                          |
+| `ECONNREFUSED` | not a socket, no live listener, another scope root, or a full backlog    |
+| `ENOBUFS`      | runtime listener, connection or pending-request limit                    |
+| `ECANCELED`    | the helper or runtime shut down during the call                          |
+| `EBADF`        | the request reused a handle that already names a listener or socket      |
+| `ENOTSUP`      | standalone host                                                          |
 
 ## Not supported
 
