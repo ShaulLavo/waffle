@@ -117,7 +117,7 @@ async function run(): Promise<void> {
   );
   await writeFile(
     join(consumerDirectory, "src/main.ts"),
-    'import { bootstrap } from "waffle/browser/worker";\nexport { bootstrap };\n',
+    'import { bootstrap } from "waffle/browser/worker";\nimport searchUrl from "waffle/search/search-worker?worker&url";\nimport shardUrl from "waffle/search/shard-worker?worker&url";\nexport { bootstrap, searchUrl, shardUrl };\n',
   );
   execFileSync("bun", ["run", "vite", "build", "--outDir", join(scratch, "vite-dist")], {
     cwd: consumerDirectory,
