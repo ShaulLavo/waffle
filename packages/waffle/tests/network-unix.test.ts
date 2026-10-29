@@ -69,7 +69,10 @@ class Guest {
   private calls = new Map<number, PromiseWithResolvers<unknown>>();
   private next = 0;
   lastMs = 0;
-  constructor(readonly helper: RuntimeNetworkHelper, ring: SharedArrayBuffer) {
+  constructor(
+    readonly helper: RuntimeNetworkHelper,
+    ring: SharedArrayBuffer,
+  ) {
     this.worker.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
       if (data.kind === "net") return this.helper.handle(data.request);
       const call = this.calls.get(data.id)!;
@@ -148,7 +151,10 @@ test("path streams carry FIFO bytes both ways with Unix addresses", async () => 
     family: "Unix",
     path: "/run/s.sock",
   });
-  expect(JSON.parse(await server.call("peerAddr", accepted))).toEqual({ family: "Unix", path: null });
+  expect(JSON.parse(await server.call("peerAddr", accepted))).toEqual({
+    family: "Unix",
+    path: null,
+  });
   expect(JSON.parse(await client.call("localAddr", conn))).toEqual({ family: "Unix", path: null });
   expect(JSON.parse(await client.call("peerAddr", conn))).toEqual({
     family: "Unix",
@@ -284,7 +290,10 @@ test("standalone hosts report ENOTSUP for path calls", () => {
   expect(host.listenPath("/s")).toBe(UNSUPPORTED);
   expect(JSON.parse(host.error(0) as string)).toMatchObject({ code: "ENOTSUP", syscall: "listen" });
   expect(host.connectPath("/s")).toBe(UNSUPPORTED);
-  expect(JSON.parse(host.error(0) as string)).toMatchObject({ code: "ENOTSUP", syscall: "connect" });
+  expect(JSON.parse(host.error(0) as string)).toMatchObject({
+    code: "ENOTSUP",
+    syscall: "connect",
+  });
   host.dispose();
 });
 
@@ -293,7 +302,8 @@ test("a full backlog refuses; runtime pair and listener caps fail with ENOBUFS a
   const server = guest(network);
   const client = guest(network);
   const listener = await server.call("listenPath", "/backlog");
-  for (let i = 0; i < 64; i++) expect(await client.call("connectPath", "/backlog")).toBeGreaterThan(0);
+  for (let i = 0; i < 64; i++)
+    expect(await client.call("connectPath", "/backlog")).toBeGreaterThan(0);
   expect(await client.call("connectPath", "/backlog")).toBe(ERROR);
   expect((await client.error()).code).toBe("ECONNREFUSED");
   const second = await server.call("listenPath", "/more");
@@ -309,7 +319,8 @@ test("a full backlog refuses; runtime pair and listener caps fail with ENOBUFS a
   expect(await client.call("connectPath", "/backlog")).toBe(ERROR);
   expect(await client.call("close", more[0])).toBe(OK);
   expect(await client.call("connectPath", "/backlog")).toBeGreaterThan(0);
-  for (let i = 0; i < 127; i++) expect(await server.call("listenPath", `/l${i}`)).toBeGreaterThan(0);
+  for (let i = 0; i < 127; i++)
+    expect(await server.call("listenPath", `/l${i}`)).toBeGreaterThan(0);
   const before = tree.nodes.size;
   expect(await server.call("listenPath", "/one-too-many")).toBe(ERROR);
   expect((await server.error()).code).toBe("ENOBUFS");
@@ -394,7 +405,7 @@ test("a blocked poll wakes for accept, data and EOF without periodic polling", a
   await Bun.sleep(30);
   await client.call("write", conn, new Uint8Array([1]));
   expect(await data).toBe(1);
-  expect(await server.call("read", accepted, 1)).toEqual(new Uint8Array([1]));
+  expect(await server.call<Uint8Array | number>("read", accepted, 1)).toEqual(new Uint8Array([1]));
   const end = server.call("poll", 10_000);
   await Bun.sleep(30);
   await client.call("close", conn);

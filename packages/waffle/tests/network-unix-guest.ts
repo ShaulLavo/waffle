@@ -4,14 +4,21 @@ import { NetHost } from "../browser/net/host.js";
 import type { NetRequest } from "../browser/net/protocol.js";
 
 declare const self: DedicatedWorkerGlobalScope;
-export type GuestCall = { kind: "call"; id: number; method: keyof NetHost & string; args: unknown[] };
+export type GuestCall = {
+  kind: "call";
+  id: number;
+  method: keyof NetHost & string;
+  args: unknown[];
+};
 export type GuestMessage =
   | { kind: "net"; request: NetRequest }
   | { kind: "return"; id: number; value: unknown; ms: number }
   | { kind: "throw"; id: number; message: string };
 
 let host: NetHost | undefined;
-self.onmessage = ({ data }: MessageEvent<{ kind: "start"; ring: SharedArrayBuffer } | GuestCall>) => {
+self.onmessage = ({
+  data,
+}: MessageEvent<{ kind: "start"; ring: SharedArrayBuffer } | GuestCall>) => {
   if (data.kind === "start") {
     host = new NetHost(
       data.ring,

@@ -46,12 +46,18 @@ function snapshot(options: Parameters<RuntimeNetwork["createHelper"]>[0]) {
     throw new TypeError("Network listening hook must be a function");
   if (stopped !== undefined && typeof stopped !== "function")
     throw new TypeError("Network stopped hook must be a function");
-  return { ring, fetch, hooks: { listening, stopped }, pathScope: snapshotScope(options.pathScope) };
+  return {
+    ring,
+    fetch,
+    hooks: { listening, stopped },
+    pathScope: snapshotScope(options.pathScope),
+  };
 }
 
 function snapshotScope(scope: RuntimeNetworkPathScope | undefined) {
   if (scope === undefined) return undefined;
-  if (!scope || typeof scope !== "object") throw new TypeError("Network path scope must be an object");
+  if (!scope || typeof scope !== "object")
+    throw new TypeError("Network path scope must be an object");
   const filesystem = scope.filesystem;
   const directory = scope.directory;
   if (!filesystem || typeof filesystem !== "object")

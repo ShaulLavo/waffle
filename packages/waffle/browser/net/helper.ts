@@ -26,7 +26,12 @@ import {
   type SocketAddr,
   type TcpRequest,
 } from "./protocol.js";
-import { socketPathError, type HelperPaths, type SocketLease, type SocketScope } from "./unix-paths.js";
+import {
+  socketPathError,
+  type HelperPaths,
+  type SocketLease,
+  type SocketScope,
+} from "./unix-paths.js";
 import { EBADF, ECANCELED, ENOBUFS, ENOTCAPABLE } from "./unix-status.js";
 import { RingWriter } from "./ring.js";
 import {
@@ -932,7 +937,13 @@ function snapshotRequest(req: NetRequest): NetRequest {
     case "tcp-write":
       return { type, id, reply: req.reply, data: req.data };
     case "unix-listen":
-      return { type, id, reply: req.reply, path: req.path, unlinkOnClose: req.unlinkOnClose !== false };
+      return {
+        type,
+        id,
+        reply: req.reply,
+        path: req.path,
+        unlinkOnClose: req.unlinkOnClose !== false,
+      };
     case "unix-connect":
       return { type, id, reply: req.reply, path: req.path };
     case "unix-close":

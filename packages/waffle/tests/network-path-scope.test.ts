@@ -65,18 +65,18 @@ test("a launcher pairs its live admitted context with a directory, and only that
   });
   runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
   const { childFilesystem } = await spawnFromRoot("/app");
-  const [{ context, service }] = seen;
-  const scope = service.networkPathScope(context!, 5);
+  const { context, service } = seen[0]!;
+  const scope = service.networkPathScope(context, 5);
   expect(scope.filesystem).toBe(childFilesystem);
   expect(scope.directory).toBe(5);
   expect(Object.isFrozen(scope)).toBe(true);
-  expect(() => service.networkPathScope({ ...context!, job: context!.job + 1 }, 5)).toThrow(
+  expect(() => service.networkPathScope({ ...context, job: context.job + 1 }, 5)).toThrow(
     /does not match/,
   );
-  expect(() => service.networkPathScope({ ...context!, pid: 99_999 }, 5)).toThrow(/no admitted/);
-  expect(() => service.networkPathScope(context!, -1)).toThrow(TypeError);
+  expect(() => service.networkPathScope({ ...context, pid: 99_999 }, 5)).toThrow(/no admitted/);
+  expect(() => service.networkPathScope(context, -1)).toThrow(TypeError);
   runtime.filesystem.revoke(childFilesystem);
-  expect(() => service.networkPathScope(context!, 5)).toThrow(/revoked/);
+  expect(() => service.networkPathScope(context, 5)).toThrow(/revoked/);
 });
 
 test("an exited context cannot be paired", async () => {
@@ -87,7 +87,7 @@ test("an exited context cannot be paired", async () => {
   });
   runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
   await spawnFromRoot("/app");
-  const [{ context, service }] = seen;
-  context!.exit(0);
-  expect(() => service.networkPathScope(context!, 5)).toThrow();
+  const { context, service } = seen[0]!;
+  context.exit(0);
+  expect(() => service.networkPathScope(context, 5)).toThrow();
 });

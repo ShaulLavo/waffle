@@ -18,8 +18,7 @@ export interface HelperPaths {
 
 /** 0, or the WASI errno for a path that must not reach the filesystem walk. */
 export function socketPathError(path: unknown): number {
-  if (typeof path !== "string" || path.includes("\0") || LONE_SURROGATE.test(path))
-    return EINVAL;
+  if (typeof path !== "string" || path.includes("\0") || LONE_SURROGATE.test(path)) return EINVAL;
   if (path === "") return ENOENT;
   // Bun joins relative paths to the process cwd; Waffle reads absolute paths inside the scope.
   if (!path.startsWith("/")) return EINVAL;
