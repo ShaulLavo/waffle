@@ -32,7 +32,7 @@ function fixture() {
       shared: new native.SharedArrayBufferConstructor(4),
       segments: [],
       capabilities: new native.SharedArrayBufferConstructor(protocol.CAPABILITY_LENGTH * 4),
-      sections: new native.SharedArrayBufferConstructor(4),
+      sections: new native.SharedArrayBufferConstructor(protocol.FILESYSTEM_SECTION_BYTES),
       owner: 1,
       maxBytes: protocol.PAGE,
       ownerStates: new native.SharedArrayBufferConstructor(8),

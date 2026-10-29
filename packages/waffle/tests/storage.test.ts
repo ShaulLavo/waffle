@@ -462,3 +462,21 @@ for (const whenBusy of ["wait", "takeover"] as const)
       await debt;
     }
   });
+
+test("durable sockets cannot acquire hard links or payload data", () => {
+  const value: PersistedIndex = {
+    version: 1,
+    generation: 1,
+    root: 1,
+    nodes: [
+      { ino: 1, kind: "dir", mtime: 0, size: 0, children: [["socket", 2]] },
+      { ino: 2, kind: "socket", mtime: 0, mode: 0o600, size: 0 },
+    ],
+  };
+  expect(() => validatePersistedIndex(value)).not.toThrow();
+  value.nodes[0]!.children!.push(["hardlink", 2]);
+  expect(() => validatePersistedIndex(value)).toThrow();
+  value.nodes[0]!.children!.pop();
+  value.nodes[1]!.data = "payload";
+  expect(() => validatePersistedIndex(value)).toThrow();
+});

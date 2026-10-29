@@ -91,10 +91,13 @@ interface TreeWalk {
   search?: (node: DirNode) => void;
   depth?: number;
   pathUnits?: number;
+  pathBytes?: number;
 }
-function treePathError(path: string, limit: number | undefined): number {
+function treePathError(path: string, limit: number | undefined, bytes?: number): number {
   if (!path) return 44;
   if (path.includes("\0")) return 28;
+  if (bytes !== undefined && /\p{Surrogate}/u.test(path)) return 28;
+  if (bytes !== undefined && utf8ByteLength(path) > bytes) return 37;
   return limit !== undefined && path.length > limit ? 37 : 0;
 }
 function expandTreeLink(
@@ -117,7 +120,7 @@ function expandTreeLink(
   if (absolute && !options.clampRoot) return 63;
   const suffix = path.slice(start);
   const expanded = target + (suffix || path.endsWith("/") ? "/" + suffix : "");
-  const error = treePathError(expanded, options.pathUnits);
+  const error = treePathError(expanded, options.pathUnits, options.pathBytes);
   return (
     error || {
       path: expanded,
@@ -128,7 +131,7 @@ function expandTreeLink(
 }
 /** Expand links against actual parent edges, never a lexically normalized pathname. */
 export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePath | number {
-  const error = treePathError(path, options.pathUnits);
+  const error = treePathError(path, options.pathUnits, options.pathBytes);
   if (error) return error;
   const dirs: DirNode[] = [];
   const names: string[] = [];
@@ -437,10 +440,12 @@ export class MemFS implements FileSystem {
     path: string,
     clampRoot: boolean,
     followFinal: boolean,
+    pathBytes?: number,
   ): MemoryPath | number {
     const resolved = walkTree(this.directory(directory), path, {
       clampRoot,
       followFinal,
+      pathBytes,
       child: (parent, name) => {
         const child = parent.children.get(name);
         if (child?.kind === "dir") this.directoryParents.set(child, parent);
@@ -618,6 +623,7 @@ export class MemFS implements FileSystem {
       path.replace(/^\/+/, "") || ".",
       this.nodeForHandle(directory) === this.root,
       followFinal,
+      4096,
     );
     return result === 63 ? 76 : result;
   }
