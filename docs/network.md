@@ -27,6 +27,9 @@ The names `fetchPolicy`, `previewHooks`, `sendNetRequest` and `writeGuestFile` a
 consumer callbacks. Preview hooks register and unregister this helper with the
 existing `PreviewRouter`. External fetch policy remains injected.
 
+To let a guest use pathname sockets, also pass a `pathScope` to `createHelper`. See
+[Unix-domain stream sockets](unix-sockets.md).
+
 Shared hosts send bind, connect and write commands through their existing sender.
 A private shared reply buffer lets the worker wait for the helper's answer.
 Incoming bytes, accepts, EOF and writable notifications use the existing ring.

@@ -151,6 +151,7 @@ class Successor {
     if (entries.length > WORKSPACE_LIMITS.pageEntries) contract("Snapshot page count exceeded");
     let charge = 0;
     for (const entry of entries) {
+      if (entry.kind === "socket") throw new FilesystemError(58);
       if (entry.kind !== "file" && entry.kind !== "directory" && entry.kind !== "symlink")
         throw new WorkspaceArchiveError("INVALID", "Unsupported entry kind");
       const metadata: NodeMetadata =
@@ -304,6 +305,8 @@ async function* sourceEntry(
   };
   checkSignal(signal);
   switch (entry.kind) {
+    case "socket":
+      throw new FilesystemError(58);
     case "directory":
       yield { metadata: { ...metadata, kind: "directory" } };
       return;

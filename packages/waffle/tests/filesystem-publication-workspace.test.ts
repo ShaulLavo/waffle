@@ -34,6 +34,7 @@ import {
 } from "../fs/publication-attachment";
 import {
   CAPABILITY_HEADER,
+  FILESYSTEM_SECTION_BYTES,
   CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
@@ -314,6 +315,7 @@ test("legitimate workspace reservation transfer never changes live ownership con
     const sourceCount = Atomics.load(new Int32Array(connection.capabilities), 0);
     const targetCount = Atomics.load(new Int32Array(childIdentity.capabilities), 0);
     observeTransferStores(connection, childIdentity, sourceCount, targetCount, changed);
+    expect(childIdentity.sections.byteLength).toBe(FILESYSTEM_SECTION_BYTES);
     host.attach(childPair.server);
     await child.asyncCall("workspaceBind", [childSession]);
     childBound = true;

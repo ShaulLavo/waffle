@@ -76,3 +76,41 @@ fn queue_copy_partial_credit_half_close_and_stale_events() {
     net.unlisten(port);
     assert_eq!(net.listen(addr("127.0.0.1:49153")).unwrap(), 49153);
 }
+
+#[test]
+fn addressless_pair_reuses_credit_half_close_and_touches_no_port() {
+    let mut net = VirtualNet::default();
+    let client = net.pair().unwrap();
+    let server = net.peer(client).unwrap();
+    assert_eq!(net.peer(server).unwrap(), client);
+    assert_eq!(
+        net.local_addr(client).unwrap_err().kind(),
+        ErrorKind::Unsupported
+    );
+    assert_eq!(
+        net.peer_addr(server).unwrap_err().kind(),
+        ErrorKind::Unsupported
+    );
+    // A pair takes no ephemeral port, so the first dynamic listener still gets the first port.
+    assert_eq!(net.listen(addr("127.0.0.1:0")).unwrap(), 49152);
+    let bytes = vec![3; (1 << 20) + 1];
+    assert_eq!(net.write(client, &bytes).unwrap(), 1 << 20);
+    assert_eq!(
+        net.write(client, b"x").unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+    let mut out = [0; 4];
+    assert_eq!(net.take(server, &mut out).unwrap(), 4);
+    assert!(net.consumed(server, 4));
+    assert_eq!(net.write(client, b"tail").unwrap(), 4);
+    net.shutdown(server).unwrap();
+    assert!(net.ended(client));
+    assert!(!net.ended(server));
+    net.close(client);
+    assert_eq!(
+        net.write(server, b"late").unwrap_err().kind(),
+        ErrorKind::BrokenPipe
+    );
+    net.close(server);
+    assert_eq!(net.listen(addr("127.0.0.1:0")).unwrap(), 49153);
+}

@@ -20,8 +20,10 @@ import {
   type NewConn,
   OK,
   type PeerAddr,
+  type SocketAddr,
   UNSUPPORTED,
 } from "./protocol.js";
+import { ENOTSUP, unixCode } from "./unix-status.js";
 import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
 import { RingReader } from "./ring.js";
 import {
@@ -51,15 +53,15 @@ interface LookupHandle {
 
 interface ListenerHandle {
   kind: "listener";
-  local: PeerAddr;
+  local: SocketAddr;
   pending: number[];
   error: NetError | null;
 }
 
 interface ConnHandle extends Stream {
   kind: "conn";
-  local: PeerAddr;
-  peer: PeerAddr;
+  local: SocketAddr;
+  peer: SocketAddr;
   /** For a connection between two of the guest's own handles (connect to its own listener): the other end. */
   pipe: number | null;
   writeEnded?: boolean;
@@ -338,8 +340,9 @@ export class NetHost {
     if (!h) return BADF;
     this.handles.delete(handle);
     if (h.kind === "listener") {
-      if (!this.options.shared) this.releasePort(h.local.port);
+      if (h.local.family !== "Unix" && !this.options.shared) this.releasePort(h.local.port);
       for (const conn of h.pending) this.closeUnaccepted(conn);
+      if (h.local.family === "Unix" && !this.disposed) return this.closePath(handle, h.local);
     }
     if (h.kind === "conn" && h.pipe !== null) {
       const other = this.connection(h.pipe);
@@ -349,6 +352,64 @@ export class NetHost {
     }
     this.send({ type: "close", id: handle });
     return OK;
+  }
+
+  /** Pathname listener in the shared runtime namespace; the helper creates a real socket node. */
+  listenPath(path: string, options?: { readonly unlinkOnClose?: boolean }): number {
+    if (this.disposed) return BADF;
+    const unlinkOnClose = options?.unlinkOnClose ?? true;
+    if (!this.options.shared) return this.unixUnsupported("listen", path);
+    const id = this.nextHandle++;
+    const [status, errno] = this.call({ type: "unix-listen", id, path, unlinkOnClose });
+    if (status < 0) return this.fail(this.unixError("listen", errno, path));
+    this.handles.set(id, {
+      kind: "listener",
+      local: { family: "Unix", path },
+      pending: [],
+      error: null,
+    });
+    return id;
+  }
+
+  connectPath(path: string): number {
+    if (this.disposed) return BADF;
+    if (!this.options.shared) return this.unixUnsupported("connect", path);
+    const id = this.nextHandle++;
+    const [status, errno] = this.call({ type: "unix-connect", id, path });
+    if (status < 0) return this.fail(this.unixError("connect", errno, path));
+    this.handles.set(id, {
+      kind: "conn",
+      local: { family: "Unix", path: null },
+      peer: { family: "Unix", path },
+      pipe: null,
+      chunks: [],
+      ended: false,
+      error: null,
+    });
+    return id;
+  }
+
+  /** Blocks until the requested unlink settles. The handle is gone either way. */
+  private closePath(handle: number, local: SocketAddr): number {
+    const [status, errno] = this.call({ type: "unix-close", id: handle });
+    if (status >= 0) return OK;
+    const path = local.family === "Unix" ? (local.path ?? "") : "";
+    return this.fail(this.unixError("close", errno, path));
+  }
+
+  private unixUnsupported(syscall: string, path: string): number {
+    this.lastError = {
+      name: "Error",
+      message: `${syscall} ENOTSUP ${path}: Unix sockets need a shared runtime network`,
+      code: unixCode(ENOTSUP),
+      syscall,
+    };
+    return UNSUPPORTED;
+  }
+
+  private unixError(syscall: string, errno: number, path: string): NetError {
+    const code = unixCode(errno);
+    return { name: "Error", message: `${syscall} ${code} ${path}`, code, syscall };
   }
 
   listen(hostname: string, port: number): number {
@@ -417,8 +478,8 @@ export class NetHost {
     const target = loopbackAddress(address);
     if (this.options.shared) return this.connectShared(target, port);
     const state = Array.from(this.handles.values()).find(
-      (handle): handle is ListenerHandle =>
-        handle.kind === "listener" && handle.local.port === port,
+      (handle): handle is ListenerHandle & { local: PeerAddr } =>
+        handle.kind === "listener" && handle.local.family !== "Unix" && handle.local.port === port,
     );
     const accepted = state && acceptedAddress(state.local, target);
     if (!state || !accepted) {
@@ -533,7 +594,7 @@ export class NetHost {
   localPort(handle: number): number {
     const h = this.handles.get(handle);
     if (h?.kind !== "conn" && h?.kind !== "listener") return BADF;
-    return h.local.port;
+    return h.local.family === "Unix" ? UNSUPPORTED : h.local.port;
   }
 
   accept(listener: number): number {

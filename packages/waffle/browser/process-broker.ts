@@ -92,6 +92,8 @@ import {
   type TerminalOutputReader,
 } from "./terminal-output.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
+import type { RuntimeNetworkPathScope } from "./net/runtime.js";
+import type { FileHandle } from "../core/filesystem.js";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
@@ -1212,6 +1214,26 @@ export class BrowserProcessBroker {
       const bytes = Atomics.load(child.memory, 0);
       return { ...child.identity, bytes: bytes < 0n ? null : Number(bytes) };
     });
+  }
+  /**
+   * Trusted launcher pairing for RuntimeNetwork.createHelper: the live admitted process's own
+   * filesystem identity with `directory`. Nothing is attached here; the network authenticates the
+   * pair (same filesystem, live identity, a directory the guest's table holds) on the guest's first
+   * path request. The caller keeps owning `directory` and releases it after the helper is disposed.
+   */
+  networkPathScope(context: ProcessContext, directory: FileHandle): RuntimeNetworkPathScope {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    if (!Number.isSafeInteger(directory) || directory < 0)
+      throw new TypeError("Network path scope requires a directory handle");
+    const transport = this.transport.get(context.pid);
+    if (!transport) throw new Error("process has no admitted worker transport");
+    const state = workerProcessState(transport);
+    if (state.parentPid !== context.parentPid || state.job !== context.job)
+      throw new Error("process context does not match its admitted transport");
+    if (readOutcome(context.outcome)) throw new Error("process has already exited");
+    const filesystem = this.filesystem(transport);
+    if (isRevoked(filesystem)) throw new Error("process filesystem is revoked");
+    return Object.freeze({ filesystem, directory });
   }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,

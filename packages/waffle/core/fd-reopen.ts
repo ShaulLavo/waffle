@@ -50,6 +50,7 @@ export function openInode(
   base: bigint,
   inheriting: bigint,
 ): number {
+  if (fs.stat(handle).kind === "socket") return -60;
   const access = (base & READ ? 4 : 0) | (base & WRITE ? 2 : 0);
   const permissions = fs.permissions?.(handle);
   if (permissions && permissions.accessSupported & access & ~permissions.access) return -2;
@@ -81,7 +82,7 @@ function descriptorPath(path: string): number | undefined {
 
 type PathEntry = { prefix: string } & (
   | { kind: "symlink"; handle: number; source?: never }
-  | { kind: "file" | "directory"; handle?: number; source?: number }
+  | { kind: "file" | "directory" | "socket"; handle?: number; source?: number }
 );
 const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 

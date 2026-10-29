@@ -44,6 +44,9 @@ export interface FilesystemBackend {
 }
 const namespaceOperations = new Set([
   "preopen",
+  "bindSocket",
+  "bindSocketPath",
+  "unbindSocket",
   "create",
   "symlink",
   "link",
@@ -250,7 +253,8 @@ export class MemoryBackend implements FilesystemBackend {
       throw new FilesystemError(8);
     }
     this.sync(handle);
-    if (kind && stat.kind !== kind) throw new FilesystemError(kind === "directory" ? 54 : 31);
+    if (kind && stat.kind !== kind)
+      throw new FilesystemError(kind === "directory" ? 54 : stat.kind === "socket" ? 60 : 31);
   }
   private path(path: ResolvedPath): void {
     if (path.parent === undefined || path.terminalDot) return;
@@ -323,6 +327,9 @@ export class MemoryBackend implements FilesystemBackend {
       case "sync":
         this.check(a);
         return 0;
+      case "connectSocket":
+        this.check(a, "directory");
+        return this.fs.connectSocket(a, b);
       case "resolve":
         this.check(a, "directory");
         return this.fs.resolve(a, b, c === true);
@@ -504,6 +511,52 @@ export class MemoryBackend implements FilesystemBackend {
           intent.kind === "preopen" ? intent.path : undefined,
         );
       }
+      case "bindSocketPath": {
+        this.check(intent.directory, "directory");
+        const prepared = this.fs.planBindSocketPath(
+          intent.directory,
+          intent.path,
+          intent.lease,
+          this.effectBound,
+        );
+        return this.planNamespace(
+          prepared.plan,
+          "error" in prepared.result
+            ? { kind: "create-error", errno: prepared.result.error }
+            : { kind: "socket-path-binding", ...prepared.result },
+          allocation,
+        );
+      }
+      case "bindSocket": {
+        this.check(intent.parent, "directory");
+        const prepared = this.fs.planBindSocket(
+          intent.parent,
+          intent.name,
+          intent.lease,
+          this.effectBound,
+        );
+        return this.planNamespace(
+          prepared.plan,
+          "error" in prepared.result
+            ? { kind: "create-error", errno: prepared.result.error }
+            : { kind: "socket-binding", binding: prepared.result },
+          allocation,
+        );
+      }
+      case "unbindSocket": {
+        const prepared = this.fs.planUnbindSocket(
+          intent.binding,
+          intent.name,
+          intent.lease,
+          intent.unlink,
+          this.effectBound,
+        );
+        return this.planNamespace(
+          prepared.plan,
+          { kind: "number", value: prepared.result },
+          allocation,
+        );
+      }
       case "create": {
         if (intent.path.parent !== undefined) this.check(intent.path.parent, "directory");
         const prepared = this.fs.planCreate(
@@ -603,7 +656,7 @@ export class MemoryBackend implements FilesystemBackend {
         file: this.publicationKey(node.ino),
         ...(node.kind === "symlink"
           ? { nodeKind: "symlink", target: node.target }
-          : { nodeKind: node.kind === "dir" ? "directory" : "file" }),
+          : { nodeKind: node.kind === "dir" ? "directory" : node.kind }),
         mode: node.mode,
         mtime: plan.mtime,
       });

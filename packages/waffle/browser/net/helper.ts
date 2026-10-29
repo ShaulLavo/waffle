@@ -22,10 +22,20 @@ import {
   type NewConn,
   ERROR,
   UNSUPPORTED,
-  type PeerAddr,
+  OK,
+  type SocketAddr,
   type TcpRequest,
 } from "./protocol.js";
+import {
+  errnoOf,
+  socketPathError,
+  type HelperPaths,
+  type SocketLease,
+  type SocketScope,
+} from "./unix-paths.js";
+import { EBADF, ECANCELED, ENOBUFS, ENOTCAPABLE } from "./unix-status.js";
 import { RingWriter } from "./ring.js";
+import { TCP_INVALID } from "./tcp-status.js";
 import {
   acceptedAddress,
   loopbackAddress,
@@ -43,6 +53,12 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "[::]"])
 const json = (value: unknown) => encoder.encode(JSON.stringify(value));
 
 type FetchRequest = NetRequest & { type: "fetch" };
+type UnixRequest = TcpRequest & { type: "unix-listen" | "unix-connect" | "unix-close" };
+interface PathBinding {
+  scope: SocketScope;
+  lease: SocketLease;
+  unlink: boolean;
+}
 interface FetchResponse {
   head: FetchHead;
   body: ReadableStream<Uint8Array<ArrayBuffer>> | null;
@@ -101,6 +117,9 @@ export class NetHelper {
   private disposed = false;
   private sockets = new Map<number, LoopbackSocket>();
   private pending = new Map<number, Set<number>>();
+  private pathListeners = new Map<number, PathBinding>();
+  /** Path requests in flight, by guest handle. Close or disposal drops the token. */
+  private pathOperations = new Map<number, object>();
   private fileWrites: Promise<void> = Promise.resolve();
 
   constructor(
@@ -110,6 +129,7 @@ export class NetHelper {
     private namespace = new NetNamespace(),
     private assertOwnerLive: () => void = () => {},
     private lookupRequest: NetLookup = lookupAddress,
+    private paths?: HelperPaths,
   ) {
     this.ring = new RingWriter(sab);
   }
@@ -132,7 +152,7 @@ export class NetHelper {
         this.close(req.id);
         return;
       case "listen":
-        this.listen(req.id, req.port, req.host);
+        if (!this.claimed(req.id)) this.listen(req.id, req.port, req.host);
         return;
       case "tcp-accept":
         this.pending.get(req.listener)?.delete(req.id);
@@ -160,6 +180,9 @@ export class NetHelper {
     const fetches = Array.from(this.fetches.values());
     const connections = Array.from(this.connections.values());
     const ports = Array.from(this.listeners.values());
+    const bindings = Array.from(this.pathListeners.values());
+    this.pathListeners.clear();
+    this.pathOperations.clear();
     this.sockets.clear();
     this.pending.clear();
     this.fetches.clear();
@@ -182,6 +205,10 @@ export class NetHelper {
     }
     for (const conn of connections) attempt(() => conn.error("the server stopped"));
     for (const port of ports) attempt(() => this.hooks.stopped?.(port));
+    // The runtime owner retains and joins these; helper disposal itself stays synchronous.
+    for (const { scope, lease, unlink } of bindings)
+      attempt(() => void this.paths?.cleanup.unbind(scope, lease, unlink));
+    attempt(() => this.paths?.retire());
     if (failures.length) throw new AggregateError(failures, "Network helper disposal failed");
   }
 
@@ -447,8 +474,8 @@ export class NetHelper {
 
   private acceptSocket(
     listener: number,
-    peer: PeerAddr,
-    local: PeerAddr,
+    peer: SocketAddr,
+    local: SocketAddr,
     socket: LoopbackSocket,
   ): void {
     const conn = this.nextConn++;
@@ -459,6 +486,12 @@ export class NetHelper {
   }
 
   private tcp(req: TcpRequest): void {
+    if (req.type === "unix-listen" || req.type === "unix-connect" || req.type === "unix-close")
+      return this.unix(req);
+    this.tcpReply(req);
+  }
+
+  private tcpReply(req: Exclude<TcpRequest, UnixRequest>): void {
     let result: [number, number] = [ERROR, 0];
     try {
       if (this.live()) result = this.executeTcp(req);
@@ -467,7 +500,148 @@ export class NetHelper {
     }
   }
 
-  private executeTcp(req: TcpRequest): [number, number] {
+  /** The reply cell always completes: errors become ECANCELED rather than a stuck guest. */
+  private unix(req: UnixRequest): void {
+    let work: Promise<number>;
+    try {
+      work = this.executeUnix(req);
+    } catch {
+      work = Promise.resolve(ECANCELED);
+    }
+    void work.catch(errnoOf).then((errno) => tcpReply(req.reply, errno ? ERROR : OK, errno));
+  }
+
+  private executeUnix(req: UnixRequest): Promise<number> {
+    if (req.type === "unix-close") return this.closeUnix(req.id);
+    if (!this.live()) return Promise.resolve(ECANCELED);
+    const invalid = socketPathError(req.path);
+    if (invalid) return Promise.resolve(invalid);
+    const paths = this.paths;
+    if (!paths) return Promise.resolve(ENOTCAPABLE);
+    if (this.claimed(req.id)) return Promise.resolve(EBADF);
+    const release = paths.cleanup.admit();
+    if (!release) return Promise.resolve(ENOBUFS);
+    const operation = {};
+    this.pathOperations.set(req.id, operation);
+    return this.withScope(paths, req, operation).finally(() => {
+      release();
+      if (this.pathOperations.get(req.id) === operation) this.pathOperations.delete(req.id);
+    });
+  }
+
+  /** Every allocating request checks this: a handle id names at most one listener, socket,
+   * connection or pending path operation, so no request can overwrite another's resource. */
+  private claimed(id: number): boolean {
+    return (
+      this.pathOperations.has(id) ||
+      this.pathListeners.has(id) ||
+      this.sockets.has(id) ||
+      this.listeners.has(id) ||
+      this.connections.has(id)
+    );
+  }
+
+  /** The operation still owns its handle: not closed, not disposed. */
+  private current(id: number, operation: object): boolean {
+    return this.open() && this.pathOperations.get(id) === operation;
+  }
+
+  private closeUnix(id: number): Promise<number> {
+    const closing = this.closePath(id);
+    if (closing) return closing;
+    return Promise.resolve(this.pathOperations.delete(id) ? 0 : EBADF);
+  }
+
+  private async withScope(
+    paths: HelperPaths,
+    req: UnixRequest & { type: "unix-listen" | "unix-connect" },
+    operation: object,
+  ): Promise<number> {
+    const scope = await paths.scope();
+    if (typeof scope === "number") return scope;
+    if (!this.current(req.id, operation)) return ECANCELED;
+    if (req.type === "unix-listen")
+      return paths.cleanup.use(scope, () => this.listenPath(paths, scope, req, operation));
+    return paths.cleanup.use(scope, () => this.connectPath(scope, req.id, req.path, operation));
+  }
+
+  private open(): boolean {
+    try {
+      return this.live();
+    } catch {
+      return false;
+    }
+  }
+
+  private async listenPath(
+    paths: HelperPaths,
+    scope: SocketScope,
+    req: UnixRequest & { type: "unix-listen" },
+    operation: object,
+  ): Promise<number> {
+    if (!this.namespace.reservePathListener()) return ENOBUFS;
+    let lease: SocketLease | number;
+    try {
+      lease = await scope.bind(req.path);
+    } catch (error) {
+      this.namespace.releasePathListener();
+      throw error;
+    }
+    if (typeof lease === "number") {
+      this.namespace.releasePathListener();
+      return this.current(req.id, operation) ? lease : ECANCELED;
+    }
+    if (!this.current(req.id, operation)) {
+      // Late bind after close or disposal: the node was never handed out; roll back by lease.
+      this.namespace.releasePathListener();
+      void paths.cleanup.unbind(scope, lease, true);
+      return ECANCELED;
+    }
+    const id = req.id;
+    const local: SocketAddr = { family: "Unix", path: lease.path };
+    const bound = this.namespace.listenPath(lease.key, {
+      owner: this,
+      handle: id,
+      pending: () => this.pending.get(id)?.size ?? 0,
+      accept: (socket) => this.acceptSocket(id, { family: "Unix", path: null }, local, socket),
+    });
+    if (bound) {
+      void paths.cleanup.unbind(scope, lease, true);
+      return bound;
+    }
+    this.pathListeners.set(id, { scope, lease, unlink: req.unlinkOnClose });
+    this.pending.set(id, new Set());
+    return 0;
+  }
+
+  private async connectPath(
+    scope: SocketScope,
+    id: number,
+    path: string,
+    operation: object,
+  ): Promise<number> {
+    const key = await scope.target(path);
+    if (!this.current(id, operation)) return ECANCELED;
+    if (typeof key === "number") return key;
+    const socket = this.namespace.connectPath(key, this.socketSink(id));
+    if (typeof socket === "number") return socket;
+    this.sockets.set(id, socket);
+    return 0;
+  }
+
+  /** Stop routing at once; the unlink settles through the runtime-retained cleanup. */
+  private closePath(id: number): Promise<number> | undefined {
+    const binding = this.pathListeners.get(id);
+    if (!binding || !this.paths) return undefined;
+    this.pathListeners.delete(id);
+    this.namespace.unlistenPath(this, id);
+    for (const conn of this.pending.get(id) ?? []) this.close(conn);
+    this.pending.delete(id);
+    return this.paths.cleanup.unbind(binding.scope, binding.lease, binding.unlink);
+  }
+
+  private executeTcp(req: Exclude<TcpRequest, UnixRequest>): [number, number] {
+    if (req.type !== "tcp-write" && this.claimed(req.id)) return [TCP_INVALID, 0];
     if (req.type === "tcp-listen") {
       const port = this.listen(req.id, req.port, req.host, true);
       return [port < 0 ? port : 0, port];
@@ -745,6 +919,8 @@ export class NetHelper {
 
   private close(id: number): void {
     if (this.lookups.delete(id)) return;
+    if (this.pathOperations.delete(id)) return;
+    if (this.closePath(id)) return;
     const socket = this.sockets.get(id);
     if (socket) {
       this.sockets.delete(id);
@@ -804,6 +980,18 @@ function snapshotRequest(req: NetRequest): NetRequest {
       return { type, id, reply: req.reply, port: req.port, host: req.host };
     case "tcp-write":
       return { type, id, reply: req.reply, data: req.data };
+    case "unix-listen":
+      return {
+        type,
+        id,
+        reply: req.reply,
+        path: req.path,
+        unlinkOnClose: req.unlinkOnClose !== false,
+      };
+    case "unix-connect":
+      return { type, id, reply: req.reply, path: req.path };
+    case "unix-close":
+      return { type, id, reply: req.reply };
     case "listen":
       return { type, id, port: req.port, host: req.host };
     case "fetch":

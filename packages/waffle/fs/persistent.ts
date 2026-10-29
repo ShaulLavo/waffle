@@ -45,6 +45,26 @@ interface CheckpointCapture {
 
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
  * no lock or guest request is held across a background commit. */
+function restoreNode(entry: PersistedNode): Node {
+  const metadata = {
+    ino: entry.ino,
+    identity: entry.identity && restoreIdentity(entry.identity),
+    mtime: entry.mtime,
+  };
+  if (entry.kind === "dir")
+    return { ...metadata, kind: "dir", mode: entry.mode ?? 0o700, children: new Map() };
+  if (entry.kind === "socket") return { ...metadata, kind: "socket", mode: entry.mode ?? 0o600 };
+  if (entry.kind === "symlink")
+    return { ...metadata, kind: "symlink", mode: entry.mode ?? 0o600, target: entry.target };
+  return {
+    ...metadata,
+    kind: "file",
+    mode: entry.mode ?? 0o600,
+    size: entry.size,
+    data: new Uint8Array(),
+  };
+}
+
 export class PersistentBackend extends MemoryBackend {
   private readonly pressure: CheckpointPressure;
   private nodes = new Map<number, Node>();
@@ -138,37 +158,7 @@ export class PersistentBackend extends MemoryBackend {
         options.startupRoot,
       );
     const nodes = new Map<number, Node>();
-    for (const entry of index.nodes)
-      nodes.set(
-        entry.ino,
-        entry.kind === "dir"
-          ? {
-              kind: "dir",
-              ino: entry.ino,
-              identity: entry.identity && restoreIdentity(entry.identity),
-              mtime: entry.mtime,
-              mode: entry.mode ?? 0o700,
-              children: new Map(),
-            }
-          : entry.kind === "symlink"
-            ? {
-                kind: "symlink",
-                ino: entry.ino,
-                identity: entry.identity && restoreIdentity(entry.identity),
-                mtime: entry.mtime,
-                mode: entry.mode ?? 0o600,
-                target: entry.target,
-              }
-            : {
-                kind: "file",
-                ino: entry.ino,
-                identity: entry.identity && restoreIdentity(entry.identity),
-                mtime: entry.mtime,
-                mode: entry.mode ?? 0o600,
-                size: entry.size,
-                data: new Uint8Array(),
-              },
-      );
+    for (const entry of index.nodes) nodes.set(entry.ino, restoreNode(entry));
     for (const entry of index.nodes)
       if (entry.kind === "dir") {
         const node = nodes.get(entry.ino) as DirNode;
@@ -810,25 +800,34 @@ export class PersistentBackend extends MemoryBackend {
             size: 0,
             children: Array.from(node.children, ([name, child]) => [name, child.ino]),
           }
-        : node.kind === "symlink"
+        : node.kind === "socket"
           ? {
               ino: node.ino,
               identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-              kind: "symlink",
+              kind: "socket",
               mtime: node.mtime,
               mode: node.mode,
-              size: new TextEncoder().encode(node.target).length,
-              target: node.target,
+              size: 0,
             }
-          : {
-              ino: node.ino,
-              identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-              kind: "file",
-              mtime: node.mtime,
-              mode: node.mode,
-              size: node.size ?? node.data.length,
-              data: this.keys.get(node.ino),
-            },
+          : node.kind === "symlink"
+            ? {
+                ino: node.ino,
+                identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+                kind: "symlink",
+                mtime: node.mtime,
+                mode: node.mode,
+                size: new TextEncoder().encode(node.target).length,
+                target: node.target,
+              }
+            : {
+                ino: node.ino,
+                identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+                kind: "file",
+                mtime: node.mtime,
+                mode: node.mode,
+                size: node.size ?? node.data.length,
+                data: this.keys.get(node.ino),
+              },
     );
     this.dirty.clear();
     const removes = Array.from(this.removed);

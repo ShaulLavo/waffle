@@ -1194,7 +1194,7 @@ function unsupportedEntry(page: SnapshotPage, path: string, targetRead: () => ne
       return Object.defineProperties(
         { ...entry },
         {
-          kind: { value: "socket", enumerable: true },
+          kind: { value: "fifo", enumerable: true },
           path: { get: targetRead, enumerable: true },
           target: { get: targetRead, enumerable: true },
         },
@@ -1356,6 +1356,7 @@ test("R68 real link leaves preserve raw targets and inode metadata without pin r
     const entries = events.flatMap((event) => (event.kind === "entry" ? [event.entry] : []));
     expect(entries).toEqual(
       selected.entries.map((entry) => {
+        if (entry.kind === "socket") throw new Error("socket not in archive fixture");
         const fields = {
           path: entry.path,
           size: entry.size,

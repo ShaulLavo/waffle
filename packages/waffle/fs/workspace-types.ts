@@ -13,10 +13,10 @@ export interface NamespaceCut {
   readonly watermark: Watermark;
 }
 export type NodeMetadata =
-  | { readonly kind: "file" | "directory"; readonly target?: never }
+  | { readonly kind: "file" | "directory" | "socket"; readonly target?: never }
   | { readonly kind: "symlink"; readonly target: string };
 export type InodeMetadata =
-  | { readonly nodeKind: "file" | "directory"; readonly target?: never }
+  | { readonly nodeKind: "file" | "directory" | "socket"; readonly target?: never }
   | { readonly nodeKind: "symlink"; readonly target: string };
 export type NamespaceEntry = NodeMetadata & {
   readonly id: FileId;

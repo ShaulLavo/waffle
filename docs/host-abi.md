@@ -729,6 +729,8 @@ until it. Kind 7 is `-EINVAL` in a process that is not a group member.
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.
 
+Shared hosts also carry pathname stream sockets through `listenPath` and `connectPath`. Their wire requests are `unix-listen`, `unix-connect` and the acknowledged `unix-close`, answered in the same 12-byte reply cell with a WASI errno on failure. Socket nodes report Preview1 filetype 6 (`SOCKET_STREAM`). See [Unix-domain stream sockets](unix-sockets.md).
+
 ## Compatibility
 
 Waffle does not promise compatibility with an older runtime package or a stale consumer. Consumers pin one exact Git commit and use the matching exports and lockfile.

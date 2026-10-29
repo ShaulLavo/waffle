@@ -8,6 +8,7 @@ export type NetworkCommand =
   | { op: "fetch"; url: string }
   | { op: "head" | "poll"; handle: number }
   | { op: "connect"; port: number; host?: string }
+  | { op: "listenPath" | "connectPath"; path: string }
   | { op: "accept"; handle: number }
   | { op: "read"; handle: number; cap: number }
   | { op: "write"; handle: number; bytes: Uint8Array }
@@ -84,6 +85,10 @@ function execute(host: NetHost, command: NetworkCommand): unknown {
       return host.listen(command.host ?? "localhost", command.port);
     case "connect":
       return host.connect(command.host ?? "localhost", command.port);
+    case "listenPath":
+      return host.listenPath(command.path);
+    case "connectPath":
+      return host.connectPath(command.path);
     case "accept":
       return host.accept(command.handle);
     case "read":
