@@ -120,7 +120,11 @@ try {
     )) as typeof import("./memory-group-browser.js");
     return tests.memoryGroupBrowser();
   });
-  if (typeof report.disposal !== "string" || !report.disposal.includes("memory group members"))
+  if (
+    typeof report.disposal !== "string" ||
+    !report.disposal.includes("memory group members") ||
+    !report.disposal.includes("A live page runtime already owns this page")
+  )
     throw new Error(`disposal released the page with unsettled group debt: ${report.disposal}`);
   console.log(JSON.stringify({ memoryGroups: report }, null, 1));
   await context.close();

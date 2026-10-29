@@ -22,6 +22,8 @@ An adopted runtime root that runs its own worker calls `admitRootMemoryGroup(pid
 
 The member image is a PIE linked with `-pie --experimental-pic --import-memory --shared-memory --import-table --max-memory=4294967296`. It imports `env.memory`, `env.__indirect_function_table`, `env.__memory_base`, `env.__table_base` and a mutable `env.__stack_pointer`. Waffle reads `dylink.0` memory-info, carves the data chunk and a private stack (`stackBytes`), and gives the image its own table with slot 0 left null. A link plan whose core has `dylink.0` is linked the same way, then its PIC libraries reserve through the core allocator as before. Constant data exports of such a core are relative to its `__memory_base`.
 
+`workerMemory()` samples a member's bound memory, which is the whole group memory. Use `memoryGroups()` for a group's committed backing; do not sum worker samples across members.
+
 ## Policy
 
 `createRuntime({ memoryGroups })` sets runtime policy. Every limit is configurable.

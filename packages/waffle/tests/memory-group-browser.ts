@@ -191,10 +191,17 @@ async function harness() {
         () => "resolved",
         (error: unknown) => flatten(error).join("; "),
       );
+      // Unsettled group debt must keep the one-runtime page guard.
+      let guard = "released";
+      try {
+        await createRuntime().dispose();
+      } catch (error) {
+        guard = String(error instanceof Error ? error.message : error);
+      }
       failing.clear();
       for (const worker of created) worker.terminate();
       globalThis.Worker = NativeWorker;
-      return disposal;
+      return `${disposal} | guard: ${guard}`;
     },
   };
 }
