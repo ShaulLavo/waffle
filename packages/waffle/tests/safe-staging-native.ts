@@ -8,10 +8,10 @@ export async function runSafeStagingNative(engine: string, control?: string): Pr
   try {
     await lifecycle.init();
     const bundle = await browserBundle("tests/safe-staging-browser.ts");
-    const origin = lifecycle.serve(
-      { "/": "<!doctype html><title>Staged storage fixture</title>", "/test.js": bundle },
-      46439,
-    );
+    const origin = lifecycle.serve({
+      "/": "<!doctype html><title>Staged storage fixture</title>",
+      "/test.js": bundle,
+    });
     const browser = await lifecycle.launch(engine as keyof typeof engines);
     const page = await browser.newPage();
     page.on("console", (message) => console.log(message.text()));
