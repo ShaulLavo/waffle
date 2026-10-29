@@ -69,6 +69,7 @@ export const CAPABILITY_SLOTS = 4096;
 // One candidate-count word, then reusable [handle, open-reference count, transfer count] records. A negative
 // reference count revokes an entry. Handles never recycle, but these per-session entries do.
 export const CAPABILITY_HEADER = 1;
+export const FILESYSTEM_SECTION_BYTES = 8;
 export const CAPABILITY_WORDS = 3;
 export const MAX_CONNECTION_OWNERS = 65536;
 export const CONNECTION_SHARED_BYTES = 64 * 1024 * 1024;
@@ -95,7 +96,7 @@ export interface FilesystemConnection {
   segments: SharedArrayBuffer[];
   /** Private to this connection, not its descendants: capabilities and local open references. */
   capabilities: SharedArrayBuffer;
-  /** Active synchronous host filesystem sections, private to this connection. Never reused. */
+  /** Active sections in word 0; service-only identity probe in word 1. Never reused. */
   sections: SharedArrayBuffer;
   /** Nonzero lock owner token; service clears it when this identity is reaped. */
   owner: number;
@@ -127,7 +128,8 @@ export function filesystemOwnerPlan(publication: PublicationConfiguration) {
     bytes:
       MAX_CONNECTION_OWNERS * 4 +
       CAPABILITY_LENGTH * 4 +
-      20 +
+      12 +
+      FILESYSTEM_SECTION_BYTES +
       arena.bytes +
       REQUEST_BUDGET_BYTES +
       REQUEST_CONTROL_BYTES,
@@ -189,7 +191,7 @@ export function createFilesystemIdentity(
     shared,
     segments,
     capabilities,
-    sections: allocate(8),
+    sections: allocate(FILESYSTEM_SECTION_BYTES),
     owner,
     maxBytes,
     ownerStates,
@@ -304,14 +306,25 @@ export function sameFilesystemIdentity(
   expected: FilesystemIdentity,
   incoming: Pick<FilesystemIdentity, "owner" | "sections">,
 ): boolean {
-  if (expected.owner !== incoming.owner || incoming.sections.byteLength !== 8) return false;
+  if (
+    expected.owner !== incoming.owner ||
+    incoming.sections.byteLength !== FILESYSTEM_SECTION_BYTES
+  )
+    return false;
   const own = new Int32Array(expected.sections),
     other = new Int32Array(incoming.sections);
   const previous = Atomics.load(own, 1);
-  Atomics.store(own, 1, previous ^ -1);
-  const same = Atomics.load(other, 1) === (previous ^ -1);
-  Atomics.store(own, 1, previous);
-  return same && Atomics.load(other, 1) === previous;
+  const challenges = crypto.getRandomValues(new Int32Array(2));
+  const first = challenges[0]!;
+  const second = challenges[1] === first ? first ^ -1 : challenges[1]!;
+  try {
+    Atomics.store(own, 1, first);
+    if (Atomics.load(other, 1) !== first) return false;
+    Atomics.store(own, 1, second);
+    return Atomics.load(other, 1) === second;
+  } finally {
+    Atomics.store(own, 1, previous);
+  }
 }
 export function connectFilesystemIdentity(
   identity: FilesystemIdentity,

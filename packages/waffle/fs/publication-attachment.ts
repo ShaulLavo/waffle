@@ -44,6 +44,7 @@ import {
 
 import {
   CAPABILITY_HEADER,
+  FILESYSTEM_SECTION_BYTES,
   CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
@@ -854,7 +855,7 @@ function workspaceConnection(value: unknown, parent: FilesystemConnection): File
     shared: workspaceBuffer(data.shared, CONNECTION_SHARED_BYTES + 4),
     segments,
     capabilities: workspaceBuffer(data.capabilities, (CAPABILITY_LENGTH + 1) * 4),
-    sections: workspaceBuffer(data.sections, 4),
+    sections: workspaceBuffer(data.sections, FILESYSTEM_SECTION_BYTES),
     owner: integer(data.owner, MAX_CONNECTION_OWNERS - 1),
     maxBytes: parent.maxBytes,
     ownerStates: workspaceBuffer(data.ownerStates, (MAX_CONNECTION_OWNERS + 1) * 4),

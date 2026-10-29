@@ -48,7 +48,12 @@ function snapshotNode(node: Node): unknown {
   return {
     ino: node.ino,
     mtime: node.mtime,
-    value: node.kind === "file" ? Array.from(node.data) : node.kind === "symlink" ? node.target : undefined,
+    value:
+      node.kind === "file"
+        ? Array.from(node.data)
+        : node.kind === "symlink"
+          ? node.target
+          : undefined,
   };
 }
 function fixture(target = "../raw//é/雪/🙂", memory = new WebAssembly.Memory({ initial: 4 })) {

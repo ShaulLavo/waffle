@@ -4,6 +4,7 @@ import { FilesystemClient } from "../fs/client.js";
 import { FilesystemService } from "../fs/service.js";
 import { MemFS } from "../fs/memory.js";
 import {
+  FILESYSTEM_SECTION_BYTES,
   connectFilesystemIdentity,
   createFilesystemConnection,
   createProcessFilesystemIdentity,
@@ -85,7 +86,10 @@ test("scope admission authenticates actual sessions and live directory membershi
     foreign.server.port.close();
   });
   await expect(attach(f, f.directory, foreign.client)).rejects.toMatchObject({ errno: 76 });
-  const forged = { ...f.guest.connection, sections: new SharedArrayBuffer(8) };
+  const forged = {
+    ...f.guest.connection,
+    sections: new SharedArrayBuffer(FILESYSTEM_SECTION_BYTES),
+  };
   await expect(attach(f, f.directory, forged)).rejects.toMatchObject({ errno: 76 });
   new Int32Array(forged.sections)[1] = -1;
   await expect(attach(f, f.directory, forged)).rejects.toMatchObject({ errno: 76 });
@@ -258,4 +262,24 @@ test("a directory moved out of an admitted scope cannot be used for a later bind
     .catch((error: unknown) => error);
   expect(error).toMatchObject({ errno: 76 });
   expect(f.fs.lookup("/outside/child/listener")).toBeUndefined();
+});
+
+test("socket path admission keeps the 4096 UTF8 byte limit", async () => {
+  const f = await fixture();
+  const scope = await attach(f);
+  expect(
+    await scope.client.asyncCall("bindSocketPath", [scope.root, "/" + "é".repeat(2048), 1]),
+  ).toEqual({ error: 37 });
+  expect(await scope.client.asyncCall("bindSocketPath", [scope.root, "/bad\ud800", 1])).toEqual({
+    error: 28,
+  });
+  const path = "/" + "a".repeat(4095);
+  const value = await scope.client.asyncCall("bindSocketPath", [scope.root, path, 1]);
+  expect(value.binding.ino).toBeGreaterThan(0);
+  expect(await scope.client.asyncCall("connectSocket", [scope.root, path])).toEqual({
+    ino: value.binding.ino,
+  });
+  expect(await scope.client.asyncCall("unbindSocket", [value.binding, value.name, 1, true])).toBe(
+    0,
+  );
 });

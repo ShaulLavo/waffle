@@ -1748,7 +1748,7 @@ export function publicationCut(value: unknown): PublicationCut {
     throw new FilesystemError(28);
   return { history: text(value.history), generation: integer(value.generation) };
 }
-export function socketBinding(value: unknown): SocketBinding {
+function socketBinding(value: unknown): SocketBinding {
   if (
     !value ||
     typeof value !== "object" ||

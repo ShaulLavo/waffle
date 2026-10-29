@@ -76,7 +76,8 @@ interface EntryStat {
   ino: number;
   mtime: number;
 }
-type LeafEntry = EntryStat & ({ kind: "file" } | { kind: "socket" } | { kind: "symlink"; target: string });
+type LeafEntry = EntryStat &
+  ({ kind: "file" } | { kind: "socket" } | { kind: "symlink"; target: string });
 export interface RemoveCondition {
   /** Remove only a regular file whose bytes equal these. */
   readonly ifContent: Uint8Array;
@@ -353,6 +354,7 @@ export class SharedFilesystem {
       client.dispose();
       pair.server.port.close();
       channel.port2.close();
+      if (isRevoked(guest)) throw new FilesystemError(11);
       throw error;
     }
   }

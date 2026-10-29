@@ -179,6 +179,8 @@ export class FilesystemService {
       return { root: directory, rootIno: this.backend.fs.stat(directory).ino, reservation };
     } catch (error) {
       releaseFilesystemReservation(reservation);
+      revokeFilesystem(connection);
+      this.sweep();
       throw error;
     }
   }
@@ -1728,6 +1730,32 @@ export class FilesystemService {
     if (failures.length) throw new AggregateError(failures, "filesystem shutdown failed");
   }
 }
+function attachSocketScopeControl(
+  owner: FilesystemService,
+  data: {
+    connect: FilesystemConnection;
+    socketScope: { guest: Pick<FilesystemIdentity, "owner" | "sections">; directory: number };
+    reply: MessagePort;
+  },
+): void {
+  try {
+    data.reply.postMessage({
+      value: owner.attachSocketScope(
+        data.socketScope.guest,
+        data.socketScope.directory,
+        data.connect,
+      ),
+    });
+  } catch (error) {
+    revokeFilesystem(data.connect);
+    data.connect.port.close();
+    retireRequestMemory(captureRequestMemory(data.connect.requests));
+    data.reply.postMessage({ error: errno(error) });
+  } finally {
+    data.reply.close();
+  }
+}
+
 function failureDiagnostic(error: unknown) {
   let message = "Unknown filesystem worker error";
   let stack: string | undefined;
@@ -1822,20 +1850,7 @@ export function installFilesystemWorker(
           return;
         }
         if (data.socketScope && data.connect && data.reply) {
-          try {
-            data.reply.postMessage({
-              value: owner.attachSocketScope(
-                data.socketScope.guest,
-                data.socketScope.directory,
-                data.connect,
-              ),
-            });
-          } catch (error) {
-            data.connect.port.close();
-            data.reply.postMessage({ error: errno(error) });
-          } finally {
-            data.reply.close();
-          }
+          attachSocketScopeControl(owner, data);
         } else if (data.connect) {
           owner.connect(data.connect);
           scope.postMessage({ type: "filesystem-state", status: "ready" });

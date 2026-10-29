@@ -206,7 +206,7 @@ export function validatePersistedIndex(value: unknown): asserts value is Persist
     const node = nodes.get(ino);
     if (!node) invalid();
     if (seen.has(ino)) {
-      if (node.kind === "dir") invalid();
+      if (node.kind === "dir" || node.kind === "socket") invalid();
       continue;
     }
     seen.add(ino);
