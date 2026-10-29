@@ -276,6 +276,8 @@ jobs:
       - run: test -z "$(git ls-files packages/waffle/dist)"
   libc:
     needs: changes
+    outputs:
+      memory-group-artifact-id: ${{ steps.memory-group-artifact.outputs.artifact-id }}
     # Also the single producer of the memory group fixture that the browser gate consumes.
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
@@ -338,6 +340,7 @@ jobs:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
       - run: bun packages/waffle/scripts/build-memory-group-fixture.ts --verify "$RUNNER_TEMP/memory-group-fixture"
       - uses: actions/upload-artifact@v4
+        id: memory-group-artifact
         with:
           name: memory-group-fixture-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/memory-group-fixture
@@ -389,9 +392,14 @@ jobs:
           test -s /etc/apt/apt-mirrors.txt
           cat /etc/apt/apt-mirrors.txt
       - run: bunx playwright install --with-deps chromium firefox webkit
+      - name: Require the producer's fixture artifact ID
+        run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
+        env:
+          MEMORY_GROUP_ARTIFACT_ID: ${{ needs.libc.outputs.memory-group-artifact-id }}
       - uses: actions/download-artifact@v4
         with:
-          name: memory-group-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ needs.libc.outputs.memory-group-artifact-id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/memory-group-fixture
       - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
         shell: bash
