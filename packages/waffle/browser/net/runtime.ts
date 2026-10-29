@@ -90,9 +90,9 @@ function helperPaths(
     scope() {
       if (retired) return Promise.resolve(ECANCELED);
       if (!scope || !attach) return Promise.resolve(ENOTCAPABLE);
-      attached ??= cleanup.track(
-        attach(scope.filesystem, scope.directory).then(filesystemScope, errnoOf),
-      );
+      // Not joined by disposal: an unanswered attach holds no filesystem state, and the
+      // filesystem cancels it when it closes after the network.
+      attached ??= attach(scope.filesystem, scope.directory).then(filesystemScope, errnoOf);
       return attached;
     },
     retire() {

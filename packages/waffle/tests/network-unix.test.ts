@@ -398,3 +398,20 @@ test("literal unix-* requests and reply cells", async () => {
     [1, 0, 0],
   ]);
 });
+
+test("a scope attach that never answers does not hold owner disposal", async () => {
+  const stuck = new Promise<never>(() => {});
+  const owner = createRuntimeNetwork(
+    () => {},
+    () => stuck,
+  );
+  const server = guest(owner.network);
+  void server.call("listenPath", "/never");
+  await Bun.sleep(20);
+  server.helper.dispose();
+  const settled = await Promise.race([
+    owner.dispose().then(() => "disposed"),
+    Bun.sleep(1000).then(() => "stuck"),
+  ]);
+  expect(settled).toBe("disposed");
+});

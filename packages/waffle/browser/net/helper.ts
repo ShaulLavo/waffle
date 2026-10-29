@@ -514,7 +514,7 @@ export class NetHelper {
     if (invalid) return Promise.resolve(invalid);
     const paths = this.paths;
     if (!paths) return Promise.resolve(ENOTCAPABLE);
-    return paths.cleanup.track(this.withScope(paths, req));
+    return this.withScope(paths, req);
   }
 
   private async withScope(paths: HelperPaths, req: UnixRequest): Promise<number> {
