@@ -145,6 +145,7 @@ jobs:
               - "packages/waffle/proc/**"
               - "packages/waffle/interrupt/**"
               - "packages/waffle/browser/**"
+              - "packages/waffle/search/**"
               - "packages/waffle/runtime.ts"
               - "packages/waffle/index.ts"
               - "package.json"
