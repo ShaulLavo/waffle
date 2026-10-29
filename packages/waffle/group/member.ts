@@ -14,7 +14,6 @@ import {
   reflectApply,
   sharedArrayBufferByteLength,
 } from "../proc/intrinsics.js";
-import { dylinkMemoryInfo } from "../link/metadata.js";
 import {
   GroupErrno,
   GroupOp,
@@ -42,6 +41,39 @@ const asIntN = BigInt.asIntN;
 // Unused lease pages stay charged to the member until its physical stop.
 const LEASE_MIN = 16,
   LEASE_MAX = 64;
+
+/** Memory-info (subsection 1) of a `dylink.0` payload. The full validator lives in waffle/link. */
+function memoryInfo(payload: Uint8Array) {
+  let at = 0;
+  const u32 = (): number => {
+    let result = 0;
+    for (let shift = 0; shift <= 28; shift += 7) {
+      const byte = payload[at++];
+      if (byte === undefined) throw new TypeError("truncated dylink.0 section");
+      result += (byte & 127) * 2 ** shift;
+      if (byte < 128) return result;
+    }
+    throw new TypeError("invalid dylink.0 integer");
+  };
+  while (at < payload.length) {
+    const kind = u32(),
+      size = u32(),
+      end = at + size;
+    if (kind === 1) {
+      const info = {
+        memorySize: u32(),
+        memoryAlignment: u32(),
+        tableSize: u32(),
+        tableAlignment: u32(),
+      };
+      if (at !== end || info.memoryAlignment > 31 || info.tableAlignment > 31)
+        throw new TypeError("invalid dylink.0 memory-info");
+      return info;
+    }
+    at = end;
+  }
+  throw new TypeError("dylink.0 lacks memory-info");
+}
 
 export interface GroupMemberHooks {
   checkActive(): void;
@@ -266,7 +298,7 @@ export function createGroupMember(
     const sections = reflectApply(customSections, WebAssembly.Module, [module, "dylink.0"]);
     if (sections.length !== 1)
       throw new TypeError("memory group image requires one dylink.0 section");
-    const info = dylinkMemoryInfo(new NativeUint8Array(sections[0]!), "member");
+    const info = memoryInfo(new NativeUint8Array(sections[0]!));
     if (info.memoryAlignment > 16) throw new TypeError("member data alignment exceeds a page");
     const dataPages = max(1, ceil(info.memorySize / PAGE_BYTES));
     const stackPages = ceil(request.stackBytes / PAGE_BYTES);
