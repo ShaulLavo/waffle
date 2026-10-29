@@ -27,7 +27,9 @@ import {
   type TcpRequest,
 } from "./protocol.js";
 import {
+  abstractNameError,
   errnoOf,
+  isAbstractName,
   socketPathError,
   type HelperPaths,
   type SocketLease,
@@ -54,6 +56,7 @@ const json = (value: unknown) => encoder.encode(JSON.stringify(value));
 
 type FetchRequest = NetRequest & { type: "fetch" };
 type UnixRequest = TcpRequest & { type: "unix-listen" | "unix-connect" | "unix-close" };
+type UnixOpen = UnixRequest & { type: "unix-listen" | "unix-connect" };
 interface PathBinding {
   scope: SocketScope;
   lease: SocketLease;
@@ -118,6 +121,8 @@ export class NetHelper {
   private sockets = new Map<number, LoopbackSocket>();
   private pending = new Map<number, Set<number>>();
   private pathListeners = new Map<number, PathBinding>();
+  /** Abstract listener handle -> name. The namespace holds the binding; nothing to unlink. */
+  private abstractListeners = new Map<number, string>();
   /** Path requests in flight, by guest handle. Close or disposal drops the token. */
   private pathOperations = new Map<number, object>();
   private fileWrites: Promise<void> = Promise.resolve();
@@ -182,6 +187,7 @@ export class NetHelper {
     const ports = Array.from(this.listeners.values());
     const bindings = Array.from(this.pathListeners.values());
     this.pathListeners.clear();
+    this.abstractListeners.clear();
     this.pathOperations.clear();
     this.sockets.clear();
     this.pending.clear();
@@ -514,6 +520,7 @@ export class NetHelper {
   private executeUnix(req: UnixRequest): Promise<number> {
     if (req.type === "unix-close") return this.closeUnix(req.id);
     if (!this.live()) return Promise.resolve(ECANCELED);
+    if (isAbstractName(req.path)) return Promise.resolve(this.executeAbstract(req));
     const invalid = socketPathError(req.path);
     if (invalid) return Promise.resolve(invalid);
     const paths = this.paths;
@@ -535,6 +542,7 @@ export class NetHelper {
     return (
       this.pathOperations.has(id) ||
       this.pathListeners.has(id) ||
+      this.abstractListeners.has(id) ||
       this.sockets.has(id) ||
       this.listeners.has(id) ||
       this.connections.has(id)
@@ -547,16 +555,13 @@ export class NetHelper {
   }
 
   private closeUnix(id: number): Promise<number> {
+    if (this.closeAbstract(id)) return Promise.resolve(0);
     const closing = this.closePath(id);
     if (closing) return closing;
     return Promise.resolve(this.pathOperations.delete(id) ? 0 : EBADF);
   }
 
-  private async withScope(
-    paths: HelperPaths,
-    req: UnixRequest & { type: "unix-listen" | "unix-connect" },
-    operation: object,
-  ): Promise<number> {
+  private async withScope(paths: HelperPaths, req: UnixOpen, operation: object): Promise<number> {
     const scope = await paths.scope();
     if (typeof scope === "number") return scope;
     if (!this.current(req.id, operation)) return ECANCELED;
@@ -635,9 +640,50 @@ export class NetHelper {
     if (!binding || !this.paths) return undefined;
     this.pathListeners.delete(id);
     this.namespace.unlistenPath(this, id);
-    for (const conn of this.pending.get(id) ?? []) this.close(conn);
-    this.pending.delete(id);
+    this.endPending(id);
     return this.paths.cleanup.unbind(binding.scope, binding.lease, binding.unlink);
+  }
+
+  /** Abstract names never reach the path scope or the filesystem: one synchronous namespace step.
+   * `unlinkOnClose` is accepted and ignored, as Linux has nothing to unlink. */
+  private executeAbstract(req: UnixOpen): number {
+    const invalid = abstractNameError(req.path);
+    if (invalid) return invalid;
+    if (this.claimed(req.id)) return EBADF;
+    if (req.type === "unix-connect") return this.connectAbstract(req.id, req.path);
+    const id = req.id;
+    const local: SocketAddr = { family: "Unix", path: req.path };
+    const bound = this.namespace.listenAbstract(req.path, {
+      owner: this,
+      handle: id,
+      pending: () => this.pending.get(id)?.size ?? 0,
+      accept: (socket) => this.acceptSocket(id, { family: "Unix", path: null }, local, socket),
+    });
+    if (bound) return bound;
+    this.abstractListeners.set(id, req.path);
+    this.pending.set(id, new Set());
+    return 0;
+  }
+
+  private connectAbstract(id: number, name: string): number {
+    const socket = this.namespace.connectAbstract(name, this.socketSink(id));
+    if (typeof socket === "number") return socket;
+    this.sockets.set(id, socket);
+    return 0;
+  }
+
+  /** The name is free for a new bind as soon as this returns. */
+  private closeAbstract(id: number): boolean {
+    if (!this.abstractListeners.delete(id)) return false;
+    this.namespace.unlistenAbstract(this, id);
+    this.endPending(id);
+    return true;
+  }
+
+  /** Peers the listener announced but the guest never accepted read EOF. */
+  private endPending(listener: number): void {
+    for (const conn of this.pending.get(listener) ?? []) this.close(conn);
+    this.pending.delete(listener);
   }
 
   private executeTcp(req: Exclude<TcpRequest, UnixRequest>): [number, number] {
@@ -920,7 +966,7 @@ export class NetHelper {
   private close(id: number): void {
     if (this.lookups.delete(id)) return;
     if (this.pathOperations.delete(id)) return;
-    if (this.closePath(id)) return;
+    if (this.closePath(id) || this.closeAbstract(id)) return;
     const socket = this.sockets.get(id);
     if (socket) {
       this.sockets.delete(id);
@@ -939,8 +985,7 @@ export class NetHelper {
       this.listeners.delete(id);
       this.sharedListeners.delete(id);
       this.namespace.unlisten(this, id);
-      for (const conn of this.pending.get(id) ?? []) this.close(conn);
-      this.pending.delete(id);
+      this.endPending(id);
       this.hooks.stopped?.(port);
       return;
     }

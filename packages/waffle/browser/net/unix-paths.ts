@@ -53,6 +53,20 @@ export function socketPathError(path: unknown): number {
   return 0;
 }
 
+/** Linux `sizeof sun_path`: an abstract name's UTF-8 bytes, leading NUL included. */
+const ABSTRACT_LIMIT = 108;
+
+/** A leading NUL selects the abstract namespace. Classify the raw string before any path rule. */
+export function isAbstractName(path: unknown): path is string {
+  return typeof path === "string" && path.startsWith("\0");
+}
+
+/** 0, or EINVAL for an abstract name that is empty (no autobind), too long or not UTF-8. */
+export function abstractNameError(name: string): number {
+  if (name.length < 2 || LONE_SURROGATE.test(name)) return EINVAL;
+  return encoder.encode(name).length > ABSTRACT_LIMIT ? EINVAL : 0;
+}
+
 /** One exact binding. Cleanup compares this lease, never the path string. */
 export interface SocketLease {
   readonly key: SocketKey;

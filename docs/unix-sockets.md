@@ -1,8 +1,10 @@
 # Unix-domain stream sockets
 
 Guests of one runtime can listen on and connect to pathname stream sockets, such as
-`/tmp/vite.sock`. The socket is a real node in Waffle's filesystem, and the bytes travel through
-the same in-memory streams as loopback TCP. Nothing reaches the host operating system.
+`/tmp/vite.sock`, and Linux abstract names, such as `"\0nitro-worker.sock"`. A pathname socket is
+a real node in Waffle's filesystem; an abstract name lives only in the runtime's network. The bytes
+travel through the same in-memory streams as loopback TCP. Nothing reaches the host operating
+system.
 
 This is not Linux parity. The sections below list exactly what is supported and where it differs.
 
@@ -54,6 +56,9 @@ Addresses are JSON `{ "family": "Unix", "path": string | null }`:
 | accepted | the bound path | `null` path        |
 | client   | `null` path    | the connected path |
 
+For an abstract name the path is the requested string, leading NUL included (`"\u0000name"` in
+JSON).
+
 ## Names
 
 - Paths must be absolute and at most 4096 UTF-8 bytes. They resolve inside the scope directory by
@@ -69,6 +74,26 @@ Addresses are JSON `{ "family": "Unix", "path": string | null }`:
 - Helper disposal honors `unlinkOnClose`. A bind that finishes after its helper was disposed is
   rolled back.
 
+## Abstract names
+
+A name whose first UTF-16 unit is U+0000 is abstract. This is decided first, on the raw string;
+every other name follows the pathname rules above, so a NUL anywhere else is `EINVAL`.
+
+- Identity is the whole string, compared exactly. Later NULs are significant, nothing is trimmed,
+  and there is no case or path folding. Its UTF-8 bytes are Linux's `sun_path` bytes.
+- No normalization and no filesystem: no cwd join, no `.`, `..` or symlink processing, no node, no
+  mode and no permission checks.
+- The name, leading NUL included, is at most 108 UTF-8 bytes (`sizeof sun_path`). The empty name
+  `"\0"` is `EINVAL`, because autobind is not supported.
+- Scope is the runtime's network, the same reach as loopback TCP: every guest of the runtime shares
+  it, and other runtimes cannot see it.
+- They need a shared host, like pathnames. They do not use the path scope: a helper without one can
+  bind and connect abstract names while its pathname calls still get `ENOTCAPABLE`.
+- The listener owns the name. Closing it, disposing its helper or ending the runtime frees the name
+  at once, so a new bind succeeds immediately. `close` never waits, and `unlinkOnClose` is accepted
+  and ignored.
+- Accepted streams survive listener close, and unaccepted peers read EOF, as with pathnames.
+
 ## Streams and limits
 
 - Each direction holds at most 1 MiB that the reader has not consumed. A full direction returns
@@ -79,25 +104,27 @@ Addresses are JSON `{ "family": "Unix", "path": string | null }`:
   with `EPIPE`.
 - Closing a listener keeps accepted streams. Peers it had not accepted read EOF. Linux reports
   `ECONNRESET` to those peers.
-- One runtime allows 128 path listeners and 128 path connections. A listener holds at most 64
-  connections it has not accepted; the next connect fails with `ECONNREFUSED`. Exhaustion fails
-  with `ENOBUFS` and creates nothing. A connection counts until both ends close. At most 128 path
-  requests may be waiting on the filesystem at once across the runtime; the next one fails with
-  `ENOBUFS`.
+- One runtime allows 128 Unix listeners and 128 Unix connections, pathname and abstract together.
+  A listener holds at most 64 connections it has not accepted; the next connect fails with
+  `ECONNREFUSED`. Exhaustion fails with `ENOBUFS` and creates nothing. A connection counts until
+  both ends close. At most 128 pathname requests may be waiting on the filesystem at once across the
+  runtime; the next one fails with `ENOBUFS`. Abstract requests never wait on the filesystem.
 
 ## Errors
 
 | Code           | When                                                                     |
 | -------------- | ------------------------------------------------------------------------ |
 | `EINVAL`       | NUL, unpaired surrogate, or a relative path                              |
+| `EINVAL`       | abstract: `"\0"` alone, more than 108 UTF-8 bytes, unpaired surrogate    |
 | `ENOENT`       | empty path, missing name or parent                                       |
 | `ENAMETOOLONG` | more than 4096 UTF-8 bytes                                               |
 | `ENOTDIR`      | a parent is not a directory                                              |
 | `EACCES`       | no search on a parent, no write on the parent (bind) or socket (connect) |
 | `ELOOP`        | symlink loop                                                             |
 | `ENOTCAPABLE`  | no path scope, a scope that failed its check, or a path leaving it       |
-| `EADDRINUSE`   | the name exists                                                          |
+| `EADDRINUSE`   | the name exists; abstract: a live listener holds it                      |
 | `ECONNREFUSED` | not a socket, no live listener, another scope root, or a full backlog    |
+| `ECONNREFUSED` | abstract: no live listener in this runtime, or a full backlog            |
 | `ENOBUFS`      | runtime listener, connection or pending-request limit                    |
 | `ECANCELED`    | the helper or runtime shut down during the call                          |
 | `EBADF`        | the request reused a handle that already names a listener or socket      |
@@ -105,5 +132,5 @@ Addresses are JSON `{ "family": "Unix", "path": string | null }`:
 
 ## Not supported
 
-Datagram and seqpacket sockets, abstract names, socket file descriptors passed between processes,
+Datagram and seqpacket sockets, autobind (an empty abstract name), socket file descriptors passed between processes,
 credentials (`SO_PEERCRED`), hard links to sockets, and any connection to a host socket.

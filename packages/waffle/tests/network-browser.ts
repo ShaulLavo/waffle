@@ -215,10 +215,39 @@ async function unixCases(runtime: Runtime, make: (scope?: RuntimeNetworkPathScop
       (await client.call({ op: "connect", host: "192.0.2.1", port: 80 })) === -4,
       "External TCP connect was not denied",
     );
+    await abstractCase(runtime, unscoped, client);
   } finally {
     for (const client of clients) client.dispose();
     root.release();
   }
+}
+
+/** An unscoped worker serves an abstract name to a scoped one; no filesystem node appears. */
+async function abstractCase(runtime: Runtime, server: Guest, client: Guest): Promise<void> {
+  const path = "\0w-abstract";
+  const listener = number(await server.call({ op: "listenPath", path }));
+  check(listener > 0, "Abstract listener failed without a path scope");
+  const conn = number(await client.call({ op: "connectPath", path }));
+  check(conn > 0, "Abstract connect failed");
+  const accepted = number(
+    await until(
+      () => server.call({ op: "accept", handle: listener }),
+      (v) => typeof v === "number" && v > 0,
+    ),
+  );
+  check(
+    (await client.call({ op: "peer", handle: conn })) === JSON.stringify({ family: "Unix", path }),
+    "Abstract peer address differs",
+  );
+  await client.call({ op: "write", handle: conn, bytes: bytes("abstract") });
+  await client.call({ op: "shutdown", handle: conn });
+  check(text(await read(server, accepted)) === "abstract", "Abstract stream lost bytes");
+  check((await read(server, accepted)) === 0, "Abstract half-close EOF missing");
+  await server.call({ op: "write", handle: accepted, bytes: bytes("echo") });
+  check(text(await read(client, conn)) === "echo", "Abstract reverse direction lost bytes");
+  check((await runtime.filesystem.lookup("/w-abstract")) === undefined, "Abstract name hit the FS");
+  check((await server.call({ op: "close", handle: listener })) === 0, "Abstract close failed");
+  check(number(await client.call({ op: "listenPath", path })) > 0, "Abstract rebind failed");
 }
 
 async function addressCases(server: Guest, client: Guest): Promise<void> {
@@ -524,7 +553,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
     return [
-      "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied",
+      "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied; abstract name served by an unscoped worker without a node",
       "runtime-owned IPv4 localhost lookup before any helper or worker exists",
       "IPv6 wildcard, loopback, mapped addresses and HTTP destination families across real workers",
       "paused HTTP bounded credit, read wakeups, streaming EOF and cancellation across workers and within one worker",

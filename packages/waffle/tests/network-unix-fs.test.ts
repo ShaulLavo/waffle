@@ -4,6 +4,7 @@ import { createRing } from "../browser/net/ring.js";
 import { ERROR, OK } from "../browser/net/protocol.js";
 import { FilesystemClient } from "../fs/client.js";
 import { revokeFilesystem, type FilesystemIdentity } from "../fs/protocol.js";
+import type { DirectoryEntry } from "../core/filesystem.js";
 import { disposeLive, Guest, live, readEnd } from "./network-unix-support.js";
 
 const noFetch = async () => {
@@ -253,4 +254,44 @@ test("a failed acknowledged close keeps its lease and the owner retries it", asy
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });
   admin = new FilesystemClient(runtime.filesystem.connect(runtime.filesystem.createIdentity()));
+});
+
+/** Every name under the root with its kind, sockets included. */
+async function tree(handle = adminRoot, path = ""): Promise<string[]> {
+  const entries: DirectoryEntry[] = await admin.asyncCall("readdir", [handle]);
+  let names: string[] = [];
+  for (const { name, kind } of entries) {
+    if (name === "." || name === "..") continue;
+    const child = `${path}/${name}`;
+    names.push(`${child} ${kind}`);
+    if (kind !== "directory") continue;
+    const resolved = await admin.asyncCall("resolve", [adminRoot, child.slice(1)]);
+    names = names.concat(await tree(resolved.node, child));
+  }
+  return names;
+}
+
+test("abstract names create no filesystem node and need no path scope", async () => {
+  const before = await tree();
+  const ring = createRing();
+  const unscoped = network.createHelper({ ring, fetch: noFetch });
+  live.push({ dispose: () => unscoped.dispose() });
+  const server = new Guest(unscoped, ring);
+  const client = await scoped();
+  const listener = await server.call("listenPath", "\0run/a.sock");
+  expect(listener).toBeGreaterThan(0);
+  const conn = await client.call("connectPath", "\0run/a.sock");
+  const accepted = await server.accept(listener);
+  expect(await client.call("write", conn, new Uint8Array([1]))).toBe(1);
+  expect(await server.readAll(accepted, 1)).toEqual(new Uint8Array([1]));
+  expect(await tree()).toEqual(before);
+  expect(await server.call("listenPath", "/run/a.sock")).toBe(ERROR);
+  expect(await code(server)).toBe("ENOTCAPABLE");
+  expect(await client.call("connectPath", "/run/a.sock")).toBe(ERROR);
+  expect(await code(client)).toBe("ENOENT");
+  expect(await server.call("close", listener)).toBe(OK);
+  expect(await client.call("listenPath", "\0run/a.sock")).toBeGreaterThan(0);
+  expect(await server.call("write", accepted, new Uint8Array([2]))).toBe(1);
+  expect(await client.readAll(conn, 1)).toEqual(new Uint8Array([2]));
+  expect(await tree()).toEqual(before);
 });

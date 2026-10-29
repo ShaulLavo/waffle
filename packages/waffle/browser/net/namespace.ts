@@ -29,7 +29,8 @@ export interface PathListener {
   pending(): number;
   accept(socket: LoopbackSocket): void;
 }
-/** Runtime-wide caps for pathname sockets. Unaccepted connections count as pairs. */
+/** Runtime-wide caps shared by pathname and abstract sockets. Unaccepted connections count as
+ * pairs. */
 const PATH_LISTENERS = 128;
 const PATH_PAIRS = 128;
 const PATH_BACKLOG = 64;
@@ -158,14 +159,19 @@ export class NetNamespace {
   private listeners = new Map<number, Listener>();
   private sockets = new Set<LoopbackSocket>();
   private bindings = new Map<string, PathListener>();
+  /** Abstract names, keyed by the exact string with its leading NUL. */
+  private abstract = new Map<string, PathListener>();
   /** Listener slots promised to binds still waiting on the filesystem. */
   private reservedListeners = 0;
   private pathPairs = 0;
   /** Take a listener slot before any FS work, so a refused bind creates nothing. */
   reservePathListener(): boolean {
-    if (this.bindings.size + this.reservedListeners >= PATH_LISTENERS) return false;
+    if (this.listenerSlots() >= PATH_LISTENERS) return false;
     this.reservedListeners++;
     return true;
+  }
+  private listenerSlots(): number {
+    return this.bindings.size + this.abstract.size + this.reservedListeners;
   }
   releasePathListener(): void {
     this.reservedListeners--;
@@ -182,9 +188,29 @@ export class NetNamespace {
     for (const [name, listener] of this.bindings)
       if (listener.owner === owner && listener.handle === handle) this.bindings.delete(name);
   }
-  /** Atomic: refusals and exhaustion allocate nothing. */
+  /** Synchronous: no filesystem work, so no reservation. */
+  listenAbstract(name: string, listener: PathListener): number {
+    if (this.abstract.has(name)) return EADDRINUSE;
+    if (this.listenerSlots() >= PATH_LISTENERS) return ENOBUFS;
+    this.abstract.set(name, listener);
+    return 0;
+  }
+  /** The name is free again at once: abstract names leave nothing stale. */
+  unlistenAbstract(owner: object, handle: number): void {
+    for (const [name, listener] of this.abstract)
+      if (listener.owner === owner && listener.handle === handle) this.abstract.delete(name);
+  }
   connectPath(key: SocketKey, sink: SocketSink): LoopbackSocket | number {
-    const listener = this.bindings.get(bindingKey(key));
+    return this.connectListener(this.bindings.get(bindingKey(key)), sink);
+  }
+  connectAbstract(name: string, sink: SocketSink): LoopbackSocket | number {
+    return this.connectListener(this.abstract.get(name), sink);
+  }
+  /** Atomic: refusals and exhaustion allocate nothing. */
+  private connectListener(
+    listener: PathListener | undefined,
+    sink: SocketSink,
+  ): LoopbackSocket | number {
     if (!listener || listener.pending() >= PATH_BACKLOG) return ECONNREFUSED;
     if (this.pathPairs >= PATH_PAIRS) return ENOBUFS;
     const id = status(this.module.call("net_pair"));
@@ -237,6 +263,8 @@ export class NetNamespace {
     }
     for (const [name, listener] of this.bindings)
       if (listener.owner === owner) this.bindings.delete(name);
+    for (const [name, listener] of this.abstract)
+      if (listener.owner === owner) this.abstract.delete(name);
   }
   has(port: number): boolean {
     return this.listeners.has(port);
@@ -271,6 +299,7 @@ export class NetNamespace {
       this.sockets.clear();
       this.listeners.clear();
       this.bindings.clear();
+      this.abstract.clear();
       this.module.dispose();
     }
   }
