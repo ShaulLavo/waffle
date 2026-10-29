@@ -4,13 +4,13 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 
 ## Current delivery
 
-- [PR #123](https://github.com/ShaulLavo/waffle/pull/123) merged the loader retry fix as `cc885cd`. Its main gate is pending.
-- [PR #126](https://github.com/ShaulLavo/waffle/pull/126) adds stream NONBLOCK support. It is a draft pending verification.
+- [PR #207](https://github.com/ShaulLavo/waffle/pull/207) merged memory groups, shared Wasm memory, admission limits, wake handling and cleanup. See [Memory groups](memory-groups.md).
+- Pure search source, matchers and command planners are present. Runtime engine exports are not wired.
 - No consumer dependency repin is included.
 
 ## Stability
 
-- **Version:** `0.0.100` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
+- **Version:** `0.0.101` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
 - **Distribution:** GitHub release archives of the runtime package (`waffle-v<version>` tags). Existing exact-commit Git pins keep installing their old trees. No npm package.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
@@ -44,7 +44,7 @@ The CI `browser` job installs Playwright's Chromium, Firefox and WebKit on `ubun
 - **Guest that inherits file descriptor 3 and scans preopens:** needs a wasi-libc rebuilt with the patch in [Guest libc](wasi-libc.md).
 - **Bun and Bash Web:** run on Waffle through their own adapters, in their own repositories.
 
-Waffle's code and docs do not mention Wasm threads or other post-Preview 1 interfaces.
+Memory groups support cooperative shared-memory guests. Production thread scheduling and a Rust allocator rewrite are not delivered.
 
 ## Limits
 
