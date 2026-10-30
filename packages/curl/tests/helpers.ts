@@ -2,6 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import type { Socket } from "node:net";
 import type { CurlInvocation, CurlOutput } from "../src/types.ts";
 
+export function nativeArgs(args: readonly string[]): string[] {
+  return ["-q", "--max-time", "1", "--silent", "--show-error"].concat(args);
+}
+
 const cleanups = new Set<() => Promise<void>>();
 export async function cleanupFixtures(): Promise<void> {
   for (const cleanup of cleanups) await cleanup();

@@ -68,6 +68,7 @@ async function transfer(
   signal.throwIfAborted();
   const response = await fetchResponse(invocation, request, body, signal);
   let output: CurlOutput | undefined;
+  let outputClosed = false;
   const owned = request.output !== undefined && request.output !== "-";
   try {
     signal.throwIfAborted();
@@ -89,11 +90,14 @@ async function transfer(
       await write(output, encoder.encode(responseHeaders(response)), signal);
     if (failed) throw new CurlError(22, `HTTP response ${response.status}`);
     if (!request.head) await copyResponse(response, output, signal);
-    if (owned) await closeOutput(output, signal);
+    if (owned) {
+      await closeOutput(output, signal);
+      outputClosed = true;
+    }
     signal.throwIfAborted();
     return 0;
   } catch (error) {
-    if (owned && output)
+    if (owned && output && !outputClosed)
       await output.abort(error).catch(() => {
         throw new CurlError(23, "failed cleaning up output");
       });
@@ -121,7 +125,6 @@ async function closeOutput(output: CurlOutput, signal: AbortSignal): Promise<voi
   } catch {
     throw new CurlError(23, "failed closing output");
   }
-  signal.throwIfAborted();
 }
 
 async function write(output: CurlOutput, bytes: Uint8Array, signal: AbortSignal): Promise<void> {

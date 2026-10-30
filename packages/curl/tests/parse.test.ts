@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseCurl } from "../src/parse.ts";
 import { runCurl } from "../src/curl.ts";
-import { invocation } from "./helpers.ts";
+import { invocation, nativeArgs } from "./helpers.ts";
 
 test("parses clusters, attached values, headers and method", () => {
   const request = parseCurl([
@@ -83,4 +83,29 @@ test("help obeys the same overall deadline and cancellation rules", async () => 
   expect(await runCurl({ ...context.call, timeoutMs: Infinity })).toBe(2);
   context.controller.abort();
   expect(await runCurl(context.call)).toBe(42);
+});
+
+test("empty output paths fail before Fetch or filesystem access", async () => {
+  for (const flags of [["-o", ""], ["--output", ""], ["--output="], ["-so", ""]]) {
+    const context = invocation(flags.concat("https://fixture.invalid/"));
+    let fetched = 0;
+    expect(
+      await runCurl({
+        ...context.call,
+        fetch: async () => {
+          fetched++;
+          return new Response("must not transfer");
+        },
+      }),
+    ).toBe(2);
+    expect(fetched).toBe(0);
+    expect(context.written).toHaveLength(0);
+  }
+});
+
+test("native oracle ignores configuration before every other argument", () => {
+  const args = ["-L", "http://127.0.0.1:46271/redirect"];
+  const actual = nativeArgs(args);
+  expect(actual[0]).toBe("-q");
+  expect(actual.slice(-args.length)).toEqual(args);
 });

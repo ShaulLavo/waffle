@@ -118,6 +118,7 @@ function setValue(state: State, name: string, value: string | undefined): void {
   switch (name) {
     case "o":
     case "output":
+      if (value === "") throw new CurlError(2, "output path must not be empty");
       state.output = value;
       return;
     case "H":

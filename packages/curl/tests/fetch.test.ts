@@ -374,3 +374,72 @@ test("cancellation awaits the original pending stream cleanup, not a second canc
     expect(stream.locked).toBe(false);
   }
 });
+
+test("cancellation during a successful output close never aborts the closed handle", async () => {
+  const context = invocation(["-o", "out", "https://fixture.invalid/"]);
+  const output = {
+    ...context.file.output,
+    async close(signal: AbortSignal) {
+      await context.file.output.close(signal);
+      context.controller.abort();
+    },
+  };
+  expect(
+    await runCurl({
+      ...context.call,
+      fetch: async () => new Response("owned output"),
+      files: { ...context.call.files, write: async () => output },
+    }),
+  ).toBe(42);
+  expect(context.file.state()).toEqual({ closed: 1, aborted: 0 });
+});
+
+test("disposal joins a pending output close without a second terminal operation", async () => {
+  const context = invocation(["-o", "out", "https://fixture.invalid/"]);
+  const command = createCurlCommand();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let closed = 0;
+  let aborted = 0;
+  let disposed = false;
+  let disposal: Promise<void> | undefined;
+  const output = {
+    write: context.file.output.write,
+    async close() {
+      entered.resolve();
+      await release.promise;
+      closed++;
+    },
+    async abort() {
+      aborted++;
+    },
+  };
+  const running = command.run({
+    ...context.call,
+    fetch: async () => new Response("owned output"),
+    files: { ...context.call.files, write: async () => output },
+  });
+  try {
+    await Promise.race([
+      entered.promise,
+      running.then(() => {
+        throw new Error("close was not reached");
+      }),
+    ]);
+    disposal = command.dispose().then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+    expect(closed).toBe(0);
+    expect(aborted).toBe(0);
+  } finally {
+    release.resolve();
+    await running;
+    await disposal;
+  }
+  expect(await running).toBe(42);
+  expect(disposed).toBe(true);
+  expect(closed).toBe(1);
+  expect(aborted).toBe(0);
+});

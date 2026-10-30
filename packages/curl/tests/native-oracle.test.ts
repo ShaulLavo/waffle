@@ -1,26 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { runCurl } from "../src/curl.ts";
-import { cleanupFixtures, fixture, invocation } from "./helpers.ts";
+import { cleanupFixtures, fixture, invocation, nativeArgs } from "./helpers.ts";
 
 // Hooks belong to this test file, not the cached helper module.
 afterEach(cleanupFixtures);
 
 async function native(args: readonly string[], input: Uint8Array) {
-  const child = spawn(
-    "/usr/bin/curl",
-    ["--max-time", "1", "--silent", "--show-error"].concat(args),
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 2000,
-      env: {
-        PATH: "/usr/bin:/bin",
-        HOME: "/nonexistent-waffle-curl-fixture",
-        CURL_HOME: "/nonexistent-waffle-curl-fixture",
-        LC_ALL: "C",
-      },
+  const child = spawn("/usr/bin/curl", nativeArgs(args), {
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 2000,
+    env: {
+      PATH: "/usr/bin:/bin",
+      HOME: "/nonexistent-waffle-curl-fixture",
+      CURL_HOME: "/nonexistent-waffle-curl-fixture",
+      LC_ALL: "C",
     },
-  );
+  });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
