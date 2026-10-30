@@ -2,7 +2,7 @@
   "name": "waffle-tar",
   "version": "0.0.0",
   "private": true,
-  "description": "Optional upstream tar for Waffle, with explicit WASI metadata limits.",
+  "description": "Optional read-only tar and gzip listing for Waffle; WASI create/extract and zstd are unsupported.",
   "license": "MIT",
   "files": [
     "src",

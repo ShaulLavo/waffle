@@ -55,10 +55,16 @@ function compare(result: Execution, expected: Observation, name: string, fixture
   assert.equal(result.exit.kind, "exited", JSON.stringify(result.exit));
   assert.equal(result.exit.code, expected.status, `${name}: ${text(result.stderr)}`);
   assert.deepEqual(result.stdout, new Uint8Array(expected.stdout), `${name}: stdout`);
-  // Host and guest cwd prefixes differ by construction. Only that fixture path is normalized.
+  // Native syntax includes writing; the read-only guest advertises only listing.
+  // Normalize that exact usage text and the run-owned fixture prefix, not other diagnostics.
   assert.equal(
     text(result.stderr).replaceAll("/owned-tar/", "<fixture>/"),
-    text(expected.stderr).replaceAll(fixtureRoot + "/", "<fixture>/"),
+    text(expected.stderr)
+      .replaceAll(fixtureRoot + "/", "<fixture>/")
+      .replace(
+        "Usage: tar key [FILE...]\n              tar {-c|-t|-x} [-v] -f ARCHIVE [FILE...]",
+        "Usage: tar -t [-v] [-z] -f ARCHIVE",
+      ),
     `${name}: stderr`,
   );
 }
@@ -73,6 +79,17 @@ async function seed(session: FamilyAcceptanceSession, fixtures: FixtureSet) {
 }
 async function prove(session: FamilyAcceptanceSession, fixtures: FixtureSet) {
   await seed(session, fixtures);
+  const help = await execute(session, { name: "truthful WASI help", args: ["--help"] });
+  assert.equal(help.exit.kind === "exited" && help.exit.code, 0);
+  const helpText = text(help.stdout);
+  assert.match(helpText, /Read-only archive listing/);
+  assert.match(helpText, /Unsupported on WASI/);
+  assert.match(helpText, /ownership and permission/);
+  assert.match(helpText, /zstd is unsupported/);
+  assert.doesNotMatch(
+    helpText,
+    /Create a new archive|Extract files from archive|Filter through zstd/,
+  );
   for (const fixture of fixtures.cases) {
     const expected = command(native, fixture.args, fixtures.directory, fixture.input);
     const result = await execute(session, fixture);

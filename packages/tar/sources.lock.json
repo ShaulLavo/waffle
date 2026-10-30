@@ -12,10 +12,10 @@
   },
   "patch": {
     "path": "patches/wasi.patch",
-    "sha256": "e2268e55f975ac50b5472d3d4961eab6a663166d61f01e04b52516e938e564cd"
+    "sha256": "98f2df11df80fb5789803c160e828e8303654ab0ad046a859ca99d653f505d99"
   },
   "producer": "producer/Cargo.toml and producer/Cargo.lock",
-  "adaptation": "Standalone package-only upstream build; pure Rust gzip; zstd rejected; -C resolves archive against original cwd; WASI rejects create/extract before file changes rather than fabricating ownership or dropping permission metadata. Member filters are rejected instead of silently ignored. Gzip uses MultiGzDecoder and list drains the reader to validate trailers. Invalid numeric metadata/timestamps fail instead of invented zero/current-time values. Startup obtains cwd from the existing runtime_proc.cwd ABI, never from user PWD.",
+  "adaptation": "Standalone package-only upstream build; pure Rust gzip; zstd rejected; -C resolves archive against original cwd; WASI rejects create/extract before file changes rather than fabricating ownership or dropping permission metadata. Member filters are rejected instead of silently ignored. Gzip uses MultiGzDecoder and list drains the reader to validate trailers. Invalid numeric metadata/timestamps fail instead of invented zero/current-time values. Startup obtains cwd from the existing runtime_proc.cwd ABI, never from user PWD. Target-specific help exposes read-only WASI support and rejects advertised create/extract and zstd capabilities explicitly.",
   "finalizerDependency": "Waffle PR 231 owns size optimizer and served compression finalizer. This accepted-main recipe calls stageProgram, which strips names only.",
   "sourceFiles": {
     "src/uu/tar/src/compression.rs": "2e5fd9c25890aa4b682583ebe358ef5dca97c35665e04082a46d4e4c1ef5b9c4",
@@ -28,7 +28,7 @@
     "src/uu/tar/src/operations/list.rs": "c255672a02758e4f4d8fe1f8b2524546150def035f8643dfb40709c8ce86cabd",
     "src/uu/tar/src/operations/list_tests.rs": "5572f6c3173b764a0aeaae06ebc3c5eb4859d7d5e48df277e80d22c92ceb6c0b",
     "src/uu/tar/src/operations/mod.rs": "15d30e2166f13ae2f50206325d726dab3cea7ebe2f7f6d00d41f68aeeb2d1425",
-    "src/uu/tar/src/tar.rs": "0ca32fa23ffab3239eb25749505a5d14ccc455533ebd1470af4807a8d409f70f",
+    "src/uu/tar/src/tar.rs": "7195b649ee361d2cdb895968191f64f78d93d2512ffd78271575a22a7850abc0",
     "src/uu/tar/src/tar_tests.rs": "213ded6d9971885c5788c24c95e3017c5bc739bde08535d04e6de5b57d06a838"
   }
 }
