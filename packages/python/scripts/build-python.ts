@@ -22,9 +22,11 @@ import {
   pythonSource,
   regularFiles,
   sha256,
+  type PythonPayloadFile,
+  type PythonPayloadManifest,
 } from "./python-source.ts";
-import type { PythonPayloadFile, PythonPayloadManifest } from "./python-source.ts";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildConfiguration,
   wasiSysrootCommand,
@@ -226,8 +228,20 @@ export function stagePythonArtifact(source: string, output: string, sdk?: string
   const tree = resolve(output, "python-files");
   assert.ok(!existsSync(tree), `Refusing to replace an existing payload tree: ${tree}`);
   mkdirSync(output, { recursive: true });
-  for (const name of Object.keys(assets).concat(["python-build.json"]))
+  for (const name of Object.keys(assets)
+    .filter((name) => name !== "python.wasm")
+    .concat(["python-build.json"]))
     copyFileSync(resolve(source, name), resolve(output, name));
+  const input = readFileSync(resolve(source, "python.wasm"));
+  stageProgram(resolve(source, "python.wasm"), resolve(output, "python.wasm"));
+  const finalized = readFileSync(resolve(output, "python.wasm"));
+  const derivation = {
+    operation: "strip-wasm-name-sections",
+    producerReceiptSha256: sha256(readFileSync(resolve(source, "python-build.json"))),
+    input: { bytes: input.length, sha256: sha256(input) },
+    output: { bytes: finalized.length, sha256: sha256(finalized) },
+  };
+  writeFileSync(resolve(output, "python-program.json"), `${JSON.stringify(derivation, null, 2)}\n`);
   cpSync(resolve(source, "python-files"), tree, {
     recursive: true,
     force: false,

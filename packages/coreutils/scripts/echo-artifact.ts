@@ -8,7 +8,7 @@ import {
   verifyXargsArtifact,
   workspaceRoot,
 } from "../../findutils/scripts/xargs-artifact.ts";
-import { verifyWasiGuest } from "../../../tools/program-build-tools.ts";
+import { stripWasmNames, verifyWasiGuest } from "../../../tools/program-build-tools.ts";
 
 const input = process.env.ECHO_XARGS_ARTIFACT;
 assert.ok(input, "same-run qualified xargs artifact required");
@@ -16,7 +16,10 @@ const xargs = verifyXargsArtifact(input);
 const guest = resolve(workspaceRoot, ".build/coreutils/wasm32-wasip1/release/echo.wasm");
 verifyWasiGuest(guest);
 const bytes = readFileSync(guest);
-assert.deepEqual(readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo.wasm")), bytes);
+assert.deepEqual(
+  readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo.wasm")),
+  stripWasmNames(bytes),
+);
 const proof = {
   schema: "waffle-echo-xargs-qualified-pair/v1",
   identity: githubIdentity(),
