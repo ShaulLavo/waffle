@@ -5,7 +5,7 @@
 ```ts
 import { installPython } from "@waffle/python/install";
 const python = await installPython(runtime, { launcher });
-// Spawn /usr/bin/python with the caller's existing process controller.
+// Spawn /usr/bin/python or /usr/bin/python3 with the existing process controller.
 await python.dispose();
 ```
 
@@ -13,7 +13,9 @@ await python.dispose();
 `createPythonPackage`, whose launch policy sets PWD so requested cwd wins over missing or
 stale PWD. Lower-level `createPythonProgram` remains the payload/source implementation.
 
-The program path is `/usr/bin/python`, and its fixed CPython argv0 is `/cross-build/wasm32-wasip1/python.wasm`. `createPythonProgram` is lazy: construction does not fetch the interpreter or payload. The first `source()` call loads the interpreter and prepares the payload, and concurrent calls share that work.
+The canonical program path is `/usr/bin/python`. `/usr/bin/python3` and `/bin/python3` are aliases of that same program, so a shell can find `python3` through `/usr/bin` or `/bin` on PATH. Its fixed CPython argv0 is `/cross-build/wasm32-wasip1/python.wasm`. `createPythonProgram` is lazy: construction does not fetch the interpreter or payload. The first `source()` call loads the interpreter and prepares the payload, and concurrent calls share that work.
+
+For collection loading, `createPythonPackage(runtime).pick("/usr/bin/python3")` selects the original Python entry and payload owner. Once that package is installed, `runtime.programs.get("/bin/python3")` returns the same handle as `runtime.programs.get("python")`. Alias selectors are absolute paths in Waffle's catalog contract; `python3` alone is a shell command name, not a catalog selector. Preloading or executing either alias shares the canonical program's cached source, payload preparation, compiled module, and disposal fences. Aliases do not add another interpreter asset or guest filesystem copy.
 
 Serve `python.wasm`, `python-stdlib.json`, `python-files/**`, and `python.NOTICES.txt` from the qualified [Python build](python-build.md). The manifest's file URLs resolve relative to its URL. Defaults point to the package's `assets/` files. Keep the manifest and its full unpruned payload together; the interpreter is a separate asset, never a duplicate VFS file.
 

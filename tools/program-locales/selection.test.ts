@@ -28,7 +28,7 @@ test("every shipped coreutils program has an explicit payload classification", a
   const { coreutilsNames } = await import("../../packages/coreutils/scripts/programs.ts");
   const { usesProgramCatalogs } = await import("./selection.ts");
   const notApplicable = ["clear", "cat", "mkdir", "seq", "tail", "which"];
-  assert.equal(coreutilsNames.length, 19);
+  assert.equal(coreutilsNames.length, 20);
   for (const name of coreutilsNames) {
     assert.equal(usesProgramCatalogs(name), !notApplicable.includes(name), name);
     selectCatalogs(name, "0.12.0");

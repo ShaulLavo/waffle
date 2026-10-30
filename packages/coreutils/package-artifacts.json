@@ -12,6 +12,8 @@
     "dist/tr-program.json",
     "dist/head.wasm",
     "dist/head-program.json",
+    "dist/nl.wasm",
+    "dist/nl-program.json",
     "dist/which.wasm",
     "dist/which-program.json",
     "dist/ls.wasm",

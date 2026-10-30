@@ -345,6 +345,25 @@ test("programs normal CI runs the release closure test from the folded source ch
   ).toBe(true);
 });
 
+test("programs prepares locked Cargo sources after cache restore and before source checks", () => {
+  const steps = stepsFor("programs");
+  const cache = steps.findIndex(
+    (step) =>
+      step.uses === "actions/cache@v4" && String(record(step.with).path).includes("~/.cargo/git"),
+  );
+  const fetches = steps.filter((step) => step.run === "cargo fetch --locked");
+  expect(fetches).toHaveLength(1);
+  const fetch = fetches[0];
+  expect(fetch?.if).toBeUndefined();
+  const fetched = steps.indexOf(record(fetch));
+  expect(cache).toBeGreaterThanOrEqual(0);
+  expect(fetched).toBeGreaterThan(cache);
+  for (const command of ["bun run programs:routes", "bun run programs:source"]) {
+    const check = steps.findIndex((step) => step.run === command);
+    expect(check).toBeGreaterThan(fetched);
+  }
+});
+
 test("jq has a separate leaf with the shared network artifact prerequisite", () => {
   const job = record(jobs.jq);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
@@ -600,4 +619,58 @@ test("program producers explicitly provision the pinned optimizer before running
     expect(selected(filter, "tools/program-derivation.ts")).toBe(true);
     expect(selected(filter, ".github/actions/program-optimizer/action.yml")).toBe(true);
   }
+});
+
+test("gh selects its inputs without selecting native program jobs for gh-only changes", () => {
+  const job = record(jobs.gh);
+  expect(record(changes.outputs).gh).toBe("${{ steps.paths.outputs.gh }}");
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(String(job.if)).toContain("needs.changes.outputs.gh == 'true'");
+  for (const path of [
+    "packages/gh/src/program.ts",
+    "packages/gh/tests/fixtures.ts",
+    "packages/waffle/runtime.ts",
+    "tools/program-package.ts",
+    "package.json",
+    "bun.lock",
+    ".github/workflows/ci.yml",
+  ])
+    expect(selected("gh", path), path).toBe(true);
+  for (const path of [
+    "docs/development.md",
+    "site/package.json",
+    "packages/jq/src/index.ts",
+    "packages/git/src/index.ts",
+  ])
+    expect(selected("gh", path), path).toBe(false);
+  for (const name of ["programs", "coreutils", "findutils", "network", "browser", "libc"])
+    expect(selected(name, "packages/gh/src/program.ts"), name).toBe(false);
+});
+
+test("gh restores the exact network asset and does not set up native compilers", () => {
+  const steps = stepsFor("gh");
+  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const restore = steps.find((step) => step.id === "network-artifact");
+  expect(record(restore?.with).key).toBe(record(producer?.with).key);
+  expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  expect(steps.indexOf(record(restore))).toBeLessThan(verify);
+  expect(verify).toBeLessThan(install);
+  expect(record(record(jobs.gh).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(
+    steps.some((step) =>
+      /cargo|rust-toolchain|wasi-sdk|wasmtime/i.test(
+        String(step.uses ?? "") + " " + String(step.run ?? ""),
+      ),
+    ),
+  ).toBe(false);
+  expect(
+    record(steps.find((step) => step.uses === "actions/setup-node@v4")?.with)["node-version"],
+  ).toBe("26.12.1");
+  expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });
