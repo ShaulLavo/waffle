@@ -131,7 +131,7 @@ export class NetHelper {
     sab: SharedArrayBuffer,
     private fetchRequest: NetFetch,
     private hooks: NetHelperHooks = {},
-    private namespace = new NetNamespace(),
+    private namespace: NetNamespace,
     private assertOwnerLive: () => void = () => {},
     private lookupRequest: NetLookup = lookupAddress,
     private paths?: HelperPaths,
