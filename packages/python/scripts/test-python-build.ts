@@ -267,11 +267,13 @@ test("owned compiler scratch is removed after failure while caller data survives
   assert.throws(() => readFileSync(resolve(created, "compiler-output")), /ENOENT/);
 });
 
-
 test("generated Python audit imports resolve in Node from the package directory", (context) => {
   const { directory, put } = fixture(context);
   put("audit-api.mjs", "export class Wasi {}\nexport class MemFS {}\n");
-  const script = pythonAuditScript(resolve(directory, "audit-api.mjs"), auditWaffleSource(repositoryRoot));
+  const script = pythonAuditScript(
+    resolve(directory, "audit-api.mjs"),
+    auditWaffleSource(repositoryRoot),
+  );
   const body = script.indexOf("const output=");
   assert.ok(body > 0);
   execFileSync("node", ["--input-type=module", "-e", script.slice(0, body)], {

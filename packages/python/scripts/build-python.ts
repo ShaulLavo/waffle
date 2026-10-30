@@ -247,7 +247,10 @@ export function stagePythonArtifact(source: string, output: string, sdk?: string
   return manifest;
 }
 
-export function pythonAuditScript(api: string, runtimeIdentity: ReturnType<typeof auditWaffleSource>) {
+export function pythonAuditScript(
+  api: string,
+  runtimeIdentity: ReturnType<typeof auditWaffleSource>,
+) {
   return `
 import assert from "node:assert/strict";
 import {dirname,resolve} from "node:path";
