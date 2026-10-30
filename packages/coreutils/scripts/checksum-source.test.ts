@@ -32,11 +32,12 @@ test("checksum source stays a pinned isolated upstream leaf", () => {
     );
     assert.match(manifest, new RegExp(`uu_${name}`));
   }
+  assert.match(manifest, /\[patch\."https:\/\/github.com\/uutils\/coreutils"\]/);
+  assert.match(text(resolve(crateRoot, "src/stdio.rs")), /fn fd_read\(/);
+  assert.match(text(resolve(crateRoot, "src/stdio.rs")), /fn fd_write\(/);
   assert.equal(provenance.revision, revision);
   assert.deepEqual(provenance.utilities, checksumNames);
-  assert.ok(
-    provenance.localChanges.some((change) => change.includes("No upstream checksum source")),
-  );
+  assert.ok(provenance.localChanges.some((change) => change.includes("selected-I/O")));
 });
 
 test("checksum oracle fixture seals every requested utility", () => {

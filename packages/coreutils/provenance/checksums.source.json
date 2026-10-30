@@ -2,7 +2,7 @@
   "repository": "https://github.com/uutils/coreutils",
   "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
   "archive": "https://codeload.github.com/uutils/coreutils/tar.gz/07763857f6b9a547742a994b58aef0ccd036198b",
-  "classification": "Unmodified pinned upstream checksum implementations in an isolated package-local Cargo leaf; Waffle only supplies binary entry wrappers and the WASI build/qualification harness.",
+  "classification": "Pinned upstream checksum implementations in an isolated package-local Cargo leaf with a local dependency patch for selected WASI I/O errors and escaped checksum records.",
   "utilities": [
     "b2sum",
     "cksum",
@@ -116,11 +116,12 @@
     "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
   },
   "localChanges": [
-    "No upstream checksum source, locale or shared checksum helper is copied or edited.",
+    "The selected-I/O patch changes only checksum readers/writers, legacy sum I/O, and checksum record parsing in the generated dependency source. No shared runtime source changes.",
     "Each local bin initializes libc cwd from PWD and calls the upstream uucore::bin!(uu_<utility>) entry. The crate has its own Cargo workspace and lockfile.",
     "The local cwd adapter applies the launch PWD before entering upstream so relative file operands observe the Waffle request cwd.",
     "The build reuses an existing recipe-checked Waffle patched-libc artifact and shared release environment, verifier and optimizer. It builds only the nine checksum leaves. The source-only probe retains upstream catalogs until the parent applies checksum locale policy.",
-    "The Waffle test loads each guest lazily through the real runtime process worker and compares frozen stdout/status/stderr-presence observations after native oracle identity verification."
+    "The Waffle test loads each guest lazily through the real runtime process worker and compares frozen stdout/status/stderr-presence observations after native oracle identity verification.",
+    "The package-local preparation helper exports the exact pinned Git revision, applies the owned patch, copies the I/O adapter and parser regressions, and seals every generated source file. Cargo patches are isolated to this checksum workspace. All upstream notices remain intact."
   ],
   "oracle": {
     "fixture": "fixtures/checksums.json",
@@ -138,5 +139,16 @@
     "digestReader": "src/uucore/src/lib/features/checksum/mod.rs:522",
     "implementation": "io::copy(reader, DigestWriter) over the upstream 32 KiB BufReader; sum uses fixed 8 KiB stack buffers. No guest whole-file read or host checksum evaluator.",
     "qualifiedInputBytes": 1048576
+  },
+  "dependencyPatch": {
+    "path": "crates/checksums/patches/selected-io-and-escaped-records.patch",
+    "sha256": "61a2afaf5b6c60662c6f23b098d12cb94642fa853a8164ef23d9a0128758770c",
+    "preparation": "scripts/prepare-checksum-source.ts",
+    "generatedSource": ".sources/checksums",
+    "changes": [
+      "Use selected raw WASI fd_read/fd_write operations instead of Rust stdio wrappers that hide absent descriptors. Named-file-only reads never touch fd0, and output-free verification never touches fd1.",
+      "Propagate verification report write errors. Preserve existing streaming buffers and process cancellation.",
+      "Strip the optional escape marker before untagged digest parsing, decode marked filenames once, and preserve unmarked filename bytes."
+    ]
   }
 }

@@ -20,6 +20,8 @@ import {
   type ChecksumFixture,
 } from "../scripts/checksum-oracle.ts";
 
+import { checksumRegressions } from "./helpers/checksum-regressions.ts";
+
 const artifactDirectory =
   process.env.CHECKSUM_ARTIFACTS ??
   resolve(import.meta.dirname, "../../../.build/coreutils-checksums/dist");
@@ -149,6 +151,7 @@ async function observations(
   assert.equal(handle.state.kind, "loaded");
   for (const entry of fixture.cases) await assertFixtureCase(session, entry);
   console.log(`Passed ${fixture.cases.length} checksum oracle cases`);
+  await checksumRegressions(session);
   await assertStreaming(session, fixture.stream, false);
   await assertStreaming(session, fixture.stream, true);
   assert.deepEqual(session.descriptors.inheritable(), [0, 1, 2]);

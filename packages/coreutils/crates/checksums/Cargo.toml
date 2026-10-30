@@ -19,4 +19,9 @@ uu_md5sum = { package = "uu_md5sum", git = "https://github.com/uutils/coreutils"
 uu_b2sum = { package = "uu_b2sum", git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
 uu_cksum = { package = "uu_cksum", git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
 uu_sum = { package = "uu_sum", git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
-uucore = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = { features = ["checksum"], git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[patch."https://github.com/uutils/coreutils"]
+uucore = { path = "../../.sources/checksums/src/uucore" }
+uu_checksum_common = { path = "../../.sources/checksums/src/uu/checksum_common" }
+uu_sum = { path = "../../.sources/checksums/src/uu/sum" }

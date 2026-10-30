@@ -11,7 +11,7 @@ From `packages/coreutils`, with the existing verified patched WASI libc, wasi-sd
 ```sh
 node scripts/build-checksums.ts
 node scripts/checksum-oracle.ts --verify
-node --test scripts/checksum-source.test.ts
+node --test scripts/checksum-source.test.ts scripts/checksum-parser.test.ts
 bun test tests/checksums-wasi.test.ts
 ```
 
@@ -21,7 +21,11 @@ The fixture records GNU coreutils 9.12 executable versions and hashes. The runti
 
 ## Upstream behavior and integration limits
 
-The upstream digest reader uses `io::copy` over a 32 KiB buffered reader. `sum` uses fixed 8 KiB buffers. The adapter never reads a complete input file into memory or substitutes a host hashing implementation. It only sets libc cwd from `PWD` before entering upstream. Keep `PWD` aligned with the requested cwd.
+The upstream digest reader uses `io::copy` over a 32 KiB buffered reader. `sum` uses fixed 8 KiB buffers. The adapter never reads a complete input file into memory or substitutes a host hashing implementation. It sets libc cwd from `PWD` before entering upstream. A checksum-only dependency patch uses WASI descriptor reads and writes at the selected I/O operation, so absent descriptors fail instead of becoming empty input or discarded output. Named-file reads do not require stdin. Output-free `--status` verification does not require stdout. Keep `PWD` aligned with the requested cwd.
+
+The build first exports the exact pinned Cargo Git source into `.sources/checksums`, applies the owned dependency patch, and verifies a complete generated-source receipt on reuse. Set `CHECKSUM_UPSTREAM_SOURCE` if that exact checkout is outside Cargo's cache. Do not edit the generated dependency or shared Cargo cache. The patch also handles escape markers before digest parsing and decodes marked filenames once. The runtime tests generate and verify escaped records for every verification command and compare selected-descriptor controls with the pinned GNU oracle.
+
+`--zero --check` remains an upstream compatibility limit. GNU rejects this combination, while this pinned uutils accepts it.
 
 Diagnostics, help and version output remain uutils text. Tests compare diagnostic presence rather than GNU wording. MD5, SHA-1 and legacy sums are not suitable for checking authenticity.
 

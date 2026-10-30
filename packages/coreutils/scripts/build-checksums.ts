@@ -10,6 +10,8 @@ import {
 } from "../../../tools/program-build-tools.ts";
 import { programReleaseEnvironment } from "../../../tools/program-optimize.ts";
 
+import { prepareChecksumSource } from "./prepare-checksum-source.ts";
+
 export const checksumNames = [
   "b2sum",
   "cksum",
@@ -32,6 +34,7 @@ const releaseDirectory = resolve(workspaceRoot, targetDirectory, wasiTarget, "re
 const outputDirectory = resolve(workspaceRoot, targetDirectory, "dist");
 
 export function buildChecksums() {
+  prepareChecksumSource();
   const recipe = {
     root: workspaceRoot,
     waffle: resolve(workspaceRoot, "packages/waffle"),

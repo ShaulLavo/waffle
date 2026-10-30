@@ -858,7 +858,6 @@ dependencies = [
 [[package]]
 name = "uu_checksum_common"
 version = "0.13.0"
-source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
 dependencies = [
  "clap",
  "fluent",
@@ -945,7 +944,6 @@ dependencies = [
 [[package]]
 name = "uu_sum"
 version = "0.13.0"
-source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
 dependencies = [
  "clap",
  "fluent",
@@ -956,7 +954,6 @@ dependencies = [
 [[package]]
 name = "uucore"
 version = "0.13.0"
-source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
 dependencies = [
  "base64-simd",
  "blake2b_simd",
@@ -994,7 +991,6 @@ dependencies = [
 [[package]]
 name = "uucore_procs"
 version = "0.13.0"
-source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
 dependencies = [
  "proc-macro2",
  "quote",
