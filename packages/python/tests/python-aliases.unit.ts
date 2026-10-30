@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPythonPackage, PYTHON_ARGV0, PYTHON_PATH } from "../src/index.ts";
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
+import { PYTHON_ARGV0 } from "../src/python-payload.ts";
+
+// Source-only unit CI does not prepare Waffle's Node exports.
+const bundled = await build({
+  entryPoints: [fileURLToPath(new URL("../src/index.ts", import.meta.url))],
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  write: false,
+});
+const output = bundled.outputFiles[0];
+assert.ok(output);
+const { createPythonPackage, PYTHON_PATH }: typeof import("../src/index.ts") = await import(
+  `data:text/javascript;base64,${Buffer.from(output.contents).toString("base64")}`
+);
 
 test("Python catalog picks retain one canonical definition, source, and payload owner", () => {
   const runtime = {
@@ -18,7 +34,9 @@ test("Python catalog picks retain one canonical definition, source, and payload 
       async drain() {},
     },
   };
-  const catalog = createPythonPackage(runtime);
+  const catalog = createPythonPackage(runtime, {
+    payloadUrl: "https://python.test/python-stdlib.json",
+  });
   assert.equal(catalog.programs.length, 1);
   const program = catalog.programs[0];
   assert.ok(program);

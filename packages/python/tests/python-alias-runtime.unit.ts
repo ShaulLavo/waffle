@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import { after, before, test, type TestContext } from "node:test";
-import { createRuntime, type GuestLauncher, type RuntimeProcessContext } from "waffle";
-import { createPythonPackage, PYTHON_ARGV0, type PythonPayloadManifest } from "../src/index.ts";
-import { installPython } from "../src/install.ts";
+import type { GuestLauncher, RuntimeProcessContext } from "waffle";
+import { PYTHON_ARGV0, type PythonPayloadManifest } from "../src/python-payload.ts";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "../test/node-worker-host.ts";
-import { createProgramTestRoot } from "../../../tools/program-test-root.ts";
 import { wasiCat } from "../../waffle/tests/fixtures/wasi-cat.ts";
 
+const runtimeTest = {
+  skip:
+    process.env.PYTHON_ALIAS_RUNTIME === "1"
+      ? false
+      : "Set PYTHON_ALIAS_RUNTIME=1 after preparing Waffle Node exports",
+  timeout: 10_000,
+};
 const paths = ["/usr/bin/python", "/usr/bin/python3", "/bin/python3"];
 const nodeRoot = new URL(".", import.meta.resolve("waffle"));
 const worker = new URL(import.meta.resolve("waffle/browser/preview1-worker"));
@@ -57,6 +62,10 @@ const launchWorker: GuestLauncher = (context, service) =>
   });
 
 async function fixture(context: TestContext, launcher = launchWorker) {
+  const { createRuntime } = await import("waffle");
+  const { createPythonPackage } = await import("../src/index.ts");
+  const { installPython } = await import("../src/install.ts");
+  const { createProgramTestRoot } = await import("../../../tools/program-test-root.ts");
   const runtime = createRuntime({
     filesystem: { mode: "memory", workerURL: new URL("browser/fs-worker.js", nodeRoot) },
     programs: { launcher },
@@ -124,128 +133,140 @@ async function fixture(context: TestContext, launcher = launchWorker) {
 }
 
 for (const kind of ["collection", "installer"] as const) {
-  test(`${kind}: Python aliases load one WASI fixture and preserve argv, cwd, and exit status`, async (context) => {
-    const launches: RuntimeProcessContext[] = [];
-    const state = await fixture(context, (guest, service) => {
-      launches.push(guest);
-      return launchWorker(guest, service);
-    });
-    const dispose = await state.install(kind);
-    for (const path of paths)
-      assert.equal((await state.runtime.filesystem.lookup(path))?.kind, "file");
-    assert.deepEqual(state.fetched, []);
-    await state.runtime.filesystem.mkdirp("/home/guest");
-    const root = await state.root();
-    const args = ["-I", "-B", "-u", "-c", "unchanged", "", "two words", "β", "-m", "--version"];
-    const executions = paths.map((executable) =>
-      root.exec({
-        executable,
-        argv: [executable].concat(args),
-        cwd: "/home/guest",
-        env: { PWD: "/stale", TOKEN: "kept" },
-      }),
-    );
-    await state.entered;
-    assert.equal(launches.length, 0);
-    state.release();
-    const results = await Promise.all(executions);
-    for (const result of results) assert.deepEqual(result, { status: 2, stdout: "", stderr: "" });
-    assert.equal(launches.length, paths.length);
-    for (const launched of launches) {
-      assert.deepEqual(launched.request.argv, [PYTHON_ARGV0].concat(args));
-      assert.equal(launched.request.cwd, "/home/guest");
-      assert.deepEqual(launched.request.env, { PWD: "/home/guest", TOKEN: "kept" });
-      assert.equal(launched.module, launches[0]?.module);
-    }
-    assert.equal(state.fetched.length, files.size + 2);
-    assert.equal(new Set(state.fetched).size, state.fetched.length);
-    if (kind === "collection") await state.runtime.programs.preload("python", "/bin/python3");
-    assert.equal(state.fetched.length, files.size + 2);
-    await dispose();
-    for (const path of paths.concat(Array.from(files.keys())))
-      assert.equal(await state.runtime.filesystem.lookup(path), undefined);
-    assert.equal(state.runtime.disposed, false);
-  });
+  test(
+    `${kind}: Python aliases load one WASI fixture and preserve argv, cwd, and exit status`,
+    runtimeTest,
+    async (context) => {
+      const launches: RuntimeProcessContext[] = [];
+      const state = await fixture(context, (guest, service) => {
+        launches.push(guest);
+        return launchWorker(guest, service);
+      });
+      const dispose = await state.install(kind);
+      for (const path of paths)
+        assert.equal((await state.runtime.filesystem.lookup(path))?.kind, "file");
+      assert.deepEqual(state.fetched, []);
+      await state.runtime.filesystem.mkdirp("/home/guest");
+      const root = await state.root();
+      const args = ["-I", "-B", "-u", "-c", "unchanged", "", "two words", "β", "-m", "--version"];
+      const executions = paths.map((executable) =>
+        root.exec({
+          executable,
+          argv: [executable].concat(args),
+          cwd: "/home/guest",
+          env: { PWD: "/stale", TOKEN: "kept" },
+        }),
+      );
+      await state.entered;
+      assert.equal(launches.length, 0);
+      state.release();
+      const results = await Promise.all(executions);
+      for (const result of results) assert.deepEqual(result, { status: 2, stdout: "", stderr: "" });
+      assert.equal(launches.length, paths.length);
+      for (const launched of launches) {
+        assert.deepEqual(launched.request.argv, [PYTHON_ARGV0].concat(args));
+        assert.equal(launched.request.cwd, "/home/guest");
+        assert.deepEqual(launched.request.env, { PWD: "/home/guest", TOKEN: "kept" });
+        assert.equal(launched.module, launches[0]?.module);
+      }
+      assert.equal(state.fetched.length, files.size + 2);
+      assert.equal(new Set(state.fetched).size, state.fetched.length);
+      if (kind === "collection") await state.runtime.programs.preload("python", "/bin/python3");
+      assert.equal(state.fetched.length, files.size + 2);
+      await dispose();
+      for (const path of paths.concat(Array.from(files.keys())))
+        assert.equal(await state.runtime.filesystem.lookup(path), undefined);
+      assert.equal(state.runtime.disposed, false);
+    },
+  );
 
-  test(`${kind}: disposal joins canonical and alias loading without resurrection`, async (context) => {
-    let launches = 0;
-    const state = await fixture(context, () => {
-      launches++;
-      throw new Error("unexpected launch");
-    });
-    const dispose = await state.install(kind);
-    const root = await state.root();
-    const running = paths.map((executable) =>
-      root.exec({
-        executable,
-        argv: [executable, "--version"],
-        cwd: "/",
-        env: {},
-      }),
-    );
-    await state.entered;
-    let disposed = false;
-    const disposal = dispose();
-    assert.equal(dispose(), disposal);
-    void disposal.then(() => {
-      disposed = true;
-    });
-    await setImmediate();
-    assert.equal(disposed, false);
-    state.release();
-    for (const result of await Promise.all(running)) assert.equal(result.status, 127);
-    await disposal;
-    assert.equal(launches, 0);
-    for (const path of paths.concat(Array.from(files.keys())))
-      assert.equal(await state.runtime.filesystem.lookup(path), undefined);
-    assert.equal(state.fetched.length, files.size + 2);
-  });
+  test(
+    `${kind}: disposal joins canonical and alias loading without resurrection`,
+    runtimeTest,
+    async (context) => {
+      let launches = 0;
+      const state = await fixture(context, () => {
+        launches++;
+        throw new Error("unexpected launch");
+      });
+      const dispose = await state.install(kind);
+      const root = await state.root();
+      const running = paths.map((executable) =>
+        root.exec({
+          executable,
+          argv: [executable, "--version"],
+          cwd: "/",
+          env: {},
+        }),
+      );
+      await state.entered;
+      let disposed = false;
+      const disposal = dispose();
+      assert.equal(dispose(), disposal);
+      void disposal.then(() => {
+        disposed = true;
+      });
+      await setImmediate();
+      assert.equal(disposed, false);
+      state.release();
+      for (const result of await Promise.all(running)) assert.equal(result.status, 127);
+      await disposal;
+      assert.equal(launches, 0);
+      for (const path of paths.concat(Array.from(files.keys())))
+        assert.equal(await state.runtime.filesystem.lookup(path), undefined);
+      assert.equal(state.fetched.length, files.size + 2);
+    },
+  );
 
-  test(`${kind}: canonical and alias consumers share the physical-stop payload fence`, async (context) => {
-    const started = [deferred(), deferred()];
-    const stopped = [deferred(), deferred()];
-    const terminating = [deferred(), deferred()];
-    const guests: RuntimeProcessContext[] = [];
-    const state = await fixture(context, (guest) => {
-      const index = guests.length;
-      guests.push(guest);
-      guest.started();
-      started[index]?.resolve();
-      return {
-        terminate: async () => {
-          terminating[index]?.resolve();
-          await stopped[index]?.promise;
-        },
-      };
-    });
-    for (const gate of stopped) state.hold(gate);
-    const dispose = await state.install(kind);
-    state.release();
-    const root = await state.root();
-    const executions = paths.slice(0, 2).map((executable) =>
-      root.exec({
-        executable,
-        argv: [executable, "--version"],
-        cwd: "/",
-        env: {},
-      }),
-    );
-    await Promise.all(started.map((gate) => gate.promise));
-    let disposed = false;
-    const disposal = dispose().then(() => {
-      disposed = true;
-    });
-    for (const guest of guests) guest.exit(7);
-    await Promise.all(terminating.map((gate) => gate.promise));
-    assert.equal(disposed, false);
-    assert.ok(await state.runtime.filesystem.lookup("/Lib/os.py"));
-    stopped[0]?.resolve();
-    await executions[0];
-    assert.equal(disposed, false);
-    assert.ok(await state.runtime.filesystem.lookup("/Lib/os.py"));
-    stopped[1]?.resolve();
-    for (const result of await Promise.all(executions)) assert.equal(result.status, 7);
-    await disposal;
-    assert.equal(await state.runtime.filesystem.lookup("/Lib/os.py"), undefined);
-  });
+  test(
+    `${kind}: canonical and alias consumers share the physical-stop payload fence`,
+    runtimeTest,
+    async (context) => {
+      const started = [deferred(), deferred()];
+      const stopped = [deferred(), deferred()];
+      const terminating = [deferred(), deferred()];
+      const guests: RuntimeProcessContext[] = [];
+      const state = await fixture(context, (guest) => {
+        const index = guests.length;
+        guests.push(guest);
+        guest.started();
+        started[index]?.resolve();
+        return {
+          terminate: async () => {
+            terminating[index]?.resolve();
+            await stopped[index]?.promise;
+          },
+        };
+      });
+      for (const gate of stopped) state.hold(gate);
+      const dispose = await state.install(kind);
+      state.release();
+      const root = await state.root();
+      const executions = paths.slice(0, 2).map((executable) =>
+        root.exec({
+          executable,
+          argv: [executable, "--version"],
+          cwd: "/",
+          env: {},
+        }),
+      );
+      await Promise.all(started.map((gate) => gate.promise));
+      let disposed = false;
+      const disposal = dispose().then(() => {
+        disposed = true;
+      });
+      for (const guest of guests) guest.exit(7);
+      await Promise.all(terminating.map((gate) => gate.promise));
+      assert.equal(disposed, false);
+      assert.ok(await state.runtime.filesystem.lookup("/Lib/os.py"));
+      stopped[0]?.resolve();
+      await executions[0];
+      assert.equal(disposed, false);
+      assert.ok(await state.runtime.filesystem.lookup("/Lib/os.py"));
+      stopped[1]?.resolve();
+      for (const result of await Promise.all(executions)) assert.equal(result.status, 7);
+      await disposal;
+      assert.equal(await state.runtime.filesystem.lookup("/Lib/os.py"), undefined);
+    },
+  );
 }

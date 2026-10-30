@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { createRuntime, type GuestLauncher } from "waffle";
-import { createPythonPackage, PYTHON_ARGV0 } from "../src/index.ts";
+import type { GuestLauncher } from "waffle";
+import { PYTHON_ARGV0 } from "../src/python-payload.ts";
 import { serveTestFiles } from "../test/assets-server.ts";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "../test/node-worker-host.ts";
-import { createProgramTestRoot, type TestExecution } from "../../../tools/program-test-root.ts";
+import type { TestExecution } from "../../../tools/program-test-root.ts";
 
 const artifact = process.env.PYTHON_ALIAS_ARTIFACT;
 const paths = ["/usr/bin/python", "/usr/bin/python3", "/bin/python3"];
@@ -62,6 +62,9 @@ test(
   },
   async (context) => {
     assert.ok(artifact);
+    const { createRuntime } = await import("waffle");
+    const { createPythonPackage } = await import("../src/index.ts");
+    const { createProgramTestRoot } = await import("../../../tools/program-test-root.ts");
     const server = await serveTestFiles(resolve(artifact));
     const roots: Awaited<ReturnType<typeof createProgramTestRoot>>[] = [];
     const cleanup = [
