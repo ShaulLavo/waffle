@@ -27,9 +27,10 @@ The producer's output directory is an intermediate artifact. The staging helper 
 the externally accepted producer receipt SHA-256, pinned CPython/source-patch identity,
 all 2,650 payload entries, interpreter admission and memory cap, and the receipt's asset
 hashes before copying anything. The original `python-build.json` remains byte-identical;
-consumer qualification records the current Waffle source separately. Staging removes only
-the interpreter's `name` custom sections after verification. `python-program.json` links
-the unchanged producer receipt and interpreter hash to the final staged bytes. It does
+consumer qualification records the current Waffle source separately. Staging optimizes a
+private snapshot with pinned Binaryen, verifies the actual named optimized code, then
+removes its names. `python-program.json` binds that two-step chain and final hash/size
+to the unchanged producer receipt and original interpreter identity. It does
 not identify the staging runtime as a new producer.
 
 ```sh

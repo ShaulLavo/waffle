@@ -1,3 +1,5 @@
+import { stageProgram } from "../tools/program-build-tools.ts";
+import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -84,12 +87,16 @@ function writeArtifacts(packageRoot: string) {
   for (const file of recipe.files as string[]) {
     const path = resolve(packageRoot, file);
     mkdirSync(dirname(path), { recursive: true });
-    const label = Buffer.from(file);
-    const wasm = Buffer.concat([
-      Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 0, label.length + 1, 0]),
-      label,
-    ]);
-    writeFileSync(path, file.endsWith(".wasm") ? wasm : `stand-in notice for ${file}\n`);
+    if (file.endsWith("-program.json")) continue;
+    if (!file.endsWith(".wasm")) {
+      writeFileSync(path, `stand-in notice for ${file}\n`);
+      continue;
+    }
+    const input = resolve(packageRoot, ".build/fixture-input.wasm");
+    mkdirSync(dirname(input), { recursive: true });
+    writeFileSync(input, cappedWasiFixture);
+    stageProgram(input, path);
+    rmSync(input);
   }
 }
 
@@ -229,7 +236,7 @@ describe("base closure", () => {
     expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm).toHaveLength(24);
+    expect(wasm).toHaveLength(25);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
@@ -244,6 +251,7 @@ describe("base closure", () => {
       "dist/ls.wasm",
       "dist/mkdir.wasm",
       "dist/mv.wasm",
+      "dist/nl.wasm",
       "dist/rm.wasm",
       "dist/seq.wasm",
       "dist/sort.wasm",
@@ -272,6 +280,21 @@ describe("base closure", () => {
     });
     expect(guests.get("waffle-base")).toEqual({ descriptor: [], staticReference: [] });
   });
+
+  test("a symlinked output directory still proves guest containment in the real install", async () => {
+    const linkedRoot = preparedFixture("symlink-output");
+    const target = resolve(scratch, "actual-output");
+    mkdirSync(target);
+    const link = resolve(scratch, "linked-output");
+    symlinkSync(target, link);
+    const receipt = await buildRelease({
+      ...(await fixtureOptions(linkedRoot, "unused-output")),
+      out: link,
+    });
+    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(25);
+    for (const guest of receipt.installCheck.wasm)
+      expect(guest.path.startsWith("node_modules/")).toBe(true);
+  }, 60_000);
 
   test("never mutates the source checkout", () => {
     expect(git(root, ["status", "--porcelain"])).toBe("");

@@ -1,0 +1,203 @@
+--- a/lib/signal.in.h
++++ b/lib/signal.in.h
+@@ -255,8 +255,8 @@
+ #   define NSIG 32
+ #  endif
+ 
+-/* This code supports only 32 signals.  */
+-#  if !GNULIB_defined_verify_NSIG_constraint
++/* WASI exposes 64 signals, but diff and cmp stub out signal masking.  */
++#  if !GNULIB_defined_verify_NSIG_constraint && !defined __wasi__
+ typedef int verify_NSIG_constraint[NSIG <= 32 ? 1 : -1];
+ #   define GNULIB_defined_verify_NSIG_constraint 1
+ #  endif
+--- a/lib/getdtablesize.c
++++ b/lib/getdtablesize.c
+@@ -87,6 +87,16 @@
+   return dtablesize;
+ }
+ 
++#elif defined __wasi__
++
++# include <limits.h>
++
++int
++getdtablesize (void)
++{
++  return INT_MAX;
++}
++
+ #else
+ 
+ # include <limits.h>
+--- a/lib/pclose.c
++++ b/lib/pclose.c
+@@ -18,11 +18,16 @@
+ 
+ /* Specification.  */
+ #include <stdio.h>
+-
+-/* Native Windows API.  */
++#include <errno.h>
+ 
+ int
+ pclose (FILE *stream)
+ {
++#ifdef __wasi__
++  (void) stream;
++  errno = ENOSYS;
++  return -1;
++#else
+   return _pclose (stream);
++#endif
+ }
+--- a/lib/popen.c
++++ b/lib/popen.c
+@@ -38,6 +38,19 @@
+   return _popen (filename, mode);
+ }
+ 
++#elif defined __wasi__
++
++# include <errno.h>
++
++FILE *
++popen (const char *filename, const char *mode)
++{
++  (void) filename;
++  (void) mode;
++  errno = ENOSYS;
++  return NULL;
++}
++
+ #else
+ 
+ # include <errno.h>
+--- a/lib/sigaction.c
++++ b/lib/sigaction.c
+@@ -24,6 +24,19 @@
+ #include <stdint.h>
+ #include <stdlib.h>
+ 
++#ifdef __wasi__
++int
++sigaction (int sig, const struct sigaction *restrict act,
++           struct sigaction *restrict oact)
++{
++  (void) sig;
++  (void) act;
++  (void) oact;
++  errno = ENOSYS;
++  return -1;
++}
++#else
++
+ /* This implementation of sigaction is tailored to native Windows behavior:
+    signal() has SysV semantics (ie. the handler is uninstalled before
+    it is invoked).  This is an inherent data race if an asynchronous
+@@ -202,3 +215,5 @@
+   errno = saved_errno;
+   return -1;
+ }
++
++#endif
+\ No newline at end of file
+--- a/lib/time_rz.c
++++ b/lib/time_rz.c
+@@ -189,7 +189,9 @@
+ {
+   if (setenv_TZ (tz->tz_is_set ? tz->abbrs : NULL) != 0)
+     return false;
++#ifndef __wasi__
+   tzset ();
++#endif
+   return true;
+ }
+ 
+--- a/lib/mktime.c
++++ b/lib/mktime.c
+@@ -97,7 +97,7 @@
+   const char *tz = getenv ("TZ");
+   if (tz != NULL && strchr (tz, '/') != NULL)
+     _putenv ("TZ=");
+-# else
++# elif !defined __wasi__
+   tzset ();
+ # endif
+ }
+--- a/src/system.h
++++ b/src/system.h
+@@ -35,7 +35,9 @@
+ #include <fcntl.h>
+ #include <time.h>
+ 
++#ifndef __wasi__
+ #include <sys/wait.h>
++#endif
+ 
+ #include <dirent.h>
+ #ifndef _D_EXACT_NAMLEN
+--- a/src/dir.c
++++ b/src/dir.c
+@@ -27,7 +27,9 @@
+ #include <filenamecat.h>
+ #include <mcel.h>
+ #include <quote.h>
++#ifndef __wasi__
+ #include <setjmp.h>
++#endif
+ #include <xalloc.h>
+ 
+ #ifndef HAVE_STRUCT_DIRENT_D_TYPE
+@@ -49,8 +51,10 @@
+    locale-specific sorting.  */
+ static bool locale_specific_sorting;
+ 
++#ifndef __wasi__
+ /* Where to go if locale-specific sorting fails.  */
+ static jmp_buf failed_locale_specific_sorting;
++#endif
+ 
+ static int compare_names (char const *, char const *);
+ static bool dir_loop (struct comparison const *, int);
+@@ -193,7 +197,9 @@
+     {
+       error (0, errno, _("cannot compare file names %s and %s"),
+ 	     quote_n (0, name1), quote_n (1, name2));
++#ifndef __wasi__
+       longjmp (failed_locale_specific_sorting, 1);
++#endif
+     }
+   return r;
+ }
+@@ -262,10 +268,14 @@
+   if (val == EXIT_SUCCESS)
+     {
+       /* Use locale-specific sorting if possible, else native byte order.  */
++#ifdef __wasi__
++      locale_specific_sorting = false;
++#else
+       locale_specific_sorting = true;
+       if (! ignore_file_name_case)
+ 	if (setjmp (failed_locale_specific_sorting))
+ 	  locale_specific_sorting = false;
++#endif
+ 
+       /* Sort the directories.  */
+       for (int i = 0; i < 2; i++)
+--- a/src/util.c
++++ b/src/util.c
+@@ -911,9 +911,13 @@
+       if (waitpid (pr_pid, &wstatus, 0) < 0)
+         pfatal_with_name ("waitpid");
+ #endif
++#ifdef __wasi__
++      int status = INT_MAX;
++#else
+       int status = (! werrno && WIFEXITED (wstatus)
+ 		    ? WEXITSTATUS (wstatus)
+ 		    : INT_MAX);
++#endif
+       if (status)
+         error (EXIT_TROUBLE, werrno,
+                _(status == 126

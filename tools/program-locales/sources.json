@@ -46,6 +46,11 @@
         "path": "locales/errors/en-US.ftl",
         "sha256": "e9142ecba95ab9f7fccb89658dd76b8118746cbc05ef6128eb5268dd2a906651"
       },
+      "nl/en-US.ftl": {
+        "package": "uu_nl",
+        "path": "locales/en-US.ftl",
+        "sha256": "680e90adf9c994be07bcc7517e02b4155d7f5ba143a4fffd2a03cc96e2cd6144"
+      },
       "echo/en-US.ftl": {
         "package": "uu_echo",
         "path": "locales/en-US.ftl",

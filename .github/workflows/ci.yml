@@ -31,6 +31,8 @@ jobs:
       ripgrep: ${{ steps.paths.outputs.ripgrep }}
       base: ${{ steps.paths.outputs.base }}
       programs: ${{ steps.paths.outputs.programs }}
+      diffutils: ${{ steps.paths.outputs.diffutils }}
+      gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +76,8 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/findutils/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -96,6 +100,8 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/program-support/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -134,12 +140,35 @@ jobs:
               - "packages/base/**"
               - "packages/python/**"
               - "packages/git/**"
+            diffutils:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
+              - "tools/program-package.ts"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/**"
+              - "packages/base/**"
+              - "packages/diffutils/**"
+            gh:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-package.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/**"
+              - "packages/gh/**"
             jq:
               - ".github/**"
               - "package.json"
               - "bun.lock"
               - "rust-toolchain.toml"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-package.ts"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -248,6 +277,139 @@ jobs:
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
+  diffutils:
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache/restore@v4
+        id: bun-cache
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - name: Record native compiler identity
+        id: native-compiler
+        run: |
+          set -eu
+          identity=$(
+            {
+              cc -dumpmachine
+              cc --version | sed -n '1p'
+            } | sha256sum | cut -d' ' -f1
+          )
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+          printf 'native compiler identity: %s\n' "$identity"
+      - uses: actions/cache@v4
+        id: native-oracle
+        with:
+          path: .build/diffutils-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-native-oracle-v1-gnu-3.12-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/scripts/build-native-oracle.ts') }}-${{ steps.native-compiler.outputs.identity }}
+      - name: Build or verify native GNU diffutils oracle
+        run: bun run --cwd packages/diffutils native-oracle
+        env:
+          NATIVE_ORACLE_COMPILER_IDENTITY: ${{ steps.native-compiler.outputs.identity }}
+      - uses: actions/cache@v4
+        id: diffutils-cache
+        with:
+          path: |
+            .build/wasi-libc
+            packages/diffutils/.build
+            packages/diffutils/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/patches/**', 'packages/diffutils/scripts/**', 'packages/diffutils/src/**', 'packages/diffutils/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-
+      - uses: actions/cache@v4
+        id: sdk
+        with:
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - name: Install pinned wasi-sdk 34
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
+          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
+          tar -xzf wasi-sdk.tar.gz
+          rm wasi-sdk.tar.gz
+      - uses: actions/cache@v4
+        id: wasmtime
+        with:
+          path: ~/downloader/bin/wasmtime
+          key: ${{ runner.os }}-wasmtime-49.0.3
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+        if: steps.wasmtime.outputs.cache-hit != 'true'
+        with:
+          version: 49.0.3
+      - name: Add cached Wasmtime to PATH
+        run: |
+          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
+          "$HOME/downloader/bin/wasmtime" --version
+      - uses: ./.github/actions/program-optimizer
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare:package
+      - run: bun run programs:check
+      - name: Build and test diffutils
+        run: |
+          cmake --version
+          ninja --version
+          bun run programs:diffutils
+        env:
+          GNU_DIFF: ${{ github.workspace }}/.build/diffutils-native-oracle/diff
+          GNU_CMP: ${{ github.workspace }}/.build/diffutils-native-oracle/cmp
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+  gh:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.gh == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.1
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare:package
+      - run: bun run programs:gh
   jq:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -347,6 +509,7 @@ jobs:
         run: |
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
+      - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
       - run: bun run programs:check
@@ -360,6 +523,7 @@ jobs:
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+
   package:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -602,12 +766,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
+      - run: cargo fetch --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
       - run: bun run --cwd packages/git test:unit
       - run: bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
+      - uses: ./.github/actions/program-optimizer
       - run: bun run programs:tools
       - run: bun test scripts/program-release.test.ts
       - run: bun run programs:routes

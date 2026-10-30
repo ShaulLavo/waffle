@@ -1,3 +1,7 @@
+import {
+  programBytesIdentity,
+  validateProgramDerivation,
+} from "../../../tools/program-derivation.ts";
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -9,7 +13,7 @@ import {
   workspaceRoot,
 } from "../../findutils/scripts/xargs-artifact.ts";
 import { readProgramLocaleProof } from "../../../tools/program-locales/prepare.ts";
-import { stripWasmNames, verifyWasiGuest } from "../../../tools/program-build-tools.ts";
+import { verifyWasiGuest } from "../../../tools/program-build-tools.ts";
 
 const input = process.env.ECHO_XARGS_ARTIFACT;
 assert.ok(input, "same-run qualified xargs artifact required");
@@ -17,10 +21,14 @@ const xargs = verifyXargsArtifact(input);
 const guest = resolve(workspaceRoot, ".build/coreutils/wasm32-wasip1/release/echo.wasm");
 verifyWasiGuest(guest);
 const bytes = readFileSync(guest);
-assert.deepEqual(
-  readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo.wasm")),
-  stripWasmNames(bytes),
+const finalized = readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo.wasm"));
+const derivation: unknown = JSON.parse(
+  readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo-program.json"), "utf8"),
 );
+validateProgramDerivation(derivation, finalized);
+assert.ok(derivation && typeof derivation === "object" && "input" in derivation);
+assert.deepEqual(derivation.input, programBytesIdentity(bytes));
+
 const proof = {
   schema: "waffle-echo-xargs-qualified-pair/v1",
   identity: githubIdentity(),
@@ -36,6 +44,8 @@ const proof = {
     "packages/coreutils/scripts/echo-artifact.ts",
     "packages/coreutils/provenance/echo.source.json",
     "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
     "tools/program-locales",
     "packages/waffle/scripts/build-wasi-libc.sh",
     "packages/waffle/patches/wasi-libc/preopen-scan.patch",

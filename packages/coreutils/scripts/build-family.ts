@@ -95,12 +95,14 @@ export function buildFamilyPrograms(
 
 export function stageFamilyPrograms(names: readonly string[]) {
   for (const name of names) {
-    for (const directory of ["dist", "public/programs"]) {
-      mkdirSync(resolve(packageRoot, directory), { recursive: true });
-      stageProgram(
-        resolve(releaseDirectory, `${name}.wasm`),
-        resolve(packageRoot, directory, `${name}.wasm`),
-      );
-    }
+    const destinations = ["dist", "public/programs"].map((directory) =>
+      resolve(packageRoot, directory, `${name}.wasm`),
+    );
+    for (const path of destinations) mkdirSync(resolve(path, ".."), { recursive: true });
+    stageProgram(
+      resolve(releaseDirectory, `${name}.wasm`),
+      destinations,
+      verificationOptions(name),
+    );
   }
 }
