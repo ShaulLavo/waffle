@@ -144,6 +144,9 @@ generateRustNotices({
   features: "cooperative-wasi",
   prefix: readFileSync(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), "utf8"),
   isolated: [
-    { manifest: resolve(root, "crates/checksums/Cargo.toml"), packages: ["waffle-coreutils-checksums"] },
+    {
+      manifest: resolve(root, "crates/checksums/Cargo.toml"),
+      packages: ["waffle-coreutils-checksums"],
+    },
   ],
 });

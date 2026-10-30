@@ -34,7 +34,7 @@ interface Invocation {
 const guestRoot = "/work/checksum-regressions";
 const decoy = "decoy";
 
-function pwd(root: string, invocation: Invocation) {
+function pwd(root: string, invocation: Invocation): Record<string, string> {
   if (invocation.pwd === "absent") return {};
   return { PWD: invocation.pwd === "decoy" ? resolve(root, decoy) : root };
 }

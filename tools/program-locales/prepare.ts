@@ -114,7 +114,8 @@ function pinned(entry: CargoPackage, version: string, owned: OwnedLocaleSource |
   const identity = sourceIdentity(version);
   if (entry.source === identity.source) return true;
   if (entry.source !== null) return false;
-  if (owned) return owned.revision === identity.revision && inside(owned.directory, entry.manifest_path);
+  if (owned)
+    return owned.revision === identity.revision && inside(owned.directory, entry.manifest_path);
   return entry.name === "uu_env";
 }
 

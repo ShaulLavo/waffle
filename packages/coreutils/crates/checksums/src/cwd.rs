@@ -31,7 +31,8 @@ fn enter_process_cwd() -> io::Result<()> {
 fn process_cwd(bytes: &mut [u8]) -> io::Result<usize> {
     let result = unsafe { cwd(bytes.as_mut_ptr(), bytes.len()) };
     if result < 0 {
-        return Err(io::Error::other(format!("runtime cwd errno {}", -i64::from(result))));
+        let errno = -i64::from(result);
+        return Err(io::Error::other(format!("runtime cwd errno {errno}")));
     }
     usize::try_from(result).map_err(io::Error::other)
 }

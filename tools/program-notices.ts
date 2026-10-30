@@ -125,7 +125,10 @@ export function generateRustNotices(options: {
   readonly features?: string;
   readonly prefix?: string;
   /** Family crates with their own Cargo workspace and lockfile; shared crates appear once. */
-  readonly isolated?: readonly { readonly manifest: string; readonly packages: readonly string[] }[];
+  readonly isolated?: readonly {
+    readonly manifest: string;
+    readonly packages: readonly string[];
+  }[];
 }) {
   const selected = selectedPackages(
     cargoMetadata(options.root, options.features),

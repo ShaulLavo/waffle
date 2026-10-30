@@ -16,8 +16,10 @@ type Verify = typeof verifyWasiGuest;
 function receipt(root: string, directory: string, verifier: Verify): string {
   const source = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   assert.match(source, /^[a-f0-9]{40}$/);
-  const line = (file: string) =>
-    `${createHash("sha256").update(readFileSync(resolve(directory, file))).digest("hex")}  ${file}`;
+  const line = (file: string) => {
+    const bytes = readFileSync(resolve(directory, file));
+    return `${createHash("sha256").update(bytes).digest("hex")}  ${file}`;
+  };
   const hashes = coreutilsNames.flatMap((name) => {
     const path = resolve(directory, `${name}.wasm`);
     verifier(path, verificationOptions(name));
