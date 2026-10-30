@@ -26,6 +26,9 @@
     "../packages/python/src",
     "../packages/diffutils/src",
     "../packages/diffutils/scripts",
-    "../packages/diffutils/tests"
+    "../packages/diffutils/tests",
+    "../packages/jq/src",
+    "../packages/jq/scripts",
+    "../packages/jq/tests"
   ]
 }
