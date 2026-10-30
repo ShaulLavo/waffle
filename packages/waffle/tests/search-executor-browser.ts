@@ -7,7 +7,11 @@ import {
 } from "../proc/worker-client.js";
 import { WorkerPipeHost } from "../proc/worker-pipes.js";
 import type { FilesystemIdentity } from "../fs/protocol.js";
-import { SLOT_WORDS, SharedFilesystemState } from "../fs/shared.js";
+import {
+  auditFilesystem,
+  assertFilesystemStopped,
+  assertFilesystemQuiet,
+} from "./filesystem-stop-observer.js";
 import {
   CONTROL_CHUNKS,
   CONTROL_FENCED,
@@ -24,9 +28,6 @@ import type {
   SearchWorkerRequest,
 } from "./fixtures/search-count-worker.js";
 
-// Shared-slot field and global-lock cell of fs/shared.ts, read only to audit lock words.
-const FILE_LOCK = 8;
-const GLOBAL_LOCK = 1;
 const SEARCH_WORKER = "/search-worker.js";
 
 function check(value: unknown, message: string): asserts value {
@@ -49,13 +50,9 @@ function admittedModule(): Uint8Array {
   ]);
 }
 
-interface Termination {
-  readonly sections: number;
+interface Termination extends Readonly<ReturnType<typeof auditFilesystem>> {
   readonly liveShards: number;
   readonly fenced: boolean;
-  readonly revocation: number;
-  readonly fileLocks: number;
-  readonly globalLock: boolean;
 }
 interface Launch {
   readonly pid: number;
@@ -70,17 +67,10 @@ interface Launch {
 }
 
 function audit(identity: FilesystemIdentity, control: Int32Array): Termination {
-  const state = new SharedFilesystemState(identity.shared, identity.maxBytes);
-  let fileLocks = 0;
-  for (let slot = 1; slot < state.slots.length / SLOT_WORDS; slot++)
-    if (Atomics.load(state.slots, slot * SLOT_WORDS + FILE_LOCK) === identity.owner) fileLocks++;
   return {
-    sections: Atomics.load(new Int32Array(identity.sections), 0),
+    ...auditFilesystem(identity),
     liveShards: Atomics.load(control, CONTROL_LIVE_SHARDS),
     fenced: Atomics.load(control, CONTROL_FENCED) === 1,
-    revocation: Atomics.load(new Int32Array(identity.revocations[0]!), 0),
-    fileLocks,
-    globalLock: Atomics.load(state.cells, GLOBAL_LOCK) === identity.owner,
   };
 }
 
@@ -296,11 +286,7 @@ function expected(root: string, files: number, count: number): string {
 async function assertStopped(launch: Launch, label: string): Promise<void> {
   await until(() => launch.terminated !== undefined, `${label} worker stop`);
   const audits = [launch.acknowledged, launch.terminated].filter((audit) => audit !== undefined);
-  for (const audited of audits) {
-    check(audited.sections === 0, `${label}: stopped inside ${audited.sections} sections`);
-    check(audited.fileLocks === 0, `${label}: dead token holds ${audited.fileLocks} file locks`);
-    check(!audited.globalLock, `${label}: dead token holds the global lock`);
-  }
+  for (const audited of audits) assertFilesystemStopped(audited, label);
   // A process that acknowledged exit reaped its own identity in fs.dispose(); every shard must
   // have acknowledged stop before that. Without an acknowledgement the page fence stopped it.
   const ack = launch.acknowledged;
@@ -309,10 +295,9 @@ async function assertStopped(launch: Launch, label: string): Promise<void> {
     `${label}: exit with ${ack?.liveShards} live shards and no fence`,
   );
   const control = launch.control!;
-  const sections = new Int32Array(launch.filesystem.sections);
   launch.quietMs = await quiet(
     () => Atomics.load(control, CONTROL_HEARTBEAT) + Atomics.load(control, CONTROL_CHUNKS),
-    () => check(Atomics.load(sections, 0) === 0, `${label}: a helper entered a section after stop`),
+    () => assertFilesystemQuiet(launch.filesystem, label),
     label,
   );
 }

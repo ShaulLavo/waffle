@@ -17,7 +17,12 @@ import {
   waitForFilesystemQuiescence,
 } from "../fs";
 import { SLOT_WORDS } from "../fs/shared";
-import { FilesystemSection } from "../fs/protocol";
+import { FilesystemSection, isRevoked } from "../fs/protocol";
+import {
+  auditFilesystem,
+  assertFilesystemStopped,
+  assertFilesystemQuiet,
+} from "./filesystem-stop-observer.js";
 
 function serviceQuiescence(service: FilesystemService): Promise<void> {
   const sessions = Reflect.get(service, "sessions");
@@ -333,4 +338,171 @@ test("nested sections and concurrent identity users do not announce quiescence p
   expect(settled).toBe(true);
   expect(() => first.enter()).toThrow();
   expect(Atomics.load(new Int32Array(identity.sections), 0)).toBe(0);
+});
+
+function stopObserverFixture() {
+  const pair = createFilesystemConnection();
+  workerCleanups.add(() => {
+    pair.client.port.close();
+    pair.server.port.close();
+  });
+  const identity = pair.client;
+  const state = (revoked: () => boolean) =>
+    new SharedFilesystemState(
+      identity.shared,
+      identity.maxBytes,
+      identity.owner,
+      identity.segments,
+      new FilesystemSection(identity, revoked),
+    );
+  const shared = state(() => isRevoked(identity));
+  shared.register(
+    0,
+    { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    new Uint8Array([65, 66, 67, 68]),
+  );
+  const slot = shared.fileSlot(0);
+  const lockWord = slot * SLOT_WORDS + 8;
+  const stop = () => {
+    revokeFilesystem(identity);
+    assertFilesystemStopped(auditFilesystem(identity), "stop");
+    reapFilesystem(identity);
+  };
+  return { identity, shared, state, slot, lockWord, stop };
+}
+
+test("stop observer accepts a revoked late admission that aborts without storage access", () => {
+  const fixture = stopObserverFixture();
+  fixture.stop();
+  let admissions = 0;
+  const shared = fixture.state(() => {
+    admissions++;
+    expect(auditFilesystem(fixture.identity)).toEqual({
+      sections: 1,
+      revocation: 2,
+      fileLocks: 0,
+      globalLock: false,
+    });
+    assertFilesystemQuiet(fixture.identity, "late abort");
+    return isRevoked(fixture.identity);
+  });
+  const bytes = new Uint8Array(4);
+  expect(() =>
+    shared.directRead(
+      fixture.slot,
+      0,
+      [bytes],
+      0,
+      () => isRevoked(fixture.identity),
+      fixture.identity.owner,
+    ),
+  ).toThrow(expect.objectContaining({ errno: 11 }));
+  expect(admissions).toBe(1);
+  expect(Array.from(bytes)).toEqual([0, 0, 0, 0]);
+  assertFilesystemStopped(auditFilesystem(fixture.identity), "after abort");
+});
+
+test("stop observer rejects a pre-revocation section still open at stop", () => {
+  const fixture = stopObserverFixture();
+  Atomics.store(fixture.shared.slots, fixture.lockWord, fixture.identity.owner + 1);
+  let stopped = false;
+  fixture.shared.onContention = () => {
+    stopped = true;
+    revokeFilesystem(fixture.identity);
+    const snapshot = auditFilesystem(fixture.identity);
+    expect(snapshot.revocation).toBe(1);
+    expect(snapshot.sections).toBe(1);
+    expect(() => assertFilesystemStopped(snapshot, "open section")).toThrow(
+      "stopped inside 1 sections",
+    );
+    Atomics.store(fixture.shared.slots, fixture.lockWord, 0);
+  };
+  const bytes = new Uint8Array(4);
+  expect(() =>
+    fixture.shared.directRead(
+      fixture.slot,
+      0,
+      [bytes],
+      0,
+      () => isRevoked(fixture.identity),
+      fixture.identity.owner,
+    ),
+  ).toThrow(expect.objectContaining({ errno: 11 }));
+  expect(stopped).toBe(true);
+  expect(Array.from(bytes)).toEqual([0, 0, 0, 0]);
+  assertFilesystemStopped(auditFilesystem(fixture.identity), "after open section");
+});
+
+test("quiet observer rejects a genuine late read while its dead-owner file lock is held", () => {
+  const fixture = stopObserverFixture();
+  fixture.stop();
+  const shared = fixture.state(() => false);
+  let inspected = false;
+  class ObservedRead extends Uint8Array {
+    override get length(): number {
+      inspected = true;
+      expect(auditFilesystem(fixture.identity).fileLocks).toBe(1);
+      expect(() => assertFilesystemQuiet(fixture.identity, "late read")).toThrow(
+        "file locks after stop",
+      );
+      return super.length;
+    }
+  }
+  const bytes = new ObservedRead(4);
+  expect(shared.directRead(fixture.slot, 0, [bytes], 0, () => false, fixture.identity.owner)).toBe(
+    4,
+  );
+  expect(inspected).toBe(true);
+  expect(Array.from(bytes)).toEqual([65, 66, 67, 68]);
+  assertFilesystemQuiet(fixture.identity, "read released");
+});
+
+test("quiet observer rejects a dead-owner global lock inside a late storage body", () => {
+  const fixture = stopObserverFixture();
+  fixture.stop();
+  const shared = fixture.state(() => false);
+  shared.mutate(
+    new Int32Array(fixture.identity.epoch),
+    () => false,
+    () => {
+      expect(auditFilesystem(fixture.identity).globalLock).toBe(true);
+      expect(() => assertFilesystemQuiet(fixture.identity, "late mutation")).toThrow(
+        "global lock after stop",
+      );
+    },
+  );
+  assertFilesystemQuiet(fixture.identity, "mutation released");
+});
+
+test("stop and quiet observers require revocation and ignore other owners' locks", () => {
+  const fixture = stopObserverFixture();
+  expect(() => assertFilesystemStopped(auditFilesystem(fixture.identity), "live")).toThrow(
+    "unrevoked",
+  );
+  expect(() => assertFilesystemQuiet(fixture.identity, "live")).toThrow("unrevoked");
+  fixture.stop();
+  Atomics.store(fixture.shared.slots, fixture.lockWord, fixture.identity.owner + 1);
+  Atomics.store(fixture.shared.cells, 1, fixture.identity.owner + 1);
+  assertFilesystemStopped(auditFilesystem(fixture.identity), "other owner");
+  assertFilesystemQuiet(fixture.identity, "other owner");
+  Atomics.store(fixture.shared.slots, fixture.lockWord, fixture.identity.owner);
+  expect(() => assertFilesystemStopped(auditFilesystem(fixture.identity), "file lock")).toThrow(
+    "dead token holds 1 file locks",
+  );
+  expect(() => assertFilesystemQuiet(fixture.identity, "fresh file lock")).toThrow(
+    "file locks after stop",
+  );
+  Atomics.store(fixture.shared.slots, fixture.lockWord, 0);
+  Atomics.store(fixture.shared.cells, 1, fixture.identity.owner);
+  expect(() => assertFilesystemStopped(auditFilesystem(fixture.identity), "global lock")).toThrow(
+    "dead token holds the global lock",
+  );
+  expect(() => assertFilesystemQuiet(fixture.identity, "fresh global lock")).toThrow(
+    "global lock after stop",
+  );
+  Atomics.store(fixture.shared.cells, 1, 0);
+  const revocation = new Int32Array(fixture.identity.revocations[0]!);
+  Atomics.store(revocation, 0, 0);
+  expect(() => assertFilesystemQuiet(fixture.identity, "lost revocation")).toThrow("unrevoked");
+  Atomics.store(revocation, 0, 1);
 });
