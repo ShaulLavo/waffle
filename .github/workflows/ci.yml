@@ -32,6 +32,7 @@ jobs:
       base: ${{ steps.paths.outputs.base }}
       programs: ${{ steps.paths.outputs.programs }}
       diffutils: ${{ steps.paths.outputs.diffutils }}
+      gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
     steps:
       - uses: actions/checkout@v4
@@ -146,6 +147,14 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
               - "packages/diffutils/**"
+            gh:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-package.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/**"
+              - "packages/gh/**"
             jq:
               - ".github/**"
               - "package.json"
@@ -359,6 +368,39 @@ jobs:
           GNU_CMP: ${{ github.workspace }}/.build/diffutils-native-oracle/cmp
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+  gh:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.gh == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.1
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare:package
+      - run: bun run programs:gh
   jq:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"

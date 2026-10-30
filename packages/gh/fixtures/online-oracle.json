@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "ghVersion": "2.103.0",
+  "observations": [
+    {
+      "id": "pr-view-json",
+      "argv": [
+        "pr",
+        "view",
+        "231",
+        "-R",
+        "ShaulLavo/waffle",
+        "--json",
+        "number,title,state"
+      ],
+      "exit": 0,
+      "stdout": "{\"number\":231,\"state\":\"OPEN\",\"title\":\"Optimize verified program releases for size\"}\n",
+      "stderr": ""
+    },
+    {
+      "id": "pr-view-jq",
+      "argv": [
+        "pr",
+        "view",
+        "231",
+        "-R",
+        "ShaulLavo/waffle",
+        "--json",
+        "number,title",
+        "--jq",
+        ".title"
+      ],
+      "exit": 0,
+      "stdout": "Optimize verified program releases for size\n",
+      "stderr": ""
+    },
+    {
+      "id": "pr-list-filter",
+      "argv": [
+        "pr",
+        "list",
+        "-R",
+        "ShaulLavo/waffle",
+        "--state",
+        "all",
+        "--limit",
+        "2",
+        "--json",
+        "number,state,title"
+      ],
+      "exit": 0,
+      "stdout": "[{\"number\":235,\"state\":\"OPEN\",\"title\":\"Add the nl line-numbering program\"},{\"number\":234,\"state\":\"OPEN\",\"title\":\"Make program loading explicit\"}]\n",
+      "stderr": ""
+    },
+    {
+      "id": "issue-view-json",
+      "argv": [
+        "issue",
+        "view",
+        "1",
+        "-R",
+        "cli/cli",
+        "--json",
+        "number,state,title"
+      ],
+      "exit": 0,
+      "stdout": "{\"number\":1,\"state\":\"MERGED\",\"title\":\"interactive pr list\"}\n",
+      "stderr": ""
+    },
+    {
+      "id": "issue-list-state",
+      "argv": [
+        "issue",
+        "list",
+        "-R",
+        "cli/cli",
+        "--state",
+        "closed",
+        "--limit",
+        "2",
+        "--json",
+        "number,state,title"
+      ],
+      "exit": 0,
+      "stdout": "[{\"number\":14871,\"state\":\"CLOSED\",\"title\":\"test\"},{\"number\":14870,\"state\":\"CLOSED\",\"title\":\"malik\"}]\n",
+      "stderr": ""
+    },
+    {
+      "id": "repo-view-json",
+      "argv": [
+        "repo",
+        "view",
+        "ShaulLavo/waffle",
+        "--json",
+        "nameWithOwner,url"
+      ],
+      "exit": 0,
+      "stdout": "{\"nameWithOwner\":\"ShaulLavo/waffle\",\"url\":\"https://github.com/ShaulLavo/waffle\"}\n",
+      "stderr": ""
+    },
+    {
+      "id": "repo-discovery-env",
+      "argv": [
+        "api",
+        "repos/{owner}/{repo}",
+        "--jq",
+        ".full_name"
+      ],
+      "exit": 0,
+      "stdout": "cli/cli\n",
+      "stderr": ""
+    },
+    {
+      "id": "run-list-filter",
+      "argv": [
+        "run",
+        "list",
+        "-R",
+        "ShaulLavo/waffle",
+        "--branch",
+        "main",
+        "--limit",
+        "2",
+        "--json",
+        "databaseId,status,conclusion"
+      ],
+      "exit": 0,
+      "stdout": "[{\"conclusion\":\"failure\",\"databaseId\":41036415169,\"status\":\"completed\"},{\"conclusion\":\"success\",\"databaseId\":40985591629,\"status\":\"completed\"}]\n",
+      "stderr": ""
+    },
+    {
+      "id": "run-view-json-exit-status",
+      "argv": [
+        "run",
+        "view",
+        "41036415169",
+        "-R",
+        "ShaulLavo/waffle",
+        "--json",
+        "databaseId,status,conclusion",
+        "--exit-status"
+      ],
+      "exit": 0,
+      "stdout": "{\"conclusion\":\"failure\",\"databaseId\":41036415169,\"status\":\"completed\"}\n",
+      "stderr": ""
+    },
+    {
+      "id": "run-view-plain-exit-status",
+      "argv": [
+        "run",
+        "view",
+        "41036415169",
+        "-R",
+        "ShaulLavo/waffle",
+        "--exit-status"
+      ],
+      "exit": 1,
+      "stdout": "\nX main CI · 41036415169\nTriggered via push about 56 minutes ago\n\nJOBS\n✓ changes in 5s (ID 123998234350)\n✓ site in 14s (ID 123998234804)\n✓ network-wasm in 9s (ID 123998291081)\n✓ libc in 11s (ID 123998291123)\n✓ programs in 1m18s (ID 123998291147)\n✓ package in 4m34s (ID 123998365182)\n✓ findutils-xargs / xargs-process in 1m12s (ID 123998365446)\nX browser in 6m6s (ID 123998381494)\n  ✓ Set up job\n  ✓ Run actions/checkout@v4\n  ✓ Run oven-sh/setup-bun@v2\n  ✓ Run actions/cache/restore@v4\n  ✓ Verify exact-input network artifact before installation\n  ✓ Restore Bun package downloads\n  ✓ Run bun install --frozen-lockfile --ignore-scripts\n  ✓ Run actions/cache@v4\n  ✓ Use Ubuntu HTTPS archives for browser dependencies\n  ✓ Run bunx playwright install --with-deps chromium firefox webkit\n  ✓ Require the producer's fixture artifact ID\n  ✓ Run actions/download-artifact@v4\n  X Run bun run test:browser 2>&1 | tee \"$RUNNER_TEMP/waffle-browser-protocol.log\"\n  - Run bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium\n  ✓ Retain recovery failure report\n  ✓ Retain browser failure protocol\n  - Post Run actions/cache@v4\n  - Post Run oven-sh/setup-bun@v2\n  ✓ Post Run actions/checkout@v4\n  ✓ Complete job\n✓ coreutils-echo / echo-process in 55s (ID 123998848781)\n\nANNOTATIONS\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, dorny/paths-filter@v3. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nchanges: .github#13\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nchanges: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nsite: .github#2\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nsite: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4, actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nnetwork-wasm: .github#2\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nnetwork-wasm: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4, actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nlibc: .github#4\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nlibc: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4, actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nprograms: .github#2\n\nX \n      at prepareSysroot (/home/runner/work/waffle/waffle/tools/program-build-tools.ts:85:15)\n      at cli (/home/runner/work/waffle/waffle/tools/program-build-tools.ts:327:5)\n      at /home/runner/work/waffle/waffle/tools/program-build-tools.ts:336:61\nprograms: tools/program-build-tools.ts#85\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nprograms: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/cache@v4, actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\npackage: .github#2\n\nX \n      at <anonymous> (/tmp/waffle-browser-matrix-UCqWYc/scripts/test-browser.ts:41:18)\n      at /tmp/waffle-browser-matrix-UCqWYc/scripts/test-browser.ts:39:15\npackage: ../../../../../tmp/waffle-browser-matrix-UCqWYc/scripts/test-browser.ts#41\n\nX \n      at runBrowserSuite (/tmp/waffle-browser-matrix-UCqWYc/scripts/browser-command.ts:30:13)\npackage: ../../../../../tmp/waffle-browser-matrix-UCqWYc/scripts/browser-command.ts#30\n\nX \n      at /tmp/waffle-browser-matrix-UCqWYc/tests/storage-browser-runner.ts:36:78\npackage: ../../../../../tmp/waffle-browser-matrix-UCqWYc/tests/storage-browser-runner.ts#36\n\nX \n      at <anonymous> (/tmp/waffle-browser-matrix-8stnVw/scripts/test-browser.ts:41:18)\n      at /tmp/waffle-browser-matrix-8stnVw/scripts/test-browser.ts:39:15\npackage: ../../../../../tmp/waffle-browser-matrix-8stnVw/scripts/test-browser.ts#41\n\nX \n      at runBrowserSuite (/tmp/waffle-browser-matrix-8stnVw/scripts/browser-command.ts:30:13)\npackage: ../../../../../tmp/waffle-browser-matrix-8stnVw/scripts/browser-command.ts#30\n\nX \n      at /tmp/waffle-browser-matrix-8stnVw/tests/safe-staging-browser-runner.ts:36:78\npackage: ../../../../../tmp/waffle-browser-matrix-8stnVw/tests/safe-staging-browser-runner.ts#36\n\nX \n      at <anonymous> (/tmp/waffle-browser-matrix-x9GAtT/scripts/test-browser.ts:41:18)\n      at /tmp/waffle-browser-matrix-x9GAtT/scripts/test-browser.ts:39:15\npackage: ../../../../../tmp/waffle-browser-matrix-x9GAtT/scripts/test-browser.ts#41\n\nX \n      at runBrowserSuite (/tmp/waffle-browser-matrix-x9GAtT/scripts/browser-command.ts:30:13)\npackage: ../../../../../tmp/waffle-browser-matrix-x9GAtT/scripts/browser-command.ts#30\n\nX \n      at /tmp/waffle-browser-matrix-x9GAtT/tests/safe-staging-browser-runner.ts:36:78\npackage: ../../../../../tmp/waffle-browser-matrix-x9GAtT/tests/safe-staging-browser-runner.ts#36\n\nX \n      at /tmp/wc-short-xxxxxxxxxxxxxxxxxxxxxxxxxxxBT8rCo/suite.ts:11:38\npackage: ../../../../../tmp/wc-short-xxxxxxxxxxxxxxxxxxxxxxxxxxxBT8rCo/suite.ts#11\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\npackage: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/cache@v4, actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nfindutils-xargs / xargs-process: .github#2\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nfindutils-xargs / xargs-process: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/cache@v4, actions/checkout@v4, actions/download-artifact@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\nbrowser: .github#2\n\nX Process completed with exit code 1.\nbrowser: .github#2031\n\nX \n      at /home/runner/work/waffle/waffle/packages/waffle/scripts/test-browser.ts:41:18\nbrowser: packages/waffle/scripts/test-browser.ts#41\n\nX \n      at runBrowserSuite (/home/runner/work/waffle/waffle/packages/waffle/scripts/browser-command.ts:30:13)\nbrowser: packages/waffle/scripts/browser-command.ts#30\n\nX assertFilesystemStopped@http://127.0.0.1:41437/tests.js:23660:9\nassertStopped@http://127.0.0.1:41437/tests.js:24189:28\nasync*pipeCase@http://127.0.0.1:41437/tests.js:24322:9\nasync*searchExecutorBrowserCases@http://127.0.0.1:41437/tests.js:24442:26\nasync*@debugger eval code line 370 > eval:2:42\nasync*evaluate@debugger eval code:372:16\n@debugger eval code:1:44\n@debugger eval code:1:62\n\n      at inPage (/home/runner/work/waffle/waffle/packages/waffle/tests/isolated-page-runner.ts:133:64)\n      at runIsolatedPages (/home/runner/work/waffle/waffle/packages/waffle/tests/isolated-page-runner.ts:91:13)\nbrowser: packages/waffle/tests/isolated-page-runner.ts#133\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\nbrowser: .github#1\n\n! Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/cache@v4, actions/checkout@v4, actions/download-artifact@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/\ncoreutils-echo / echo-process: .github#2\n\n- \"The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026. For more information, see https://github.com/actions/runner-images/issues/14748\"\ncoreutils-echo / echo-process: .github#1\n\n\nARTIFACTS\nwaffle-runtime-tarball-41036415169-1\nxargs-process-19b3a67e60073ca712169120de3b4d6cdd5a3548-41036415169-1\necho-process-19b3a67e60073ca712169120de3b4d6cdd5a3548-41036415169-1\nbrowser-protocol-41036415169-1\nbrowser-recovery-report-41036415169-1\nmemory-group-fixture-41036415169-1\n\nTo see what failed, try: gh run view 41036415169 --log-failed\nView this run on GitHub: https://github.com/ShaulLavo/waffle/actions/runs/41036415169\n",
+      "stderr": ""
+    },
+    {
+      "id": "api-view-jq",
+      "argv": [
+        "api",
+        "repos/cli/cli",
+        "--jq",
+        ".full_name"
+      ],
+      "exit": 0,
+      "stdout": "cli/cli\n",
+      "stderr": ""
+    },
+    {
+      "id": "api-get-fields",
+      "argv": [
+        "api",
+        "-X",
+        "GET",
+        "repos/cli/cli/issues",
+        "-f",
+        "state=closed",
+        "-f",
+        "per_page=1",
+        "--jq",
+        "length"
+      ],
+      "exit": 0,
+      "stdout": "1\n",
+      "stderr": ""
+    },
+    {
+      "id": "api-error-404",
+      "argv": [
+        "api",
+        "repos/cli/cli/gh-contract-endpoint-that-does-not-exist"
+      ],
+      "exit": 1,
+      "stdout": "{\r\n  \"message\": \"Not Found\",\r\n  \"documentation_url\": \"https://docs.github.com/rest\",\r\n  \"status\": \"404\"\r\n}",
+      "stderr": "gh: Not Found (HTTP 404)\n"
+    },
+    {
+      "id": "fake-token-redaction",
+      "argv": [
+        "api",
+        "repos/cli/cli"
+      ],
+      "exit": 1,
+      "stdout": "{\r\n  \"message\": \"Bad credentials\",\r\n  \"documentation_url\": \"https://docs.github.com/rest\",\r\n  \"status\": \"401\"\r\n}",
+      "stderr": "gh: Bad credentials (HTTP 401)\n"
+    }
+  ]
+}
