@@ -1,0 +1,37 @@
+name: Pinned program optimizer
+description: Restore or provision hash-checked Binaryen 133 for program staging
+runs:
+  using: composite
+  steps:
+    - name: Restore pinned optimizer
+      id: binaryen
+      uses: actions/cache@v4
+      with:
+        path: .build/binaryen-version_133/bin/wasm-opt
+        key: binaryen-133-linux-x64-8f25e9fd5db0fc5f210003aaa432922feb2e52d309e430def2f929e34da9466b
+    - name: Install pinned optimizer on cache miss
+      if: steps.binaryen.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$RUNNER_OS/$RUNNER_ARCH" = Linux/X64
+        scratch=$(mktemp -d "$RUNNER_TEMP/program-binaryen-XXXXXX")
+        trap 'rm -rf -- "$scratch"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM HUP
+        curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 --silent --show-error \
+          https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz \
+          -o "$scratch/binaryen.tar.gz"
+        printf '%s  %s\n' 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489 "$scratch/binaryen.tar.gz" | sha256sum --check --status
+        tar -xzf "$scratch/binaryen.tar.gz" -C "$scratch" binaryen-version_133/bin/wasm-opt
+        printf '%s  %s\n' 8f25e9fd5db0fc5f210003aaa432922feb2e52d309e430def2f929e34da9466b "$scratch/binaryen-version_133/bin/wasm-opt" | sha256sum --check --status
+        mkdir -p .build/binaryen-version_133/bin
+        mv "$scratch/binaryen-version_133/bin/wasm-opt" .build/binaryen-version_133/bin/wasm-opt
+    - name: Verify optimizer and expose its path
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$RUNNER_OS/$RUNNER_ARCH" = Linux/X64
+        printf '%s  %s\n' 8f25e9fd5db0fc5f210003aaa432922feb2e52d309e430def2f929e34da9466b .build/binaryen-version_133/bin/wasm-opt | sha256sum --check --status
+        test "$(.build/binaryen-version_133/bin/wasm-opt --version)" = 'wasm-opt version 133 (version_133)'
+        echo "WASM_OPT=$GITHUB_WORKSPACE/.build/binaryen-version_133/bin/wasm-opt" >> "$GITHUB_ENV"
