@@ -41,7 +41,8 @@ staged-byte transformation is a separate derivation, not a locale producer ident
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | echo, ls, env, cut, tr, wc, touch, rm, cp, mv | Git 0.13 utility English plus common English help and errors                                            |
 | head, sort, uniq                              | Registry 0.12 utility English plus common English help and errors                                       |
-| find, xargs, sed                              | Registry 0.12 common English only; no utility Fluent catalog is used                                    |
+| find                                          | Registry 0.12 common English help and errors; find has no utility Fluent catalog                        |
+| xargs, sed                                    | No linked Fluent payload; their shared uucore producer selects common English only                      |
 | clear, cat, mkdir, seq, tail, which           | Not applicable; no linked Fluent localization use; unchanged compiler route                             |
 | grep, rg                                      | Not applicable; no uucore or Fluent catalog producer                                                    |
 | Python                                        | Not applicable to this transformation; CPython and its standard-library payload are not uucore catalogs |
