@@ -9,6 +9,7 @@
         "playwright": "^1.64.1",
         "waffle": "workspace:*",
         "waffle-base": "workspace:*",
+        "waffle-gh": "workspace:*",
         "waffle-git": "workspace:*",
       },
     },
@@ -41,6 +42,20 @@
       "name": "waffle-findutils",
       "version": "0.0.0",
       "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
+    "packages/gh": {
+      "name": "waffle-gh",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "@types/node": "26.6.3",
+        "esbuild": "0.28.2",
+        "typescript": "7.0.2",
         "waffle": "workspace:*",
       },
       "peerDependencies": {
@@ -699,6 +714,8 @@
     "waffle-coreutils": ["waffle-coreutils@workspace:packages/coreutils"],
 
     "waffle-findutils": ["waffle-findutils@workspace:packages/findutils"],
+
+    "waffle-gh": ["waffle-gh@workspace:packages/gh"],
 
     "waffle-git": ["waffle-git@workspace:packages/git"],
 
