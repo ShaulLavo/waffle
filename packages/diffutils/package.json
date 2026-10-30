@@ -1,0 +1,45 @@
+{
+  "name": "waffle-diffutils",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GNU diff and cmp WASI programs for Waffle runtimes.",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "licenses",
+    "patches",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "LICENSE.gnu",
+    "sources.lock.json",
+    "tsconfig.json",
+    "package-artifacts.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build-diffutils.ts",
+    "test": "node scripts/test-diffutils.ts",
+    "native-oracle": "node scripts/build-native-oracle.ts",
+    "test:wasi": "bun test tests/diffutils-wasi.test.ts",
+    "test:source": "node --test scripts/gnu-source.test.ts tests/command-deadline.test.ts",
+    "typecheck": "tsc -p .",
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check",
+    "notices": "node scripts/notices.ts",
+    "prepare:package": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  }
+}

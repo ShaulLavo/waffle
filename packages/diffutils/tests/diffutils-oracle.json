@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "nativeVersions": {
+    "diff": "diff (GNU diffutils) 3.12",
+    "cmp": "cmp (GNU diffutils) 3.12"
+  },
+  "cases": {
+    "diff identical": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "diff unified": {
+      "exit": 1,
+      "stdout": "--- left.txt\t2020-01-02 03:04:05.000000000 +0000\n+++ right.txt\t2020-01-02 03:04:05.000000000 +0000\n@@ -1,3 +1,4 @@\n alpha\n-beta\n+beta two\n gamma\n+delta\n",
+      "stderr": ""
+    },
+    "diff unified one line": {
+      "exit": 1,
+      "stdout": "--- left.txt\t2020-01-02 03:04:05.000000000 +0000\n+++ right.txt\t2020-01-02 03:04:05.000000000 +0000\n@@ -1,3 +1,4 @@\n alpha\n-beta\n+beta two\n gamma\n+delta\n",
+      "stderr": ""
+    },
+    "diff context": {
+      "exit": 1,
+      "stdout": "*** left.txt\tThu Jan  2 03:04:05 2020\n--- right.txt\tThu Jan  2 03:04:05 2020\n***************\n*** 1,3 ****\n  alpha\n! beta\n  gamma\n--- 1,4 ----\n  alpha\n! beta two\n  gamma\n+ delta\n",
+      "stderr": ""
+    },
+    "diff context one line": {
+      "exit": 1,
+      "stdout": "*** left.txt\tThu Jan  2 03:04:05 2020\n--- right.txt\tThu Jan  2 03:04:05 2020\n***************\n*** 1,3 ****\n  alpha\n! beta\n  gamma\n--- 1,4 ----\n  alpha\n! beta two\n  gamma\n+ delta\n",
+      "stderr": ""
+    },
+    "diff quiet": {
+      "exit": 1,
+      "stdout": "Files left.txt and right.txt differ\n",
+      "stderr": ""
+    },
+    "diff ignore all space": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "diff ignore space change": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "diff ignore all space with change": {
+      "exit": 1,
+      "stdout": "--- space-left.txt\t2020-01-02 03:04:05.000000000 +0000\n+++ space-right-change.txt\t2020-01-02 03:04:05.000000000 +0000\n@@ -1,2 +1,2 @@\n alpha  beta\n-gamma\n+gamma delta\n",
+      "stderr": ""
+    },
+    "diff ignore space change with change": {
+      "exit": 1,
+      "stdout": "--- space-left.txt\t2020-01-02 03:04:05.000000000 +0000\n+++ space-right-change.txt\t2020-01-02 03:04:05.000000000 +0000\n@@ -1,2 +1,2 @@\n alpha  beta\n-gamma\n+gamma delta\n",
+      "stderr": ""
+    },
+    "diff recursive": {
+      "exit": 1,
+      "stdout": "diff -r tree-left/change.txt tree-right/change.txt\n2c2\n< two\n---\n> changed\ndiff -r tree-left/nested/shared.txt tree-right/nested/shared.txt\n1c1\n< nested left\n---\n> nested right\nOnly in tree-left: only-left.txt\nOnly in tree-right: only-right.txt\n",
+      "stderr": ""
+    },
+    "diff recursive new files": {
+      "exit": 1,
+      "stdout": "diff -r -N tree-left/change.txt tree-right/change.txt\n2c2\n< two\n---\n> changed\ndiff -r -N tree-left/nested/shared.txt tree-right/nested/shared.txt\n1c1\n< nested left\n---\n> nested right\ndiff -r -N tree-left/only-left.txt tree-right/only-left.txt\n1d0\n< left only\ndiff -r -N tree-left/only-right.txt tree-right/only-right.txt\n0a1\n> right only\n",
+      "stderr": ""
+    },
+    "diff new file": {
+      "exit": 1,
+      "stdout": "1,3d0\n< alpha\n< beta\n< gamma\n",
+      "stderr": ""
+    },
+    "diff stdin": {
+      "exit": 1,
+      "stdout": "2c2\n< beta\n---\n> beta two\n3a4\n> delta\n",
+      "stderr": ""
+    },
+    "diff missing file": {
+      "exit": 2,
+      "stdout": "",
+      "stderr": "diff: missing.txt: No such file or directory\n"
+    },
+    "cmp identical": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "cmp different": {
+      "exit": 1,
+      "stdout": "left.txt right.txt differ: char 11, line 2\n",
+      "stderr": ""
+    },
+    "cmp silent": {
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    "cmp list bytes": {
+      "exit": 1,
+      "stdout": "11  12  40\n12 147 164\n13 141 167\n14 155 157\n15 155  12\n16 141 147\n17  12 141\n",
+      "stderr": "cmp: EOF on 'left.txt' after byte 17\n"
+    },
+    "cmp stdin identical": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "cmp stdin different": {
+      "exit": 1,
+      "stdout": "- right.txt differ: char 11, line 2\n",
+      "stderr": ""
+    },
+    "cmp silent stdin": {
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    "cmp missing file": {
+      "exit": 2,
+      "stdout": "",
+      "stderr": "cmp: missing.txt: No such file or directory\n"
+    },
+    "cmp two stdin files": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  }
+}

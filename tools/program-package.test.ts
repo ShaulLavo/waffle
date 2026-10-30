@@ -2,7 +2,7 @@ import { stageProgram } from "./program-build-tools.ts";
 import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import {
@@ -122,4 +122,23 @@ test("Python packing binds its derivation to original producer and final interpr
   writeFileSync(resolve(assets, "python-build.json"), producer);
   assert.equal(admitProgramPackage(root).length, 3);
   assert.deepEqual(readFileSync(resolve(assets, "python-build.json")), producer);
+});
+
+
+test("package artifact recipes declare a derivation for every Wasm asset", () => {
+  const packages = resolve(import.meta.dirname, "../packages");
+  for (const entry of readdirSync(packages, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const recipePath = resolve(packages, entry.name, "package-artifacts.json");
+    if (!existsSync(recipePath)) continue;
+    const recipe: unknown = JSON.parse(readFileSync(recipePath, "utf8"));
+    assert.ok(recipe && typeof recipe === "object" && "files" in recipe && Array.isArray(recipe.files));
+    const files: unknown[] = recipe.files;
+    for (const file of files) {
+      assert.ok(typeof file === "string");
+      if (!file.endsWith(".wasm")) continue;
+      const derivation = file.replace(/\.wasm$/, "-program.json");
+      assert.ok(files.includes(derivation), `${entry.name}: missing declared derivation ${derivation}`);
+    }
+  }
 });
