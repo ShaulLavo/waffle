@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { NetHelper, type NetFetch } from "../browser/net/helper";
+import { NetHelper, NetNamespace, type NetFetch } from "../browser/net/helper";
 import { NetHost } from "../browser/net/host";
 import {
   AGAIN,
@@ -32,7 +32,8 @@ test("generic network helper uses only its injected fetch and streams its result
     return new Response("injected response", { status: 201, headers: { "x-transport": "test" } });
   };
   const sab = createRing();
-  const helper = new NetHelper(sab, transport);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(sab, transport, {}, namespace);
   const host = new NetHost(sab, (request) => helper.handle(request));
   try {
     const handle = host.fetch(
@@ -65,16 +66,23 @@ test("generic network helper uses only its injected fetch and streams its result
     expect(calls[0]!.options.signal).toBeInstanceOf(AbortSignal);
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
 test("injected fetch is called as a function rather than a method of the helper", async () => {
   let receiver: unknown = "not called";
-  const helper = new NetHelper(createRing(), async function (this: unknown) {
-    // oxlint-disable-next-line typescript/no-this-alias -- This test records the actual callback/Worker receiver.
-    receiver = this;
-    return new Response(null);
-  });
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    createRing(),
+    async function (this: unknown) {
+      // oxlint-disable-next-line typescript/no-this-alias -- This test records the actual callback/Worker receiver.
+      receiver = this;
+      return new Response(null);
+    },
+    {},
+    namespace,
+  );
   try {
     helper.handle({
       type: "fetch",
@@ -89,6 +97,7 @@ test("injected fetch is called as a function rather than a method of the helper"
     expect(receiver).toBeUndefined();
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
@@ -96,17 +105,23 @@ test("generic helper disposal aborts the injected fetch without publishing an ex
   let signal: AbortSignal | undefined;
   let finished = false;
   const sab = createRing();
-  const helper = new NetHelper(sab, async (_url, options) => {
-    signal = options.signal!;
-    try {
-      await new Promise<void>((_resolve, reject) =>
-        signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
-      );
-      throw new Error("Unreachable");
-    } finally {
-      finished = true;
-    }
-  });
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    sab,
+    async (_url, options) => {
+      signal = options.signal!;
+      try {
+        await new Promise<void>((_resolve, reject) =>
+          signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
+        );
+        throw new Error("Unreachable");
+      } finally {
+        finished = true;
+      }
+    },
+    {},
+    namespace,
+  );
   const host = new NetHost(sab, (request) => helper.handle(request));
   try {
     host.fetch(JSON.stringify({ url: "https://network.invalid/" }), null);
@@ -117,6 +132,7 @@ test("generic helper disposal aborts the injected fetch without publishing an ex
     expect(host.poll(0)).toBe(0);
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
@@ -165,10 +181,16 @@ test("generic handles support local pipes, partial reads, half-close and per-hos
 test("generic fetch reaches a local listener without calling the injected transport", async () => {
   let fetches = 0;
   const sab = createRing();
-  const helper = new NetHelper(sab, async () => {
-    fetches++;
-    throw new Error("Unexpected external fetch");
-  });
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    sab,
+    async () => {
+      fetches++;
+      throw new Error("Unexpected external fetch");
+    },
+    {},
+    namespace,
+  );
   const host = new NetHost(sab, (request) => helper.handle(request));
   try {
     const listener = host.listen("localhost", 3000);
@@ -200,6 +222,7 @@ test("generic fetch reaches a local listener without calling the injected transp
     expect(fetches).toBe(0);
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
@@ -233,9 +256,15 @@ test("generic host returns protocol errors and acknowledges only consumed fetch 
 test("generic filesystem notices wake the host without replaying contents", async () => {
   const updates: { path: string; bytes: Uint8Array }[] = [];
   const sab = createRing();
-  const helper = new NetHelper(sab, async () => {
-    throw new Error("Unexpected fetch");
-  });
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    sab,
+    async () => {
+      throw new Error("Unexpected fetch");
+    },
+    {},
+    namespace,
+  );
   const host = new NetHost(
     sab,
     () => {},
@@ -250,6 +279,7 @@ test("generic filesystem notices wake the host without replaying contents", asyn
     expect(updates).toEqual([{ path: "/app.ts", bytes: encode("replacement") }]);
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
@@ -257,9 +287,15 @@ for (const ending of ["end", "error"] as const) {
   test(`loopback response writes keep every chunk in FIFO order with ${ending} last`, async () => {
     const sab = createRing();
     const reader = new RingReader(sab);
-    const helper = new NetHelper(sab, async () => {
-      throw new Error("Unexpected external fetch");
-    });
+    const namespace = await NetNamespace.create();
+    const helper = new NetHelper(
+      sab,
+      async () => {
+        throw new Error("Unexpected external fetch");
+      },
+      {},
+      namespace,
+    );
     let records: RingRecord[] = [];
     try {
       helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
@@ -319,6 +355,7 @@ for (const ending of ["end", "error"] as const) {
       expect(response.at(-1)!.kind).toBe(terminal);
     } finally {
       helper.dispose();
+      namespace.dispose();
       reader.drain();
     }
   });
@@ -382,9 +419,15 @@ for (const delivered of [false, true]) {
   test(`closing a loopback fetch releases its preview connection ${delivered ? "after" : "before"} request delivery`, async () => {
     const sab = createRing();
     const reader = new RingReader(sab);
-    const helper = new NetHelper(sab, async () => {
-      throw new Error("Unexpected external fetch");
-    });
+    const namespace = await NetNamespace.create();
+    const helper = new NetHelper(
+      sab,
+      async () => {
+        throw new Error("Unexpected external fetch");
+      },
+      {},
+      namespace,
+    );
     let records: RingRecord[] = [];
     try {
       helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
@@ -418,6 +461,7 @@ for (const delivered of [false, true]) {
       expect(Reflect.get(helper, "fetches").size).toBe(0);
     } finally {
       helper.dispose();
+      namespace.dispose();
       reader.drain();
     }
   });

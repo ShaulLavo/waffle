@@ -15,9 +15,9 @@ const noFetch = async () => {
   throw Error("Lookup must not use external fetch");
 };
 const records: RuntimeNetworkLookupResult[] = [{ address: "127.0.0.1", family: 4 }];
-function fixture(lookup?: NetLookup, shared = false, assertLive = () => {}) {
+async function fixture(lookup?: NetLookup, shared = false, assertLive = () => {}) {
   const ring = createRing();
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const helper = new NetHelper(ring, noFetch, {}, namespace, assertLive, lookup);
   const host = new NetHost(ring, (request) => helper.handle(request), undefined, { shared });
   return {
@@ -81,7 +81,7 @@ async function expectPolicy(
 
 for (const shared of [false, true]) {
   test(`lookup heads share allocation, remain repeatable and reject other handle operations shared=${shared}`, async () => {
-    const f = fixture(undefined, shared);
+    const f = await fixture(undefined, shared);
     try {
       const lookup = f.host.lookupStart("localhost");
       expect(lookup).toBe(1);
@@ -173,7 +173,7 @@ test("lookup helpers within one runtime retain separate same-numbered handles an
 
 test("lookup helper snapshots request options before its final disposal admission check", async () => {
   let calls = 0;
-  const f = fixture(() => {
+  const f = await fixture(() => {
     calls++;
     return records;
   });
@@ -200,7 +200,7 @@ test("lookup helper snapshots request options before its final disposal admissio
 test("helper preserves delayed resolver order/options and all lookup error fields", async () => {
   const pending = Promise.withResolvers<RuntimeNetworkLookupResult[]>();
   const seen: unknown[] = [];
-  const f = fixture(function (this: void, hostname, options) {
+  const f = await fixture(function (this: void, hostname, options) {
     expect(this).toBeUndefined();
     seen.push([hostname, options]);
     return pending.promise;
@@ -226,7 +226,7 @@ test("helper preserves delayed resolver order/options and all lookup error field
     syscall: "getaddrinfo",
     hostname: "resolver.example",
   });
-  const failed = fixture(() => Promise.reject(failure));
+  const failed = await fixture(() => Promise.reject(failure));
   try {
     const id = failed.host.lookupStart("resolver.example");
     expect(await head(failed.host, id)).toBe(ERROR);
@@ -248,7 +248,7 @@ for (const action of ["close", "host-dispose", "helper-dispose", "owner-revoke"]
       const pending = Promise.withResolvers<RuntimeNetworkLookupResult[]>();
       let live = true;
       let starts = 0;
-      const f = fixture(
+      const f = await fixture(
         () => {
           starts++;
           return pending.promise;
@@ -258,7 +258,7 @@ for (const action of ["close", "host-dispose", "helper-dispose", "owner-revoke"]
           if (!live) throw Error("Runtime is disposed");
         },
       );
-      const sibling = fixture();
+      const sibling = await fixture();
       try {
         const id = f.host.lookupStart("delayed.example");
         await settle();
@@ -291,7 +291,7 @@ for (const action of ["close", "host-dispose", "helper-dispose", "owner-revoke"]
 test.each(["localhost", "unsupported.example"])(
   "closing the default provider before completion suppresses publication: %s",
   async (hostname) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const id = f.host.lookupStart(hostname);
       f.host.close(id);
@@ -304,8 +304,8 @@ test.each(["localhost", "unsupported.example"])(
   },
 );
 
-test("lookup admission snapshots accessors before liveness and rolls back transport failures", () => {
-  const f = fixture();
+test("lookup admission snapshots accessors before liveness and rolls back transport failures", async () => {
+  const f = await fixture();
   try {
     expect(
       f.host.lookupStart("localhost", {
@@ -333,13 +333,13 @@ test("lookup fragments preserve long provider results and full default-policy er
     address: "::1",
     family: 6,
   }));
-  const f = fixture(() => result);
+  const f = await fixture(() => result);
   try {
     expect(decode(await head(f.host, f.host.lookupStart("resolver.example")))).toEqual(result);
   } finally {
     f.close();
   }
-  const failed = fixture();
+  const failed = await fixture();
   const hostname = "unsupported-".repeat(10000);
   try {
     const id = failed.host.lookupStart(hostname);
@@ -357,7 +357,7 @@ test("lookup fragments preserve long provider results and full default-policy er
 });
 
 test("lookup head ignores records for other handle kinds and drops late records after close", async () => {
-  const f = fixture(() => new Promise(() => {}));
+  const f = await fixture(() => new Promise(() => {}));
   const writer = new RingWriter(f.ring);
   try {
     const id = f.host.lookupStart("pending.example");
@@ -503,7 +503,7 @@ for (const mode of malformedModes) {
       unhandled.push(reason);
     };
     process.on("unhandledRejection", rejected);
-    const f = fixture(malformedProvider(mode));
+    const f = await fixture(malformedProvider(mode));
     try {
       const completed = await blockedLookup(f.helper, f.ring, "malformed.example", {}, "localhost");
       expect(completed.head).toBe(ERROR);
