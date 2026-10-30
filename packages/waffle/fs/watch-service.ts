@@ -1,41 +1,37 @@
 import { FilesystemError } from "../core/filesystem.js";
-import type { MemoryBackend } from "./backend.js";
-import type { Node } from "./memory.js";
-import { WATCH_CAPACITY, validWatchName, type WatchRecord } from "./watch-ring.js";
+import type { LocalMutationPlan, MemoryBackend } from "./backend.js";
+import { captureWatchIndex, indexWatchNode } from "./watch-capture.js";
+import { WatchIndex } from "./watch-index.js";
+import { WatchRouting } from "./watch-routing.js";
+import { WatchSubscriptions, type HeldWatchBatch } from "./watch-subscriptions.js";
+import { WATCH_CAPACITY, type WatchRecord } from "./watch-ring.js";
 import type { WatchBatch, WatchEvent } from "./watch.js";
 
-const MAX_NODES = 4096;
-const MAX_EDGES = 16384;
-const MAX_WATCHES = 128;
-const MAX_PATH_UNITS = 4096;
-interface WatchNode {
-  readonly directory: boolean;
-  mode: number;
-  readonly parents: Map<bigint, Set<string>>;
-}
-interface Subscription {
-  readonly owner: number;
-  readonly root: bigint;
-  readonly recursive: boolean;
-  events: WatchEvent[];
-  overflow: boolean;
-}
-
-/** One metadata graph per filesystem, shared by overlapping subscriptions. */
+/** One live metadata index and pooled event allocator per backend root. */
 export class WatchService {
-  private readonly nodes = new Map<bigint, WatchNode>();
-  private readonly subscriptions = new Map<number, Subscription>();
+  private readonly index: WatchIndex;
+  private readonly subscriptions: WatchSubscriptions;
   private cursor = 0;
-  private serial = 0;
-  private edges = 0;
   private incomplete = false;
-  constructor(private readonly backend: MemoryBackend) {}
+  private directories = 0;
+  constructor(private readonly backend: MemoryBackend) {
+    this.index = new WatchIndex(backend.watchAccount);
+    this.subscriptions = new WatchSubscriptions(backend.watchAccount, this.index);
+    backend.installWatchObserver(this);
+  }
+  resources() {
+    return {
+      ...this.index.resources(),
+      ...this.subscriptions.resources(),
+      incomplete: this.incomplete,
+    };
+  }
   open(owner: number, handle: number, recursive: boolean, cancelled: () => boolean): number {
     return this.backend.shared.mutate(undefined, cancelled, () =>
-      this.registerWatch(owner, handle, recursive, cancelled),
+      this.register(owner, handle, recursive, cancelled),
     );
   }
-  private registerWatch(
+  private register(
     owner: number,
     handle: number,
     recursive: boolean,
@@ -43,228 +39,231 @@ export class WatchService {
   ): number {
     try {
       if (cancelled()) throw new FilesystemError(11);
-      const id = this.openLocked(owner, handle, recursive);
+      const node = this.backend.fs.nodeForHandle(handle);
+      if (!this.backend.fs.hasNode(node)) throw new FilesystemError(44);
+      if (!this.subscriptions.size) {
+        this.incomplete = false;
+        captureWatchIndex(this.backend, this.index, cancelled);
+        this.cursor = this.backend.shared.watch.sequence;
+      }
+      this.drain();
+      if (cancelled()) throw new FilesystemError(11);
+      if (this.incomplete || this.cursor === Number.MAX_SAFE_INTEGER)
+        throw new FilesystemError(6, "watch metadata incomplete");
+      const root = this.backend.ensureIdentity(node).id;
+      if (cancelled()) throw new FilesystemError(11);
+      this.access(root);
+      const id = this.subscriptions.open(owner, root, recursive);
+      if (this.index.metadata(root).directory) this.directories++;
+      this.backend.shared.watch.retain();
       if (!cancelled()) return id;
       this.close(owner, id);
       throw new FilesystemError(11);
+    } catch (error) {
+      if (cancelled()) throw new FilesystemError(11);
+      throw error;
     } finally {
-      if (!this.subscriptions.size) this.nodes.clear();
+      if (!this.subscriptions.size) this.index.clear();
     }
   }
-  private openLocked(owner: number, handle: number, recursive: boolean): number {
-    if (this.subscriptions.size >= MAX_WATCHES)
-      throw new FilesystemError(6, "watch capacity exhausted");
-    if (!this.subscriptions.size) this.capture();
-    this.drain();
-    if (this.incomplete)
-      throw new FilesystemError(6, "watch graph overflow; close watches before registering again");
-    const node = this.backend.fs.nodeForHandle(handle);
-    if (!this.backend.fs.hasNode(node)) throw new FilesystemError(44);
-    const root = this.backend.ensureIdentity(node).id;
-    const metadata = this.nodes.get(root);
-    if (!metadata) throw new FilesystemError(44);
-    this.access(metadata);
-    if (this.serial === Number.MAX_SAFE_INTEGER)
-      throw new FilesystemError(6, "watch identifiers exhausted");
-    const id = ++this.serial;
-    this.subscriptions.set(id, { owner, root, recursive, events: [], overflow: false });
-    this.backend.shared.watch.retain();
-    return id;
+  private access(id: bigint): void {
+    const metadata = this.index.metadata(id);
+    const required = metadata.directory ? 0o500 : 0o400;
+    if ((metadata.mode & required) !== required) throw new FilesystemError(2);
   }
-  private capture(): void {
-    this.nodes.clear();
-    this.edges = 0;
-    this.incomplete = false;
-    const pending = [this.backend.fs.root];
-    while (pending.length) this.captureNode(pending.pop()!, pending);
-    this.cursor = this.backend.shared.watch.sequence;
-    if (this.cursor === Number.MAX_SAFE_INTEGER)
-      throw new FilesystemError(6, "watch sequence exhausted");
-  }
-  private captureNode(node: Node, pending: Node[]): void {
-    const id = this.backend.ensureIdentity(node).id;
-    this.captureMetadata(node);
-    if (node.kind !== "dir") return;
-    for (const [name, child] of node.children) {
-      if (!validWatchName(name)) throw new FilesystemError(6, "watch name bound exceeded");
-      if (++this.edges > MAX_EDGES) throw new FilesystemError(6, "watch edge bound exceeded");
-      this.captureMetadata(child);
-      this.addParent(this.backend.ensureIdentity(child).id, id, name);
-      if (child.kind === "dir") pending.push(child);
-    }
-  }
-  private captureMetadata(node: Node): WatchNode {
-    const id = this.backend.ensureIdentity(node).id;
-    const existing = this.nodes.get(id);
-    if (existing) return existing;
-    if (this.nodes.size >= MAX_NODES) throw new FilesystemError(6, "watch node bound exceeded");
-    const handle = this.backend.fs.existingHandle(node);
-    const mode =
-      handle === undefined ? node.mode : (this.backend.shared.stat(handle)?.mode ?? node.mode);
-    const metadata = {
-      directory: node.kind === "dir",
-      mode,
-      parents: new Map<bigint, Set<string>>(),
-    };
-    this.nodes.set(id, metadata);
-    return metadata;
-  }
-  private addParent(file: bigint, parent: bigint, name: string): void {
-    const node = this.nodes.get(file);
-    if (!node) return;
-    let names = node.parents.get(parent);
-    if (!names) node.parents.set(parent, (names = new Set()));
-    names.add(name);
-  }
-  private access(node: WatchNode): void {
-    const required = node.directory ? 0o500 : 0o400;
-    if ((node.mode & required) !== required) throw new FilesystemError(2);
-  }
-  read(owner: number, id: number): WatchBatch {
+  readHeld(owner: number, id: number): HeldWatchBatch {
     return this.backend.shared.mutate(undefined, undefined, () => {
-      const watch = this.owned(owner, id);
+      const root = this.subscriptions.root(owner, id);
       this.drain();
-      if (watch.overflow) return { kind: "overflow", events: [] };
-      const node = this.nodes.get(watch.root);
-      if (node) this.access(node);
-      const events = watch.events;
-      watch.events = [];
-      return { kind: "events", events };
+      if (!this.incomplete && !this.subscriptions.overflowed(owner, id)) this.access(root);
+      return this.subscriptions.batch(owner, id);
     });
   }
+  read(owner: number, id: number): WatchBatch {
+    const held = this.readHeld(owner, id);
+    try {
+      return held.batch;
+    } finally {
+      held.release();
+    }
+  }
   close(owner: number, id: number): void {
-    if (!this.subscriptions.has(id)) return;
-    this.owned(owner, id);
-    this.subscriptions.delete(id);
+    let directory = false;
+    try {
+      directory = this.index.metadata(this.subscriptions.root(owner, id)).directory;
+    } catch (error) {
+      if (!(error instanceof FilesystemError) || error.errno !== 8) throw error;
+    }
+    if (!this.subscriptions.close(owner, id)) return;
+    if (directory) this.directories--;
     this.backend.shared.watch.release();
-    if (!this.subscriptions.size) this.nodes.clear();
+    if (!this.subscriptions.size) this.index.clear();
   }
   closeOwner(owner: number): void {
-    for (const [id, watch] of this.subscriptions) if (watch.owner === owner) this.close(owner, id);
-  }
-  private owned(owner: number, id: number): Subscription {
-    const watch = this.subscriptions.get(id);
-    if (!watch || watch.owner !== owner) throw new FilesystemError(8);
-    return watch;
+    const count = this.subscriptions.closeOwner(owner);
+    for (let at = 0; at < count; at++) this.backend.shared.watch.release();
+    if (!this.subscriptions.size) {
+      this.index.clear();
+      this.directories = 0;
+      return;
+    }
+    this.directories = 0;
+    this.subscriptions.forEach((peer, id) => {
+      if (this.index.metadata(this.subscriptions.root(peer, id)).directory) this.directories++;
+    });
   }
   private overflow(): void {
     this.incomplete = true;
-    for (const watch of this.subscriptions.values()) {
-      watch.overflow = true;
-      watch.events = [];
-    }
+    this.subscriptions.forEach((owner, id) => this.subscriptions.overflow(owner, id));
   }
   private drain(): void {
-    if (this.incomplete) return;
-    const records = this.backend.shared.watch.read(this.cursor);
-    if (!records) return this.overflow();
-    this.cursor = this.backend.shared.watch.sequence;
-    for (const record of records) {
-      this.accept(record);
-      if (this.incomplete) return;
+    if (this.incomplete || !this.subscriptions.size) return;
+    const sequence = this.backend.shared.watch.sequence;
+    if (sequence === this.cursor && sequence !== Number.MAX_SAFE_INTEGER) return;
+    let control: { release(): void } | undefined;
+    try {
+      control = this.backend.watchAccount.reserveControl(WATCH_CAPACITY * (2048 + 64));
+      const records = this.backend.shared.watch.read(this.cursor);
+      if (!records) return this.overflow();
+      this.cursor = sequence;
+      for (const record of records) this.accept(record);
+    } catch {
+      this.overflow();
+    } finally {
+      control?.release();
     }
+  }
+
+  beforeMutation(): void {
+    this.drain();
+  }
+  committed(plan: LocalMutationPlan): void {
+    if (!this.subscriptions.size) return;
+    try {
+      if (!this.incomplete) this.applyPlan(plan);
+    } catch {
+      this.overflow();
+    }
+    this.backend.shared.watch.effects(plan.changes);
+    this.cursor = this.backend.shared.watch.sequence;
+    if (this.cursor === Number.MAX_SAFE_INTEGER) this.overflow();
+  }
+  private applyPlan(plan: LocalMutationPlan): void {
+    this.restoreEntries(plan);
+    for (const effect of plan.changes) this.effect(effect);
+    this.collectEntries(plan);
+  }
+  private namespace(plan: LocalMutationPlan) {
+    const action = plan.action;
+    return action.kind === "namespace"
+      ? action.plan
+      : action.kind === "writeFile"
+        ? action.namespace.plan
+        : undefined;
+  }
+  private restoreEntries(plan: LocalMutationPlan): void {
+    for (const edge of this.namespace(plan)?.edges ?? []) {
+      const parent = this.backend.ensureIdentity(edge.parent).id;
+      if (!this.index.has(parent)) indexWatchNode(this.backend, this.index, edge.parent);
+      if (edge.after && !this.index.has(this.backend.ensureIdentity(edge.after).id))
+        indexWatchNode(this.backend, this.index, edge.after);
+    }
+  }
+  private collectEntries(plan: LocalMutationPlan): void {
+    for (const edge of this.namespace(plan)?.edges ?? [])
+      if (edge.before) this.index.collect(this.backend.ensureIdentity(edge.before).id);
+  }
+  private effect(effect: LocalMutationPlan["changes"][number]): void {
+    if (effect.kind === "inode")
+      return this.accept({
+        kind: "inode",
+        file: effect.file.id,
+        mode: effect.mode,
+        directory: effect.nodeKind === "directory",
+      });
+    if (effect.kind === "entry")
+      return this.accept({
+        kind: "entry",
+        parent: effect.parent.id,
+        before: effect.before?.id ?? 0n,
+        after: effect.after?.id ?? 0n,
+        name: effect.name,
+      });
+    if (effect.kind === "metadata")
+      return this.accept({ kind: "metadata", file: effect.file.id, mode: effect.mode });
+    this.accept({ kind: "change", file: effect.file.id });
   }
   private accept(record: WatchRecord): void {
+    if (this.incomplete) return;
     if (record.kind === "overflow") return this.overflow();
     if (record.kind === "inode") {
-      if (this.nodes.size >= MAX_NODES) return this.overflow();
-      this.nodes.set(record.file, {
-        directory: record.directory,
-        mode: record.mode,
-        parents: new Map(),
-      });
+      this.index.upsert(record.file, record.mode, record.directory);
       return;
     }
-    if (record.kind === "entry") return this.entry(record);
-    if (record.kind === "metadata") {
-      const node = this.nodes.get(record.file);
-      if (node) node.mode = record.mode;
+    if (record.kind === "entry") {
+      this.deliver(record.parent, "rename", record.name, record.after || record.before);
+      this.target(record.before, "rename");
+      if (record.after !== record.before) this.target(record.after, "rename");
+      if (record.before) this.index.unlink(record.parent, record.name);
+      if (record.after) this.index.link(record.parent, record.after, record.name);
+      return;
     }
+    if (!this.index.has(record.file)) return;
+    if (record.kind === "metadata")
+      this.index.upsert(record.file, record.mode, this.index.metadata(record.file).directory);
     this.deliver(record.file, "change");
   }
-  private entry(record: Extract<WatchRecord, { kind: "entry" }>): void {
-    this.deliver(record.parent, "rename", record.name, record.after || record.before);
-    this.deliverTarget(record.before);
-    if (record.after !== record.before) this.deliverTarget(record.after);
-    if (record.before) {
-      const names = this.nodes.get(record.before)?.parents.get(record.parent);
-      if (names?.delete(record.name)) this.edges--;
-    }
-    if (!record.after) return;
-    if (++this.edges > MAX_EDGES) return this.overflow();
-    this.addParent(record.after, record.parent, record.name);
-  }
-  private deliverTarget(file: bigint): void {
-    if (!file) return;
-    for (const watch of this.subscriptions.values()) {
-      if (watch.root === file) this.enqueue(watch, { type: "rename", id: file, name: null });
-    }
+  private target(file: bigint, type: WatchEvent["type"]): void {
+    if (!file || !this.index.has(file)) return;
+    this.subscriptions.forRoot(file, (owner, id) =>
+      this.subscriptions.enqueue(owner, id, { type, id: file, name: null }),
+    );
   }
   private deliver(file: bigint, type: WatchEvent["type"], suffix?: string, changed = file): void {
-    for (const watch of this.subscriptions.values())
-      this.deliverWatch(watch, file, type, suffix, changed);
+    if (!this.index.has(file)) return;
+    if (suffix === undefined) this.target(file, type);
+    if (!this.directories) return;
+    const routes = new WatchRouting(this.backend.watchAccount);
+    try {
+      routes.push(file, "");
+      for (let current = routes.pop(); current; current = routes.pop()) {
+        this.deliverRoute(routes, current, type, suffix, changed);
+      }
+    } finally {
+      routes.close();
+    }
   }
-  private deliverWatch(
-    watch: Subscription,
-    file: bigint,
+  private deliverRoute(
+    routes: WatchRouting,
+    current: { id: bigint; path: string },
     type: WatchEvent["type"],
     suffix: string | undefined,
     changed: bigint,
   ): void {
-    if (watch.overflow) return;
-    const names = this.names(file, watch);
-    if (!names) return this.overflow();
-    for (const name of names) {
-      const path = suffix === undefined ? name : name ? `${name}/${suffix}` : suffix;
-      if (path && path.length > MAX_PATH_UNITS) return this.overflow();
-      if (!watch.recursive && path?.includes("/")) continue;
-      this.enqueue(watch, { type, id: changed, name: path || null });
-    }
+    const path =
+      suffix === undefined ? current.path : current.path ? `${current.path}/${suffix}` : suffix;
+    if (path.length > 4096) throw new FilesystemError(6, "watch path bound exceeded");
+    this.route(current.id, path, type, changed, suffix !== undefined || !!current.path);
+    this.ancestors(routes, current.id, current.path);
   }
-  private names(file: bigint, watch: Subscription): (string | null)[] | undefined {
-    const result: (string | null)[] = [];
-    const pending = [{ file, path: "" }];
-    let steps = 0;
-    while (pending.length) {
-      if (++steps > MAX_EDGES || result.length > WATCH_CAPACITY) return;
-      const current = pending.pop()!;
-      if (current.path.length > MAX_PATH_UNITS) return;
-      if (current.file === watch.root) result.push(current.path || null);
-      else this.ancestors(current, pending);
-    }
-    return result;
+  private ancestors(routes: WatchRouting, id: bigint, path: string): void {
+    this.index.forEachParent(id, (parent, name) => {
+      if ((this.index.metadata(parent).mode & 0o500) !== 0o500) return;
+      routes.push(parent, path ? `${name}/${path}` : name);
+    });
   }
-  private ancestors(
-    current: { file: bigint; path: string },
-    pending: { file: bigint; path: string }[],
-  ): void {
-    const node = this.nodes.get(current.file);
-    if (!node) return;
-    for (const [parent, names] of node.parents)
-      this.parentPaths(parent, names, current.path, pending);
-  }
-  private parentPaths(
-    parent: bigint,
-    names: Set<string>,
+  private route(
+    root: bigint,
     path: string,
-    pending: { file: bigint; path: string }[],
+    type: WatchEvent["type"],
+    changed: bigint,
+    report: boolean,
   ): void {
-    if (((this.nodes.get(parent)?.mode ?? 0) & 0o500) !== 0o500) return;
-    for (const name of names) pending.push({ file: parent, path: path ? `${name}/${path}` : name });
-  }
-  private enqueue(watch: Subscription, event: WatchEvent): void {
-    if (
-      watch.overflow ||
-      watch.events.some(
-        (old) => old.type === event.type && old.id === event.id && old.name === event.name,
-      )
-    )
-      return;
-    if (watch.events.length >= WATCH_CAPACITY) {
-      watch.overflow = true;
-      watch.events = [];
-      return;
-    }
-    watch.events.push(event);
+    if (!report) return;
+    this.subscriptions.forRoot(root, (owner, id) => {
+      if (!this.index.metadata(root).directory) return;
+      if (!this.subscriptions.recursive(owner, id) && path.includes("/")) return;
+      this.subscriptions.enqueue(owner, id, { type, id: changed, name: path || null });
+    });
   }
 }

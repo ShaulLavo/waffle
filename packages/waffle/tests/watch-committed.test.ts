@@ -337,7 +337,7 @@ test("UTF8 byte limit, stale ring recovery, and safe-integer exhaustion are expl
   }
 }, 10000);
 
-test("first graph capture is bounded; overlapping watches reuse it and idle next performs no scans or RPCs", async () => {
+test("first index capture is shared beyond 128 watches and idle next performs no scans or RPCs", async () => {
   const f = await fixture();
   try {
     const handle = await file(f.guest, f.guestRoot, "one");
@@ -351,14 +351,8 @@ test("first graph capture is bounded; overlapping watches reuse it and idle next
     const first = await f.page.watch(f.root);
     const captured = visited;
     const watches = [first];
-    for (let i = 1; i < 128; i++) watches.push(await f.page.watch(f.root));
-    expect(visited - captured).toBe(127);
-    try {
-      await f.page.watch(f.root);
-      throw new Error("accepted");
-    } catch (error) {
-      expect(error).toMatchObject({ errno: 6 });
-    }
+    for (let i = 1; i < 256; i++) watches.push(await f.page.watch(f.root));
+    expect(visited - captured).toBe(255);
     const call = f.page.asyncCall.bind(f.page);
     let calls = 0;
     f.page.asyncCall = (...args) => {
@@ -388,7 +382,9 @@ test("first graph capture is bounded; overlapping watches reuse it and idle next
   for (let index = 0; index < 4096; index++) fs.writeFile("/" + index, new Uint8Array());
   const large = await fixture(new MemoryBackend(fs));
   try {
-    await expect(large.page.watch(large.root)).rejects.toMatchObject({ errno: 6 });
+    const watch = await large.page.watch(large.root);
+    expect(large.backend.shared.watch.active).toBe(true);
+    await watch.close();
     expect(large.backend.shared.watch.active).toBe(false);
   } finally {
     await large.close();
@@ -752,8 +748,8 @@ test("guest watch imports validate before changing state and pass service errnos
   const sub = h.backend.fs.handleForNode(h.backend.fs.lookup("/dir/sub")!);
   h.backend.execute("setMode", [sub, 0o300], new Uint8Array());
   expect(h.guest.open(locked).errno).toBe(2);
-  for (let index = 1; index < 128; index++) expect(h.guest.open(root).errno).toBe(0);
-  expect(h.guest.open(root).errno).toBe(6);
+  for (let index = 1; index < 256; index++) expect(h.guest.open(root).errno).toBe(0);
+  expect(h.guest.open(root).errno).toBe(0);
   h.state.revoked = true;
   expect(h.guest.read(id).errno).toBe(11);
   expect(h.wasi.filesystemWatches?.pending()).toBe(false);
