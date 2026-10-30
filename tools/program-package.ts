@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { stripWasmNames } from "./program-build-tools.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -60,7 +61,11 @@ export function admitProgramPackage(root: string): string[] {
   const recipe = record(JSON.parse(readFileSync(resolve(root, "package-artifacts.json"), "utf8")));
   assert.ok(Array.isArray(recipe.files) && recipe.files.every((name) => typeof name === "string"));
   const files: string[] = recipe.files;
-  for (const name of files) requiredFile(root, name);
+  for (const name of files) {
+    const bytes = requiredFile(root, name);
+    if (!name.endsWith(".wasm")) continue;
+    assert.ok(stripWasmNames(bytes) === bytes, `Program still contains a name section: ${name}`);
+  }
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));
     for (const name of recipe.dependencies) {

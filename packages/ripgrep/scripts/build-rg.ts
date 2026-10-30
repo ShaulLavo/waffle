@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildEnvironment,
   wasiTarget,
@@ -100,7 +101,7 @@ export async function buildRipgrep(options: RipgrepBuildOptions = {}) {
 export async function stageRipgrep() {
   for (const directory of ["dist", "public/programs"]) {
     await mkdir(resolve(packageRoot, directory), { recursive: true });
-    await copyFile(guest, resolve(packageRoot, directory, "rg.wasm"));
+    stageProgram(guest, resolve(packageRoot, directory, "rg.wasm"));
   }
   const notices = await ripgrepNotices(source, process.env);
   for (const directory of ["dist", "public/programs"])

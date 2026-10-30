@@ -28,6 +28,8 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/program-locales/patch.ts` | Adaptation | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs. |
 | `tools/program-locales/{prepare,selection,rustc-wrapper,build}.ts`, `generate.rs` | Original adapter | Build-source selection, isolated producer identity, compiler pass-through, transaction lock, catalog generation and receipts. No runtime or command implementation copied. |
 
+| `tools/program-build-tools.ts` | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied. |
+
 ## Node WASI descriptor adapter
 
 `proc/node-wasi.ts` is an explicit Node embedding leaf adapted from bun-wasm `web/scripts/node-process.ts:188-397` at `c16ff39435cc33465b999ea06c1ee9d20b952354`. The moved code owns the private Node WASI descriptor marker and lookup, preopen placement, preview1 descriptor translation, native `path_open` result remapping, file and pipe I/O, metadata, rights, flags, seek behavior, close, renumber and native or mixed `poll_oneoff` handling. Native poll temporarily receives the Node descriptor and restores the guest descriptor subscription before returning.
@@ -271,3 +273,15 @@ The wrapper, input selection, generation, locking, and proof collection are orig
 Waffle adapters. They record source and generated hashes separately from final guest
 hashes. The shipped command code and uucore language fallback are not patched.
 See [English program catalogs](program-locales.md) for coverage and build identities.
+
+## Program artifact finalization
+
+`tools/program-build-tools.ts` originated in bash-web `9ef027d7`, from
+`scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. Its original byte reader
+now rejects integers outside the Wasm u32 range. Waffle's original `stripWasmNames`
+and `stageProgram` operations use that reader to remove only complete custom sections
+whose name is exactly `name`. All other bytes, including producer metadata, target
+features and dynamic-linking metadata, remain unchanged. Compiler intermediates keep
+their names until the existing patched-libc verification finishes. Family staging
+strips final program assets before release hashing. Python keeps its accepted producer
+receipt and writes a separate final-program derivation receipt.

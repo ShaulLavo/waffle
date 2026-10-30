@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
@@ -31,6 +30,11 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     assert.throws(() => packProgramPackage(root), /ENOENT/);
     writeFileSync(resolve(root, "dist/NOTICES.txt"), "fixture license\n");
     writeFileSync(resolve(root, "dist/payload.bin"), new Uint8Array(1024 * 1024 + 1));
+    const guest = resolve(root, "dist/program.wasm");
+    const original = readFileSync(guest);
+    writeFileSync(guest, Buffer.concat([original, Uint8Array.of(0, 5, 4, 110, 97, 109, 101)]));
+    assert.throws(() => admitProgramPackage(root), /still contains a name section/);
+    writeFileSync(guest, original);
     assert.equal(admitProgramPackage(root).length, 3);
     const archive = packProgramPackage(root);
     assert.ok(readFileSync(archive).length > 0);
