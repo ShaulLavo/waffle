@@ -1,0 +1,10 @@
+{
+  "files": [
+    "dist/diff.wasm",
+    "dist/diff.wasm.br",
+    "dist/cmp.wasm",
+    "dist/cmp.wasm.br",
+    "dist/diffutils.sizes.json",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
+}
