@@ -1,4 +1,4 @@
-// @ts-nocheck -- The owner-provided procedural scene is preserved verbatim apart from its ES module import.
+// @ts-nocheck -- The owner-provided procedural scene keeps its original ES5 style; see docs/bun-patches.md for the local changes.
 import {
   AdditiveBlending,
   BackSide,
@@ -6,10 +6,10 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
+  CatmullRomCurve3,
   Clock,
   Color,
   ConeGeometry,
-  CustomBlending,
   CylinderGeometry,
   DataTexture,
   DirectionalLight,
@@ -17,7 +17,6 @@ import {
   Float32BufferAttribute,
   FrontSide,
   Group,
-  HalfFloatType,
   HemisphereLight,
   LatheGeometry,
   Matrix3,
@@ -27,9 +26,6 @@ import {
   MeshToonMaterial,
   NearestFilter,
   NoToneMapping,
-  OneFactor,
-  OneMinusSrcAlphaFactor,
-  OrthographicCamera,
   PCFSoftShadowMap,
   Path,
   PerspectiveCamera,
@@ -45,9 +41,9 @@ import {
   SphereGeometry,
   Sprite,
   SpriteMaterial,
+  TubeGeometry,
   Vector2,
   Vector3,
-  WebGLRenderTarget,
   WebGLRenderer
 } from 'three';
 
@@ -56,7 +52,8 @@ import {
  * Cartoon city-builder look: toon shading + ink outline post-pass.
  * Uses the matching three.js r158 module build.
  * API: WaffleScene.mount(canvas, opts) -> { setProgress(p, now), setLayout(l), setLabels(b), getProgress(), destroy() } | null
- * opts: { progress, layout: 'split'|'stack'|'center', labels, interactive, quality: 'high'|'low', background: true }
+ * opts: { progress, layout: 'split'|'stack'|'center'|{cx,cy,wf,hf}, labels, interactive, quality: 'high'|'low', background: true,
+ *         adaptive: true, onReady(), onProgress(p) }
  */
 (function () {
   'use strict';
@@ -78,7 +75,9 @@ import {
   }
   function hash(x, z) { var s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return s - Math.floor(s); }
 
-  var PITCH = 2.5, HW = 0.56, RIDGE_H = 0.72, SLAB = 0.5, LINE = 5.0, EDGE = 5.4, CORNER = 0.8;
+  var PITCH = 2.5, RIDGE_H = 0.72, SLAB = 0.5, LINE = 5.0, EDGE = 5.4, CORNER = 1.0;
+  // cartoon waffle: chunky crowned ridges and square pockets with rounded corners
+  var TW = 0.33, WD = 0.24, RC = 0.36, INK_LIP = 0.013;
   var DOM = 5.625, SEG = 180;
   var AZ_FINAL = -34 * DEG, EL_FINAL = 37 * DEG, EL_START = 88.5 * DEG;
   function cellX(c) { return -3.75 + c * PITCH; }
@@ -100,14 +99,15 @@ import {
     opts = opts || {};
     var renderer;
     try {
-      renderer = new WebGLRenderer({ canvas: canvas, antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+      renderer = new WebGLRenderer({ canvas: canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
     } catch (e) { return null; }
     if (!renderer || !renderer.getContext()) return null;
-    var isGL2 = renderer.capabilities.isWebGL2;
     var low = opts.quality === 'low' || window.innerWidth < 700;
-    var small = window.innerWidth * window.innerHeight < 700000;
-    var DPR = Math.min(window.devicePixelRatio || 1, 2);
-    renderer.setPixelRatio(DPR);
+    // Render at the screen's real density, up to 3x, within a fixed pixel budget. Small phone
+    // canvases get their full density; large desktop canvases stay near 2x. If frames run slow,
+    // `quality` steps the density down instead of dropping frames.
+    var DPR_CAP = Math.min(window.devicePixelRatio || 1, 3), PIXEL_BUDGET = 5.6e6, quality = 1;
+    function targetDpr(w, h) { return Math.max(0.75, Math.min(DPR_CAP, Math.sqrt(PIXEL_BUDGET / Math.max(1, w * h))) * quality); }
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = NoToneMapping;
     renderer.setClearColor(0x000000, 0);
@@ -117,31 +117,49 @@ import {
     var scene = new Scene();
     var overlay = new Scene();
     var camera = new PerspectiveCamera(30, 1, 0.5, 400);
-    var U = { uFlat: { value: 1 }, uEdge: { value: 0.02 } };
+    var U = { uFlat: { value: 1 }, uEdge: { value: 0.02 }, uInk: { value: 0 }, uInkCol: { value: new Color(0x2A1F33) } };
     var disposables = [];
     var REG_INIT = null;
-    var hideInNormals = [];
 
     // ---------- materials ----------
     var gradMap = new DataTexture(new Uint8Array([105, 182, 255]), 3, 1, RedFormat);
     gradMap.minFilter = gradMap.magFilter = NearestFilter; gradMap.generateMipmaps = false; gradMap.needsUpdate = true;
     disposables.push(gradMap);
 
-    function patch(m, waffle) {
+    // The waffle's ink is drawn in its own shader from the same pocket outline the geometry uses,
+    // so it stays crisp at any zoom: one thin stroke all the way round each pocket's rim.
+    function f(v) { return v.toFixed(4); }
+    var WAFFLE_GLSL = [
+      'uniform float uInk; uniform vec3 uInkCol; varying vec2 vP;',
+      'vec2 pocketOffset(vec2 p) {',
+      '  vec2 cell = clamp(floor((p + ' + f(LINE) + ') / ' + f(PITCH) + '), 0.0, 3.0);',
+      '  return p - (-' + f(LINE) + ' + (cell + 0.5) * ' + f(PITCH) + ');',
+      '}',
+      'float waffleS(vec2 p) {',
+      '  vec2 q = abs(pocketOffset(p)) - ' + f(PITCH / 2 - TW - RC) + ';',
+      '  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - ' + f(RC) + ';',
+      '}'
+    ].join('\n');
+    var WAFFLE_INK = [
+      'float ws = waffleS(vP), aw = max(fwidth(ws), 1e-4);',
+      'float lipInk = 1.0 - smoothstep(' + f(INK_LIP) + ' - aw, ' + f(INK_LIP) + ' + aw, abs(ws));',
+      'gl_FragColor.rgb = mix(gl_FragColor.rgb, uInkCol, lipInk * uInk);'
+    ].join('\n');
+    function patch(m, waffle, matte) {
       m.onBeforeCompile = function (s) {
         s.uniforms.uFlat = U.uFlat;
         if (waffle) {
-          s.uniforms.uEdge = U.uEdge;
+          s.uniforms.uEdge = U.uEdge; s.uniforms.uInk = U.uInk; s.uniforms.uInkCol = U.uInkCol;
           s.vertexShader = s.vertexShader
-            .replace('#include <common>', '#include <common>\nattribute float aOut;\nvarying float vOut;')
-            .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOut = aOut;');
+            .replace('#include <common>', '#include <common>\nattribute float aOut;\nvarying float vOut;\nvarying vec2 vP;')
+            .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOut = aOut;\nvP = transformed.xz;');
         }
         s.fragmentShader = s.fragmentShader
-          .replace('#include <common>', '#include <common>\nuniform float uFlat;' + (waffle ? '\nuniform float uEdge;\nvarying float vOut;' : ''))
+          .replace('#include <common>', '#include <common>\nuniform float uFlat;' + (waffle ? '\nuniform float uEdge;\nvarying float vOut;\n' + WAFFLE_GLSL : ''))
           .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>' + (waffle ? '\nif (vOut > uEdge) discard;' : ''))
-          .replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb = mix(gl_FragColor.rgb, diffuseColor.rgb + totalEmissiveRadiance, uFlat);');
+          .replace('#include <opaque_fragment>', '#include <opaque_fragment>\nfloat rimK = 1.0 - max(dot(normal, normalize(vViewPosition)), 0.0);\ngl_FragColor.rgb += vec3(1.0, 0.96, 0.9) * smoothstep(0.55, 0.95, rimK) * ' + (waffle || matte ? '0.0' : '0.14') + ';\ngl_FragColor.rgb = mix(gl_FragColor.rgb, diffuseColor.rgb + totalEmissiveRadiance, uFlat);' + (waffle ? '\n' + WAFFLE_INK : ''));
       };
-      m.customProgramCacheKey = function () { return waffle ? 'toon-waffle' : 'toon-flat'; };
+      m.customProgramCacheKey = function () { return (waffle ? 'toon-waffle' : 'toon-flat') + (matte ? '-matte' : ''); };
       disposables.push(m);
       return m;
     }
@@ -205,6 +223,41 @@ import {
     function G() { return new Group(); }
     function dyn(o) { o.userData.dyn = true; return o; }
 
+    // Ink shells push a back-face copy out along the normals. Flat-shaded edges (box corners,
+    // cylinder rims, gear teeth) have one normal per face, so the copy splits apart and shows
+    // black spikes. Each geometry gets one averaged direction per corner instead, scaled down for
+    // small parts so a door knob gets a hairline and a wall gets the full line.
+    var INK_FULL = 0.16;
+    function inkDirs(geo) {
+      if (geo.userData.inkDirs) return geo.userData.inkDirs;
+      var p = geo.attributes.position, n = geo.attributes.normal, sums = new Map(), keys = new Array(p.count), out = new Float32Array(p.count * 3);
+      for (var i = 0; i < p.count; i++) {
+        var key = Math.round(p.getX(i) * 1e4) + ',' + Math.round(p.getY(i) * 1e4) + ',' + Math.round(p.getZ(i) * 1e4), e = sums.get(key);
+        if (!e) { e = [0, 0, 0]; sums.set(key, e); }
+        e[0] += n.getX(i); e[1] += n.getY(i); e[2] += n.getZ(i); keys[i] = key;
+      }
+      for (var j = 0; j < p.count; j++) { var v = sums.get(keys[j]), L = Math.hypot(v[0], v[1], v[2]) || 1; out[j * 3] = v[0] / L; out[j * 3 + 1] = v[1] / L; out[j * 3 + 2] = v[2] / L; }
+      geo.userData.inkDirs = out;
+      return out;
+    }
+    function inkWeight(radius) { return Math.max(0.3, Math.min(1, radius / INK_FULL)); }
+    function inkGeometry(geo) {
+      if (geo.userData.inkGeo) return geo.userData.inkGeo;
+      var ink = geo.attributes.ink;
+      if (!ink) {
+        if (!geo.boundingSphere) geo.computeBoundingSphere();
+        var dirs = inkDirs(geo), w = geo.userData.inkWeight || inkWeight(geo.boundingSphere.radius), arr = new Float32Array(dirs.length);
+        for (var i = 0; i < dirs.length; i++) arr[i] = dirs[i] * w;
+        ink = new BufferAttribute(arr, 3);
+      }
+      var h = new BufferGeometry();
+      h.setAttribute('position', geo.attributes.position); h.setAttribute('normal', ink);
+      if (geo.index) h.setIndex(geo.index);
+      h.boundingSphere = geo.boundingSphere; disposables.push(h);
+      geo.userData.inkGeo = h;
+      return h;
+    }
+
     // merge static meshes of a building by material to save draw calls
     function bake(root) {
       root.updateMatrixWorld(true);
@@ -220,20 +273,25 @@ import {
         for (var i = 0; i < o.children.length; i++) walk(o.children[i], d);
       })(root, false);
       Object.keys(buckets).forEach(function (k) {
-        var bk = buckets[k], posArr = [], norArr = [], m4 = new Matrix4(), n3 = new Matrix3();
+        var bk = buckets[k], posArr = [], norArr = [], inkArr = [], m4 = new Matrix4(), n3 = new Matrix3();
         bk.parts.forEach(function (o) {
-          var g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry;
+          var src = o.geometry, idx = src.index, g = idx ? src.toNonIndexed() : src;
           m4.multiplyMatrices(inv, o.matrixWorld); n3.getNormalMatrix(m4);
+          if (!src.boundingSphere) src.computeBoundingSphere();
+          var dirs = inkDirs(src), w = inkWeight(src.boundingSphere.radius * m4.getMaxScaleOnAxis());
           var p = g.attributes.position, n = g.attributes.normal, v = new Vector3();
           for (var i = 0; i < p.count; i++) {
             v.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(m4); posArr.push(v.x, v.y, v.z);
             v.set(n.getX(i), n.getY(i), n.getZ(i)).applyMatrix3(n3).normalize(); norArr.push(v.x, v.y, v.z);
+            var s3 = (idx ? idx.getX(i) : i) * 3;
+            v.set(dirs[s3], dirs[s3 + 1], dirs[s3 + 2]).applyMatrix3(n3).normalize().multiplyScalar(w); inkArr.push(v.x, v.y, v.z);
           }
-          if (g !== o.geometry) g.dispose();
+          if (g !== src) g.dispose();
         });
         var mg = new BufferGeometry();
         mg.setAttribute('position', new Float32BufferAttribute(posArr, 3));
         mg.setAttribute('normal', new Float32BufferAttribute(norArr, 3));
+        mg.setAttribute('ink', new Float32BufferAttribute(inkArr, 3));
         mg.computeBoundingSphere(); disposables.push(mg);
         root.add(mesh(mg, bk.mat));
       });
@@ -244,14 +302,16 @@ import {
     var hullU = { uThick: { value: 0.0 }, uCol: { value: new Color(0x2A1F33) } };
     var hullMat = new ShaderMaterial({
       uniforms: hullU, side: BackSide,
-      vertexShader: 'uniform float uThick; void main(){ vec3 p = position + normalize(normal) * uThick; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }',
+      // `normal` here is the ink direction, already scaled by the part's line weight.
+      vertexShader: 'uniform float uThick; void main(){ vec3 p = position + normal * uThick; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }',
       fragmentShader: 'uniform vec3 uCol; void main(){ gl_FragColor = vec4(uCol, 1.0);\n#include <colorspace_fragment>\n}'
     });
     disposables.push(hullMat);
+    function inkShell(x) { var h = new Mesh(inkGeometry(x.geometry), hullMat); h.castShadow = false; h.receiveShadow = false; h.userData.hull = true; x.add(h); return h; }
     function outline(root) {
       var list = [];
-      root.traverse(function (x) { if (x.isMesh && x.material && !x.material.map && !x.material.transparent && !x.isSprite && x.material.type !== 'MeshBasicMaterial' && x.material !== hullMat && x.geometry.attributes.normal) list.push(x); });
-      list.forEach(function (x) { var h = new Mesh(x.geometry, hullMat); h.castShadow = false; h.receiveShadow = false; h.userData.hull = true; x.add(h); });
+      root.traverse(function (x) { if (x.isMesh && x.material && (!x.material.map || x.userData.ink) && !x.material.transparent && !x.isSprite && x.material.type !== 'MeshBasicMaterial' && x.material !== hullMat && !x.userData.hull && x.geometry.attributes.normal) list.push(x); });
+      list.forEach(inkShell);
     }
 
     // ---------- canvas textures ----------
@@ -327,46 +387,70 @@ import {
     });
     disposables.push(bpMat);
     var blueprint = new Mesh(groundGeo, bpMat); blueprint.position.y = GROUND_Y; blueprint.renderOrder = -2; scene.add(blueprint);
-    hideInNormals.push(blueprint);
     var shadowMat = new ShadowMaterial({ color: 0x1B2A6B, opacity: 0.0, depthWrite: false }); disposables.push(shadowMat);
     var shadowCatcher = new Mesh(groundGeo, shadowMat); shadowCatcher.position.y = GROUND_Y; shadowCatcher.receiveShadow = true; shadowCatcher.renderOrder = -1; scene.add(shadowCatcher);
-    hideInNormals.push(shadowCatcher);
     var blobTex = tex(128, 128, function (ctx, w, h) { var gr = ctx.createRadialGradient(64, 64, 10, 64, 64, 64); gr.addColorStop(0, 'rgba(20,30,90,0.55)'); gr.addColorStop(0.6, 'rgba(20,30,90,0.22)'); gr.addColorStop(1, 'rgba(20,30,90,0)'); ctx.fillStyle = gr; ctx.fillRect(0, 0, w, h); });
     var blobGeo = new PlaneGeometry(17, 17); blobGeo.rotateX(-Math.PI / 2); disposables.push(blobGeo);
     var blobMat = basic(0xffffff, { map: blobTex.tex, dw: false, o: 0 });
-    var blob = new Mesh(blobGeo, blobMat); blob.position.y = GROUND_Y + 0.002; blob.renderOrder = -1; scene.add(blob); hideInNormals.push(blob);
+    var blob = new Mesh(blobGeo, blobMat); blob.position.y = GROUND_Y + 0.002; blob.renderOrder = -1; scene.add(blob);
 
     // ---------- the waffle: crisp interior grid inside a rounded rim ----------
-    var SEGI = 160;
+    var SEGI = 192;
     var wGeo = new PlaneGeometry(LINE * 2, LINE * 2, SEGI, SEGI); wGeo.rotateX(-Math.PI / 2); wGeo.deleteAttribute('uv'); disposables.push(wGeo);
     var wPos = wGeo.attributes.position, nV = wPos.count;
     var vR = new Float32Array(nV);
     var colFlat = new Float32Array(nV * 3), colWaffle = new Float32Array(nV * 3), colors = new Float32Array(nV * 3);
     var cT = new Color(), cA = new Color(), cB = new Color();
-    var SHEET = 0x2C5AD4, FLOOR = 0xFFDC92, FLOOR_AO = 0xEDA142, WALL = 0xF4AC48, TOP = 0xD07A28, TOP_HI = 0xFFCF6A, CRUST = 0xB86826;
-    function prof(d) { var u = d / HW; return u >= 1 ? 0 : 1 - sstep(0.5, 0.86, u); }
-    function nearLine(v) { var k = Math.round((v + LINE) / PITCH); k = Math.max(0, Math.min(4, k)); return Math.abs(v - (k * PITCH - LINE)); }
-    function paint(out, r, ao, lip, n) {
-      out.setHex(FLOOR).lerp(cB.setHex(FLOOR_AO), ao * 0.75);
-      out.lerp(cB.setHex(WALL), sstep(0.02, 0.45, r));
-      var top = sstep(0.86, 0.995, r);
-      out.lerp(cB.setHex(TOP), top * 0.85);
-      out.lerp(cB.setHex(TOP_HI), top * lip * 0.85);
+    // cartoon colours: bright golden ridges, deeper orange pockets, a pale shine on the crowns
+    var SHEET = 0x2C5AD4, FLOOR = 0xE58E2E, FLOOR_AO = 0xCF7724, WALL = 0xF7BA4E, TOP = 0xF2A83A, TOP_HI = 0xFFD98A, CRUST = 0xB5621F, TOAST = 0xC9752C;
+    function vnoise(x, z) {
+      var xi = Math.floor(x), zi = Math.floor(z), xf = x - xi, zf = z - zi, u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+      return lerp(lerp(hash(xi, zi), hash(xi + 1, zi), u), lerp(hash(xi, zi + 1), hash(xi + 1, zi + 1), u), v);
+    }
+    function toastAt(x, z) { return vnoise(x * 1.3 + 11, z * 1.3 + 5) * 0.6 + vnoise(x * 4.1 + 3, z * 4.1 + 9) * 0.4; }
+    // signed distance to the nearest pocket's opening: negative inside the pocket, positive on a ridge
+    function waffleS(x, z) {
+      var cx = -LINE + (Math.max(0, Math.min(3, Math.floor((x + LINE) / PITCH))) + 0.5) * PITCH;
+      var cz = -LINE + (Math.max(0, Math.min(3, Math.floor((z + LINE) / PITCH))) + 0.5) * PITCH;
+      var a = PITCH / 2 - TW - RC, qx = Math.abs(x - cx) - a, qz = Math.abs(z - cz) - a;
+      return Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0) - RC;
+    }
+    function ridgeR(s) { return 0.9 * sstep(-WD, 0, s) + 0.1 * sstep(0, TW, s); }
+    function paint(out, s, toast, pocket) {
+      var r = ridgeR(s), floorK = 1 - sstep(-WD, -WD * 0.4, s), ao = s < -WD ? 1 - sstep(0, 0.5, -WD - s) : 1;
+      out.setHex(FLOOR).lerp(cB.setHex(FLOOR_AO), ao * 0.6 * floorK);
+      out.lerp(cB.setHex(WALL), (1 - floorK) * (1 - sstep(-0.05, 0.04, s)));
+      var top = sstep(-0.05, 0.04, s);
+      out.lerp(cB.setHex(TOP), top);
+      // a pale crown along the middle of each ridge, like a cartoon highlight
+      out.lerp(cB.setHex(TOP_HI), sstep(TW * 0.45, TW * 0.95, s) * 0.55);
+      out.lerp(cB.setHex(TOAST), sstep(0.55, 0.9, toast) * 0.18 * (floorK + top));
+      var n = (pocket - 0.5) * 0.05 + (toast - 0.5) * 0.04;
       out.r = clamp01(out.r * (1 + n)); out.g = clamp01(out.g * (1 + n)); out.b = clamp01(out.b * (1 + n));
       return out;
     }
     for (var i = 0; i < nV; i++) {
-      var x = wPos.getX(i), z = wPos.getZ(i);
-      var dx = nearLine(x), dz = nearLine(z), px = prof(dx), pz = prof(dz);
-      var r = Math.max(px, pz), dDom = px >= pz ? dx : dz, dmin = Math.min(dx, dz);
-      vR[i] = r;
+      var x = wPos.getX(i), z = wPos.getZ(i), sd = waffleS(x, z);
+      vR[i] = ridgeR(sd);
       cT.setHex(SHEET).toArray(colFlat, i * 3);
-      var ao = 1 - sstep(HW * 0.86, HW + 0.5, dmin);
-      paint(cA, r, ao, sstep(0.14, 0.24, dDom), (hash(Math.round(x * 5), Math.round(z * 5)) - 0.5) * 0.05).toArray(colWaffle, i * 3);
+      var pocket = hash(Math.floor((x + LINE) / PITCH) + 0.5, Math.floor((z + LINE) / PITCH) + 0.5);
+      paint(cA, sd, toastAt(x, z), pocket).toArray(colWaffle, i * 3);
     }
     wGeo.setAttribute('color', new BufferAttribute(colors, 3));
     wGeo.setAttribute('aOut', new BufferAttribute(new Float32Array(nV), 1));
-    var wMat = patch(new MeshToonMaterial({ vertexColors: true, gradientMap: gradMap }), true);
+    // The surface is a height field, y = H * r(x, z). Its normal is (-H dr/dx, 1, -H dr/dz), so the
+    // ridge gradient is computed once here and each scroll step only rescales it. This replaces a
+    // full computeVertexNormals() pass over 51k triangles on every frame while the ridges rise.
+    var wNor = wGeo.attributes.normal, gX = new Float32Array(nV), gZ = new Float32Array(nV), NG = SEGI + 1;
+    for (var gy = 0; gy < NG; gy++) for (var gx = 0; gx < NG; gx++) {
+      var gk = gy * NG + gx, gl = gy * NG + Math.max(0, gx - 1), gr = gy * NG + Math.min(NG - 1, gx + 1);
+      var gu = Math.max(0, gy - 1) * NG + gx, gd = Math.min(NG - 1, gy + 1) * NG + gx;
+      gX[gk] = (vR[gr] - vR[gl]) / (wPos.getX(gr) - wPos.getX(gl));
+      gZ[gk] = (vR[gd] - vR[gu]) / (wPos.getZ(gd) - wPos.getZ(gu));
+    }
+    var bakeMap = new DataTexture(new Uint8Array([138, 200, 255]), 3, 1, RedFormat);
+    bakeMap.minFilter = bakeMap.magFilter = NearestFilter; bakeMap.generateMipmaps = false; bakeMap.needsUpdate = true; disposables.push(bakeMap);
+    var wMat = patch(new MeshToonMaterial({ vertexColors: true, gradientMap: bakeMap }), true); wMat.extensions = { derivatives: true };
     var waffle = new Mesh(wGeo, wMat); waffle.castShadow = true; waffle.receiveShadow = true; scene.add(waffle);
 
     // rim: an extruded rounded-square ring with a soft bevel
@@ -378,10 +462,11 @@ import {
       s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
       return s;
     }
-    var BV = 0.16, RIM_H = RIDGE_H + SLAB;
+    var BV = 0.28, RIM_H = RIDGE_H + SLAB, HOLE = 2 * (LINE + BV - 0.16) - 0.02;
     var rimShape = rrShape(2 * (EDGE - BV), 2 * (EDGE - BV), CORNER - BV);
-    rimShape.holes.push(rrShape(2 * LINE - 0.02, 2 * LINE - 0.02, 0.3, new Path()));
-    var rimGeo = new ExtrudeGeometry(rimShape, { depth: RIM_H - 2 * BV, bevelEnabled: true, bevelThickness: BV, bevelSize: BV, bevelSegments: 4, curveSegments: 12 });
+    // the hole follows the outer edge's corner, or its corners poke through and the cap fills in
+    rimShape.holes.push(rrShape(HOLE, HOLE, CORNER - BV - (EDGE - BV - HOLE / 2), new Path()));
+    var rimGeo = new ExtrudeGeometry(rimShape, { depth: RIM_H - 2 * BV, bevelEnabled: true, bevelThickness: BV, bevelSize: BV, bevelSegments: 7, curveSegments: 14 });
     rimGeo.rotateX(-Math.PI / 2); rimGeo.translate(0, BV, 0); rimGeo.deleteAttribute('uv');
     rimGeo.computeVertexNormals(); disposables.push(rimGeo);
     var rp = rimGeo.attributes.position, nR = rp.count;
@@ -389,13 +474,14 @@ import {
     for (var ri = 0; ri < nR; ri++) {
       var fy = rp.getY(ri) / RIM_H, ax = Math.max(Math.abs(rp.getX(ri)), Math.abs(rp.getZ(ri)));
       cT.setHex(SHEET).toArray(rimFlat, ri * 3);
-      var topK = sstep(0.9, 0.995, fy);
-      cA.setHex(CRUST).lerp(cB.setHex(WALL), sstep(0.1, 0.8, fy)).lerp(cB.setHex(TOP), topK * 0.8);
-      cA.lerp(cB.setHex(TOP_HI), topK * sstep(LINE + 0.05, LINE + 0.2, ax) * (1 - sstep(EDGE - 0.12, EDGE, ax)) * 0.8);
+      var topK = sstep(0.86, 0.99, fy), rx = rp.getX(ri), rz = rp.getZ(ri);
+      cA.setHex(CRUST).lerp(cB.setHex(0xEFA03C), sstep(0.05, 0.7, fy)).lerp(cB.setHex(TOP), topK);
+      cA.lerp(cB.setHex(TOP_HI), topK * sstep(LINE + 0.05, LINE + 0.22, ax) * (1 - sstep(EDGE - 0.22, EDGE - 0.05, ax)) * 0.55);
+      cA.lerp(cB.setHex(TOAST), sstep(0.55, 0.9, toastAt(rx + rz * 0.3, rz + fy * 2)) * 0.2);
       cA.toArray(rimWaffle, ri * 3);
     }
     rimGeo.setAttribute('color', new BufferAttribute(rimCol, 3));
-    var rim = new Mesh(rimGeo, patch(new MeshToonMaterial({ vertexColors: true, gradientMap: gradMap }))); rim.castShadow = true; rim.receiveShadow = true; scene.add(rim);
+    var rim = new Mesh(rimGeo, patch(new MeshToonMaterial({ vertexColors: true, gradientMap: bakeMap }), false, true)); rim.castShadow = true; rim.receiveShadow = true; scene.add(rim);
     function smoothCopy(geo) {
       var p = geo.attributes.position, nn = geo.attributes.normal, map = {}, keys = [], out = new Float32Array(p.count * 3), v = new Vector3();
       for (var i = 0; i < p.count; i++) {
@@ -407,7 +493,8 @@ import {
       return g;
     }
     var rimHull = new Mesh(smoothCopy(rimGeo), hullMat); rim.add(rimHull);
-    var waffleHull = new Mesh(wGeo, hullMat); waffle.add(waffleHull);
+    // The waffle itself carries no inner ink lines: on a height field they only appear on the walls
+    // facing away from the camera and read as cuts. The rim keeps its outline.
 
     var lastShape = '';
     function shapeWaffle(ph) {
@@ -417,12 +504,14 @@ import {
       var H = RIDGE_H * ph.ridge, c = ph.color;
       for (var i = 0; i < nV; i++) {
         wPos.setY(i, H * vR[i]);
+        var nx = -H * gX[i], nz = -H * gZ[i], inv = 1 / Math.sqrt(nx * nx + 1 + nz * nz);
+        wNor.setXYZ(i, nx * inv, inv, nz * inv);
         var j = i * 3;
         colors[j] = lerp(colFlat[j], colWaffle[j], c); colors[j + 1] = lerp(colFlat[j + 1], colWaffle[j + 1], c); colors[j + 2] = lerp(colFlat[j + 2], colWaffle[j + 2], c);
       }
       for (var k = 0; k < nR * 3; k++) rimCol[k] = lerp(rimFlat[k], rimWaffle[k], c);
-      wPos.needsUpdate = true; wGeo.attributes.color.needsUpdate = true; rimGeo.attributes.color.needsUpdate = true;
-      wGeo.computeVertexNormals(); wGeo.computeBoundingSphere();
+      wPos.needsUpdate = true; wNor.needsUpdate = true; wGeo.attributes.color.needsUpdate = true; rimGeo.attributes.color.needsUpdate = true;
+      wGeo.computeBoundingSphere();
       var tall = H + SLAB * ph.slab + 0.03 * ph.ridge;
       rim.position.y = -SLAB * ph.slab;
       rim.scale.y = Math.max(0.002, tall / RIM_H);
@@ -430,7 +519,7 @@ import {
 
     // diagram wiring that becomes ridges
     var lineMat = basic(0xEEF3FF, { o: 1 });
-    var lines = G(); scene.add(lines); hideInNormals.push(lines);
+    var lines = G(); scene.add(lines);
     for (var k0 = 0; k0 < 5; k0++) {
       var off = k0 * PITCH - LINE;
       var g1 = new PlaneGeometry(0.075, EDGE * 2 - 0.55); g1.rotateX(-Math.PI / 2); disposables.push(g1);
@@ -461,10 +550,16 @@ import {
       at(g, rb(w, h, 0.05, C.glass, 0.015), x, y, z + 0.012);
       at(g, rb(0.025, h, 0.055, C.trim, 0.008), x, y, z + 0.016);
     }
+    // cartoon smoke: small inked clouds of three blobs that swell as they rise, then shrink away
     function puffSet(g, n, color, x, y, z) {
-      var arr = [];
-      for (var i = 0; i < n; i++) { var m = toon(color, { t: true, uniq: true }); var p = sph(0.13, m); p.castShadow = false; p.userData.dyn = true; at(g, p, x, y, z); arr.push({ m: p, mat: m, o: i / n }); }
-      return { update: function (t, rate) { for (var i = 0; i < arr.length; i++) { var q = (t * rate + arr[i].o) % 1; arr[i].m.position.set(x + Math.sin(q * 5 + i) * 0.06 - q * 0.18, y + q * 0.9, z + q * 0.08); var s = 0.55 + q * 1.15; arr[i].m.scale.set(s, s, s); arr[i].mat.opacity = (1 - q) * sstep(0, 0.12, q); arr[i].m.visible = arr[i].mat.opacity > 0.25; } } };
+      var arr = [], m = toon(color);
+      for (var i = 0; i < n; i++) {
+        var p = dyn(G()); at(g, p, x, y, z);
+        at(p, sph(0.07, m), 0, 0, 0); at(p, sph(0.05, m), 0.06, -0.012, 0.012); at(p, sph(0.046, m), -0.056, -0.016, -0.008);
+        bake(p); p.traverse(function (o) { o.castShadow = false; });
+        arr.push({ m: p, o: i / n });
+      }
+      return { update: function (t, rate) { for (var i = 0; i < arr.length; i++) { var q = (t * rate + arr[i].o) % 1, P = arr[i].m; P.position.set(x + Math.sin(q * 5 + i) * 0.05 - q * 0.16, y + q * 0.8, z + q * 0.06); P.rotation.y = i * 1.7 + q * 1.2; var s = (0.7 + q * 1.1) * sstep(0, 0.14, q) * (1 - sstep(0.6, 1, q)); P.scale.set(s, s * 0.9, s); P.visible = s > 0.04; } } };
     }
     var blockHex = ['#FF8A7A', '#7FB6FF', '#FFD86B', '#8EE3C4', '#C3A8FF'];
     var blockMats = blockHex.map(function (h) { return toon(parseInt(h.slice(1), 16)); });
@@ -492,7 +587,7 @@ import {
       at(mon, rb(0.3, 0.06, 0.04, toon(0xD9CDB8), 0.02), 0.28, 0.2, 0.3);
       at(mon, sph(0.025, toon(0x3FD69A, { e: 0x3FD69A, ei: 0.8 })), 0.42, 0.23, 0.3);
       var script = [['$ ', 'ls'], ['', 'app/  tests/  todo.md'], ['$ ', 'bun run dev'], ['', 'listening on :3000'], ['$ ', 'grep -c TODO app.ts'], ['', '3'], ['$ ', 'cat todo.md | wc -l'], ['', '7']];
-      var st = { line: 0, ch: 0, acc: 0, rows: [], flash: 0, blink: 0 };
+      var st = { line: 0, ch: 0, acc: 0, rows: [], flash: 0, blink: 0, drawn: '' };
       var scr = tex(320, 224, function (ctx, w, h) {
         ctx.fillStyle = '#123A2E'; ctx.fillRect(0, 0, w, h);
         ctx.fillStyle = 'rgba(63,214,154,' + (0.08 + st.flash * 0.3) + ')'; ctx.fillRect(0, 0, w, h);
@@ -519,7 +614,9 @@ import {
           if (row.out) { if (st.acc > 0.55) { row.text = cur[1]; row.done = true; st.line++; st.acc = 0; } }
           else if (st.acc > 0.075) { st.acc = 0; if (st.ch < cur[1].length) { st.ch++; row.text = cur[0] + cur[1].slice(0, st.ch); } else { row.done = true; st.ch = 0; st.line++; } }
           if (st.rows.length > 12) st.rows.splice(0, 6);
-          scr.redraw();
+          // Upload the screen texture only when what it shows has changed.
+          var view = st.rows.slice(-6).map(function (r) { return r.text; }).join('\n') + (st.blink < 0.5 ? '_' : ' ') + Math.round(st.flash * 12);
+          if (view !== st.drawn) { st.drawn = view; scr.redraw(); }
         },
         pulse: function () { st.flash = 1; }
       };
@@ -540,9 +637,12 @@ import {
       }
       at(g, rb(0.22, 0.66, 0.22, brick, 0.03), 0.45, 0.6, -0.45);
       at(g, rb(0.28, 0.08, 0.28, C.dark, 0.03), 0.45, 1.26, -0.45);
-      var ring = cyl(0.24, 0.24, 0.05, 24, C.dark); ring.rotation.x = Math.PI / 2; at(g, ring, -0.24, 0.36, 0.43);
       var glow = toon(0xFF9F43, { e: 0xFFB13B, ei: 0.7, uniq: true });
-      var gl = cyl(0.18, 0.18, 0.06, 24, glow); gl.rotation.x = Math.PI / 2; gl.userData.dyn = true; at(g, gl, -0.24, 0.36, 0.44);
+      at(g, rb(0.48, 0.34, 0.05, C.trim, 0.03), -0.24, 0.16, 0.4);
+      var gl = rb(0.4, 0.26, 0.05, glow, 0.025); gl.userData.dyn = true; at(g, gl, -0.24, 0.2, 0.412);
+      at(g, rb(0.035, 0.26, 0.056, C.trim, 0.01), -0.24, 0.2, 0.414);
+      at(g, rb(0.54, 0.03, 0.11, C.trim, 0.01), -0.24, 0.14, 0.45);
+      var aw = tb(0.56, 0.03, 0.15, toon(0xffffff, { map: stripes('#E8A658', '#FFF8EC', 8, true).tex })); aw.position.set(-0.24, 0.55, 0.47); aw.rotation.x = 0.5; g.add(aw);
       at(g, rb(0.36, 0.52, 0.05, C.trim, 0.02), 0.34, 0.08, 0.42);
       at(g, rb(0.28, 0.46, 0.05, toon(0x8A4B2F), 0.02), 0.34, 0.1, 0.436);
       var sign = signPlane('bun', 0.5, 0.17, '#FFF3E0', '#8A4B2F', { scale: 0.7 }); sign.position.set(0.0, 0.745, 0.47); g.add(sign);
@@ -786,25 +886,66 @@ import {
       };
     }
 
+    // a cartoon python in the Python colours: a banded blue coil, a raised neck, eyes and a tongue
+    function mkSnake() {
+      var sn = dyn(G()), skinCol = 0x3B7DD8;
+      var skin = tex(64, 16, function (ctx, w, h) { ctx.fillStyle = '#3B7DD8'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#FFD43B'; ctx.fillRect(w * 0.6, 0, w * 0.24, h); }, true);
+      skin.tex.repeat.set(12, 1);
+      var pts = [], n = 36;
+      for (var i = 0; i <= n; i++) { var u = i / n, a = 0.4 + u * 2.15 * Math.PI * 2, r = lerp(0.25, 0.12, u); pts.push(new Vector3(Math.cos(a) * r, 0.06 + u * 0.15, Math.sin(a) * r)); }
+      var end = pts[n];
+      pts.push(new Vector3(end.x * 0.45, 0.31, end.z * 0.45 + 0.03), new Vector3(0, 0.44, 0.08));
+      var curve = new CatmullRomCurve3(pts), TS = 150, RS = 12, c = new Vector3();
+      var tg = new TubeGeometry(curve, TS, 1, RS, false), tp = tg.attributes.position;
+      for (var k = 0; k <= TS; k++) {
+        var t = k / TS; curve.getPointAt(t, c);
+        var rad = 0.012 + 0.056 * sstep(0, 0.22, t) * (1 - 0.22 * sstep(0.8, 1, t));
+        for (var j = 0; j <= RS; j++) { var q = k * (RS + 1) + j; tp.setXYZ(q, c.x + (tp.getX(q) - c.x) * rad, c.y + (tp.getY(q) - c.y) * rad, c.z + (tp.getZ(q) - c.z) * rad); }
+      }
+      tg.computeBoundingSphere(); tg.userData.inkWeight = 0.7; disposables.push(tg);
+      var tube = mesh(tg, toon(0xffffff, { map: skin.tex })); tube.userData.ink = true; sn.add(tube);
+      var head = G(); curve.getPointAt(1, c); head.position.copy(c); sn.add(head);
+      var skull = sph(0.1, toon(skinCol)); skull.scale.set(0.95, 0.68, 1.28); at(head, skull, 0, 0, 0.035);
+      var white = toon(0xFFFFFF);
+      [-1, 1].forEach(function (side) { at(head, sph(0.034, white), side * 0.056, 0.042, 0.07); at(head, sph(0.018, C.dark), side * 0.062, 0.048, 0.096); });
+      var tongue = G(); tongue.position.set(0, -0.025, 0.15); head.add(tongue);
+      var red = toon(0xF2405A);
+      at(tongue, rb(0.018, 0.012, 0.08, red, 0.005), 0, 0, 0.04);
+      [-0.35, 0.35].forEach(function (ang) { var tip = rb(0.012, 0.01, 0.04, red, 0.004); tip.rotation.y = ang; at(tongue, tip, Math.sin(ang) * 0.015, 0.001, 0.09); });
+      var rear = 0;
+      return {
+        g: sn,
+        update: function (t, dt) {
+          rear = Math.max(0, rear - dt * 1.6);
+          head.rotation.y = Math.sin(t * 1.1) * 0.35; head.rotation.x = -0.12 + Math.sin(t * 1.7) * 0.06;
+          var ph = t % 2.6, flick = rear > 0.5 ? 1 : ph < 0.36 ? Math.sin(ph / 0.36 * Math.PI) : 0;
+          tongue.scale.set(1, 1, Math.max(0.001, flick)); tongue.visible = flick > 0.05;
+          var up = Math.sin((1 - rear) * Math.PI) * rear; sn.scale.set(1 - up * 0.08, 1 + up * 0.35, 1 - up * 0.08);
+        },
+        pulse: function () { rear = 1; }
+      };
+    }
     function mkChart() {
       var g = G();
-      var blue = toon(0x4C7DFF);
+      var blue = toon(0x3B7DD8), yellow = toon(0xFFD43B);
       at(g, rb(1.46, 0.1, 1.12, toon(0xD3D9E4), 0.04), 0, 0, -0.12);
       at(g, rb(1.38, 0.66, 1.04, toon(0xFAF6EE), 0.06, 0.98), 0, 0.08, -0.12);
+      at(g, rb(1.42, 0.05, 1.08, yellow, 0.02), 0, 0.68, -0.12);
       at(g, rb(1.44, 0.09, 1.1, blue, 0.04), 0, 0.72, -0.12);
       windowAt(g, -0.42, 0.3, 0.41, 0.3, 0.24); windowAt(g, 0.42, 0.3, 0.41, 0.3, 0.24);
       at(g, rb(0.3, 0.46, 0.05, blue, 0.02), 0, 0.08, 0.41);
-      at(g, rb(1.2, 0.05, 0.4, C.metal, 0.02), 0, 0.81, -0.2);
-      var bars = [], cols = [toon(0x7FB6FF), toon(0x8EE3C4), toon(0xFFD86B), toon(0xFF8A7A)];
-      for (var i = 0; i < 4; i++) { var b = rb(0.2, 1, 0.2, cols[i], 0.04); b.userData.dyn = true; at(g, b, -0.42 + i * 0.28, 0.86, -0.2); bars.push(b); }
-      var dish = sph(0.2, C.white, true); dish.rotation.x = Math.PI * 0.75; dish.scale.set(1, 0.45, 1); at(g, dish, 0.5, 1.02, 0.18);
-      at(g, cyl(0.025, 0.03, 0.2, 8, C.metal), 0.5, 0.81, 0.18);
+      at(g, sph(0.022, yellow), 0.09, 0.3, 0.445);
+      // the notebook: a little live bar chart at the back of the roof
+      at(g, rb(0.62, 0.05, 0.3, C.metal, 0.02), -0.36, 0.81, -0.36);
+      var bars = [], cols = [toon(0x7FB6FF), toon(0xFFD86B), toon(0xFF8A7A)];
+      for (var i = 0; i < 3; i++) { var b = rb(0.15, 1, 0.15, cols[i], 0.04); b.userData.dyn = true; at(g, b, -0.54 + i * 0.18, 0.86, -0.36); bars.push(b); }
+      var snake = mkSnake(); snake.g.position.set(0.3, 0.81, 0.02); g.add(snake.g);
       bush(g, -0.72, 0.52, 0.85); tree(g, 0.74, 0.55, 0.9);
       var kick = 0;
       return {
         g: g, h: 1.85,
-        update: function (t, dt) { kick = Math.max(0, kick - dt); for (var i = 0; i < 4; i++) { bars[i].scale.y = 0.25 + 0.42 * (0.5 + 0.5 * Math.sin(t * (0.7 + i * 0.23) + i * 1.7)) + 0.25 * (0.5 + 0.5 * Math.sin(t * 0.31 + i)) + kick * 0.2; } },
-        pulse: function () { kick = 1; }
+        update: function (t, dt) { kick = Math.max(0, kick - dt); for (var i = 0; i < 3; i++) { bars[i].scale.y = 0.22 + 0.36 * (0.5 + 0.5 * Math.sin(t * (0.7 + i * 0.23) + i * 1.7)) + 0.2 * (0.5 + 0.5 * Math.sin(t * 0.31 + i)) + kick * 0.2; } snake.update(t, dt); },
+        pulse: function () { kick = 1; snake.pulse(); }
       };
     }
 
@@ -832,7 +973,7 @@ import {
       var big = mesh(gearGeo(10, 0.32, 0.26, 0.08, 0.06), C.gold); big.userData.dyn = true; at(g, big, -0.32, 0.4, 0.46);
       var small = mesh(gearGeo(7, 0.22, 0.17, 0.08, 0.045), toon(0xFF9F43)); small.userData.dyn = true; at(g, small, 0.12, 0.3, 0.47);
       var door = tb(0.36, 0.44, 0.04, toon(0xffffff, { map: stripes('#9AA5BD', '#7E8AA6', 10, false).tex })); door.position.set(0.5, 0.08, 0.41); g.add(door);
-      var puffs = puffSet(g, 4, 0xD9DEE8, 0.55, 1.9, -0.5);
+      var puffs = puffSet(g, 4, 0xEEF1F6, 0.55, 1.9, -0.5);
       bush(g, -0.74, 0.58, 0.8);
       var sp = 1;
       return {
@@ -842,26 +983,60 @@ import {
       };
     }
 
+    function crateOf(w, h, d) {
+      var c = G(), card = toon(0xD9A567), tape = toon(0xF6E3BC);
+      at(c, rb(w, h, d, card, 0.03), 0, 0, 0); at(c, rb(w * 0.24, 0.015, d + 0.012, tape, 0.005), 0, h - 0.008, 0);
+      return c;
+    }
+    function mkForklift() {
+      var f = G(), body = toon(0xFFC94D);
+      at(f, rb(0.2, 0.1, 0.26, body, 0.03), 0, 0.04, 0.02);
+      at(f, rb(0.2, 0.1, 0.07, C.dark, 0.025), 0, 0.05, 0.14);
+      at(f, rb(0.12, 0.05, 0.08, C.dark, 0.02), 0, 0.14, 0.07);
+      [-0.08, 0.08].forEach(function (x) { at(f, rb(0.018, 0.22, 0.018, C.dark, 0.006), x, 0.14, 0.12); at(f, rb(0.018, 0.22, 0.018, C.dark, 0.006), x, 0.14, -0.06); });
+      at(f, rb(0.21, 0.02, 0.22, C.dark, 0.008), 0, 0.36, 0.03);
+      [[-0.1, -0.06], [0.1, -0.06], [-0.1, 0.12], [0.1, 0.12]].forEach(function (q) { var w = cyl(0.045, 0.045, 0.04, 14, C.dark); w.rotation.z = Math.PI / 2; at(f, w, q[0] + (q[0] > 0 ? -0.02 : 0.02), 0.045, q[1]); });
+      [-0.06, 0.06].forEach(function (x) { at(f, rb(0.02, 0.36, 0.02, C.metal, 0.006), x, 0.03, -0.12); });
+      var forks = dyn(G()); forks.position.set(0, 0.03, 0); f.add(forks);
+      at(forks, rb(0.16, 0.08, 0.015, C.dark, 0.005), 0, 0, -0.135);
+      [-0.045, 0.045].forEach(function (x) { at(forks, rb(0.022, 0.012, 0.16, C.metal, 0.004), x, 0, -0.21); });
+      at(forks, rb(0.18, 0.03, 0.17, C.wood, 0.008), 0, 0.012, -0.215);
+      at(forks, crateOf(0.14, 0.12, 0.14), 0, 0.042, -0.215, 0.2);
+      return { g: f, forks: forks };
+    }
     function mkPackages() {
       var g = G();
-      var tan = toon(0xF1C98E), card = toon(0xD9A567), tape = toon(0xF6E3BC);
-      at(g, rb(1.54, 0.1, 1.16, C.concrete, 0.04), 0, 0, -0.16);
-      at(g, rb(1.42, 0.62, 1.04, tan, 0.06), 0, 0.08, -0.16);
-      var arcG = new CylinderGeometry(0.53, 0.53, 1.46, 26, 1, false, -Math.PI / 2, Math.PI); arcG.rotateZ(Math.PI / 2); arcG.deleteAttribute('uv'); disposables.push(arcG);
-      at(g, mesh(arcG, toon(0xA7B7CF)), 0, 0.68, -0.16);
-      var door = tb(0.62, 0.48, 0.04, toon(0xffffff, { map: stripes('#B9C3D6', '#98A4BC', 12, false).tex })); door.position.set(-0.22, 0.08, 0.37); g.add(door);
-      var sign = signPlane('PACKAGES', 0.66, 0.15, '#2E2840', '#FFD86B'); sign.position.set(-0.22, 0.62, 0.385); g.add(sign);
-      function crate(w, h, d) { var c = G(); at(c, rb(w, h, d, card, 0.03), 0, 0, 0); at(c, rb(w * 0.24, 0.015, d + 0.012, tape, 0.005), 0, h - 0.008, 0); return c; }
-      at(g, rb(0.5, 0.05, 0.42, C.wood, 0.015), 0.5, 0, 0.52);
-      at(g, crate(0.26, 0.22, 0.24), 0.38, 0.05, 0.52, 0.1);
-      at(g, crate(0.22, 0.2, 0.22), 0.62, 0.05, 0.5, -0.2);
-      var c3 = dyn(crate(0.2, 0.18, 0.2)); at(g, c3, 0.48, 0.27, 0.52, 0.3);
-      bush(g, -0.76, 0.55, 0.8);
-      var hop = 0;
+      var wall = toon(0x37B3A2), deck = toon(0xE4DED2);
+      var doorTex = stripes('#B9C3D6', '#98A4BC', 12, false).tex;
+      at(g, rb(1.56, 0.1, 1.24, C.concrete, 0.04), 0, 0, -0.1);
+      at(g, rb(1.44, 0.66, 0.76, wall, 0.06, 0.98), 0, 0.08, -0.32);
+      at(g, rb(1.5, 0.08, 0.82, C.trim, 0.03), 0, 0.74, -0.32);
+      at(g, rb(1.38, 0.05, 0.7, deck, 0.02), 0, 0.82, -0.32);
+      at(g, rb(0.3, 0.16, 0.24, C.metal, 0.04), -0.4, 0.86, -0.44);
+      at(g, cyl(0.075, 0.075, 0.03, 16, C.dark), -0.4, 1.02, -0.44);
+      at(g, rb(0.42, 0.07, 0.22, C.glass, 0.02), 0.3, 0.86, -0.4);
+      var sign = signPlane('PACKAGES', 0.96, 0.18, '#2E2840', '#FFD86B'); sign.position.set(0, 0.64, 0.068); g.add(sign);
+      [-0.36, 0.36].forEach(function (x) {
+        at(g, rb(0.52, 0.46, 0.06, C.trim, 0.02), x, 0.08, 0.03);
+        var d = tb(0.44, 0.38, 0.04, toon(0xffffff, { map: doorTex })); d.position.set(x, 0.15, 0.06); g.add(d);
+      });
+      // loading dock with a hazard edge
+      at(g, rb(1.44, 0.07, 0.27, C.concrete, 0.02), 0, 0.08, 0.195);
+      var edge = tb(1.4, 0.035, 0.012, toon(0xffffff, { map: stripes('#FFC94D', '#2E2840', 14, true).tex })); edge.position.set(0, 0.1, 0.33); g.add(edge);
+      at(g, crateOf(0.2, 0.18, 0.2), -0.54, 0.15, 0.2, 0.1);
+      at(g, crateOf(0.15, 0.13, 0.15), -0.52, 0.33, 0.2, 0.5);
+      var c3 = dyn(crateOf(0.17, 0.15, 0.17)); at(g, c3, -0.22, 0.15, 0.21, 0.3);
+      var lift = mkForklift(); lift.g.position.set(0.46, 0.1, 0.48); lift.g.rotation.y = Math.PI / 2 + 0.25; g.add(lift.g);
+      bush(g, -0.74, 0.58, 0.75);
+      var hop = 0, speed = 1, lt = 0;
       return {
         g: g, h: 1.3,
-        update: function (t, dt) { hop = Math.max(0, hop - dt * 2); c3.position.y = 0.27 + (hop > 0 ? Math.sin((1 - hop) * Math.PI) * 0.35 : 0); c3.rotation.y = 0.3 + (hop > 0 ? (1 - hop) * Math.PI : 0); },
-        pulse: function () { hop = 1; }
+        update: function (t, dt) {
+          hop = Math.max(0, hop - dt * 2); speed = lerp(speed, 1, dt);
+          c3.position.y = 0.15 + (hop > 0 ? Math.sin((1 - hop) * Math.PI) * 0.35 : 0); c3.rotation.y = 0.3 + (hop > 0 ? (1 - hop) * Math.PI : 0);
+          lt += dt * speed; lift.forks.position.y = 0.03 + 0.15 * (0.5 - 0.5 * Math.cos(lt * 1.3));
+        },
+        pulse: function () { hop = 1; speed = 3; }
       };
     }
 
@@ -918,7 +1093,7 @@ import {
       [[-0.4, 0.24, -0.3], [0.32, 0.24, -0.36], [0.0, 0.24, 0.16], [-0.1, 0.64, -0.14], [0.4, 0.24, 0.3]].forEach(function (q, i) {
         var b = dyn(G()); b.position.set(q[0], q[1], q[2]); b.userData.y0 = q[1]; bs.push(b);
         at(b, sph(0.26, bm), 0, 0, 0);
-        for (var k = 0; k < 5; k++) { var a = k / 5 * Math.PI * 2; var pt = cone(0.035, 0.08, 4, bd); pt.position.set(Math.cos(a) * 0.05, 0.22, Math.sin(a) * 0.05); pt.rotation.set(Math.sin(a) * 0.8, 0, -Math.cos(a) * 0.8); b.add(pt); }
+        at(b, cyl(0.08, 0.055, 0.04, 5, bd), 0, 0.235, 0);
         b.rotation.set(hash(i, 1) * 0.6, hash(i, 2) * 3, hash(i, 4) * 0.5);
         g.add(b);
       });
@@ -957,9 +1132,9 @@ import {
       db: { make: mkDb, card: 'database', label: 'database', icon: 'db' },
       tests: { make: mkTests, card: 'tests', label: 'tests', icon: 'check' },
       video: { make: mkVideo, card: 'transcode', label: 'video job', icon: 'play' },
-      chart: { make: mkChart, card: 'notebook', label: 'notebook', icon: 'bars' },
+      chart: { make: mkChart, card: 'python', label: 'Python', real: true, icon: 'bars' },
       build: { make: mkBuild, card: 'build', label: 'build', icon: 'gear' },
-      packages: { make: mkPackages, card: 'packages', label: 'packages', icon: 'box' },
+      packages: { make: mkPackages, card: 'packages', label: 'packages', real: true, icon: 'box' },
       syrup: { make: mkSyrup }, berries: { make: mkBerries }, strawberry: { make: mkStrawberry }
     };
     function drawIcon(ctx, kind, cx, cy, s) {
@@ -1012,11 +1187,13 @@ import {
           } else { ctx.strokeStyle = 'rgba(255,255,255,0.32)'; ctx.lineWidth = 4; ctx.setLineDash([14, 12]); rr(ctx, 16, 16, w - 32, h - 32, 26); ctx.stroke(); ctx.setLineDash([]); }
         });
         var cm = basic(0xffffff, { map: ct.tex, dw: false });
-        var card = new Mesh(cardGeo, cm); card.position.set(cellX(c), 0.03, cellZ(r)); card.renderOrder = 3; scene.add(card); hideInNormals.push(card);
+        var card = new Mesh(cardGeo, cm); card.position.set(cellX(c), 0.03, cellZ(r)); card.renderOrder = 3; scene.add(card);
         o.card = card; o.cardMat = cm;
         if (program) {
-          var lt = tex(512, 128, function (ctx, w, h) {
-            ctx.clearRect(0, 0, w, h);
+          // Drawn at twice the old resolution so the tags stay sharp on 3x screens.
+          var lt = tex(1024, 256, function (ctx, W, H) {
+            ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); ctx.setTransform(2, 0, 0, 2, 0, 0);
+            var w = 512;
             ctx.font = '600 44px ' + FONT;
             var tw = ctx.measureText(info.label).width + (info.real ? 70 : 44), x = (w - tw) / 2;
             ctx.fillStyle = info.real ? '#FFC94D' : '#FFFFFF'; rr(ctx, x, 18, tw, 80, 40); ctx.fill();
@@ -1064,7 +1241,7 @@ import {
     }
     var flows = FLOWS.map(function (f, i) {
       var A = byKind[f[0]], B = byKind[f[1]];
-      var bead = new Mesh(beadGeo, basic(f[2], { t: false })); scene.add(bead); hideInNormals.push(bead);
+      var bead = new Mesh(beadGeo, basic(f[2], { t: false })); scene.add(bead);
       var hm = new SpriteMaterial({ map: haloTex.tex, color: f[2], transparent: true, blending: AdditiveBlending, depthWrite: false, depthTest: false, opacity: 0.85 });
       disposables.push(hm);
       var halo = new Sprite(hm); halo.scale.set(0.75, 0.75, 1); overlay.add(halo);
@@ -1094,76 +1271,6 @@ import {
       return total;
     }
 
-    // ---------- outline post-process ----------
-    // One MSAA'd buffer holds view normal (rgb) and view depth / far (a). Edges come from the Laplacian
-    // of inverse depth (zero on any flat surface, however steep) plus normal creases, so sloped
-    // waffle walls and thin moving parts no longer sparkle.
-    var rtColor = null, rtNormal = null;
-    var normalMat = new ShaderMaterial({
-      uniforms: { uFar: { value: 100 } },
-      vertexShader: 'varying vec3 vN; varying float vZ; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vZ = -mv.z; gl_Position = projectionMatrix * mv; }',
-      fragmentShader: 'uniform float uFar; varying vec3 vN; varying float vZ; void main(){ vec3 n = normalize(vN); gl_FragColor = vec4(n * 0.5 + 0.5, clamp(vZ / uFar, 0.0, 0.998)); }'
-    });
-    disposables.push(normalMat);
-    var maskMat = new ShaderMaterial({
-      uniforms: normalMat.uniforms,
-      vertexShader: normalMat.vertexShader,
-      fragmentShader: 'uniform float uFar; varying vec3 vN; varying float vZ; void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, clamp(vZ / uFar, 0.0, 0.998)); }'
-    });
-    disposables.push(maskMat);
-    var normScene = new Scene();
-    var waffleN = new Mesh(wGeo, normalMat), rimN = new Mesh(rimGeo, normalMat);
-    normScene.add(waffleN); normScene.add(rimN);
-    var post = new ShaderMaterial({
-      uniforms: { tColor: { value: null }, tN: { value: null }, res: { value: new Vector2(1, 1) }, uAmt: { value: 0 }, thick: { value: 1 }, lineCol: { value: new Color(0x2A1F33) } },
-      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: [
-        'uniform sampler2D tColor; uniform sampler2D tN; uniform vec2 res; uniform float uAmt; uniform float thick; uniform vec3 lineCol; varying vec2 vUv;',
-        'vec3 toSRGB(vec3 c){ c = max(c, vec3(0.0)); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(vec3(0.0031308), c)); }',
-        'float W(vec4 s){ return 1.0 / max(s.a, 0.0005); }',
-        'bool BG(vec4 s){ return s.a > 0.997; }',
-        'bool MK(vec4 s){ return s.r + s.g + s.b < 0.03; }',
-        'float crease(vec4 a, vec3 n0){ if (BG(a) || MK(a)) return 0.0; vec3 n = normalize(a.xyz * 2.0 - 1.0); return 1.0 - dot(n, n0); }',
-        'void main(){',
-        '  vec4 c = texture2D(tColor, vUv);',
-        '  vec2 px = thick / res;',
-        '  vec4 s0 = texture2D(tN, vUv);',
-        '  vec4 sL = texture2D(tN, vUv - vec2(px.x, 0.0)); vec4 sR = texture2D(tN, vUv + vec2(px.x, 0.0));',
-        '  vec4 sD = texture2D(tN, vUv - vec2(0.0, px.y)); vec4 sU = texture2D(tN, vUv + vec2(0.0, px.y));',
-        '  float e = 0.0;',
-        '  if (!BG(s0) && !MK(s0)) {',
-        '    float w0 = W(s0);',
-        '    float lap = max(2.0 * w0 - W(sL) - W(sR), 2.0 * w0 - W(sU) - W(sD)) / w0;',
-        '    vec3 n0 = normalize(s0.xyz * 2.0 - 1.0);',
-        '    float ne = max(max(crease(sL, n0), crease(sR, n0)), max(crease(sU, n0), crease(sD, n0)));',
-        '    e = max(smoothstep(0.02, 0.045, lap), smoothstep(0.55, 0.85, ne));',
-        '  }',
-        '  e *= uAmt;',
-        '  vec3 rgb = c.a > 0.0001 ? c.rgb / c.a : vec3(0.0);',
-        '  rgb = toSRGB(rgb);',
-        '  rgb = mix(rgb, lineCol, e);',
-        '  float a = max(c.a, e);',
-        '  gl_FragColor = vec4(rgb * a, a);',
-        '}'
-      ].join('\n'),
-      depthTest: false, depthWrite: false, transparent: true, blending: CustomBlending, blendSrc: OneFactor, blendDst: OneMinusSrcAlphaFactor
-    });
-    disposables.push(post);
-    var quadGeo = new PlaneGeometry(2, 2); disposables.push(quadGeo);
-    var quad = new Mesh(quadGeo, post); quad.frustumCulled = false;
-    var postScene = new Scene(); postScene.add(quad);
-    var postCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    function makeTargets(w, h) {
-      if (rtColor) { rtColor.dispose(); rtNormal.dispose(); }
-      var ms = isGL2 ? 4 : 0;
-      rtColor = new WebGLRenderTarget(w, h, { samples: ms, type: HalfFloatType });
-      rtNormal = new WebGLRenderTarget(w, h, { samples: ms, type: HalfFloatType });
-      post.uniforms.tColor.value = rtColor.texture;
-      post.uniforms.tN.value = rtNormal.texture;
-      post.uniforms.res.value.set(w, h);
-      post.uniforms.thick.value = Math.max(1, Math.round(DPR));
-    }
-
     // ---------- camera & layout ----------
     if (opts.layout && typeof opts.layout === 'object') { REG_INIT = opts.layout; }
     var state = { target: clamp01(opts.progress || 0), p: clamp01(opts.progress || 0), layout: (opts.layout && typeof opts.layout === 'object') ? 'custom' : (opts.layout || 'split'), labels: opts.labels !== false, mx: 0, my: 0, smx: 0, smy: 0, w: 0, h: 0, visible: true, bgKey: -1 };
@@ -1174,21 +1281,25 @@ import {
     cells.forEach(function (o) { if (state.p > o.start) o.a = 1; });
     if (state.p > 0.82) { butterA = 1; }
 
-    function resize() {
-      var rect = canvas.getBoundingClientRect();
-      var w = Math.max(2, Math.round(rect.width)), h = Math.max(2, Math.round(rect.height));
+    // The canvas size comes from a ResizeObserver, so frames never force a layout read.
+    function applySize(cw, ch) {
+      var w = Math.max(2, Math.round(cw)), h = Math.max(2, Math.round(ch));
       if (w === state.w && h === state.h) return;
       state.w = w; state.h = h;
+      renderer.setPixelRatio(targetDpr(w, h));
       renderer.setSize(w, h, false);
     }
-    function placeCamera(ph, t) {
-      var R = REG[state.layout] || REG.split;
-      reg.cx = lerp(reg.cx, R.cx, 0.08); reg.cy = lerp(reg.cy, R.cy, 0.08); reg.wf = lerp(reg.wf, R.wf, 0.08); reg.hf = lerp(reg.hf, R.hf, 0.08);
+    function measure() { var rect = canvas.getBoundingClientRect(); applySize(rect.width, rect.height); }
+    var ro = null;
+    if ('ResizeObserver' in window) { ro = new ResizeObserver(function (es) { var b = es[0] && es[0].contentRect; if (b) applySize(b.width, b.height); }); ro.observe(canvas); }
+    function placeCamera(ph, t, dt) {
+      var R = REG[state.layout] || REG.split, k = 1 - Math.exp(-dt * 5);
+      reg.cx = lerp(reg.cx, R.cx, k); reg.cy = lerp(reg.cy, R.cy, k); reg.wf = lerp(reg.wf, R.wf, k); reg.hf = lerp(reg.hf, R.hf, k);
       var aspect = state.w / state.h;
       camera.aspect = aspect; camera.fov = 30;
       var tv = Math.tan(15 * DEG);
       var fitR = lerp(6.1, 6.2, ph.fit) * (state.layout === 'stack' ? lerp(1, 1.06, ph.fit) : 1);
-      if (state.layout === 'custom') fitR *= lerp(1, 1.2, ph.fit);
+      if (state.layout === 'custom') fitR *= lerp(1, 1.1, ph.fit);
       var dist = fitR / Math.min(tv * reg.hf, tv * aspect * reg.wf);
       var live = ph.lit;
       var el = lerp(EL_START, EL_FINAL, ph.cam) + state.smy * 0.05 * live;
@@ -1197,9 +1308,8 @@ import {
       camera.position.set(Math.cos(el) * Math.sin(az) * dist, ty + Math.sin(el) * dist, Math.cos(el) * Math.cos(az) * dist);
       camera.lookAt(0, ty, 0);
       camera.near = dist * 0.4; camera.far = dist * 2.4;
-      camera.setViewOffset(state.w, state.h, -(reg.cx + (state.layout === 'custom' ? 0.02 * reg.wf * ph.fit : 0) - 0.5) * state.w, -(reg.cy - 0.5) * state.h, state.w, state.h);
+      camera.setViewOffset(state.w, state.h, -(reg.cx - 0.5) * state.w, -(reg.cy - 0.5) * state.h, state.w, state.h);
       camera.updateProjectionMatrix();
-      normalMat.uniforms.uFar.value = camera.far;
     }
 
     // ---------- interaction: every thing in the scene reacts to a click ----------
@@ -1233,6 +1343,8 @@ import {
     }
     var lastMove = null, moveDirty = false, lastPickT = 0;
     function onMove(ev) {
+      // Touch moves are scroll gestures; only a mouse or pen hovers and tilts the camera.
+      if (ev.pointerType === 'touch') return;
       var rect = canvas.getBoundingClientRect();
       state.mx = ((ev.clientX - rect.left) / rect.width) * 2 - 1; state.my = ((ev.clientY - rect.top) / rect.height) * 2 - 1;
       lastMove = { clientX: ev.clientX, clientY: ev.clientY }; moveDirty = true;
@@ -1246,15 +1358,30 @@ import {
     if ('IntersectionObserver' in window) { io = new IntersectionObserver(function (es) { state.visible = es[0] ? es[0].isIntersecting : true; }, { threshold: 0 }); io.observe(canvas); }
 
     // ---------- frame ----------
-    var clock = new Clock(), elapsed = 0, raf = 0;
+    var clock = new Clock(), elapsed = 0, raf = 0, painted = false, reported = -1;
+    // Adaptive density: sample real frame rate in one-second windows after a warm-up. Two slow
+    // windows in a row step the pixel ratio down by 20%, to a floor of half density.
+    var perf = { frames: 0, time: 0, slow: 0, warm: 0 };
+    function adapt(rawDt) {
+      if (opts.adaptive === false) return;
+      perf.warm += rawDt; if (perf.warm < 2) return;
+      perf.frames++; perf.time += rawDt; if (perf.time < 1) return;
+      var fps = perf.frames / perf.time; perf.frames = 0; perf.time = 0;
+      perf.slow = fps < 42 ? perf.slow + 1 : 0;
+      if (perf.slow < 2 || quality <= 0.5) return;
+      perf.slow = 0; quality = Math.max(0.5, quality * 0.8);
+      renderer.setPixelRatio(targetDpr(state.w, state.h)); renderer.setSize(state.w, state.h, false);
+    }
     function frame() {
       raf = requestAnimationFrame(frame);
-      var dt = Math.min(0.05, clock.getDelta());
-      if (!state.visible) return;
+      var rawDt = clock.getDelta(), dt = Math.min(0.05, rawDt);
+      if (!state.visible || document.hidden) return;
+      adapt(rawDt);
       elapsed += dt; var t = elapsed;
-      resize();
+      if (!ro) measure();
       state.p = lerp(state.p, state.target, 1 - Math.exp(-dt * 7));
       if (Math.abs(state.p - state.target) < 0.0005) state.p = state.target;
+      if (opts.onProgress && Math.abs(state.p - reported) > 0.0005) { reported = state.p; opts.onProgress(state.p); }
       state.smx = lerp(state.smx, state.mx, 1 - Math.exp(-dt * 3)); state.smy = lerp(state.smy, state.my, 1 - Math.exp(-dt * 3));
       var p = state.p, ph = phases(p);
       if (moveDirty && opts.interactive !== false && elapsed - lastPickT > 0.08) { lastPickT = elapsed; moveDirty = false; canvas.style.cursor = pick(lastMove) ? 'pointer' : ''; }
@@ -1263,7 +1390,7 @@ import {
         var bk = Math.round(ph.world * 200);
         if (bk !== state.bgKey) { state.bgKey = bk; canvas.style.background = 'linear-gradient(180deg,' + mixRGB(SKY_TOP_A, SKY_TOP_B, ph.world) + ' 0%,' + mixRGB(SKY_BOT_A, SKY_BOT_B, ph.world) + ' 100%)'; }
       }
-      U.uFlat.value = 1 - ph.lit;
+      U.uFlat.value = 1 - ph.lit; U.uInk.value = ph.lit;
       U.uEdge.value = 1.0;
       shapeWaffle(ph);
       lineMat.opacity = ph.lines; lines.visible = ph.lines > 0.01; lines.position.y = RIDGE_H * ph.ridge + 0.012;
@@ -1337,31 +1464,18 @@ import {
         if (s2 > 0.97 && fl.lastArr !== cyc) { fl.lastArr = cyc; if (p > 0.6) kick(fl.B, 0.3); }
       }
 
-      placeCamera(ph, t);
-      // pass 1: colour
-      renderer.setRenderTarget(null); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(scene, camera);
-      // pass 2: normals + depth, for the ink outlines
-      post.uniforms.uAmt.value = 0;
+      placeCamera(ph, t, dt);
+      // ink shells grow with the lighting, then the scene, then name tags on top
       hullU.uThick.value = 0.024 * ph.lit; hullMat.visible = ph.lit > 0.02;
-      if (false) {
-        var vis = hideInNormals.map(function (x) { var v = x.visible; x.visible = false; return v; });
-        scene.overrideMaterial = maskMat; hullMat.visible = false;
-        rimN.position.copy(rim.position); rimN.scale.copy(rim.scale);
-        var sm0 = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
-        renderer.setRenderTarget(rtNormal); renderer.setClearColor(0x8080ff, 1.0); renderer.clear(); renderer.render(scene, camera);
-        renderer.autoClear = false; renderer.render(normScene, camera); renderer.autoClear = true;
-        renderer.shadowMap.autoUpdate = sm0;
-        scene.overrideMaterial = null; hullMat.visible = true;
-        hideInNormals.forEach(function (x, k) { x.visible = vis[k]; });
-      }
-      // pass 3: composite, then name tags on top
+      renderer.setRenderTarget(null); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(scene, camera);
       renderer.autoClear = false; renderer.clearDepth(); renderer.render(overlay, camera); renderer.autoClear = true;
+      if (!painted) { painted = true; if (opts.onReady) opts.onReady(); }
     }
 
     if (document.fonts && document.fonts.load) {
       Promise.all([document.fonts.load('600 44px "Fredoka"'), document.fonts.load('700 40px "Fredoka"'), document.fonts.load('600 23px "Martian Mono"')]).then(function () { textures.forEach(function (x) { x.redraw(); }); }).catch(function () {});
     }
-    resize();
+    measure();
     frame();
 
     return {
@@ -1373,8 +1487,8 @@ import {
         cancelAnimationFrame(raf);
         canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('pointerdown', onDown);
         if (io) io.disconnect();
+        if (ro) ro.disconnect();
         disposables.forEach(function (d) { try { d.dispose(); } catch (e) {} });
-        if (rtColor) { rtColor.dispose(); rtNormal.dispose(); }
         renderer.dispose();
       }
     };

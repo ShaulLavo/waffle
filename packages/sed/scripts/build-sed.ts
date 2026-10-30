@@ -73,10 +73,11 @@ export function buildSed(options: SedBuildOptions = {}) {
 
 export function stageSed() {
   const guest = resolve(releaseDirectory, "sed.wasm");
-  for (const directory of ["dist", "public/programs"]) {
-    mkdirSync(resolve(packageRoot, directory), { recursive: true });
-    stageProgram(guest, resolve(packageRoot, directory, "sed.wasm"));
-  }
+  const destinations = ["dist", "public/programs"].map((directory) =>
+    resolve(packageRoot, directory, "sed.wasm"),
+  );
+  for (const path of destinations) mkdirSync(resolve(path, ".."), { recursive: true });
+  stageProgram(guest, destinations);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

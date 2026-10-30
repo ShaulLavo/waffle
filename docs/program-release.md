@@ -61,14 +61,16 @@ with the local command rather than the workflow.
 
 ## Final program bytes
 
-Family build routes verify compiler outputs before staging program assets. Staging
-removes only Wasm `name` custom sections through `tools/program-build-tools.ts`.
-Compiler intermediates retain names because the patched-libc verifier uses them.
-Package admission rejects named program assets. Release receipts and archive hashes
-therefore identify the final stripped bytes. Producers, target features, memory limits,
-imports and other custom sections do not change. The base package has no own Wasm;
-Git builds JavaScript, so both are no-ops for this operation.
+Family build routes preserve their original named compiler outputs and producer proofs.
+The [program optimizer](program-optimization.md) transforms private snapshots, then
+runs the original patched-libc or direct-Rust verifier on actual optimized code.
+Only afterward does staging strip names and emit final bytes with a strict
+`<program>-program.json` derivation. Package admission checks that two-step chain,
+pinned optimizer policy, transformation sources and actual final hash/size. Release
+and archive hashes identify those final bytes. Base has no binary and Git builds
+already-minified JavaScript.
 
-Python stages its accepted producer archive without changing its original receipt or
-payload. Its separate `python-program.json` records the producer receipt hash and
-interpreter hashes before and after name stripping. It does not claim a new producer.
+Python retains its original producer receipt and payload byte-for-byte. Its separate
+`python-program.json` binds the producer receipt and original interpreter identity to
+the optimization, name stripping and final interpreter. It does not claim a new
+producer or retroactively apply new C compiler flags to an accepted archive.

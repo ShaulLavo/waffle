@@ -66,10 +66,11 @@ export function buildGrep(options: GrepBuildOptions = {}) {
 
 export function stageGrep() {
   const guest = resolve(releaseDirectory, "grep.wasm");
-  for (const directory of ["dist", "public/programs"]) {
-    mkdirSync(resolve(packageRoot, directory), { recursive: true });
-    stageProgram(guest, resolve(packageRoot, directory, "grep.wasm"));
-  }
+  const destinations = ["dist", "public/programs"].map((directory) =>
+    resolve(packageRoot, directory, "grep.wasm"),
+  );
+  for (const path of destinations) mkdirSync(resolve(path, ".."), { recursive: true });
+  stageProgram(guest, destinations, { filesystemAdapter });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

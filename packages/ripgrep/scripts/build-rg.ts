@@ -1,3 +1,5 @@
+import { programReleaseEnvironment } from "../../../tools/program-optimize.ts";
+import { mkdirSync } from "node:fs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -88,8 +90,7 @@ export async function buildRipgrep(options: RipgrepBuildOptions = {}) {
       cwd: source,
       env: {
         ...environment(familyRecipe, targetDirectory),
-        CARGO_PROFILE_RELEASE_DEBUG: "0",
-        CARGO_PROFILE_RELEASE_STRIP: "debuginfo",
+        ...programReleaseEnvironment,
         GIT_CEILING_DIRECTORIES: resolve(packageRoot, ".sources"),
       },
       stdio: "inherit",
@@ -99,10 +100,11 @@ export async function buildRipgrep(options: RipgrepBuildOptions = {}) {
 }
 
 export async function stageRipgrep() {
-  for (const directory of ["dist", "public/programs"]) {
-    await mkdir(resolve(packageRoot, directory), { recursive: true });
-    stageProgram(guest, resolve(packageRoot, directory, "rg.wasm"));
-  }
+  const destinations = ["dist", "public/programs"].map((directory) =>
+    resolve(packageRoot, directory, "rg.wasm"),
+  );
+  for (const path of destinations) mkdirSync(resolve(path, ".."), { recursive: true });
+  stageProgram(guest, destinations);
   const notices = await ripgrepNotices(source, process.env);
   for (const directory of ["dist", "public/programs"])
     await writeFile(resolve(packageRoot, directory, "rg.NOTICES.txt"), notices);

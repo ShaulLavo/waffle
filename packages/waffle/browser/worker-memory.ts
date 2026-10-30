@@ -6,15 +6,15 @@ import {
   reflectApply,
   isSharedArrayBuffer,
   sharedArrayBufferByteLength,
-  wasmMemoryByteLength,
+  wasmMemoryByteLengthReader,
   wasmModuleImports,
 } from "../proc/intrinsics.js";
 
 function sampledCall(call: Function, sample: () => void): Function {
-  return (...args: unknown[]) => {
+  return function (this: unknown, ...args: unknown[]) {
     sample();
     try {
-      return reflectApply(call, undefined, args);
+      return reflectApply(call, this, args);
     } finally {
       sample();
     }
@@ -26,13 +26,13 @@ export function createWorkerMemorySampler(buffer: SharedArrayBuffer) {
   if (!isSharedArrayBuffer(buffer) || sharedArrayBufferByteLength(buffer) !== 8)
     throw new TypeError("memory observation requires one shared 64-bit cell");
   const cell = new BigInt64ArrayConstructor(buffer);
-  let memory: WebAssembly.Memory | undefined;
+  let readMemoryByteLength: (() => number) | undefined;
   const sample = () => {
-    if (memory) atomicsStore(cell, 0, BigIntConstructor(wasmMemoryByteLength(memory)));
+    if (readMemoryByteLength) atomicsStore(cell, 0, BigIntConstructor(readMemoryByteLength()));
   };
   return {
     bind(value: WebAssembly.Memory) {
-      memory = value;
+      readMemoryByteLength = wasmMemoryByteLengthReader(value);
       sample();
     },
     sample,

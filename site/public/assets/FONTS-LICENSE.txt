@@ -1,4 +1,4 @@
-Some of the files packed into this page (the "__bundler/manifest" data in this file, unpacked by the page’s script when it opens) are font files downloaded unchanged from Google Fonts (fonts.gstatic.com) when the page was saved. Google Fonts serves each family in pieces, one file per range of characters, so these may not be complete families. Each family’s license follows and still applies to its files. If you pass this file on, keep this comment in it.
+The Waffle landing page uses three fonts first downloaded from Google Fonts (fonts.gstatic.com): Bricolage Grotesque, Fredoka and Martian Mono. The files served with the page are modified versions. They are subset to Basic Latin, Latin-1 and common punctuation, and instanced with fontTools 4.68.0: Bricolage Grotesque at width 100, optical size 18 and weights 400 to 700, Fredoka at weight 700, and Martian Mono at width 100 with weights 400 to 700. Each family's license follows and still applies to its files.
 
 Bricolage Grotesque
 
