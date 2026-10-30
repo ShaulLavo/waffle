@@ -144,6 +144,8 @@ jobs:
               - "bun.lock"
               - "rust-toolchain.toml"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-package.ts"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -351,6 +353,7 @@ jobs:
         run: |
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
+      - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
       - run: bun run programs:check

@@ -565,13 +565,21 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
 });
 
 test("program producers explicitly provision the pinned optimizer before running build routes", () => {
-  const steps = stepsFor("programs");
-  const optimizer = steps.findIndex((step) => step.uses === "./.github/actions/program-optimizer");
-  const tools = steps.findIndex((step) => step.run === "bun run programs:tools");
-  expect(optimizer).toBeGreaterThanOrEqual(0);
-  expect(tools).toBeGreaterThan(optimizer);
-  expect(steps[optimizer]?.if).toBeUndefined();
-  expect(steps[optimizer]?.["continue-on-error"]).toBeUndefined();
+  const producers = [
+    ["programs", "bun run programs:tools"],
+    ["jq", "bun run programs:jq"],
+  ] satisfies readonly [string, string][];
+  for (const [job, command] of producers) {
+    const steps = stepsFor(job);
+    const optimizer = steps.findIndex(
+      (step) => step.uses === "./.github/actions/program-optimizer",
+    );
+    const consumer = steps.findIndex((step) => step.run === command);
+    expect(optimizer).toBeGreaterThanOrEqual(0);
+    expect(consumer).toBeGreaterThan(optimizer);
+    expect(steps[optimizer]?.if).toBeUndefined();
+    expect(steps[optimizer]?.["continue-on-error"]).toBeUndefined();
+  }
   expect(
     stepsFor("network-wasm").some((step) => step.uses === "./.github/actions/program-optimizer"),
   ).toBe(false);
@@ -587,7 +595,7 @@ test("program producers explicitly provision the pinned optimizer before running
     );
     expect(source).toContain("uses: ./.github/actions/program-optimizer");
   }
-  for (const filter of ["programs", "coreutils", "findutils"]) {
+  for (const filter of ["programs", "coreutils", "findutils", "jq"]) {
     expect(selected(filter, "tools/program-optimize.ts")).toBe(true);
     expect(selected(filter, "tools/program-derivation.ts")).toBe(true);
     expect(selected(filter, ".github/actions/program-optimizer/action.yml")).toBe(true);
