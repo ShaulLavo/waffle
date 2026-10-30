@@ -164,8 +164,8 @@ function releaseHelpers(helpers: Map<NetHelper, RuntimeNetworkHelper>): void {
 }
 
 /** Runtime-only owner. Consumers receive just the frozen network/helper projections. */
-export function createRuntimeNetwork(assertLive: () => void, attach?: AttachSocketScope) {
-  const namespace = new NetNamespace();
+export async function createRuntimeNetwork(assertLive: () => void, attach?: AttachSocketScope) {
+  const namespace = await NetNamespace.create(assertLive);
   const cleanup = new PathCleanup();
   const helpers = new Map<NetHelper, RuntimeNetworkHelper>();
   const network: RuntimeNetwork = Object.freeze({

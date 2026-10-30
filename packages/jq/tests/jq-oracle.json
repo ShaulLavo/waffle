@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "nativeVersion": "jq-1.8.2",
+  "cases": {
+    "identity compact": {
+      "exit": 0,
+      "stdout": "{\"b\":[2,1],\"a\":true}\n",
+      "stderr": ""
+    },
+    "raw top-level string": {
+      "exit": 0,
+      "stdout": "cli/cli\n",
+      "stderr": ""
+    },
+    "raw top-level number": {
+      "exit": 0,
+      "stdout": "231\n",
+      "stderr": ""
+    },
+    "raw top-level boolean": {
+      "exit": 0,
+      "stdout": "true\n",
+      "stderr": ""
+    },
+    "raw top-level null": {
+      "exit": 0,
+      "stdout": "null\n",
+      "stderr": ""
+    },
+    "raw embedded newline": {
+      "exit": 0,
+      "stdout": "first\nsecond\n",
+      "stderr": ""
+    },
+    "compact array construction": {
+      "exit": 0,
+      "stdout": "[{\"id\":2,\"label\":\"second\"},{\"id\":1,\"label\":\"first\"}]\n",
+      "stderr": ""
+    },
+    "compact object construction": {
+      "exit": 0,
+      "stdout": "{\"name\":\"cli/cli\",\"count\":3}\n",
+      "stderr": ""
+    },
+    "null input": {
+      "exit": 0,
+      "stdout": "{\"answer\":42,\"ok\":true}\n",
+      "stderr": ""
+    },
+    "slurp stream": {
+      "exit": 0,
+      "stdout": "[1,2,3]\n",
+      "stderr": ""
+    },
+    "slurp empty input": {
+      "exit": 0,
+      "stdout": "0\n",
+      "stderr": ""
+    },
+    "exit status true": {
+      "exit": 0,
+      "stdout": "true\n",
+      "stderr": ""
+    },
+    "exit status false": {
+      "exit": 1,
+      "stdout": "false\n",
+      "stderr": ""
+    },
+    "exit status null": {
+      "exit": 1,
+      "stdout": "null\n",
+      "stderr": ""
+    },
+    "exit status no output": {
+      "exit": 4,
+      "stdout": "",
+      "stderr": ""
+    },
+    "string argument": {
+      "exit": 0,
+      "stdout": "Ada Lovelace\n",
+      "stderr": ""
+    },
+    "JSON argument": {
+      "exit": 0,
+      "stdout": "{\"b\":[2,1],\"a\":true}\n",
+      "stderr": ""
+    },
+    "stream inputs": {
+      "exit": 0,
+      "stdout": "{\"id\":1,\"doubled\":8}\n{\"id\":2,\"doubled\":10}\n",
+      "stderr": ""
+    },
+    "map select pipes": {
+      "exit": 0,
+      "stdout": "[\"one\",\"three\"]\n",
+      "stderr": ""
+    },
+    "gh complex query": {
+      "exit": 0,
+      "stdout": "second\nthird\n",
+      "stderr": ""
+    },
+    "array and arithmetic construction": {
+      "exit": 0,
+      "stdout": "[2,3,6]\n",
+      "stderr": ""
+    },
+    "nested object construction": {
+      "exit": 0,
+      "stdout": "{\"id\":7,\"name\":\"seven\",\"nested\":{\"ok\":true}}\n",
+      "stderr": ""
+    },
+    "string case operations": {
+      "exit": 0,
+      "stdout": "hello world|HELLO WORLD\n",
+      "stderr": ""
+    },
+    "string trim operations": {
+      "exit": 0,
+      "stdout": "-content-\n",
+      "stderr": ""
+    },
+    "string boundary operations": {
+      "exit": 0,
+      "stdout": "[true,true]\n",
+      "stderr": ""
+    },
+    "split map join": {
+      "exit": 0,
+      "stdout": "ONE;TWO;THREE\n",
+      "stderr": ""
+    },
+    "regular expression substitution": {
+      "exit": 0,
+      "stdout": "a#b#c\n",
+      "stderr": ""
+    },
+    "regular expression capture": {
+      "exit": 0,
+      "stdout": "{\"word\":\"hello\"}\n",
+      "stderr": ""
+    },
+    "string conversions": {
+      "exit": 0,
+      "stdout": "[\"41\",42]\n",
+      "stderr": ""
+    },
+    "Unicode lengths": {
+      "exit": 0,
+      "stdout": "[5,12]\n",
+      "stderr": ""
+    },
+    "environment filter": {
+      "exit": 0,
+      "stdout": "from environment\n",
+      "stderr": ""
+    },
+    "environment variable": {
+      "exit": 0,
+      "stdout": "from environment\n",
+      "stderr": ""
+    },
+    "named arguments object": {
+      "exit": 0,
+      "stdout": "{\"x\":\"a value\"}\n",
+      "stderr": ""
+    },
+    "positional arguments object": {
+      "exit": 0,
+      "stdout": "[\"one\",\"two words\"]\n",
+      "stderr": ""
+    },
+    "recursive definition": {
+      "exit": 0,
+      "stdout": "720\n",
+      "stderr": ""
+    },
+    "reduce": {
+      "exit": 0,
+      "stdout": "10\n",
+      "stderr": ""
+    },
+    "destructured variables": {
+      "exit": 0,
+      "stdout": "42\n",
+      "stderr": ""
+    },
+    "scalar paths": {
+      "exit": 0,
+      "stdout": "[[\"a\",0],[\"a\",1,\"b\"]]\n",
+      "stderr": ""
+    },
+    "invalid expression": {
+      "exit": 3,
+      "stdout": "",
+      "stderr": "jq: error: syntax error, unexpected end of file at <top-level>, line 1, column 2:\n    .[\n     ^\njq: 1 compile error\n"
+    },
+    "unknown filter": {
+      "exit": 3,
+      "stdout": "",
+      "stderr": "jq: error: definitely_not_a_filter/0 is not defined at <top-level>, line 1, column 1:\n    definitely_not_a_filter\n    ^^^^^^^^^^^^^^^^^^^^^^^\njq: 1 compile error\n"
+    },
+    "invalid JSON argument": {
+      "exit": 2,
+      "stdout": "",
+      "stderr": "jq: invalid JSON text passed to --argjson\nUse jq --help for help with command-line options,\nor see the jq manpage, or online docs at https://jqlang.org\n"
+    },
+    "runtime type error": {
+      "exit": 5,
+      "stdout": "",
+      "stderr": "jq: error (at <stdin>:0): Cannot index number with string (\"foo\")\n"
+    },
+    "invalid JSON input": {
+      "exit": 5,
+      "stdout": "",
+      "stderr": "jq: parse error: Unfinished JSON term at EOF at line 1, column 1\n"
+    }
+  }
+}

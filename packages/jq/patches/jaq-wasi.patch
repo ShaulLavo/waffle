@@ -1,0 +1,66 @@
+--- a/jaq/Cargo.toml
++++ b/jaq/Cargo.toml
+@@ -17,9 +17,11 @@
+ [dependencies]
+ jaq-all  = { workspace = true, features = ["formats", "std-all"] }
+
+-dirs = { version = "6.0" }
+ env_logger = { version = "0.10.0", default-features = false }
+ log = { version = "0.4.17" }
+ mimalloc = { version = "0.1.29", default-features = false, optional = true }
+-rustyline = { version = "13.0.0", default-features = false, features = ["with-file-history"] }
+ tempfile = "3.3.0"
++
++[target.'cfg(not(target_os = "wasi"))'.dependencies]
++dirs = { version = "6.0" }
++rustyline = { version = "13.0.0", default-features = false, features = ["with-file-history"] }
+--- a/jaq/src/funs.rs
++++ b/jaq/src/funs.rs
+@@ -2,19 +2,31 @@
+ use jaq_all::data::{Ctx, Data, DataKind};
+ use jaq_all::jaq_core::native::{self, v, Filter, Fun};
+ use jaq_all::jaq_core::{Exn, RunPtr, Vars};
++#[cfg(not(target_os = "wasi"))]
+ use rustyline::error::ReadlineError;
++#[cfg(not(target_os = "wasi"))]
+ use rustyline::DefaultEditor;
++#[cfg(not(target_os = "wasi"))]
+ use std::sync::atomic::{AtomicUsize, Ordering};
+
++#[cfg(not(target_os = "wasi"))]
+ pub fn funs() -> impl Iterator<Item = Fun<DataKind>> {
+     jaq_all::data::funs().chain([native::run::<DataKind>(repl())])
+ }
+
++#[cfg(target_os = "wasi")]
++pub fn funs() -> impl Iterator<Item = Fun<DataKind>> {
++    jaq_all::data::funs()
++}
++
++#[cfg(not(target_os = "wasi"))]
+ /// counter that increases for each nested invocation of `repl`
+ static REPL_DEPTH: AtomicUsize = AtomicUsize::new(0);
++#[cfg(not(target_os = "wasi"))]
+ /// immediately abort REPL if REPL_DEPTH + 1 == REPL_KILL_DEPTH
+ static REPL_KILL_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
++#[cfg(not(target_os = "wasi"))]
+ pub fn repl() -> Filter<RunPtr<DataKind>> {
+     ("repl", v(0), |cv| {
+         let depth = REPL_DEPTH.fetch_add(1, Ordering::Relaxed);
+@@ -30,6 +42,7 @@
+     })
+ }
+
++#[cfg(not(target_os = "wasi"))]
+ fn eval(data: &Data, code: String, input: Val) -> Result<(), Error> {
+     let (vars, filter) =
+         filter::parse_compile(&"<repl>".into(), &code, &[], &[]).map_err(Error::Report)?;
+@@ -51,6 +64,7 @@
+     })
+ }
+
++#[cfg(not(target_os = "wasi"))]
+ fn repl_with(runner: &Runner, depth: usize, f: impl Fn(String)) -> Result<(), ReadlineError> {
+     use rustyline::config::{Behavior, Config};
+     let config = Config::builder()

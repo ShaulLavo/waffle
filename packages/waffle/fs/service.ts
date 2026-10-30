@@ -94,7 +94,13 @@ interface SocketScopeState {
   readonly root: number;
   readonly leases: Map<number, { binding: SocketBinding; name: string }>;
 }
+interface WatchTransaction {
+  readonly cancel: () => void;
+  readonly release: (() => void) | undefined;
+}
 interface Session {
+  watchTransactions: Map<number, WatchTransaction>;
+  watchResponses: Map<number, () => void>;
   walks?: WalkTable;
   walkTransactions: Map<number, WalkTransaction>;
   walkResponses: Map<number, () => void>;
@@ -153,6 +159,7 @@ export class FilesystemService {
   private refusedConnections = new Set<FilesystemConnection>();
   residentPublication: ResidentGrantAuthority | undefined;
   private watchService?: WatchService;
+  private disposingWatches = false;
   constructor(private backend: FilesystemBackend) {}
   attachSocketScope(
     guest: Pick<FilesystemIdentity, "owner" | "sections">,
@@ -211,6 +218,8 @@ export class FilesystemService {
       connection,
       walkTransactions: new Map(),
       walkResponses: new Map(),
+      watchTransactions: new Map(),
+      watchResponses: new Map(),
       requests: captureRequestMemory(connection.requests),
       handles: new Map(),
       capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
@@ -513,6 +522,10 @@ export class FilesystemService {
     session.responseMemory.delete(id);
   }
   private discardResponse(session: Session, id: number): void {
+    const watch = session.watchResponses.get(id);
+    session.watchResponses.delete(id);
+    const request = session.retainedRequests.get(id);
+    if (request && requestCancelled(request)) watch?.();
     this.releaseResponseMemory(session, id);
     const retained = session.retainedRequests.get(id);
     const cancelledWalk = retained && requestCancelled(retained);
@@ -739,21 +752,40 @@ export class FilesystemService {
     }
     if (prepared) prepared.handles.length = 0;
   }
-  private watchRequest(session: Session, operation: string, args: any[]): unknown {
+  private watchRequest(
+    session: Session,
+    requestId: number,
+    operation: string,
+    args: any[],
+  ): unknown {
     const [a, b] = args;
     if (operation === "watchOpen") {
       if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
       this.watchService ??= new WatchService(this.backend);
-      return this.watchService.open(
+      const request = session.pending.get(requestId);
+      const id = this.watchService.open(
         session.connection.owner,
         a,
         b,
-        () => sessionRevoked(session) || !this.sessions.has(session),
+        () =>
+          sessionRevoked(session) ||
+          !this.sessions.has(session) ||
+          !request ||
+          requestCancelled(request),
       );
+      session.watchTransactions.set(requestId, {
+        cancel: () => this.watchService?.close(session.connection.owner, id),
+        release: undefined,
+      });
+      return id;
     }
     if (operation === "watchRead") {
       if (!this.watchService) throw new FilesystemError(8);
-      return this.watchService.read(session.connection.owner, a);
+      const held = this.watchService.readHeld(session.connection.owner, a);
+      if (held.batch.events.length)
+        session.watchTransactions.set(requestId, { cancel: held.rollback, release: held.release });
+      else held.release();
+      return held.batch;
     }
     if (operation === "watchClose") {
       this.watchService?.close(session.connection.owner, a);
@@ -825,7 +857,7 @@ export class FilesystemService {
     const [a, b, c] = args;
     this.checkSocketTree(session, operation, args);
     if (operation.startsWith("walk")) return this.walkRequest(session, id, operation, args);
-    if (operation.startsWith("watch")) return this.watchRequest(session, operation, args);
+    if (operation.startsWith("watch")) return this.watchRequest(session, id, operation, args);
     if (operation === "take") {
       const response = session.responses.get(a);
       const bytes =
@@ -1060,6 +1092,7 @@ export class FilesystemService {
           state = State.Cancelled;
         }
         this.settleWalk(session, id, state === State.Complete);
+        this.settleWatch(session, id, state === State.Complete || state === State.Overflow);
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
@@ -1077,8 +1110,33 @@ export class FilesystemService {
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
   }
+  private holdResponseMemory(session: Session, id: number, release: () => void): void {
+    const prior = session.responseMemory.get(id);
+    session.responseMemory.set(id, () => {
+      try {
+        prior?.();
+      } finally {
+        release();
+      }
+    });
+  }
+  private settleWatch(session: Session, id: number, success: boolean): void {
+    const transaction = session.watchTransactions.get(id);
+    if (!transaction) return;
+    session.watchTransactions.delete(id);
+    if (!success) {
+      transaction.cancel();
+      return;
+    }
+    session.watchResponses.set(id, transaction.cancel);
+    if (transaction.release) this.holdResponseMemory(session, id, transaction.release);
+  }
   private retainRequestReply(session: Session, id: number, buffer: FilesystemRequestBuffer): void {
-    if (session.responses.has(id) || session.walkResponses.has(id)) {
+    if (
+      session.responses.has(id) ||
+      session.walkResponses.has(id) ||
+      session.watchResponses.has(id)
+    ) {
       session.retainedRequests.set(id, buffer);
       return;
     }
@@ -1097,7 +1155,7 @@ export class FilesystemService {
     cells[4] = binary ? 1 : 0;
     const response = session.responses.get(id);
     if (result.length > bytes.length) {
-      session.responseMemory.set(id, retainResponseBytes(session.requests, result.length));
+      this.holdResponseMemory(session, id, retainResponseBytes(session.requests, result.length));
       if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: result };
       else session.responses.set(id, { kind: "bytes", bytes: result });
       return State.Overflow;
@@ -1567,6 +1625,8 @@ export class FilesystemService {
     for (const id of session.walkTransactions.keys()) this.settleWalk(session, id, false);
     session.walks?.dispose();
     session.walkResponses.clear();
+    for (const id of session.watchTransactions.keys()) this.settleWatch(session, id, false);
+    session.watchResponses.clear();
     for (const key of session.handles.values()) Atomics.store(session.capabilities, key + 1, -1);
     for (const handle of Array.from(session.handles.keys())) {
       if (Atomics.load(session.capabilities, session.handles.get(handle)! + 2) > 0) continue;
@@ -1601,6 +1661,7 @@ export class FilesystemService {
       if (publication && !this.retirePublication(session)) return;
       this.sessions.delete(session);
     }
+    this.closeDisposedWatchAccount();
     if (
       !this.sessions.size &&
       this.backend instanceof MemoryBackend &&
@@ -1709,10 +1770,16 @@ export class FilesystemService {
     )
       throw new FilesystemError(6, "filesystem owner still has pending work");
   }
+  private closeDisposedWatchAccount(): void {
+    if (this.disposingWatches && !this.sessions.size && this.backend instanceof MemoryBackend)
+      this.backend.watchAccount.close();
+  }
   dispose(): void {
     if (this.shutdownOwner) return;
+    this.disposingWatches = true;
     this.residentPublication?.dispose();
     for (const session of this.sessions) this.close(session);
+    this.closeDisposedWatchAccount();
   }
   shutdown(): Promise<void> {
     if (this.shutdownOwner) return this.shutdownOwner.done;
@@ -1776,6 +1843,7 @@ export class FilesystemService {
       failures.push(new FilesystemError(6, "filesystem has unresolved refused transfers"));
     this.throwShutdownFailures(failures);
     await this.backend.close?.();
+    if (this.backend instanceof MemoryBackend) this.backend.watchAccount.close();
   }
   private recoverShutdownOwners(sessions: readonly Session[], failures: unknown[]): void {
     for (const session of sessions) {

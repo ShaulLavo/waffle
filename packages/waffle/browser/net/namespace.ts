@@ -4,8 +4,9 @@ import { loadNetworkModule, type NetworkModule } from "./module.js";
 import { tcpAddress } from "./address.js";
 import { ECONNREFUSED, EADDRINUSE, ENOBUFS } from "./unix-status.js";
 
-// This module is reached by runtime.network(), never by the core or process entries.
-const compiled = await loadNetworkModule();
+// Keep module evaluation synchronous. A suspended network compile can expose uninitialized
+// class bindings to concurrent dynamic imports on affected module loaders.
+let compilation: ReturnType<typeof loadNetworkModule> | undefined;
 export interface SocketSink {
   data(bytes: Uint8Array): void;
   end(): void;
@@ -155,7 +156,13 @@ export class LoopbackSocket {
 }
 /** One module instance per namespace; JS retains only callbacks and owner identity. */
 export class NetNamespace {
-  private module = compiled.create();
+  static async create(assertActive: () => void = () => {}): Promise<NetNamespace> {
+    const compiled = await (compilation ??= loadNetworkModule());
+    assertActive();
+    return new NetNamespace(compiled.create());
+  }
+
+  private constructor(private readonly module: NetworkModule) {}
   private listeners = new Map<number, Listener>();
   private sockets = new Set<LoopbackSocket>();
   private bindings = new Map<string, PathListener>();

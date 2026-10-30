@@ -79,11 +79,15 @@ connections and signals peers. It never disposes another helper or namespace.
 Worker termination alone cannot invoke page-side cleanup; the launcher owns that
 exit hook. Host disposal also stops its ring watcher.
 
-Low-level standalone users may construct `NetHelper` directly. Its optional fourth
-argument is a `NetNamespace`, exported by `waffle/browser/net/helper`. Omitting it
-creates a private namespace. Runtime consumers must use the factory instead of
-creating a second namespace or a module-global runtime registry. Bun launcher
-attachment and its physical worker-exit hooks are separate consumer work.
+Low-level standalone users first await `NetNamespace.create()`, exported by
+`waffle/browser/net/helper`, then pass that initialized namespace as the required
+fourth argument to `new NetHelper(ring, fetch, hooks, namespace)`. They dispose their
+helpers before disposing the namespace. Compilation is shared and starts only at
+this explicit async boundary; each namespace owns a separate module instance.
+Importing the helper or runtime network owner never waits for compilation. Runtime
+consumers must use `await runtime.network()` instead of creating a second namespace
+or a module-global runtime registry. Bun launcher attachment and its physical
+worker-exit hooks are separate consumer work.
 
 The shared namespace is smaller than another broker layer. Existing per-worker
 messages carry commands, existing rings carry replies and data, and helpers route

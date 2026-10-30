@@ -345,6 +345,148 @@ test("programs normal CI runs the release closure test from the folded source ch
   ).toBe(true);
 });
 
+test("jq has a separate leaf with the shared network artifact prerequisite", () => {
+  const job = record(jobs.jq);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}",
+  );
+  expect(record(changes.outputs).jq).toBe("${{ steps.paths.outputs.jq }}");
+  const steps = stepsFor("jq");
+  expect(steps.some((step) => step.run === "bun run prepare:package")).toBe(true);
+  expect(steps.some((step) => step.run === "bun run programs:check")).toBe(true);
+  expect(steps.some((step) => step.run === "bun run programs:jq")).toBe(true);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+});
+
+test("jq selects only its package and shared runtime inputs", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "rust-toolchain.toml",
+    "tools/program-build-tools.ts",
+    "tools/program-package.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/base/src/index.ts",
+    "packages/jq/src/index.ts",
+    "packages/jq/scripts/build-jaq.ts",
+    "packages/jq/tests/jq-wasi.test.ts",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/programs/collection.ts",
+    "packages/waffle/browser/fs-worker.ts",
+  ])
+    expect(selected("jq", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "packages/coreutils/src/lib.rs",
+    "packages/findutils/src/index.ts",
+    "packages/grep/src/index.ts",
+    "packages/sed/src/index.ts",
+    "packages/ripgrep/src/index.ts",
+    "packages/python/src/launcher.ts",
+    "packages/git/src/index.ts",
+    "docs/bun-patches.md",
+    "site/src/pages/index.astro",
+  ])
+    expect(selected("jq", path), path).toBe(false);
+});
+
+test("jq restores and verifies the single network artifact before install", () => {
+  const steps = stepsFor("jq");
+  const restore = steps.find((step) => step.id === "network-artifact");
+  const verify = steps.find(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.find(
+    (step) => typeof step.run === "string" && step.run.startsWith("bun install"),
+  );
+  expect(restore).toBeDefined();
+  expect(verify).toBeDefined();
+  expect(install).toBeDefined();
+  expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(String(record(restore?.with).path)).toContain("packages/waffle/browser/net/network.wasm");
+  expect(steps.indexOf(record(restore))).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(install)));
+  expect(
+    steps.some((step) => typeof step.run === "string" && step.run.includes("build:network")),
+  ).toBe(false);
+  const cache = steps.find((step) => step.id === "jq-cache");
+  expect(cache).toBeDefined();
+  for (const path of [
+    "~/.rustup/toolchains",
+    "~/.cargo/registry",
+    "~/.cargo/git",
+    ".build/jq",
+    ".build/wasi-libc",
+    "packages/jq/.build",
+    "packages/jq/.sources",
+  ])
+    expect(String(record(cache?.with).path)).toContain(path);
+  expect(String(record(cache?.with).key)).toContain("packages/jq/sources.lock.json");
+  expect(String(record(cache?.with).key)).toContain("tools/program-build-tools.ts");
+});
+
+test("jq provisions the pinned SDK before its native program build", () => {
+  const job = record(jobs.jq);
+  expect(record(job.env)).toEqual({ WAFFLE_NETWORK_PREBUILT: "1" });
+  const steps = stepsFor("jq");
+  const build = steps.find((step) => step.run === "bun run programs:jq");
+  expect(record(build?.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(build?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  const sdk = steps.find((step) => step.id === "sdk");
+  expect(record(sdk?.with).path).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(sdk?.with).key).toBe(
+    "${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4",
+  );
+  const provision = steps.find((step) => step.name === "Install pinned wasi-sdk 34");
+  expect(provision?.if).toBe("steps.sdk.outputs.cache-hit != 'true'");
+  expect(String(provision?.run)).toContain(
+    "b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz",
+  );
+  expect(steps.indexOf(record(provision))).toBeLessThan(
+    steps.findIndex((step) => step.run === "bun run programs:jq"),
+  );
+});
+
+test("jq pins and verifies its native oracle without a host-jq fallback", () => {
+  const steps = stepsFor("jq");
+  const cache = steps.find((step) => step.id === "jq-native");
+  const download = steps.find((step) => step.name === "Download pinned jq native oracle");
+  const verify = steps.find((step) => step.name === "Verify and expose pinned jq native oracle");
+  const version = steps.find((step) => step.name === "Assert pinned jq native oracle");
+  const oracle = steps.find((step) => step.run === "bun run programs:jq");
+  expect(cache).toBeDefined();
+  expect(record(cache?.with).path).toBe("${{ runner.temp }}/jq-native");
+  expect(record(cache?.with).key).toBe(
+    "${{ runner.os }}-${{ runner.arch }}-jq-native-1.8.2-x86_64-b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+  );
+  expect(download?.if).toBe("steps.jq-native.outputs.cache-hit != 'true'");
+  expect(record(download?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(record(download?.env).JQ_NATIVE_URL).toBe(
+    "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
+  );
+  expect(String(download?.run)).toContain('curl -fL --retry 3 "$JQ_NATIVE_URL"');
+  expect(String(download?.run)).toContain('"$JQ_NATIVE_DIR/jq"');
+  expect(record(verify?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(record(verify?.env).JQ_NATIVE_SHA256).toBe(
+    "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+  );
+  expect(String(verify?.run)).toContain("sha256sum -c -");
+  expect(String(verify?.run)).toContain('chmod 700 "$JQ_NATIVE_DIR/jq"');
+  expect(String(verify?.run)).toContain('echo "$JQ_NATIVE_DIR" >> "$GITHUB_PATH"');
+  expect(record(version?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(String(version?.run)).toContain('test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"');
+  expect(String(version?.run)).toContain('test "$(jq --version)" = "jq-1.8.2"');
+  expect(String(version?.run)).not.toContain("|| jq");
+  expect(String(version?.run)).not.toContain("apt-get");
+  expect(steps.indexOf(record(cache))).toBeLessThan(steps.indexOf(record(download)));
+  expect(steps.indexOf(record(download))).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(version)));
+  expect(steps.indexOf(record(version))).toBeLessThan(steps.indexOf(record(oracle)));
+});
+
 test("the browser gate runs memory groups on the fixture built once by libc", () => {
   for (const path of [
     "packages/waffle/group/state.ts",

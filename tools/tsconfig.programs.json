@@ -14,6 +14,7 @@
   },
   "include": [
     "*.ts",
+    "program-locales/**/*.ts",
     "../packages/base/src",
     "../packages/coreutils/src/index.ts",
     "../packages/coreutils/scripts/notices.ts",
@@ -23,6 +24,9 @@
     "../packages/gh/src",
     "../packages/sed/src/index.ts",
     "../packages/ripgrep/src/index.ts",
-    "../packages/python/src"
+    "../packages/python/src",
+    "../packages/jq/src",
+    "../packages/jq/scripts",
+    "../packages/jq/tests"
   ]
 }
