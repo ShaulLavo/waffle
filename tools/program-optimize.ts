@@ -21,6 +21,13 @@ export const programOptimizer = {
   archive: "binaryen-version_133-x86_64-linux.tar.gz",
 } as const;
 
+export const programOptimizationPolicy = "waffle-program-size-v1";
+export const programOptimizationEnvironment = {
+  BINARYEN_CORES: "1",
+  LC_ALL: "C",
+  TZ: "UTC",
+} as const;
+
 export const programOptimizationFlags = [
   "--mvp-features",
   "--enable-sign-ext",
@@ -81,7 +88,10 @@ const identity = (bytes: Uint8Array) => ({ bytes: bytes.byteLength, sha256: sha2
 
 class Reader {
   offset = 0;
-  constructor(readonly bytes: Uint8Array) {}
+  readonly bytes: Uint8Array;
+  constructor(bytes: Uint8Array) {
+    this.bytes = bytes;
+  }
   integer() {
     let value = 0;
     let shift = 0;
@@ -234,13 +244,13 @@ function tool(options: OptimizerOptions) {
     "Unpinned wasm-opt executable",
   );
   const execute = options.execute ?? execFileSync;
-  const env = { BINARYEN_CORES: "1", LC_ALL: "C", TZ: "UTC" };
+  const env = programOptimizationEnvironment;
   const version = execute(executable, ["--version"], { env, encoding: "utf8" }).toString().trim();
   assert.equal(version, programOptimizer.version, "Unexpected wasm-opt version");
   return { executable, execute, env };
 }
 
-function assertSeparateSource(source: string, destination: string) {
+export function assertSeparateSource(source: string, destination: string) {
   assert.notEqual(source, destination, "Compiler input and staged output must differ");
   let target;
   try {
@@ -297,6 +307,7 @@ export function optimizeProgram(program: ProgramOptimization, options: Optimizer
       format: 1,
       stage: "wasm-opt-before-name-strip",
       optimizer: {
+        policy: programOptimizationPolicy,
         version: programOptimizer.version,
         sha256: programOptimizer.linuxX64Sha256,
         flags: Array.from(programOptimizationFlags),

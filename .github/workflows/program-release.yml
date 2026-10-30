@@ -57,6 +57,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - uses: ./.github/actions/program-optimizer
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.1
@@ -83,7 +84,13 @@ jobs:
             target
             .build/wasi-libc
             .build/program-locales
-          key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-locales/**') }}
+            .build/coreutils
+            .build/findutils
+            .build/grep
+            .build/sed
+            .build/ripgrep
+            packages/ripgrep/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-*.ts', 'tools/program-locales/**', 'packages/**/*.rs', 'packages/**/Cargo.toml', 'packages/**/Cargo.lock', 'packages/*/scripts/**', 'packages/*/patches/**') }}
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun test scripts/program-release.test.ts
       - name: Prepare every family in the closure with its own route

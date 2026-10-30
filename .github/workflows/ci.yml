@@ -73,6 +73,8 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/findutils/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -95,6 +97,8 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/program-support/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -212,6 +216,7 @@ jobs:
             packages/waffle/target
           key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
+      - uses: ./.github/actions/program-optimizer
       - uses: dtolnay/rust-toolchain@stable
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
         with:
@@ -477,7 +482,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check

@@ -1,3 +1,5 @@
+import { stageProgram } from "../tools/program-build-tools.ts";
+import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -78,12 +80,16 @@ function writeArtifacts(packageRoot: string) {
   for (const file of recipe.files as string[]) {
     const path = resolve(packageRoot, file);
     mkdirSync(dirname(path), { recursive: true });
-    const label = Buffer.from(file);
-    const wasm = Buffer.concat([
-      Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 0, label.length + 1, 0]),
-      label,
-    ]);
-    writeFileSync(path, file.endsWith(".wasm") ? wasm : `stand-in notice for ${file}\n`);
+    if (file.endsWith("-program.json")) continue;
+    if (!file.endsWith(".wasm")) {
+      writeFileSync(path, `stand-in notice for ${file}\n`);
+      continue;
+    }
+    const input = resolve(packageRoot, ".build/fixture-input.wasm");
+    mkdirSync(dirname(input), { recursive: true });
+    writeFileSync(input, cappedWasiFixture);
+    stageProgram(input, path);
+    rmSync(input);
   }
 }
 

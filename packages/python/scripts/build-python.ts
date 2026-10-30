@@ -1,3 +1,4 @@
+import { programCOptimizationFlags } from "../../../tools/program-optimize.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -59,9 +60,9 @@ export function pythonBuildRecipe(
   const flags = `--target=wasm32-wasip1 --sysroot=${sysroot}`;
   const hostEnv: NodeJS.ProcessEnv = {
     ...nativeEnv,
-    CFLAGS: flags,
+    CFLAGS: `${flags} ${programCOptimizationFlags.join(" ")}`,
     CPPFLAGS: flags,
-    LDFLAGS: `${flags} -Wl,--max-memory=268435456`,
+    LDFLAGS: `${flags} ${programCOptimizationFlags.join(" ")} -Wl,--max-memory=268435456`,
   };
   return [
     { args: ["configure-build-python", "--", "--config-cache"], env: nativeEnv },
@@ -232,16 +233,12 @@ export function stagePythonArtifact(source: string, output: string, sdk?: string
     .filter((name) => name !== "python.wasm")
     .concat(["python-build.json"]))
     copyFileSync(resolve(source, name), resolve(output, name));
-  const input = readFileSync(resolve(source, "python.wasm"));
-  stageProgram(resolve(source, "python.wasm"), resolve(output, "python.wasm"));
-  const finalized = readFileSync(resolve(output, "python.wasm"));
-  const derivation = {
-    operation: "strip-wasm-name-sections",
-    producerReceiptSha256: sha256(readFileSync(resolve(source, "python-build.json"))),
-    input: { bytes: input.length, sha256: sha256(input) },
-    output: { bytes: finalized.length, sha256: sha256(finalized) },
-  };
-  writeFileSync(resolve(output, "python-program.json"), `${JSON.stringify(derivation, null, 2)}\n`);
+  stageProgram(
+    resolve(source, "python.wasm"),
+    resolve(output, "python.wasm"),
+    sdk === undefined ? {} : { sdk },
+    resolve(source, "python-build.json"),
+  );
   cpSync(resolve(source, "python-files"), tree, {
     recursive: true,
     force: false,
@@ -266,6 +263,7 @@ async function auditWaffle(work: string, output: string) {
     outfile: api,
   });
   const script = `
+import { programCOptimizationFlags } from "../../../tools/program-optimize.ts";
 import assert from "node:assert/strict";
 import {dirname,resolve} from "node:path";
 import {readFileSync} from "node:fs";

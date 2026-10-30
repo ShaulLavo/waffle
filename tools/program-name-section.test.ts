@@ -11,10 +11,13 @@ import {
 import { dirname, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { programBytesIdentity, validateProgramDerivation } from "./program-derivation.ts";
 import { stageProgram, stripWasmNames } from "./program-build-tools.ts";
 
 const header = [0, 97, 115, 109, 1, 0, 0, 0];
-const named = Uint8Array.from(header.concat([0, 5, 4, 110, 97, 109, 101]));
+const named = Uint8Array.from(
+  header.concat([5, 5, 1, 1, 1, 128, 32], [0, 5, 4, 110, 97, 109, 101]),
+);
 
 function sourceFixture(context: TestContext) {
   const repository = resolve(import.meta.dirname, "..");
@@ -24,6 +27,12 @@ function sourceFixture(context: TestContext) {
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const sources = [
     "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
+    "tools/program-locales/prepare.ts",
+    "tools/program-locales/selection.ts",
+    "tools/program-locales/patch.ts",
+    "tools/program-locales/sources.json",
     "packages/coreutils/scripts/build-family.ts",
     "packages/coreutils/scripts/build-config.ts",
     "packages/coreutils/scripts/programs.ts",
@@ -162,7 +171,16 @@ function programFixture(
   }
   return () => {
     for (const path of originals) assert.deepEqual(readFileSync(path), Buffer.from(named));
-    for (const path of staged) assert.deepEqual(readFileSync(path), Buffer.from(header));
+    for (const path of staged) {
+      const bytes = readFileSync(path);
+      assert.equal(
+        WebAssembly.Module.customSections(new WebAssembly.Module(bytes), "name").length,
+        0,
+      );
+      const metadata = JSON.parse(readFileSync(path.replace(/\.wasm$/, "-program.json"), "utf8"));
+      validateProgramDerivation(metadata, bytes);
+      assert.deepEqual(metadata.input, programBytesIdentity(named));
+    }
   };
 }
 

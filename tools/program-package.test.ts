@@ -1,3 +1,5 @@
+import { stageProgram } from "./program-build-tools.ts";
+import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,14 +22,20 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     );
     writeFileSync(
       resolve(root, "package-artifacts.json"),
-      JSON.stringify({ files: ["dist/program.wasm", "dist/NOTICES.txt", "dist/payload.bin"] }),
+      JSON.stringify({
+        files: [
+          "dist/program.wasm",
+          "dist/program-program.json",
+          "dist/NOTICES.txt",
+          "dist/payload.bin",
+        ],
+      }),
     );
     assert.throws(() => packProgramPackage(root), /ENOENT/);
     mkdirSync(resolve(root, "dist"));
-    writeFileSync(
-      resolve(root, "dist/program.wasm"),
-      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
-    );
+    const input = resolve(root, "input.wasm");
+    writeFileSync(input, cappedWasiFixture);
+    stageProgram(input, resolve(root, "dist/program.wasm"));
     assert.throws(() => packProgramPackage(root), /ENOENT/);
     writeFileSync(resolve(root, "dist/NOTICES.txt"), "fixture license\n");
     writeFileSync(resolve(root, "dist/payload.bin"), new Uint8Array(1024 * 1024 + 1));
@@ -36,7 +44,7 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     writeFileSync(guest, Buffer.concat([original, Uint8Array.of(0, 5, 4, 110, 97, 109, 101)]));
     assert.throws(() => admitProgramPackage(root), /still contains a name section/);
     writeFileSync(guest, original);
-    assert.equal(admitProgramPackage(root).length, 3);
+    assert.equal(admitProgramPackage(root).length, 4);
     const archive = packProgramPackage(root);
     assert.ok(readFileSync(archive).length > 0);
     writeFileSync(resolve(root, "dist/NOTICES.txt"), "changed license\n");
@@ -62,28 +70,29 @@ test("Python packing binds its derivation to original producer and final interpr
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const assets = resolve(root, "assets");
   mkdirSync(assets);
-  const output = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
-  const input = Buffer.concat([output, Uint8Array.of(0, 5, 4, 110, 97, 109, 101)]);
+  const input = Buffer.concat([cappedWasiFixture, Uint8Array.of(0, 5, 4, 110, 97, 109, 101)]);
   const producer = Buffer.from(
     JSON.stringify({
       assets: { "python.wasm": digest(input) },
       interpreterBytes: input.length,
     }),
   );
-  const derivation = {
-    operation: "strip-wasm-name-sections",
-    producerReceiptSha256: digest(producer),
-    input: { bytes: input.length, sha256: digest(input) },
-    output: { bytes: output.length, sha256: digest(output) },
-  };
   writeFileSync(
     resolve(root, "package-artifacts.json"),
     JSON.stringify({
       files: ["assets/python.wasm", "assets/python-build.json", "assets/python-program.json"],
     }),
   );
-  writeFileSync(resolve(assets, "python.wasm"), output);
   writeFileSync(resolve(assets, "python-build.json"), producer);
+  const source = resolve(root, "input.wasm");
+  writeFileSync(source, input);
+  const derivation = stageProgram(
+    source,
+    resolve(assets, "python.wasm"),
+    {},
+    resolve(assets, "python-build.json"),
+  );
+  const output = readFileSync(resolve(assets, "python.wasm"));
   const receipt = resolve(assets, "python-program.json");
   const writeReceipt = (value: unknown) => writeFileSync(receipt, JSON.stringify(value));
   writeReceipt(derivation);
@@ -91,6 +100,7 @@ test("Python packing binds its derivation to original producer and final interpr
   const invalid = [
     {},
     { ...derivation, operation: "unknown" },
+    { ...derivation, operation: "strip-wasm-name-sections" },
     { ...derivation, producerReceiptSha256: "0".repeat(64) },
     { ...derivation, input: { ...derivation.input, sha256: "0".repeat(64) } },
     { ...derivation, input: { ...derivation.input, bytes: input.length + 1 } },
@@ -105,10 +115,10 @@ test("Python packing binds its derivation to original producer and final interpr
   const changed = Buffer.concat([output, Uint8Array.of(0, 3, 1, 120, 42)]);
   new WebAssembly.Module(changed);
   writeFileSync(resolve(assets, "python.wasm"), changed);
-  assert.throws(() => admitProgramPackage(root), /Python program output/);
+  assert.throws(() => admitProgramPackage(root), /Final program derivation identity/);
   writeFileSync(resolve(assets, "python.wasm"), output);
   writeFileSync(resolve(assets, "python-build.json"), Buffer.concat([producer, Buffer.from(" ")]));
-  assert.throws(() => admitProgramPackage(root), /Python producer receipt/);
+  assert.throws(() => admitProgramPackage(root), /Original producer receipt hash/);
   writeFileSync(resolve(assets, "python-build.json"), producer);
   assert.equal(admitProgramPackage(root).length, 3);
   assert.deepEqual(readFileSync(resolve(assets, "python-build.json")), producer);

@@ -421,3 +421,23 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
     expect(result.exitCode).toBe(id ? 0 : 1);
   }
 });
+
+test("program producers explicitly provision the pinned optimizer before running build routes", () => {
+  for (const path of [
+    "ci.yml",
+    "coreutils-echo.yml",
+    "findutils-xargs.yml",
+    "program-release.yml",
+  ]) {
+    const source = readFileSync(
+      new URL(`../../../.github/workflows/${path}`, import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("uses: ./.github/actions/program-optimizer");
+  }
+  for (const filter of ["programs", "coreutils", "findutils"]) {
+    expect(selected(filter, "tools/program-optimize.ts")).toBe(true);
+    expect(selected(filter, "tools/program-derivation.ts")).toBe(true);
+    expect(selected(filter, ".github/actions/program-optimizer/action.yml")).toBe(true);
+  }
+});

@@ -382,3 +382,16 @@ test("size optimization drops DWARF but keeps verifier function names", () => {
     assert.equal(WebAssembly.Module.customSections(module, "name").length, 1);
   });
 });
+
+test("root and independent sed profiles use the selected size policy", () => {
+  for (const path of ["../Cargo.toml", "../packages/sed/Cargo.toml"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    const profile = source.split("[profile.release]")[1]?.split("\n[")[0];
+    assert.ok(profile);
+    assert.match(profile, /opt-level = "z"/);
+    assert.match(profile, /lto = "fat"/);
+    assert.match(profile, /panic = "abort"/);
+    assert.match(profile, /codegen-units = 1/);
+    assert.match(profile, /strip = "debuginfo"/);
+  }
+});

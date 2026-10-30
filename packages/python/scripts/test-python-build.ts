@@ -1,3 +1,4 @@
+import { validateProgramDerivation } from "../../../tools/program-derivation.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -78,8 +79,8 @@ test("official build stages scope patched SDK34 flags to host configure and cap 
       assert.equal(step.env.LDFLAGS, undefined);
       continue;
     }
-    assert.equal(step.env.CFLAGS, "--target=wasm32-wasip1 --sysroot=/patched-sysroot");
-    assert.equal(step.env.CPPFLAGS, step.env.CFLAGS);
+    assert.equal(step.env.CFLAGS, "--target=wasm32-wasip1 --sysroot=/patched-sysroot -Oz -flto");
+    assert.equal(step.env.CPPFLAGS, "--target=wasm32-wasip1 --sysroot=/patched-sysroot");
     assert.equal(step.env.LDFLAGS, `${step.env.CFLAGS} -Wl,--max-memory=268435456`);
   }
 });
@@ -191,14 +192,18 @@ test("a validated artifact stages without building and rejects an altered interp
     regularFiles(staged),
     regularFiles(output).concat(["python-program.json"]).sort(),
   );
-  assert.deepEqual(readFileSync(resolve(staged, "python.wasm")), Buffer.from(cappedWasiFixture));
+  const finalBytes = readFileSync(resolve(staged, "python.wasm"));
+  assert.ok(WebAssembly.validate(finalBytes));
+  assert.equal(
+    WebAssembly.Module.customSections(new WebAssembly.Module(finalBytes), "name").length,
+    0,
+  );
   assert.deepEqual(readFileSync(resolve(output, "python.wasm")), interpreter);
-  assert.deepEqual(JSON.parse(readFileSync(resolve(staged, "python-program.json"), "utf8")), {
-    operation: "strip-wasm-name-sections",
-    producerReceiptSha256: sha256(readFileSync(resolve(output, "python-build.json"))),
-    input: { bytes: interpreter.length, sha256: sha256(interpreter) },
-    output: { bytes: cappedWasiFixture.length, sha256: sha256(cappedWasiFixture) },
-  });
+  validateProgramDerivation(
+    JSON.parse(readFileSync(resolve(staged, "python-program.json"), "utf8")),
+    finalBytes,
+    readFileSync(resolve(output, "python-build.json")),
+  );
   for (const path of regularFiles(output).filter((name) => name !== "python.wasm"))
     assert.deepEqual(
       readFileSync(resolve(staged, path)),
