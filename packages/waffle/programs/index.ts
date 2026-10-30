@@ -64,6 +64,8 @@ export type PackageProgram = {
 );
 
 export interface InstallProgramsOptions {
+  /** Cancels new loads and launches immediately, including while marker writes are pending. */
+  readonly signal?: AbortSignal;
   /** Starts a process for each exec, for example a launcher using Waffle's preview1 worker.
    * The installation registers its own adapters around it. */
   readonly launcher: GuestLauncher;
@@ -151,6 +153,15 @@ export async function installPrograms(
   const activity = new Activity();
   const entries = programEntries(packages, activity, options);
   const installed: Installed = { runtime, packages, activity, leases: [], created: [] };
+  const signal = options.signal;
+  if (signal?.aborted) throw new Error("Program installation was cancelled");
+  if (signal) {
+    const close = () => {
+      activity.closing = true;
+    };
+    signal.addEventListener("abort", close, { once: true });
+    installed.leases.push(() => signal.removeEventListener("abort", close));
+  }
   try {
     const adapters = registerAdapters(installed, entries, options);
     const preparations = new Map<PackageProgram, () => Promise<void>>();
