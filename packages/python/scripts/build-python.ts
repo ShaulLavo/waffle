@@ -247,23 +247,8 @@ export function stagePythonArtifact(source: string, output: string, sdk?: string
   return manifest;
 }
 
-async function auditWaffle(work: string, output: string) {
-  const runtimeIdentity = auditWaffleSource(repositoryRoot);
-  const api = resolve(work, "waffle-api.mjs");
-  await build({
-    absWorkingDir: root,
-    stdin: {
-      contents: `export { Wasi } from ${JSON.stringify(resolve(waffleSourceRoot, "core/wasi.ts"))}; export { MemFS } from ${JSON.stringify(resolve(waffleSourceRoot, "fs/memory.ts"))};`,
-      resolveDir: root,
-    },
-    bundle: true,
-    format: "esm",
-    platform: "neutral",
-    conditions: ["browser"],
-    outfile: api,
-  });
-  const script = `
-import { programCOptimizationFlags } from "../../../tools/program-optimize.ts";
+export function pythonAuditScript(api: string, runtimeIdentity: ReturnType<typeof auditWaffleSource>) {
+  return `
 import assert from "node:assert/strict";
 import {dirname,resolve} from "node:path";
 import {readFileSync} from "node:fs";
@@ -303,6 +288,24 @@ const qualification=${JSON.stringify(pythonUsageCases())}.map(run);
 assert.equal(new TextDecoder().decode(fs.readFile("/home/guest/result.txt")),"PAYLOAD INPUT\\n");
 console.log(JSON.stringify({imports:WebAssembly.Module.imports(module),exports:WebAssembly.Module.exports(module),nameSectionBytes:WebAssembly.Module.customSections(module,"name").map(section=>section.byteLength),preopens:{"/":"/"},waffle:${JSON.stringify(runtimeIdentity)},qualification}));
 `;
+}
+
+async function auditWaffle(work: string, output: string) {
+  const runtimeIdentity = auditWaffleSource(repositoryRoot);
+  const api = resolve(work, "waffle-api.mjs");
+  await build({
+    absWorkingDir: root,
+    stdin: {
+      contents: `export { Wasi } from ${JSON.stringify(resolve(waffleSourceRoot, "core/wasi.ts"))}; export { MemFS } from ${JSON.stringify(resolve(waffleSourceRoot, "fs/memory.ts"))};`,
+      resolveDir: root,
+    },
+    bundle: true,
+    format: "esm",
+    platform: "neutral",
+    conditions: ["browser"],
+    outfile: api,
+  });
+  const script = pythonAuditScript(api, runtimeIdentity);
   return object(
     JSON.parse(
       execFileSync(process.execPath, ["--input-type=module", "-e", script, output], {

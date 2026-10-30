@@ -423,6 +423,16 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
 });
 
 test("program producers explicitly provision the pinned optimizer before running build routes", () => {
+  const steps = stepsFor("programs");
+  const optimizer = steps.findIndex((step) => step.uses === "./.github/actions/program-optimizer");
+  const tools = steps.findIndex((step) => step.run === "bun run programs:tools");
+  expect(optimizer).toBeGreaterThanOrEqual(0);
+  expect(tools).toBeGreaterThan(optimizer);
+  expect(steps[optimizer]?.if).toBeUndefined();
+  expect(steps[optimizer]?.["continue-on-error"]).toBeUndefined();
+  expect(
+    stepsFor("network-wasm").some((step) => step.uses === "./.github/actions/program-optimizer"),
+  ).toBe(false);
   for (const path of [
     "ci.yml",
     "coreutils-echo.yml",

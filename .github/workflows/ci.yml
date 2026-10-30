@@ -216,7 +216,6 @@ jobs:
             packages/waffle/target
           key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
-      - uses: ./.github/actions/program-optimizer
       - uses: dtolnay/rust-toolchain@stable
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
         with:
@@ -488,6 +487,7 @@ jobs:
       - run: bun run programs:check
       - run: bun run --cwd packages/git test:unit
       - run: bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
+      - uses: ./.github/actions/program-optimizer
       - run: bun run programs:tools
       - run: bun test scripts/program-release.test.ts
       - run: bun run programs:routes

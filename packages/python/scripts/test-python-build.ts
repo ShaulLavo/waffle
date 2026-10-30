@@ -1,5 +1,6 @@
 import { validateProgramDerivation } from "../../../tools/program-derivation.ts";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -7,6 +8,7 @@ import {
   familyRecipe,
   familyTargetRoot,
   pythonBuildRecipe,
+  pythonAuditScript,
   repositoryRoot,
   withPythonWorkspace,
   stagePythonArtifact,
@@ -14,6 +16,7 @@ import {
   validatePythonPayload,
 } from "./build-python.ts";
 import { pythonSource, regularFiles, sha256, verifyPythonSource } from "./python-source.ts";
+import { auditWaffleSource } from "./waffle-source.ts";
 import { cappedWasiFixture } from "./wasi-artifact-fixture.ts";
 
 function fixture(context: TestContext) {
@@ -262,4 +265,17 @@ test("owned compiler scratch is removed after failure while caller data survives
   );
   assert.equal(readFileSync(resolve(directory, "scratch/caller.txt"), "utf8"), "preserve");
   assert.throws(() => readFileSync(resolve(created, "compiler-output")), /ENOENT/);
+});
+
+
+test("generated Python audit imports resolve in Node from the package directory", (context) => {
+  const { directory, put } = fixture(context);
+  put("audit-api.mjs", "export class Wasi {}\nexport class MemFS {}\n");
+  const script = pythonAuditScript(resolve(directory, "audit-api.mjs"), auditWaffleSource(repositoryRoot));
+  const body = script.indexOf("const output=");
+  assert.ok(body > 0);
+  execFileSync("node", ["--input-type=module", "-e", script.slice(0, body)], {
+    cwd: resolve(repositoryRoot, "packages/python"),
+    stdio: "pipe",
+  });
 });
