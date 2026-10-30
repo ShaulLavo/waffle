@@ -3,19 +3,9 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": [
-      "ESNext",
-      "DOM",
-      "DOM.Iterable"
-    ],
-    "types": [
-      "bun",
-      "node"
-    ],
-    "typeRoots": [
-      "../packages/waffle/node_modules/@types",
-      "../packages/git/node_modules/@types"
-    ],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["bun", "node"],
+    "typeRoots": ["../packages/waffle/node_modules/@types", "../packages/git/node_modules/@types"],
     "strict": true,
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
