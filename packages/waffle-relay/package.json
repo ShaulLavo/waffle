@@ -1,0 +1,60 @@
+{
+  "name": "waffle-relay",
+  "version": "0.0.0",
+  "description": "Optional authenticated outbound HTTP relay for Waffle runtimes.",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "tsconfig.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "node": "./dist/index.js",
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./node": {
+      "types": "./src/node.ts",
+      "node": "./dist/node.js",
+      "bun": "./src/node.ts",
+      "default": "./src/node.ts"
+    },
+    "./worker": {
+      "types": "./src/worker.ts",
+      "node": "./dist/worker.js",
+      "bun": "./src/worker.ts",
+      "browser": "./src/worker.ts",
+      "default": "./src/worker.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./tests",
+    "build": "bun scripts/build.ts",
+    "test:native": "node tests/native-fixture.ts && bun tests/native-fixture.ts",
+    "prepack": "bun run build",
+    "pack:check": "bun scripts/pack-check.ts",
+    "size": "bun scripts/size.ts",
+    "test:worker": "bun scripts/test-worker.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "@types/node": "26.6.3",
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
