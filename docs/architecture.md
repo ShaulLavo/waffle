@@ -137,6 +137,15 @@ adapter instead. Handled signals dispatch during cooperative event-loop turns; u
 actions select their outcomes immediately. See [the host ABI](host-abi.md) for executable-entry
 and interrupt contracts.
 
+The same bounded module-promise cache also reuses admitted byte output across pages through
+an optional Cache Storage store. Keys bind the source hash, rewriter revision and admission
+policy. A hit streams the stored response while verifying its body; a miss uses the normal
+rewrite and compile path. Stored bytes contain no instance or runtime authority. This trusts
+the app's cache writer, not hostile same-origin storage. It saves admission work, not proven
+persistent machine code, and does not stream the original source download into the compiler.
+Source, digest, admission, store and compile measures separate those costs without changing
+source errors or the lazy compiler import.
+
 ## Registration leases
 
 `Runtime.registerAdapter(name, launcher)` and `Runtime.registerProgram(name, definition)`
