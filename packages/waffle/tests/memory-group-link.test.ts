@@ -151,6 +151,7 @@ const plan = () =>
       source: pieCore(),
       cooperative: true,
       checkpoint: { module: "env", name: "check" },
+      initializeMemory: [],
       initialize: [],
     },
     libraries: [
@@ -159,6 +160,7 @@ const plan = () =>
         source: side(),
         cooperative: true,
         checkpoint: { module: "env", name: "check" },
+        initializeMemory: [],
         initialize: [],
       },
     ],
@@ -188,6 +190,7 @@ test("a PIE core links only into a supplied group memory and table", async () =>
     __table_base: global(1),
   };
   const group = instantiateLinkPlan(prepared, host({ env }));
+  group.initialize();
   expect(group.memory).toBe(memory);
   expect(group.table).toBe(table);
   // The core's constant export 16 is relative to its own __memory_base.
@@ -211,6 +214,7 @@ test("a PIE core admits only weak carved stack-bound GOT.mem imports", async () 
       source,
       cooperative: true,
       checkpoint: { module: "env", name: "check" },
+      initializeMemory: [],
       initialize: [],
     },
     libraries: [],
@@ -246,6 +250,7 @@ test("a PIE core admits only weak carved stack-bound GOT.mem imports", async () 
         source: pieCore(true, true),
         cooperative: true,
         checkpoint: { module: "env", name: "check" },
+        initializeMemory: [],
         initialize: [],
       },
       libraries: [],
@@ -279,6 +284,7 @@ for (const [label, resources] of [
           source,
           cooperative: true,
           checkpoint: { module: "env", name: "check" },
+          initializeMemory: [],
           initialize: [],
         },
         libraries: [],
@@ -331,6 +337,7 @@ test("real members bind nonoverlapping stack bounds and the matching stack point
       source: pieCore(true),
       cooperative: true,
       checkpoint: { module: "env", name: "check" },
+      initializeMemory: [],
       initialize: [],
     },
     libraries: [],
