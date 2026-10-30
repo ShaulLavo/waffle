@@ -1,3 +1,7 @@
 {
-  "files": ["dist/grep.wasm", "dist/THIRD_PARTY_NOTICES.txt"]
+  "files": [
+    "dist/grep.wasm",
+    "dist/grep-program.json",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
 }

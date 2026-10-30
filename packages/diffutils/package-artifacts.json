@@ -1,8 +1,10 @@
 {
   "files": [
     "dist/diff.wasm",
+    "dist/diff-program.json",
     "dist/diff.wasm.br",
     "dist/cmp.wasm",
+    "dist/cmp-program.json",
     "dist/cmp.wasm.br",
     "dist/diffutils.sizes.json",
     "dist/THIRD_PARTY_NOTICES.txt"

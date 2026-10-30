@@ -3,8 +3,23 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, resolve } from "node:path";
+import { assertSeparateSource, optimizeProgram } from "./program-optimize.ts";
+import {
+  programBytesIdentity,
+  transformationProvenance,
+  validateProgramDerivation,
+} from "./program-derivation.ts";
 import { fileURLToPath } from "node:url";
 
 type Environment = NodeJS.ProcessEnv;
@@ -204,9 +219,67 @@ export function stripWasmNames(bytes: Uint8Array): Uint8Array {
   return removed ? Buffer.concat(retained) : bytes;
 }
 
-/** Stage program bytes only after source-side verification has consumed debug names. */
-export function stageProgram(source: string, destination: string): void {
-  writeFileSync(destination, stripWasmNames(readFileSync(source)));
+export function stageProgram(
+  source: string,
+  destination: string | readonly string[],
+  verification: WasiGuestVerification = {},
+  producerReceipt?: string,
+) {
+  const destinations = typeof destination === "string" ? [destination] : destination;
+  for (const path of destinations) assertSeparateSource(realpathSync(source), resolve(path));
+  const first = destinations[0];
+  assert.ok(first, "Missing program staging destination");
+  const scratch = mkdtempSync(resolve(dirname(first), ".program-stage-"));
+  try {
+    const candidate = resolve(scratch, "named.wasm");
+    const optimization = optimizeProgram({
+      source,
+      destination: candidate,
+      producerReceipt,
+      verify: (path) => verifyWasiGuest(path, verification),
+    });
+    const bytes = stripWasmNames(readFileSync(candidate));
+    const output = programBytesIdentity(bytes);
+    const receipt = {
+      operation: "optimize-and-strip-program",
+      transformer: transformationProvenance(),
+      ...(producerReceipt === undefined
+        ? {}
+        : { producerReceiptSha256: programBytesIdentity(readFileSync(producerReceipt)).sha256 }),
+      input: optimization.input,
+      operations: [
+        optimization,
+        { operation: "strip-wasm-name-sections", input: optimization.output, output },
+      ],
+      output,
+    };
+    validateProgramDerivation(
+      receipt,
+      bytes,
+      producerReceipt === undefined ? undefined : readFileSync(producerReceipt),
+    );
+    for (const path of destinations) publishProgram(path, bytes, receipt);
+    return receipt;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+function publishProgram(destination: string, bytes: Uint8Array, receipt: unknown) {
+  const scratch = mkdtempSync(resolve(dirname(destination), ".program-publish-"));
+  try {
+    const binary = resolve(scratch, "program.wasm");
+    const metadata = resolve(scratch, "program.json");
+    writeFileSync(binary, bytes);
+    writeFileSync(metadata, JSON.stringify(receipt, null, 2) + "\n");
+    renameSync(
+      metadata,
+      resolve(dirname(destination), `${basename(destination, ".wasm")}-program.json`),
+    );
+    renameSync(binary, destination);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 function readFunctionNameSubsection(data: Reader, names: Map<string, number>) {

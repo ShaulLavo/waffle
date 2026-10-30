@@ -5,9 +5,13 @@ import { resolve } from "node:path";
 import { packProgramPackage } from "./program-package.ts";
 
 const root = resolve(import.meta.dirname, "..");
-const runtimeArchive = resolve(root, ".build/runtime-input/waffle-0.0.92.tgz");
 const consumer = await mkdtemp("/work/tmp/waffle-optional-packed-");
 try {
+  const runtimeArchive = resolve(consumer, "waffle-runtime-local.tgz");
+  execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--filename", runtimeArchive], {
+    cwd: resolve(root, "packages/waffle"),
+    stdio: "pipe",
+  });
   const files: Record<string, string> = { waffle: `file:${runtimeArchive}` };
   for (const family of ["python", "git"]) {
     const directory = resolve(root, "packages", family);

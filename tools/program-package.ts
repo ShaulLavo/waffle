@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { validateProgramDerivation } from "./program-derivation.ts";
 import { stripWasmNames } from "./program-build-tools.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,36 +57,6 @@ function payloadFiles(root: string, path: string): string[] {
   });
 }
 
-function admitPythonProgram(root: string) {
-  const original = requiredFile(root, "assets/python-build.json");
-  const producer = record(JSON.parse(original.toString()));
-  const receipt = record(JSON.parse(requiredFile(root, "assets/python-program.json").toString()));
-  assert.equal(receipt.operation, "strip-wasm-name-sections", "Python program operation");
-  assert.equal(
-    receipt.producerReceiptSha256,
-    createHash("sha256").update(original).digest("hex"),
-    "Python producer receipt hash",
-  );
-  const input = record(receipt.input);
-  const assets = record(producer.assets);
-  const sourceHash = assets["python.wasm"];
-  assert.ok(typeof sourceHash === "string" && /^[a-f0-9]{64}$/.test(sourceHash));
-  assert.equal(input.sha256, sourceHash, "Python program input hash");
-  const sourceBytes = input.bytes;
-  assert.ok(typeof sourceBytes === "number" && Number.isSafeInteger(sourceBytes));
-  const output = requiredFile(root, "assets/python.wasm");
-  assert.ok(sourceBytes >= output.length, "Python program input size");
-  if (producer.interpreterBytes !== undefined)
-    assert.equal(sourceBytes, producer.interpreterBytes, "Python program input size");
-  const finalized = record(receipt.output);
-  assert.equal(finalized.bytes, output.length, "Python program output size");
-  assert.equal(
-    finalized.sha256,
-    createHash("sha256").update(output).digest("hex"),
-    "Python program output hash",
-  );
-}
-
 /** Admission consumes prepared artifacts only; it never builds or fetches them. */
 export function admitProgramPackage(root: string): string[] {
   const recipe = record(JSON.parse(readFileSync(resolve(root, "package-artifacts.json"), "utf8")));
@@ -95,8 +66,12 @@ export function admitProgramPackage(root: string): string[] {
     const bytes = requiredFile(root, name);
     if (!name.endsWith(".wasm")) continue;
     assert.ok(stripWasmNames(bytes) === bytes, `Program still contains a name section: ${name}`);
+    const sidecar = name.replace(/\.wasm$/, "-program.json");
+    assert.ok(files.includes(sidecar), `Missing declared program derivation: ${sidecar}`);
+    const producer =
+      name === "assets/python.wasm" ? requiredFile(root, "assets/python-build.json") : undefined;
+    validateProgramDerivation(JSON.parse(requiredFile(root, sidecar).toString()), bytes, producer);
   }
-  if (files.includes("assets/python-program.json")) admitPythonProgram(root);
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));
     for (const name of recipe.dependencies) {
