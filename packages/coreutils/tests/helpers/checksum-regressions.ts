@@ -89,6 +89,8 @@ function descriptorCases(): Invocation[] {
       { utility, args: [], close: 0 },
       { utility, args: ["input"], close: 0 },
       { utility, args: ["input"], close: 1 },
+      { utility, args: ["--help"], close: 1 },
+      { utility, args: ["--version"], close: 1 },
     );
   }
   return cases.concat([
@@ -101,7 +103,6 @@ function descriptorCases(): Invocation[] {
     { utility: "sha256sum", args: ["--check", "--quiet", "expected"], close: 1 },
     { utility: "sha256sum", args: ["--check", "--status", "mismatch"], close: 1 },
     { utility: "sha256sum", args: ["--check", "--quiet", "mismatch"], close: 1 },
-    { utility: "sha256sum", args: ["--help"], close: 0 },
     { utility: "cksum", args: ["--algorithm=sha256", "--raw", "input"], close: 1 },
   ]);
 }

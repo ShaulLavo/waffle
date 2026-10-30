@@ -48,6 +48,8 @@ mod wasi {
         }
     }
 
+    impl crate::display::OsWrite for Stdout {}
+
     impl Write for Stdout {
         fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
             let vector = Iovec {

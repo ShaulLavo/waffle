@@ -108,7 +108,8 @@
     "src/uucore/src/lib/features/checksum/mod.rs": "1cddd1b7df59d50934f5b3b5806a231f47a1b385c7eabbfb48c3d5d5eabbcb93",
     "src/uucore/src/lib/features/checksum/validate.rs": "24cce45d92ebad7acdb90180c647696fecd767c31ec0196635c179ce23c67377",
     "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c",
-    "src/uucore/src/lib/features/sum.rs": "a2dc896709ef78b8cd2a04ec5a1ac483497c7fd22cb53c379eb13b4c844e3240"
+    "src/uucore/src/lib/features/sum.rs": "a2dc896709ef78b8cd2a04ec5a1ac483497c7fd22cb53c379eb13b4c844e3240",
+    "src/uucore/src/lib/mods/clap_localization.rs": "a41f9bd2dec111f574b38fe3daf9985a917d886b4578994ca765574de2d7bdc9"
   },
   "license": {
     "spdx": "MIT",
@@ -116,7 +117,7 @@
     "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
   },
   "localChanges": [
-    "The selected-I/O patch changes only checksum readers/writers, legacy sum I/O, and checksum record parsing in the generated dependency source. No shared runtime source changes.",
+    "The selected-I/O patch changes only checksum readers/writers, legacy sum and help/version output, and checksum record parsing in the generated dependency source. No shared runtime source changes.",
     "Each local bin initializes libc cwd from PWD and calls the upstream uucore::bin!(uu_<utility>) entry. The crate has its own Cargo workspace and lockfile.",
     "The local cwd adapter applies the launch PWD before entering upstream so relative file operands observe the Waffle request cwd.",
     "The build reuses an existing recipe-checked Waffle patched-libc artifact and shared release environment, verifier and optimizer. It builds only the nine checksum leaves. The source-only probe retains upstream catalogs until the parent applies checksum locale policy.",
@@ -142,7 +143,7 @@
   },
   "dependencyPatch": {
     "path": "crates/checksums/patches/selected-io-and-escaped-records.patch",
-    "sha256": "61a2afaf5b6c60662c6f23b098d12cb94642fa853a8164ef23d9a0128758770c",
+    "sha256": "e3df8fc1976add09356966c2eaa21ad66eef30a08d5b98b9f380f65b0325e8e1",
     "preparation": "scripts/prepare-checksum-source.ts",
     "generatedSource": ".sources/checksums",
     "changes": [

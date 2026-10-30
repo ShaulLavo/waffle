@@ -86,3 +86,15 @@
 @@ -197 +203 @@
 -    Stdin(std::io::Stdin),
 +    Stdin(ChecksumStdin),
+--- a/src/uucore/src/lib/mods/clap_localization.rs
++++ b/src/uucore/src/lib/mods/clap_localization.rs
+@@ -140 +140,8 @@
+-        print!("{}", err.render());
++        #[cfg(all(target_os = "wasi", feature = "checksum"))]
++        let mut output = crate::checksum::stdio::stdout();
++        #[cfg(not(all(target_os = "wasi", feature = "checksum")))]
++        let mut output = std::io::stdout();
++        if let Err(error) = write!(output, "{}", err.render()) {
++            let _ = writeln!(stderr(), "{}: write error: {error}", self.util_name);
++            return 1;
++        }
