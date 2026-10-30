@@ -31,24 +31,37 @@ export interface AdmittedModuleStore {
   evict(sourceSha256: string): Promise<void>;
 }
 
-export function programStage(stage: string, start: number, detail: object, end?: number): void {
+export function programTime(): number | undefined {
   try {
-    performance.measure(`waffle:program:${stage}`, {
-      start,
-      end: end ?? performance.now(),
-      detail,
-    });
+    return performance.now();
+  } catch {
+    return undefined;
+  }
+}
+
+export function programStage(
+  stage: string,
+  start: number | undefined,
+  detail: object,
+  end?: number,
+): void {
+  if (start === undefined) return;
+  try {
+    const finished = end ?? programTime();
+    if (finished === undefined) return;
+    performance.measure(`waffle:program:${stage}`, { start, end: finished, detail });
   } catch {
     // Diagnostics must never replace a loader result or failure.
   }
 }
 
-export function storeError(operation: string, start: number, error: unknown, bytes = 0): void {
-  programStage("store-error", start, {
-    bytes,
-    operation,
-    error: error instanceof Error ? error.name : "UnknownError",
-  });
+export function storeError(
+  operation: string,
+  start: number | undefined,
+  error: unknown,
+  bytes = 0,
+): void {
+  programStage("store-error", start, { bytes, operation, error: typeof error });
 }
 
 export async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
@@ -109,7 +122,7 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
   }
 
   async open(hash: string): Promise<AdmittedEntry | undefined> {
-    const start = performance.now();
+    const start = programTime();
     try {
       await this.initialize();
       const cache = await this.storage.open(this.name);
@@ -133,7 +146,7 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
   }
 
   private async write(hash: string, admitted: Uint8Array<ArrayBuffer>): Promise<void> {
-    const start = performance.now();
+    const start = programTime();
     try {
       await this.initialize();
       const digest = await sha256Hex(admitted);
@@ -179,8 +192,14 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
     }
   }
 
-  async evict(hash: string): Promise<void> {
-    const start = performance.now();
+  evict(hash: string): Promise<void> {
+    const pending = this.maintenance.then(() => this.remove(hash));
+    this.maintenance = pending;
+    return pending;
+  }
+
+  private async remove(hash: string): Promise<void> {
+    const start = programTime();
     try {
       const cache = await this.storage.open(this.name);
       await cache.delete(admittedKey(this.origin, hash, this.limits));
@@ -191,7 +210,7 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
 }
 
 export function cacheStorageAdmittedStore(): AdmittedModuleStore | null {
-  const start = performance.now();
+  const start = programTime();
   try {
     if (!globalThis.caches || typeof WebAssembly.compileStreaming !== "function") return null;
     if (typeof location === "undefined" || !/^https?:\/\//.test(location.origin)) return null;

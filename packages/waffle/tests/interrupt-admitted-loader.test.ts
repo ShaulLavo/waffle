@@ -1,9 +1,20 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { InterruptModuleCache } from "../interrupt/loader.js";
-import { sha256Hex, programStage, type AdmittedModuleStore } from "../interrupt/admitted-store.js";
+import {
+  sha256Hex,
+  programStage,
+  cacheStorageAdmittedStore,
+  CacheStorageAdmittedStore,
+  ADMITTED_CACHE_PREFIX,
+  ADMITTED_DIGEST_HEADER,
+  admittedKey,
+  interruptTransformId,
+  type AdmittedModuleStore,
+} from "../interrupt/admitted-store.js";
 import { rewriteInterrupts } from "../interrupt/rewriter.js";
 import { MemoryAdmittedStore, emptyWasm, tickWasm } from "./interrupt-admitted-fixture.js";
 import { interruptLoopFixture } from "./fixtures/interrupt-browser-loops.js";
+import { MemoryCacheStorage } from "./interrupt-cache-storage-fixture.js";
 
 const spies: { mockRestore(): void }[] = [];
 afterEach(() => {
@@ -202,4 +213,112 @@ test("timing failures leave the original result and error untouched", async () =
     "Cannot instrument",
   );
   expect(() => programStage("source", 0, {}, 1)).not.toThrow();
+});
+
+test("failed diagnostic clocks preserve valid compilation, invalid source and storage work", async () => {
+  const now = spyOn(performance, "now").mockImplementation(() => {
+    throw new Error("Diagnostic clock is unavailable");
+  });
+  spies.push(now);
+  const store = new CacheStorageAdmittedStore(new MemoryCacheStorage(), "https://example.test");
+  expect(isInstrumented(await new InterruptModuleCache(16, store).compile(emptyWasm()))).toBe(true);
+  await expect(new InterruptModuleCache().compile(new Uint8Array([0]))).rejects.toThrow(
+    "Cannot instrument",
+  );
+  await store.put("valid", rewriteInterrupts(emptyWasm()));
+  expect(await store.open("valid")).toBeDefined();
+  await store.evict("valid");
+  expect(await store.open("valid")).toBeUndefined();
+  expect(() => cacheStorageAdmittedStore()).not.toThrow();
+});
+
+test("storage error metadata is never observed by diagnostics", async () => {
+  let reads = 0;
+  const failure = new Error("Optional storage failed");
+  Object.defineProperty(failure, "name", {
+    get() {
+      reads++;
+      throw new Error("Error metadata must not affect admission");
+    },
+  });
+  const store: AdmittedModuleStore = {
+    async open() {
+      throw failure;
+    },
+    async put() {
+      throw failure;
+    },
+    async evict() {
+      throw failure;
+    },
+  };
+  expect(isInstrumented(await new InterruptModuleCache(16, store).compile(emptyWasm()))).toBe(true);
+  await expect(new InterruptModuleCache(16, store).compile(new Uint8Array([0]))).rejects.toThrow(
+    "Cannot instrument",
+  );
+  expect(reads).toBe(0);
+});
+
+test("failed clocks cannot replace an original native compiler rejection", async () => {
+  const failure = new RangeError("Original allocation failure");
+  const now = spyOn(performance, "now").mockImplementation(() => {
+    throw new Error("Diagnostic clock failed");
+  });
+  const compile = spyOn(WebAssembly, "compile").mockRejectedValueOnce(failure);
+  spies.push(now, compile);
+  let rejection: unknown;
+  try {
+    await new InterruptModuleCache().compile(emptyWasm());
+  } catch (error) {
+    rejection = error;
+  }
+  expect(rejection).toBe(failure);
+});
+
+test("a delayed eviction precedes its repair without blocking valid module publication", async () => {
+  const origin = "https://example.test";
+  const storage = new MemoryCacheStorage();
+  const store = new CacheStorageAdmittedStore(storage, origin);
+  const source = emptyWasm();
+  const hash = await sha256Hex(source);
+  const admitted = rewriteInterrupts(source);
+  const cache = await storage.open(ADMITTED_CACHE_PREFIX + interruptTransformId());
+  await cache.put(
+    admittedKey(origin, hash),
+    new Response(admitted, {
+      headers: {
+        "content-type": "application/wasm",
+        "content-length": String(admitted.length),
+        [ADMITTED_DIGEST_HEADER]: "0".repeat(64),
+      },
+    }),
+  );
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const remove = cache.delete.bind(cache);
+  const deleting = spyOn(cache, "delete").mockImplementation(async (key) => {
+    entered.resolve();
+    await release.promise;
+    return remove(key);
+  });
+  const writes: Promise<void>[] = [];
+  const put = store.put.bind(store);
+  const writing = spyOn(store, "put").mockImplementation((...args) => {
+    const pending = put(...args);
+    writes.push(pending);
+    return pending;
+  });
+  spies.push(deleting, writing);
+  try {
+    expect(isInstrumented(await new InterruptModuleCache(16, store).compile(source))).toBe(true);
+    await entered.promise;
+    expect(writes).toHaveLength(1);
+    release.resolve();
+    await Promise.all(writes);
+    const repaired = await store.open(hash);
+    expect(repaired?.admittedSha256).toBe(await sha256Hex(admitted));
+  } finally {
+    release.resolve();
+    await Promise.all(writes);
+  }
 });

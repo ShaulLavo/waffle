@@ -5,6 +5,7 @@ import {
   INTERRUPT_INTERVAL,
   INTERRUPT_POLICY,
   programStage,
+  programTime,
   sha256Hex,
   storeError,
   type AdmittedEntry,
@@ -27,7 +28,7 @@ export class InterruptModuleCache {
   async compile(source: Uint8Array): Promise<WebAssembly.Module> {
     // Hash and rewrite one owned snapshot, even if the caller mutates a borrowed view.
     const bytes = new Uint8Array(source);
-    const start = performance.now();
+    const start = programTime();
     const hash = await sha256Hex(bytes);
     programStage("digest", start, { bytes: bytes.length });
     let pending = this.modules.get(hash);
@@ -52,13 +53,13 @@ export class InterruptModuleCache {
     const reused = await this.reuse(hash);
     if (reused) return reused;
     try {
-      const admitStart = performance.now();
+      const admitStart = programTime();
       const admitted = rewriteInterruptsOwned(bytes, {
         interval: INTERRUPT_INTERVAL,
         policy: INTERRUPT_POLICY,
       });
       programStage("admit", admitStart, { bytes: bytes.length });
-      const compileStart = performance.now();
+      const compileStart = programTime();
       const module = await WebAssembly.compile(admitted);
       programStage("compile", compileStart, { bytes: admitted.length });
       void this.persist(hash, admitted);
@@ -71,7 +72,7 @@ export class InterruptModuleCache {
   }
 
   private async evict(hash: string): Promise<void> {
-    const start = performance.now();
+    const start = programTime();
     try {
       await this.store?.evict(hash);
     } catch (error) {
@@ -81,7 +82,7 @@ export class InterruptModuleCache {
 
   private async persist(hash: string, admitted: Uint8Array<ArrayBuffer>): Promise<void> {
     if (!this.store) return;
-    const start = performance.now();
+    const start = programTime();
     try {
       await this.store.put(hash, admitted);
     } catch (error) {
@@ -91,7 +92,7 @@ export class InterruptModuleCache {
 
   private async reuse(hash: string): Promise<WebAssembly.Module | undefined> {
     if (!this.store) return undefined;
-    const start = performance.now();
+    const start = programTime();
     try {
       const entry = await this.store.open(hash);
       programStage("store-open", start, { bytes: 0, result: entry ? "hit" : "miss" });
@@ -107,7 +108,7 @@ export class InterruptModuleCache {
 }
 
 async function reuseEntry(entry: AdmittedEntry): Promise<WebAssembly.Module | undefined> {
-  const start = performance.now();
+  const start = programTime();
   try {
     return await compileEntry(entry, start);
   } catch (error) {
@@ -118,7 +119,7 @@ async function reuseEntry(entry: AdmittedEntry): Promise<WebAssembly.Module | un
 }
 
 async function compileStored(response: Response): Promise<WebAssembly.Module> {
-  const start = performance.now();
+  const start = programTime();
   try {
     return await WebAssembly.compileStreaming(response);
   } finally {
@@ -131,7 +132,7 @@ async function compileStored(response: Response): Promise<WebAssembly.Module> {
 
 async function compileEntry(
   entry: AdmittedEntry,
-  start: number,
+  start: number | undefined,
 ): Promise<WebAssembly.Module | undefined> {
   const copy = entry.response.clone();
   const results = await Promise.allSettled([

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   ADMITTED_CACHE_PREFIX,
   ADMITTED_DIGEST_HEADER,
@@ -154,5 +154,42 @@ test("unavailable streaming, caches and non-http origins preserve admission-only
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
     }
+  }
+});
+
+test("eviction reserves mutation order before a later repair", async () => {
+  const storage = new MemoryCacheStorage();
+  const store = new CacheStorageAdmittedStore(storage, origin);
+  const admitted = rewriteInterrupts(emptyWasm());
+  await store.put(hash, admitted);
+  const digest = await crypto.subtle.digest("SHA-256", admitted);
+  const hashing = spyOn(crypto.subtle, "digest").mockResolvedValue(digest);
+  const cache = await storage.open(ADMITTED_CACHE_PREFIX + interruptTransformId());
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const remove = cache.delete.bind(cache);
+  const deleting = spyOn(cache, "delete").mockImplementation(async (key) => {
+    entered.resolve();
+    await release.promise;
+    return remove(key);
+  });
+  const writing = spyOn(cache, "put");
+  const removal = store.evict(hash);
+  await entered.promise;
+  const repair = store.put(hash, admitted);
+  try {
+    // Drain resolved storage and digest jobs while deletion remains deliberately held.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(writing).toHaveBeenCalledTimes(0);
+    release.resolve();
+    await Promise.all([removal, repair]);
+    expect(writing).toHaveBeenCalledTimes(1);
+    expect(await store.open(hash)).toBeDefined();
+  } finally {
+    release.resolve();
+    await Promise.all([removal, repair]);
+    deleting.mockRestore();
+    writing.mockRestore();
+    hashing.mockRestore();
   }
 });

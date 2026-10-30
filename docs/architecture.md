@@ -147,6 +147,18 @@ persistent machine code, and does not stream the original source download into t
 Source, digest, admission, store and compile measures separate those costs without changing
 source errors or the lazy compiler import.
 
+The store trims writes to 32 entries, at most 48 MiB per entry and 192 MiB total. This realm
+serializes writes and eviction; independent tabs may trim concurrently. These storage limits
+are not a whole-process memory bound. Clearing admitted entries forces later pages to repeat
+admission. Existing in-memory modules remain until their page closes. Between runs, clear
+only Waffle's admitted-byte caches:
+
+```ts
+for (const name of await caches.keys()) {
+  if (name.startsWith("waffle-admitted:")) await caches.delete(name);
+}
+```
+
 ## Registration leases
 
 `Runtime.registerAdapter(name, launcher)` and `Runtime.registerProgram(name, definition)`
