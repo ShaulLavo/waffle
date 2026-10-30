@@ -7,6 +7,7 @@ const names = [
   "cut",
   "tr",
   "head",
+  "nl",
   "which",
   "ls",
   "mkdir",
