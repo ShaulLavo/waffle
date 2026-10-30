@@ -216,7 +216,7 @@ describe("base closure", () => {
     expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm).toHaveLength(24);
+    expect(wasm).toHaveLength(25);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
