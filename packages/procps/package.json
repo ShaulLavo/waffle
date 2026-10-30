@@ -2,7 +2,7 @@
   "name": "waffle-procps",
   "version": "0.0.0",
   "private": true,
-  "description": "Pure process-command plans for Waffle. This package has no runtime command adapter.",
+  "description": "Optional Waffle process commands with pure snapshot planning.",
   "files": [
     "src",
     "docs",
@@ -12,7 +12,8 @@
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./programs": "./src/catalog.ts"
   },
   "scripts": {
     "test": "bun test tests",
