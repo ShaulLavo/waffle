@@ -1,417 +1,313 @@
-export interface LandingState {
-  p: number;
-  scroll: boolean;
-  vh: number;
-  narrow: boolean;
-  noGl: boolean;
-  canvasO: number;
-  past?: boolean;
+// Scroll story for the landing page. The page scrolls natively; this file turns the scroll
+// position into one progress value for the 3D scene and keeps the scene framed in the free
+// part of the screen. It never sets layout styles, so the URL bar showing or hiding on a
+// phone cannot make the page jump.
+
+interface SceneRegion {
+  cx: number;
+  cy: number;
+  wf: number;
+  hf: number;
 }
 
-export const initialState: LandingState = {
-  p: 0,
-  scroll: false,
-  vh: 900,
-  narrow: false,
-  noGl: false,
-  canvasO: 1,
-};
-
-export function renderValues(state: LandingState) {
-  const p = state.p;
-  const narrow = state.narrow;
-  const scroll = state.scroll;
-  const vh = Math.max(560, state.vh);
-  const stageH = scroll ? vh : 900;
-  const scrollyH = scroll ? Math.round(vh * 4.4) : 900;
-  const sst = (a: number, b: number, x: number) => {
-    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-    return t * t * (3 - 2 * t);
-  };
-  const beat = (a: number, b: number) => {
-    const f = 0.045;
-    const inn = a <= 0 ? 1 : sst(a - f, a, p);
-    const out = b >= 1 ? 0 : sst(b - f, b, p);
-    const o = inn * (1 - out);
-    const y = (1 - inn) * 30 - out * 30;
-    return (
-      "opacity:" +
-      o.toFixed(3) +
-      ";transform:translate3d(0," +
-      y.toFixed(1) +
-      "px,0);pointer-events:" +
-      (o > 0.5 ? "auto" : "none") +
-      ";visibility:" +
-      (o < 0.01 ? "hidden" : "visible")
-    );
-  };
-  const mix = (a: string, b: string, t: number) => {
-    const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16));
-    const pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16));
-    return "rgb(" + pa.map((v, i) => Math.round(v + (pb[i] - v) * t)).join(",") + ")";
-  };
-  const back = (t: number) => {
-    if (t <= 0) return 0;
-    if (t >= 1) return 1;
-    const c1 = 1.9,
-      c3 = c1 + 1;
-    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
-  };
-  const word = "waffle".split("");
-  const letters = word.map((ch, i) => {
-    const k = back(Math.min(1, Math.max(0, (p - 0.86 - i * 0.014) / 0.05)));
-    const rot = (i % 2 ? 1 : -1) * (1 - k) * 12;
-    return {
-      ch,
-      style:
-        "transform:translateY(" +
-        ((1 - k) * 70).toFixed(1) +
-        "px) rotate(" +
-        rot.toFixed(1) +
-        "deg) scale(" +
-        Math.max(0.001, k).toFixed(3) +
-        ");transform-origin:50% 100%",
-    };
-  });
-  const panelH = narrow ? Math.round(Math.min(430, Math.max(350, vh * 0.5))) : 0;
-  const canvasTop = narrow ? panelH - 40 : 0;
-  const tilt = Math.round(88.5 - 42.5 * sst(0.06, 0.62, p));
-  const ridges = (0.72 * sst(0.2, 0.6, p)).toFixed(2);
-  const seated = p < 0.4 ? 0 : Math.min(11, Math.round(sst(0.4, 0.66, p) * 11));
-  return {
-    wide: !narrow,
-    stageFade: (() => {
-      const c = mix("#2350C7", "#F4F6FC", sst(0.5, 0.78, p)).slice(4, -1);
-      return "linear-gradient(180deg, rgba(" + c + ",0) 0%, rgba(" + c + ",1) 100%)";
-    })(),
-    logoStyle: "",
-    navStyle:
-      scroll && p > 0.86
-        ? "opacity: 0; transform: translateY(-28px); visibility: hidden; pointer-events: none"
-        : "opacity: 1; transform: none; visibility: visible",
-    scroll,
-    noGl: state.noGl,
-    stageH,
-    scrollyH,
-    stageBg:
-      "linear-gradient(180deg," +
-      mix("#2350C7", "#86CCFF", sst(0.5, 0.78, p)) +
-      "," +
-      mix("#2350C7", "#F4F6FC", sst(0.5, 0.78, p)) +
-      ")",
-    canvasO: (state.canvasO ?? 1).toFixed(3),
-    narrow,
-    scrollCue: scroll && !narrow,
-    leadTail: narrow ? "none" : "inline",
-    btnFlex: narrow ? "1 1 0" : "0 0 auto",
-    btnPad: narrow ? "12px" : "24px",
-    arrowD: narrow ? "none" : "inline",
-    cardPad: narrow ? "20px 22px" : "26px 28px",
-    cardBody: narrow ? "16px" : "17px",
-    canvasTop: canvasTop,
-    canvasH: narrow ? "calc(100% - " + canvasTop + "px)" : "100%",
-    canvasMask: narrow ? "linear-gradient(180deg, transparent 0, #000 70px)" : "none",
-    h1Size: narrow ? (vh < 720 ? "31px" : "36px") : "clamp(42px, 5.4vw, 90px)",
-    leadSize: narrow ? "16px" : "clamp(17px, 1.35vw, 20px)",
-    b0Gap: narrow ? "12px" : "22px",
-    beatBox: narrow
-      ? "left: 18px; right: 18px; top: 78px; height: " + (panelH - 88) + "px"
-      : "left: clamp(24px, 5vw, 88px); top: 0; bottom: 0; width: min(600px, 44%)",
-    beatAlign: narrow ? "flex-start" : "center",
-    readoutBox: narrow ? "left: 16px; bottom: 16px" : "right: 28px; bottom: 26px",
-    b0: beat(0, 0.13),
-    b1: beat(0.17, 0.38),
-    b2: beat(0.42, 0.62),
-    b3: beat(0.66, 0.84),
-    b4: beat(0.88, 1),
-    letters,
-    tilt,
-    ridges,
-    seated,
-    pct: Math.round(p * 100),
-    wheelY: (8 + 5 * ((Date.now() / 900) % 1)).toFixed(1),
-  };
+interface SceneOptions {
+  progress: number;
+  layout: SceneRegion;
+  compact: boolean;
+  background: boolean;
+  labels: boolean;
+  adaptive: boolean;
+  onReady: () => void;
+  onProgress: (progress: number) => void;
 }
 
-export function interpolateStyle(
-  template: string,
-  values: ReturnType<typeof renderValues>,
-): string {
-  const entries = new Map(Object.entries(values));
-  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => String(entries.get(key) ?? ""));
-}
-
-type SceneLayout = "phone" | { cx: number; cy: number; wf: number; hf: number };
 interface WaffleSceneInstance {
   setProgress(progress: number, immediate?: boolean): void;
-  setLayout(layout: SceneLayout): void;
-  setLabels(labels: boolean): void;
+  setLayout(layout: SceneRegion): void;
   destroy(): void;
 }
 
 declare global {
   interface Window {
     WaffleScene?: {
-      mount(
-        canvas: HTMLCanvasElement,
-        options: {
-          progress: number;
-          layout: SceneLayout;
-          compact: boolean;
-          background: boolean;
-          labels: boolean;
-        },
-      ): WaffleSceneInstance | null;
+      mount(canvas: HTMLCanvasElement, options: SceneOptions): WaffleSceneInstance | null;
     };
   }
 }
 
-type HeroPreview = "waffle" | "grid" | "loop";
+/** A scroll offset inside the story and the scene progress that belongs there. */
+interface Anchor {
+  offset: number;
+  progress: number;
+}
 
-class LandingController {
-  private state: LandingState = { ...initialState };
+const COMPACT = "(max-width: 859px)";
+const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Piecewise-linear lookup over anchors sorted by offset. */
+function progressAt(anchors: readonly Anchor[], offset: number): number {
+  const first = anchors[0];
+  if (!first || offset <= first.offset) return first?.progress ?? 0;
+  for (let index = 1; index < anchors.length; index++) {
+    const next = anchors[index];
+    const previous = anchors[index - 1];
+    if (!next || !previous || offset > next.offset) continue;
+    const span = next.offset - previous.offset;
+    const t = span > 0 ? (offset - previous.offset) / span : 1;
+    return previous.progress + (next.progress - previous.progress) * t;
+  }
+  return anchors.at(-1)?.progress ?? 1;
+}
+
+/** Snap to the nearest anchor, so reduced motion gets still frames instead of a camera fly. */
+function nearestAnchor(anchors: readonly Anchor[], offset: number): number {
+  let best = anchors[0];
+  for (const anchor of anchors) {
+    if (best && Math.abs(anchor.offset - offset) < Math.abs(best.offset - offset)) best = anchor;
+  }
+  return best?.progress ?? 0;
+}
+
+class Story {
+  private readonly stage: HTMLElement;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly blueprint: HTMLElement;
+  private readonly heroCopy: HTMLElement | null;
+  private readonly deck: HTMLElement | null;
+  private readonly cards: HTMLElement[];
+  private readonly probe: HTMLElement;
+  private readonly compact = window.matchMedia(COMPACT);
+  private readonly reduced = window.matchMedia(REDUCED_MOTION);
+  private readonly resizeObserver: ResizeObserver;
+  private anchors: Anchor[] = [];
+  private top = 0;
+  private progress = 0;
+  private frame = 0;
+  private measureFrame = 0;
+  private inHero = true;
   private scene: WaffleSceneInstance | null = null;
   private alive = true;
-  private scrollFrame = 0;
-  private posterFrame = 0;
-  private readonly styles;
-  private readonly conditions;
-  private readonly letters;
-  private readonly wheel;
 
-  constructor(
-    private readonly root: HTMLElement,
-    private readonly preview: HeroPreview,
-    private readonly labels: boolean,
-  ) {
-    this.styles = Array.from(
-      root.querySelectorAll<HTMLElement | SVGElement>("[data-waffle-style]"),
-      (element) => ({ element, template: element.getAttribute("data-waffle-style") ?? "" }),
-    );
-    this.conditions = Array.from(root.querySelectorAll<HTMLElement>("[data-waffle-if]"));
-    this.letters = Array.from(root.querySelectorAll<HTMLElement>("[data-waffle-letter]"));
-    this.wheel = root.querySelector("[data-wheel-dot]");
-    window.addEventListener("resize", this.onResize);
-    document.addEventListener("scroll", this.onScroll, { passive: true, capture: true });
+  constructor(private readonly root: HTMLElement) {
+    this.stage = this.require("[data-stage]");
+    this.canvas = this.require<HTMLCanvasElement>("[data-scene]");
+    this.blueprint = this.require("[data-blueprint]");
+    this.probe = this.require("[data-svh]");
+    this.heroCopy = root.querySelector("[data-hero-copy]");
+    this.deck = root.querySelector("[data-deck]");
+    this.cards = Array.from(root.querySelectorAll<HTMLElement>("[data-progress]"));
+    // Measuring resizes the deck, so wait a frame instead of measuring inside the observer.
+    this.resizeObserver = new ResizeObserver(this.scheduleMeasure);
+    this.resizeObserver.observe(root);
+    this.resizeObserver.observe(this.stage);
+    // The hero copy changes height when the web fonts arrive, which moves the phone framing.
+    if (this.heroCopy) this.resizeObserver.observe(this.heroCopy);
+    window.addEventListener("scroll", this.onScroll, { passive: true });
+    this.compact.addEventListener("change", this.scheduleMeasure);
+    this.reduced.addEventListener("change", this.scheduleMeasure);
     this.measure();
   }
 
-  destroy = () => {
+  private require<T extends Element = HTMLElement>(selector: string): T {
+    const element = this.root.querySelector<T>(selector);
+    if (!element) throw new Error(`Landing story is missing ${selector}`);
+    return element;
+  }
+
+  destroy() {
     this.alive = false;
-    window.removeEventListener("resize", this.onResize);
-    document.removeEventListener("scroll", this.onScroll, { capture: true });
-    if (this.scrollFrame) cancelAnimationFrame(this.scrollFrame);
-    this.stopPoster();
+    window.removeEventListener("scroll", this.onScroll);
+    this.compact.removeEventListener("change", this.scheduleMeasure);
+    this.reduced.removeEventListener("change", this.scheduleMeasure);
+    this.resizeObserver.disconnect();
+    if (this.frame) cancelAnimationFrame(this.frame);
+    if (this.measureFrame) cancelAnimationFrame(this.measureFrame);
     this.scene?.destroy();
     this.scene = null;
-  };
-
-  private render() {
-    const values = renderValues(this.state);
-    this.wheel?.setAttribute("cy", values.wheelY);
-    for (const { element, template } of this.styles) {
-      const style = interpolateStyle(template, values);
-      if (element.getAttribute("style") !== style) element.setAttribute("style", style);
-    }
-    const conditions = new Map(Object.entries(values));
-    for (const element of this.conditions) {
-      element.hidden = !conditions.get(element.dataset.waffleIf ?? "");
-    }
-    for (const [index, element] of this.letters.entries()) {
-      const letter = values.letters[index];
-      if (letter) element.style.cssText = "display: inline-block; " + letter.style;
-    }
   }
-
-  private setState(update: Partial<LandingState>) {
-    Object.assign(this.state, update);
-    this.render();
-  }
-
-  private onResize = () => this.measure();
 
   private onScroll = () => {
-    if (this.scrollFrame) return;
-    this.scrollFrame = requestAnimationFrame(() => {
-      this.scrollFrame = 0;
-      this.readScroll();
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      this.update();
     });
   };
 
+  private scheduleMeasure = () => {
+    if (this.measureFrame) return;
+    this.measureFrame = requestAnimationFrame(() => {
+      this.measureFrame = 0;
+      this.measure();
+    });
+  };
+
+  /** Read layout once per resize. Scroll frames only do arithmetic on these numbers. */
   private measure() {
-    const vh = window.innerHeight || 900;
-    const vw = window.innerWidth || 1440;
-    const scroll = vh < 1500;
-    const narrow = vw < 860;
-    this.setState({ vh, scroll, narrow });
-    this.scene?.setLayout(this.sceneRegion());
-    if (scroll) {
-      this.stopPoster();
-      this.readScroll();
-    } else {
-      this.startPoster();
+    this.sizeDeck();
+    const viewport = this.probe.offsetHeight || window.innerHeight;
+    const rootTop = this.root.getBoundingClientRect().top;
+    this.top = rootTop + window.scrollY;
+    const end = Math.max(1, this.root.offsetHeight - viewport);
+    const anchors: Anchor[] = [{ offset: 0, progress: 0 }];
+    for (const card of this.cards) {
+      const progress = Number(card.dataset.progress);
+      const spacer = card.previousElementSibling;
+      if (!Number.isFinite(progress) || !spacer) continue;
+      // A docked card reports its stuck position, so read where it sits in the flow from the
+      // spacer before it. The card docks once that point has scrolled up to its sticky top.
+      const flowTop = spacer.getBoundingClientRect().bottom - rootTop;
+      const dockTop = Number.parseFloat(getComputedStyle(card).top) || 0;
+      anchors.push({ offset: Math.min(end, Math.max(0, flowTop - dockTop)), progress });
     }
+    anchors.push({ offset: end, progress: 1 });
+    this.anchors = anchors.sort((a, b) => a.offset - b.offset);
+    this.update(true);
   }
 
-  private sceneRegion(): SceneLayout {
-    const vw = window.innerWidth || 1440;
-    if (vw < 860) return "phone";
-    const pad = Math.min(88, Math.max(24, vw * 0.05));
-    const left = pad + Math.min(600, vw * 0.44) + 28;
-    const right = vw - 16;
-    return { cx: (left + right) / 2 / vw, cy: 0.54, wf: (right - left) / vw, hf: 0.84 };
+  /** Give every card the height of the tallest, so a docked card fully covers the last one. */
+  private sizeDeck() {
+    if (!this.deck || this.cards.length === 0) return;
+    // Collapse the shared height first so each card reports its natural height.
+    this.deck.style.setProperty("--dock-h", "0px");
+    const tallest = Math.ceil(Math.max(...this.cards.map((card) => card.offsetHeight)));
+    this.deck.style.setProperty("--dock-h", `${tallest}px`);
   }
 
-  private readScroll() {
-    if (!this.state.scroll) return;
-    const element = this.root.querySelector("[data-scrolly]");
-    if (!element) return;
-    const r = element.getBoundingClientRect();
-    const span = r.height - (window.innerHeight || 1);
-    const p = span > 0 ? Math.min(1, Math.max(0, -r.top / span)) : 0;
-    this.scene?.setProgress(p);
-    const past = r.bottom < (window.innerHeight || 1) * 0.6;
-    if (past !== !!this.state.past) this.setState({ past });
-    if (Math.abs(p - this.state.p) > 0.001) this.setState({ p });
+  private update(force = false) {
+    const offset = window.scrollY - this.top;
+    const progress = this.reduced.matches
+      ? nearestAnchor(this.anchors, offset)
+      : progressAt(this.anchors, offset);
+    const inHero = progress < 0.04;
+    if (force || inHero !== this.inHero) {
+      this.inHero = inHero;
+      this.scene?.setLayout(this.region());
+    }
+    if (!force && Math.abs(progress - this.progress) < 0.0005) return;
+    this.progress = progress;
+    if (this.scene) this.scene.setProgress(progress, this.reduced.matches);
+    else this.paintSky(progress);
   }
 
-  private posterMode(): HeroPreview {
-    const mode = this.preview;
-    let reduce = false;
-    try {
-      reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    } catch {
-      /* Media query support is optional. */
-    }
-    return reduce && mode === "loop" ? "waffle" : mode;
-  }
+  /** The blueprint layer fades out as the waffle meets the sky, in step with the scene. */
+  private paintSky = (progress: number) => {
+    this.blueprint.style.opacity = String(1 - smoothstep(0.5, 0.78, progress));
+  };
 
-  private startPoster() {
-    this.stopPoster();
-    if (this.state.scroll) {
-      if (this.state.canvasO !== 1) this.setState({ canvasO: 1 });
-      return;
+  /** Where the waffle sits, as fractions of the canvas. */
+  private region(): SceneRegion {
+    const width = this.stage.clientWidth || window.innerWidth;
+    const height = this.stage.clientHeight || window.innerHeight;
+    const visible = Math.min(height, this.probe.offsetHeight || height);
+    // Bottom edge of the floating nav bar, with a little air.
+    const nav = 76;
+    if (!this.compact.matches) {
+      const copy = this.heroCopy?.getBoundingClientRect();
+      const left = Math.min(width * 0.5, (copy?.right ?? width * 0.42) + 24);
+      const right = width - Math.max(24, width * 0.04);
+      const top = nav;
+      // Half-folded, the waffle is wider than its fit radius suggests, so keep some margin.
+      return {
+        cx: (left + right) / 2 / width,
+        cy: (top + visible) / 2 / height,
+        wf: ((right - left) * 0.9) / width,
+        hf: ((visible - top) * 0.9) / height,
+      };
     }
-    const mode = this.posterMode();
-    if (mode !== "loop") {
-      const p = mode === "grid" ? 0 : 1;
-      this.scene?.setProgress(p, true);
-      this.setState({ p, canvasO: 1 });
-      return;
-    }
-    // Grid → waffle, hold, then a quick fade and a clean restart, never backwards.
-    const t0 = performance.now();
-    let last = 0,
-      cutDone = -1;
-    const tick = (now: number) => {
-      if (!this.alive) return;
-      this.posterFrame = requestAnimationFrame(tick);
-      const tt = (now - t0) / 1000;
-      const loop = Math.floor(tt / 14.5);
-      const t = tt % 14.5;
-      let p,
-        o = 1;
-      if (t < 2.5) p = 0;
-      else if (t < 9) p = (t - 2.5) / 6.5;
-      else if (t < 13.2) p = 1;
-      else {
-        p = 1;
-        o = 1 - Math.min(1, (t - 13.2) / 0.5);
-      }
-      if (t >= 13.7 && cutDone !== loop) {
-        cutDone = loop;
-        this.scene?.setProgress(0, true);
-      }
-      if (t >= 13.7) {
-        p = 0;
-        o = Math.min(1, (t - 14.0) / 0.5);
-        o = Math.max(0, o);
-      }
-      if (t < 0.01 && loop > 0) o = 0;
-      if (this.scene && t < 13.7) this.scene.setProgress(p);
-      if (now - last > 60) {
-        last = now;
-        this.setState({ p, canvasO: o });
-      }
+    // Phones: under the hero copy at first, then centred above the docked step cards.
+    const copyBottom = this.heroCopy
+      ? this.heroCopy.getBoundingClientRect().bottom - this.stage.getBoundingClientRect().top
+      : visible * 0.5;
+    const top = this.inHero ? Math.min(visible * 0.62, copyBottom + 8) : nav;
+    // Leave room for a docked step card, about 260px, but never squeeze the waffle below 55%.
+    const bottom = this.inHero ? visible - 8 : Math.max(visible * 0.55, visible - 270);
+    // The finished waffle sits at an angle and reaches further right than left, so nudge it left.
+    return {
+      cx: this.inHero ? 0.5 : 0.47,
+      cy: (top + bottom) / 2 / height,
+      wf: Math.min(0.8, 480 / width),
+      hf: (bottom - top) / height,
     };
-    this.posterFrame = requestAnimationFrame(tick);
-  }
-
-  private stopPoster() {
-    if (this.posterFrame) cancelAnimationFrame(this.posterFrame);
-    this.posterFrame = 0;
   }
 
   mountScene() {
     if (!this.alive || this.scene) return;
-    const canvas = this.root.querySelector<HTMLCanvasElement>("[data-waffle-canvas]");
-    if (!canvas || !window.WaffleScene) {
-      this.sceneLoadFailed();
-      return;
-    }
-    this.scene = window.WaffleScene.mount(canvas, {
-      progress: this.state.p,
-      layout: this.sceneRegion(),
-      compact: (window.innerWidth || 1440) < 860,
+    const api = window.WaffleScene;
+    const scene = api?.mount(this.canvas, {
+      progress: this.progress,
+      layout: this.region(),
+      compact: this.compact.matches,
       background: false,
-      labels: this.labels,
+      labels: true,
+      adaptive: !new URLSearchParams(location.search).has("full-quality"),
+      onReady: () => {
+        this.canvas.dataset.ready = "";
+      },
+      onProgress: this.paintSky,
     });
-    if (!this.scene) {
-      this.sceneLoadFailed();
+    if (!scene) {
+      this.sceneFailed();
       return;
     }
-    if (!this.state.scroll) this.startPoster();
-    else this.readScroll();
+    this.scene = scene;
+    this.update(true);
   }
 
-  sceneLoadFailed() {
-    if (this.alive) this.setState({ noGl: true });
+  sceneFailed() {
+    if (!this.alive) return;
+    this.root.dataset.noGl = "";
   }
 }
 
 export function initializeLanding() {
-  const controllers = Array.from(
-    document.querySelectorAll<HTMLElement>("[data-waffle-landing]"),
-    (root) => {
-      const value = root.dataset.heroPreview;
-      const preview = value === "loop" || value === "grid" ? value : "waffle";
-      return new LandingController(root, preview, root.dataset.labels !== "false");
-    },
-  );
+  const root = document.querySelector<HTMLElement>("[data-story]");
+  if (!root) return () => {};
+  const story = new Story(root);
   let alive = true;
-  let firstLoadFrame = 0;
-  let secondLoadFrame = 0;
+  let idle = 0;
   const destroy = () => {
     alive = false;
-    if (firstLoadFrame) cancelAnimationFrame(firstLoadFrame);
-    if (secondLoadFrame) cancelAnimationFrame(secondLoadFrame);
-    for (const controller of controllers) controller.destroy();
+    if (idle) cancelIdle(idle);
+    story.destroy();
     window.removeEventListener("pagehide", onPageHide);
-    document.removeEventListener("astro:before-swap", destroy);
   };
   const onPageHide = (event: PageTransitionEvent) => {
     // A bfcache entry is suspended by the browser and resumes its existing scene.
     if (!event.persisted) destroy();
   };
   window.addEventListener("pagehide", onPageHide);
-  document.addEventListener("astro:before-swap", destroy, { once: true });
-  // Keep text and layout on the first paint; mount whenever the deferred scene arrives.
-  firstLoadFrame = requestAnimationFrame(() => {
-    firstLoadFrame = 0;
+  // Text and layout paint first; three.js loads once the main thread has a moment.
+  idle = requestIdle(() => {
+    idle = 0;
     if (!alive) return;
-    secondLoadFrame = requestAnimationFrame(() => {
-      secondLoadFrame = 0;
-      if (!alive) return;
-      void import("./waffle-scene")
-        .then(() => {
-          if (!alive) return;
-          for (const controller of controllers) controller.mountScene();
-        })
-        .catch(() => {
-          if (!alive) return;
-          for (const controller of controllers) controller.sceneLoadFailed();
-        });
-    });
+    void import("./waffle-scene")
+      .then(() => {
+        if (alive) story.mountScene();
+      })
+      .catch(() => {
+        if (alive) story.sceneFailed();
+      });
   });
   return destroy;
+}
+
+// Safari has no idle callbacks, so fall back to a short timeout there.
+const idleScheduler: Partial<Pick<Window, "requestIdleCallback" | "cancelIdleCallback">> = window;
+
+function requestIdle(callback: () => void): number {
+  if (idleScheduler.requestIdleCallback) {
+    return idleScheduler.requestIdleCallback(callback, { timeout: 600 });
+  }
+  return window.setTimeout(callback, 120);
+}
+
+function cancelIdle(handle: number) {
+  if (idleScheduler.cancelIdleCallback) idleScheduler.cancelIdleCallback(handle);
+  else window.clearTimeout(handle);
 }

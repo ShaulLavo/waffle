@@ -1,4 +1,4 @@
-// @ts-nocheck -- The owner-provided procedural scene is preserved verbatim apart from its ES module import.
+// @ts-nocheck -- The owner-provided procedural scene keeps its original ES5 style; see docs/bun-patches.md for the local changes.
 import {
   AdditiveBlending,
   BackSide,
@@ -9,7 +9,6 @@ import {
   Clock,
   Color,
   ConeGeometry,
-  CustomBlending,
   CylinderGeometry,
   DataTexture,
   DirectionalLight,
@@ -17,7 +16,6 @@ import {
   Float32BufferAttribute,
   FrontSide,
   Group,
-  HalfFloatType,
   HemisphereLight,
   LatheGeometry,
   Matrix3,
@@ -27,9 +25,6 @@ import {
   MeshToonMaterial,
   NearestFilter,
   NoToneMapping,
-  OneFactor,
-  OneMinusSrcAlphaFactor,
-  OrthographicCamera,
   PCFSoftShadowMap,
   Path,
   PerspectiveCamera,
@@ -47,7 +42,6 @@ import {
   SpriteMaterial,
   Vector2,
   Vector3,
-  WebGLRenderTarget,
   WebGLRenderer
 } from 'three';
 
@@ -56,7 +50,8 @@ import {
  * Cartoon city-builder look: toon shading + ink outline post-pass.
  * Uses the matching three.js r158 module build.
  * API: WaffleScene.mount(canvas, opts) -> { setProgress(p, now), setLayout(l), setLabels(b), getProgress(), destroy() } | null
- * opts: { progress, layout: 'split'|'stack'|'center', labels, interactive, quality: 'high'|'low', background: true }
+ * opts: { progress, layout: 'split'|'stack'|'center'|{cx,cy,wf,hf}, labels, interactive, quality: 'high'|'low', background: true,
+ *         adaptive: true, onReady(), onProgress(p) }
  */
 (function () {
   'use strict';
@@ -100,14 +95,15 @@ import {
     opts = opts || {};
     var renderer;
     try {
-      renderer = new WebGLRenderer({ canvas: canvas, antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+      renderer = new WebGLRenderer({ canvas: canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
     } catch (e) { return null; }
     if (!renderer || !renderer.getContext()) return null;
-    var isGL2 = renderer.capabilities.isWebGL2;
     var low = opts.quality === 'low' || window.innerWidth < 700;
-    var small = window.innerWidth * window.innerHeight < 700000;
-    var DPR = Math.min(window.devicePixelRatio || 1, 2);
-    renderer.setPixelRatio(DPR);
+    // Render at the screen's real density, up to 3x, within a fixed pixel budget. Small phone
+    // canvases get their full density; large desktop canvases stay near 2x. If frames run slow,
+    // `quality` steps the density down instead of dropping frames.
+    var DPR_CAP = Math.min(window.devicePixelRatio || 1, 3), PIXEL_BUDGET = 5.6e6, quality = 1;
+    function targetDpr(w, h) { return Math.max(0.75, Math.min(DPR_CAP, Math.sqrt(PIXEL_BUDGET / Math.max(1, w * h))) * quality); }
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = NoToneMapping;
     renderer.setClearColor(0x000000, 0);
@@ -120,7 +116,6 @@ import {
     var U = { uFlat: { value: 1 }, uEdge: { value: 0.02 } };
     var disposables = [];
     var REG_INIT = null;
-    var hideInNormals = [];
 
     // ---------- materials ----------
     var gradMap = new DataTexture(new Uint8Array([105, 182, 255]), 3, 1, RedFormat);
@@ -327,14 +322,12 @@ import {
     });
     disposables.push(bpMat);
     var blueprint = new Mesh(groundGeo, bpMat); blueprint.position.y = GROUND_Y; blueprint.renderOrder = -2; scene.add(blueprint);
-    hideInNormals.push(blueprint);
     var shadowMat = new ShadowMaterial({ color: 0x1B2A6B, opacity: 0.0, depthWrite: false }); disposables.push(shadowMat);
     var shadowCatcher = new Mesh(groundGeo, shadowMat); shadowCatcher.position.y = GROUND_Y; shadowCatcher.receiveShadow = true; shadowCatcher.renderOrder = -1; scene.add(shadowCatcher);
-    hideInNormals.push(shadowCatcher);
     var blobTex = tex(128, 128, function (ctx, w, h) { var gr = ctx.createRadialGradient(64, 64, 10, 64, 64, 64); gr.addColorStop(0, 'rgba(20,30,90,0.55)'); gr.addColorStop(0.6, 'rgba(20,30,90,0.22)'); gr.addColorStop(1, 'rgba(20,30,90,0)'); ctx.fillStyle = gr; ctx.fillRect(0, 0, w, h); });
     var blobGeo = new PlaneGeometry(17, 17); blobGeo.rotateX(-Math.PI / 2); disposables.push(blobGeo);
     var blobMat = basic(0xffffff, { map: blobTex.tex, dw: false, o: 0 });
-    var blob = new Mesh(blobGeo, blobMat); blob.position.y = GROUND_Y + 0.002; blob.renderOrder = -1; scene.add(blob); hideInNormals.push(blob);
+    var blob = new Mesh(blobGeo, blobMat); blob.position.y = GROUND_Y + 0.002; blob.renderOrder = -1; scene.add(blob);
 
     // ---------- the waffle: crisp interior grid inside a rounded rim ----------
     var SEGI = 160;
@@ -366,6 +359,16 @@ import {
     }
     wGeo.setAttribute('color', new BufferAttribute(colors, 3));
     wGeo.setAttribute('aOut', new BufferAttribute(new Float32Array(nV), 1));
+    // The surface is a height field, y = H * r(x, z). Its normal is (-H dr/dx, 1, -H dr/dz), so the
+    // ridge gradient is computed once here and each scroll step only rescales it. This replaces a
+    // full computeVertexNormals() pass over 51k triangles on every frame while the ridges rise.
+    var wNor = wGeo.attributes.normal, gX = new Float32Array(nV), gZ = new Float32Array(nV), NG = SEGI + 1;
+    for (var gy = 0; gy < NG; gy++) for (var gx = 0; gx < NG; gx++) {
+      var gk = gy * NG + gx, gl = gy * NG + Math.max(0, gx - 1), gr = gy * NG + Math.min(NG - 1, gx + 1);
+      var gu = Math.max(0, gy - 1) * NG + gx, gd = Math.min(NG - 1, gy + 1) * NG + gx;
+      gX[gk] = (vR[gr] - vR[gl]) / (wPos.getX(gr) - wPos.getX(gl));
+      gZ[gk] = (vR[gd] - vR[gu]) / (wPos.getZ(gd) - wPos.getZ(gu));
+    }
     var wMat = patch(new MeshToonMaterial({ vertexColors: true, gradientMap: gradMap }), true);
     var waffle = new Mesh(wGeo, wMat); waffle.castShadow = true; waffle.receiveShadow = true; scene.add(waffle);
 
@@ -417,12 +420,14 @@ import {
       var H = RIDGE_H * ph.ridge, c = ph.color;
       for (var i = 0; i < nV; i++) {
         wPos.setY(i, H * vR[i]);
+        var nx = -H * gX[i], nz = -H * gZ[i], inv = 1 / Math.sqrt(nx * nx + 1 + nz * nz);
+        wNor.setXYZ(i, nx * inv, inv, nz * inv);
         var j = i * 3;
         colors[j] = lerp(colFlat[j], colWaffle[j], c); colors[j + 1] = lerp(colFlat[j + 1], colWaffle[j + 1], c); colors[j + 2] = lerp(colFlat[j + 2], colWaffle[j + 2], c);
       }
       for (var k = 0; k < nR * 3; k++) rimCol[k] = lerp(rimFlat[k], rimWaffle[k], c);
-      wPos.needsUpdate = true; wGeo.attributes.color.needsUpdate = true; rimGeo.attributes.color.needsUpdate = true;
-      wGeo.computeVertexNormals(); wGeo.computeBoundingSphere();
+      wPos.needsUpdate = true; wNor.needsUpdate = true; wGeo.attributes.color.needsUpdate = true; rimGeo.attributes.color.needsUpdate = true;
+      wGeo.computeBoundingSphere();
       var tall = H + SLAB * ph.slab + 0.03 * ph.ridge;
       rim.position.y = -SLAB * ph.slab;
       rim.scale.y = Math.max(0.002, tall / RIM_H);
@@ -430,7 +435,7 @@ import {
 
     // diagram wiring that becomes ridges
     var lineMat = basic(0xEEF3FF, { o: 1 });
-    var lines = G(); scene.add(lines); hideInNormals.push(lines);
+    var lines = G(); scene.add(lines);
     for (var k0 = 0; k0 < 5; k0++) {
       var off = k0 * PITCH - LINE;
       var g1 = new PlaneGeometry(0.075, EDGE * 2 - 0.55); g1.rotateX(-Math.PI / 2); disposables.push(g1);
@@ -492,7 +497,7 @@ import {
       at(mon, rb(0.3, 0.06, 0.04, toon(0xD9CDB8), 0.02), 0.28, 0.2, 0.3);
       at(mon, sph(0.025, toon(0x3FD69A, { e: 0x3FD69A, ei: 0.8 })), 0.42, 0.23, 0.3);
       var script = [['$ ', 'ls'], ['', 'app/  tests/  todo.md'], ['$ ', 'bun run dev'], ['', 'listening on :3000'], ['$ ', 'grep -c TODO app.ts'], ['', '3'], ['$ ', 'cat todo.md | wc -l'], ['', '7']];
-      var st = { line: 0, ch: 0, acc: 0, rows: [], flash: 0, blink: 0 };
+      var st = { line: 0, ch: 0, acc: 0, rows: [], flash: 0, blink: 0, drawn: '' };
       var scr = tex(320, 224, function (ctx, w, h) {
         ctx.fillStyle = '#123A2E'; ctx.fillRect(0, 0, w, h);
         ctx.fillStyle = 'rgba(63,214,154,' + (0.08 + st.flash * 0.3) + ')'; ctx.fillRect(0, 0, w, h);
@@ -519,7 +524,9 @@ import {
           if (row.out) { if (st.acc > 0.55) { row.text = cur[1]; row.done = true; st.line++; st.acc = 0; } }
           else if (st.acc > 0.075) { st.acc = 0; if (st.ch < cur[1].length) { st.ch++; row.text = cur[0] + cur[1].slice(0, st.ch); } else { row.done = true; st.ch = 0; st.line++; } }
           if (st.rows.length > 12) st.rows.splice(0, 6);
-          scr.redraw();
+          // Upload the screen texture only when what it shows has changed.
+          var view = st.rows.slice(-6).map(function (r) { return r.text; }).join('\n') + (st.blink < 0.5 ? '_' : ' ') + Math.round(st.flash * 12);
+          if (view !== st.drawn) { st.drawn = view; scr.redraw(); }
         },
         pulse: function () { st.flash = 1; }
       };
@@ -957,9 +964,9 @@ import {
       db: { make: mkDb, card: 'database', label: 'database', icon: 'db' },
       tests: { make: mkTests, card: 'tests', label: 'tests', icon: 'check' },
       video: { make: mkVideo, card: 'transcode', label: 'video job', icon: 'play' },
-      chart: { make: mkChart, card: 'notebook', label: 'notebook', icon: 'bars' },
+      chart: { make: mkChart, card: 'python', label: 'Python', real: true, icon: 'bars' },
       build: { make: mkBuild, card: 'build', label: 'build', icon: 'gear' },
-      packages: { make: mkPackages, card: 'packages', label: 'packages', icon: 'box' },
+      packages: { make: mkPackages, card: 'packages', label: 'packages', real: true, icon: 'box' },
       syrup: { make: mkSyrup }, berries: { make: mkBerries }, strawberry: { make: mkStrawberry }
     };
     function drawIcon(ctx, kind, cx, cy, s) {
@@ -1012,11 +1019,13 @@ import {
           } else { ctx.strokeStyle = 'rgba(255,255,255,0.32)'; ctx.lineWidth = 4; ctx.setLineDash([14, 12]); rr(ctx, 16, 16, w - 32, h - 32, 26); ctx.stroke(); ctx.setLineDash([]); }
         });
         var cm = basic(0xffffff, { map: ct.tex, dw: false });
-        var card = new Mesh(cardGeo, cm); card.position.set(cellX(c), 0.03, cellZ(r)); card.renderOrder = 3; scene.add(card); hideInNormals.push(card);
+        var card = new Mesh(cardGeo, cm); card.position.set(cellX(c), 0.03, cellZ(r)); card.renderOrder = 3; scene.add(card);
         o.card = card; o.cardMat = cm;
         if (program) {
-          var lt = tex(512, 128, function (ctx, w, h) {
-            ctx.clearRect(0, 0, w, h);
+          // Drawn at twice the old resolution so the tags stay sharp on 3x screens.
+          var lt = tex(1024, 256, function (ctx, W, H) {
+            ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); ctx.setTransform(2, 0, 0, 2, 0, 0);
+            var w = 512;
             ctx.font = '600 44px ' + FONT;
             var tw = ctx.measureText(info.label).width + (info.real ? 70 : 44), x = (w - tw) / 2;
             ctx.fillStyle = info.real ? '#FFC94D' : '#FFFFFF'; rr(ctx, x, 18, tw, 80, 40); ctx.fill();
@@ -1064,7 +1073,7 @@ import {
     }
     var flows = FLOWS.map(function (f, i) {
       var A = byKind[f[0]], B = byKind[f[1]];
-      var bead = new Mesh(beadGeo, basic(f[2], { t: false })); scene.add(bead); hideInNormals.push(bead);
+      var bead = new Mesh(beadGeo, basic(f[2], { t: false })); scene.add(bead);
       var hm = new SpriteMaterial({ map: haloTex.tex, color: f[2], transparent: true, blending: AdditiveBlending, depthWrite: false, depthTest: false, opacity: 0.85 });
       disposables.push(hm);
       var halo = new Sprite(hm); halo.scale.set(0.75, 0.75, 1); overlay.add(halo);
@@ -1094,76 +1103,6 @@ import {
       return total;
     }
 
-    // ---------- outline post-process ----------
-    // One MSAA'd buffer holds view normal (rgb) and view depth / far (a). Edges come from the Laplacian
-    // of inverse depth (zero on any flat surface, however steep) plus normal creases, so sloped
-    // waffle walls and thin moving parts no longer sparkle.
-    var rtColor = null, rtNormal = null;
-    var normalMat = new ShaderMaterial({
-      uniforms: { uFar: { value: 100 } },
-      vertexShader: 'varying vec3 vN; varying float vZ; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vZ = -mv.z; gl_Position = projectionMatrix * mv; }',
-      fragmentShader: 'uniform float uFar; varying vec3 vN; varying float vZ; void main(){ vec3 n = normalize(vN); gl_FragColor = vec4(n * 0.5 + 0.5, clamp(vZ / uFar, 0.0, 0.998)); }'
-    });
-    disposables.push(normalMat);
-    var maskMat = new ShaderMaterial({
-      uniforms: normalMat.uniforms,
-      vertexShader: normalMat.vertexShader,
-      fragmentShader: 'uniform float uFar; varying vec3 vN; varying float vZ; void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, clamp(vZ / uFar, 0.0, 0.998)); }'
-    });
-    disposables.push(maskMat);
-    var normScene = new Scene();
-    var waffleN = new Mesh(wGeo, normalMat), rimN = new Mesh(rimGeo, normalMat);
-    normScene.add(waffleN); normScene.add(rimN);
-    var post = new ShaderMaterial({
-      uniforms: { tColor: { value: null }, tN: { value: null }, res: { value: new Vector2(1, 1) }, uAmt: { value: 0 }, thick: { value: 1 }, lineCol: { value: new Color(0x2A1F33) } },
-      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: [
-        'uniform sampler2D tColor; uniform sampler2D tN; uniform vec2 res; uniform float uAmt; uniform float thick; uniform vec3 lineCol; varying vec2 vUv;',
-        'vec3 toSRGB(vec3 c){ c = max(c, vec3(0.0)); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(vec3(0.0031308), c)); }',
-        'float W(vec4 s){ return 1.0 / max(s.a, 0.0005); }',
-        'bool BG(vec4 s){ return s.a > 0.997; }',
-        'bool MK(vec4 s){ return s.r + s.g + s.b < 0.03; }',
-        'float crease(vec4 a, vec3 n0){ if (BG(a) || MK(a)) return 0.0; vec3 n = normalize(a.xyz * 2.0 - 1.0); return 1.0 - dot(n, n0); }',
-        'void main(){',
-        '  vec4 c = texture2D(tColor, vUv);',
-        '  vec2 px = thick / res;',
-        '  vec4 s0 = texture2D(tN, vUv);',
-        '  vec4 sL = texture2D(tN, vUv - vec2(px.x, 0.0)); vec4 sR = texture2D(tN, vUv + vec2(px.x, 0.0));',
-        '  vec4 sD = texture2D(tN, vUv - vec2(0.0, px.y)); vec4 sU = texture2D(tN, vUv + vec2(0.0, px.y));',
-        '  float e = 0.0;',
-        '  if (!BG(s0) && !MK(s0)) {',
-        '    float w0 = W(s0);',
-        '    float lap = max(2.0 * w0 - W(sL) - W(sR), 2.0 * w0 - W(sU) - W(sD)) / w0;',
-        '    vec3 n0 = normalize(s0.xyz * 2.0 - 1.0);',
-        '    float ne = max(max(crease(sL, n0), crease(sR, n0)), max(crease(sU, n0), crease(sD, n0)));',
-        '    e = max(smoothstep(0.02, 0.045, lap), smoothstep(0.55, 0.85, ne));',
-        '  }',
-        '  e *= uAmt;',
-        '  vec3 rgb = c.a > 0.0001 ? c.rgb / c.a : vec3(0.0);',
-        '  rgb = toSRGB(rgb);',
-        '  rgb = mix(rgb, lineCol, e);',
-        '  float a = max(c.a, e);',
-        '  gl_FragColor = vec4(rgb * a, a);',
-        '}'
-      ].join('\n'),
-      depthTest: false, depthWrite: false, transparent: true, blending: CustomBlending, blendSrc: OneFactor, blendDst: OneMinusSrcAlphaFactor
-    });
-    disposables.push(post);
-    var quadGeo = new PlaneGeometry(2, 2); disposables.push(quadGeo);
-    var quad = new Mesh(quadGeo, post); quad.frustumCulled = false;
-    var postScene = new Scene(); postScene.add(quad);
-    var postCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    function makeTargets(w, h) {
-      if (rtColor) { rtColor.dispose(); rtNormal.dispose(); }
-      var ms = isGL2 ? 4 : 0;
-      rtColor = new WebGLRenderTarget(w, h, { samples: ms, type: HalfFloatType });
-      rtNormal = new WebGLRenderTarget(w, h, { samples: ms, type: HalfFloatType });
-      post.uniforms.tColor.value = rtColor.texture;
-      post.uniforms.tN.value = rtNormal.texture;
-      post.uniforms.res.value.set(w, h);
-      post.uniforms.thick.value = Math.max(1, Math.round(DPR));
-    }
-
     // ---------- camera & layout ----------
     if (opts.layout && typeof opts.layout === 'object') { REG_INIT = opts.layout; }
     var state = { target: clamp01(opts.progress || 0), p: clamp01(opts.progress || 0), layout: (opts.layout && typeof opts.layout === 'object') ? 'custom' : (opts.layout || 'split'), labels: opts.labels !== false, mx: 0, my: 0, smx: 0, smy: 0, w: 0, h: 0, visible: true, bgKey: -1 };
@@ -1174,21 +1113,25 @@ import {
     cells.forEach(function (o) { if (state.p > o.start) o.a = 1; });
     if (state.p > 0.82) { butterA = 1; }
 
-    function resize() {
-      var rect = canvas.getBoundingClientRect();
-      var w = Math.max(2, Math.round(rect.width)), h = Math.max(2, Math.round(rect.height));
+    // The canvas size comes from a ResizeObserver, so frames never force a layout read.
+    function applySize(cw, ch) {
+      var w = Math.max(2, Math.round(cw)), h = Math.max(2, Math.round(ch));
       if (w === state.w && h === state.h) return;
       state.w = w; state.h = h;
+      renderer.setPixelRatio(targetDpr(w, h));
       renderer.setSize(w, h, false);
     }
-    function placeCamera(ph, t) {
-      var R = REG[state.layout] || REG.split;
-      reg.cx = lerp(reg.cx, R.cx, 0.08); reg.cy = lerp(reg.cy, R.cy, 0.08); reg.wf = lerp(reg.wf, R.wf, 0.08); reg.hf = lerp(reg.hf, R.hf, 0.08);
+    function measure() { var rect = canvas.getBoundingClientRect(); applySize(rect.width, rect.height); }
+    var ro = null;
+    if ('ResizeObserver' in window) { ro = new ResizeObserver(function (es) { var b = es[0] && es[0].contentRect; if (b) applySize(b.width, b.height); }); ro.observe(canvas); }
+    function placeCamera(ph, t, dt) {
+      var R = REG[state.layout] || REG.split, k = 1 - Math.exp(-dt * 5);
+      reg.cx = lerp(reg.cx, R.cx, k); reg.cy = lerp(reg.cy, R.cy, k); reg.wf = lerp(reg.wf, R.wf, k); reg.hf = lerp(reg.hf, R.hf, k);
       var aspect = state.w / state.h;
       camera.aspect = aspect; camera.fov = 30;
       var tv = Math.tan(15 * DEG);
       var fitR = lerp(6.1, 6.2, ph.fit) * (state.layout === 'stack' ? lerp(1, 1.06, ph.fit) : 1);
-      if (state.layout === 'custom') fitR *= lerp(1, 1.2, ph.fit);
+      if (state.layout === 'custom') fitR *= lerp(1, 1.1, ph.fit);
       var dist = fitR / Math.min(tv * reg.hf, tv * aspect * reg.wf);
       var live = ph.lit;
       var el = lerp(EL_START, EL_FINAL, ph.cam) + state.smy * 0.05 * live;
@@ -1197,9 +1140,8 @@ import {
       camera.position.set(Math.cos(el) * Math.sin(az) * dist, ty + Math.sin(el) * dist, Math.cos(el) * Math.cos(az) * dist);
       camera.lookAt(0, ty, 0);
       camera.near = dist * 0.4; camera.far = dist * 2.4;
-      camera.setViewOffset(state.w, state.h, -(reg.cx + (state.layout === 'custom' ? 0.02 * reg.wf * ph.fit : 0) - 0.5) * state.w, -(reg.cy - 0.5) * state.h, state.w, state.h);
+      camera.setViewOffset(state.w, state.h, -(reg.cx - 0.5) * state.w, -(reg.cy - 0.5) * state.h, state.w, state.h);
       camera.updateProjectionMatrix();
-      normalMat.uniforms.uFar.value = camera.far;
     }
 
     // ---------- interaction: every thing in the scene reacts to a click ----------
@@ -1233,6 +1175,8 @@ import {
     }
     var lastMove = null, moveDirty = false, lastPickT = 0;
     function onMove(ev) {
+      // Touch moves are scroll gestures; only a mouse or pen hovers and tilts the camera.
+      if (ev.pointerType === 'touch') return;
       var rect = canvas.getBoundingClientRect();
       state.mx = ((ev.clientX - rect.left) / rect.width) * 2 - 1; state.my = ((ev.clientY - rect.top) / rect.height) * 2 - 1;
       lastMove = { clientX: ev.clientX, clientY: ev.clientY }; moveDirty = true;
@@ -1246,15 +1190,30 @@ import {
     if ('IntersectionObserver' in window) { io = new IntersectionObserver(function (es) { state.visible = es[0] ? es[0].isIntersecting : true; }, { threshold: 0 }); io.observe(canvas); }
 
     // ---------- frame ----------
-    var clock = new Clock(), elapsed = 0, raf = 0;
+    var clock = new Clock(), elapsed = 0, raf = 0, painted = false, reported = -1;
+    // Adaptive density: sample real frame rate in one-second windows after a warm-up. Two slow
+    // windows in a row step the pixel ratio down by 20%, to a floor of half density.
+    var perf = { frames: 0, time: 0, slow: 0, warm: 0 };
+    function adapt(rawDt) {
+      if (opts.adaptive === false) return;
+      perf.warm += rawDt; if (perf.warm < 2) return;
+      perf.frames++; perf.time += rawDt; if (perf.time < 1) return;
+      var fps = perf.frames / perf.time; perf.frames = 0; perf.time = 0;
+      perf.slow = fps < 42 ? perf.slow + 1 : 0;
+      if (perf.slow < 2 || quality <= 0.5) return;
+      perf.slow = 0; quality = Math.max(0.5, quality * 0.8);
+      renderer.setPixelRatio(targetDpr(state.w, state.h)); renderer.setSize(state.w, state.h, false);
+    }
     function frame() {
       raf = requestAnimationFrame(frame);
-      var dt = Math.min(0.05, clock.getDelta());
-      if (!state.visible) return;
+      var rawDt = clock.getDelta(), dt = Math.min(0.05, rawDt);
+      if (!state.visible || document.hidden) return;
+      adapt(rawDt);
       elapsed += dt; var t = elapsed;
-      resize();
+      if (!ro) measure();
       state.p = lerp(state.p, state.target, 1 - Math.exp(-dt * 7));
       if (Math.abs(state.p - state.target) < 0.0005) state.p = state.target;
+      if (opts.onProgress && Math.abs(state.p - reported) > 0.0005) { reported = state.p; opts.onProgress(state.p); }
       state.smx = lerp(state.smx, state.mx, 1 - Math.exp(-dt * 3)); state.smy = lerp(state.smy, state.my, 1 - Math.exp(-dt * 3));
       var p = state.p, ph = phases(p);
       if (moveDirty && opts.interactive !== false && elapsed - lastPickT > 0.08) { lastPickT = elapsed; moveDirty = false; canvas.style.cursor = pick(lastMove) ? 'pointer' : ''; }
@@ -1337,31 +1296,18 @@ import {
         if (s2 > 0.97 && fl.lastArr !== cyc) { fl.lastArr = cyc; if (p > 0.6) kick(fl.B, 0.3); }
       }
 
-      placeCamera(ph, t);
-      // pass 1: colour
-      renderer.setRenderTarget(null); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(scene, camera);
-      // pass 2: normals + depth, for the ink outlines
-      post.uniforms.uAmt.value = 0;
+      placeCamera(ph, t, dt);
+      // ink shells grow with the lighting, then the scene, then name tags on top
       hullU.uThick.value = 0.024 * ph.lit; hullMat.visible = ph.lit > 0.02;
-      if (false) {
-        var vis = hideInNormals.map(function (x) { var v = x.visible; x.visible = false; return v; });
-        scene.overrideMaterial = maskMat; hullMat.visible = false;
-        rimN.position.copy(rim.position); rimN.scale.copy(rim.scale);
-        var sm0 = renderer.shadowMap.autoUpdate; renderer.shadowMap.autoUpdate = false;
-        renderer.setRenderTarget(rtNormal); renderer.setClearColor(0x8080ff, 1.0); renderer.clear(); renderer.render(scene, camera);
-        renderer.autoClear = false; renderer.render(normScene, camera); renderer.autoClear = true;
-        renderer.shadowMap.autoUpdate = sm0;
-        scene.overrideMaterial = null; hullMat.visible = true;
-        hideInNormals.forEach(function (x, k) { x.visible = vis[k]; });
-      }
-      // pass 3: composite, then name tags on top
+      renderer.setRenderTarget(null); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(scene, camera);
       renderer.autoClear = false; renderer.clearDepth(); renderer.render(overlay, camera); renderer.autoClear = true;
+      if (!painted) { painted = true; if (opts.onReady) opts.onReady(); }
     }
 
     if (document.fonts && document.fonts.load) {
       Promise.all([document.fonts.load('600 44px "Fredoka"'), document.fonts.load('700 40px "Fredoka"'), document.fonts.load('600 23px "Martian Mono"')]).then(function () { textures.forEach(function (x) { x.redraw(); }); }).catch(function () {});
     }
-    resize();
+    measure();
     frame();
 
     return {
@@ -1373,8 +1319,8 @@ import {
         cancelAnimationFrame(raf);
         canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('pointerdown', onDown);
         if (io) io.disconnect();
+        if (ro) ro.disconnect();
         disposables.forEach(function (d) { try { d.dispose(); } catch (e) {} });
-        if (rtColor) { rtColor.dispose(); rtNormal.dispose(); }
         renderer.dispose();
       }
     };
