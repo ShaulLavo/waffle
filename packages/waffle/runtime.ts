@@ -347,6 +347,14 @@ function stopFailures(results: readonly PromiseSettledResult<void>[]): unknown[]
 }
 
 /** The page is the sole owner. Duplicate bundles share only the guard, not a service locator. */
+function sourceTime(): number | undefined {
+  try {
+    return performance.now();
+  } catch {
+    return undefined;
+  }
+}
+
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
   const hostIdentity = snapshotHostIdentity(options.hostIdentity);
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
@@ -408,12 +416,16 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       onLoad?.({ kind: "preparing" });
       try {
         assertLive();
+        const sourceStart = sourceTime();
         const bytes = typeof ownedSource === "function" ? await ownedSource() : ownedSource;
+        const sourceEnd = sourceTime();
         if (!(bytes instanceof Uint8Array))
           throw new TypeError("Program source loader must return Wasm bytes");
         // Own source bytes before an asynchronous import can yield to a mutating caller.
         const snapshot = new Uint8Array(bytes);
-        const { compileInterruptible } = await import("./interrupt/loader.js");
+        const { compileInterruptible, programStage } = await import("./interrupt/loader.js");
+        if (sourceStart !== undefined && sourceEnd !== undefined)
+          programStage("source", sourceStart, { bytes: snapshot.byteLength }, sourceEnd);
         const compiled = await compileInterruptible(snapshot);
         assertLive();
         onLoad?.({ kind: "loaded" });

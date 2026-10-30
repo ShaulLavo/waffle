@@ -1818,6 +1818,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "uu_nl"
+version = "0.13.0"
+source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
+dependencies = [
+ "clap",
+ "fluent",
+ "itoa",
+ "regex",
+ "uucore 0.13.0",
+]
+
+[[package]]
 name = "uu_rm"
 version = "0.13.0"
 source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
@@ -2018,6 +2030,7 @@ version = "0.0.1"
 name = "waffle-coreutils"
 version = "0.0.2"
 dependencies = [
+ "clap",
  "futures",
  "rustix",
  "serde_json",
@@ -2026,6 +2039,7 @@ dependencies = [
  "uu_head",
  "uu_ls",
  "uu_mv",
+ "uu_nl",
  "uu_rm",
  "uu_sort",
  "uu_touch",

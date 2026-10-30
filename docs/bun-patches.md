@@ -27,6 +27,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/program-locales/patch.ts`                                                                                                      | Adaptation       | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs.                                                                                                                                                                     |
 | `tools/program-locales/{prepare,selection,rustc-wrapper,build}.ts`, `generate.rs`                                                     | Original adapter | Build-source selection, isolated producer identity, compiler pass-through, transaction lock, catalog generation and receipts. No runtime or command implementation copied.                                                                                                                                                                                                                                                   |
 | `packages/diffutils/patches/gnu-wasi.patch`                                                                                           | Adaptation       | GNU diffutils 3.12 release sources; bounded WASI changes disable unsupported process, signal, timezone and locale recovery APIs. See [GNU diffutils](#gnu-diffutils).                                                                                                                                                                                                                                                        |
+| `packages/coreutils/src/bin/nl.rs`, `packages/coreutils/src/bin/nl_bre/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/nl` and `src/uucore` at `07763857f6b9a547742a994b58aef0ccd036198b`. Initializes WASI cwd and translates bounded common BRE styles into upstream's byte regex grammar; no command algorithm copied. See [External nl entry](#external-nl-entry). |
 | `packages/jq/patches/jaq-wasi.patch`, `packages/jq/scripts/` | Adaptation | jaq 3.1.2 at `f7fea9219d8d5364c91c6a0278765eaa0e6fa95e`; target-gate rustyline and the interactive `repl` off WASI. Original Waffle recipe preserves the upstream evaluator and noninteractive CLI, disables mimalloc, and adds packaging, notices, native jq oracle and runtime tests. |
 | `tools/program-build-tools.ts`                                                                                                        | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied.                                                                                                                                                                                                              |
 
@@ -289,3 +290,23 @@ features and dynamic-linking metadata, remain unchanged. Compiler intermediates 
 their names until the existing patched-libc verification finishes. Family staging
 strips final program assets before release hashing. Python keeps its accepted producer
 receipt and writes a separate final-program derivation receipt.
+
+## External nl entry
+
+`packages/coreutils/src/bin/nl.rs` is an original MIT adapter to unchanged
+uutils/coreutils `src/uu/nl` and `src/uucore` at
+`07763857f6b9a547742a994b58aef0ccd036198b`. The pinned dependency owns numbering,
+file traversal, byte input/output, help, and diagnostics. The source receipt is
+`packages/coreutils/provenance/nl.source.json`; the family notices retain upstream
+MIT licenses and production dependency notices.
+
+The original `nl_bre` module normalizes numbering-style arguments with upstream's
+option parser. It follows the original Waffle grep adapter's common BRE literal,
+operator, and branch-anchor rules at Waffle `19b3a67`. Backreferences are explicitly
+rejected, so this does not claim complete GNU BRE parity. Matching is byte-oriented.
+There is no native command, Bash, or second-runtime fallback. The nl-only TypeScript
+oracle runs GNU separately as a test reference and compares identical inputs.
+
+## jaq WASI packaging
+
+`packages/jq/sources.lock.json` pins the immutable jaq archive and SHA-256. The local patch changes only `jaq/Cargo.toml` and `jaq/src/funs.rs`: rustyline, dirs and `repl` remain native-only, while WASI registers the unchanged noninteractive evaluator. Build, packaging, license staging, Brotli measurement and tests are original Waffle adapters. Known jaq, jq and gojq differences are in `packages/jq/docs/compatibility.md`; no full-parity claim is made.

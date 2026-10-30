@@ -83,6 +83,7 @@ export function createPythonPackage(
     programs: [
       {
         path: program.path,
+        aliases: ["/usr/bin/python3", "/bin/python3"],
         argv0: program.argv0,
         source: program.source,
         launch: (context, service, fallback) => pythonLauncher(fallback)(context, service),
