@@ -9,6 +9,7 @@
         "playwright": "^1.64.1",
         "waffle": "workspace:*",
         "waffle-base": "workspace:*",
+        "waffle-curl": "workspace:*",
         "waffle-gh": "workspace:*",
         "waffle-git": "workspace:*",
       },
@@ -36,6 +37,14 @@
       },
       "peerDependencies": {
         "waffle": "*",
+      },
+    },
+    "packages/curl": {
+      "name": "waffle-curl",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "typescript": "7.0.2",
       },
     },
     "packages/findutils": {
@@ -722,6 +731,8 @@
     "waffle": ["waffle@workspace:packages/waffle"],
 
     "waffle-base": ["waffle-base@workspace:packages/base"],
+
+    "waffle-curl": ["waffle-curl@workspace:packages/curl"],
 
     "waffle-coreutils": ["waffle-coreutils@workspace:packages/coreutils"],
 
