@@ -20,6 +20,7 @@
     "../packages/coreutils/scripts/verify-transfer.ts",
     "../packages/findutils/src/index.ts",
     "../packages/grep/src/index.ts",
+    "../packages/gh/src",
     "../packages/sed/src/index.ts",
     "../packages/ripgrep/src/index.ts",
     "../packages/python/src"
