@@ -1,0 +1,11 @@
+{
+  "ghVersion": "2.103.0",
+  "implementation": "Original TypeScript adapter; no cli/cli or go-gh source is bundled.",
+  "fixtures": {
+    "cases.json": {
+      "sha256": "13ab992cc75fae7f3e1280ea300fea75416a3a80f93c288e2a4f7ca48f153b19",
+      "oracle": "gh 2.103.0",
+      "collectedAt": "2026-10-30"
+    }
+  }
+}

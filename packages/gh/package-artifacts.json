@@ -1,0 +1,7 @@
+{
+  "files": [
+    "dist/gh-cli.js",
+    "dist/gh.sizes.json",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
+}
