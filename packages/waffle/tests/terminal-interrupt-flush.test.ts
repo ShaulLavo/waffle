@@ -11,13 +11,21 @@ import {
   type TerminalResult,
 } from "../browser/runtime-terminals.js";
 import { DescriptorTable } from "../core/descriptors.js";
+import { claimOutcome } from "../proc/outcome.js";
+import { requestSignal, setSignalDisposition, SignalDisposition } from "../proc/signals.js";
+import { Signal } from "../proc/types.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
+  workerProcessState,
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 import type { TerminalControlWorkerData } from "./fixtures/terminal-control-worker.js";
-import type { TerminalModeWorkerData } from "./fixtures/terminal-mode-worker.js";
+import type {
+  TerminalModeReply,
+  TerminalModeRequest,
+  TerminalModeWorkerData,
+} from "./fixtures/terminal-mode-worker.js";
 
 function must<T>(result: TerminalResult<T>): T {
   if (result.kind === "error") throw Error(result.code);
@@ -26,7 +34,7 @@ function must<T>(result: TerminalResult<T>): T {
 
 // The deployed Ctrl-C shape: the shell root polls stdin while the page queues terminal work,
 // and the interrupted foreground job restores cooked mode from its signal handler.
-function interruptFixture() {
+function interruptFixture(editorMode: "raw" | "cooked" = "cooked") {
   const input = createTerminalInput();
   const root = createWorkerProcessTransport({ capacity: 16 });
   const display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
@@ -60,7 +68,7 @@ function interruptFixture() {
   });
   const spawned = messages.find((item) => item.operation === "spawn" && item.transport.pid === pid);
   if (!spawned || spawned.operation !== "spawn") throw Error("spawn failed");
-  const editor = must(authority.createGroup({ initialMode: "cooked" }));
+  const editor = must(authority.createGroup({ initialMode: editorMode }));
   const rootMember = must(authority.admitExisting({ group: editor, pid: root.pid }));
   const editorLease = must(authority.acquire({ group: editor, expected: null }));
   const repl = must(authority.createGroup({ initialMode: "raw" }));
@@ -77,6 +85,7 @@ function interruptFixture() {
     descriptors,
     editor,
     rootMember,
+    editorLease,
     repl,
     replRoot,
     replMember,
@@ -119,32 +128,55 @@ async function contendedOrReplied(cells: Int32Array, reply: Promise<unknown>): P
 }
 async function stopWorker(worker: Worker): Promise<void> {
   const exited = once(worker, "exit");
-  worker.postMessage({ kind: "exit" });
+  worker.postMessage({ kind: "exit" } satisfies TerminalModeRequest);
   await exited;
+}
+
+/** REPL worker attached, shell-root holder parked in its readiness turn, page work queued. */
+async function contention<T>(f: Fixture, page: () => TerminalResult<T>) {
+  const flags = new Int32Array(new SharedArrayBuffer(16));
+  const repl = startRepl(f);
+  expect((await once(repl, "message"))[0]).toEqual({ kind: "ready", result: "ok" });
+  const holder = startHolder(f, f.replRoot.context, flags);
+  expect((await once(holder, "message"))[0]).toMatchObject({ kind: "held" });
+  const queued = f.authority.control(page);
+  expect(Atomics.load(f.cells, 22)).toBe(1);
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    const parked = once(holder, "message");
+    Atomics.store(flags, 1, 1);
+    Atomics.notify(flags, 1);
+    await parked;
+  };
+  /** Posts the restore and returns once the worker is blocked on contention (or replied). */
+  const restore = async (request: Extract<TerminalModeRequest, { kind: "restore" }>) => {
+    Atomics.store(f.cells, 6, 0);
+    const reply = once(repl, "message").then(([value]) => value as TerminalModeReply);
+    repl.postMessage(request);
+    await contendedOrReplied(f.cells, reply);
+    return { reply };
+  };
+  const stop = async () => {
+    await release();
+    await Promise.all([stopWorker(repl), holder.terminate()]);
+    await queued.catch(() => undefined);
+    f.display.close("disposed");
+    f.descriptors.dispose();
+  };
+  return { queued, release, restore, stop };
 }
 
 test("a foreground worker restores cooked mode while a page control waits behind the shell", async () => {
   const f = interruptFixture();
-  const flags = new Int32Array(new SharedArrayBuffer(16));
-  const repl = startRepl(f);
-  let holder: Worker | undefined;
+  const c = await contention(f, () => ({ kind: "ok", value: "page" }));
   try {
-    expect((await once(repl, "message"))[0]).toEqual({ kind: "ready", result: "ok" });
-    holder = startHolder(f, f.replRoot.context, flags);
-    expect((await once(holder, "message"))[0]).toMatchObject({ kind: "held" });
     const before = f.cells.slice(8, 12);
-    const queued = f.authority.control(() => ({ kind: "ok", value: "page" }));
-    expect(Atomics.load(f.cells, 22)).toBe(1);
-    Atomics.store(f.cells, 6, 0); // observe the worker's own contention hint below
-    const restored = once(repl, "message");
-    repl.postMessage({ kind: "restore" });
-    await contendedOrReplied(f.cells, restored);
-    const released = once(holder, "message");
-    Atomics.store(flags, 1, 1);
-    Atomics.notify(flags, 1);
-    await released;
-    expect(must(await queued)).toBe("page");
-    expect((await restored)[0]).toEqual({ kind: "restored", step: "setMode", code: "ok" });
+    const { reply } = await c.restore({ kind: "restore" });
+    await c.release();
+    expect(must(await c.queued)).toBe("page");
+    expect(await reply).toEqual({ kind: "restored", step: "setMode", code: "ok", pending: false });
     const after = f.cells.slice(8, 12);
     expect({ selected: after[0], selection: after[1], mode: after[2] }).toEqual({
       selected: before[0],
@@ -155,10 +187,84 @@ test("a foreground worker restores cooked mode while a page control waits behind
     expect(Atomics.load(f.cells, 22)).toBe(0);
     expect(Atomics.load(f.gate, 0)).toBe(0n);
   } finally {
-    Atomics.store(flags, 1, 1);
-    Atomics.notify(flags, 1);
-    await Promise.all([stopWorker(repl), holder?.terminate()]);
+    await c.stop();
+  }
+});
+
+test("the SIGINT being handled does not cancel its own cooked-mode restore", async () => {
+  const f = interruptFixture();
+  const signals = workerProcessState(f.child).signals;
+  setSignalDisposition(signals.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
+  expect(requestSignal(signals, Signal.SIGINT).action).toBe("handled");
+  const c = await contention(f, () => ({ kind: "ok", value: undefined }));
+  try {
+    const { reply } = await c.restore({ kind: "restore", takeSignal: true });
+    await c.release();
+    expect(await reply).toEqual({ kind: "restored", step: "setMode", code: "ok", pending: false });
+  } finally {
+    await c.stop();
+  }
+});
+
+test("a signal arriving during the wait ends it without consuming the signal", async () => {
+  const f = interruptFixture();
+  const signals = workerProcessState(f.child).signals;
+  setSignalDisposition(signals.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
+  const c = await contention(f, () => ({ kind: "ok", value: undefined }));
+  try {
+    const { reply } = await c.restore({ kind: "restore" });
+    expect(requestSignal(signals, Signal.SIGINT).action).toBe("handled");
+    expect(await reply).toEqual({
+      kind: "restored",
+      step: "snapshot",
+      code: "CANCELED",
+      pending: true,
+    });
+    expect(Atomics.load(f.cells, 10)).toBe(1); // raw: no mode write happened
+  } finally {
+    await c.stop();
+  }
+});
+
+test("closing the session ends a blocked restore", async () => {
+  const f = interruptFixture();
+  const c = await contention(f, () => ({ kind: "ok", value: undefined }));
+  try {
+    const { reply } = await c.restore({ kind: "restore" });
     f.display.close("disposed");
-    f.descriptors.dispose();
+    expect(await reply).toMatchObject({ step: "snapshot", code: "CLOSED" });
+  } finally {
+    await c.stop();
+  }
+});
+
+test("terminal root death ends a blocked restore", async () => {
+  const f = interruptFixture();
+  const c = await contention(f, () => ({ kind: "ok", value: undefined }));
+  try {
+    const { reply } = await c.restore({ kind: "restore" });
+    claimOutcome(workerProcessState(f.root).signals.outcome, { kind: "exited", code: 0 });
+    expect(await reply).toMatchObject({ step: "snapshot", code: "PROCESS_GONE" });
+  } finally {
+    await c.stop();
+  }
+});
+
+test("a job displaced while it waited is denied and writes no mode", async () => {
+  const f = interruptFixture("raw");
+  const c = await contention(f, () => f.authority.transfer({ from: f.replLease, to: f.editor }));
+  try {
+    const { reply } = await c.restore({ kind: "restore" });
+    await c.release();
+    must(await c.queued);
+    expect(await reply).toEqual({
+      kind: "restored",
+      step: "setMode",
+      code: "DENIED",
+      pending: false,
+    });
+    expect(Atomics.load(f.cells, 10)).toBe(1);
+  } finally {
+    await c.stop();
   }
 });
