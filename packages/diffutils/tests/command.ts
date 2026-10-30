@@ -4,6 +4,7 @@ export interface Command {
   readonly name: string;
   readonly executable: string;
   readonly args: readonly string[];
+  readonly argv0?: string;
   readonly cwd?: string;
   readonly input?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -15,6 +16,7 @@ export function runCommand(command: Command, timeoutMs = 15_000) {
   }
   const result = spawnSync(command.executable, command.args, {
     cwd: command.cwd,
+    argv0: command.argv0,
     input: command.input,
     env: command.env,
     encoding: "utf8",

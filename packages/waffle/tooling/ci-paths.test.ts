@@ -500,6 +500,48 @@ test("diffutils SDK uses supported step context and runner scratch", () => {
   expect(String(build?.run)).toContain("ninja --version");
 });
 
+test("diffutils provisions one exact native GNU oracle", () => {
+  const steps = stepsFor("diffutils");
+  const compiler = steps.find((step) => step.id === "native-compiler");
+  const cache = steps.find((step) => step.id === "native-oracle");
+  const recipe = steps.find((step) => step.name === "Build or verify native GNU diffutils oracle");
+  const build = steps.find((step) => step.name === "Build and test diffutils");
+  expect(compiler?.run).toContain("cc -dumpmachine");
+  expect(compiler?.run).toContain("cc --version");
+  expect(cache?.uses).toBe("actions/cache@v4");
+  expect(record(cache?.with).path).toBe(".build/diffutils-native-oracle");
+  const key = String(record(cache?.with).key);
+  expect(key).toContain("${{ runner.os }}");
+  expect(key).toContain("${{ runner.arch }}");
+  expect(key).toContain("gnu-3.12");
+  expect(key).toContain(
+    "${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/scripts/build-native-oracle.ts') }}",
+  );
+  expect(key).toContain("${{ steps.native-compiler.outputs.identity }}");
+  expect(recipe?.run).toBe("bun run --cwd packages/diffutils native-oracle");
+  expect(record(recipe?.env).NATIVE_ORACLE_COMPILER_IDENTITY).toBe(
+    "${{ steps.native-compiler.outputs.identity }}",
+  );
+  expect(steps.indexOf(compiler)).toBeLessThan(steps.indexOf(cache));
+  expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(recipe));
+  expect(steps.indexOf(recipe)).toBeLessThan(steps.indexOf(build));
+  expect(record(build?.env).GNU_DIFF).toBe(
+    "${{ github.workspace }}/.build/diffutils-native-oracle/diff",
+  );
+  expect(record(build?.env).GNU_CMP).toBe(
+    "${{ github.workspace }}/.build/diffutils-native-oracle/cmp",
+  );
+  expect(
+    Object.keys(jobs)
+      .filter((name) => Array.isArray(record(jobs[name]).steps))
+      .flatMap((name) =>
+        stepsFor(name).filter(
+          (step) => step.run === "bun run --cwd packages/diffutils native-oracle",
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
 test("diffutils package exposes its actual commands", async () => {
   const { diffutils } = await import("../../diffutils/src/index.ts");
   expect(diffutils.pick("diff", "/bin/cmp").programs.map((program) => program.path)).toEqual([

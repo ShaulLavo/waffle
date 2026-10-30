@@ -25,6 +25,7 @@
   "scripts": {
     "build": "node scripts/build-diffutils.ts",
     "test": "node scripts/test-diffutils.ts",
+    "native-oracle": "node scripts/build-native-oracle.ts",
     "test:wasi": "bun test tests/diffutils-wasi.test.ts",
     "test:source": "node --test scripts/gnu-source.test.ts tests/command-deadline.test.ts",
     "typecheck": "tsc -p .",

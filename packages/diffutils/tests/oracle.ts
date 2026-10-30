@@ -35,6 +35,7 @@ export function executeNative(
   const result = runCommand({
     name: `native ${fixture.name}`,
     executable: executables[fixture.program],
+    argv0: fixture.program,
     args: fixture.args,
     cwd: root,
     input: fixture.stdin ?? "",

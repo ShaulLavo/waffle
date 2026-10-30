@@ -277,6 +277,27 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - name: Record native compiler identity
+        id: native-compiler
+        run: |
+          set -eu
+          identity=$(
+            {
+              cc -dumpmachine
+              cc --version | sed -n '1p'
+            } | sha256sum | cut -d' ' -f1
+          )
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+          printf 'native compiler identity: %s\n' "$identity"
+      - uses: actions/cache@v4
+        id: native-oracle
+        with:
+          path: .build/diffutils-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-program-diffutils-native-oracle-v1-gnu-3.12-${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/scripts/build-native-oracle.ts') }}-${{ steps.native-compiler.outputs.identity }}
+      - name: Build or verify native GNU diffutils oracle
+        run: bun run --cwd packages/diffutils native-oracle
+        env:
+          NATIVE_ORACLE_COMPILER_IDENTITY: ${{ steps.native-compiler.outputs.identity }}
       - uses: actions/cache@v4
         id: diffutils-cache
         with:
@@ -321,6 +342,8 @@ jobs:
           ninja --version
           bun run programs:diffutils
         env:
+          GNU_DIFF: ${{ github.workspace }}/.build/diffutils-native-oracle/diff
+          GNU_CMP: ${{ github.workspace }}/.build/diffutils-native-oracle/cmp
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
   package:
