@@ -35,6 +35,7 @@ jobs:
       gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
       curl: ${{ steps.paths.outputs.curl }}
+      procps-pure: ${{ steps.paths.outputs.procps-pure }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -183,6 +184,12 @@ jobs:
               - "tools/program-package.ts"
               - "tools/tsconfig.programs.json"
               - "packages/curl/**"
+            procps-pure:
+              - ".github/workflows/ci.yml"
+              - "package.json"
+              - "bun.lock"
+              - "packages/waffle/**"
+              - "packages/procps/**"
             browser:
               - ".github/**"
               - "packages/waffle/Cargo.toml"
@@ -285,6 +292,26 @@ jobs:
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
+  procps-pure:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps-pure == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.1
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types
+      - run: echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: bun run programs:procps:pure
   diffutils:
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}

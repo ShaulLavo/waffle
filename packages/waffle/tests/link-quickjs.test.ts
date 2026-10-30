@@ -23,6 +23,7 @@ test.skipIf(!directory)(
         source: core,
         cooperative: true,
         checkpoint: { module: "runtime_proc", name: "signal" },
+        initializeMemory: [],
         initialize: ["__wasm_call_ctors"],
       },
       libraries: [
@@ -31,11 +32,8 @@ test.skipIf(!directory)(
           source: engine,
           cooperative: true,
           checkpoint: { module: "env", name: "core_checkpoint" },
-          initialize: [
-            "quickjs_initialize_memory",
-            "quickjs_apply_data_relocs",
-            "quickjs_call_ctors",
-          ],
+          initializeMemory: ["quickjs_initialize_memory", "quickjs_apply_data_relocs"],
+          initialize: ["quickjs_call_ctors"],
         },
       ],
       reserve: "bun_core_alloc",
@@ -67,10 +65,10 @@ test.skipIf(!directory)(
       return fn();
     };
     try {
+      expect(group.libraries).toEqual([]);
+      group.initialize();
       const library = group.libraries[0]!;
       expect(library.instance.exports.__stack_pointer).toBe(group.entry.exports.__stack_pointer);
-      expect(call(library.instance, "quickjs_ctor_value")).toBe(0);
-      group.initialize();
       expect(call(library.instance, "quickjs_ctor_value")).toBe(42);
       group.initialize();
       expect(call(library.instance, "quickjs_ctor_value")).toBe(42);

@@ -173,3 +173,44 @@ for (const [command, entry] of [
     ).not.toThrow();
   });
 }
+
+test("installed root and filesystem entries share the public workspace stream contract", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import * as root from "waffle";
+    import * as fs from "waffle/fs";
+    import { MemFS } from "waffle/fs/memory";
+    assert.equal(root.openWorkspaceRead, fs.openWorkspaceRead);
+    assert.equal(root.WorkspaceReadContractError, fs.WorkspaceReadContractError);
+    const seed = new MemFS();
+    seed.writeFile("/file", new Uint8Array([65, 66, 67]));
+    const backend = new fs.MemoryBackend(seed);
+    const pair = fs.createFilesystemConnection(undefined, { workspace: true });
+    const service = new fs.FilesystemService(backend);
+    service.connect(pair.server);
+    const client = new fs.FilesystemClient(pair.client);
+    const workspace = fs.createWorkspaceVfs(client);
+    try {
+      const opened = await root.openWorkspaceRead(workspace, "/file");
+      assert.equal(opened.kind, "ok");
+      const step = await opened.value.next();
+      assert.equal(step.kind, "chunk");
+      assert.deepEqual(Array.from(step.bytes), [65, 66, 67]);
+      assert.deepEqual(await opened.value.next(), { kind: "end" });
+      await opened.value.close();
+    } finally {
+      await workspace.close();
+      client.dispose();
+      await service.drainForOwner();
+      service.dispose();
+      pair.client.port.close();
+      pair.server.port.close();
+    }
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});

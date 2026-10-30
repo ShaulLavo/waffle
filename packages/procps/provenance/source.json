@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "implementation": "Original TypeScript selector, formatter and inert signal-plan code. Not a procps-ng build or port.",
+  "license": "MIT",
+  "acceptedWaffleCommit": "620da8002cf2dab88862a0a503e228413b52603a",
+  "runtimeContractWaffleCommit": "db1bcd95c06a8130fd85caa510754a7f14bf9b98",
+  "runtimeAcceptance": "NOT IMPLEMENTED: Waffle supplies host commands and delegated signals, but this pure package has no command adapter or execution acceptance.",
+  "nativeOracle": {
+    "family": "procps-ng",
+    "version": "4.0.7",
+    "collectedAt": "2026-10-30T14:51:07.834Z",
+    "cases": 37,
+    "file": "fixtures/oracle.json",
+    "sha256": "59465041176775ba2d111bf58eac5f72642d91e836c2d5e197c94f2041adb22d",
+    "collectorSha256": "874726c1582af71ff02792081c6a43e9dadef36035c9309dee5ec1e7714f583c",
+    "collectorLocation": "/work/reports/wave-20261029/agent-tools/process-contract/collect.ts",
+    "recollectedForThisPackage": false,
+    "rawObservationsAndNormalization": "Preserved byte-for-byte; comparisons use raw status, stdout and stderr where supported. No dynamic-field normalization is broadened."
+  },
+  "survey": {
+    "file": "fixtures/survey-priority.json",
+    "sha256": "6e3ad9879b817f829fd84b5882d5e4f4ff5d815eb8a6b5234faa084bd24b8b0f"
+  },
+  "payload": {
+    "wasm": null,
+    "nativeGuestBuild": false,
+    "runtimeCatalogExport": false,
+    "reason": "No payload or executable catalog is invented for a pure package. Waffle now supplies the host-command contract, but procps integration remains separate work."
+  }
+}

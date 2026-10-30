@@ -83,6 +83,13 @@ export type {
   ProgramsOptions,
 } from "./programs/collection.js";
 
+export {
+  openWorkspaceRead,
+  WorkspaceReadContractError,
+  type WorkspaceReadStream,
+  type WorkspaceReadStep,
+} from "./fs/workspace-stream.js";
+
 export { CommandStdioError } from "./proc/command.js";
 export type {
   HostCommand,
