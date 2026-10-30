@@ -6,7 +6,7 @@ import type {
   FamilyAcceptanceSession,
   LaunchRequest,
 } from "../../../../tools/family-acceptance.ts";
-import { checksumNames, type ChecksumName } from "../../scripts/build-checksums.ts";
+import { checksumNames, type ChecksumName } from "../../scripts/programs.ts";
 
 const environment = { PATH: "/usr/bin:/bin", HOME: "/tmp/spec", LC_ALL: "C", TZ: "UTC" };
 const data = "Waffle checksum\n";
@@ -27,11 +27,22 @@ interface Invocation {
   readonly args: readonly string[];
   readonly input?: Uint8Array | string;
   readonly close?: 0 | 1;
+  /** PWD is ordinary environment: it may name another directory or be missing. */
+  readonly pwd?: "decoy" | "absent";
+}
+
+const guestRoot = "/work/checksum-regressions";
+const decoy = "decoy";
+
+function pwd(root: string, invocation: Invocation) {
+  if (invocation.pwd === "absent") return {};
+  return { PWD: invocation.pwd === "decoy" ? resolve(root, decoy) : root };
 }
 
 function native(root: string, invocation: Invocation) {
   const command = `/usr/bin/${invocation.utility}`;
-  const options = { cwd: root, env: environment, input: invocation.input ?? "", timeout: 5000 };
+  const env = { ...environment, ...pwd(root, invocation) };
+  const options = { cwd: root, env, input: invocation.input ?? "", timeout: 5000 };
   const result =
     invocation.close === undefined
       ? spawnSync(command, invocation.args, options)
@@ -60,8 +71,8 @@ async function guest(session: FamilyAcceptanceSession, invocation: Invocation) {
   const request: LaunchRequest = {
     executable: `/usr/bin/${invocation.utility}`,
     argv: ["unrelated-executable-name"].concat(invocation.args),
-    cwd: "/work/checksum-regressions",
-    env: { ...environment, PWD: "/work/checksum-regressions" },
+    cwd: guestRoot,
+    env: { ...environment, ...pwd(guestRoot, invocation) },
     fds: [0, 1, 2]
       .filter((fd) => fd !== invocation.close)
       .map((fd) => ({ child: fd, parent: fd === 0 ? stdin : fd })),
@@ -107,6 +118,15 @@ function descriptorCases(): Invocation[] {
   ]);
 }
 
+// Relative names follow the launch cwd, never a PWD that names other or no files.
+function cwdCases(): Invocation[] {
+  const cases = checksumNames.flatMap((utility): Invocation[] => [
+    { utility, args: ["input"], pwd: "decoy" },
+    { utility, args: ["input"], pwd: "absent" },
+  ]);
+  return cases.concat([{ utility: "sha256sum", args: ["--check", "expected"], pwd: "decoy" }]);
+}
+
 function generationCases(utility: ChecksumName): Invocation[] {
   const algorithm = utility === "cksum" ? ["--algorithm=sha256"] : [];
   const untagged = utility === "cksum" ? algorithm.concat(["--untagged"]) : algorithm;
@@ -139,12 +159,15 @@ export async function checksumRegressions(session: FamilyAcceptanceSession) {
   mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(resolve(parent, "checksum-regressions-"));
   try {
-    await session.filesystem.mkdirp("/work/checksum-regressions");
+    await session.filesystem.mkdirp(`${guestRoot}/${decoy}`);
+    mkdirSync(resolve(root, decoy));
     for (const [name, content] of files) {
       writeFileSync(resolve(root, name), content);
-      await session.filesystem.writeFile(`/work/checksum-regressions/${name}`, content);
+      await session.filesystem.writeFile(`${guestRoot}/${name}`, content);
+      writeFileSync(resolve(root, decoy, name), `decoy ${content}`);
+      await session.filesystem.writeFile(`${guestRoot}/${decoy}/${name}`, `decoy ${content}`);
     }
-    const cases = descriptorCases();
+    const cases = descriptorCases().concat(cwdCases());
     for (const invocation of cases) await compare(session, root, invocation);
     const count = await roundtrips(session, root);
     console.log(

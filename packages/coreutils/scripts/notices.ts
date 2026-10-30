@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { generateRustNotices } from "../../../tools/program-notices.ts";
+import { prepareChecksumSource } from "./prepare-checksum-source.ts";
 import fileOperations from "../provenance/file-operations.source.json" with { type: "json" };
 import envSource from "../provenance/env.source.json" with { type: "json" };
 import envProvenance from "../vendor/uutils-env/provenance.json" with { type: "json" };
@@ -127,6 +128,8 @@ for (const pkg of metadata.packages.toSorted((a, b) => a.name.localeCompare(b.na
 await mkdir(resolve(root, "dist"), { recursive: true });
 await writeFile(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), output);
 
+// The isolated checksum workspace resolves its patched dependency from the owned source.
+prepareChecksumSource();
 generateRustNotices({
   root,
   packages: [
@@ -140,4 +143,7 @@ generateRustNotices({
   ],
   features: "cooperative-wasi",
   prefix: readFileSync(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), "utf8"),
+  isolated: [
+    { manifest: resolve(root, "crates/checksums/Cargo.toml"), packages: ["waffle-coreutils-checksums"] },
+  ],
 });

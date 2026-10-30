@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { checksumNames } from "./build-checksums.ts";
+import { checksumNames } from "./programs.ts";
 import { fixturePath, readFixture } from "./checksum-oracle.ts";
 import provenance from "../provenance/checksums.source.json" with { type: "json" };
 
@@ -33,6 +33,9 @@ test("checksum source stays a pinned isolated upstream leaf", () => {
     assert.match(manifest, new RegExp(`uu_${name}`));
   }
   assert.match(manifest, /\[patch\."https:\/\/github.com\/uutils\/coreutils"\]/);
+  const cwd = text(resolve(crateRoot, "src/cwd.rs"));
+  assert.match(cwd, /wasm_import_module = "runtime_proc"/);
+  assert.doesNotMatch(cwd, /env::var/, "PWD is environment, not the launch cwd");
   assert.match(text(resolve(crateRoot, "src/stdio.rs")), /fn fd_read\(/);
   assert.match(text(resolve(crateRoot, "src/stdio.rs")), /fn fd_write\(/);
   assert.equal(provenance.revision, revision);

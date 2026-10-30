@@ -38,6 +38,15 @@ const runtimeUrl = runtimeReleaseUrl("ShaulLavo/waffle", runtimeVersion);
 let runtimeSha256 = "";
 let runtimeArchive = "";
 const baseFamilies = ["coreutils", "findutils", "grep", "sed", "ripgrep", "base"];
+
+/** Raw guests the family's committed artifact recipe admits, sorted. */
+function recipeGuests(family: string): string[] {
+  const recipe = JSON.parse(
+    readFileSync(resolve(repository, "packages", family, "package-artifacts.json"), "utf8"),
+  );
+  return (recipe.files as string[]).filter((file) => file.endsWith(".wasm")).sort();
+}
+const baseGuestCount = baseFamilies.flatMap(recipeGuests).length;
 const tag = "programs-v0.0.92";
 const assetBase = `https://github.com/ShaulLavo/waffle/releases/download/${tag}`;
 
@@ -205,7 +214,7 @@ describe("base closure", () => {
         .filter((artifact) => artifact.path.endsWith(".wasm"))
         .map((artifact) => ({ item, artifact })),
     );
-    expect(raw).toHaveLength(26);
+    expect(raw).toHaveLength(baseGuestCount);
     for (const { item, artifact } of raw) {
       const gzip = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.gz`);
       const brotli = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.br`);
@@ -259,33 +268,11 @@ describe("base closure", () => {
     expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm).toHaveLength(26);
+    expect(wasm).toHaveLength(baseGuestCount);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
-    const coreutilsGuests = [
-      "dist/cat.wasm",
-      "dist/clear.wasm",
-      "dist/cp.wasm",
-      "dist/cut.wasm",
-      "dist/date.wasm",
-      "dist/echo.wasm",
-      "dist/env.wasm",
-      "dist/head.wasm",
-      "dist/ls.wasm",
-      "dist/mkdir.wasm",
-      "dist/mv.wasm",
-      "dist/nl.wasm",
-      "dist/rm.wasm",
-      "dist/seq.wasm",
-      "dist/sort.wasm",
-      "dist/tail.wasm",
-      "dist/touch.wasm",
-      "dist/tr.wasm",
-      "dist/uniq.wasm",
-      "dist/wc.wasm",
-      "dist/which.wasm",
-    ];
+    const coreutilsGuests = recipeGuests("coreutils");
     expect(guests.get("waffle-coreutils")?.descriptor).toEqual(coreutilsGuests);
     const coreutils = manifest.packages.find((item) => item.name === "waffle-coreutils");
     if (!coreutils) throw new Error("coreutils is missing from the release");
@@ -315,7 +302,7 @@ describe("base closure", () => {
       ...(await fixtureOptions(linkedRoot, "unused-output")),
       out: link,
     });
-    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(26);
+    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(baseGuestCount);
     for (const guest of receipt.installCheck.wasm)
       expect(guest.path.startsWith("node_modules/")).toBe(true);
   }, 60_000);

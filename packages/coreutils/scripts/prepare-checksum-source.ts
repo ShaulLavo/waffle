@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import type { OwnedLocaleSource } from "../../../tools/program-locales/prepare.ts";
 
 export const checksumRevision = "07763857f6b9a547742a994b58aef0ccd036198b";
 const root = resolve(import.meta.dirname, "..");
@@ -89,7 +90,17 @@ function materialize(source: string, destination: string) {
     writeFileSync(resolve(checksum, name), readFileSync(resolve(crate, "src", name)));
 }
 
-export function prepareChecksumSource() {
+function sealed(): OwnedLocaleSource {
+  const receipt = readFileSync(resolve(checksumSource, "waffle-source.json"));
+  return {
+    directory: checksumSource,
+    revision: checksumRevision,
+    receiptSha256: createHash("sha256").update(receipt).digest("hex"),
+  };
+}
+
+/** Exports, patches and seals the dependency tree; locale selection binds its receipt hash. */
+export function prepareChecksumSource(): OwnedLocaleSource {
   const source = upstreamSource();
   assert.equal(git(source, ["rev-parse", "HEAD"]).trim(), checksumRevision);
   const expectedInputs = inputs();
@@ -102,7 +113,7 @@ export function prepareChecksumSource() {
       { revision: checksumRevision, inputs: expectedInputs, files: identity(checksumSource) },
       "Patched checksum source changed; remove the owned generated source before preparing again",
     );
-    return checksumSource;
+    return sealed();
   }
   mkdirSync(dirname(checksumSource), { recursive: true });
   const temporary = mkdtempSync(resolve(dirname(checksumSource), ".checksums-"));
@@ -121,7 +132,7 @@ export function prepareChecksumSource() {
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
-  return checksumSource;
+  return sealed();
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename))

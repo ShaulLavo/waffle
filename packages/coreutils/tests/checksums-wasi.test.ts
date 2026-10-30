@@ -11,7 +11,8 @@ import {
   type LaunchRequest,
   type RunningProgram,
 } from "../../../tools/family-acceptance.ts";
-import { checksumNames } from "../scripts/build-checksums.ts";
+import { checksumNames } from "../scripts/programs.ts";
+import { coreutils } from "../src/index.ts";
 import {
   readFixture,
   streamingInput,
@@ -22,25 +23,37 @@ import {
 
 import { checksumRegressions } from "./helpers/checksum-regressions.ts";
 
-const artifactDirectory =
-  process.env.CHECKSUM_ARTIFACTS ??
-  resolve(import.meta.dirname, "../../../.build/coreutils-checksums/dist");
+// Defaults to the package's staged guests; set this to read back a retained artifact directory.
+const artifactDirectory = process.env.CHECKSUM_ARTIFACTS;
 const decoder = new TextDecoder();
 const empty: ProgramPackage = { name: "empty", programs: [] };
 
+function guestUrl(name: string, packaged: URL | undefined) {
+  if (artifactDirectory) return pathToFileURL(resolve(artifactDirectory, `${name}.wasm`));
+  assert.ok(packaged, `coreutils has no packaged guest for ${name}`);
+  return packaged;
+}
+
+/** The registered coreutils checksum entries, with fetches recorded for lazy-load checks. */
 function checksumPackage(loaded: string[]): ProgramPackage {
+  const registered = coreutils.pick(...checksumNames);
   return {
     name: "coreutils-checksums",
-    programs: checksumNames.map((name) => ({
-      path: `/usr/bin/${name}`,
-      aliases: [`/bin/${name}`],
-      source: async () => {
-        loaded.push(name);
-        const response = await fetch(pathToFileURL(resolve(artifactDirectory, `${name}.wasm`)));
-        assert.ok(response.ok, `Cannot fetch checksum artifact: ${name}`);
-        return new Uint8Array(await response.arrayBuffer());
-      },
-    })),
+    programs: checksumNames.map((name, index) => {
+      const program = registered.programs[index];
+      assert.ok(program && program.path === `/usr/bin/${name}`, name);
+      const url = guestUrl(name, program.wasm);
+      return {
+        path: program.path,
+        aliases: program.aliases,
+        source: async () => {
+          loaded.push(name);
+          const response = await fetch(url);
+          assert.ok(response.ok, `Cannot fetch checksum artifact: ${name}`);
+          return new Uint8Array(await response.arrayBuffer());
+        },
+      };
+    }),
   };
 }
 

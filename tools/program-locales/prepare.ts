@@ -9,7 +9,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { patchBuildScript, sha256, sourceIdentity } from "./patch.ts";
 import { selectCatalogs } from "./selection.ts";
 
@@ -98,15 +98,38 @@ function localeManifest(root: string, program: string): string {
   return resolve(root, path, "Cargo.toml");
 }
 
-function catalogInput(packages: readonly CargoPackage[], key: string, version: string) {
+/** A generated dependency tree whose receipt seals every file, exported from a pinned revision. */
+export interface OwnedLocaleSource {
+  readonly directory: string;
+  readonly revision: string;
+  readonly receiptSha256: string;
+}
+
+function inside(directory: string, path: string) {
+  const offset = relative(directory, path);
+  return offset !== "" && !offset.startsWith("..") && !offset.startsWith("/");
+}
+
+function pinned(entry: CargoPackage, version: string, owned: OwnedLocaleSource | undefined) {
+  const identity = sourceIdentity(version);
+  if (entry.source === identity.source) return true;
+  if (entry.source !== null) return false;
+  if (owned) return owned.revision === identity.revision && inside(owned.directory, entry.manifest_path);
+  return entry.name === "uu_env";
+}
+
+function catalogInput(
+  packages: readonly CargoPackage[],
+  key: string,
+  version: string,
+  owned: OwnedLocaleSource | undefined,
+) {
   const identity = sourceIdentity(version);
   const catalog = Object.entries(identity.catalogs).find(([name]) => name === key)?.[1];
   assert.ok(catalog, `Missing pinned catalog: ${version}/${key}`);
   const pkg = packages.find(
     (entry) =>
-      entry.name === catalog.package &&
-      entry.version === version &&
-      (entry.source === identity.source || (entry.name === "uu_env" && entry.source === null)),
+      entry.name === catalog.package && entry.version === version && pinned(entry, version, owned),
   );
   assert.ok(pkg, `Missing pinned locale package: ${catalog.package} ${version}`);
   const path = resolve(dirname(pkg.manifest_path), catalog.path);
@@ -126,8 +149,9 @@ export function prepareProgramLocales(options: {
   readonly program: string;
   readonly env: NodeJS.ProcessEnv;
   readonly manifest?: string;
+  readonly ownedSource?: OwnedLocaleSource;
 }): NodeJS.ProcessEnv {
-  const { root, program, env } = options;
+  const { root, program, env, ownedSource } = options;
   assert.ok(
     !env.RUSTC_WRAPPER,
     "Program locale builds require their declared rustc wrapper, not a hidden wrapper chain",
@@ -137,7 +161,7 @@ export function prepareProgramLocales(options: {
     .filter((entry) => entry.name === "uucore")
     .map((pkg) => {
       const identity = sourceIdentity(pkg.version);
-      assert.equal(pkg.source, identity.source, "Unpinned uucore dependency source");
+      assert.ok(pinned(pkg, pkg.version, ownedSource), "Unpinned uucore dependency source");
       const buildScript = resolve(dirname(pkg.manifest_path), "build.rs");
       assert.equal(
         sha256(readFileSync(buildScript)),
@@ -145,7 +169,7 @@ export function prepareProgramLocales(options: {
         "Unpinned uucore build.rs",
       );
       const catalogs = selectCatalogs(program, pkg.version).map((key) =>
-        catalogInput(packages, key, pkg.version),
+        catalogInput(packages, key, pkg.version, ownedSource),
       );
       return {
         version: pkg.version,
@@ -180,6 +204,7 @@ export function prepareProgramLocales(options: {
     program,
     policy: "utility-and-common-English-only",
     implementation,
+    ownedSource: ownedSource ?? null,
     sources: selections,
   };
   const directory = resolve(root, ".build/program-locales", sha256(JSON.stringify(receipt)));
@@ -250,6 +275,15 @@ export function singleProgramBuilds(args: readonly string[], programs: readonly 
   });
 }
 
+function generatedKeys(source: string) {
+  const keys = Array.from(source.matchAll(/^\s*"([^"\n]+)" => Some/gm), (match) => match[1]);
+  assert.ok(
+    keys.length >= 2 && keys.every((key) => key?.endsWith("/en-US.ftl")),
+    "Unexpected generated locale selection",
+  );
+  return keys;
+}
+
 export function recordProgramLocaleBuild(env: NodeJS.ProcessEnv) {
   const inputs = env.WAFFLE_PROGRAM_LOCALE_INPUTS;
   assert.ok(inputs, "Missing selected locale inputs");
@@ -262,18 +296,16 @@ export function recordProgramLocaleBuild(env: NodeJS.ProcessEnv) {
       const marker = resolve(out, "waffle-program-locale-inputs");
       if (!existsSync(marker) || readFileSync(marker, "utf8") !== inputs) return [];
       const source = readFileSync(resolve(out, "embedded_locales.rs"), "utf8");
-      const keys = Array.from(source.matchAll(/^\s*"([^"\n]+)" => Some/gm), (match) => match[1]);
-      assert.ok(
-        keys.length >= 2 && keys.every((key) => key?.endsWith("/en-US.ftl")),
-        "Unexpected generated locale selection",
-      );
+      const keys = generatedKeys(source);
       const version = readFileSync(resolve(out, "waffle-program-locale-version"), "utf8");
       const expected = readFileSync(resolve(inputs, `${version}.inputs`), "utf8")
         .trim()
         .split("\n")
         .map((line) => line.split("\t")[0]);
       assert.deepEqual(keys, expected, "Generated catalogs do not match the selected program");
-      return [{ path: resolve(out, "embedded_locales.rs"), sha256: sha256(source), version, keys }];
+      // Keep the generated bytes themselves: later boundaries must not rely on Cargo's OUT_DIR.
+      const path = resolve(out, "embedded_locales.rs");
+      return [{ path, sha256: sha256(source), version, keys, source }];
     });
   assert.ok(generated.length > 0, "Cargo produced no catalog selection proof");
   atomicWrite(resolve(inputs, "generated.json"), JSON.stringify(generated, null, 2) + "\n");
@@ -351,7 +383,15 @@ export function readProgramLocaleProof(guest: string, program: string): unknown 
     assert.ok(
       "sha256" in generated &&
         typeof generated.sha256 === "string" &&
-        /^[a-f0-9]{64}$/.test(generated.sha256),
+        "source" in generated &&
+        typeof generated.source === "string",
+      "Locale proof lacks its generated source bytes",
+    );
+    assert.equal(sha256(generated.source), generated.sha256, "Generated locale source changed");
+    assert.deepEqual(
+      generatedKeys(generated.source),
+      generated.keys,
+      "Generated locale source differs",
     );
   }
   assert.equal(

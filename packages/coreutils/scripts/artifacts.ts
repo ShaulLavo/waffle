@@ -16,11 +16,15 @@ type Verify = typeof verifyWasiGuest;
 function receipt(root: string, directory: string, verifier: Verify): string {
   const source = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   assert.match(source, /^[a-f0-9]{40}$/);
-  const hashes = coreutilsNames.map((name) => {
+  const line = (file: string) =>
+    `${createHash("sha256").update(readFileSync(resolve(directory, file))).digest("hex")}  ${file}`;
+  const hashes = coreutilsNames.flatMap((name) => {
     const path = resolve(directory, `${name}.wasm`);
     verifier(path, verificationOptions(name));
-    if (usesProgramCatalogs(name)) readProgramLocaleProof(path, name);
-    return `${createHash("sha256").update(readFileSync(path)).digest("hex")}  ${name}.wasm`;
+    if (!usesProgramCatalogs(name)) return [line(`${name}.wasm`)];
+    readProgramLocaleProof(path, name);
+    // The proof carries the generated catalog source, so its bytes are part of the receipt.
+    return [line(`${name}.wasm`), line(`${name}.wasm.locales.json`)];
   });
   return [`source ${source}`].concat(hashes).join("\n") + "\n";
 }

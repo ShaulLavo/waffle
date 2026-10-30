@@ -13,7 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { resolve } from "node:path";
-import { checksumNames, type ChecksumName } from "./build-checksums.ts";
+import { checksumNames, type ChecksumName } from "./programs.ts";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const workspaceRoot = resolve(packageRoot, "../..");
