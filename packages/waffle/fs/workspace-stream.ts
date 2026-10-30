@@ -1,4 +1,4 @@
-import { ReadRefusal, nodeMetadata, readRange } from "./workspace-protocol.js";
+import { ReadRefusal, readRange, versionStat } from "./workspace-protocol.js";
 import {
   WORKSPACE_READ_LIMITS,
   type ByteRange,
@@ -6,7 +6,6 @@ import {
   type FileVersion,
   type ReadFailure,
   type ReadOutcome,
-  type ReadValue,
   type VersionLease,
   type VersionStat,
   type WorkspaceVfs,
@@ -80,17 +79,31 @@ export async function openWorkspaceRead(
   return { kind: "cancelled" };
 }
 
-function snapshotStat(stat: VersionStat): VersionStat {
-  const { id, version, cut, size, mtime, mode } = stat;
-  return Object.freeze({
-    ...nodeMetadata(stat),
-    id,
-    version,
-    size,
-    mtime,
-    mode,
-    cut: Object.freeze({ ...cut, watermark: Object.freeze({ ...cut.watermark }) }),
-  });
+function isMetadataRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function snapshotStat(value: unknown): VersionStat {
+  if (!isMetadataRecord(value)) throw new WorkspaceReadContractError();
+  const { id, version, kind, target, cut, size, mtime, mode } = value;
+  if (!isMetadataRecord(cut)) throw new WorkspaceReadContractError();
+  const { workspace, generation, watermark } = cut;
+  if (!isMetadataRecord(watermark)) throw new WorkspaceReadContractError();
+  const { history, seq } = watermark;
+  // Observe provider getters before parsing plain data, preserving their exact rejection values.
+  try {
+    return versionStat({
+      id,
+      version,
+      kind,
+      target,
+      size,
+      mtime,
+      mode,
+      cut: { workspace, generation, watermark: { history, seq } },
+    });
+  } catch {
+    throw new WorkspaceReadContractError();
+  }
 }
 function sameStat(first: VersionStat, second: VersionStat): boolean {
   return (
@@ -214,15 +227,21 @@ class LeaseStream implements WorkspaceReadStream {
   }
 
   private accept(
-    value: ReadValue,
+    value: unknown,
     offset: number,
     length: number,
   ): WorkspaceReadStep | Promise<WorkspaceReadStep> {
     if (this.terminal) return this.terminal;
+    if (!isMetadataRecord(value)) throw new WorkspaceReadContractError();
     const stat = snapshotStat(value.stat);
     if (!sameStat(stat, this.stat)) throw new WorkspaceReadContractError({ kind: "stat", stat });
     const { range, bytes } = value;
-    if (range.offset !== offset || range.length !== length || !ownedExact(bytes, length))
+    if (
+      !isMetadataRecord(range) ||
+      range.offset !== offset ||
+      range.length !== length ||
+      !ownedExact(bytes, length)
+    )
       throw new WorkspaceReadContractError();
     if (this.terminal) return this.terminal;
     this.position = offset + length;

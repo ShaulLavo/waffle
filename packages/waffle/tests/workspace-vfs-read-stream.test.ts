@@ -4,6 +4,7 @@ import { MemoryBackend } from "../fs/backend.js";
 import { MemFS } from "../fs/memory.js";
 import {
   openWorkspaceRead,
+  WorkspaceReadContractError,
   type WorkspaceReadStream,
   type WorkspaceReadStep,
 } from "../fs/workspace-stream.js";
@@ -763,6 +764,113 @@ test("an actual copyRead ticket cleanup rejection remains next's exact stable re
     expect(await capture(work)).toEqual({ kind: "error", error: 0 });
     expect(stream.next()).toBe(work);
     await stream.close();
+    released(fixture);
+  } finally {
+    await fixture.close();
+  }
+});
+
+function malformedLease(
+  lease: VersionLease,
+  field: "stat" | "range",
+  replacement: (stat: VersionStat) => unknown,
+): VersionLease {
+  return {
+    stat: lease.stat,
+    async read(range, signal) {
+      const result = await lease.read(range, signal);
+      if (result.kind !== "ok") return result;
+      return {
+        kind: "ok",
+        value: Object.defineProperty({ ...result.value }, field, {
+          value: replacement(lease.stat),
+        }),
+      };
+    },
+    close: () => lease.close(),
+  };
+}
+
+for (const [label, field, replacement] of [
+  ["missing stat", "stat", () => undefined],
+  ["null stat", "stat", () => null],
+  ["malformed kind", "stat", (stat: VersionStat) => ({ ...stat, kind: "invalid" })],
+  ["missing cut", "stat", (stat: VersionStat) => ({ ...stat, cut: undefined })],
+  [
+    "missing watermark",
+    "stat",
+    (stat: VersionStat) => ({ ...stat, cut: { ...stat.cut, watermark: null } }),
+  ],
+  [
+    "invalid symlink size",
+    "stat",
+    (stat: VersionStat) => ({ ...stat, kind: "symlink", target: "/wrong", size: 1 }),
+  ],
+  ["missing range", "range", () => undefined],
+  ["null range", "range", () => null],
+] satisfies readonly [string, "stat" | "range", (stat: VersionStat) => unknown][]) {
+  test(`stream normalizes ${label} provider metadata and releases its lease`, async () => {
+    const fixture = memory(1);
+    const workspace = wrap(fixture.workspace, (lease) => malformedLease(lease, field, replacement));
+    try {
+      const stream = await open(workspace);
+      const pending = stream.next();
+      const failure = await capture(pending);
+      expect(failure.kind).toBe("error");
+      if (failure.kind !== "error") throw new Error("Expected metadata rejection");
+      expect(failure.error).toBeInstanceOf(WorkspaceReadContractError);
+      expect(stream.next()).toBe(pending);
+      await stream.close();
+      released(fixture);
+    } finally {
+      await fixture.close();
+    }
+  });
+}
+
+function throwingCut(stat: VersionStat, reason: unknown): VersionStat {
+  return {
+    ...stat,
+    get cut() {
+      throw reason;
+    },
+  };
+}
+
+for (const reason of [undefined, null, false, 0, ""]) {
+  test(`stream preserves a nested metadata getter's exact ${String(reason)} rejection`, async () => {
+    const fixture = memory(1);
+    const workspace = wrap(fixture.workspace, (lease) =>
+      malformedLease(lease, "stat", (stat) => throwingCut(stat, reason)),
+    );
+    try {
+      const stream = await open(workspace);
+      const pending = stream.next();
+      expect(await capture(pending)).toEqual({ kind: "error", error: reason });
+      expect(stream.next()).toBe(pending);
+      await stream.close();
+      released(fixture);
+    } finally {
+      await fixture.close();
+    }
+  });
+}
+
+test("stream opening normalizes malformed pinned metadata and closes the lease", async () => {
+  const fixture = memory(1);
+  const workspace = wrap(fixture.workspace, (lease) => {
+    const wrapped: VersionLease = {
+      stat: lease.stat,
+      read: lease.read.bind(lease),
+      close: lease.close.bind(lease),
+    };
+    return Object.defineProperty(wrapped, "stat", { value: { ...lease.stat, cut: undefined } });
+  });
+  try {
+    const result = await capture(openWorkspaceRead(workspace, "/file"));
+    expect(result.kind).toBe("error");
+    if (result.kind !== "error") throw new Error("Expected opening metadata rejection");
+    expect(result.error).toBeInstanceOf(WorkspaceReadContractError);
     released(fixture);
   } finally {
     await fixture.close();
