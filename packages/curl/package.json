@@ -1,0 +1,39 @@
+{
+  "name": "waffle-curl",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Optional curl-like Fetch and guest I/O boundaries; runtime-native admission is blocked.",
+  "files": [
+    "dist",
+    "src",
+    "scripts",
+    "tests",
+    "docs",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "package-artifacts.json",
+    "sources.lock.json",
+    "tsconfig.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "bun": "./src/index.ts",
+      "default": "./dist/curl.js"
+    }
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "test": "bun test tests --timeout 5000",
+    "typecheck": "tsc -p .",
+    "prepack": "bun ../../tools/program-package.ts check",
+    "pack": "bun ../../tools/program-package.ts pack",
+    "prepare:package": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "7.0.2"
+  }
+}
