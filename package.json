@@ -41,7 +41,8 @@
     "programs:browser": "bun tools/family-browser.ts",
     "programs:packed": "bun tools/family-packed.ts",
     "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack",
-    "programs:procps": "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands"
+    "programs:procps": "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands",
+    "relay:check": "bun run --cwd packages/waffle-relay build && bun run --cwd packages/waffle-relay typecheck && bun run --cwd packages/waffle-relay test && bun run --cwd packages/waffle-relay test:native && bun run --cwd packages/waffle-relay test:worker && bun run --cwd packages/waffle-relay pack:check"
   },
   "devDependencies": {
     "@waffle/python": "workspace:*",
