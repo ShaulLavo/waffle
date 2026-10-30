@@ -14,27 +14,39 @@ import { patchBuildScript, sha256, sourceIdentity } from "./patch.ts";
 import { selectCatalogs } from "./selection.ts";
 
 interface CargoPackage {
+  id: string;
   name: string;
   version: string;
   source: string | null;
   manifest_path: string;
 }
 
-function cargoPackages(manifest: string): CargoPackage[] {
+export function programLocalePackages(manifest: string, env: NodeJS.ProcessEnv): CargoPackage[] {
   const parsed: unknown = JSON.parse(
     execFileSync(
       "cargo",
-      ["metadata", "--locked", "--offline", "--format-version", "1", "--manifest-path", manifest],
-      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+      [
+        "metadata",
+        "--locked",
+        "--format-version",
+        "1",
+        "--filter-platform",
+        "wasm32-wasip1",
+        "--manifest-path",
+        manifest,
+      ],
+      { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
     ),
   );
   assert.ok(
     parsed && typeof parsed === "object" && "packages" in parsed && Array.isArray(parsed.packages),
   );
-  return parsed.packages.map((entry: unknown) => {
+  const packages = parsed.packages.map((entry: unknown) => {
     assert.ok(
       entry &&
         typeof entry === "object" &&
+        "id" in entry &&
+        typeof entry.id === "string" &&
         "name" in entry &&
         typeof entry.name === "string" &&
         "version" in entry &&
@@ -45,12 +57,45 @@ function cargoPackages(manifest: string): CargoPackage[] {
         typeof entry.manifest_path === "string",
     );
     return {
+      id: entry.id,
       name: entry.name,
       version: entry.version,
       source: entry.source,
       manifest_path: entry.manifest_path,
     };
   });
+  assert.ok("resolve" in parsed && parsed.resolve && typeof parsed.resolve === "object");
+  const graph = parsed.resolve;
+  assert.ok(
+    "root" in graph && typeof graph.root === "string",
+    "Locale metadata needs a package manifest",
+  );
+  assert.ok("nodes" in graph && Array.isArray(graph.nodes));
+  const dependencies = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    assert.ok(node && typeof node === "object" && "id" in node && typeof node.id === "string");
+    assert.ok("dependencies" in node && Array.isArray(node.dependencies));
+    assert.ok(node.dependencies.every((id: unknown): id is string => typeof id === "string"));
+    dependencies.set(node.id, node.dependencies);
+  }
+  const selected = new Set([graph.root]);
+  for (const id of selected) {
+    const children = dependencies.get(id);
+    assert.ok(children, `Missing Cargo dependency node: ${id}`);
+    for (const child of children) selected.add(child);
+  }
+  return packages.filter((entry) => selected.has(entry.id));
+}
+
+function localeManifest(root: string, program: string): string {
+  if (program === "sed") return resolve(root, "packages/sed/Cargo.toml");
+  if (program === "find" || program === "xargs")
+    return resolve(root, "packages/findutils/Cargo.toml");
+  const isolated = new Set(["cut", "tr", "wc", "echo", "clear"]);
+  const path = isolated.has(program)
+    ? `packages/coreutils/crates/${program}`
+    : "packages/coreutils";
+  return resolve(root, path, "Cargo.toml");
 }
 
 function catalogInput(packages: readonly CargoPackage[], key: string, version: string) {
@@ -87,7 +132,7 @@ export function prepareProgramLocales(options: {
     !env.RUSTC_WRAPPER,
     "Program locale builds require their declared rustc wrapper, not a hidden wrapper chain",
   );
-  const packages = cargoPackages(options.manifest ?? resolve(root, "Cargo.toml"));
+  const packages = programLocalePackages(options.manifest ?? localeManifest(root, program), env);
   const selections = packages
     .filter((entry) => entry.name === "uucore")
     .map((pkg) => {
