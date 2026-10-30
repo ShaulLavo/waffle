@@ -587,13 +587,14 @@ test("program producers explicitly provision the pinned optimizer before running
   const producers = [
     ["programs", "bun run programs:tools"],
     ["jq", "bun run programs:jq"],
+    ["diffutils", "bun run programs:diffutils"],
   ] satisfies readonly [string, string][];
   for (const [job, command] of producers) {
     const steps = stepsFor(job);
     const optimizer = steps.findIndex(
       (step) => step.uses === "./.github/actions/program-optimizer",
     );
-    const consumer = steps.findIndex((step) => step.run === command);
+    const consumer = steps.findIndex((step) => String(step.run).includes(command));
     expect(optimizer).toBeGreaterThanOrEqual(0);
     expect(consumer).toBeGreaterThan(optimizer);
     expect(steps[optimizer]?.if).toBeUndefined();
@@ -614,7 +615,7 @@ test("program producers explicitly provision the pinned optimizer before running
     );
     expect(source).toContain("uses: ./.github/actions/program-optimizer");
   }
-  for (const filter of ["programs", "coreutils", "findutils", "jq"]) {
+  for (const filter of ["programs", "coreutils", "findutils", "jq", "diffutils"]) {
     expect(selected(filter, "tools/program-optimize.ts")).toBe(true);
     expect(selected(filter, "tools/program-derivation.ts")).toBe(true);
     expect(selected(filter, ".github/actions/program-optimizer/action.yml")).toBe(true);
