@@ -1,0 +1,142 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "archive": "https://codeload.github.com/uutils/coreutils/tar.gz/07763857f6b9a547742a994b58aef0ccd036198b",
+  "classification": "Unmodified pinned upstream checksum implementations in an isolated package-local Cargo leaf; Waffle only supplies binary entry wrappers and the WASI build/qualification harness.",
+  "utilities": [
+    "b2sum",
+    "cksum",
+    "md5sum",
+    "sha1sum",
+    "sha224sum",
+    "sha256sum",
+    "sha384sum",
+    "sha512sum",
+    "sum"
+  ],
+  "packages": {
+    "uu_b2sum": {
+      "version": "0.13.0",
+      "path": "src/uu/b2sum"
+    },
+    "uu_cksum": {
+      "version": "0.13.0",
+      "path": "src/uu/cksum"
+    },
+    "uu_md5sum": {
+      "version": "0.13.0",
+      "path": "src/uu/md5sum"
+    },
+    "uu_sha1sum": {
+      "version": "0.13.0",
+      "path": "src/uu/sha1sum"
+    },
+    "uu_sha224sum": {
+      "version": "0.13.0",
+      "path": "src/uu/sha224sum"
+    },
+    "uu_sha256sum": {
+      "version": "0.13.0",
+      "path": "src/uu/sha256sum"
+    },
+    "uu_sha384sum": {
+      "version": "0.13.0",
+      "path": "src/uu/sha384sum"
+    },
+    "uu_sha512sum": {
+      "version": "0.13.0",
+      "path": "src/uu/sha512sum"
+    },
+    "uu_sum": {
+      "version": "0.13.0",
+      "path": "src/uu/sum"
+    }
+  },
+  "sharedPackages": {
+    "uu_checksum_common": {
+      "version": "0.13.0",
+      "path": "src/uu/checksum_common"
+    },
+    "uucore": {
+      "version": "0.13.0",
+      "path": "src/uucore"
+    }
+  },
+  "upstreamFiles": {
+    "src/uu/b2sum/Cargo.toml": "256cfa33b3f3b6ff176db5f50ee16fcc7ee02b0f7df4dc570fa4214390ef08b6",
+    "src/uu/b2sum/src/main.rs": "94e36e496f759b0dd17344f3d91eb574169526936a23b54f464564524fbbb5e9",
+    "src/uu/b2sum/src/b2sum.rs": "d0548583bd721589fb747eb57eb7bf1992473433c82601401fdb89d6fd3fd04d",
+    "src/uu/b2sum/locales/en-US.ftl": "06d43bb4a1af796c74768909bf104d16cff1ae931c33804b2779cb5e53e6da38",
+    "src/uu/cksum/Cargo.toml": "fe70bba758272e156100d21ef8ad244d40284a1935e030cbe321ebd1b7ba9d3b",
+    "src/uu/cksum/src/main.rs": "feef04398617f6e1f672438e66978270f92c796c0080394a15f363086a795298",
+    "src/uu/cksum/src/cksum.rs": "ee0fedc1f7ae07e064e122ee8966e52a47b1a8b4ff40dbb8c8ec7bcf8bf481e7",
+    "src/uu/cksum/locales/en-US.ftl": "af10ffe30af0ce9f4cffe234f8882d955d8d8a10e037aa98c4b5aa647815e70a",
+    "src/uu/md5sum/Cargo.toml": "2f4ab187c74b5b4cdd845b082b17471c2dec9bb5935b99a07bfa3685384fddfb",
+    "src/uu/md5sum/src/main.rs": "ae2c47ad16d26d5809c4cb4c986b0321a877981a4a659b22126dc10c5c1139bf",
+    "src/uu/md5sum/src/md5sum.rs": "1c89dfc25c75e251fc1e4e1fc50233edc59001b80dd4e3bf868a6483da7523ef",
+    "src/uu/md5sum/locales/en-US.ftl": "0c30fe82f3ee557387beb52973b3a49e5814bf00ff53ebe483453ed9073f5d40",
+    "src/uu/sha1sum/Cargo.toml": "ce86f8ef0aec974545933004dd71f3cc04c043362883793533f0d5310e56d4ea",
+    "src/uu/sha1sum/src/main.rs": "0bbab3db8fce436a363e605a35b99c5207073d7c8d25fc70a5029daa70f730d7",
+    "src/uu/sha1sum/src/sha1sum.rs": "1c1a53f862b65d142c1777fbbb5661de014c511f67b7b17dfe95a78a01f2b341",
+    "src/uu/sha1sum/locales/en-US.ftl": "08632ac03fe912db0cd014c1328eddddc5047b1e9f8008e31c172ec7afcb20ed",
+    "src/uu/sha224sum/Cargo.toml": "93c5b601ddfb8d9b59bec2436d3058671a4c2f88588d014bb1ebf7ac362eadad",
+    "src/uu/sha224sum/src/main.rs": "af9e331536d35d3804ed1cb6dec2fbcfba589a113c0e4a2761c848372b747dda",
+    "src/uu/sha224sum/src/sha224sum.rs": "abfa240442548f985ff03824f067d8d71e72bc78edacf84347cc97c59d2c3fc5",
+    "src/uu/sha224sum/locales/en-US.ftl": "52419597770b096011fcaf3178eddec366d286ec8568ba34b9805d10e9e95734",
+    "src/uu/sha256sum/Cargo.toml": "e54f979d169e85b9c328c04f6e918ba4e29832de32ef2101727574b3e6658ec5",
+    "src/uu/sha256sum/src/main.rs": "ff42597b32ca64314adad84a2d5915b12d172c2cc447051aa9be26c34604a796",
+    "src/uu/sha256sum/src/sha256sum.rs": "48254a0adf102ceaa5ab91c1146fb3a7d21f79de3396b89be6f9480025ae6d6e",
+    "src/uu/sha256sum/locales/en-US.ftl": "2fab34e5f9930c5c97fe405de19addac6cbcab07df65ddb58e4eb62acb6a1396",
+    "src/uu/sha384sum/Cargo.toml": "53d752c5b1fe87ee5ae38ccb7d880f7524c1d77401db258a6bab90bcb53d4426",
+    "src/uu/sha384sum/src/main.rs": "ed5dc1c07b50bb5cca486cff0b4f39ec802be626352c14595e5587656c7b4ad3",
+    "src/uu/sha384sum/src/sha384sum.rs": "8e76bda67e48a858b5c5d115ca633061554e7143ae487f2f9031103cd220191d",
+    "src/uu/sha384sum/locales/en-US.ftl": "e73e60ec2441959f21554ad4040a467ac7748b8f888f192903ac2bee077b77f9",
+    "src/uu/sha512sum/Cargo.toml": "4ba719bb61199c596cdd20ef18f6685a3caa2b09e3edbe7e6a09ffff5c08000d",
+    "src/uu/sha512sum/src/main.rs": "2a15d806957895eb7631847de131fb96a03b69dbfd46ef4a980fa8cb47fc0bfe",
+    "src/uu/sha512sum/src/sha512sum.rs": "4b376448b38480e7da2413e02a9d0b87996ab92291ee372503fe7d7af912d8a1",
+    "src/uu/sha512sum/locales/en-US.ftl": "97b5289906411e534eafdf06f96a6f2bb307e3dc0e6fff97bd0ef1e78f1cbe5f",
+    "src/uu/sum/Cargo.toml": "cf2f84b6198bce9305efb4fbeb84bdc23624cc5537dee274dba5f41fd7c766a2",
+    "src/uu/sum/src/main.rs": "6d7d0731dac0981c6bee8d0451d178d228cb2c6714c00cd819b4a5241603367a",
+    "src/uu/sum/src/sum.rs": "a97db94c1f513e98d350e47c4ca7aecaf667672084055a8716b7aa97771db0fe",
+    "src/uu/sum/locales/en-US.ftl": "be92e16471edb1a68f4926b964af96b5d1842823cbc5d76edfee0b0c2ed2d547",
+    "src/uu/checksum_common/Cargo.toml": "de4b898be722d40039244d887d52961f6def02fb3d0367ec34e5639457ff45f0",
+    "src/uu/checksum_common/src/cli.rs": "558b438f4a97f347d10b6ed702f4884454ee139233012ca5ed050beff75107ef",
+    "src/uu/checksum_common/src/lib.rs": "9fd310077a11f0b21f5895cc562f60d208926be7167fa215ff07dd6bffbac81b",
+    "src/uu/checksum_common/locales/en-US.ftl": "15f6b86555b047295388cefa99b48246a1bf6cbd47891911306c52d74004a923",
+    "src/uucore/Cargo.toml": "8bc0f57c0da66ea8b7c5ec880d38a7d090755b127a4845905497877602d18324",
+    "src/uucore/src/lib/features/checksum/compute.rs": "f99a1477fbd64c6d13ff50d8a012683428983072e4247767dfa461f2d77bf0d6",
+    "src/uucore/src/lib/features/checksum/mod.rs": "1cddd1b7df59d50934f5b3b5806a231f47a1b385c7eabbfb48c3d5d5eabbcb93",
+    "src/uucore/src/lib/features/checksum/validate.rs": "24cce45d92ebad7acdb90180c647696fecd767c31ec0196635c179ce23c67377",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c",
+    "src/uucore/src/lib/features/sum.rs": "a2dc896709ef78b8cd2a04ec5a1ac483497c7fd22cb53c379eb13b4c844e3240"
+  },
+  "license": {
+    "spdx": "MIT",
+    "upstreamPath": "LICENSE",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "localChanges": [
+    "No upstream checksum source, locale or shared checksum helper is copied or edited.",
+    "Each local bin initializes libc cwd from PWD and calls the upstream uucore::bin!(uu_<utility>) entry. The crate has its own Cargo workspace and lockfile.",
+    "The local cwd adapter applies the launch PWD before entering upstream so relative file operands observe the Waffle request cwd.",
+    "The build reuses an existing recipe-checked Waffle patched-libc artifact and shared release environment, verifier and optimizer. It builds only the nine checksum leaves. The source-only probe retains upstream catalogs until the parent applies checksum locale policy.",
+    "The Waffle test loads each guest lazily through the real runtime process worker and compares frozen stdout/status/stderr-presence observations after native oracle identity verification."
+  ],
+  "oracle": {
+    "fixture": "fixtures/checksums.json",
+    "recorder": "scripts/checksum-oracle.ts",
+    "environment": {
+      "PATH": "/usr/bin:/bin",
+      "HOME": "/tmp/spec",
+      "LC_ALL": "C",
+      "TZ": "UTC"
+    },
+    "native": "GNU coreutils 9.12",
+    "fixtureSha256": "bf4a3a78d8347c223a6168ce9df9b92c7a426ace567505d9201b82843de53c21"
+  },
+  "streaming": {
+    "digestReader": "src/uucore/src/lib/features/checksum/mod.rs:522",
+    "implementation": "io::copy(reader, DigestWriter) over the upstream 32 KiB BufReader; sum uses fixed 8 KiB stack buffers. No guest whole-file read or host checksum evaluator.",
+    "qualifiedInputBytes": 1048576
+  }
+}
