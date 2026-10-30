@@ -1,5 +1,6 @@
 import type { SearchWorkers, SearchWorkerRequest } from "waffle/search";
-import { defineProgramPackage, type ProgramLaunch, type ProgramCatalog } from "waffle/programs";
+import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
+import type { ProgramLaunch } from "waffle/programs";
 
 export const ripgrep = defineProgramPackage({
   name: "ripgrep",

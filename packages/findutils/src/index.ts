@@ -1,4 +1,4 @@
-import { defineProgramPackage } from "waffle/programs";
+import { defineProgramPackage } from "waffle/programs/catalog";
 
 export const findutils = defineProgramPackage({
   name: "findutils",

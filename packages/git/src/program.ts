@@ -1,4 +1,4 @@
-import { defineProgramPackage } from "waffle/programs";
+import { defineProgramPackage } from "waffle/programs/catalog";
 import type { Runtime } from "waffle";
 import { FilesystemClient } from "waffle/fs/client";
 import { FilesystemError } from "waffle/fs/protocol";

@@ -398,3 +398,40 @@ test("runtime disposal during preparation cannot publish a loaded handle or resu
   expect(handle.state.kind).toBe("removed");
   expect(program.disposals()).toBe(1);
 });
+
+test("catalog ownership survives copied metadata between source and prepared entrypoints", async () => {
+  const original = fixture();
+  const copied = defineProgramPackage({ ...original.pkg });
+  const owner = create();
+  await owner.programs.onDemand(original.pkg.pick("cat"));
+  await owner.programs.onDemand(copied.pick("cat"));
+  expect(owner.programs.status()).toHaveLength(1);
+  expect(original.attempts()).toBe(0);
+  await owner.programs.get("cat")!.remove();
+  expect(original.disposals()).toBe(1);
+});
+
+test("the actual prepared runtime executes through its default prepared preview1 worker", async () => {
+  const prepared: typeof import("../index.js") = await import(
+    new URL("../dist/index.js", import.meta.url).href
+  );
+  const program = fixture();
+  const owner = prepared.createRuntime({
+    filesystem: {
+      mode: "memory",
+      workerURL: new URL("../dist/browser/fs-worker.js", import.meta.url),
+    },
+    programs: { onDemand: [program.pkg] },
+  });
+  runtime = owner;
+  await owner.programs.ready;
+  await owner.filesystem.writeFile("/prepared-input", "prepared default worker\n");
+  const shell = await createProgramShell(owner, tables);
+  expect(await shell.exec("/bin/cat", ["cat", "/prepared-input"])).toMatchObject({
+    kind: "exited",
+    code: 0,
+  });
+  expect(shell.output.join("")).toBe("prepared default worker\n");
+  expect(program.attempts()).toBe(1);
+  expect(owner.programs.get("cat")?.state.kind).toBe("loaded");
+});

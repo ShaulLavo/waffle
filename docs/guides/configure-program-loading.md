@@ -76,3 +76,7 @@ await runtime.programs.onDemand(git);
 Git lookup checks the declared interpreter's live registration without fetching Git's script, preparing a payload, or loading the interpreter. Git preload and execution prepare the script and resolve that existing interpreter. Its registered adapter launches the process. No hidden Bun or Python instance is created. A missing interpreter produces normal missing-executable admission.
 
 The lower-level `registerProgram` and `installPrograms` APIs remain available for caller-driven registration and installation. They do not implicitly install base. The collection does not own registrations created outside it. Live filesystem admission still governs all execution, including symlinks, user-written shebang scripts, deleted markers, and non-runnable files.
+
+## Publish family metadata
+
+Family packages create their catalog with `defineProgramPackage` from `waffle/programs/catalog`. This small entry imports no runtime owner, process service, or compiler. Bun can read its source before preparing Node exports. Node consumers use the prepared catalog module. Picks preserve the same package identity across source and prepared entrypoints.

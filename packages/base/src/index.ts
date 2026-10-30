@@ -1,7 +1,7 @@
+import { defineProgramPackage } from "waffle/programs/catalog";
 import type { GuestLauncher, Runtime } from "waffle";
 import {
   installPrograms,
-  defineProgramPackage,
   type InstallProgramsOptions,
   type ProgramInstallation,
   type ProgramPackage,

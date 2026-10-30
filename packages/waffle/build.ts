@@ -145,6 +145,32 @@ function fromSpecifier(code: string, at: number): StringLiteral | undefined {
   return undefined;
 }
 
+function importMetaUrl(code: string, at: number): boolean {
+  for (const part of ["import", ".", "meta", ".", "url"]) {
+    at = trivia(code, at);
+    if (!code.startsWith(part, at)) return false;
+    at += part.length;
+  }
+  at = trivia(code, at);
+  if (code[at] === ",") at = trivia(code, at + 1);
+  return code[at] === ")";
+}
+
+function moduleUrlSpecifier(
+  code: string,
+  token: { value: string; end: number },
+): StringLiteral | undefined {
+  if (token.value !== "new") return undefined;
+  const constructor = identifier(code, trivia(code, token.end));
+  if (constructor?.value !== "URL") return undefined;
+  const open = trivia(code, constructor.end);
+  if (code[open] !== "(") return undefined;
+  const literal = nextString(code, open + 1);
+  if (!literal?.value.startsWith(".") || !literal.value.endsWith(".ts")) return undefined;
+  const comma = trivia(code, literal.end);
+  return code[comma] === "," && importMetaUrl(code, comma + 1) ? literal : undefined;
+}
+
 function moduleSpecifier(
   code: string,
   token: { value: string; end: number },
@@ -161,9 +187,10 @@ function moduleSpecifier(
   return undefined;
 }
 
-/** Rewrite relative module specifiers without treating strings, comments or regexes as imports. */
+/** Emit Node module paths for imports and static module URLs, leaving payload strings alone. */
 export function rewriteNodeImports(code: string, source: string, root: string): string {
   const edits: StringLiteral[] = [];
+  const urls: StringLiteral[] = [];
   let index = 0;
   let canStartRegex = true;
   while (index < code.length) {
@@ -199,6 +226,8 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
     if (token) {
       const literal = moduleSpecifier(code, token, index);
       if (literal?.value.startsWith(".")) edits.push(literal);
+      const url = moduleUrlSpecifier(code, token);
+      if (url) urls.push(url);
       canStartRegex = [
         "return",
         "throw",
@@ -227,7 +256,7 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
   if (expected.length !== actual.length || expected.some((path, index) => path !== actual[index])) {
     throw new Error(`Bun import scanner disagrees with Waffle's syntax scanner in ${source}`);
   }
-  const resolved = edits.map((literal) => {
+  const resolved = edits.concat(urls).map((literal) => {
     const specifier = literal.value;
     const base = resolve(dirname(source), specifier);
     if (!inside(root, base)) throw new Error(`Import outside package: ${specifier} in ${source}`);

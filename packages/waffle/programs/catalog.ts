@@ -4,9 +4,11 @@ export interface ProgramCatalog extends ProgramPackage {
   pick(...names: string[]): ProgramPackage;
 }
 
-const identities = new WeakMap<ProgramPackage, object>();
+const identityKey = Symbol.for("waffle.programPackage.identity");
 export function packageIdentity(pkg: ProgramPackage): object {
-  return identities.get(pkg) ?? pkg;
+  if (identityKey in pkg && typeof pkg[identityKey] === "object" && pkg[identityKey] !== null)
+    return pkg[identityKey];
+  return pkg;
 }
 
 /** A selection retains each definition and its package's payload ownership. */
@@ -14,18 +16,17 @@ export function defineProgramPackage(pkg: ProgramPackage): ProgramCatalog {
   const identity = packageIdentity(pkg);
   const catalog = Object.freeze({
     ...pkg,
+    [identityKey]: identity,
     pick(...names: string[]): ProgramPackage {
       const programs = names.map((name) => {
         const program = pkg.programs.find((entry) => matchesProgram(entry, name));
         if (!program) throw new TypeError(`Unknown program ${name} in ${pkg.name}`);
         return program;
       });
-      const selected = { ...pkg, programs: Array.from(new Set(programs)) };
-      identities.set(selected, identity);
+      const selected = { ...pkg, [identityKey]: identity, programs: Array.from(new Set(programs)) };
       return selected;
     },
   });
-  identities.set(catalog, identity);
   return catalog;
 }
 
