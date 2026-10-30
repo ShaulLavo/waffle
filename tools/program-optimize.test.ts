@@ -311,21 +311,20 @@ test("malformed standard EH declarations and instructions fail before invoking t
       [0, 97, 115, 109, 1, 0, 0, 0].concat(signatures(signature([], [])), section(13, [1, 1, 0])),
     ),
     withStandardEhFeatures.subarray(0, -1),
-    new Uint8Array(
-      Array.from(standardEhControl)
-        .slice(0, 25)
-        .concat([1], Array.from(standardEhControl.subarray(26))),
-    ),
-    new Uint8Array(
-      Array.from(standardEhControl)
-        .slice(0, 47)
-        .concat([1], Array.from(standardEhControl.subarray(48))),
-    ),
+    changedEhControl(27, 2),
+    changedEhControl(48, 1),
   ];
   for (const input of malformed) rejectMalformedEh(input);
 });
 
+function changedEhControl(offset: number, byte: number) {
+  const changed = Buffer.from(standardEhControl);
+  changed[offset] = byte;
+  return changed;
+}
+
 function rejectMalformedEh(input: Uint8Array) {
+  assert.equal(WebAssembly.validate(input), false, "Malformed EH fixture must be invalid");
   fixture((source, destination) => {
     writeFileSync(source, input);
     const execute = () => assert.fail("invalid EH reached Binaryen");
