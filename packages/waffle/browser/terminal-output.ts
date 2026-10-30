@@ -176,9 +176,18 @@ export class TerminalOutputReader {
   pending(): number {
     return (atomicsLoad(this.state, H.write) - atomicsLoad(this.state, H.read)) >>> 0;
   }
-  /** The writer ran out of credit and waits for a grant. */
+  /**
+   * The writer ran out of credit and waits for a grant. A writer that read its credit just
+   * before a grant stores its request after it; that request is stale while the credit still
+   * funds a record, and must not cost the writer its armed doorbell. The page clears the
+   * request only as part of a grant, so reading it never loses a newer one.
+   */
   wants(): boolean {
-    return !this.retired && atomicsLoad(this.state, H.want) !== 0;
+    return (
+      !this.retired &&
+      atomicsLoad(this.state, H.want) !== 0 &&
+      atomicsLoad(this.state, H.credit) <= RECORD_BYTES
+    );
   }
   /** Gives the writer more credit and wakes it. */
   grant(units: number): void {

@@ -118,3 +118,22 @@ Approved for a later protocol change; nonblocking for PR203. A connection curren
 A small reproduction sets `FilesystemRequestAllocator.nextId` to `0x1fffffff`, observes the final valid allocation, and observes errno 33 on the next call. A blind wrap is unsafe: `{completed:id}` and discard controls carry no generation, so a delayed old frame could complete or cancel a replacement with the same ID. Safe reuse therefore needs late-frame generation fencing as well as skipping live IDs.
 
 The follow-up must add generation-tagged completion/discard controls (or an equivalent proof), wrap only after skipping every live ID, and test delayed old completion/discard against a replacement, cancellation, stale descriptors, generation/arena reuse and exact resource accounting. No ID wrap belongs in the retirement and release-accounting corrections.
+
+## Guest watcher full-suite timeout
+
+Approved, unclassified. Found while testing PR226 (head `1116adc`, base `a4d2fec`): `bun run test`
+gave 4961 pass, 24 skip, 1 fail. The failure is `packages/waffle/tests/watch-committed.test.ts:418`,
+"real guest watcher receives peer direct commit or is forcibly reaped, killed=false", which hit its
+10 s timeout. That case runs `tests/watch-direct-worker.ts` in `mode: "watch"`. The worker posts
+`ready` after `client.watch()` resolves and only then awaits `watch.next()`; the test writes after it
+sees `ready`. Three isolated runs of `bun test tests/watch-committed.test.ts` each gave 29 pass,
+0 fail. That shows the failure only in the full suite. It proves nothing about its cause, and load is
+not established. The test, its worker and their imports use only filesystem and watch modules, so
+they never touch terminal output directly.
+
+Logs and the reproduction command are in
+`/work/reports/wave-20261029/waffle/output-credit-rearm/` (`test.log`, `watch-committed-isolated-*.log`).
+Next step, before choosing any fix: in the failing full-suite order, record the watch ring sequence
+and counter at `ready`, after the peer write, and when `watch.next()` starts waiting. That shows
+whether the commit is published before the reader waits and whether it is ever lost. Raising the
+timeout is not a fix.
