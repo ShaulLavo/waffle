@@ -345,6 +345,27 @@ test("programs normal CI runs the release closure test from the folded source ch
   ).toBe(true);
 });
 
+test("programs prepares locked Cargo sources after cache restore and before source checks", () => {
+  const steps = stepsFor("programs");
+  const cache = steps.findIndex(
+    (step) =>
+      step.uses === "actions/cache@v4" && String(record(step.with).path).includes("~/.cargo/git"),
+  );
+  const fetches = steps.filter(
+    (step) => step.run === "cargo fetch --locked --target wasm32-wasip1",
+  );
+  expect(fetches).toHaveLength(1);
+  const fetch = fetches[0];
+  expect(fetch?.if).toBeUndefined();
+  const fetched = steps.indexOf(record(fetch));
+  expect(cache).toBeGreaterThanOrEqual(0);
+  expect(fetched).toBeGreaterThan(cache);
+  for (const command of ["bun run programs:routes", "bun run programs:source"]) {
+    const check = steps.findIndex((step) => step.run === command);
+    expect(check).toBeGreaterThan(fetched);
+  }
+});
+
 test("the browser gate runs memory groups on the fixture built once by libc", () => {
   for (const path of [
     "packages/waffle/group/state.ts",

@@ -479,6 +479,7 @@ jobs:
             target
           key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
+      - run: cargo fetch --locked --target wasm32-wasip1
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
       - run: bun run --cwd packages/git test:unit
