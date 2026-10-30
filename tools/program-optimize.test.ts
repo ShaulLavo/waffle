@@ -37,7 +37,22 @@ const integer = (value: number): number[] => {
 const text = (value: string) =>
   integer(value.length).concat(Array.from(new TextEncoder().encode(value)));
 const section = (kind: number, bytes: number[]) => [kind].concat(integer(bytes.length), bytes);
+const signatures = (...items: number[][]) => section(1, [items.length].concat(...items));
+const signature = (params: number[], results: number[]) => [0x60].concat(params.length, params, results.length, results);
 const custom = (name: string, bytes: number[]) => section(0, text(name).concat(bytes));
+const standardEhControl = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x09, 0x02, 0x60, 0x01, 0x7f, 0x00,
+  0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x01, 0x0d, 0x03, 0x01, 0x00, 0x00, 0x07,
+  0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x00, 0x0a, 0x14, 0x01, 0x12, 0x00, 0x02,
+  0x7f, 0x1f, 0x40, 0x01, 0x00, 0x00, 0x00, 0x41, 0x07, 0x08, 0x00, 0x0b, 0x41, 0x00,
+  0x0b, 0x0b, 0x00, 0x1b, 0x04, 0x6e, 0x61, 0x6d, 0x65, 0x03, 0x0b, 0x01, 0x00, 0x01,
+  0x00, 0x06, 0x63, 0x61, 0x75, 0x67, 0x68, 0x74, 0x0b, 0x07, 0x01, 0x00, 0x04, 0x65,
+  0x78, 0x69, 0x74,
+]);
+const standardEhFeatures = custom("target_features", [1, 0x2b].concat(text("exception-handling")));
+const withStandardEhFeatures = new Uint8Array(
+  Array.from(standardEhControl).concat(standardEhFeatures),
+);
 
 function guest(extra: number[] = []) {
   return new Uint8Array(
@@ -259,6 +274,46 @@ test("dynamic linking and target feature metadata survive optimization", () => {
     const features = WebAssembly.Module.customSections(module, "target_features")[0];
     assert.ok(features);
     assert.ok(new TextDecoder().decode(features).includes("mutable-globals"));
+  });
+});
+
+test("standard EH optimization preserves tags, target features and nonlocal exits", () => {
+  fixture((source, destination) => {
+    writeFileSync(source, withStandardEhFeatures);
+    const before = new WebAssembly.Module(withStandardEhFeatures);
+    optimizeProgram({
+      source,
+      destination,
+      verify: (path) => {
+        const module = new WebAssembly.Module(readFileSync(path));
+        const instance = new WebAssembly.Instance(module);
+        const run = instance.exports.run;
+        assert.ok(typeof run === "function");
+        assert.equal(run(), 7);
+      },
+    });
+    const output = readFileSync(destination);
+    const after = new WebAssembly.Module(output);
+    assert.deepEqual(WebAssembly.Module.imports(after), WebAssembly.Module.imports(before));
+    assert.deepEqual(WebAssembly.Module.exports(after), WebAssembly.Module.exports(before));
+    assert.equal(WebAssembly.Module.customSections(after, "target_features").length, 1);
+    assert.equal(WebAssembly.Module.customSections(after, "name").length, 1);
+  });
+});
+
+test("malformed standard EH tags fail closed before optimization", () => {
+  fixture((source, destination) => {
+    const malformed = new Uint8Array(
+      [0, 97, 115, 109, 1, 0, 0, 0].concat(
+        signatures(signature([], [])),
+        section(13, [1, 1, 0]),
+      ),
+    );
+    writeFileSync(source, malformed);
+    assert.throws(
+      () => optimizeProgram({ source, destination, verify }),
+      WebAssembly.CompileError,
+    );
   });
 });
 
