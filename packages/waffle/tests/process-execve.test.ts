@@ -518,8 +518,14 @@ test("asynchronous filesystem admission retains the exact registered program", a
   registry.unregister("/bin/test-guest");
   registry.register("/bin/test-guest", { module, adapter: "replacement", interruptible: false });
   release({ path: "/bin/test-guest", kind: "file" });
-  expect(await pending).toEqual({ module, adapter: "original", interruptible: true });
+  expect(await pending).toEqual({
+    kind: "module",
+    module,
+    adapter: "original",
+    interruptible: true,
+  });
   expect(await registry.resolve("/bin/test-guest")).toEqual({
+    kind: "module",
     module,
     adapter: "replacement",
     interruptible: false,
