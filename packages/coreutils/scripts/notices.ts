@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { generateRustNotices } from "../../../tools/program-notices.ts";
 import { prepareChecksumSource } from "./prepare-checksum-source.ts";
 import fileOperations from "../provenance/file-operations.source.json" with { type: "json" };
@@ -20,12 +19,6 @@ interface CargoPackage {
 
 interface CargoMetadata {
   packages: CargoPackage[];
-  resolve: {
-    nodes: Array<{
-      id: string;
-      dependencies: string[];
-    }>;
-  };
 }
 
 const root = resolve(import.meta.dirname, "..");
@@ -51,28 +44,6 @@ const metadata: CargoMetadata = JSON.parse(
     { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   ),
 );
-const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
-const included = new Set<string>();
-const familyRoots = new Set([
-  "waffle-coreutils",
-  "waffle-cut",
-  "waffle-tr",
-  "waffle-wc",
-  "waffle-clear",
-]);
-
-function includeDependencies(id: string): void {
-  if (included.has(id)) return;
-  included.add(id);
-  const node = nodes.get(id);
-  assert.ok(node, `Dependency node is missing from Cargo metadata: ${id}`);
-  for (const dependency of node.dependencies) includeDependencies(dependency);
-}
-
-for (const pkg of metadata.packages) {
-  if (familyRoots.has(pkg.name)) includeDependencies(pkg.id);
-}
-
 const upstream = metadata.packages.find(
   (pkg) => pkg.name === "uucore" && pkg.source?.endsWith(`#${fileOperations.revision}`),
 );
@@ -122,12 +93,6 @@ for (const [path, digest] of Object.entries(envProvenance.files)) {
 }
 output += `## uutils env source\n\n${envSource.repository} at ${envSource.revision}. Local WASI changes are recorded in vendor/uutils-env/wasi.patch.\n\n`;
 await include(`uutils coreutils ${fileOperations.revision}`, upstreamRoot);
-for (const pkg of metadata.packages.toSorted((a, b) => a.name.localeCompare(b.name))) {
-  if (included.has(pkg.id)) await include(`${pkg.name} ${pkg.version}`, dirname(pkg.manifest_path));
-}
-await mkdir(resolve(root, "dist"), { recursive: true });
-await writeFile(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), output);
-
 // The isolated checksum workspace resolves its patched dependency from the owned source.
 prepareChecksumSource();
 generateRustNotices({
@@ -142,7 +107,7 @@ generateRustNotices({
     "waffle-date",
   ],
   features: "cooperative-wasi",
-  prefix: readFileSync(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), "utf8"),
+  prefix: output,
   isolated: [
     {
       manifest: resolve(root, "crates/checksums/Cargo.toml"),
