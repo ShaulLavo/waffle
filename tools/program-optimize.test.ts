@@ -368,7 +368,10 @@ function checkOriginalException(path: string, original: Error) {
   });
   const run = instance.exports.run;
   assert.ok(typeof run === "function");
-  assert.throws(run, (error) => error === original);
+  assert.throws(
+    () => run(),
+    (error: unknown) => error === original,
+  );
 }
 
 test("optimizer preserves target features Binaryen does not model", () => {
