@@ -32,7 +32,8 @@
     "sha256": "f86abb28d347886ff591e4e4a6569cdeea86c1010cc3c67f9d33807e92b0825c"
   },
   "nativeOracle": "The native executable is compiled from the same prepared source tree and patch; it is never the host awk implementation.",
-  "qualification": "Real Waffle acceptance uses the enabled package suite and ordinary source rewriting. The shared optimizer must admit standard exception-handling before current-finalizer package output can qualify.",
+  "qualification": "programs:awk runs the pinned native oracle, Wasmtime comparison, and enabled real Waffle runtime acceptance before actual package archive readback. Runtime qualification applies to the merged source used by the run, not an older published runtime.",
   "exceptionHandling": "-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false and exact shared sysroot libsetjmp.a",
-  "finalization": "Shared stageProgram runs pinned Binaryen optimization, validates the named guest, strips names, and stages derivation and compression receipts."
+  "finalization": "Shared stageProgram runs pinned Binaryen optimization, validates the named guest, strips names, and stages derivation and compression receipts.",
+  "optimizationPolicy": "waffle-program-size-v2"
 }

@@ -2,7 +2,7 @@
 
 This package runs the pinned 20260426 release of The One True Awk. It is not a handwritten evaluator or a translation into TypeScript. The bounded fixture corpus covers the common agent workflows of field selection, `FS` and `OFS`, patterns and actions, `BEGIN` and `END`, `NR` and `NF`, stdin and file arguments, `-F` and `-v`, arithmetic, formatting, associative arrays, substitutions, regular expressions, multi-file iteration, exit statuses, and diagnostics.
 
-The native oracle is compiled from this same source archive and patch, with the WASI-only guards inactive. It does not invoke system `awk`, `gawk`, `mawk`, or another host implementation. Oracle observations are committed as fixture data and are compared with the actual Wasm guest under Wasmtime. The enabled Waffle acceptance suite also checks the reviewed guest through the real runtime. Current-finalizer package production has the separate build prerequisite below.
+The native oracle is compiled from this same source archive and patch, with the WASI-only guards inactive. It does not invoke system `awk`, `gawk`, `mawk`, or another host implementation. Oracle observations are committed as fixture data and are compared with the actual Wasm guest under Wasmtime. The enabled Waffle acceptance suite also checks the generated guest through the real runtime. The normal `programs:awk` command runs native, Wasmtime and merged-source runtime checks before package archive readback.
 
 ## Guest behavior checked with Wasmtime
 
@@ -19,10 +19,10 @@ The Waffle suite checks `/usr/bin/awk` and `/bin/awk` as aliases of one lazy pro
 - The corpus is evidence for the covered behavior, not a claim of complete POSIX or GNU awk parity.
 - Every native oracle process has a 15-second maximum deadline. The Waffle acceptance suite bounds its nonterminating control with an interrupt and a 5-second assertion window.
 
-## Qualification and build prerequisite
+## Source and qualification identity
 
 The upstream evaluator uses `setjmp` and `longjmp` for nonlocal `exit`, including exits from expressions in nested functions and `END`. The package preserves that behavior with wasi-sdk 34's `-mllvm -wasm-enable-sjlj`, standard exception handling via `-mllvm -wasm-use-legacy-eh=false`, and the shared sysroot's `-lsetjmp`.
 
-The original runtime at `620da8002cf2dab88862a0a503e228413b52603a` rejected exception tag section 13. Runtime PR 254 resolves that admission failure. The enabled package suite passes against main `a92850661692d9e5c96160d93b62606e0bec5ef2` with the original reviewed guest, SHA-256 `dbc5c6e025f5f07e598c3d685b01fdced0b21b3ad37629398c94dfcfdae939e3`. It preserves all 43 committed native observations, three capability refusals and the original infinite-loop interrupt and removal deadlines. This package uses ordinary source rewriting, without a cooperative declaration or admission bypass.
+Runtime PR 254 admits the real standard-EH guest through ordinary source rewriting. Optimizer PR 268 enables standard exception handling in pinned Binaryen 133 and advances the strict finalization policy to `waffle-program-size-v2`. The producer uses the normal `stageProgram` route and declares its derivation, gzip and Brotli outputs. Old policies, flags and transformation-source identities are rejected. Historical derivatives remain historical evidence and must not be relabeled.
 
-That guest predates the shared optimizer and remains historical evidence, not a current-finalizer artifact. The current shared finalizer rejects its required `exception-handling` target feature before Binaryen runs. Current package production stays blocked until the shared optimizer supports standard exception handling without changing guest semantics or weakening verification. The producer uses the normal `stageProgram` route and declares its derivation, gzip and Brotli outputs. Old derivatives must not be relabeled to satisfy this gate.
+Each production run must bind its receipts to the committed source that actually produced the bytes. Qualification covers all 43 committed native observations, three capability refusals, and the original infinite-loop interrupt and physical-stop removal controls. Installed-package checks must consume the actual archive and the matching merged-source runtime. Runtime 0.0.105 predates this exception-handling source, so merged-source qualification does not establish conformance with that published runtime or any consumer pin. No cooperative declaration, source admission bypass or second runtime is part of this package.
