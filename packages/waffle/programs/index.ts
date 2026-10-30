@@ -1,7 +1,7 @@
 // Install program packages (coreutils, sed, python, ...) on a page Runtime. Installing writes one
 // small marker file per path and registers it; nothing is fetched, prepared or compiled until
 // the first exec.
-import type { GuestLauncher, Runtime } from "../runtime.js";
+import type { GuestLauncher, Runtime, ProgramLoadState } from "../runtime.js";
 import type { ProcessHandle } from "../proc/types.js";
 
 /** One program package: its WASI programs and the absolute paths they are installed at. */
@@ -9,6 +9,8 @@ export interface ProgramPackage {
   /** Package name, recorded in each marker file, for example "coreutils". */
   readonly name: string;
   readonly programs: readonly PackageProgram[];
+  /** Aggregate membership retains the original families and their payload ownership. */
+  readonly packages?: readonly ProgramPackage[];
   /** Release what the package prepared itself, such as a standard library on the filesystem.
    * Runs once per installation, after its markers are gone and every process that loaded or
    * launched one of its programs has physically stopped. */
@@ -20,6 +22,15 @@ export type ProgramLaunch = (
   service: Parameters<GuestLauncher>[1],
   fallback: GuestLauncher,
 ) => ReturnType<GuestLauncher>;
+
+export { defineProgramPackage, type ProgramCatalog } from "./catalog.js";
+export type {
+  ProgramHandle,
+  ProgramMode,
+  ProgramState,
+  RuntimePrograms,
+  ProgramsOptions,
+} from "./collection.js";
 
 export type PackageProgram = {
   /** Selects a process worker after real module admission. Fallback uses this installation's launcher. */
@@ -36,12 +47,19 @@ export type PackageProgram = {
        * `new URL("./ls.wasm", import.meta.url)` so bundlers emit the asset. */
       readonly wasm: URL;
       readonly source?: never;
+      readonly script?: never;
     }
   | {
       /** Called on first exec, not at install, and again only after a failure. It may prepare
        * files the program needs before returning its Wasm bytes. */
       readonly source: () => Promise<Uint8Array>;
       readonly wasm?: never;
+      readonly script?: never;
+    }
+  | {
+      readonly script: { readonly interpreter: string; readonly source: () => Promise<string> };
+      readonly wasm?: never;
+      readonly source?: never;
     }
 );
 
@@ -49,6 +67,12 @@ export interface InstallProgramsOptions {
   /** Starts a process for each exec, for example a launcher using Waffle's preview1 worker.
    * The installation registers its own adapters around it. */
   readonly launcher: GuestLauncher;
+  readonly onLoad?: (program: PackageProgram, state: ProgramLoadState) => void;
+  readonly launchInterpreter?: (
+    interpreter: string,
+    context: Parameters<GuestLauncher>[0],
+    service: Parameters<GuestLauncher>[1],
+  ) => ReturnType<GuestLauncher>;
 }
 
 export interface ProgramInstallation {
@@ -75,8 +99,9 @@ export class ProgramConflictError extends Error {
 
 interface Entry {
   readonly path: string;
-  readonly marker: Uint8Array;
-  readonly source: () => Promise<Uint8Array>;
+  marker: Uint8Array;
+  readonly program: PackageProgram;
+  readonly source: (() => Promise<Uint8Array>) | undefined;
   readonly argv0: string | undefined;
   readonly launch: ProgramLaunch | undefined;
 }
@@ -124,13 +149,36 @@ export async function installPrograms(
 ): Promise<ProgramInstallation> {
   if (runtime.disposed) throw new Error("Runtime is disposed");
   const activity = new Activity();
-  const entries = programEntries(packages, activity);
+  const entries = programEntries(packages, activity, options);
   const installed: Installed = { runtime, packages, activity, leases: [], created: [] };
   try {
-    const adapters = registerAdapters(installed, entries, options.launcher);
+    const adapters = registerAdapters(installed, entries, options);
+    const preparations = new Map<PackageProgram, () => Promise<void>>();
+    const observations = new Map<PackageProgram, (state: ProgramLoadState) => void>();
     for (const entry of entries) {
       const adapter = adapters.get(entry.launch)!.get(entry.argv0)!;
-      installed.leases.push(runtime.registerProgram(entry.path, { adapter, source: entry.source }));
+      const onLoad =
+        observations.get(entry.program) ?? observeLoad(entry.program, activity, options.onLoad);
+      observations.set(entry.program, onLoad);
+      const script = entry.program.script;
+      const definition = script
+        ? {
+            adapter,
+            script: {
+              interpreter: script.interpreter,
+              prepare: scriptPreparation(
+                runtime,
+                entry,
+                entries,
+                installed.created,
+                activity,
+                preparations,
+              ),
+            },
+            onLoad,
+          }
+        : { adapter, source: entry.source!, onLoad };
+      installed.leases.push(runtime.registerProgram(entry.path, definition));
     }
     await provision(runtime, entries, installed.created);
   } catch (error) {
@@ -149,9 +197,13 @@ export async function installPrograms(
   };
 }
 
-function programEntries(packages: readonly ProgramPackage[], activity: Activity): Entry[] {
+function programEntries(
+  packages: readonly ProgramPackage[],
+  activity: Activity,
+  options: InstallProgramsOptions,
+): Entry[] {
   const entries = packages.flatMap(({ name, programs }) =>
-    programs.flatMap((program) => programPaths(name, program, activity)),
+    programs.flatMap((program) => programPaths(name, program, activity, options)),
   );
   const claimed = new Set<string>();
   for (const { path } of entries) {
@@ -162,15 +214,21 @@ function programEntries(packages: readonly ProgramPackage[], activity: Activity)
   return entries;
 }
 
-function programPaths(name: string, program: PackageProgram, activity: Activity): Entry[] {
+function programPaths(
+  name: string,
+  program: PackageProgram,
+  activity: Activity,
+  options: InstallProgramsOptions,
+): Entry[] {
   if (program.argv0 !== undefined && typeof program.argv0 !== "string")
     throw new TypeError(`Program ${program.path} argv0 must be a string`);
-  const source = trackedSource(programLoader(program), activity);
+  const source = program.script ? undefined : trackedSource(programLoader(program), activity);
   const marker = encoder.encode(`waffle program: ${name} ${program.path}\n`);
   const argv0 = program.argv0;
+  const launch = program.script ? scriptLaunch(program, options) : program.launch;
   return [program.path]
     .concat(program.aliases ?? [])
-    .map((path) => ({ path, marker, source, argv0, launch: program.launch }));
+    .map((path) => ({ path, marker, source, argv0, launch, program }));
 }
 
 function programLoader(program: PackageProgram): () => Promise<Uint8Array> {
@@ -201,7 +259,12 @@ function trackedSource(load: () => Promise<Uint8Array>, activity: Activity) {
   };
 }
 
-function registerAdapters(installed: Installed, entries: readonly Entry[], launch: GuestLauncher) {
+function registerAdapters(
+  installed: Installed,
+  entries: readonly Entry[],
+  options: InstallProgramsOptions,
+) {
+  const launch = options.launcher;
   if (typeof launch !== "function") throw new TypeError("Program launcher is required");
   const install = ++installs;
   const adapters = new Map<ProgramLaunch | undefined, Map<string | undefined, string>>();
@@ -225,7 +288,7 @@ function trackedLauncher(
   hook: ProgramLaunch | undefined,
 ): GuestLauncher {
   return async (context, service) => {
-    if (activity.fenced) throw new Error("Program was uninstalled");
+    if (activity.closing || activity.fenced) throw new Error("Program was uninstalled");
     const leave = activity.enter();
     let handle: ProcessHandle;
     try {
@@ -317,4 +380,107 @@ async function rollback(installed: Installed, error: unknown): Promise<never> {
 
 function parentDirectory(path: string): string {
   return path.slice(0, path.lastIndexOf("/")) || "/";
+}
+
+function scriptLaunch(program: PackageProgram, options: InstallProgramsOptions): ProgramLaunch {
+  const script = program.script;
+  const launchInterpreter = options.launchInterpreter;
+  if (!script || !launchInterpreter)
+    throw new TypeError("Script programs require an interpreter launcher");
+  return (context, service) => {
+    const fallback: GuestLauncher = (next, host) =>
+      launchInterpreter(script.interpreter, next, host);
+    return program.launch ? program.launch(context, service, fallback) : fallback(context, service);
+  };
+}
+
+function trackedScript(
+  runtime: Runtime,
+  entries: readonly Entry[],
+  created: Entry[],
+  activity: Activity,
+): () => Promise<void> {
+  let pending: Promise<void> | undefined;
+  return () => {
+    if (activity.closing) return Promise.reject(new Error("Program is being uninstalled"));
+    pending ??= prepareScript(runtime, entries, created, activity).catch((error: unknown) => {
+      pending = undefined;
+      throw error;
+    });
+    return pending;
+  };
+}
+
+async function prepareScript(
+  runtime: Runtime,
+  entries: readonly Entry[],
+  created: Entry[],
+  activity: Activity,
+): Promise<void> {
+  const script = entries[0]?.program.script;
+  if (!script) throw new TypeError("Expected script program");
+  const leave = activity.enter();
+  try {
+    const text = await script.source();
+    if (typeof text !== "string") throw new TypeError("Script source loader must return text");
+    if (activity.closing) throw new Error("Program is being uninstalled");
+    const bytes = encoder.encode(`#!${script.interpreter}\n${text}`);
+    for (const entry of entries) await writeScript(runtime, entry, bytes, created, activity);
+  } finally {
+    leave();
+  }
+}
+
+async function writeScript(
+  runtime: Runtime,
+  entry: Entry,
+  bytes: Uint8Array,
+  created: Entry[],
+  activity: Activity,
+): Promise<void> {
+  if (activity.closing) throw new Error("Program is being uninstalled");
+  if (!(await runtime.filesystem.remove(entry.path, { ifContent: entry.marker })))
+    throw new ProgramConflictError(entry.path, "script marker was replaced");
+  if (activity.closing) throw new Error("Program is being uninstalled");
+  await runtime.filesystem.writeFile(entry.path, bytes, { exclusive: true });
+  entry.marker = bytes;
+  if (!created.includes(entry)) created.push(entry);
+}
+
+function observeLoad(
+  program: PackageProgram,
+  activity: Activity,
+  observe: InstallProgramsOptions["onLoad"],
+): (state: ProgramLoadState) => void {
+  let leave: (() => void) | undefined;
+  return (state) => {
+    if (state.kind === "preparing") leave ??= activity.enter();
+    if (state.kind === "loaded" || state.kind === "error") {
+      leave?.();
+      leave = undefined;
+    }
+    observe?.(program, state);
+    if (state.kind === "loaded" && activity.closing)
+      throw new Error("Program is being uninstalled");
+  };
+}
+
+function scriptPreparation(
+  runtime: Runtime,
+  entry: Entry,
+  entries: readonly Entry[],
+  created: Entry[],
+  activity: Activity,
+  preparations: Map<PackageProgram, () => Promise<void>>,
+): () => Promise<void> {
+  const existing = preparations.get(entry.program);
+  if (existing) return existing;
+  const prepare = trackedScript(
+    runtime,
+    entries.filter((other) => other.program === entry.program),
+    created,
+    activity,
+  );
+  preparations.set(entry.program, prepare);
+  return prepare;
 }

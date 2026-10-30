@@ -11,15 +11,15 @@ const python = await installPython(runtime, { launcher });
 await python.dispose();
 ```
 
-The approved CPython startup patch establishes cwd from PWD. `installPython` wraps only
-this installation's launcher with `pythonLauncher`, setting PWD from
+The approved CPython startup patch establishes cwd from PWD. `createPythonPackage` wraps only
+its program's launcher with `pythonLauncher`, setting PWD from
 `context.request.cwd`. It handles missing or stale PWD while preserving other environment
 entries, argv and descriptor bindings. The generic launcher receives the interpreter's
 required argv0 and otherwise launches the real preview1 worker unchanged.
 
 For explicit composition, `createPythonPackage` exports the exact `ProgramPackage` shape:
 lazy `source`, canonical `/usr/bin/python`, interpreter `argv0`, and payload disposal.
-Use `pythonLauncher` from `@waffle/python/launcher` when installing it directly.
+The package carries its launch policy when passed to `runtime.programs` or `installPrograms`.
 
 ## Stage an accepted producer artifact
 

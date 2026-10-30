@@ -1,6 +1,6 @@
-import type { ProgramPackage } from "waffle/programs";
+import { defineProgramPackage } from "waffle/programs";
 
-export const findutils: ProgramPackage = {
+export const findutils = defineProgramPackage({
   name: "findutils",
   programs: [
     {
@@ -14,4 +14,4 @@ export const findutils: ProgramPackage = {
       wasm: new URL("../dist/xargs.wasm", import.meta.url),
     },
   ],
-};
+});
