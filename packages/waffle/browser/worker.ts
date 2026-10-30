@@ -1193,7 +1193,7 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
 type GroupAttachment = Pick<GroupMember, "namespaces" | "dispose"> & {
   readonly memory?: WebAssembly.Memory;
   readonly watchReady?: GroupMember["watchReady"];
-  bindings(module: WebAssembly.Module): { env: WebAssembly.ModuleImports } | undefined;
+  bindings(module: WebAssembly.Module): ReturnType<GroupMember["bindings"]> | undefined;
 };
 const noGroup: GroupAttachment = {
   namespaces: {},

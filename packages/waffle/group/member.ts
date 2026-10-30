@@ -89,8 +89,11 @@ export interface GroupMember {
   readonly imports: Record<string, (...args: any[]) => number>;
   /** The runtime_shm namespace, keyed for Wasi namespaces. */
   readonly namespaces: WebAssembly.Imports;
-  /** env bindings for a PIE image: imported memory, own table, bases and stack. */
-  bindings(module: WebAssembly.Module): { env: WebAssembly.ModuleImports };
+  /** Bindings for a PIE image, including the member-owned carved stack bounds. */
+  bindings(module: WebAssembly.Module): {
+    env: WebAssembly.ModuleImports;
+    "GOT.mem": WebAssembly.ModuleImports;
+  };
   /** Poll kind 7 readiness, or undefined for an unknown watch. */
   watchReady(id: number): boolean | undefined;
   dispose(): void;
@@ -295,7 +298,7 @@ export function createGroupMember(
     memory,
     imports,
     namespaces: { runtime_shm: imports },
-    bindings: (module) => ({ env: image(module) }),
+    bindings: (module) => image(module),
     watchReady,
     dispose() {
       if (disposed) return;
@@ -304,7 +307,10 @@ export function createGroupMember(
     },
   };
 
-  function image(module: WebAssembly.Module): WebAssembly.ModuleImports {
+  function image(module: WebAssembly.Module): {
+    env: WebAssembly.ModuleImports;
+    "GOT.mem": WebAssembly.ModuleImports;
+  } {
     const sections = reflectApply(customSections, WebAssembly.Module, [module, "dylink.0"]);
     if (sections.length !== 1)
       throw new TypeError("memory group image requires one dylink.0 section");
@@ -332,13 +338,20 @@ export function createGroupMember(
         (stack + stackPages) * PAGE_BYTES,
       ),
     };
+    const got: WebAssembly.ModuleImports = Object.create(null);
     const wanted = new Set(
       reflectApply(moduleImports, WebAssembly.Module, [module])
-        .filter((entry) => entry.module === "env")
-        .map((entry) => entry.name),
+        .filter((entry) => entry.module === "env" || entry.module === "GOT.mem")
+        .map((entry) => `${entry.module}.${entry.name}`),
     );
-    for (const name of objectKeys(env)) if (!wanted.has(name)) delete env[name];
-    return env;
+    for (const name of objectKeys(env)) if (!wanted.has(`env.${name}`)) delete env[name];
+    const stackLow = stack * PAGE_BYTES;
+    const stackHigh = (stack + stackPages) * PAGE_BYTES;
+    if (wanted.has("GOT.mem.__stack_low"))
+      got.__stack_low = new NativeGlobal({ value: "i32", mutable: true }, stackLow);
+    if (wanted.has("GOT.mem.__stack_high"))
+      got.__stack_high = new NativeGlobal({ value: "i32", mutable: true }, stackHigh);
+    return { env, "GOT.mem": got };
   }
 
   function watchReady(id: number): boolean | undefined {
