@@ -30,6 +30,9 @@ const intrinsicModules: Readonly<Record<string, string>> = {
 };
 const trustedModules: Readonly<Record<string, string>> = {
   ...intrinsicModules,
+  "proc/command.ts": "Trusted page-command data contract, not imported by the guest bootstrap.",
+  "proc/command-runner.ts": "Page-only trusted command execution and physical task ownership.",
+  "proc/command-stdio.ts": "Page-only asynchronous descriptor I/O for trusted host callbacks.",
   "proc/supervisor.ts": "Page-owned supervisor, not imported by the guest bootstrap.",
   "proc/table.ts": "Page-owned process table, not imported by the guest bootstrap.",
   "proc/registry.ts": "Page-owned process registry, not imported by the guest bootstrap.",
