@@ -21,6 +21,7 @@ const names = [
   "cp",
   "mv",
   "echo",
+  "date",
 ] as const;
 
 export const coreutils = defineProgramPackage({

@@ -35,6 +35,11 @@
     "../packages/diffutils/tests",
     "../packages/jq/src",
     "../packages/jq/scripts",
-    "../packages/jq/tests"
+    "../packages/jq/tests",
+    "../packages/coreutils/tests/date-wasi.test.ts",
+    "../packages/coreutils/scripts/build-date.ts",
+    "../packages/coreutils/scripts/date-oracle.ts",
+    "../packages/coreutils/scripts/date-source.test.ts",
+    "../packages/coreutils/fixtures/date-cases.ts"
   ]
 }

@@ -91,7 +91,7 @@ function localeManifest(root: string, program: string): string {
   if (program === "sed") return resolve(root, "packages/sed/Cargo.toml");
   if (program === "find" || program === "xargs")
     return resolve(root, "packages/findutils/Cargo.toml");
-  const isolated = new Set(["cut", "tr", "wc", "echo", "clear"]);
+  const isolated = new Set(["cut", "tr", "wc", "echo", "clear", "date"]);
   const path = isolated.has(program)
     ? `packages/coreutils/crates/${program}`
     : "packages/coreutils";
@@ -223,6 +223,7 @@ const packagesByProgram: ReadonlyMap<string, string> = new Map([
   ["tr", "waffle-tr"],
   ["wc", "waffle-wc"],
   ["echo", "waffle-echo"],
+  ["date", "waffle-date"],
   ["clear", "waffle-clear"],
 ]);
 

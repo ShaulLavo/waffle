@@ -40,6 +40,8 @@
     "dist/mv-program.json",
     "dist/echo.wasm",
     "dist/echo-program.json",
+    "dist/date.wasm",
+    "dist/date-program.json",
     "dist/THIRD_PARTY_NOTICES.txt"
   ]
 }

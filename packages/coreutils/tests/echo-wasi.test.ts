@@ -214,7 +214,7 @@ test("real registered echo closes the xargs gap and cleans up a canceled pipelin
   };
   const empty: ProgramPackage = { name: "empty", programs: [] };
   try {
-    assert.equal(basePrograms.length, 25);
+    assert.equal(basePrograms.length, 26);
     assert.ok(basePackages.includes(coreutils));
     await runFamilyAcceptance({
       runtime,
