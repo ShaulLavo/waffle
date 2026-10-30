@@ -9,6 +9,7 @@ import { DescriptorTable } from "../core/descriptors.js";
 import { createProgramShell } from "./fixtures/program-shell.js";
 import { waitStatus } from "../proc/wait-status.js";
 import { wasiCat } from "./fixtures/wasi-cat.js";
+import { SharedFilesystem } from "../browser/shared-fs.js";
 
 let runtime: Runtime | undefined;
 let tables: DescriptorTable[] = [];
@@ -434,4 +435,54 @@ test("the actual prepared runtime executes through its default prepared preview1
   expect(shell.output.join("")).toBe("prepared default worker\n");
   expect(program.attempts()).toBe(1);
   expect(owner.programs.get("cat")?.state.kind).toBe("loaded");
+});
+
+test("removal closes executable admission while an alias marker is still installing", async () => {
+  const aliasStarted = deferred();
+  const aliasWrite = deferred();
+  const program = fixture();
+  let launches = 0;
+  const owner = create({
+    programs: {
+      launcher(context) {
+        launches++;
+        context.started();
+        context.exit(0);
+        return { terminate() {} };
+      },
+    },
+  });
+  const shell = await createProgramShell(owner, tables);
+  const original = SharedFilesystem.prototype.writeFile;
+  const writing = spyOn(SharedFilesystem.prototype, "writeFile").mockImplementation(async function (
+    this: SharedFilesystem,
+    path,
+    bytes,
+    mode,
+  ) {
+    if (path === "/bin/cat") {
+      aliasStarted.resolve();
+      await aliasWrite.promise;
+    }
+    return original.call(this, path, bytes, mode);
+  });
+  const addition = owner.programs.onDemand(program.pkg);
+  let removal: Promise<void> | undefined;
+  try {
+    await aliasStarted.promise;
+    const handle = owner.programs.get("cat")!;
+    removal = handle.remove();
+    expect(handle.state.kind).toBe("removed");
+    expect((await shell.exec("/usr/bin/cat", ["cat"])).kind).toBe("start-failed");
+    expect(program.attempts()).toBe(0);
+    expect(launches).toBe(0);
+  } finally {
+    aliasWrite.resolve();
+    await addition;
+    await removal;
+    writing.mockRestore();
+  }
+  expect(await owner.filesystem.lookup("/usr/bin/cat")).toBeUndefined();
+  expect(await owner.filesystem.lookup("/bin/cat")).toBeUndefined();
+  expect(program.disposals()).toBe(1);
 });
