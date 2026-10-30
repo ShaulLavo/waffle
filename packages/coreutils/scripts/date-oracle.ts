@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns, type SpawnSyncOptionsWithBufferEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -8,19 +8,24 @@ import { WASI } from "node:wasi";
 import { currentDateCases, dateCases, fixedTime, type DateCase } from "../fixtures/date-cases.ts";
 import source from "../provenance/date.source.json" with { type: "json" };
 
+import { verifyNativeDate } from "./build-native-date-oracle.ts";
+import { assertSafeNativeDateArgs } from "./safe-native-date.ts";
+
 const environment = { ...process.env, ...source.oracle.environment };
 const script = fileURLToPath(import.meta.url);
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 export function verifyGnuDate() {
-  const path = process.env.GNU_DATE ?? source.oracle.path;
-  assert.equal(sha256(readFileSync(path)), source.oracle.sha256, "GNU date executable changed");
-  const result = spawnSync(path, ["--version"], { env: environment, timeout: 5_000 });
-  assert.ifError(result.error);
-  assert.equal(result.status, 0);
-  const version = result.stdout.toString().split("\n")[0];
-  assert.equal(version, source.oracle.version, "GNU date version changed");
-  return { path, version, sha256: source.oracle.sha256 };
+  const oracle = verifyNativeDate();
+  assert.ok(process.env.GNU_DATE, "Set GNU_DATE to the owned, verified GNU 9.12 cache binary");
+  assert.equal(resolve(process.env.GNU_DATE), oracle.path);
+  assert.equal(oracle.version, source.oracle.version);
+  return oracle;
+}
+
+function runGnuDate(path: string, args: readonly string[], options: SpawnSyncOptionsWithBufferEncoding) {
+  assertSafeNativeDateArgs(args);
+  return spawnSync(path, args, { ...options, argv0: "date" });
 }
 
 async function runGuest(path: string, args: string[]) {
@@ -102,7 +107,7 @@ export function compareDate(wasm: string, native?: string) {
       const expected =
         fixture.kind === "unsupported"
           ? undefined
-          : completed(spawnSync(oracle.path, fixture.args, options), fixture.name);
+          : completed(runGnuDate(oracle.path, fixture.args, options), fixture.name);
       const actual = completed(
         spawnSync(
           process.execPath,
@@ -147,7 +152,7 @@ function compareCurrent(wasm: string, cwd: string, gnu: string) {
   return currentDateCases.map((fixture) => {
     const options = { cwd, env: environment, timeout: 10_000, maxBuffer: 1024 * 1024 };
     const expected = completed(
-      spawnSync(gnu, ["-d", fixedTime.epoch].concat(fixture.args), options),
+      runGnuDate(gnu, ["-d", fixedTime.epoch].concat(fixture.args), options),
       fixture.name,
     );
     const actual = completed(

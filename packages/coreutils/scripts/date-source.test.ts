@@ -77,5 +77,7 @@ test("date uses only its isolated single-program locale route", () => {
 });
 
 test("GNU oracle identity is pinned before parity comparisons", () => {
-  assert.equal(verifyGnuDate().sha256, source.oracle.sha256);
+  const oracle = verifyGnuDate();
+  assert.equal(oracle.version, source.oracle.version);
+  assert.equal(oracle.sha256, createHash("sha256").update(readFileSync(oracle.path)).digest("hex"));
 });
