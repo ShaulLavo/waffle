@@ -291,7 +291,7 @@ describe("base closure", () => {
       ...(await fixtureOptions(linkedRoot, "unused-output")),
       out: link,
     });
-    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(24);
+    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(25);
     for (const guest of receipt.installCheck.wasm)
       expect(guest.path.startsWith("node_modules/")).toBe(true);
   }, 60_000);
