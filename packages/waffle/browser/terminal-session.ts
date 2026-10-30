@@ -2,6 +2,7 @@ import {
   assertTerminalWaitAllowed,
   terminalTurnActive,
   terminalPolicyActive,
+  terminalWaitAllowed,
   withTerminalControl,
   withTerminalPolicy,
 } from "../proc/terminal-turn.js";
@@ -495,7 +496,14 @@ interface ControlRequest {
   receipt: TerminalControlReceipt;
   execute(): Promise<void>;
 }
+/** Acquisition contention is "busy"; an operation's own result, including AGAIN, is "done". */
 type ControlAttempt<T> = { kind: "busy" } | { kind: "done"; result: TerminalResult<T> };
+function done<T>(result: TerminalResult<T>): ControlAttempt<T> {
+  return { kind: "done", result };
+}
+function settledAttempt<T>(attempt: ControlAttempt<T>): TerminalResult<T> {
+  return attempt.kind === "busy" ? error("AGAIN") : attempt.result;
+}
 
 function rollbackControl(frame: ControlFrame): void {
   // Only provisional handles/allocations are invalidated; no shared word is rewound.
@@ -587,52 +595,64 @@ class Session {
     owner: ProcessState | typeof pageOwner,
     operation: () => TerminalResult<T>,
   ): TerminalResult<T> {
-    if (this.closed()) return error("CLOSED");
+    return settledAttempt(this.attempt(owner, operation));
+  }
+  /** One acquisition attempt. Busy means a page reservation or another holder; nothing ran. */
+  attempt<T>(
+    owner: ProcessState | typeof pageOwner,
+    operation: () => TerminalResult<T>,
+  ): ControlAttempt<T> {
+    if (this.closed()) return done(error("CLOSED"));
     if (!this.rootLive()) {
       this.close();
-      return error("PROCESS_GONE");
+      return done(error("PROCESS_GONE"));
     }
-    if (activeControl) {
-      if (
-        terminalPolicyActive() ||
-        activeControl.state !== "executing" ||
-        activeControl.session.identity.buffer !== this.identity.buffer
-      )
-        return error("INVALID");
-      if (
-        typeof owner !== "bigint" &&
-        (owner.pid !== activeControl.owner.pid || owner.slot !== activeControl.owner.slot)
-      )
-        return error("DENIED");
-      return operation();
-    }
+    if (activeControl) return done(this.reenter(owner, operation));
     if (typeof owner === "bigint") return this.lock(owner, operation);
-    if (!enterTerminalSection(owner)) return error("CANCELED");
+    if (!enterTerminalSection(owner)) return done(error("CANCELED"));
     try {
       return this.lock(BigIntConstructor(owner.pid), operation);
     } finally {
       leaveTerminalSection(owner, this.identity.directory);
     }
   }
-  private lock<T>(owner: bigint, operation: () => TerminalResult<T>): TerminalResult<T> {
+  private reenter<T>(
+    owner: ProcessState | typeof pageOwner,
+    operation: () => TerminalResult<T>,
+  ): TerminalResult<T> {
+    const frame = activeControl!;
+    if (
+      terminalPolicyActive() ||
+      frame.state !== "executing" ||
+      frame.session.identity.buffer !== this.identity.buffer
+    )
+      return error("INVALID");
+    if (
+      typeof owner !== "bigint" &&
+      (owner.pid !== frame.owner.pid || owner.slot !== frame.owner.slot)
+    )
+      return error("DENIED");
+    return operation();
+  }
+  private lock<T>(owner: bigint, operation: () => TerminalResult<T>): ControlAttempt<T> {
     if (this.get(H.pageWaiting) !== 0) return this.contend(true);
     if (atomicsCompareExchange(this.gate, 0, 0n, owner) !== 0n) return this.contend();
     this.dirty = false;
     try {
-      if (this.closed()) return error("CLOSED");
-      return operation();
+      if (this.closed()) return done(error("CLOSED"));
+      return done(operation());
     } finally {
       atomicsStore(this.gate, 0, 0n);
       const contended = atomicsExchange(this.words, H.contended, 0);
       if (this.dirty || contended !== 0) this.notify();
     }
   }
-  private contend(reserved = false): TerminalResult<never> {
+  private contend(reserved = false): { kind: "busy" } {
     atomicsStore(this.words, H.contended, 1);
     // Either the holder sees our hint after unlocking, or it already released and we wake
     // the scan ourselves. A fully notified poll observed its sequence before losing this CAS.
     if (!reserved && atomicsLoad(this.gate, 0) === 0n) this.notify();
-    return error("AGAIN");
+    return { kind: "busy" };
   }
   control<T>(
     state: ProcessState,
@@ -1615,9 +1635,12 @@ class Attachment implements TerminalAttachment {
     return undefined;
   }
   run<T>(state: ProcessState, callback: () => TerminalResult<T>): TerminalResult<T> {
+    return settledAttempt(this.attempt(state, callback));
+  }
+  attempt<T>(state: ProcessState, callback: () => TerminalResult<T>): ControlAttempt<T> {
     const denied = this.check(state);
-    if (denied) return error(denied);
-    return this.session.transact(state, () => {
+    if (denied) return done(error(denied));
+    return this.session.attempt(state, () => {
       const failure = this.check(state);
       return failure ? error(failure) : callback();
     });
@@ -1716,6 +1739,21 @@ class Endpoint implements Stream {
     const denied = this.check();
     if (denied) return error(denied);
     return this.attachment.run(this.state, callback);
+  }
+  /** Waits out acquisition contention in worker realms; the callback runs once, under the gate.
+   * Each expiry re-evaluates liveness and signals, whose publishers do not notify `wake`. */
+  waiting<T>(callback: () => TerminalResult<T>): TerminalResult<T> {
+    for (;;) {
+      const seen = this.attachment.session.get(H.wake);
+      const denied = this.check();
+      if (denied) return error(denied);
+      const attempt = this.attachment.attempt(this.state, callback);
+      if (attempt.kind === "done") return attempt.result;
+      if (!terminalWaitAllowed()) return error("AGAIN");
+      // The handler's own signal was taken before dispatch; a new one ends the wait unconsumed.
+      if (signalPending(this.state.signals)) return error("CANCELED");
+      atomicsWait(this.attachment.session.wake, 0, seen, 10);
+    }
   }
   tryRead(chunks: readonly Uint8Array[]): number {
     const denied = this.check();
@@ -1832,14 +1870,14 @@ class Endpoint implements Stream {
 class Controls implements TerminalControls {
   constructor(private readonly endpoint: Endpoint) {}
   snapshot(): TerminalResult<TerminalSnapshot> {
-    return this.endpoint.run(() => ok(this.endpoint.attachment.session.snapshot()));
+    return this.endpoint.waiting(() => ok(this.endpoint.attachment.session.snapshot()));
   }
   setMode(options: {
     readonly expected: TerminalSelection | null;
     readonly mode: TerminalMode;
   }): TerminalResult<void> {
     const { expected, mode } = options;
-    return this.endpoint.run(() => this.set({ expected, mode }));
+    return this.endpoint.waiting(() => this.set({ expected, mode }));
   }
   private set(options: {
     readonly expected: TerminalSelection | null;
