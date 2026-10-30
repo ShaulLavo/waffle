@@ -583,6 +583,45 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
   }
 });
 
+test("program producers explicitly provision the pinned optimizer before running build routes", () => {
+  const producers = [
+    ["programs", "bun run programs:tools"],
+    ["jq", "bun run programs:jq"],
+    ["diffutils", "bun run programs:diffutils"],
+  ] satisfies readonly [string, string][];
+  for (const [job, command] of producers) {
+    const steps = stepsFor(job);
+    const optimizer = steps.findIndex(
+      (step) => step.uses === "./.github/actions/program-optimizer",
+    );
+    const consumer = steps.findIndex((step) => String(step.run).includes(command));
+    expect(optimizer).toBeGreaterThanOrEqual(0);
+    expect(consumer).toBeGreaterThan(optimizer);
+    expect(steps[optimizer]?.if).toBeUndefined();
+    expect(steps[optimizer]?.["continue-on-error"]).toBeUndefined();
+  }
+  expect(
+    stepsFor("network-wasm").some((step) => step.uses === "./.github/actions/program-optimizer"),
+  ).toBe(false);
+  for (const path of [
+    "ci.yml",
+    "coreutils-echo.yml",
+    "findutils-xargs.yml",
+    "program-release.yml",
+  ]) {
+    const source = readFileSync(
+      new URL(`../../../.github/workflows/${path}`, import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("uses: ./.github/actions/program-optimizer");
+  }
+  for (const filter of ["programs", "coreutils", "findutils", "jq", "diffutils"]) {
+    expect(selected(filter, "tools/program-optimize.ts")).toBe(true);
+    expect(selected(filter, "tools/program-derivation.ts")).toBe(true);
+    expect(selected(filter, ".github/actions/program-optimizer/action.yml")).toBe(true);
+  }
+});
+
 test("diffutils selects its exact integration inputs", () => {
   const job = record(jobs.diffutils);
   expect(job.needs).toEqual(["changes", "network-wasm"]);

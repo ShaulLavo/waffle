@@ -118,6 +118,10 @@ test("ripgrep retains its pinned Cargo flags, release settings and final verific
     "-j2",
   ]);
   assert.equal(call.env.CARGO_ENCODED_RUSTFLAGS, "fixture-flags");
+  assert.equal(call.env.CARGO_PROFILE_RELEASE_OPT_LEVEL, "z");
+  assert.equal(call.env.CARGO_PROFILE_RELEASE_LTO, "fat");
+  assert.equal(call.env.CARGO_PROFILE_RELEASE_PANIC, "abort");
+  assert.equal(call.env.CARGO_PROFILE_RELEASE_CODEGEN_UNITS, "1");
   assert.equal(call.env.CARGO_PROFILE_RELEASE_DEBUG, "0");
   assert.equal(call.env.CARGO_PROFILE_RELEASE_STRIP, "debuginfo");
   assert.equal(call.env.GIT_CEILING_DIRECTORIES, resolve(ripgrepRoot, ".sources"));

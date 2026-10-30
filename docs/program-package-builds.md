@@ -1,6 +1,7 @@
 # Preparing program packages
 
-Each family owns its build and license generation. Run `prepare:package` in coreutils,
+Each family owns its build and license generation. Program staging requires the
+[pinned optimizer](program-optimization.md); CI provisions it explicitly. Run `prepare:package` in coreutils,
 grep, findutils or sed to build with the locked patched-sysroot recipe and generate
 `dist/THIRD_PARTY_NOTICES.txt` from its locked production dependency graph. The notice
 command uses offline Cargo metadata and fails when required cached source/license text

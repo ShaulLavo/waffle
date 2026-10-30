@@ -29,7 +29,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `packages/diffutils/patches/gnu-wasi.patch`                                                                                           | Adaptation       | GNU diffutils 3.12 release sources; bounded WASI changes disable unsupported process, signal, timezone and locale recovery APIs. See [GNU diffutils](#gnu-diffutils).                                                                                                                                                                                                                                                        |
 | `packages/coreutils/src/bin/nl.rs`, `packages/coreutils/src/bin/nl_bre/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/nl` and `src/uucore` at `07763857f6b9a547742a994b58aef0ccd036198b`. Initializes WASI cwd and translates bounded common BRE styles into upstream's byte regex grammar; no command algorithm copied. See [External nl entry](#external-nl-entry). |
 | `packages/jq/patches/jaq-wasi.patch`, `packages/jq/scripts/` | Adaptation | jaq 3.1.2 at `f7fea9219d8d5364c91c6a0278765eaa0e6fa95e`; target-gate rustyline and the interactive `repl` off WASI. Original Waffle recipe preserves the upstream evaluator and noninteractive CLI, disables mimalloc, and adds packaging, notices, native jq oracle and runtime tests. |
-| `tools/program-build-tools.ts`                                                                                                        | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied.                                                                                                                                                                                                              |
+| `tools/program-build-tools.ts`                                                                                                        | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds verified optimization and bounded final-program name stripping with original optimizer/derivation adapters; no external Wasm parser is copied.                                                                                                                                                                                                              |
 
 ## GNU diffutils
 
@@ -284,12 +284,14 @@ See [English program catalogs](program-locales.md) for coverage and build identi
 `tools/program-build-tools.ts` originated in bash-web `9ef027d7`, from
 `scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. Its original byte reader
 now rejects integers outside the Wasm u32 range. Waffle's original `stripWasmNames`
-and `stageProgram` operations use that reader to remove only complete custom sections
-whose name is exactly `name`. All other bytes, including producer metadata, target
-features and dynamic-linking metadata, remain unchanged. Compiler intermediates keep
-their names until the existing patched-libc verification finishes. Family staging
-strips final program assets before release hashing. Python keeps its accepted producer
-receipt and writes a separate final-program derivation receipt.
+removes only complete custom sections whose name is exactly `name`, retaining every
+other encoded byte. The original `stageProgram`, `program-optimize.ts` and
+`program-derivation.ts` adapters run pinned external Binaryen before the existing
+verifier, then apply that byte transform and bind both steps to final staged bytes.
+No Binaryen implementation is copied into this repository. Named compiler inputs,
+locale proofs and accepted Python producer receipts remain unchanged. Optimized code
+is verified while names remain available; final hashes follow stripping. Python's
+separate derivation preserves its original producer identity.
 
 ## External nl entry
 
