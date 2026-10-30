@@ -94,11 +94,11 @@ import {
 } from "./terminal-output.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
 import type { RuntimeNetworkPathScope } from "./net/runtime.js";
+import type { SignalDelegation } from "../programs/index.js";
 import { packageIdentity } from "../programs/catalog.js";
 import {
   CommandStdioError,
   type ProcessQuery,
-  type SignalDelegation,
   type CommandProcessRow,
   type DelegatedSignals,
 } from "../proc/command.js";

@@ -20,6 +20,10 @@ export interface ProgramPackage {
   readonly dispose?: () => Promise<void>;
 }
 
+export interface SignalDelegation {
+  readonly packages: readonly ProgramPackage[];
+}
+
 export type ProgramLaunch = (
   context: Parameters<GuestLauncher>[0],
   service: Parameters<GuestLauncher>[1],

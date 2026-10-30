@@ -225,6 +225,18 @@ test("command stdio writes real redirected files and keeps a shared append offse
   expect(new TextDecoder().decode(await owner.filesystem.readFile("/err"))).toBe(
     "separate stderr\n",
   );
+  const second = await shell.spawn(
+    "/opt/fixture",
+    ["fixture"],
+    [
+      { parent: 1, child: 1 },
+      { parent: 2, child: 2 },
+    ],
+  );
+  expect(await second.collect()).toMatchObject({ kind: "exited", code: 0 });
+  expect(new TextDecoder().decode(await owner.filesystem.readFile("/out"))).toBe(
+    "redirected stdout\n".repeat(2),
+  );
 });
 
 test("stdio copies at least one MiB through real pipes under backpressure", async () => {
@@ -596,4 +608,40 @@ test("the page entry keeps command execution and stdio in lazy import chunks", a
   );
   expect(chunks.some((text) => text.includes("function runCommand("))).toBe(true);
   expect(chunks.some((text) => text.includes("class CommandStdio "))).toBe(true);
+});
+
+test("cancellation fences a pending unawaited pipe write without releasing the callback hold", async () => {
+  const owner = create();
+  const entered = deferred();
+  const physical = deferred();
+  let pending: Promise<void> | undefined;
+  await owner.programs.onDemand(
+    command(async ({ stdout }) => {
+      pending = stdout.write(new Uint8Array(16384));
+      entered.resolve();
+      await physical.promise;
+      return 0;
+    }),
+  );
+  const shell = await commandShell(owner, cleanups);
+  const output = new PipeController({ capacity: 4096, relay: "manual" });
+  cleanups.push(() => output.dispose());
+  const reader = output.retain(shell.root, "read");
+  cleanups.push(() => reader.close());
+  shell.descriptors.openAt(1, output.retain(shell.root, "write"), 64n, 0n);
+  const child = await shell.spawn("/bin/fixture", ["fixture"], [{ parent: 1, child: 1 }]);
+  shell.descriptors.close(1);
+  await entered.promise;
+  await shell.service.kill(child.pid, 15);
+  expect(await child.exit).toMatchObject({ kind: "signaled", code: 15 });
+  expect(await failure(pending!)).toMatchObject({ code: "CANCELED" });
+  const removal = owner.programs.get("fixture")!.remove();
+  let removed = false;
+  void removal.then(() => {
+    removed = true;
+  });
+  await Promise.resolve();
+  expect(removed).toBe(false);
+  physical.resolve();
+  await removal;
 });

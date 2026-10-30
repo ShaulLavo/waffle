@@ -1,4 +1,3 @@
-import type { ProgramPackage } from "../programs/index.js";
 /** Trusted page-thread code. Cancellation revokes capabilities, but cannot preempt JavaScript. */
 export type HostCommand = (context: HostCommandContext) => Promise<number>;
 export interface HostCommandDefinition {
@@ -47,9 +46,6 @@ export interface CommandProcessRow {
   readonly state: "reserved" | "starting" | "running";
 }
 
-export interface SignalDelegation {
-  readonly packages: readonly ProgramPackage[];
-}
 export type SignalSend = "sent" | "missing" | "denied" | "revoked";
 export interface DelegatedSignals {
   send(pid: number, signal: number): SignalSend;
