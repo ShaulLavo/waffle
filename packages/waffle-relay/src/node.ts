@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { ConnectionOptions } from "node:tls";
 import { normalizeOptions } from "./policy.js";
 import { createRelayHandler } from "./server.js";
@@ -25,24 +25,36 @@ export function createNodeRelayServer(options: NodeRelayOptions) {
     },
   );
   server.maxConnections = policy.limits.maxConcurrent + 8;
+  let closing: Promise<void> | undefined;
   return Object.freeze({
     server,
     relay,
-    async close() {
-      relay.revoke();
-      server.closeIdleConnections();
-      const closed = new Promise<void>((resolve, reject) => {
-        if (!server.listening) {
-          resolve();
-          return;
-        }
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-      server.closeAllConnections();
-      await relay.close();
-      await closed;
+    close() {
+      if (closing) return closing;
+      const completion = Promise.withResolvers<void>();
+      closing = completion.promise;
+      void shutdown(relay, server).then(completion.resolve, completion.reject);
+      return closing;
     },
   });
+}
+
+async function shutdown(
+  relay: ReturnType<typeof createRelayHandler>,
+  server: Server,
+): Promise<void> {
+  relay.revoke();
+  server.closeIdleConnections();
+  const closed = new Promise<void>((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  server.closeAllConnections();
+  await relay.close();
+  await closed;
 }
 
 async function handle(

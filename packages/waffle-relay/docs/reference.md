@@ -14,7 +14,7 @@ The base `waffle` package has no relay dependency. Its lazy network helper reads
 
 The host must keep the credential out of guest state, headers, environment, logs, and error reports. Guest `Authorization` never authenticates the relay. `transport` is an optional trusted host transport, captured once, not a guest callback.
 
-`fetch` accepts HTTP and HTTPS, seven ordinary HTTP methods, safe headers, and a raw body. Bodies may be bytes, text, Blob, URLSearchParams, or a byte stream. Replayable bodies retain their representation, so browsers need not support streaming uploads for Waffle's byte-array requests. FormData is rejected rather than buffered without a size bound. A body stream cannot be replayed across a preserving redirect.
+`fetch` accepts HTTP and HTTPS, seven ordinary HTTP methods, safe headers, and a raw body. Bodies may be bytes, text, Blob, URLSearchParams, or a byte stream. Replayable bodies retain their representation, so browsers need not support streaming uploads for Waffle's byte-array requests. FormData is rejected rather than buffered without a size bound. A body stream cannot be replayed across a preserving redirect. Manual mode returns the redirect without replaying the body or requiring a usable Location. Body-inferred content types follow the platform Request behavior unless the caller supplies an explicit content type.
 
 Manual hops driven by one helper signal share a redirect count. The client also implements `follow` and `error` redirect modes. Every hop makes a fresh policy-checked server request. Cross-origin redirects drop caller credentials. Server credential profiles are selected independently by the new exact origin, so a profile never leaks to another origin.
 

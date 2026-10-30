@@ -70,6 +70,10 @@ async function follow(initial: CapturedRequest, start: number, client: Client): 
       });
       return response;
     }
+    if (request.redirect === "manual") {
+      rememberManualHop(request, location, count, client.chains);
+      return response;
+    }
     let next: CapturedRequest;
     try {
       next = redirectRequest(request, response.status, location);
@@ -79,7 +83,6 @@ async function follow(initial: CapturedRequest, start: number, client: Client): 
     }
     if (request.signal)
       client.chains.set(request.signal, { next: next.url.href, count: count + 1 });
-    if (request.redirect === "manual") return response;
     await response.body?.cancel();
     if (request.redirect === "error" || count >= client.limits.maxRedirects)
       throw new RelayError("redirect-denied");
@@ -152,15 +155,47 @@ async function fetchHop(request: CapturedRequest, client: Client): Promise<Respo
 
 function captureRequest(value: string, init: RequestInit): CapturedRequest {
   const method = methodFrom(init.method ?? "GET");
-  const headers = Array.from(new Headers(init.headers));
+  const headers = new Headers(init.headers);
   const body = init.body ?? null;
+  if (!headers.has("content-type")) {
+    const inferred = bodyContentType(body);
+    if (inferred !== null) headers.set("content-type", inferred);
+  }
   const signal = init.signal ?? null;
   const redirect = init.redirect ?? "follow";
   if (redirect !== "manual" && redirect !== "follow" && redirect !== "error")
     throw new TypeError("Invalid redirect mode");
   if ((method === "GET" || method === "HEAD") && body !== null)
     throw new TypeError("GET and HEAD requests cannot have a body");
-  return { url: targetURL(value), method, headers, body, signal, redirect };
+  return { url: targetURL(value), method, headers: Array.from(headers), body, signal, redirect };
+}
+
+function bodyContentType(body: BodyInit | null): string | null {
+  let empty: BodyInit;
+  if (typeof body === "string") empty = "";
+  else if (body instanceof Blob) empty = new Blob([], { type: body.type });
+  else if (body instanceof URLSearchParams) empty = new URLSearchParams();
+  else return null;
+  // Infer platform headers without copying or consuming the caller's payload.
+  return new Request("https://localhost/", { method: "POST", body: empty }).headers.get(
+    "content-type",
+  );
+}
+
+function rememberManualHop(
+  request: CapturedRequest,
+  location: string,
+  count: number,
+  chains: WeakMap<AbortSignal, Chain>,
+): void {
+  if (!request.signal) return;
+  try {
+    const next = targetURL(new URL(location, request.url).href);
+    chains.set(request.signal, { next: next.href, count: count + 1 });
+  } catch {
+    // Tracking a possible next hop must not reject an unfollowed response.
+    return;
+  }
 }
 
 function nextHop(

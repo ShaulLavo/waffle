@@ -42,7 +42,9 @@ async function bundle(entry: string, before = false) {
   assert.ok(result.success, result.logs.map(String).join("\n"));
   assert.ok(result.metafile);
   const outputs = result.metafile.outputs;
-  const entryKey = Object.keys(outputs).find((key) => outputs[key]?.entryPoint?.endsWith(entry));
+  const entryKey = Object.keys(outputs).find(
+    (key) => resolve(outputs[key]?.entryPoint ?? "") === resolve(root, entry),
+  );
   assert.ok(entryKey, "Missing bundle entry");
   const visited = new Set<string>();
   const visit = (key: string): void => {

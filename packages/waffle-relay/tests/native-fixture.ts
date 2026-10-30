@@ -103,6 +103,19 @@ try {
       response.end("discard");
       return;
     }
+    if (request.url === "/body-type") {
+      request.resume();
+      request.once("end", () => response.end(request.headers["content-type"] ?? ""));
+      return;
+    }
+    if (request.url === "/preserve") {
+      request.resume();
+      request.once("end", () => {
+        response.writeHead(307, { location: "/final" });
+        response.end("manual response");
+      });
+      return;
+    }
     if (request.url === "/gzip") {
       response.writeHead(200, { "content-encoding": "gzip", "content-length": chunks.length });
       response.end(chunks);
@@ -159,6 +172,37 @@ try {
     ).text(),
     "65537",
   );
+  for (const body of [
+    new URLSearchParams({ field: "value" }),
+    new Blob(["{}"], { type: "application/json" }),
+    "plain text",
+    new Uint8Array([1, 2]),
+  ]) {
+    const expected = new Request(`${origin}/body-type`, { method: "POST", body }).headers.get(
+      "content-type",
+    );
+    const result = await client.fetch(`${origin}/body-type`, { method: "POST", body });
+    assert.equal(await result.text(), expected ?? "");
+  }
+  const explicit = await client.fetch(`${origin}/body-type`, {
+    method: "POST",
+    body: new URLSearchParams({ field: "value" }),
+    headers: { "content-type": "application/owned-fixture" },
+  });
+  assert.equal(await explicit.text(), "application/owned-fixture");
+  const manualBody = new ReadableStream<Uint8Array>({
+    start(output) {
+      output.enqueue(new TextEncoder().encode("upload"));
+      output.close();
+    },
+  });
+  const manual = await client.fetch(`${origin}/preserve`, {
+    method: "POST",
+    body: manualBody,
+    redirect: "manual",
+  });
+  assert.equal(manual.status, 307);
+  assert.equal(await manual.text(), "manual response");
   const compressed = await client.fetch(`${origin}/gzip`);
   assert.equal(await compressed.text(), "decoded fixture body");
   assert.equal(compressed.headers.get("content-encoding"), null);
@@ -203,7 +247,14 @@ try {
   controller.abort(reason);
   await assert.rejects(reader.read(), (error) => error === reason);
   await client.close();
-  await relay.close();
+  let relayClosed = false;
+  relay.server.once("close", () => {
+    relayClosed = true;
+  });
+  const closing = relay.close();
+  assert.equal(relay.close(), closing, "repeated close must join the original shutdown");
+  await closing;
+  assert.equal(relayClosed, true);
   assert.equal(relay.server.listening, false);
   console.log(
     JSON.stringify({

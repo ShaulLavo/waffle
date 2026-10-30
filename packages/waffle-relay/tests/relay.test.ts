@@ -747,3 +747,89 @@ test("trusted outer transport keeps the plain-function callback receiver", async
     await f.close();
   }
 });
+
+for (const status of [307, 308]) {
+  test(`manual streamed ${status} returns the redirect without replay`, async () => {
+    let calls = 0;
+    const f = fixture({
+      async fetch(_url, init) {
+        calls++;
+        expect(await new Response(init.body).text()).toBe("upload");
+        return new Response("manual response", { status, headers: { location: "/next" } });
+      },
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("upload"));
+        controller.close();
+      },
+    });
+    try {
+      const response = await f.client.fetch(TARGET, {
+        method: "POST",
+        body,
+        redirect: "manual",
+        signal: new AbortController().signal,
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("location")).toBe("/next");
+      expect(await response.text()).toBe("manual response");
+      expect(calls).toBe(1);
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("manual redirects return even when Location cannot be followed", async () => {
+  const f = fixture({
+    async fetch() {
+      return new Response("unfollowed", { status: 302, headers: { location: "http://[" } });
+    },
+  });
+  try {
+    const response = await f.client.fetch(TARGET, {
+      redirect: "manual",
+      signal: new AbortController().signal,
+    });
+    expect(response.status).toBe(302);
+    expect(await response.text()).toBe("unfollowed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("inferred body content types reach the target without replacing explicit headers", async () => {
+  const observed: (string | null)[] = [];
+  const f = fixture({
+    async fetch(_url, init) {
+      observed.push(init.headers.get("content-type"));
+      await new Response(init.body).arrayBuffer();
+      return new Response("ok");
+    },
+  });
+  const bodies = [
+    new URLSearchParams({ field: "value" }),
+    new Blob(["{}"], { type: "application/json" }),
+    "plain text",
+    new Uint8Array([1, 2]),
+  ];
+  try {
+    for (const body of bodies)
+      await (await f.client.fetch(TARGET, { method: "POST", body })).text();
+    const expected = bodies.map((body) =>
+      new Request(TARGET, { method: "POST", body }).headers.get("content-type"),
+    );
+    expect(observed).toEqual(expected);
+    await (
+      await f.client.fetch(TARGET, {
+        method: "POST",
+        body: new URLSearchParams({ explicit: "value" }),
+        headers: { "content-type": "application/owned-fixture" },
+      })
+    ).text();
+    expect(observed.at(-1)).toBe("application/owned-fixture");
+  } finally {
+    await f.close();
+  }
+});
