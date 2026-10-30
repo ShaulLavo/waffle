@@ -1,3 +1,4 @@
+import { RootWatchAccount, type WatchResourceLimits } from "./watch-account.js";
 import type { WalkStep } from "./walk.js";
 import { truncateBoundaryEnd } from "./shared-version-pages.js";
 import type { ReaderMetadataBudget } from "./storage.js";
@@ -105,7 +106,17 @@ export interface LocalMutationPlan extends Omit<MutationPlan, "changes"> {
   readonly identities: readonly { node: Node; handle: FileHandle; identity: FileIdentity }[];
   readonly changes: readonly PublicationEffect[];
 }
+export interface WatchMutationObserver {
+  beforeMutation(): void;
+  committed(plan: LocalMutationPlan): void;
+}
 export class MemoryBackend implements FilesystemBackend {
+  private readonly watchOwner: { observer?: WatchMutationObserver };
+  installWatchObserver(observer: WatchMutationObserver): void {
+    if (this.watchOwner.observer && this.watchOwner.observer !== observer)
+      throw new Error("filesystem root already has a watch owner");
+    this.watchOwner.observer = observer;
+  }
   identity(handle: FileHandle, revoked?: () => boolean): FileIdentity {
     const node = this.fs.nodeForHandle(handle);
     return this.shared.identity(handle, revoked) ?? this.ensureIdentity(node);
@@ -115,12 +126,17 @@ export class MemoryBackend implements FilesystemBackend {
   }
   readonly workspaceId: string;
   readonly fs: MemFS;
+  readonly watchAccount: RootWatchAccount;
   constructor(
     fs = new MemFS(),
     reservation: IdentityReservation = { workspace: crypto.randomUUID(), era: 1n },
     startupRoot?: MemoryBudget | MemoryBackend,
+    watchLimits?: WatchResourceLimits,
   ) {
     if (startupRoot instanceof MemoryBackend) {
+      if (watchLimits) throw new TypeError("a backend wrapper borrows its watch account");
+      this.watchOwner = startupRoot.watchOwner;
+      this.watchAccount = startupRoot.watchAccount;
       this.fs = startupRoot.fs;
       this.workspaceId = startupRoot.workspaceId;
       this.shared = startupRoot.shared;
@@ -128,6 +144,8 @@ export class MemoryBackend implements FilesystemBackend {
       this.sharedAttached = startupRoot.sharedAttached;
       return;
     }
+    this.watchOwner = {};
+    this.watchAccount = new RootWatchAccount(watchLimits, startupRoot);
     this.shared = new SharedFilesystemState(
       undefined,
       undefined,
@@ -943,6 +961,7 @@ export class MemoryBackend implements FilesystemBackend {
   }
   /** Only this synchronous typed switch applies a publication-aware service mutation. */
   applyPublication(plan: LocalMutationPlan): void {
+    this.watchOwner.observer?.beforeMutation();
     this.shared.identityGroup = true;
     try {
       plan.backing?.commit();
@@ -953,7 +972,8 @@ export class MemoryBackend implements FilesystemBackend {
         this.identityChanged(node);
         this.shared.updateIdentity(handle, identity);
       }
-      this.shared.watch.effects(plan.changes);
+      if (this.watchOwner.observer) this.watchOwner.observer.committed(plan);
+      else this.shared.watch.effects(plan.changes);
     } finally {
       this.shared.identityGroup = false;
     }
@@ -1013,8 +1033,24 @@ export class MemoryBackend implements FilesystemBackend {
       .flatMap((buffer, index) => (buffer.byteLength ? [{ buffer, index: index + 1 }] : []));
   }
   resources(): Record<string, number> {
+    const watch = this.watchAccount.resources();
+    const shared = this.shared.resources();
     return {
-      ...this.shared.resources(),
+      ...shared,
+      bytes: shared.bytes + watch.backingBytes,
+      metadataBytes: shared.metadataBytes + watch.backingBytes,
+      watchBackingBytes: watch.backingBytes,
+      watchLiveBytes: watch.liveBytes,
+      watchReservedBytes: watch.reservedBytes,
+      watchReusableBytes: watch.reusableBytes,
+      watchPaddingBytes: watch.paddingBytes,
+      watchControlUnits: watch.controlUnits,
+      watchEventBytes: watch.eventBytes,
+      watchWorkBytes: watch.workBytes,
+      watchPeakBackingBytes: watch.peakBackingBytes,
+      watchPeakControlUnits: watch.peakControlUnits,
+      watchPeakWorkBytes: watch.peakWorkBytes,
+      watchPeakEventBytes: watch.peakEventBytes,
       startupRootBackingBytes: this.startupRoot?.buffer.byteLength ?? 0,
     };
   }
