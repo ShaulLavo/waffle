@@ -21,6 +21,13 @@ import {
   validateProgramDerivation,
 } from "./program-derivation.ts";
 import { fileURLToPath } from "node:url";
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants as zlibConstants,
+  gunzipSync,
+  gzipSync,
+} from "node:zlib";
 
 type Environment = NodeJS.ProcessEnv;
 const helper = fileURLToPath(import.meta.url);
@@ -258,24 +265,48 @@ export function stageProgram(
       bytes,
       producerReceipt === undefined ? undefined : readFileSync(producerReceipt),
     );
-    for (const path of destinations) publishProgram(path, bytes, receipt);
+    const outputs = compressedProgramOutputs(bytes);
+    for (const path of destinations) publishProgram(path, outputs, receipt);
     return receipt;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
-function publishProgram(destination: string, bytes: Uint8Array, receipt: unknown) {
+function compressedProgramOutputs(bytes: Uint8Array) {
+  const gzip = gzipSync(bytes, { level: 9 });
+  const brotli = brotliCompressSync(bytes, {
+    params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
+  });
+  assert.ok(gunzipSync(gzip).equals(bytes), "Gzip program readback differs from final bytes");
+  assert.ok(
+    brotliDecompressSync(brotli).equals(bytes),
+    "Brotli program readback differs from final bytes",
+  );
+  return { bytes, gzip, brotli };
+}
+
+function publishProgram(
+  destination: string,
+  outputs: ReturnType<typeof compressedProgramOutputs>,
+  receipt: unknown,
+) {
   const scratch = mkdtempSync(resolve(dirname(destination), ".program-publish-"));
   try {
     const binary = resolve(scratch, "program.wasm");
+    const gzip = resolve(scratch, "program.wasm.gz");
+    const brotli = resolve(scratch, "program.wasm.br");
     const metadata = resolve(scratch, "program.json");
-    writeFileSync(binary, bytes);
+    writeFileSync(binary, outputs.bytes);
+    writeFileSync(gzip, outputs.gzip);
+    writeFileSync(brotli, outputs.brotli);
     writeFileSync(metadata, JSON.stringify(receipt, null, 2) + "\n");
     renameSync(
       metadata,
       resolve(dirname(destination), `${basename(destination, ".wasm")}-program.json`),
     );
+    renameSync(gzip, `${destination}.gz`);
+    renameSync(brotli, `${destination}.br`);
     renameSync(binary, destination);
   } finally {
     rmSync(scratch, { recursive: true, force: true });

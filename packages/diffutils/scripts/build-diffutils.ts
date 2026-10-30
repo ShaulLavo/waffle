@@ -8,11 +8,11 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
 import {
   stageProgram,
   verifyWasiGuest,
@@ -140,19 +140,13 @@ interface ProgramSize {
 
 function stageGuest(program: "diff" | "cmp"): ProgramSize {
   const guest = resolve(releaseDirectory, program);
-  const raw = readFileSync(guest);
   const destination = resolve(packageRoot, `dist/${program}.wasm`);
-  stageProgram(guest, destination);
-  const stripped = readFileSync(destination);
-  const compressed = brotliCompressSync(stripped, {
-    params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
-  });
-  writeFileSync(`${destination}.br`, compressed);
+  const derivation = stageProgram(guest, destination);
   return {
-    rawBytes: raw.length,
-    strippedBytes: stripped.length,
-    brotliBytes: compressed.length,
-    strippedSha256: createHash("sha256").update(stripped).digest("hex"),
+    rawBytes: derivation.input.bytes,
+    strippedBytes: derivation.output.bytes,
+    brotliBytes: statSync(`${destination}.br`).size,
+    strippedSha256: derivation.output.sha256,
   };
 }
 

@@ -199,6 +199,29 @@ describe("base closure", () => {
     expect(manifest.assetBase).toBe(assetBase);
   });
 
+  test("records both compressed companions for every raw Wasm artifact", () => {
+    const raw = manifest.packages.flatMap((item) =>
+      item.artifacts
+        .filter((artifact) => artifact.path.endsWith(".wasm"))
+        .map((artifact) => ({ item, artifact })),
+    );
+    expect(raw).toHaveLength(25);
+    for (const { item, artifact } of raw) {
+      const gzip = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.gz`);
+      const brotli = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.br`);
+      expect(gzip).toBeDefined();
+      expect(brotli).toBeDefined();
+      if (!gzip || !brotli) continue;
+      expect(gzip.bytes).toBeGreaterThan(0);
+      expect(brotli.bytes).toBeGreaterThan(0);
+      expect(new Set([artifact.sha256, gzip.sha256, brotli.sha256]).size).toBe(3);
+    }
+    const base = manifest.packages.find((item) => item.name === "waffle-base");
+    expect(
+      base?.artifacts.filter((artifact) => /\.wasm(?:\.gz|\.br)?$/.test(artifact.path)),
+    ).toEqual([]);
+  });
+
   test("packed manifests name only immutable asset URLs, never workspace or 0.0.0", () => {
     const urls = new Map(manifest.packages.map((item) => [item.name, item.url]));
     for (const item of manifest.packages) {
