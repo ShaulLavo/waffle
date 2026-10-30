@@ -98,3 +98,8 @@
 +            let _ = writeln!(stderr(), "{}: write error: {error}", self.util_name);
 +            return 1;
 +        }
+--- a/src/uucore/src/lib/mods/clap_localization.rs
++++ b/src/uucore/src/lib/mods/clap_localization.rs
+@@ -477 +477 @@
+-        if e.exit_code() == 0 {
++        if e.exit_code() == 0 && !cfg!(all(target_os = "wasi", feature = "checksum")) {

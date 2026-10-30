@@ -143,7 +143,7 @@
   },
   "dependencyPatch": {
     "path": "crates/checksums/patches/selected-io-and-escaped-records.patch",
-    "sha256": "e3df8fc1976add09356966c2eaa21ad66eef30a08d5b98b9f380f65b0325e8e1",
+    "sha256": "0eb78cf7dab8d1d8a00727a948dbd6ec38ee60142d1a09c100c6579c25ec3a1b",
     "preparation": "scripts/prepare-checksum-source.ts",
     "generatedSource": ".sources/checksums",
     "changes": [
