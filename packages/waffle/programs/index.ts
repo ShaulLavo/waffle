@@ -2,6 +2,8 @@
 // small marker file per path and registers it; nothing is fetched, prepared or compiled until
 // the first exec.
 import type { GuestLauncher, Runtime, ProgramLoadState } from "../runtime.js";
+import type { HostCommandDefinition } from "../proc/command.js";
+import type { RegisteredCommand } from "../proc/registry.js";
 import type { ProcessHandle } from "../proc/types.js";
 
 /** One program package: its WASI programs and the absolute paths they are installed at. */
@@ -33,8 +35,6 @@ export type {
 } from "./collection.js";
 
 export type PackageProgram = {
-  /** Selects a process worker after real module admission. Fallback uses this installation's launcher. */
-  readonly launch?: ProgramLaunch;
   /** Canonical absolute path, for example /usr/bin/ls. */
   readonly path: string;
   /** More absolute paths that run the same program, for example /bin/ls. */
@@ -45,6 +45,8 @@ export type PackageProgram = {
   | {
       /** The program's WASI preview1 module, fetched on first exec. Write it as
        * `new URL("./ls.wasm", import.meta.url)` so bundlers emit the asset. */
+      readonly launch?: ProgramLaunch;
+      readonly command?: never;
       readonly wasm: URL;
       readonly source?: never;
       readonly script?: never;
@@ -52,14 +54,25 @@ export type PackageProgram = {
   | {
       /** Called on first exec, not at install, and again only after a failure. It may prepare
        * files the program needs before returning its Wasm bytes. */
+      readonly launch?: ProgramLaunch;
+      readonly command?: never;
       readonly source: () => Promise<Uint8Array>;
       readonly wasm?: never;
       readonly script?: never;
     }
   | {
+      readonly launch?: ProgramLaunch;
+      readonly command?: never;
       readonly script: { readonly interpreter: string; readonly source: () => Promise<string> };
       readonly wasm?: never;
       readonly source?: never;
+    }
+  | {
+      readonly command: HostCommandDefinition;
+      readonly wasm?: never;
+      readonly source?: never;
+      readonly script?: never;
+      readonly launch?: never;
     }
 );
 
@@ -104,6 +117,7 @@ interface Entry {
   marker: Uint8Array;
   readonly program: PackageProgram;
   readonly source: (() => Promise<Uint8Array>) | undefined;
+  readonly command: RegisteredCommand | undefined;
   readonly argv0: string | undefined;
   readonly launch: ProgramLaunch | undefined;
 }
@@ -167,10 +181,16 @@ export async function installPrograms(
     const preparations = new Map<PackageProgram, () => Promise<void>>();
     const observations = new Map<PackageProgram, (state: ProgramLoadState) => void>();
     for (const entry of entries) {
-      const adapter = adapters.get(entry.launch)!.get(entry.argv0)!;
       const onLoad =
         observations.get(entry.program) ?? observeLoad(entry.program, activity, options.onLoad);
       observations.set(entry.program, onLoad);
+      if (entry.command) {
+        installed.leases.push(
+          runtime.registerProgram(entry.path, { command: entry.command, onLoad }),
+        );
+        continue;
+      }
+      const adapter = adapters.get(entry.launch)!.get(entry.argv0)!;
       const script = entry.program.script;
       const definition = script
         ? {
@@ -233,13 +253,17 @@ function programPaths(
 ): Entry[] {
   if (program.argv0 !== undefined && typeof program.argv0 !== "string")
     throw new TypeError(`Program ${program.path} argv0 must be a string`);
-  const source = program.script ? undefined : trackedSource(programLoader(program), activity);
+  const source =
+    program.script || program.command ? undefined : trackedSource(programLoader(program), activity);
   const marker = encoder.encode(`waffle program: ${name} ${program.path}\n`);
+  const command = program.command
+    ? trackedCommand(program.command, activity, options.signal, marker, program.argv0)
+    : undefined;
   const argv0 = program.argv0;
   const launch = program.script ? scriptLaunch(program, options) : program.launch;
   return [program.path]
     .concat(program.aliases ?? [])
-    .map((path) => ({ path, marker, source, argv0, launch, program }));
+    .map((path) => ({ path, marker, source, command, argv0, launch, program }));
 }
 
 function programLoader(program: PackageProgram): () => Promise<Uint8Array> {
@@ -270,6 +294,38 @@ function trackedSource(load: () => Promise<Uint8Array>, activity: Activity) {
   };
 }
 
+function trackedCommand(
+  definition: HostCommandDefinition,
+  activity: Activity,
+  admission: AbortSignal | undefined,
+  marker: Uint8Array,
+  argv0: string | undefined,
+): RegisteredCommand {
+  if (typeof definition.load !== "function") throw new TypeError("Command loader is required");
+  return {
+    admission,
+    marker,
+    retain: () => {
+      if (activity.closing || activity.fenced) throw new Error("Program was uninstalled");
+      return activity.enter();
+    },
+    load: async () => {
+      if (activity.closing) throw new Error("Program is being uninstalled");
+      const run = await definition.load();
+      if (typeof run !== "function") throw new TypeError("Command loader must return a function");
+      if (argv0 === undefined) return run;
+      return (context) =>
+        run({
+          ...context,
+          request: {
+            ...context.request,
+            argv: Object.freeze([argv0].concat(context.request.argv.slice(1))),
+          },
+        });
+    },
+  };
+}
+
 function registerAdapters(
   installed: Installed,
   entries: readonly Entry[],
@@ -280,7 +336,8 @@ function registerAdapters(
   const install = ++installs;
   const adapters = new Map<ProgramLaunch | undefined, Map<string | undefined, string>>();
   let serial = 0;
-  for (const { argv0, launch: hook } of entries) {
+  for (const { argv0, launch: hook, command } of entries) {
+    if (command) continue;
     let group = adapters.get(hook);
     if (!group) adapters.set(hook, (group = new Map()));
     if (group.has(argv0)) continue;

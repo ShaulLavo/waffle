@@ -42,6 +42,7 @@ import type { ProcessTable } from "../proc/table.js";
 import {
   type ChildExitEvent,
   type ProcessContext,
+  type CommandProcessContext,
   type ProcessHandle,
   checkedSignal,
   checkedProcessCwd,
@@ -93,6 +94,8 @@ import {
 } from "./terminal-output.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
 import type { RuntimeNetworkPathScope } from "./net/runtime.js";
+import { CommandStdioError, type ProcessQuery } from "../proc/command.js";
+import type { CommandCapabilities } from "../proc/command-runner.js";
 import type { FileHandle } from "../core/filesystem.js";
 
 export interface ProcessFilesystem {
@@ -127,6 +130,10 @@ export interface BrowserProcessBrokerOptions {
   registry: ExecutableRegistry;
   table: ProcessTable;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  launchCommand?(
+    context: CommandProcessContext,
+    capabilities: CommandCapabilities,
+  ): ProcessHandle | Promise<ProcessHandle>;
   onError?(error: unknown): void;
   /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
@@ -325,6 +332,7 @@ export class BrowserProcessBroker {
           registry: this.options.registry,
           table: this.options.table,
           launch: (context) => this.launchPrepared(context),
+          launchCommand: (context) => this.launchPrepared(context),
           canConfirmExit: (pid) => {
             const child = this.children.get(pid);
             return (
@@ -377,7 +385,9 @@ export class BrowserProcessBroker {
       },
     ));
   }
-  private launchPrepared(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
+  private launchPrepared(
+    context: ProcessContext | CommandProcessContext,
+  ): ProcessHandle | Promise<ProcessHandle> {
     const descendant = this.descendant(context.pid);
     if (!descendant) return this.launchAdapter(context);
     return this.prepareDescendant(context, descendant.hook, descendant.transport);
@@ -392,7 +402,7 @@ export class BrowserProcessBroker {
     return { hook, transport };
   }
   private preparationFailure(
-    context: ProcessContext,
+    context: ProcessContext | CommandProcessContext,
     hook: DescendantHook,
     rootPid: number,
   ): TerminalFailure | undefined {
@@ -403,7 +413,7 @@ export class BrowserProcessBroker {
     return undefined;
   }
   private beginPreparation(
-    context: ProcessContext,
+    context: ProcessContext | CommandProcessContext,
     rootPid: number,
     initial: TerminalControlReceipt,
     hook: DescendantHook,
@@ -452,7 +462,7 @@ export class BrowserProcessBroker {
     return record;
   }
   private async watchPreparation(
-    context: ProcessContext,
+    context: ProcessContext | CommandProcessContext,
     hook: DescendantHook,
     transport: WorkerProcessTransport,
     record: PendingPreparation,
@@ -469,7 +479,7 @@ export class BrowserProcessBroker {
     }
   }
   private async prepareDescendant(
-    context: ProcessContext,
+    context: ProcessContext | CommandProcessContext,
     hook: DescendantHook,
     transport: WorkerProcessTransport,
   ): Promise<ProcessHandle> {
@@ -531,7 +541,9 @@ export class BrowserProcessBroker {
       )
         record.controller.abort();
   }
-  private launchAdapter(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
+  private launchAdapter(
+    context: ProcessContext | CommandProcessContext,
+  ): ProcessHandle | Promise<ProcessHandle> {
     if (this.suspended) throw new Error("Process broker is disposed");
     this.traceProcess(context, "launching");
     (this.launches ??= new Set()).add(context.pid);
@@ -555,7 +567,9 @@ export class BrowserProcessBroker {
     let launched: ProcessHandle | Promise<ProcessHandle>;
     try {
       launched =
-        this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context);
+        "command" in context
+          ? this.launchCommand(context)
+          : (this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context));
     } catch (error) {
       this.launches.delete(context.pid);
       settled();
@@ -615,6 +629,50 @@ export class BrowserProcessBroker {
       throw error;
     });
   }
+  private launchCommand(context: CommandProcessContext): ProcessHandle | Promise<ProcessHandle> {
+    const launch = this.options.launchCommand;
+    if (!launch) throw new ProcessError(45, "Host commands are unavailable");
+    const record = this.options.table.require(context.pid);
+    const rootPid = record.rootPid;
+    const processes: ProcessQuery = Object.freeze({
+      snapshot: () => {
+        if (
+          this.suspended ||
+          record.revoked ||
+          readOutcome(record.outcome) ||
+          context.command.definition.admission?.aborted ||
+          this.options.table.get(record.pid) !== record
+        )
+          throw new CommandStdioError("CANCELED");
+        return Array.from(this.options.table.values())
+          .filter(
+            (row) =>
+              row.rootPid === rootPid && row.request && !row.revoked && !readOutcome(row.outcome),
+          )
+          .map((row) => ({
+            pid: row.pid,
+            parentPid: row.parentPid,
+            executable: row.request!.executable,
+            argv: row.request!.argv.slice(),
+            state: row.state === "exited" ? ("running" as const) : row.state,
+          }))
+          .sort((left, right) => left.pid - right.pid);
+      },
+    });
+    const transport = this.transport.get(context.pid);
+    const identity = transport
+      ? this.filesystem(transport)
+      : this.controllers.get(context.pid)?.filesystem;
+    const filesystem = identity ? this.options.filesystem.connect(identity) : undefined;
+    if (identity) context.registerRevocation(() => this.options.filesystem.revoke(identity));
+    try {
+      return launch(context, { processes, ...(filesystem ? { filesystem } : {}) });
+    } catch (error) {
+      filesystem?.port.close();
+      throw error;
+    }
+  }
+
   /** Register an explicit adapter controller (including legacy transports), not a default adapter. */
   registerController(pid: number, controller: ProcessController): void {
     if (this.suspended) throw new Error("Process broker is disposed");

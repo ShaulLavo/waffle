@@ -1,3 +1,4 @@
+import { ExecutableFormatError } from "./start-failure.js";
 import {
   isInstance,
   isSharedArrayBuffer,
@@ -44,6 +45,8 @@ import {
   checkedProcessCwd,
   type ChildExitEvent,
   type ProcessContext,
+  type ProcessLifecycle,
+  type CommandProcessContext,
   type ProcessExit,
   type ProcessHandle,
   type SpawnRequest,
@@ -81,6 +84,7 @@ interface ProcessAccesses {
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  launchCommand?(context: CommandProcessContext): ProcessHandle | Promise<ProcessHandle>;
   /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
    * Disposal cancels this ownership even if a custom sink never settles its promise. */
   startFailed?(pid: number, error: unknown, active: () => boolean): void | Promise<void>;
@@ -685,7 +689,7 @@ export class ProcessSupervisor {
         this.finish(record.pid, settled);
         return;
       }
-      const context: ProcessContext = {
+      const context: ProcessLifecycle = {
         pid: record.pid,
         parentPid: record.parentPid,
         job: record.job,
@@ -693,9 +697,6 @@ export class ProcessSupervisor {
           executable.argv === undefined
             ? record.request!
             : { ...record.request!, argv: executable.argv.slice() },
-        module: executable.module,
-        adapter: executable.adapter,
-        interruptible: executable.interruptible,
         descriptors: record.descriptors,
         interrupt: record.interrupt,
         requestedSignal: record.requestedSignal,
@@ -713,7 +714,18 @@ export class ProcessSupervisor {
         acquired = resolve;
       });
       try {
-        record.handle = await this.options.launch(context);
+        if (executable.kind === "command") {
+          if (!this.options.launchCommand)
+            throw new ExecutableFormatError("Host commands are unavailable in this supervisor");
+          record.handle = await this.options.launchCommand({ ...context, command: executable });
+        } else {
+          record.handle = await this.options.launch({
+            ...context,
+            module: executable.module,
+            adapter: executable.adapter,
+            interruptible: executable.interruptible,
+          });
+        }
       } finally {
         record.acquiring = undefined;
         acquired();

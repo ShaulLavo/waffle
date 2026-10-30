@@ -41,6 +41,9 @@ import {
 } from "./browser/process-context.js";
 export type { RuntimeHostIdentity, RuntimeProcessIdentity } from "./browser/process-context.js";
 import { ProcessIdentityAllocator } from "./proc/identity.js";
+import type { HostCommand } from "./proc/command.js";
+import { ExecutableFormatError } from "./proc/start-failure.js";
+import type { CommandExecutable, RegisteredCommand } from "./proc/registry.js";
 import type { ExecutableRegistry, Executable, ScriptExecutable } from "./proc/registry.js";
 import type { ProcessSupervisor } from "./proc/supervisor.js";
 import type { ProcessContext, ProcessHandle } from "./proc/types.js";
@@ -91,16 +94,19 @@ export type ProgramLoadState =
   | { readonly kind: "registered" | "preparing" | "loaded" }
   | { readonly kind: "error"; readonly error: unknown };
 export type ProgramDefinition = {
-  readonly adapter: string;
   readonly onLoad?: (state: ProgramLoadState) => void;
 } & (
   | {
+      readonly adapter: string;
+      readonly command?: never;
       readonly source: Uint8Array | (() => Uint8Array | Promise<Uint8Array>);
       readonly module?: never;
       readonly cooperative?: never;
       readonly script?: never;
     }
   | {
+      readonly adapter: string;
+      readonly command?: never;
       readonly module:
         | WebAssembly.Module
         | (() => WebAssembly.Module | Promise<WebAssembly.Module>);
@@ -109,10 +115,20 @@ export type ProgramDefinition = {
       readonly script?: never;
     }
   | {
+      readonly adapter: string;
+      readonly command?: never;
       readonly script: { readonly interpreter: string; readonly prepare: () => Promise<void> };
       readonly source?: never;
       readonly module?: never;
       readonly cooperative?: never;
+    }
+  | {
+      readonly command: RegisteredCommand;
+      readonly adapter?: never;
+      readonly source?: never;
+      readonly module?: never;
+      readonly cooperative?: never;
+      readonly script?: never;
     }
 );
 export interface RuntimeOptions {
@@ -373,7 +389,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     throw error;
   }
   const adapters = new Map<string, GuestLauncher>();
-  const programs = new Map<string, Executable | ScriptExecutable>();
+  const programs = new Map<string, Executable | ScriptExecutable | CommandExecutable>();
   let registryActivation: Promise<ExecutableRegistry> | undefined;
   const getRegistry = (): Promise<ExecutableRegistry> => {
     registryActivation ??= import("./proc/registry.js").then(({ ExecutableRegistry }) => {
@@ -438,6 +454,56 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     if (typeof source === "function") sourceModules.set(source, module);
     return module;
   };
+  const commandLoads = new WeakMap<RegisteredCommand["load"], RegisteredCommand["load"]>();
+  const commandLoader = (load: RegisteredCommand["load"], onLoad: ProgramDefinition["onLoad"]) => {
+    const existing = commandLoads.get(load);
+    if (existing) return existing;
+    const shared = async (): Promise<HostCommand> => {
+      assertLive();
+      onLoad?.({ kind: "preparing" });
+      try {
+        const run = await load();
+        if (typeof run !== "function") throw new TypeError("Command loader must return a function");
+        assertLive();
+        onLoad?.({ kind: "loaded" });
+        return run;
+      } catch (error) {
+        onLoad?.({ kind: "error", error });
+        throw error;
+      }
+    };
+    commandLoads.set(load, shared);
+    return shared;
+  };
+  const ownLaunch = (
+    launch: () => ProcessHandle | Promise<ProcessHandle>,
+  ): Promise<ProcessHandle> => {
+    const pending = Promise.resolve()
+      .then(launch)
+      .then((handle) => {
+        if (!handle || typeof handle.terminate !== "function")
+          throw new TypeError("Launcher must return a process handle");
+        let stopping: Promise<void> | undefined;
+        const owned: ProcessHandle = {
+          terminate() {
+            stopping ??= Promise.resolve().then(async () => {
+              if (terminationFence) await terminationFence;
+              await handle.terminate();
+              physicalStops.delete(owned);
+            });
+            return stopping;
+          },
+        };
+        physicalStops.set(owned, owned.terminate);
+        return owned;
+      });
+    launching.add(pending);
+    void pending.then(
+      () => launching.delete(pending),
+      () => launching.delete(pending),
+    );
+    return pending;
+  };
   const borrowedFilesystem = borrow<RuntimeFilesystem>(
     filesystem,
     filesystemCapabilities,
@@ -476,7 +542,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     },
     registerProgram(name, program) {
       assertLive();
-      if (!name || !program || !program.adapter)
+      if (!name || !program || (!program.command && !program.adapter))
         throw new TypeError("Program and adapter names are required");
       if (
         !name.startsWith("/") ||
@@ -491,13 +557,32 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         );
       }
       if (programs.has(name)) throw new Error(`Program already registered: ${name}`);
-      if (!adapters.has(program.adapter)) throw new Error(`Unknown adapter: ${program.adapter}`);
+      if (program.adapter && !adapters.has(program.adapter))
+        throw new Error(`Unknown adapter: ${program.adapter}`);
       const source = program.source;
       const module = program.module;
-      let executable: Executable | ScriptExecutable;
+      let executable: Executable | ScriptExecutable | CommandExecutable;
       if (source !== undefined && module !== undefined)
         throw new TypeError("A program must choose either source bytes or a cooperative module");
-      if (program.script) {
+      if (program.command) {
+        if (
+          program.adapter !== undefined ||
+          source !== undefined ||
+          module !== undefined ||
+          program.script !== undefined ||
+          program.cooperative !== undefined
+        )
+          throw new TypeError("A command must declare only its command definition");
+        const command = program.command;
+        if (typeof command.load !== "function") throw new TypeError("Command loader is required");
+        executable = {
+          command: Object.freeze({
+            ...command,
+            ...(command.marker ? { marker: new Uint8Array(command.marker) } : {}),
+            load: commandLoader(command.load, program.onLoad),
+          }),
+        };
+      } else if (program.script) {
         if (source !== undefined || module !== undefined || program.cooperative !== undefined)
           throw new TypeError("A script must declare only its interpreter and preparation");
         if (
@@ -613,45 +698,22 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           table,
           onProcessAdmission: options.onProcessAdmission,
           memoryGroups: options.memoryGroups,
+          launchCommand: (context, capabilities) =>
+            ownLaunch(async () => {
+              const { runCommand } = await import("./proc/command-runner.js");
+              assertLive();
+              return runCommand(context, capabilities);
+            }),
           launch: (context) => {
             assertLive();
             const launch = adapters.get(context.adapter);
             if (!launch) throw new Error(`Unknown adapter: ${context.adapter}`);
-            const pending = Promise.resolve(
+            return ownLaunch(() =>
               launch(
                 { ...context, identity: createProcessIdentity(context, hostIdentity) },
                 service!,
               ),
-            ).then((handle) => {
-              if (!handle || typeof handle.terminate !== "function")
-                throw new TypeError("Adapter launcher must return a process handle");
-              let stopping: Promise<void> | undefined;
-              const owned: ProcessHandle = {
-                terminate() {
-                  if (!stopping) {
-                    stopping = Promise.resolve().then(async () => {
-                      // Suspension can ask the supervisor to stop a handle immediately. Its raw
-                      // consumer must stay alive until this page's admitted filesystem work fences.
-                      if (terminationFence) await terminationFence;
-                      return handle.terminate();
-                    });
-                    void stopping.then(
-                      () => physicalStops.delete(owned),
-                      () => {},
-                    );
-                  }
-                  return stopping;
-                },
-              };
-              physicalStops.set(owned, owned.terminate);
-              return owned;
-            });
-            launching.add(pending);
-            void pending.then(
-              () => launching.delete(pending),
-              () => launching.delete(pending),
             );
-            return pending;
           },
         };
         const created = await (options.processHost
@@ -803,6 +865,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       },
       launchInterpreter: async (interpreter, context, service) => {
         const executable = await (await getRegistry()).check(interpreter);
+        if ("command" in executable)
+          throw new ExecutableFormatError("Registered script interpreters require a Wasm module");
         const launch = adapters.get(executable.adapter);
         if (!launch) throw new Error(`Unknown interpreter adapter: ${executable.adapter}`);
         return launch({ ...context, adapter: executable.adapter }, service);

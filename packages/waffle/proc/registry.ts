@@ -1,6 +1,7 @@
 import { objectFreeze } from "./intrinsics.ts";
 import { ExecutableFormatError } from "./start-failure.js";
 import { dirname, normalize } from "../core/path.js";
+import type { HostCommand, HostCommandDefinition } from "./command.js";
 
 /** Metadata admission is separate from bounded script-prefix reads; neither owns a filesystem. */
 export type ExecutableLookup = (
@@ -57,19 +58,42 @@ export interface ScriptExecutable {
     state: { kind: "preparing" } | { kind: "loaded" } | { kind: "error"; error: unknown },
   ) => void;
 }
-type RegisteredExecutable = Readonly<Required<Executable>>;
+export interface RegisteredCommand extends HostCommandDefinition {
+  readonly admission?: AbortSignal;
+  readonly marker?: Uint8Array;
+  /** A package hold released only after the callback and its admitted I/O physically settle. */
+  readonly retain?: () => () => void;
+}
+export interface CommandExecutable {
+  readonly command: RegisteredCommand;
+  readonly adapter?: never;
+  readonly module?: never;
+}
+type RegisteredModule = Readonly<Required<Executable>>;
+type RegisteredExecutable = RegisteredModule | CommandExecutable;
 interface AdmittedExecutable {
   readonly entry: RegisteredExecutable;
   readonly argv?: readonly string[];
   readonly onLoad?: ScriptExecutable["onLoad"];
 }
 
-export interface ResolvedExecutable {
+export interface ResolvedModule {
+  readonly kind: "module";
   readonly module: WebAssembly.Module;
   readonly adapter: string;
   readonly interruptible: boolean;
   readonly argv?: readonly string[];
 }
+export interface ResolvedCommand {
+  readonly kind: "command";
+  readonly run: HostCommand;
+  readonly definition: RegisteredCommand;
+  readonly argv?: readonly string[];
+  readonly module?: never;
+  readonly adapter?: never;
+  readonly interruptible?: never;
+}
+export type ResolvedExecutable = ResolvedModule | ResolvedCommand;
 export class ExecutableNotFound extends Error {
   readonly code = "ENOENT";
   constructor(name: string) {
@@ -101,12 +125,19 @@ export class ExecutableNotRunnable extends Error {
 export class ExecutableRegistry {
   private readonly entries = new Map<string, RegisteredExecutable | ScriptExecutable>();
   private readonly modules = new WeakMap<Executable["module"], Promise<WebAssembly.Module>>();
+  private readonly commands = new WeakMap<RegisteredCommand["load"], Promise<HostCommand>>();
   /** A page runtime supplies its filesystem; standalone registries may use opaque names. */
   constructor(
     private readonly lookup?: ExecutableLookup,
     private readonly read?: ExecutableRead,
   ) {}
-  register(name: string, executable: Executable | ScriptExecutable): void {
+  register(name: string, executable: Executable | ScriptExecutable | CommandExecutable): void {
+    if ("command" in executable) {
+      if (!name || typeof executable.command.load !== "function")
+        throw new TypeError("executable name and command loader are required");
+      this.entries.set(name, objectFreeze({ command: executable.command }));
+      return;
+    }
     if (!name || !executable.adapter)
       throw new TypeError("executable and adapter names are required");
     if ("script" in executable) {
@@ -129,7 +160,7 @@ export class ExecutableRegistry {
     name: string,
     cwd = "/",
     assertActive: () => void = () => {},
-  ): Promise<Readonly<Required<Executable>>> {
+  ): Promise<RegisteredExecutable> {
     return (await this.admit(name, cwd, assertActive, undefined, "access")).entry;
   }
   async resolve(
@@ -141,6 +172,7 @@ export class ExecutableRegistry {
     const admitted = await this.admit(name, cwd, assertActive, argv, "execute");
     const entry = admitted.entry;
     assertActive();
+    if ("command" in entry) return this.resolveCommand(entry, admitted.argv, assertActive);
     let pending = this.modules.get(entry.module);
     if (!pending) {
       let complete!: (module: WebAssembly.Module | PromiseLike<WebAssembly.Module>) => void;
@@ -178,11 +210,46 @@ export class ExecutableRegistry {
     admitted.onLoad?.({ kind: "loaded" });
     assertActive();
     return {
+      kind: "module",
       module,
       adapter: entry.adapter,
       interruptible: entry.interruptible,
       ...(admitted.argv ? { argv: admitted.argv } : {}),
     };
+  }
+
+  private async resolveCommand(
+    entry: CommandExecutable,
+    argv: readonly string[] | undefined,
+    assertActive: () => void,
+  ): Promise<ResolvedCommand> {
+    const definition = entry.command;
+    this.checkCommand(definition);
+    let pending = this.commands.get(definition.load);
+    if (!pending) {
+      const result = Promise.withResolvers<HostCommand>();
+      pending = result.promise;
+      this.commands.set(definition.load, pending);
+      try {
+        result.resolve(definition.load());
+      } catch (error) {
+        result.reject(error);
+      }
+    }
+    try {
+      const run = await pending;
+      if (typeof run !== "function") throw new TypeError("Command loader must return a function");
+      assertActive();
+      this.checkCommand(definition);
+      return { kind: "command", run, definition, ...(argv ? { argv } : {}) };
+    } catch (error) {
+      if (this.commands.get(definition.load) === pending) this.commands.delete(definition.load);
+      throw error;
+    }
+  }
+
+  private checkCommand(definition: RegisteredCommand): void {
+    if (definition.admission?.aborted) throw new Error("Program was uninstalled");
   }
 
   private async admit(
@@ -259,7 +326,15 @@ export class ExecutableRegistry {
       );
     }
     const resolved = file.path === predicted ? registered : this.entries.get(file.path);
-    if (resolved && file.kind === "file")
+    const admitted =
+      resolved &&
+      !(
+        "command" in resolved &&
+        resolved.command.marker &&
+        !(await this.matchesMarker(absolute, resolved.command.marker))
+      );
+    assertActive();
+    if (admitted && resolved && file.kind === "file")
       return this.admitEntry(
         resolved,
         file.path,
@@ -324,6 +399,7 @@ export class ExecutableRegistry {
         symlinks,
         scriptName,
       );
+    if ("command" in entry) this.checkCommand(entry.command);
     return { entry, ...(argv ? { argv } : {}) };
   }
 
@@ -354,6 +430,8 @@ export class ExecutableRegistry {
       seen,
       symlinks,
     );
+    if ("command" in admitted.entry)
+      throw new ExecutableFormatError("Registered script interpreters require a Wasm module");
     const entry = objectFreeze({ ...admitted.entry, adapter: executable.adapter });
     if (mode === "access") return { ...admitted, entry };
     const onLoad = combineLoadObservers(executable.onLoad, admitted.onLoad);
@@ -370,6 +448,11 @@ export class ExecutableRegistry {
       onLoad?.({ kind: "error", error });
       throw error;
     }
+  }
+
+  private async matchesMarker(path: string, marker: Uint8Array): Promise<boolean> {
+    const bytes = await this.read?.(path);
+    return bytes?.length === marker.length && bytes.every((byte, index) => byte === marker[index]);
   }
 
   private notRunnable(path: string, mode: "access" | "execute", invalid = false): Error {
