@@ -1,3 +1,18 @@
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { identity, verify } from "../scripts/native-oracle.ts";
+
+async function selectedNativeCurl(): Promise<string> {
+  const path = process.env.NATIVE_CURL;
+  if (!path || !isAbsolute(path) || /[\r\n]/.test(path))
+    throw new Error("NATIVE_CURL must explicitly name the validated absolute oracle path");
+  if (basename(path) !== "curl" || resolve(path) !== path)
+    throw new Error("NATIVE_CURL must name the receipt's curl binary");
+  const signal = AbortSignal.timeout(20000);
+  const selected = await verify(dirname(path), await identity(signal), signal);
+  if (selected.path !== path) throw new Error("NATIVE_CURL must name the receipt's curl binary");
+  return selected.path;
+}
+const nativeCurl = await selectedNativeCurl();
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { runCurl } from "../src/curl.ts";
@@ -7,7 +22,7 @@ import { cleanupFixtures, fixture, invocation, nativeArgs } from "./helpers.ts";
 afterEach(cleanupFixtures);
 
 async function native(args: readonly string[], input: Uint8Array) {
-  const child = spawn("/usr/bin/curl", nativeArgs(args), {
+  const child = spawn(nativeCurl, nativeArgs(args), {
     stdio: ["pipe", "pipe", "pipe"],
     timeout: 2000,
     env: {
