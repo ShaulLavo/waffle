@@ -31,14 +31,16 @@ test("host-command variants keep module admission and launcher types distinct", 
     const adapter: ProgramDefinition = { command, adapter: "guest" };
     // @ts-expect-error Commands cannot carry a compiled module.
     const module: ProgramDefinition = { command, module: new WebAssembly.Module(new Uint8Array()) };
-    const withoutModule = {};
-    // @ts-expect-error Ordinary module contexts still require their module.
-    const guest: ProcessContext = withoutModule;
+    const missingModule = (context: Omit<ProcessContext, "module">) => {
+      // @ts-expect-error Ordinary module contexts still require their module.
+      const guest: ProcessContext = context;
+      return guest;
+    };
     const inspect = (context: CommandProcessContext) => {
       // @ts-expect-error Module-less contexts do not promise a module.
       return context.module;
     };
-    void [wasm, source, script, launch, adapter, module, guest, inspect];
+    void [wasm, source, script, launch, adapter, module, missingModule, inspect];
   };
   expect(typeof checkTypes).toBe("function");
 });
