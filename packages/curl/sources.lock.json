@@ -2,6 +2,6 @@
   "implementation": "Original MIT-licensed TypeScript adapter; no copied curl or libcurl source",
   "producer": { "name": "Bun", "version": "1.4.4" },
   "upstreamPayloads": [],
-  "runtimeAdmission": "BLOCKED: runtime-native host commands are not published",
+  "runtimeAdmission": "Published ProgramPackage host command with caller-owned capabilities",
   "specification": "https://fetch.spec.whatwg.org/"
 }

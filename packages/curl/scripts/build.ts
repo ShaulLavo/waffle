@@ -13,6 +13,7 @@ const result = await Bun.build({
   format: "esm",
   minify: true,
   splitting: false,
+  external: ["waffle", "waffle/*"],
 });
 if (!result.success) throw new Error(result.logs.join("\n"));
 const output = result.outputs[0];
@@ -30,7 +31,7 @@ for (const name of (await readdir(resolve(root, "src"))).sort()) {
 const receipt = {
   inputs,
   producer: `Bun ${Bun.version}`,
-  runtimeAdmission: "BLOCKED: no runtime-native host-command contract supplied",
+  runtimeAdmission: "ProgramPackage host command; caller-owned Fetch and optional file grants",
   scriptBytes: bytes.length,
   brotliBytes: compressed.length,
   sha256: createHash("sha256").update(bytes).digest("hex"),

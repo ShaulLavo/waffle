@@ -9,6 +9,5 @@ await curl.run(invocation);
 await curl.dispose();
 ```
 
-Waffle executable admission is blocked on runtime-native host commands. This is a
-portable library, not an installable runtime command or supplied interpreter.
+`createCurlPackage(options)` also installs this command through Waffle's host-command API.
 See [the command contract](docs/compatibility.md) for flags, exits, and limitations.
