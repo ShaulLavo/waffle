@@ -1,6 +1,7 @@
+import { createScratch } from "../tests/scratch.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
 interface CompareCase {
@@ -24,7 +25,7 @@ const contract = JSON.parse(
   await readFile(new URL("../fixtures/cases.json", import.meta.url), "utf8"),
 );
 const cases = (contract.cases as CompareCase[]).filter((fixture) => selected.has(fixture.id));
-const root = await mkdtemp("/work/tmp/gh-native-compare-");
+const root = await createScratch("gh-native-compare-");
 const cleanup = () => rm(root, { recursive: true, force: true });
 process.once("SIGINT", () => void cleanup().then(() => process.exit(130)));
 process.once("SIGTERM", () => void cleanup().then(() => process.exit(143)));

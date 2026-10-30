@@ -1,6 +1,7 @@
+import { createScratch } from "./scratch.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { runGh } from "../src/cli.ts";
 import { nodeFileSystem } from "../src/filesystem.ts";
@@ -73,7 +74,7 @@ try {
 }
 
 async function runFixture(fixture: FixtureCase): Promise<void> {
-  const root = await mkdtemp("/work/tmp/gh-fixtures-");
+  const root = await createScratch("gh-fixtures-");
   temporary.add(root);
   try {
     for (const [name, contents] of Object.entries(fixture.fixtureFiles ?? {})) {

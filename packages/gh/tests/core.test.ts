@@ -1,5 +1,6 @@
+import { createScratch } from "./scratch.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { prepareFields } from "../src/api-fields.ts";
 import { runGh } from "../src/cli.ts";
@@ -36,7 +37,7 @@ test("a foreign pagination URL fails before another request", async () => {
 });
 
 test("typed fields preserve nested arrays and scalar types", async () => {
-  const root = await mkdtemp("/work/tmp/gh-fields-");
+  const root = await createScratch("gh-fields-");
   try {
     const invocation = baseInvocation(root, []);
     const fields = await prepareFields(
@@ -102,7 +103,7 @@ test("GraphQL pagination supplies the cursor and evaluates each page", async () 
 });
 
 test("Git discovery reads worktree metadata and preserves remote case", async (context) => {
-  const root = await mkdtemp("/work/tmp/gh-git-discovery-");
+  const root = await createScratch("gh-git-discovery-");
   context.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(`${root}/.git`, { recursive: true });
   await writeFile(`${root}/.git/HEAD`, "ref: refs/heads/topic\n");
@@ -136,7 +137,7 @@ interface ExecuteOptions {
 }
 
 async function execute(options: ExecuteOptions) {
-  const root = await mkdtemp("/work/tmp/gh-core-test-");
+  const root = await createScratch("gh-core-test-");
   try {
     const stdout: Uint8Array[] = [];
     const stderr: Uint8Array[] = [];

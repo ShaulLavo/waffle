@@ -1,6 +1,7 @@
+import { createScratch } from "./scratch.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { test } from "node:test";
 import { runGh } from "../src/cli.ts";
 import { nodeFileSystem } from "../src/filesystem.ts";
@@ -49,7 +50,7 @@ const online = cases.filter((fixture) => onlineIds.has(fixture.id));
 
 for (const fixture of online)
   test(`online oracle: ${fixture.id}`, async (context) => {
-    const root = await mkdtemp("/work/tmp/gh-online-oracle-");
+    const root = await createScratch("gh-online-oracle-");
     context.after(() => rm(root, { recursive: true, force: true }));
     const observation = oracle.get(observationId(fixture.id));
     assert.ok(observation, fixture.id);
