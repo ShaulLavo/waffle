@@ -1,0 +1,12 @@
+{
+  "package": "hifijson",
+  "version": "0.5.0",
+  "repository": "https://github.com/01mf02/hifijson",
+  "registryRevision": "fcd2b9ae489d962fb245063649e497bebb571cc2",
+  "declaredLicense": "MIT",
+  "reason": "The registry archive declares MIT but omits license text. The unchanged standard MIT text is copied from jaq's pinned LICENSE-MIT.",
+  "textSource": "https://github.com/01mf02/jaq/blob/f7fea9219d8d5364c91c6a0278765eaa0e6fa95e/LICENSE-MIT",
+  "files": {
+    "LICENSE-MIT": "22eb53c4c9c3c3214c5801dc3430de82d28d3fc66bea5b54efe3897acf7478e5"
+  }
+}
