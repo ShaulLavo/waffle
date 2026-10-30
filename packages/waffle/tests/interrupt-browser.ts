@@ -75,7 +75,7 @@ async function rescueOriginal(module: WebAssembly.Module, shape: InterruptShape)
   }
 }
 
-async function cancellation(
+export async function cancellation(
   module: WebAssembly.Module,
   shape: InterruptShape,
   signal: 2 | 15,

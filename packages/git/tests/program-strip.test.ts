@@ -32,6 +32,12 @@ assert.equal(error.code, "GIT_PROGRAM_CONFLICT");
 assert.equal(error.path, "/usr/bin/git");
 assert.equal(error.message, "Cannot install git: a different filesystem entry already exists at /usr/bin/git");
 assert.equal(typeof installGitProgram, "function");
+const prepared = await import("waffle/programs/catalog");
+const source = await import("./source-catalog.ts");
+const family = source.defineProgramPackage({ name: "mixed", programs: [{ path: "/bin/mixed", source: async () => new Uint8Array() }] });
+const selected = family.pick("mixed");
+assert.equal(prepared.packageIdentity(selected), source.packageIdentity(family));
+assert.equal(prepared.packageIdentity(prepared.defineProgramPackage({ ...selected })), source.packageIdentity(family));
 assert.equal(GIT_CLI_URL.pathname, resolve("node_modules/waffle-git/dist/git-cli.js"));
 `;
 
@@ -49,9 +55,14 @@ test("installed Git program export imports with Node's strip-only TypeScript loa
   cpSync(resolve(runtimeRoot, "package.json"), resolve(runtime, "package.json"));
   writeFileSync(resolve(root, "package.json"), '{"private":true,"type":"module"}');
   writeFileSync(resolve(root, "consumer.mjs"), consumer);
-  // Only Waffle's filesystem imports are prepared; Git's installed source stays TypeScript.
+  cpSync(resolve(runtimeRoot, "programs/catalog.ts"), resolve(root, "source-catalog.ts"));
+  // Git's installed source stays TypeScript; prepare its actual runtime imports.
   const built = await Bun.build({
-    entrypoints: [resolve(runtimeRoot, "fs/client.ts"), resolve(runtimeRoot, "fs/protocol.ts")],
+    entrypoints: [
+      resolve(runtimeRoot, "fs/client.ts"),
+      resolve(runtimeRoot, "fs/protocol.ts"),
+      resolve(runtimeRoot, "programs/catalog.ts"),
+    ],
     root: runtimeRoot,
     outdir: resolve(runtime, "dist"),
     naming: "[dir]/[name].js",

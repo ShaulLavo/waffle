@@ -122,3 +122,113 @@ test("disposal during a held module load creates no orphan instance", () => {
     execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
   ).toContain("subsequent instances=1 disposals=1");
 });
+
+test("concurrent network imports finish before the explicit shared compilation starts", () => {
+  const helperURL = new URL("../browser/net/helper.ts", import.meta.url).href;
+  const runtimeURL = new URL("../browser/net/runtime.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const script = `
+    import assert from "node:assert/strict";
+    import { mock } from "bun:test";
+    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
+    const release = Promise.withResolvers();
+    let imported = false, loads = 0, instances = 0;
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+      assert.equal(imported, true, "network compilation must not suspend module evaluation");
+      loads++;
+      await release.promise;
+      const compiled = await originalLoad();
+      return { create(...args) { instances++; return compiled.create(...args); } };
+    } }));
+    const [{ NetNamespace, NetHelper }, { createRuntimeNetwork }] = await Promise.all([
+      import(${JSON.stringify(helperURL)}), import(${JSON.stringify(runtimeURL)}),
+    ]);
+    imported = true;
+    assert.equal(loads, 0);
+    assert.equal(typeof NetHelper, "function");
+    const first = createRuntimeNetwork(() => {});
+    const second = NetNamespace.create();
+    assert.equal(loads, 1);
+    assert.equal(instances, 0);
+    release.resolve();
+    const [owner, namespace] = await Promise.all([first, second]);
+    try {
+      assert.equal(loads, 1);
+      assert.equal(instances, 2);
+    } finally { await owner.dispose(); namespace.dispose(); }
+    console.log("imports ready before compilation; shared loads=1, owned instances=2");
+  `;
+  expect(
+    execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
+  ).toContain("imports ready before compilation; shared loads=1, owned instances=2");
+});
+
+test("explicit namespace initialization preserves a shared loader failure without retrying", () => {
+  const namespaceURL = new URL("../browser/net/namespace.ts", import.meta.url).href;
+  const runtimeURL = new URL("../browser/net/runtime.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const script = `
+    import assert from "node:assert/strict";
+    import { mock } from "bun:test";
+    let loads = 0;
+    const failure = new TypeError("network module is unsupported");
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+      loads++;
+      throw failure;
+    } }));
+    const [{ NetNamespace }, { createRuntimeNetwork }] = await Promise.all([
+      import(${JSON.stringify(namespaceURL)}), import(${JSON.stringify(runtimeURL)}),
+    ]);
+    assert.equal(loads, 0);
+    await assert.rejects(createRuntimeNetwork(() => {}), error => error === failure);
+    await assert.rejects(NetNamespace.create(), error => error === failure);
+    assert.equal(loads, 1);
+    console.log("original loader failure preserved; shared loads=1, no retry");
+  `;
+  expect(
+    execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
+  ).toContain("original loader failure preserved; shared loads=1, no retry");
+});
+
+for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]) {
+  test(`genuine network loader rejection survives disposal by identity (${failure})`, () => {
+    const root = new URL("../index.ts", import.meta.url).href;
+    const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+    const worker = new URL("../browser/fs-worker.ts", import.meta.url).href;
+    const script = `
+      import assert from "node:assert/strict";
+      import { mock } from "bun:test";
+      const started = Promise.withResolvers(), release = Promise.withResolvers();
+      let reads = 0, loads = 0;
+      const accessorError = Object.defineProperties(new Error(), Object.fromEntries(
+        ["name", "message", "code", "errno", "then"].map(name => [name, {
+          get() { reads++; throw Error("loader error accessor must not run"); },
+        }]),
+      ));
+      const failure = ${failure};
+      mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+        loads++;
+        started.resolve();
+        await release.promise;
+        throw failure;
+      } }));
+      const { createRuntime } = await import(${JSON.stringify(root)});
+      const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
+      const outcome = runtime.network().then(() => ({ resolved: true }), reason => ({ resolved: false, reason }));
+      await started.promise;
+      const disposal = runtime.dispose().then(() => ({ resolved: true }), reason => ({ resolved: false, reason }));
+      release.resolve();
+      const result = await outcome, stopped = await disposal;
+      assert.equal(result.resolved, false);
+      assert.equal(stopped.resolved, false);
+      assert.equal(result.reason, failure);
+      assert.equal(stopped.reason, failure);
+      assert.equal(loads, 1);
+      assert.equal(reads, 0);
+      console.log("loader rejection preserved by identity during disposal; accessor reads=0");
+    `;
+    expect(
+      execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
+    ).toContain("loader rejection preserved by identity during disposal; accessor reads=0");
+  });
+}

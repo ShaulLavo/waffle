@@ -8,13 +8,13 @@ import { ERROR } from "../browser/net/protocol.js";
 import { EBADF, ECANCELED, ECONNREFUSED } from "../browser/net/unix-status.js";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 
-function fixture() {
+async function fixture() {
   const gate = Promise.withResolvers<void>();
   let targetGate = gate;
   const nodes = new Map<string, number>();
   let targets = 0;
   let binds = 0;
-  const owner = createRuntimeNetwork(
+  const owner = await createRuntimeNetwork(
     () => {},
     async () => ({
       root: 0,
@@ -78,7 +78,7 @@ function fixture() {
 }
 
 test("pending connect admissions have a finite bound before filesystem work", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     for (let id = 1; id <= 512; id++)
       f.helper.handle({
@@ -98,7 +98,7 @@ test("pending connect admissions have a finite bound before filesystem work", as
 });
 
 test("close cancels an in-flight pathname listen", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const reply = f.listen(1, "/late");
     await Bun.sleep(5);
@@ -118,7 +118,7 @@ test("close cancels an in-flight pathname listen", async () => {
 });
 
 test("a repeated listener handle cannot lose the first lease", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const first = f.listen(1, "/first");
     const second = f.listen(1, "/second");
@@ -196,7 +196,7 @@ async function replied(cells: Int32Array): Promise<number[]> {
 }
 
 test("admission is released exactly once on success, failure and cancellation", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.gate.resolve();
   try {
     expect(await replied(f.listen(1, "/s"))).toEqual([1, 0, 0]);
@@ -220,7 +220,7 @@ test("admission is released exactly once on success, failure and cancellation", 
 });
 
 test("close during a delayed connect cancels it and allocates no stream", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.gate.resolve();
   try {
     expect(await replied(f.listen(1, "/s"))).toEqual([1, 0, 0]);
@@ -280,7 +280,7 @@ test("runtime disposal racing a first path request's scope attach leaves nothing
 });
 
 test("TCP requests cannot take a handle owned by a pending or live path resource", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const pending = f.listen(1, "/first");
     const tcpOnPending = new SharedArrayBuffer(12);
@@ -312,7 +312,7 @@ test("TCP requests cannot take a handle owned by a pending or live path resource
 });
 
 test("abstract requests cannot reuse a claimed handle and never reach the path scope", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect(await replied(f.listen(1, "\0a"))).toEqual([1, 0, 0]);
     expect(await replied(f.listen(1, "\0b"))).toEqual([1, ERROR, EBADF]);
@@ -338,7 +338,7 @@ test("abstract requests cannot reuse a claimed handle and never reach the path s
 });
 
 test("an abstract request reaching a shut-down helper replies ECANCELED and binds nothing", async () => {
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   let ended = false;
   const noFetch = async () => {
     throw Error("No external requests");

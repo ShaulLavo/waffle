@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { posix } from "node:path";
 import {
   createRuntime,
@@ -523,6 +523,91 @@ test("compiled modules require explicit cooperative trust and ambiguous admissio
   expect(() =>
     register("/both", { adapter: "test", module: emptyModule, source: bytes, cooperative: true }),
   ).toThrow(/source|module|ambiguous/i);
+});
+
+async function resolveSource(source: Uint8Array | (() => Uint8Array | Promise<Uint8Array>)) {
+  let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+  const factory = processHost();
+  const runtime = create({
+    processHost: (options) => {
+      registry = options.registry;
+      return factory(options);
+    },
+  });
+  runtime.registerAdapter("test", () => ({ terminate() {} }));
+  runtime.registerProgram("/snapshot", { adapter: "test", source });
+  await runtime.processes();
+  if (!registry) throw new Error("Process host did not receive the executable registry");
+  return { registry };
+}
+
+test("source timing measures the original await without observing then twice", async () => {
+  let thenReads = 0;
+  const source = bytes.slice();
+  // oxlint-disable-next-line unicorn/no-thenable -- Count the original source await's lookup.
+  Object.defineProperty(source, "then", {
+    get() {
+      thenReads++;
+      return undefined;
+    },
+  });
+  const { registry } = await resolveSource(() => source);
+  performance.clearMeasures("waffle:program:source");
+  const before = performance.now();
+  expect((await registry.resolve("/snapshot")).module).toBeInstanceOf(WebAssembly.Module);
+  const after = performance.now();
+  const measures = performance.getEntriesByName("waffle:program:source");
+  expect(measures).toHaveLength(1);
+  expect(measures[0]!.startTime).toBeGreaterThanOrEqual(before);
+  expect(measures[0]!.startTime + measures[0]!.duration).toBeLessThanOrEqual(after);
+  expect(thenReads).toBe(1);
+});
+
+test("source timing leaves original rejection identity and accessors untouched", async () => {
+  let accessorReads = 0;
+  const failure: object = Object.create(null);
+  Object.defineProperties(
+    failure,
+    Object.fromEntries(
+      ["then", "message", "stack"].map((name) => [
+        name,
+        {
+          get() {
+            accessorReads++;
+            throw new Error("Source error accessors must not be read");
+          },
+        },
+      ]),
+    ),
+  );
+  const { registry } = await resolveSource(async () => {
+    throw failure;
+  });
+  performance.clearMeasures("waffle:program:source");
+  let rejection: unknown;
+  try {
+    await registry.resolve("/snapshot");
+  } catch (error) {
+    rejection = error;
+  }
+  expect(rejection).toBe(failure);
+  expect(accessorReads).toBe(0);
+  expect(performance.getEntriesByName("waffle:program:source")).toHaveLength(0);
+});
+
+test("failed source clocks cannot replace a successful module", async () => {
+  const { registry } = await resolveSource(() => bytes);
+  const now = performance.now.bind(performance);
+  let reads = 0;
+  const clock = spyOn(performance, "now").mockImplementation(() => {
+    if (++reads <= 2) throw new Error("Unavailable diagnostic clock");
+    return now();
+  });
+  try {
+    expect((await registry.resolve("/snapshot")).module).toBeInstanceOf(WebAssembly.Module);
+  } finally {
+    clock.mockRestore();
+  }
 });
 
 test("source admission snapshots borrowed bytes before the lazy loader starts", async () => {

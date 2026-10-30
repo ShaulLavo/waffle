@@ -57,7 +57,7 @@ const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 test("literal TCP requests, reply cells, ring records, JSON and guest handles stay unchanged", async () => {
   expect([OK, ERROR, AGAIN, BADF, UNSUPPORTED]).toEqual([0, -1, -2, -3, -4]);
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const server = peer(namespace),
     client = peer(namespace);
   try {
@@ -136,7 +136,7 @@ test("literal TCP requests, reply cells, ring records, JSON and guest handles st
 });
 
 test("literal error ring JSON and callback wake are delivered without polling", async () => {
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const p = peer(namespace);
   try {
     const id = p.host.fetch('{"url":"https://example.invalid"}');
@@ -161,7 +161,7 @@ test("literal error ring JSON and callback wake are delivered without polling", 
 });
 
 test("literal writable ring event releases credit and revocation drops queued publication", async () => {
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const server = peer(namespace),
     client = peer(namespace);
   try {

@@ -17,15 +17,17 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts`                                       | Original adapter | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                                                                                                |
 | `browser/shared-fs.ts`, `fs/{service,persistent}.ts`                                                                                  | Original adapter | Ordinary ready disposal and terminal backend shutdown ownership, integrated from Waffle `e7d4e35` and `6a979e0` onto `93698f1`. Retain the original ACK, section/work joins and failed cleanup reasons; no upstream implementation copied.                                                                                                                                                                                   |
 | Inode permission query and enforcement                                                                                                | Original adapter | Original Waffle code, 2026-10-21; stored owner read/write, directory search/sticky, shared direct I/O checks and explicit saved-metadata adoption. No upstream source copied.                                                                                                                                                                                                                                                |
-| `core/memory-views.ts`                                                                                                                | Original adapter | Resizable-memory view helpers with exported TypeScript types; emitted JavaScript retains the runtime ABI's exact view identity.                                                                                                                                                                                                                                                                                                      |
+| `core/memory-views.ts`                                                                                                                | Original adapter | Resizable-memory view helpers with exported TypeScript types; emitted JavaScript retains the runtime ABI's exact view identity.                                                                                                                                                                                                                                                                                              |
 | `patches/wasi-libc/preopen-scan.patch`                                                                                                | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.                                                                                    |
 | `network/src/{lib,queue,native}.rs`, `network/tests/`                                                                                 | Adaptation       | bun-wasm PR116 `crates/bunwasm-host/src/net/{tcp,mod}.rs` at `4a734933901f5ff4c403925d1589afc2a4ce2e71`; retain dual-stack bind, fallback, byte queue, graceful output drain, FIN completion and input discard; replace native threads with bounded progress turns and interruptible Unix wait-many.                                                                                                                         |
 | `network/src/{abi,module,virtual_net}.rs`, `browser/net/module.ts`                                                                    | Original adapter | Waffle binary ABI, virtual-only namespace, explicit loader and per-runtime module ownership. No Bun API facade copied.                                                                                                                                                                                                                                                                                                       |
 | `tools/licenses/`                                                                                                                     | License copy     | Exact upstream MIT license texts for fluent-langneg 0.13.1 and intl_pluralrules 7.0.2, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                         |
 | `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                   | Adaptation       | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                         |
-
 | `packages/coreutils/crates/echo/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/echo` at `07763857f6b9a547742a994b58aef0ccd036198b`; isolated entry and actual WASI write-failure observation, without flag/output logic. |
+| `tools/program-locales/patch.ts` | Adaptation | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs. |
+| `tools/program-locales/{prepare,selection,rustc-wrapper,build}.ts`, `generate.rs` | Original adapter | Build-source selection, isolated producer identity, compiler pass-through, transaction lock, catalog generation and receipts. No runtime or command implementation copied. |
 | `tools/program-build-tools.ts` | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied. |
+| `packages/jq/patches/jaq-wasi.patch`, `packages/jq/scripts/` | Adaptation | jaq 3.1.2 at `f7fea9219d8d5364c91c6a0278765eaa0e6fa95e`; target-gate rustyline and the interactive `repl` off WASI. Original Waffle recipe preserves the upstream evaluator and noninteractive CLI, disables mimalloc, and adds packaging, notices, native jq oracle and runtime tests. |
 
 ## Node WASI descriptor adapter
 
@@ -255,6 +257,21 @@ coreutils implementations are unchanged.
 
 The memory group owner, member imports and broker integration are original Waffle code. The Chromium fixture image is adapted from the Engines track's shared-memory prototype, which proved that one PIE image instantiates into one shared `WebAssembly.Memory` at several bases. The adaptation replaces `memory.grow` with `runtime_shm.group_grow`, adds `runtime_shm` region and futex calls, and runs a command loop that the test page drives through the member's own statics.
 
+## English program catalog build scripts
+
+`tools/program-locales/patch.ts` adapts uutils/coreutils `src/uucore/build.rs`
+under the MIT license. The two original file hashes and upstream revisions are
+recorded in `tools/program-locales/sources.json`. The generated patched source
+retains the original copyright header and, for revision
+`07763857f6b9a547742a994b58aef0ccd036198b`, its target configuration aliases.
+Waffle replaces the upstream directory scan with its original single-program
+English catalog generator. The build wrapper never edits the dependency caches.
+Original dependency identities and license notices remain unchanged.
+
+The wrapper, input selection, generation, locking, and proof collection are original
+Waffle adapters. They record source and generated hashes separately from final guest
+hashes. The shipped command code and uucore language fallback are not patched.
+See [English program catalogs](program-locales.md) for coverage and build identities.
 
 ## Program artifact finalization
 
@@ -267,3 +284,7 @@ features and dynamic-linking metadata, remain unchanged. Compiler intermediates 
 their names until the existing patched-libc verification finishes. Family staging
 strips final program assets before release hashing. Python keeps its accepted producer
 receipt and writes a separate final-program derivation receipt.
+
+## jaq WASI packaging
+
+`packages/jq/sources.lock.json` pins the immutable jaq archive and SHA-256. The local patch changes only `jaq/Cargo.toml` and `jaq/src/funs.rs`: rustyline, dirs and `repl` remain native-only, while WASI registers the unchanged noninteractive evaluator. Build, packaging, license staging, Brotli measurement and tests are original Waffle adapters. Known jaq, jq and gojq differences are in `packages/jq/docs/compatibility.md`; no full-parity claim is made.
