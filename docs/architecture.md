@@ -138,6 +138,27 @@ adapter instead. Handled signals dispatch during cooperative event-loop turns; u
 actions select their outcomes immediately. See [the host ABI](host-abi.md) for executable-entry
 and interrupt contracts.
 
+The same bounded module-promise cache also reuses admitted byte output across pages through
+an optional Cache Storage store. Keys bind the source hash, rewriter revision and admission
+policy. A hit streams the stored response while verifying its body; a miss uses the normal
+rewrite and compile path. Stored bytes contain no instance or runtime authority. This trusts
+the app's cache writer, not hostile same-origin storage. It saves admission work, not proven
+persistent machine code, and does not stream the original source download into the compiler.
+Source, digest, admission, store and compile measures separate those costs without changing
+source errors or the lazy compiler import.
+
+The store trims writes to 32 entries, at most 48 MiB per entry and 192 MiB total. This realm
+serializes writes and eviction; independent tabs may trim concurrently. These storage limits
+are not a whole-process memory bound. Clearing admitted entries forces later pages to repeat
+admission. Existing in-memory modules remain until their page closes. Between runs, clear
+only Waffle's admitted-byte caches:
+
+```ts
+for (const name of await caches.keys()) {
+  if (name.startsWith("waffle-admitted:")) await caches.delete(name);
+}
+```
+
 ## Registration leases
 
 `Runtime.registerAdapter(name, launcher)` and `Runtime.registerProgram(name, definition)`

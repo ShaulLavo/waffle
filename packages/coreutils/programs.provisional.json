@@ -11,6 +11,7 @@
     "ls": { "path": "/usr/bin/ls", "aliases": ["/bin/ls"], "execution": "wasi" },
     "mkdir": { "path": "/usr/bin/mkdir", "aliases": ["/bin/mkdir"], "execution": "cooperative", "feature": "cooperative-wasi" },
     "mv": { "path": "/usr/bin/mv", "aliases": ["/bin/mv"], "execution": "wasi" },
+    "nl": { "path": "/usr/bin/nl", "aliases": ["/bin/nl"], "execution": "wasi" },
     "rm": { "path": "/usr/bin/rm", "aliases": ["/bin/rm"], "execution": "wasi" },
     "seq": { "path": "/usr/bin/seq", "aliases": ["/bin/seq"], "execution": "cooperative", "feature": "cooperative-wasi" },
     "sort": { "path": "/usr/bin/sort", "aliases": ["/bin/sort"], "execution": "wasi" },

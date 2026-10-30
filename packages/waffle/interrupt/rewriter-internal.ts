@@ -1,3 +1,6 @@
+// Bump on every edit. interrupt-transform-pin.test.ts binds this revision to the implementation.
+export const INTERRUPT_REWRITER_REVISION = 1;
+
 /**
  * Fail-closed core-Wasm interrupt instrumentation. Supported features are MVP,
  * SIMD, multi-value, sign extension, saturating conversions, bulk memory,

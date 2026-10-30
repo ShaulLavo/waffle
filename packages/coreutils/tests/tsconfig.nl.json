@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tools/tsconfig.programs.json",
+  "include": [
+    "nl-wasi.test.ts",
+    "../scripts/build-nl.ts",
+    "../scripts/nl-oracle.ts",
+    "../scripts/nl-source.test.ts",
+    "../fixtures/nl-cases.ts"
+  ]
+}

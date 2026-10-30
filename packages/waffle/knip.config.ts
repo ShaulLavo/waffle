@@ -33,6 +33,7 @@ export default {
         "tests/fs-socket-browser-runner.ts",
         "tests/fixtures/filesystem-port-service.ts",
         "tests/interrupt-browser.ts",
+        "tests/interrupt-admitted-browser-runner.ts",
         "tests/filesystem-{shutdown,ready-disposal}-browser-runner.ts",
         "tests/fixtures/filesystem-shutdown-{page,worker}.ts",
         "tests/fixtures/{browser-cell-clone,interrupt-browser-worker,preopen-node-host,startup-pool-worker}.ts",
