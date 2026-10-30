@@ -7,6 +7,7 @@ import {
   withTerminalPolicy,
 } from "../proc/terminal-turn.js";
 import type { Readiness, Resource, Stream } from "../core/descriptors.js";
+import type { TerminalInputObservation } from "./terminal-input.js";
 
 const identityBrand = Symbol();
 const contextBrand = Symbol();
@@ -164,6 +165,9 @@ export interface TerminalAuthority {
     work: (turn: TerminalControlTurn) => TerminalResult<T>,
     options?: TerminalControlOptions,
   ): Promise<TerminalControlResult<T>>;
+  /** Queued like `control`: atomically discard all unread input of this policy's channel.
+   * Bytes are consumed only in a committed receipt; terminal metadata never changes. */
+  flushInput(options?: TerminalControlOptions): Promise<TerminalControlResult<void>>;
   createGroup(options: { readonly initialMode: TerminalMode }): TerminalResult<TerminalGroup>;
   planMember(options: {
     readonly group: TerminalGroup;
@@ -504,6 +508,24 @@ function done<T>(result: TerminalResult<T>): ControlAttempt<T> {
 function settledAttempt<T>(attempt: ControlAttempt<T>): TerminalResult<T> {
   return attempt.kind === "busy" ? error("AGAIN") : attempt.result;
 }
+type FlushAttempt = ControlAttempt<void> | { kind: "input-busy" };
+
+/** Private to the built-in input policy: one input lock acquisition around a channel cut. */
+export interface InputFlushBinding {
+  observe(): TerminalInputObservation;
+  /** Busy means another Session holds the input lock and nothing was read or written. */
+  withLock(turn: TerminalTurn, work: (cut: InputCut) => TerminalResult<void>): ControlAttempt<void>;
+}
+export interface InputCut {
+  /** CLOSED when poisoned, CANCELED when cancelled; no stores. */
+  check(): TerminalResult<void>;
+  /** The consuming cut; read = write is its linearization point. */
+  commit(): void;
+}
+const inputFlushes = new WeakMapConstructor<TerminalPolicy, InputFlushBinding>();
+export function registerTerminalInputFlush(policy: TerminalPolicy, binding: InputFlushBinding) {
+  weakMapSet(inputFlushes, policy, binding);
+}
 
 function rollbackControl(frame: ControlFrame): void {
   // Only provisional handles/allocations are invalidated; no shared word is rewound.
@@ -662,39 +684,73 @@ class Session {
     authority: Authority,
     receipt: (value: TerminalControlReceipt) => void,
   ): ControlAttempt<T> {
-    if (signal && abortSignalAborted(signal)) return { kind: "done", result: error("CANCELED") };
-    if (this.closed()) return { kind: "done", result: error("CLOSED") };
-    if (!this.rootLive()) return { kind: "done", result: error("PROCESS_GONE") };
-    if (!enterTerminalSection(state)) return { kind: "done", result: error("CANCELED") };
+    return this.granted(state, signal, () =>
+      done(this.runControl(state, work, signal, check, authority, receipt)),
+    );
+  }
+  flush(
+    state: ProcessState,
+    binding: InputFlushBinding,
+    signal: AbortSignal | undefined,
+    authority: Authority,
+    receipt: (value: TerminalControlReceipt) => void,
+  ): FlushAttempt {
+    return this.granted(state, signal, () =>
+      this.turn((turn) => this.cut(turn, binding, signal, authority, receipt)),
+    );
+  }
+  /** The page lane's grant: entry checks, H1 section and the Session gate around `locked`. */
+  private granted<R>(
+    state: ProcessState,
+    signal: AbortSignal | undefined,
+    locked: () => R,
+  ): R | ControlAttempt<never> {
+    if (signal && abortSignalAborted(signal)) return done(error("CANCELED"));
+    if (this.closed()) return done(error("CLOSED"));
+    if (!this.rootLive()) return done(error("PROCESS_GONE"));
+    if (!enterTerminalSection(state)) return done(error("CANCELED"));
     try {
-      return this.controlLock(state, work, signal, check, authority, receipt);
+      if (atomicsCompareExchange(this.gate, 0, 0n, BigIntConstructor(state.pid)) !== 0n)
+        return this.contend();
+      this.dirty = false;
+      try {
+        return locked();
+      } finally {
+        atomicsStore(this.gate, 0, 0n);
+        atomicsExchange(this.words, H.contended, 0);
+        this.notify();
+      }
     } finally {
       leaveTerminalSection(state, this.identity.directory);
     }
   }
-  private controlLock<T>(
-    state: ProcessState,
-    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+  /** Both locks held: final checks, then the cut. The receipt is captured with the gate held. */
+  private cut(
+    turn: TerminalTurn,
+    binding: InputFlushBinding,
     signal: AbortSignal | undefined,
-    check: (() => TerminalFailure | undefined) | undefined,
     authority: Authority,
     receipt: (value: TerminalControlReceipt) => void,
-  ): ControlAttempt<T> {
-    if (atomicsCompareExchange(this.gate, 0, 0n, BigIntConstructor(state.pid)) !== 0n) {
-      this.contend();
-      return { kind: "busy" };
-    }
-    this.dirty = false;
-    try {
-      return {
-        kind: "done",
-        result: this.runControl(state, work, signal, check, authority, receipt),
-      };
-    } finally {
-      atomicsStore(this.gate, 0, 0n);
-      atomicsExchange(this.words, H.contended, 0);
-      this.notify();
-    }
+  ): FlushAttempt {
+    let committed = false;
+    const attempt = binding.withLock(turn, (input) => {
+      const failure = this.cutFailure(signal);
+      if (failure) return error(failure);
+      const checked = input.check();
+      if (checked.kind === "error") return checked;
+      input.commit();
+      committed = true;
+      return ok(undefined);
+    });
+    if (attempt.kind === "busy") return { kind: "input-busy" };
+    receipt(new ControlReceipt(authority, committed ? "committed" : "rolled-back"));
+    return attempt;
+  }
+  private cutFailure(signal: AbortSignal | undefined): TerminalFailure | undefined {
+    if (signal && abortSignalAborted(signal)) return "CANCELED";
+    if (!this.rootLive()) return "PROCESS_GONE";
+    if (this.closed()) return "CLOSED";
+    return undefined;
   }
   private runControl<T>(
     state: ProcessState,
@@ -1039,7 +1095,14 @@ class Authority implements TerminalAuthority {
     options: TerminalControlOptions = {},
   ): Promise<TerminalControlResult<T>> {
     assertTerminalWaitAllowed();
-    return this.submit(work, options, (result) => result);
+    return this.submit(options, (request) =>
+      this.executeControl(work, options.signal, request, (result) => result),
+    );
+  }
+  flushInput(options: TerminalControlOptions = {}): Promise<TerminalControlResult<void>> {
+    assertTerminalWaitAllowed();
+    const binding = weakMapGet(inputFlushes, this.policy);
+    return this.submit(options, (request) => this.executeFlush(binding, options.signal, request));
   }
   prepare<T>(
     work: (turn: TerminalControlTurn) => TerminalResult<void>,
@@ -1047,7 +1110,15 @@ class Authority implements TerminalAuthority {
     finish: (result: TerminalResult<void>, receipt: TerminalControlReceipt) => T,
     check: () => TerminalFailure | undefined,
   ): Promise<TerminalControlResult<T>> {
-    return this.submit(work, options, (result, receipt) => ok(finish(result, receipt)), check);
+    return this.submit(options, (request) =>
+      this.executeControl(
+        work,
+        options.signal,
+        request,
+        (result, receipt) => ok(finish(result, receipt)),
+        check,
+      ),
+    );
   }
   matches(process: WorkerProcessTransport): boolean {
     const state = workerProcessState(process);
@@ -1057,11 +1128,9 @@ class Authority implements TerminalAuthority {
       state.slot === this.session.identity.rootSlot
     );
   }
-  private submit<T, U>(
-    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+  private submit<U>(
     options: TerminalControlOptions,
-    finish: (result: TerminalResult<T>, receipt: TerminalControlReceipt) => TerminalResult<U>,
-    check?: () => TerminalFailure | undefined,
+    run: (request: ControlRequest) => Promise<TerminalResult<U>>,
   ): Promise<TerminalControlResult<U>> {
     return new PromiseConstructor((resolve, reject) => {
       if (terminalTurnActive()) {
@@ -1095,7 +1164,7 @@ class Authority implements TerminalAuthority {
         receipt: new ControlReceipt(this, "not-entered"),
         execute: async () => {
           try {
-            const result = await this.executeControl(work, signal, request, finish, check);
+            const result = await run(request);
             settle(result);
           } catch (cause) {
             settle(undefined, cause);
@@ -1150,6 +1219,36 @@ class Authority implements TerminalAuthority {
         request.executing = false;
       }
       if (result.kind === "done") return finish(result.result, request.receipt);
+      const waiting = atomicsWaitAsync(this.session.commonWake, 0, seen);
+      if (waiting.async) await waiting.value;
+    }
+  }
+  private async executeFlush(
+    binding: InputFlushBinding | undefined,
+    signal: AbortSignal | undefined,
+    request: ControlRequest,
+  ): Promise<TerminalResult<void>> {
+    if (!binding) return error("INVALID");
+    for (;;) {
+      const seen = atomicsLoad(this.session.commonWake, 0);
+      const observed = binding.observe(); // before acquisition: a foreign unlock wakes it
+      if (request.done) return error("CANCELED");
+      this.checkActive();
+      request.executing = true;
+      let attempt: FlushAttempt;
+      try {
+        attempt = this.session.flush(this.state, binding, signal, this, (receipt) => {
+          request.receipt = receipt;
+        });
+      } finally {
+        request.executing = false;
+      }
+      if (attempt.kind === "done") return attempt.result;
+      if (attempt.kind === "input-busy") {
+        const woke = await observed.wait({ signal });
+        if (woke.kind === "error") return woke;
+        continue;
+      }
       const waiting = atomicsWaitAsync(this.session.commonWake, 0, seen);
       if (waiting.async) await waiting.value;
     }
