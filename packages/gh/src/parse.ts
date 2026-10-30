@@ -189,8 +189,8 @@ function parsePrCreate(argv: readonly string[]): Command {
     bodyFile: args.values.get("body-file"),
     head: args.values.get("head"),
     base: args.values.get("base"),
-    draft: args.flags.has("draft"),
-    maintainerCanModify: !args.flags.has("no-maintainer-edit"),
+    draft: args.flags.get("draft") ?? false,
+    maintainerCanModify: !args.flags.get("no-maintainer-edit"),
   };
 }
 
@@ -282,7 +282,7 @@ function parseRun(subcommand: string | undefined, argv: readonly string[]): Comm
       attempt: args.values.has("attempt")
         ? positiveInt(args.values.get("attempt"), 1, "--attempt")
         : undefined,
-      exitStatus: args.flags.has("exit-status"),
+      exitStatus: args.flags.get("exit-status") ?? false,
     };
   }
   throw new GhError(`unknown command: run ${subcommand ?? ""}`);
@@ -308,7 +308,7 @@ function parseAuth(argv: readonly string[]): Command {
     flags: { "--with-token": "with-token" },
   });
   arity(args, 0);
-  if (!args.flags.has("with-token")) throw new GhError("only auth login --with-token is supported");
+  if (!args.flags.get("with-token")) throw new GhError("only auth login --with-token is supported");
   return { kind: "auth-login", hostname: args.values.get("hostname") };
 }
 
@@ -340,8 +340,8 @@ function parseApi(argv: readonly string[]): Command {
     repeated: ["raw-field", "field", "header", "preview"],
   });
   arity(args, 1);
-  const paginate = args.flags.has("paginate");
-  const slurp = args.flags.has("slurp");
+  const paginate = args.flags.get("paginate") ?? false;
+  const slurp = args.flags.get("slurp") ?? false;
   const jq = args.values.get("jq");
   if (slurp && !paginate) throw new GhError("`--paginate` required when passing `--slurp`");
   if (slurp && jq) throw new GhError("cannot use `--slurp` with `--jq`");
@@ -360,8 +360,8 @@ function parseApi(argv: readonly string[]): Command {
     jq,
     paginate,
     slurp,
-    silent: args.flags.has("silent"),
-    include: args.flags.has("include"),
+    silent: args.flags.get("silent") ?? false,
+    include: args.flags.get("include") ?? false,
   };
 }
 

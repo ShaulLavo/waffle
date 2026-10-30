@@ -11,7 +11,7 @@ import type { ApiRequest, HttpResponse, Invocation, JsonObject, JsonValue } from
 
 type ApiCommand = Extract<Command, { kind: "api" }>;
 interface Page {
-  readonly value: JsonValue;
+  readonly value?: JsonValue;
   readonly response: HttpResponse;
 }
 
@@ -34,9 +34,11 @@ export async function api(invocation: Invocation, command: ApiCommand): Promise<
   let request: ApiRequest | undefined = prepared;
   while (request) {
     const response = await send(invocation, client, request);
-    const value = response.body.length ? parseJson(response.body) : undefined;
-    if (value !== undefined && command.jq) await evaluate(invocation, command.jq, value);
-    else if (value !== undefined) pages.push({ value, response });
+    const jsonRequired = command.jq !== undefined || command.paginate;
+    const value = jsonRequired && response.body.length ? parseJson(response.body) : undefined;
+    if (value !== undefined && command.jq && !command.silent)
+      await evaluate(invocation, command.jq, value);
+    if (!command.jq) pages.push({ value, response });
     request = command.paginate ? nextRequest(endpoint, request, response, value) : undefined;
   }
   if (!command.silent && !command.jq) await writePages(invocation, command, pages);
@@ -143,7 +145,7 @@ async function writePages(
   pages: readonly Page[],
 ): Promise<void> {
   if (command.slurp) {
-    await writeText(invocation, "stdout", `${stableJson(pages.map((page) => page.value))}\n`);
+    await writeText(invocation, "stdout", `${stableJson(pages.map(pageValue))}\n`);
     return;
   }
   if (command.paginate && pages.every((page) => Array.isArray(page.value))) {
@@ -153,9 +155,15 @@ async function writePages(
   }
   for (const page of pages) {
     if (command.include) await writeHeaders(invocation, page.response);
-    if (command.paginate) await writeText(invocation, "stdout", `${stableJson(page.value)}\n`);
-    else await invocation.stdout(page.response.body);
+    if (command.paginate && page.value !== undefined)
+      await writeText(invocation, "stdout", `${stableJson(page.value)}\n`);
+    if (!command.paginate) await invocation.stdout(page.response.body);
   }
+}
+
+function pageValue(page: Page): JsonValue {
+  if (page.value === undefined) throw new GhError("gh: invalid JSON response");
+  return page.value;
 }
 
 async function writeHeaders(invocation: Invocation, response: HttpResponse): Promise<void> {

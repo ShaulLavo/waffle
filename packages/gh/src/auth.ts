@@ -20,10 +20,16 @@ export function environmentToken(
 
 export async function resolveToken(invocation: Invocation): Promise<string> {
   const environment = environmentToken(invocation);
-  if (environment) return environment.value;
+  if (environment) {
+    invocation.secrets?.add(environment.value);
+    return environment.value;
+  }
   const config = await invocation.filesystem.readFile(hostsPath(invocation));
   const stored = config ? parseHosts(decode(config)).oauth_token : undefined;
-  if (stored) return stored;
+  if (stored) {
+    invocation.secrets?.add(stored);
+    return stored;
+  }
   throw new GhError(MISSING_AUTH.trimEnd(), 4);
 }
 
@@ -37,6 +43,7 @@ export async function loginWithToken(invocation: Invocation, hostname?: string):
     );
   }
   const token = decode(await invocation.stdin()).trim();
+  if (token) invocation.secrets?.add(token);
   if (!token || /[\r\n]/.test(token))
     throw new GhError("a single authentication token is required");
   const client = new GitHubClient(invocation.transport, token);

@@ -32,7 +32,7 @@ export function flattenFields(values: JsonObject): QueryEntry[] {
 function flattenValue(key: string, value: JsonValue): QueryEntry[] {
   if (Array.isArray(value)) return value.flatMap((entry) => flattenValue(`${key}[]`, entry));
   if (value && typeof value === "object")
-    return flattenFields(value).map(([child, item]) => [`${key}[${child}]`, item]);
+    return Object.entries(value).flatMap(([child, item]) => flattenValue(`${key}[${child}]`, item));
   return [[key, scalar(value)]];
 }
 

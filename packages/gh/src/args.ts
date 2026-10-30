@@ -9,14 +9,14 @@ export interface OptionSpec {
 export interface ParsedArgs {
   readonly positionals: readonly string[];
   readonly values: ReadonlyMap<string, string>;
-  readonly flags: ReadonlySet<string>;
+  readonly flags: ReadonlyMap<string, boolean>;
   readonly repeated: ReadonlyMap<string, readonly string[]>;
 }
 
 export function parseArgs(args: readonly string[], spec: OptionSpec): ParsedArgs {
   const positionals: string[] = [];
   const values = new Map<string, string>();
-  const flags = new Set<string>();
+  const flags = new Map<string, boolean>();
   const repeated = new Map<string, string[]>();
   let literal = false;
   for (let index = 0; index < args.length; index++) {
@@ -32,7 +32,7 @@ export function parseArgs(args: readonly string[], spec: OptionSpec): ParsedArgs
     const option = findOption(arg, spec);
     const name = option.name;
     if (spec.flags?.[name]) {
-      flags.add(spec.flags[name]);
+      flags.set(spec.flags[name], booleanFlag(option.inline, name));
       continue;
     }
     const canonical = spec.values?.[name];
@@ -79,6 +79,12 @@ function findOption(arg: string, spec: OptionSpec) {
   const short = arg.startsWith("-") && !arg.startsWith("--") ? arg.slice(0, 2) : arg;
   if (short !== arg && spec.values?.[short]) return { name: short, inline: arg.slice(2) };
   throw unknownOption(arg);
+}
+
+function booleanFlag(value: string | undefined, name: string): boolean {
+  if (value === undefined || value === "true") return true;
+  if (value === "false") return false;
+  throw new GhError(`invalid value for ${name}: ${value}`);
 }
 
 function unknownOption(arg: string): GhError {

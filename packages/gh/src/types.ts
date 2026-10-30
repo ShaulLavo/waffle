@@ -53,4 +53,5 @@ export interface Invocation {
   readonly filesystem: FileSystem;
   readonly transport: Transport;
   readonly evaluator?: Evaluator;
+  readonly secrets?: Set<string>;
 }

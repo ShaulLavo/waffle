@@ -14,7 +14,7 @@ export const executeJq: Evaluator = (expression, input, context) =>
           resolve(stdout);
           return;
         }
-        const detail = stderr.trimEnd();
+        const detail = stderr.trimEnd() || inputError?.message.trim() || "";
         reject(new GhError(`failed to evaluate jq expression${detail ? `\n${detail}` : ""}`));
       },
     );
@@ -22,5 +22,9 @@ export const executeJq: Evaluator = (expression, input, context) =>
       reject(new GhError("failed to start jq input stream"));
       return;
     }
+    let inputError: Error | undefined;
+    child.stdin.on("error", (error) => {
+      inputError = error;
+    });
     child.stdin.end(compact(input));
   });

@@ -7,6 +7,7 @@ import { parseCommand, type Command } from "./parse.ts";
 import { prCreate, prList, prView } from "./pr.ts";
 import { repoView } from "./repo.ts";
 import { runList, runView } from "./run.ts";
+import { withTokenRedaction } from "./redaction.ts";
 import type { Invocation } from "./types.ts";
 
 const HELP = `Work seamlessly with GitHub from the command line.
@@ -26,13 +27,13 @@ This optional Waffle package implements the common noninteractive gh subset.
 `;
 
 export async function runGh(invocation: Invocation): Promise<number> {
+  const guarded = withTokenRedaction(invocation);
   try {
-    validateHost(invocation);
-    return await dispatch(invocation, parseCommand(invocation.argv));
+    validateHost(guarded);
+    return await dispatch(guarded, parseCommand(guarded.argv));
   } catch (error) {
     const exit = error instanceof GhError ? error.exit : 1;
-    const message = errorMessage(error);
-    await writeText(invocation, "stderr", `${redact(message, invocation)}\n`);
+    await writeText(guarded, "stderr", `${errorMessage(error)}\n`);
     return exit;
   }
 }
@@ -87,13 +88,4 @@ async function dispatch(invocation: Invocation, command: Command): Promise<numbe
 function validateHost(invocation: Invocation): void {
   const host = invocation.env.GH_HOST;
   if (host && host !== "github.com") throw new GhError("only github.com is supported");
-}
-
-function redact(message: string, invocation: Invocation): string {
-  let result = message;
-  for (const name of ["GH_TOKEN", "GITHUB_TOKEN"]) {
-    const token = invocation.env[name];
-    if (token) result = result.replaceAll(token, "[REDACTED]");
-  }
-  return result;
 }

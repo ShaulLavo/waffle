@@ -88,7 +88,8 @@ const registries = { pr, issue, run, repo } satisfies Record<ResourceKind, Recor
 
 export function validateFields(kind: ResourceKind, fields: readonly string[]): void {
   for (const field of fields) {
-    if (!registries[kind][field]) throw new GhError(`Unknown JSON field: "${field}"`);
+    if (!Object.hasOwn(registries[kind], field))
+      throw new GhError(`Unknown JSON field: "${field}"`);
   }
 }
 
@@ -109,6 +110,7 @@ function pullState(record: JsonObject): string | null {
 }
 
 function mergeCommit(record: JsonObject): JsonValue {
+  if (!record.merged_at) return null;
   const oid = textAt(record, ["merge_commit_sha"]);
   return oid ? { oid } : null;
 }
