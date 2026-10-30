@@ -2,22 +2,28 @@
   "name": "waffle-procps",
   "version": "0.0.0",
   "private": true,
-  "description": "Pure process-command plans for Waffle. This package has no runtime command adapter.",
+  "description": "Optional Waffle process commands with pure snapshot planning.",
   "files": [
     "src",
     "docs",
     "provenance",
-    "scripts",
+    "scripts/measure.ts",
+    "scripts/measure-commands.ts",
     "LICENSE"
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./programs": "./src/catalog.ts"
   },
   "scripts": {
     "test": "bun test tests",
     "typecheck": "tsc -p tsconfig.json",
-    "size": "bun scripts/measure.ts"
+    "size": "bun scripts/measure.ts",
+    "test:pure": "bun test tests/commands.test.ts tests/oracle.test.ts tests/runtime-gap.test.ts",
+    "test:runtime": "bun test tests/runtime.test.ts",
+    "pack:check": "bun scripts/check-packed.ts",
+    "size:commands": "bun scripts/measure-commands.ts"
   },
   "peerDependencies": {
     "waffle": "*"

@@ -31,7 +31,7 @@
     "programs:source": "bun run --cwd packages/findutils test:source && bun run --cwd packages/sed test:source && bun run --cwd packages/ripgrep test:source",
     "programs:diffutils": "bun run --cwd packages/diffutils prepare:package && bun run --cwd packages/diffutils test:source && bun run --cwd packages/diffutils test && bun run --cwd packages/diffutils test:wasi && bun run --cwd packages/diffutils typecheck && bun run --cwd packages/diffutils pack",
     "programs:jq": "bun run --cwd packages/jq prepare:package && bun run --cwd packages/jq test:source && bun run --cwd packages/jq test:oracle && bun run --cwd packages/jq test && bun run --cwd packages/jq test:wasi && bun run --cwd packages/jq typecheck && bun run --cwd packages/jq pack",
-    "programs:procps:pure": "bun run --cwd packages/procps test && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
+    "programs:procps:pure": "bun run --cwd packages/procps test:pure && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
     "programs:tools": "bun test tools/program-locales/*.test.ts tools/program-name-section.test.ts tools/program-build-tools.test.ts tools/program-build-tools-verifier.test.ts tools/program-family-manifest.test.ts tools/family-acceptance.test.ts tools/program-package.test.ts tools/program-notices.test.ts packages/git/scripts/patch-git-source.test.ts packages/git/tests/program-strip.test.ts tools/program-optimize.test.ts tools/program-derivation.test.ts",
     "programs:native": "cargo test --locked --offline -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date",
     "programs:pack": "bun run --cwd packages/coreutils pack && bun run --cwd packages/grep pack && bun run --cwd packages/findutils pack && bun run --cwd packages/sed pack && bun run --cwd packages/ripgrep pack && bun run --cwd packages/base pack",
@@ -41,6 +41,7 @@
     "programs:browser": "bun tools/family-browser.ts",
     "programs:packed": "bun tools/family-packed.ts",
     "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack",
+    "programs:procps": "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands",
     "relay:check": "bun run --cwd packages/waffle-relay build && bun run --cwd packages/waffle-relay typecheck && bun run --cwd packages/waffle-relay test && bun run --cwd packages/waffle-relay test:native && bun run --cwd packages/waffle-relay test:worker && bun run --cwd packages/waffle-relay pack:check"
   },
   "devDependencies": {
