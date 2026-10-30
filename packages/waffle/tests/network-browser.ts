@@ -410,7 +410,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     localhost.length === 1 && localhost[0]?.address === "127.0.0.1" && localhost[0].family === 4,
     "Runtime lookup must preserve IPv4 localhost policy before any helper exists",
   );
-  const isolatedNamespace = new NetNamespace();
+  const isolatedNamespace = await NetNamespace.create();
   const isolatedNetwork: RuntimeNetwork = {
     lookup: network.lookup,
     createHelper: ({ ring, fetch, hooks }) => new NetHelper(ring, fetch, hooks, isolatedNamespace),
@@ -567,6 +567,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     for (const item of guests) item.retire();
     await registration?.unregister();
     navigator.serviceWorker.removeEventListener("message", route);
+    isolatedNamespace.dispose();
     await runtime.dispose();
   }
 }

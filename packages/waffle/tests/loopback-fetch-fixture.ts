@@ -113,9 +113,14 @@ export function response(status: number, headers: string, text = "") {
   );
 }
 export async function pair(fetchRequest?: NetFetch) {
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const server = peer(namespace);
   const client = peer(namespace, fetchRequest);
+  const closeNamespace = () => {
+    teardown.delete(closeNamespace);
+    namespace.dispose();
+  };
+  teardown.add(closeNamespace);
   await Promise.all([server.ready, client.ready]);
   const listener = await handle(server, { op: "listen", port: 32216 });
   expect(listener).toBeGreaterThan(0);
