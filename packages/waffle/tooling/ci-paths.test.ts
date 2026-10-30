@@ -345,6 +345,89 @@ test("programs normal CI runs the release closure test from the folded source ch
   ).toBe(true);
 });
 
+test("jq has a separate leaf with the shared network artifact prerequisite", () => {
+  const job = record(jobs.jq);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}",
+  );
+  expect(record(changes.outputs).jq).toBe("${{ steps.paths.outputs.jq }}");
+  const steps = stepsFor("jq");
+  expect(steps.some((step) => step.run === "bun run prepare:package")).toBe(true);
+  expect(steps.some((step) => step.run === "bun run programs:check")).toBe(true);
+  expect(steps.some((step) => step.run === "bun run programs:jq")).toBe(true);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+});
+
+test("jq selects only its package and shared runtime inputs", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "rust-toolchain.toml",
+    "tools/program-build-tools.ts",
+    "tools/program-package.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/base/src/index.ts",
+    "packages/jq/src/index.ts",
+    "packages/jq/scripts/build-jaq.ts",
+    "packages/jq/tests/jq-wasi.test.ts",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/programs/collection.ts",
+    "packages/waffle/browser/fs-worker.ts",
+  ])
+    expect(selected("jq", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "packages/coreutils/src/lib.rs",
+    "packages/findutils/src/index.ts",
+    "packages/grep/src/index.ts",
+    "packages/sed/src/index.ts",
+    "packages/ripgrep/src/index.ts",
+    "packages/python/src/launcher.ts",
+    "packages/git/src/index.ts",
+    "docs/bun-patches.md",
+    "site/src/pages/index.astro",
+  ])
+    expect(selected("jq", path), path).toBe(false);
+});
+
+test("jq restores and verifies the single network artifact before install", () => {
+  const steps = stepsFor("jq");
+  const restore = steps.find((step) => step.id === "network-artifact");
+  const verify = steps.find(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.find(
+    (step) => typeof step.run === "string" && step.run.startsWith("bun install"),
+  );
+  expect(restore).toBeDefined();
+  expect(verify).toBeDefined();
+  expect(install).toBeDefined();
+  expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(String(record(restore?.with).path)).toContain("packages/waffle/browser/net/network.wasm");
+  expect(steps.indexOf(record(restore))).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(install)));
+  expect(
+    steps.some((step) => typeof step.run === "string" && step.run.includes("build:network")),
+  ).toBe(false);
+  const cache = steps.find((step) => step.id === "jq-cache");
+  expect(cache).toBeDefined();
+  for (const path of [
+    "~/.rustup/toolchains",
+    "~/.cargo/registry",
+    "~/.cargo/git",
+    ".build/jq",
+    ".build/wasi-libc",
+    "packages/jq/.build",
+    "packages/jq/.sources",
+  ])
+    expect(String(record(cache?.with).path)).toContain(path);
+  expect(String(record(cache?.with).key)).toContain("packages/jq/sources.lock.json");
+  expect(String(record(cache?.with).key)).toContain("tools/program-build-tools.ts");
+});
+
 test("the browser gate runs memory groups on the fixture built once by libc", () => {
   for (const path of [
     "packages/waffle/group/state.ts",

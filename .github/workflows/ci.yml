@@ -31,6 +31,7 @@ jobs:
       ripgrep: ${{ steps.paths.outputs.ripgrep }}
       base: ${{ steps.paths.outputs.base }}
       programs: ${{ steps.paths.outputs.programs }}
+      jq: ${{ steps.paths.outputs.jq }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -130,6 +131,18 @@ jobs:
               - "packages/base/**"
               - "packages/python/**"
               - "packages/git/**"
+            jq:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "rust-toolchain.toml"
+              - "tools/program-build-tools.ts"
+              - "tools/program-package.ts"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/**"
+              - "packages/base/**"
+              - "packages/jq/**"
             browser:
               - ".github/**"
               - "packages/waffle/Cargo.toml"
@@ -232,6 +245,70 @@ jobs:
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
+  jq:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache/restore@v4
+        id: bun-cache
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - uses: actions/cache@v4
+        id: jq-cache
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/jq
+            .build/wasi-libc
+            packages/jq/.build
+            packages/jq/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-jq-${{ hashFiles('bun.lock', 'rust-toolchain.toml', 'packages/jq/sources.lock.json', 'packages/jq/patches/**', 'packages/jq/scripts/**', 'packages/jq/src/**', 'packages/jq/tests/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**', 'tools/program-build-tools.ts', 'tools/program-package.ts') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-jq-
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip1
+      - uses: actions/cache@v4
+        id: wasmtime
+        with:
+          path: ~/downloader/bin/wasmtime
+          key: ${{ runner.os }}-wasmtime-49.0.3
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+        if: steps.wasmtime.outputs.cache-hit != 'true'
+        with:
+          version: 49.0.3
+      - name: Add cached Wasmtime to PATH
+        run: |
+          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
+          "$HOME/downloader/bin/wasmtime" --version
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare:package
+      - run: bun run programs:check
+      - run: bun run programs:jq
   package:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
