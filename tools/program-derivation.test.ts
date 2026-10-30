@@ -194,3 +194,36 @@ test("one stage operation publishes deterministic final outputs to multiple dest
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("the old policy and flags cannot be relabeled as a current derivative", () => {
+  fixture((receipt, bytes, producer) => {
+    const optimization = receipt.operations[0];
+    assert.ok(optimization && "optimizer" in optimization);
+    assert.equal(optimization.optimizer.policy, "waffle-program-size-v2");
+    assert.ok(optimization.optimizer.flags.includes("--enable-exception-handling"));
+    const oldOptimizer = {
+      ...optimization.optimizer,
+      policy: "waffle-program-size-v1",
+      flags: optimization.optimizer.flags.filter((flag) => flag !== "--enable-exception-handling"),
+    };
+    const old = {
+      ...receipt,
+      operations: [{ ...optimization, optimizer: oldOptimizer }, receipt.operations[1]],
+    };
+    assert.throws(
+      () => validateProgramDerivation(old, bytes, producer),
+      /Unpinned optimizer policy/,
+    );
+    const oldSource = {
+      ...receipt,
+      transformer: {
+        ...receipt.transformer,
+        optimizerSourceSha256: "4d7c275c57aee3d6c782f2d15f8bda138756a0ec334f7e394d7e960cb896c79b",
+      },
+    };
+    assert.throws(
+      () => validateProgramDerivation(oldSource, bytes, producer),
+      /Optimizer source changed/,
+    );
+  });
+});
