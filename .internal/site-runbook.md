@@ -9,22 +9,21 @@ candidate build.
 
 ## Architecture
 
-- `src/pages/index.astro` emits the document and preloads the three local fonts.
-- `src/components/Landing.astro` renders the original layout and initial state as
-  HTML at build time.
-- `src/scripts/landing.ts` handles scroll, responsive layout, reduced motion, and
-  the scene lifecycle without React/DC.
-- `src/scripts/waffle-scene.ts` preserves the supplied interactive Three.js scene;
-  Astro bundles it with the pinned `three` dependency.
-- Fonts live in `src/assets/`. Scripts and fonts receive content-hashed URLs under
-  `dist/_astro/`; `public/_headers` supplies immutable caching for those URLs.
-  HTML is revalidated. Font licenses are in `public/assets/FONTS-LICENSE.txt`;
+- `src/pages/index.astro` emits the document head and preloads the three local fonts.
+- `src/components/Landing.astro` renders the page as static HTML; `src/styles/site.css` holds
+  every style.
+- `src/scripts/landing.ts` maps native scroll to scene progress, frames the waffle and sizes the
+  step-card deck. It writes no layout styles during scroll.
+- `src/scripts/waffle-scene.ts` is the adapted interactive Three.js scene; Astro bundles it with
+  the pinned `three` dependency and the page loads it after first paint.
+- Fonts live in `src/assets/` as instanced Latin subsets. Scripts and fonts receive
+  content-hashed URLs under `dist/_astro/`; `public/_headers` supplies immutable caching for
+  those URLs. HTML is revalidated. Font licenses are in `public/assets/FONTS-LICENSE.txt`;
   Three.js's unchanged MIT notice is in `public/assets/THREE-LICENSE.txt`.
 
-The owner's original self-extracting HTML remains outside the repository. It
-contains three design boards, not just this landing page. The extracted React/DC
-page is a test reference only and is never included in the production build.
-See [the provenance notes](../docs/bun-patches.md) for the adapted scene and layout.
+The 2026-10-30 redesign departs from the owner's original self-extracting HTML on purpose; see
+[the provenance notes](../docs/bun-patches.md#waffle-landing-page). The original export stays
+outside the repository and remains useful as a performance and visibility baseline.
 
 ## Build and local development
 
@@ -86,30 +85,24 @@ Stop servers you started with Ctrl-C when comparisons finish. Remove your
 extracted fixture after its last consumer stops; retain evidence only while it
 has an active review owner.
 
-## Browser parity and performance checks
+## Browser smoke, visibility and performance checks
 
-Install Playwright's pinned browsers if they are not already cached. On this PC,
-use `PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright`; do not download a second
-browser copy into the system filesystem.
-
-With the two servers running, execute from `site/`:
+With the production build served on port 4323, run the smoke check in all three engines:
 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright \
-REFERENCE_URL=http://127.0.0.1:4322/ SITE_URL=http://127.0.0.1:4323/ \
-EVIDENCE_DIR=/work/tmp/waffle-site-review \
-bun /work/platform-production/heavy/current/run.js --class browser waffle-site-parity -- bun scripts/verify.ts
+SITE_URL=http://127.0.0.1:4323/ ENGINES=chromium,firefox,webkit \
+bun /work/platform-production/heavy/current/run.js --class browser waffle-site-smoke -- bun scripts/smoke.ts
 ```
 
-`verify.ts` checks Chromium, Firefox, and WebKit at widths 375, 768, 1280, and 1920. It compares visible text/links, scroll states, hover/focus, and scene
-pointer/click states with synchronized animation time, writing screenshots and
-`visual-diff.json`. Before comparison, it applies the exact published link destinations,
-two action-label, one launch-description and two documentation-caption corrections and `© 2026 Waffle` to the original reference;
-[the provenance ledger](../docs/bun-patches.md#waffle-landing-page) records these intentional
-departures. It validates the original values before replacing them, does not modify the
-candidate, and still fails on any remaining pixel/content mismatch. `ENGINES=chromium`
-and `WIDTHS=375,1280` select a smaller diagnostic subset; they do not replace the
-full matrix.
+It checks phone, tablet and desktop sizes for browser errors, a painted scene (or the no-WebGL
+note where the engine has no WebGL, as headless Firefox on this PC does), a story that reaches
+the sky, text that stays inside the viewport and links that have targets. The pixel parity
+checker against the original page was removed with the redesign.
+
+`visibility.ts` still compares the reference and candidate scene loops: both must stop drawing
+while the canvas is off screen and resume without a time jump. It needs the reference server
+on port 4322 or `REFERENCE_URL` pointing at another build of the previous page.
 
 ```sh
 PLAYWRIGHT_BROWSERS_PATH=/work/cache/ms-playwright \
