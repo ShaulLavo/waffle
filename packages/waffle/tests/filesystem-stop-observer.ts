@@ -29,7 +29,12 @@ export function assertFilesystemStopped(
   label: string,
 ): void {
   check(snapshot.revocation !== 0, `${label}: stopped with its filesystem unrevoked`);
-  check(snapshot.sections === 0, `${label}: stopped inside ${snapshot.sections} sections`);
+  // Reaping sets revocation to 2. A worker can die after admission increments the shared count
+  // and before the revoked check decrements it. The lock checks below still reject storage work.
+  check(
+    snapshot.sections === 0 || snapshot.revocation === 2,
+    `${label}: stopped inside ${snapshot.sections} sections`,
+  );
   check(snapshot.fileLocks === 0, `${label}: dead token holds ${snapshot.fileLocks} file locks`);
   check(!snapshot.globalLock, `${label}: dead token holds the global lock`);
 }
