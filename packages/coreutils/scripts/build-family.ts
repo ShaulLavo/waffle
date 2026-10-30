@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildEnvironment,
   wasiTarget,
@@ -72,7 +73,7 @@ export function stageFamilyPrograms(names: readonly string[]) {
   for (const name of names) {
     for (const directory of ["dist", "public/programs"]) {
       mkdirSync(resolve(packageRoot, directory), { recursive: true });
-      copyFileSync(
+      stageProgram(
         resolve(releaseDirectory, `${name}.wasm`),
         resolve(packageRoot, directory, `${name}.wasm`),
       );

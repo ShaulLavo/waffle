@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildEnvironment,
   wasiTarget,
@@ -67,7 +68,7 @@ export function stageFindutils() {
   for (const name of programNames) {
     for (const directory of ["dist", "public/programs"]) {
       mkdirSync(resolve(packageRoot, directory), { recursive: true });
-      copyFileSync(
+      stageProgram(
         resolve(releaseDirectory, `${name}.wasm`),
         resolve(packageRoot, directory, `${name}.wasm`),
       );

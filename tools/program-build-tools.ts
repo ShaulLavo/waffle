@@ -164,6 +164,7 @@ class Reader {
       const byte = this.bytes[this.offset++];
       assert.ok(byte !== undefined, "truncated Wasm integer");
       value += (byte & 127) * 2 ** shift;
+      assert.ok(value <= 0xffff_ffff, "oversized Wasm integer");
       if (!(byte & 128)) return value;
       shift += 7;
       assert.ok(shift < 35, "oversized Wasm integer");
@@ -175,6 +176,37 @@ class Reader {
     assert.ok(this.offset <= this.bytes.length, "truncated Wasm section");
     return this.bytes.subarray(start, this.offset);
   }
+}
+
+const customSectionDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/** Remove only complete `name` custom sections, retaining every other encoded byte. */
+export function stripWasmNames(bytes: Uint8Array): Uint8Array {
+  const reader = new Reader(bytes);
+  const header = reader.slice(8);
+  assert.ok(
+    Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0).every((byte, index) => header[index] === byte),
+    "expected a Wasm module header",
+  );
+  const retained = [bytes.subarray(0, 8)];
+  let removed = false;
+  while (reader.offset < bytes.length) {
+    const start = reader.offset;
+    const kind = reader.slice(1)[0];
+    const section = new Reader(reader.slice(reader.integer()));
+    const name = kind === 0 ? section.slice(section.integer()) : undefined;
+    if (name && customSectionDecoder.decode(name) === "name") {
+      removed = true;
+      continue;
+    }
+    retained.push(bytes.subarray(start, reader.offset));
+  }
+  return removed ? Buffer.concat(retained) : bytes;
+}
+
+/** Stage program bytes only after source-side verification has consumed debug names. */
+export function stageProgram(source: string, destination: string): void {
+  writeFileSync(destination, stripWasmNames(readFileSync(source)));
 }
 
 function readFunctionNameSubsection(data: Reader, names: Map<string, number>) {

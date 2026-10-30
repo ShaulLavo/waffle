@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import test from "node:test";
-import type { TestContext } from "node:test";
+import test, { type TestContext } from "node:test";
 import {
   familyRecipe,
   familyTargetRoot,
@@ -168,7 +167,8 @@ test("payload validation rejects changed bytes, extra files, traversal and symbo
 
 test("a validated artifact stages without building and rejects an altered interpreter", (context) => {
   const { directory, output, put } = fixture(context);
-  put("artifact/python.wasm", cappedWasiFixture);
+  const interpreter = Buffer.concat([cappedWasiFixture, Uint8Array.of(0, 5, 4, 110, 97, 109, 101)]);
+  put("artifact/python.wasm", interpreter);
   put("artifact/python.NOTICES.txt", "license text");
   put("artifact/python-licenses.json", "{}");
   const assets = Object.fromEntries(
@@ -187,8 +187,19 @@ test("a validated artifact stages without building and rejects an altered interp
   );
   const staged = resolve(directory, "staged");
   stagePythonArtifact(output, staged);
-  assert.deepEqual(regularFiles(staged), regularFiles(output));
-  for (const path of regularFiles(staged))
+  assert.deepEqual(
+    regularFiles(staged),
+    regularFiles(output).concat(["python-program.json"]).sort(),
+  );
+  assert.deepEqual(readFileSync(resolve(staged, "python.wasm")), Buffer.from(cappedWasiFixture));
+  assert.deepEqual(readFileSync(resolve(output, "python.wasm")), interpreter);
+  assert.deepEqual(JSON.parse(readFileSync(resolve(staged, "python-program.json"), "utf8")), {
+    operation: "strip-wasm-name-sections",
+    producerReceiptSha256: sha256(readFileSync(resolve(output, "python-build.json"))),
+    input: { bytes: interpreter.length, sha256: sha256(interpreter) },
+    output: { bytes: cappedWasiFixture.length, sha256: sha256(cappedWasiFixture) },
+  });
+  for (const path of regularFiles(output).filter((name) => name !== "python.wasm"))
     assert.deepEqual(
       readFileSync(resolve(staged, path)),
       readFileSync(resolve(output, path)),
