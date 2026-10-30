@@ -90,7 +90,7 @@ fn basic_pattern(pattern: &str) -> Result<String, String> {
 impl Pattern<'_> {
     fn character(&mut self, ch: char) -> Result<(), String> {
         if !matches!(self.bracket, Bracket::Outside) {
-            self.bracket_character(ch);
+            self.bracket_character(ch)?;
             return Ok(());
         }
         match ch {
@@ -108,22 +108,60 @@ impl Pattern<'_> {
         Ok(())
     }
 
-    fn bracket_character(&mut self, ch: char) {
+    fn bracket_character(&mut self, ch: char) -> Result<(), String> {
+        if ch == '[' && self.chars.peek() == Some(&':') {
+            self.named_class()?;
+            self.bracket = Bracket::Body;
+            return Ok(());
+        }
         if ch == ']' && matches!(self.bracket, Bracket::Body) {
             self.bracket = Bracket::Outside;
         }
-        if ch == '\\' {
-            self.result.push('\\');
+        match ch {
+            '[' | '\\' | '&' | '~' => self.literal(ch),
+            _ => self.result.push(ch),
         }
-        self.result.push(ch);
-        if ch != '^' && !matches!(self.bracket, Bracket::Outside) {
+        if !matches!(self.bracket, Bracket::Outside) {
             self.bracket = Bracket::Body;
         }
+        Ok(())
+    }
+
+    fn named_class(&mut self) -> Result<(), String> {
+        self.chars.next();
+        let name: String = self.chars.by_ref().take_while(|ch| *ch != ':').collect();
+        if self.chars.next() != Some(']')
+            || !matches!(
+                name.as_str(),
+                "alnum"
+                    | "alpha"
+                    | "blank"
+                    | "cntrl"
+                    | "digit"
+                    | "graph"
+                    | "lower"
+                    | "print"
+                    | "punct"
+                    | "space"
+                    | "upper"
+                    | "xdigit"
+            )
+        {
+            return Err("invalid character class name".to_owned());
+        }
+        self.result.push_str("[:");
+        self.result.push_str(&name);
+        self.result.push_str(":]");
+        Ok(())
     }
 
     fn open_bracket(&mut self) {
         self.bracket = Bracket::First;
         self.result.push('[');
+        if self.chars.peek() == Some(&'^') {
+            self.chars.next();
+            self.result.push('^');
+        }
         if self.chars.peek() == Some(&']') {
             self.chars.next();
             self.result.push_str(r"\]");
