@@ -1,14 +1,56 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
-import { stageGrep, releaseDirectory, packageRoot } from "../packages/grep/scripts/build-grep.ts";
+import { pathToFileURL } from "node:url";
 import { stageProgram, stripWasmNames } from "./program-build-tools.ts";
 
 const header = [0, 97, 115, 109, 1, 0, 0, 0];
 const named = Uint8Array.from(header.concat([0, 5, 4, 110, 97, 109, 101]));
 
-test("program staging removes the name custom section from final bytes", (context) => {
+function sourceFixture(context: TestContext) {
+  const repository = resolve(import.meta.dirname, "..");
+  const parent = resolve(repository, ".build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "program-staging-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const sources = [
+    "tools/program-build-tools.ts",
+    "tools/program-locales/prepare.ts",
+    "tools/program-locales/selection.ts",
+    "tools/program-locales/patch.ts",
+    "tools/program-locales/sources.json",
+    "packages/coreutils/scripts/build-family.ts",
+    "packages/coreutils/scripts/build-config.ts",
+    "packages/coreutils/scripts/programs.ts",
+    "packages/findutils/scripts/build-findutils.ts",
+    "packages/findutils/scripts/xargs-source.ts",
+    "packages/grep/scripts/build-grep.ts",
+    "packages/sed/scripts/build-sed.ts",
+    "packages/sed/scripts/build-config.ts",
+    "packages/sed/scripts/sed-source.ts",
+  ];
+  for (const name of sources) {
+    const target = resolve(root, name);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(resolve(repository, name), target);
+  }
+  return (name: string) => pathToFileURL(resolve(root, name)).href;
+}
+
+test("program staging removes the name custom section from final bytes", async (context) => {
+  const fixture = sourceFixture(context);
+  const { stageGrep, releaseDirectory, packageRoot } = await import(
+    fixture("packages/grep/scripts/build-grep.ts")
+  );
   const paths = [resolve(releaseDirectory, "grep.wasm")].concat(
     ["dist", "public/programs"].map((directory) => resolve(packageRoot, directory, "grep.wasm")),
   );
@@ -78,8 +120,9 @@ test("malformed framing is rejected even after a removable name section", () => 
 });
 
 test("failed staging does not replace an existing destination", (context) => {
-  const root = resolve(packageRoot, ".build/name-strip-failure");
-  assert.equal(existsSync(root), false);
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "name-strip-failure-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(root, { recursive: true });
   const input = resolve(root, "bad.wasm");
@@ -128,8 +171,11 @@ function programFixture(
 }
 
 test("coreutils staging finalizes ls and echo after retaining their compiler proof", async (context) => {
-  const { stageFamilyPrograms } = await import("../packages/coreutils/scripts/build-family.ts");
-  const config = await import("../packages/coreutils/scripts/build-config.ts");
+  const fixture = sourceFixture(context);
+  const { stageFamilyPrograms } = await import(
+    fixture("packages/coreutils/scripts/build-family.ts")
+  );
+  const config = await import(fixture("packages/coreutils/scripts/build-config.ts"));
   const names = ["ls", "echo"];
   const check = programFixture(context, config.releaseDirectory, config.packageRoot, names);
   stageFamilyPrograms(names);
@@ -137,7 +183,8 @@ test("coreutils staging finalizes ls and echo after retaining their compiler pro
 });
 
 test("findutils staging finalizes both find and xargs", async (context) => {
-  const config = await import("../packages/findutils/scripts/build-findutils.ts");
+  const fixture = sourceFixture(context);
+  const config = await import(fixture("packages/findutils/scripts/build-findutils.ts"));
   const check = programFixture(
     context,
     config.releaseDirectory,
@@ -149,8 +196,9 @@ test("findutils staging finalizes both find and xargs", async (context) => {
 });
 
 test("sed staging finalizes the same bytes for package and direct URL consumers", async (context) => {
-  const { stageSed } = await import("../packages/sed/scripts/build-sed.ts");
-  const config = await import("../packages/sed/scripts/build-config.ts");
+  const fixture = sourceFixture(context);
+  const { stageSed } = await import(fixture("packages/sed/scripts/build-sed.ts"));
+  const config = await import(fixture("packages/sed/scripts/build-config.ts"));
   const check = programFixture(context, config.releaseDirectory, config.packageRoot, ["sed"]);
   stageSed();
   check();
