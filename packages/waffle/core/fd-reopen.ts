@@ -5,10 +5,10 @@ import {
   RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
 } from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem } from "./filesystem.js";
+import type { FileSystem, ResolvedPath } from "./filesystem.js";
 import { normalize } from "./path.js";
 
-export type DescriptorPath = { source: number } | { device: "null" };
+export type DescriptorPath = { source: number } | { device: "null" } | { resolved: ResolvedPath };
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
@@ -126,9 +126,35 @@ function searchEntry(fs: FileSystem, entry: PathEntry): number {
   return typeof result === "number" ? result : 0;
 }
 
+function nullDeviceParent(fs: FileSystem, root: number, path: ResolvedPath): boolean {
+  if (path.name !== "null" || path.parent === undefined) return false;
+  const dev = fs.resolve(root, "dev");
+  return typeof dev !== "number" && dev.node !== undefined && dev.node === path.parent;
+}
+
 type FinalLinkPolicy = "follow" | "nofollow" | "exclusive-create";
 
-/** Undefined delegates ordinary paths unchanged, without per-component service calls. */
+function resolveOrdinaryPath(
+  fs: FileSystem,
+  handle: number,
+  path: string,
+  finalLink: FinalLinkPolicy,
+): { resolved: ResolvedPath } | number | undefined {
+  let candidate = false;
+  if (path.includes("dev") || path.includes("proc")) {
+    const normalized = normalize(path);
+    candidate = descriptorPath(normalized) !== undefined || devicePath(normalized) !== undefined;
+  }
+  if (!candidate) {
+    const resolved = fs.resolve(handle, path, finalLink === "follow");
+    if (typeof resolved === "number" && resolved !== 44) return resolved;
+    if (typeof resolved !== "number" && !nullDeviceParent(fs, handle, resolved))
+      return { resolved };
+  }
+  return undefined;
+}
+
+/** Ordinary root paths return their one resolved result; virtual aliases use the component walker. */
 export function resolveDescriptorPath(
   table: DescriptorTable,
   fs: FileSystem,
@@ -136,16 +162,13 @@ export function resolveDescriptorPath(
   path: string,
   finalLink: FinalLinkPolicy,
 ): DescriptorPath | number | undefined {
-  // Normalization only selects candidates. The walker below authorizes the ORIGINAL path:
-  // canceled components, root escape and terminal slashes/dots are never discarded there.
-  if (!path.includes("dev") && !path.includes("proc")) return undefined;
-  const normalized = normalize(path);
-  if (descriptorPath(normalized) === undefined && devicePath(normalized) === undefined)
-    return undefined;
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
   if (directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
     return undefined;
+  const ordinary = resolveOrdinaryPath(fs, handle, path, finalLink);
+  if (ordinary !== undefined) return ordinary;
+  // Resolve candidates and unresolved aliases against original components, not normalized text.
   let current: PathEntry = { prefix: "", kind: "directory", handle };
   const parents: PathEntry[] = [];
   let pending = path.split("/"),

@@ -1020,17 +1020,19 @@ export class Wasi {
               : "nofollow",
         );
         if (typeof alias === "number") return alias;
-        if (alias !== undefined) {
+        if (alias !== undefined && !("resolved" in alias)) {
           if ("device" in alias)
             return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
           if (!this.descriptors.get(alias.source)) return ENOENT;
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
-        const path = this.opts.fs.resolve(
-          dir.resource.handle,
-          name,
-          (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
-        );
+        const path =
+          alias?.resolved ??
+          this.opts.fs.resolve(
+            dir.resource.handle,
+            name,
+            (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
+          );
         if (typeof path === "number") return path;
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;

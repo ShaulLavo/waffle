@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
 
@@ -25,8 +25,8 @@ function fixture() {
   const bytes = new Uint8Array(memory.buffer);
   const view = new DataView(memory.buffer);
   const calls = wasi["functions"]();
-  const open = (flags = 0, fdflags = 0) => {
-    const path = encoder.encode("dev/null");
+  const open = (flags = 0, fdflags = 0, name = "dev/null") => {
+    const path = encoder.encode(name);
     bytes.set(path, 256);
     const result = calls.path_open(3, 1, 256, path.length, flags, ALL_RIGHTS, 0n, fdflags, 1024);
     return { result, fd: result === 0 ? view.getUint32(1024, true) : undefined };
@@ -108,6 +108,50 @@ test("actual WASI /dev/null exposes character metadata and descriptor lifetime",
     expect(f.calls.fd_close(duplicate)).toBe(0);
     expect(f.calls.fd_close(duplicate)).toBe(8);
   } finally {
+    f.wasi.descriptors.dispose();
+  }
+});
+
+function makeLink(fs: MemFS, name: string, target: string) {
+  const path = fs.resolve(fs.preopen("/"), name, false);
+  if (typeof path === "number") throw new Error(`Cannot prepare symlink: ${path}`);
+  expect(fs.symlink(path, target)).toBe(0);
+}
+
+for (const withDirectory of [false, true]) {
+  test(`null device follows final and ancestor symlinks with real dev directory ${withDirectory}`, () => {
+    const f = fixture();
+    try {
+      if (withDirectory) f.fs.mkdirp("/dev");
+      const links: readonly (readonly [string, string])[] = [
+        ["alias", "dev/null"],
+        ["device-dir", "dev"],
+      ];
+      for (const [name, target] of links) {
+        makeLink(f.fs, name, target);
+      }
+      for (const name of ["alias", "device-dir/null"]) {
+        const opened = f.open(O_CREAT | O_TRUNC, 0, name);
+        expect(opened.result).toBe(0);
+        expect(f.wasi.descriptors.get(opened.fd!)?.resource.kind).toBe("device");
+        expect(f.io("fd_write", opened.fd!, "discard me").count).toBe(10);
+        expect(f.fs.lookup("/dev/null")).toBeUndefined();
+      }
+    } finally {
+      f.wasi.descriptors.dispose();
+    }
+  });
+}
+
+test("ordinary root opens retain one filesystem resolution", () => {
+  const f = fixture();
+  f.fs.writeFile("/ordinary", "data");
+  const resolve = spyOn(f.fs, "resolve");
+  try {
+    expect(f.open(0, 0, "ordinary").result).toBe(0);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  } finally {
+    resolve.mockRestore();
     f.wasi.descriptors.dispose();
   }
 });
