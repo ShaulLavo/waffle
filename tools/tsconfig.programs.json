@@ -30,11 +30,19 @@
     "../packages/sed/src/index.ts",
     "../packages/ripgrep/src/index.ts",
     "../packages/python/src",
+    "../packages/procps/src",
+    "../packages/procps/scripts",
+    "../packages/procps/tests",
     "../packages/diffutils/src",
     "../packages/diffutils/scripts",
     "../packages/diffutils/tests",
     "../packages/jq/src",
     "../packages/jq/scripts",
-    "../packages/jq/tests"
+    "../packages/jq/tests",
+    "../packages/coreutils/tests/date-wasi.test.ts",
+    "../packages/coreutils/scripts/build-date.ts",
+    "../packages/coreutils/scripts/date-oracle.ts",
+    "../packages/coreutils/scripts/date-source.test.ts",
+    "../packages/coreutils/fixtures/date-cases.ts"
   ]
 }

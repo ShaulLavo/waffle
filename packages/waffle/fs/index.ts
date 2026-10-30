@@ -70,3 +70,10 @@ export {
 export { WorkspaceArchiveError } from "./workspace-archive.js";
 
 export { FilesystemWatch, type WatchOptions, type WatchEvent, type WatchBatch } from "./watch.js";
+
+export {
+  openWorkspaceRead,
+  WorkspaceReadContractError,
+  type WorkspaceReadStream,
+  type WorkspaceReadStep,
+} from "./workspace-stream.js";

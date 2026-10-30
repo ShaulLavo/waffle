@@ -34,6 +34,7 @@ jobs:
       diffutils: ${{ steps.paths.outputs.diffutils }}
       gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
+      procps-pure: ${{ steps.paths.outputs.procps-pure }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -175,6 +176,12 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
               - "packages/jq/**"
+            procps-pure:
+              - ".github/workflows/ci.yml"
+              - "package.json"
+              - "bun.lock"
+              - "packages/waffle/**"
+              - "packages/procps/**"
             browser:
               - ".github/**"
               - "packages/waffle/Cargo.toml"
@@ -277,6 +284,26 @@ jobs:
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
+  procps-pure:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps-pure == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.1
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types
+      - run: echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: bun run programs:procps:pure
   diffutils:
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}
@@ -652,6 +679,12 @@ jobs:
     needs: [changes, network-wasm, libc]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
+    # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [parallel, serial]
+    name: browser (${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -700,14 +733,16 @@ jobs:
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
+          WAFFLE_BROWSER_GROUP: ${{ matrix.group }}
       - run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
+        if: matrix.group == 'parallel'
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
       - name: Retain recovery failure report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/recovery-r42-report.json
           if-no-files-found: ignore
           retention-days: 7
@@ -715,7 +750,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-protocol-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-protocol-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/waffle-browser-protocol.log
           retention-days: 7
   site:
@@ -778,8 +813,40 @@ jobs:
       - run: bun test scripts/program-release.test.ts
       - run: bun run programs:routes
       - run: bun run programs:source
+      - uses: actions/setup-node@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        with:
+          node-version: 26.12.1
+      - name: Record exact GNU date source and native compiler identity
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        id: gnu-date-identity
+        run: |
+          set -euo pipefail
+          identity=$(node packages/coreutils/scripts/build-native-date-oracle.ts --identity)
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        id: gnu-date-native
+        with:
+          path: .build/gnu-date-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-gnu-date-9.12-v1-${{ steps.gnu-date-identity.outputs.identity }}
+      - name: Build or verify only the pinned GNU date native oracle
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        env:
+          GNU_DATE_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-date-native-oracle
+          GNU_DATE_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          df -h "$GITHUB_WORKSPACE" "$GNU_DATE_ORACLE_SCRATCH_ROOT"
+          bash packages/coreutils/scripts/provision-native-date.sh
+          node packages/coreutils/scripts/build-native-date-oracle.ts --verify-only
+          printf 'GNU_DATE=%s/date\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
+          printf 'GNU_DATE_ORACLE_ROOT=%s\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
+      - name: Verify date source against the pinned native GNU oracle
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        run: node --disable-warning=ExperimentalWarning --test packages/coreutils/scripts/date-source.test.ts
       - run: bun run --cwd packages/python test:composition
       - run: bun run --cwd packages/python test:build
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo
+      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date

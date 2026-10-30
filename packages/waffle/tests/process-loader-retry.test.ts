@@ -79,6 +79,7 @@ test("concurrent names share each failed and retried attempt without changing re
     return loads === 1 ? firstAttempt.promise : retryAttempt.promise;
   });
   const entry = await registry.check("fixture");
+  if ("command" in entry) throw new Error("Expected a module entry");
   registry.register("alias", { ...entry, adapter: "alias", interruptible: true });
   const first = registry.resolve("fixture"),
     shared = registry.resolve("alias");
@@ -94,8 +95,13 @@ test("concurrent names share each failed and retried attempt without changing re
   const retry = registry.resolve("fixture"),
     retryShared = registry.resolve("alias");
   retryAttempt.resolve(module);
-  expect(await retry).toEqual({ module, adapter: "fixture", interruptible: false });
-  expect(await retryShared).toEqual({ module, adapter: "alias", interruptible: true });
+  expect(await retry).toEqual({ kind: "module", module, adapter: "fixture", interruptible: false });
+  expect(await retryShared).toEqual({
+    kind: "module",
+    module,
+    adapter: "alias",
+    interruptible: true,
+  });
   expect((await registry.resolve("fixture")).module).toBe(module);
   expect(loads).toBe(2);
 });

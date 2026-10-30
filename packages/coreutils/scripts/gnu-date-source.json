@@ -1,0 +1,10 @@
+{
+  "version": "9.12",
+  "archive": "https://ftp.gnu.org/gnu/coreutils/coreutils-9.12.tar.xz",
+  "archiveSha256": "a480198559733e9b3da999e90543ac6f888a2caa544d8d664c5a1f17e528e210",
+  "announcement": "https://lists.gnu.org/archive/html/coreutils-announce/2026-09/msg00000.html",
+  "upstreamRevision": "c0f8514d989184921d9b12a4d103a7b23abc5af8",
+  "tag": "v9.12",
+  "announcementDate": "2026-09-14",
+  "observedPcBinarySha256": "7531de6570c4d067b6c73472407c89bc3e4e96c37bae20f55feab13d99d6771e"
+}
