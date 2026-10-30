@@ -33,6 +33,7 @@ export interface RuntimePrograms extends Iterable<ProgramHandle> {
   forEach(callback: (program: ProgramHandle) => void): void;
 }
 interface Member {
+  readonly admission: AbortController;
   readonly package: ProgramPackage;
   readonly program: PackageProgram;
   readonly handle: ProgramHandle;
@@ -241,6 +242,7 @@ export class ProgramCollection implements RuntimePrograms {
 
   private member(pkg: ProgramPackage, program: PackageProgram): Member {
     const member: Member = {
+      admission: new AbortController(),
       package: pkg,
       program,
       mode: "onDemand",
@@ -269,6 +271,7 @@ export class ProgramCollection implements RuntimePrograms {
       this.runtime,
       [{ name: member.package.name, programs: [member.program] }],
       {
+        signal: member.admission.signal,
         launcher: this.options.launcher ?? preview1Launcher,
         launchInterpreter: this.host.launchInterpreter,
         onLoad: (_program, state) => {
@@ -297,6 +300,7 @@ export class ProgramCollection implements RuntimePrograms {
 
   private remove(member: Member): Promise<void> {
     if (member.removal) return member.removal;
+    member.admission.abort();
     member.state = Object.freeze({ kind: "removed" });
     member.removal = this.retire(member);
     return member.removal;
