@@ -1,35 +1,34 @@
-# Missing Waffle contract
+# Waffle contract and procps boundary
 
-Status: Blocked on Waffle-owned API work at accepted commit `620da8002cf2dab88862a0a503e228413b52603a`.
+Status: Pure package only. Waffle supplies host-command and delegated-signal APIs, but procps does not implement an executable adapter.
 
-## Minimal registration control
+## Historical blocker
 
-`tests/runtime-gap.test.ts` creates the real runtime and filesystem worker, then attempts module-less registration with a real marker. Waffle rejects it before launch. With neither `source`, `module`, nor `script`, `registerProgram` throws `Compiled modules require cooperative: true`. Adding cooperative trust without a module throws `Program module must provide a compiled WebAssembly.Module`. The subsequent real supervisor start fails `ENOEXEC`. No empty Wasm or interpreter is registered.
+At accepted commit `620da8002cf2dab88862a0a503e228413b52603a`, Waffle had no module-less executable variant. An adapter without `source`, `module`, or `script` failed with `Compiled modules require cooperative: true`. Adding cooperative trust without a module failed with `Program module must provide a compiled WebAssembly.Module`.
 
-This test passing means the blocker still exists. It does not qualify `ps`, `pgrep`, or `pkill` for shell execution.
+Waffle commit `db1bcd95c06a8130fd85caa510754a7f14bf9b98` added a separate `command` variant to `ProgramDefinition` and `PackageProgram`. Those incomplete Wasm definitions still fail. Their rejection no longer means that Waffle cannot register host commands.
 
-## Smallest registration and lifecycle need
+## Current runtime contract
 
-Waffle needs a module-less variant in both `ProgramDefinition` and `PackageProgram`. Exact naming belongs to Waffle. Its contract must support:
+The command variant supplies the runtime-owned behavior that was missing:
 
-- A stable, canonical host-command definition and lazy source loader, shared by all aliases and `pick` selections. Installing or checking access writes and admits markers only. Preload explicitly loads that same definition. No WebAssembly compilation occurs for this variant.
-- A host command context with the real PID, original request, borrowed process-query capability, admitted stdio streams, and a revocation signal. It must not claim to contain a WebAssembly module. The source receives no runtime owner or disposal method.
-- Ordinary process startup and exit reporting, including descriptor errors and nonzero statuses. The existing registry filesystem walk still decides executable admission.
-- Cancellation before and after load. Uninstall must reject new entry immediately, wait for admitted loaders and physically stopped commands, then release definition paths and package resources. A late async loader must not enter after revocation or runtime disposal.
-- One physical-stop handle or equivalent task completion per command. Runtime disposal must quiesce admitted filesystem work before stopping consumers, then release the one-runtime guard.
+- A canonical definition with a lazy `command.load` loader, shared by aliases and `pick` selections. Install and access checks do not load its implementation or compile WebAssembly.
+- A `HostCommandContext` with the real PID, original request, root-local process snapshots, stdio streams, an abort signal, and optional delegated signals. It exposes no module, runtime owner, or raw supervisor.
+- Registry marker admission, ordinary startup and exit reporting, cancellation, removal, and physical completion accounting.
+- Explicit signal delegation. The definition requests `signals: "delegated"`, and the spawning controller grants installed package identities through `signalDelegation.packages`. `DelegatedSignals.send` reports `sent`, `missing`, `denied`, or `revoked` and checks current authority and liveness.
 
-A callable host variant must be a real executable kind through the registry and supervisor, not an optional missing module on a context that promises `module: WebAssembly.Module`.
+Ordinary `supervisor.canSignal(commandPid, targetPid)` still rejects siblings. That restriction does not describe the separate delegated capability. Passing the parent's PID or calling raw `supervisor.kill` is not a substitute for a grant. A stale pure plan grants no permission.
 
-## Smallest control need
+## Bounded package controls
 
-The query side already exists through `Runtime.processes()` and `service.ready().table`. The snapshot must stay host-side and copy only public process fields into command data.
+`tests/runtime-gap.test.ts` creates the real runtime and filesystem worker. It preserves the incomplete Wasm-definition rejection assertions and proves that their unregistered marker fails startup with `ENOEXEC`. It also registers and releases a valid host-command definition without loading or executing it. No empty Wasm or interpreter is registered.
 
-Signaling needs an explicitly authorized trusted-command operation. `supervisor.canSignal(commandPid, targetPid)` rejects a command's sibling, even when that sibling was created by the same shell. `supervisor.kill` alone performs no caller check. Replacing the caller PID with the parent's PID would silently create authority, so this package does neither.
+A separate real-supervisor control projects admitted reservations into pure rows and checks ordinary sibling denial without sending a signal. The signal-number control retains Waffle's rejection of signal zero and unsupported stop signals.
 
-Waffle must define whether trusted process commands receive a delegated scope from the spawning controller. An operation such as `signal(targetPid, signal)` must enforce that scope, target identity, liveness, and command revocation at delivery. A stale pure plan grants no permission. Per-target errors must distinguish missing and unauthorized targets so the package can count actual successful deliveries. No signal-zero emulation is needed for the useful TERM, INT, KILL, and PIPE subset.
+These controls establish the current API distinction. They do not qualify `ps`, `pgrep`, or `pkill` for shell execution. The size report's `runtimeAcceptance: "BLOCKED"` refers to that unimplemented procps integration, not an absent Waffle API.
 
-Timestamp, resource, terminal, account, session, and Linux scheduling-state fields remain unsupported. They are not prerequisites for the bounded `-o` and matching subset. Optional oldest/newest support needs a genuine immutable start-order or timestamp contract, not numeric PID order.
+## Remaining procps integration
 
-## Parent integration
+No shared runtime changes or executable catalog are included in this package. A future procps adapter needs package-level controls for registration, lazy loading, alias identity, stdio, delegated delivery, removal, revocation, and physical completion. Pure fixture comparisons remain required and do not prove those behaviors.
 
-No shared runtime changes are included in this package branch. The parent owns the Waffle prerequisite and final integration. After it is published, replace these blocker controls with positive registration, lazy loading, alias identity, own-child delivery, removal, revocation, and physical-stop acceptance controls. Keep the pure fixture comparisons.
+Timestamp, resource, terminal, account, session, and Linux scheduling-state fields remain unsupported. Optional oldest/newest support needs a genuine immutable start-order or timestamp contract, not numeric PID order. Signal-zero emulation is not part of the bounded TERM, INT, KILL, and PIPE subset.

@@ -3,7 +3,8 @@
   "implementation": "Original TypeScript selector, formatter and inert signal-plan code. Not a procps-ng build or port.",
   "license": "MIT",
   "acceptedWaffleCommit": "620da8002cf2dab88862a0a503e228413b52603a",
-  "runtimeAcceptance": "BLOCKED: module-less registration and delegated sibling-signaling contracts are not published.",
+  "runtimeContractWaffleCommit": "db1bcd95c06a8130fd85caa510754a7f14bf9b98",
+  "runtimeAcceptance": "NOT IMPLEMENTED: Waffle supplies host commands and delegated signals, but this pure package has no command adapter or execution acceptance.",
   "nativeOracle": {
     "family": "procps-ng",
     "version": "4.0.7",
@@ -24,6 +25,6 @@
     "wasm": null,
     "nativeGuestBuild": false,
     "runtimeCatalogExport": false,
-    "reason": "No payload or executable catalog is invented for a pure package awaiting a runtime-native command contract."
+    "reason": "No payload or executable catalog is invented for a pure package. Waffle now supplies the host-command contract, but procps integration remains separate work."
   }
 }

@@ -1,6 +1,6 @@
 # Evaluate a process-command plan
 
-This package is not an installable command family yet. Its pure API is useful for fixture tests and for the pending Waffle host-command design.
+This package is not an installable command family yet. Its pure API is useful for fixture tests and for a future adapter to Waffle's host-command API.
 
 ```ts
 import { planProcps, processRows } from "waffle-procps";
@@ -15,7 +15,7 @@ const plan = planProcps({
 });
 ```
 
-The returned plan contains output, an unsupported result, or an inert signal request. Do not execute signal plans through raw supervisor methods or nominate a parent PID as authority. Waffle owns the missing capability described in [Missing Waffle contract](host-contract.md).
+The returned plan contains output, an unsupported result, or an inert signal request. Do not execute signal plans through raw supervisor methods or nominate a parent PID as authority. Waffle owns the delegated capability described in [Waffle contract and procps boundary](host-contract.md). This package does not use that capability.
 
 Run package checks from the workspace after dependencies are installed:
 

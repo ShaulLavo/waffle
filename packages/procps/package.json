@@ -2,7 +2,7 @@
   "name": "waffle-procps",
   "version": "0.0.0",
   "private": true,
-  "description": "Pure process-command plans for Waffle. Runtime registration is not yet supported.",
+  "description": "Pure process-command plans for Waffle. This package has no runtime command adapter.",
   "files": [
     "src",
     "docs",

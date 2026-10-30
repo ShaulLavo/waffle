@@ -5,8 +5,8 @@ import { ProcessSupervisor } from "../../waffle/proc/supervisor.ts";
 import { checkedSignal } from "../../waffle/proc/types.ts";
 import { processRows } from "../src/index.ts";
 
-// These controls preserve blockers. They are not successful registered command execution.
-test("real Runtime rejects module-less registration before any host command can launch", async () => {
+// These controls distinguish runtime support from this package's unimplemented command adapter.
+test("real Runtime rejects incomplete Wasm definitions but accepts unloaded host commands", async () => {
   const runtime = createRuntime({
     filesystem: {
       mode: "memory",
@@ -14,10 +14,11 @@ test("real Runtime rejects module-less registration before any host command can 
     },
   });
   let launched = 0;
+  let loaded = 0;
   try {
     runtime.registerAdapter("procps-gap-control", () => {
       launched++;
-      throw new Error("module-less commands must not reach this launcher");
+      throw new Error("incomplete Wasm definitions must not reach this launcher");
     });
     await runtime.filesystem.mkdirp("/usr/bin");
     await runtime.filesystem.writeFile("/usr/bin/ps", "procps registration control\n");
@@ -46,13 +47,24 @@ test("real Runtime rejects module-less registration before any host command can 
     await supervisor.start(child);
     expect(supervisor.get(child)?.result).toMatchObject({ kind: "start-failed", error: "ENOEXEC" });
     expect(launched).toBe(0);
+    const release = runtime.registerProgram("/usr/bin/procps-contract-control", {
+      command: {
+        load: async () => {
+          loaded++;
+          throw new Error("registration-only control must not load a command");
+        },
+      },
+    });
+    expect(loaded).toBe(0);
+    release();
+    expect(loaded).toBe(0);
   } finally {
     await runtime.dispose();
   }
   expect(runtime.disposed).toBe(true);
 }, 15_000);
 
-test("real supervisor reserves honest rows but does not authorize a pkill sibling to signal them", () => {
+test("ordinary supervisor authority still denies a pkill sibling without delegated signals", () => {
   const supervisor = new ProcessSupervisor({
     registry: new ExecutableRegistry(),
     launch: () => {
@@ -88,7 +100,7 @@ test("real supervisor reserves honest rows but does not authorize a pkill siblin
   expect(Array.from(supervisor.table.values())).toEqual([]);
 });
 
-test("accepted main expanded signal coverage but has no signal-zero operation", () => {
+test("current Waffle signal validation still rejects signal zero and unsupported stop signals", () => {
   for (const signal of [1, 2, 9, 10, 13, 15, 18, 64]) expect(checkedSignal(signal)).toBe(signal);
   for (const signal of [0, 19, 20, 21, 22, 32, 33, 65])
     expect(() => checkedSignal(signal)).toThrow();
