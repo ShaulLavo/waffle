@@ -61,6 +61,31 @@ const launchWorker: GuestLauncher = (context, service) =>
     },
   });
 
+function heldLauncher({
+  guests,
+  started,
+  stopped,
+  terminating,
+}: {
+  guests: RuntimeProcessContext[];
+  started: ReturnType<typeof deferred>[];
+  stopped: ReturnType<typeof deferred>[];
+  terminating: ReturnType<typeof deferred>[];
+}): GuestLauncher {
+  return (guest) => {
+    const index = guests.length;
+    guests.push(guest);
+    guest.started();
+    started[index]?.resolve();
+    return {
+      terminate: async () => {
+        terminating[index]?.resolve();
+        await stopped[index]?.promise;
+      },
+    };
+  };
+}
+
 async function fixture(context: TestContext, launcher = launchWorker) {
   const { createRuntime } = await import("waffle");
   const { createPythonPackage } = await import("../src/index.ts");
@@ -226,18 +251,7 @@ for (const kind of ["collection", "installer"] as const) {
       const stopped = [deferred(), deferred()];
       const terminating = [deferred(), deferred()];
       const guests: RuntimeProcessContext[] = [];
-      const state = await fixture(context, (guest) => {
-        const index = guests.length;
-        guests.push(guest);
-        guest.started();
-        started[index]?.resolve();
-        return {
-          terminate: async () => {
-            terminating[index]?.resolve();
-            await stopped[index]?.promise;
-          },
-        };
-      });
+      const state = await fixture(context, heldLauncher({ guests, started, stopped, terminating }));
       for (const gate of stopped) state.hold(gate);
       const dispose = await state.install(kind);
       state.release();
