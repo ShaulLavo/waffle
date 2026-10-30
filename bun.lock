@@ -92,6 +92,18 @@
         "waffle": "*",
       },
     },
+    "packages/diffutils": {
+      "name": "waffle-diffutils",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
     "packages/jq": {
       "name": "waffle-jq",
       "version": "0.0.0",
@@ -721,6 +733,7 @@
 
     "waffle-grep": ["waffle-grep@workspace:packages/grep"],
 
+    "waffle-diffutils": ["waffle-diffutils@workspace:packages/diffutils"],
     "waffle-jq": ["waffle-jq@workspace:packages/jq"],
 
     "waffle-process-consumer": ["waffle-process-consumer@workspace:packages/process-consumer"],
