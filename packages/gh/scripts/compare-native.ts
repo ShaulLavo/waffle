@@ -1,3 +1,4 @@
+import { comparisonEnvironment } from "./oracle-environment.ts";
 import { createScratch } from "../tests/scratch.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -66,16 +67,7 @@ function compare(fixture: CompareCase): void {
 }
 
 function execute(command: string, argv: string[], id: string) {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    GH_CONFIG_DIR: root,
-    HOME: root,
-    NO_COLOR: "1",
-    GH_NO_UPDATE_NOTIFIER: "1",
-  };
-  for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_REPO", "GH_HOST", "GITHUB_ACTIONS"])
-    delete env[name];
-  if (id !== "missing-auth") env.GH_TOKEN = "GH_CONTRACT_FAKE_TOKEN_NEVER_VALID";
+  const env = comparisonEnvironment({ root, authenticated: id !== "missing-auth" });
   const result = spawnSync(command, argv, { env, encoding: "utf8", timeout: 10_000 });
   if (result.error) throw result.error;
   return result;
