@@ -6,6 +6,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyWasiGuest } from "../../../tools/program-build-tools.ts";
 import { releaseDirectory, workspaceRoot } from "./build-config.ts";
+import { readProgramLocaleProof } from "../../../tools/program-locales/prepare.ts";
+import { usesProgramCatalogs } from "../../../tools/program-locales/selection.ts";
 import { coreutilsNames, verificationOptions } from "./programs.ts";
 
 const receiptName = "source-sha256.txt";
@@ -17,6 +19,7 @@ function receipt(root: string, directory: string, verifier: Verify): string {
   const hashes = coreutilsNames.map((name) => {
     const path = resolve(directory, `${name}.wasm`);
     verifier(path, verificationOptions(name));
+    if (usesProgramCatalogs(name)) readProgramLocaleProof(path, name);
     return `${createHash("sha256").update(readFileSync(path)).digest("hex")}  ${name}.wasm`;
   });
   return [`source ${source}`].concat(hashes).join("\n") + "\n";
@@ -26,6 +29,11 @@ function copyCoreutils(source: string, destination: string) {
   mkdirSync(destination, { recursive: true });
   for (const name of coreutilsNames) {
     copyFileSync(resolve(source, `${name}.wasm`), resolve(destination, `${name}.wasm`));
+    if (usesProgramCatalogs(name))
+      copyFileSync(
+        resolve(source, `${name}.wasm.locales.json`),
+        resolve(destination, `${name}.wasm.locales.json`),
+      );
   }
 }
 

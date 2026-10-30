@@ -8,7 +8,8 @@ import {
   verifyXargsArtifact,
   workspaceRoot,
 } from "../../findutils/scripts/xargs-artifact.ts";
-import { verifyWasiGuest } from "../../../tools/program-build-tools.ts";
+import { readProgramLocaleProof } from "../../../tools/program-locales/prepare.ts";
+import { stripWasmNames, verifyWasiGuest } from "../../../tools/program-build-tools.ts";
 
 const input = process.env.ECHO_XARGS_ARTIFACT;
 assert.ok(input, "same-run qualified xargs artifact required");
@@ -16,7 +17,10 @@ const xargs = verifyXargsArtifact(input);
 const guest = resolve(workspaceRoot, ".build/coreutils/wasm32-wasip1/release/echo.wasm");
 verifyWasiGuest(guest);
 const bytes = readFileSync(guest);
-assert.deepEqual(readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo.wasm")), bytes);
+assert.deepEqual(
+  readFileSync(resolve(workspaceRoot, "packages/coreutils/dist/echo.wasm")),
+  stripWasmNames(bytes),
+);
 const proof = {
   schema: "waffle-echo-xargs-qualified-pair/v1",
   identity: githubIdentity(),
@@ -32,9 +36,11 @@ const proof = {
     "packages/coreutils/scripts/echo-artifact.ts",
     "packages/coreutils/provenance/echo.source.json",
     "tools/program-build-tools.ts",
+    "tools/program-locales",
     "packages/waffle/scripts/build-wasi-libc.sh",
     "packages/waffle/patches/wasi-libc/preopen-scan.patch",
   ]),
+  locales: readProgramLocaleProof(guest, "echo"),
   echoGuest: { bytes: bytes.length, sha256: sha256(bytes) },
   xargs: xargs.receipt,
   acceptance:
@@ -43,5 +49,6 @@ const proof = {
 const output = resolve(workspaceRoot, ".build/echo-artifact");
 mkdirSync(output, { recursive: true });
 copyFileSync(guest, resolve(output, "echo.wasm"));
+copyFileSync(`${guest}.locales.json`, resolve(output, "echo.wasm.locales.json"));
 writeFileSync(resolve(output, "receipt.json"), JSON.stringify(proof, null, 2) + "\n");
 console.log(JSON.stringify(proof));

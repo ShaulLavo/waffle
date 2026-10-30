@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildEnvironment,
   wasiTarget,
@@ -15,6 +16,10 @@ import {
   targetDirectory,
   workspaceRoot,
 } from "./build-config.ts";
+import {
+  prepareProgramLocales,
+  programLocaleCargoCommand,
+} from "../../../tools/program-locales/prepare.ts";
 import { verifySedSource } from "./sed-source.ts";
 
 export type Execute = (
@@ -28,6 +33,7 @@ export interface SedBuildOptions {
   readonly execute?: Execute;
   readonly environment?: BuildEnvironment;
   readonly verifier?: typeof verifyWasiGuest;
+  readonly locales?: typeof prepareProgramLocales;
 }
 
 export function buildSed(options: SedBuildOptions = {}) {
@@ -35,28 +41,33 @@ export function buildSed(options: SedBuildOptions = {}) {
   const execute = options.execute ?? execFileSync;
   const environment = options.environment ?? wasiBuildEnvironment;
   const verifier = options.verifier ?? verifyWasiGuest;
-  execute(
-    "cargo",
-    [
-      "build",
-      "--locked",
-      "--release",
-      "--target",
-      wasiTarget,
-      "--manifest-path",
-      resolve(packageRoot, "Cargo.toml"),
-      "-j2",
-      "-p",
-      "shell-sed",
-      "--bin",
-      "sed",
-    ],
-    {
-      cwd: workspaceRoot,
-      env: environment(familyRecipe, targetDirectory),
-      stdio: "inherit",
-    },
+  const env = (options.locales ?? prepareProgramLocales)({
+    root: workspaceRoot,
+    program: "sed",
+    manifest: resolve(packageRoot, "Cargo.toml"),
+    env: environment(familyRecipe, targetDirectory),
+  });
+  const buildArgs = [
+    "build",
+    "--locked",
+    "--release",
+    "--target",
+    wasiTarget,
+    "--manifest-path",
+    resolve(packageRoot, "Cargo.toml"),
+    "-j2",
+    "-p",
+    "shell-sed",
+    "--bin",
+    "sed",
+  ];
+  const [command, args] = programLocaleCargoCommand(
+    env,
+    resolve(workspaceRoot, targetDirectory),
+    "sed",
+    buildArgs,
   );
+  execute(command, args, { cwd: workspaceRoot, env, stdio: "inherit" });
   verifier(resolve(releaseDirectory, "sed.wasm"));
 }
 
@@ -64,7 +75,7 @@ export function stageSed() {
   const guest = resolve(releaseDirectory, "sed.wasm");
   for (const directory of ["dist", "public/programs"]) {
     mkdirSync(resolve(packageRoot, directory), { recursive: true });
-    copyFileSync(guest, resolve(packageRoot, directory, "sed.wasm"));
+    stageProgram(guest, resolve(packageRoot, directory, "sed.wasm"));
   }
 }
 

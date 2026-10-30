@@ -1,13 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildEnvironment,
   wasiTarget,
   type WasiBuildRecipe,
 } from "../../../tools/program-build-tools.ts";
+import {
+  prepareProgramLocales,
+  programLocaleCargoCommand,
+} from "../../../tools/program-locales/prepare.ts";
 import { verifyXargsSource } from "./xargs-source.ts";
 
 export const packageRoot = resolve(import.meta.dirname, "..");
@@ -32,6 +37,7 @@ export interface FindutilsBuildOptions {
   readonly execute?: Execute;
   readonly environment?: BuildEnvironment;
   readonly verifier?: typeof verifyWasiGuest;
+  readonly locales?: typeof prepareProgramLocales;
 }
 
 export function buildFindutils(options: FindutilsBuildOptions = {}) {
@@ -40,9 +46,13 @@ export function buildFindutils(options: FindutilsBuildOptions = {}) {
   const execute = options.execute ?? execFileSync;
   const environment = options.environment ?? wasiBuildEnvironment;
   const verifier = options.verifier ?? verifyWasiGuest;
-  execute(
-    "cargo",
-    [
+  for (const name of programs) {
+    const env = (options.locales ?? prepareProgramLocales)({
+      root: workspaceRoot,
+      program: name,
+      env: environment(familyRecipe, targetDirectory),
+    });
+    const buildArgs = [
       "build",
       "--locked",
       "--release",
@@ -53,13 +63,17 @@ export function buildFindutils(options: FindutilsBuildOptions = {}) {
       "-j2",
       "-p",
       "waffle-findutils-source",
-    ].concat(programs.flatMap((name) => ["--bin", name])),
-    {
-      cwd: workspaceRoot,
-      env: environment(familyRecipe, targetDirectory),
-      stdio: "inherit",
-    },
-  );
+      "--bin",
+      name,
+    ];
+    const [command, args] = programLocaleCargoCommand(
+      env,
+      resolve(workspaceRoot, targetDirectory),
+      name,
+      buildArgs,
+    );
+    execute(command, args, { cwd: workspaceRoot, env, stdio: "inherit" });
+  }
   for (const name of programs) verifier(resolve(releaseDirectory, `${name}.wasm`));
 }
 
@@ -67,7 +81,7 @@ export function stageFindutils() {
   for (const name of programNames) {
     for (const directory of ["dist", "public/programs"]) {
       mkdirSync(resolve(packageRoot, directory), { recursive: true });
-      copyFileSync(
+      stageProgram(
         resolve(releaseDirectory, `${name}.wasm`),
         resolve(packageRoot, directory, `${name}.wasm`),
       );

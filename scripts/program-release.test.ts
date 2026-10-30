@@ -78,7 +78,11 @@ function writeArtifacts(packageRoot: string) {
   for (const file of recipe.files as string[]) {
     const path = resolve(packageRoot, file);
     mkdirSync(dirname(path), { recursive: true });
-    const wasm = Buffer.concat([Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]), Buffer.from(file)]);
+    const label = Buffer.from(file);
+    const wasm = Buffer.concat([
+      Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 0, label.length + 1, 0]),
+      label,
+    ]);
     writeFileSync(path, file.endsWith(".wasm") ? wasm : `stand-in notice for ${file}\n`);
   }
 }
