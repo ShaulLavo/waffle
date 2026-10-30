@@ -4,6 +4,7 @@ import { MemFS } from "../fs/memory.js";
 import { instantiateLinkPlan, prepareLinkPlan } from "../link/index.js";
 
 import { source, coreSource, sideSource } from "./fixtures/link-initialization.js";
+import { withMemberWorkers } from "./fixtures/link-member-workers.js";
 
 function host(trace: number[], memory: WebAssembly.Memory, table: WebAssembly.Table) {
   const wasi = new Wasi({
@@ -281,46 +282,55 @@ function memberReply(worker: Worker): Promise<MemberObservation> {
 test("two real members initialize their own core and side TLS and retain carved stacks", async () => {
   const { MemoryGroups } = await import("../group/state.js");
   const groups = new MemoryGroups({ stackBytes: 65536, maximumPages: 32, budgetBytes: 32 * 65536 });
-  const first = groups.admit(101, "ordered-memory-stages", "new");
-  const second = groups.admit(102, "ordered-memory-stages", first.group);
-  const entries = [first, second].map((lease) => ({
-    lease,
-    worker: new Worker(new URL("./fixtures/link-initialization-worker.ts", import.meta.url).href),
-  }));
-  try {
-    const observed: MemberObservation[] = [];
-    for (const [index, entry] of entries.entries()) {
-      const response = memberReply(entry.worker);
-      const launch = entry.lease.launch();
-      entry.worker.postMessage(
-        { kind: "launch", request: launch.request, mark: 111 + index * 111 },
-        launch.transfer,
-      );
-      observed.push(await response);
-    }
-    for (const value of observed) {
-      expect(value.coreTls).toBe(value.coreBase);
-      expect(value.sideTls).toBe(value.sideBase);
-      expect(value.memoryCoreMark).toBe(42);
-      expect(value.memorySideMark).toBe(22);
-      expect(value.sameStack).toBe(true);
-      expect(value.high - value.low).toBe(65536);
-      expect(value.pointer).toBe(value.high);
-    }
-    expect(observed[0]!.coreTls).not.toBe(observed[1]!.coreTls);
-    expect(observed[0]!.sideTls).not.toBe(observed[1]!.sideTls);
-    const response = memberReply(entries[0]!.worker);
-    entries[0]!.worker.postMessage({ kind: "read" });
-    expect(await response).toEqual(observed[0]!);
-    expect(observed.map((value) => value.coreMark)).toEqual([111, 222]);
-    expect(observed.map((value) => value.sideMark)).toEqual([112, 223]);
-  } finally {
-    for (const entry of entries) entry.worker.postMessage({ kind: "close" });
-    for (const entry of entries) {
-      await entry.worker.terminate();
-      entry.lease.stopped();
-    }
-    expect(groups.snapshot()).toEqual([]);
-    expect(groups.budget.committed).toBe(0);
-  }
+  await withMemberWorkers(
+    async (start) => {
+      const first = start({
+        groups,
+        pid: 101,
+        program: "ordered-memory-stages",
+        join: "new",
+        workerURL: new URL("./fixtures/link-initialization-worker.ts", import.meta.url),
+      });
+      const second = start({
+        groups,
+        pid: 102,
+        program: "ordered-memory-stages",
+        join: first.lease.group,
+        workerURL: new URL("./fixtures/link-initialization-worker.ts", import.meta.url),
+      });
+      const entries = [first, second];
+      const observed: MemberObservation[] = [];
+      for (const [index, entry] of entries.entries()) {
+        const response = memberReply(entry.worker);
+        const launch = entry.lease.launch();
+        entry.worker.postMessage(
+          { kind: "launch", request: launch.request, mark: 111 + index * 111 },
+          launch.transfer,
+        );
+        observed.push(await response);
+      }
+      for (const value of observed) {
+        expect(value.coreTls).toBe(value.coreBase);
+        expect(value.sideTls).toBe(value.sideBase);
+        expect(value.memoryCoreMark).toBe(42);
+        expect(value.memorySideMark).toBe(22);
+        expect(value.sameStack).toBe(true);
+        expect(value.high - value.low).toBe(65536);
+        expect(value.pointer).toBe(value.high);
+      }
+      expect(observed[0]!.coreTls).not.toBe(observed[1]!.coreTls);
+      expect(observed[0]!.sideTls).not.toBe(observed[1]!.sideTls);
+      const response = memberReply(entries[0]!.worker);
+      entries[0]!.worker.postMessage({ kind: "read" });
+      expect(await response).toEqual(observed[0]!);
+      expect(observed.map((value) => value.coreMark)).toEqual([111, 222]);
+      expect(observed.map((value) => value.sideMark)).toEqual([112, 223]);
+    },
+    {
+      afterClosed() {
+        expect(groups.snapshot()).toEqual([]);
+        expect(groups.budget.committed).toBe(0);
+      },
+    },
+  );
 });
