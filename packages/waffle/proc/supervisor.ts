@@ -10,7 +10,7 @@ import {
   typedArrayBuffer,
   typedArrayLength,
 } from "./intrinsics.ts";
-import { spawnError, startFailure } from "./start-failure.js";
+import { ExecutableFormatError, spawnError, startFailure } from "./start-failure.js";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
 import {
@@ -25,7 +25,7 @@ import {
   OpenDescription,
   type Descriptor,
 } from "../core/descriptors.js";
-import { ExecutableRegistry } from "./registry.js";
+import { ExecutableRegistry, type ResolvedExecutable } from "./registry.js";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
 import {
   OutcomeCell,
@@ -44,6 +44,8 @@ import {
   checkedProcessCwd,
   type ChildExitEvent,
   type ProcessContext,
+  type ProcessLifecycle,
+  type CommandProcessContext,
   type ProcessExit,
   type ProcessHandle,
   type SpawnRequest,
@@ -81,6 +83,7 @@ interface ProcessAccesses {
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  launchCommand?(context: CommandProcessContext): ProcessHandle | Promise<ProcessHandle>;
   /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
    * Disposal cancels this ownership even if a custom sink never settles its promise. */
   startFailed?(pid: number, error: unknown, active: () => boolean): void | Promise<void>;
@@ -685,7 +688,7 @@ export class ProcessSupervisor {
         this.finish(record.pid, settled);
         return;
       }
-      const context: ProcessContext = {
+      const context: ProcessLifecycle = {
         pid: record.pid,
         parentPid: record.parentPid,
         job: record.job,
@@ -693,9 +696,6 @@ export class ProcessSupervisor {
           executable.argv === undefined
             ? record.request!
             : { ...record.request!, argv: executable.argv.slice() },
-        module: executable.module,
-        adapter: executable.adapter,
-        interruptible: executable.interruptible,
         descriptors: record.descriptors,
         interrupt: record.interrupt,
         requestedSignal: record.requestedSignal,
@@ -713,7 +713,7 @@ export class ProcessSupervisor {
         acquired = resolve;
       });
       try {
-        record.handle = await this.options.launch(context);
+        record.handle = await this.launchExecutable(context, executable);
       } finally {
         record.acquiring = undefined;
         acquired();
@@ -723,6 +723,22 @@ export class ProcessSupervisor {
     } catch (error) {
       this.failStart(record.pid, error);
     }
+  }
+  private launchExecutable(
+    context: ProcessLifecycle,
+    executable: ResolvedExecutable,
+  ): ProcessHandle | Promise<ProcessHandle> {
+    if (executable.kind === "command") {
+      if (!this.options.launchCommand)
+        throw new ExecutableFormatError("Host commands are unavailable in this supervisor");
+      return this.options.launchCommand({ ...context, command: executable });
+    }
+    return this.options.launch({
+      ...context,
+      module: executable.module,
+      adapter: executable.adapter,
+      interruptible: executable.interruptible,
+    });
   }
   /** Launch handles do not prove entry; the executing host calls this at its entry boundary. */
   started(pid: number): boolean {

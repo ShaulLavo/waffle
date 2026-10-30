@@ -1,6 +1,9 @@
 import type { CompiledMember, LinkHost, PlanData } from "./plan.js";
 import { invalid } from "./metadata.js";
 
+const RELOCATION = "__wasm_apply_data_relocs";
+const claimedMembers = new WeakSet<WebAssembly.Global>();
+
 export interface LinkedLibrary {
   readonly id: string;
   readonly instance: WebAssembly.Instance;
@@ -13,6 +16,7 @@ export interface LinkedGroup {
   readonly entry: WebAssembly.Instance;
   readonly memory: WebAssembly.Memory;
   readonly table: WebAssembly.Table;
+  /** Empty until initialize() publishes all linked libraries. */
   readonly libraries: readonly LinkedLibrary[];
   initialize(): void;
   dispose(): void;
@@ -208,14 +212,24 @@ function sideImports(
   return host.wasi.imports(member.module, { env, "GOT.mem": got, "GOT.func": func });
 }
 
-function initializeMember(
+function memoryStages(member: CompiledMember): readonly string[] {
+  return member.automaticRelocation
+    ? [RELOCATION].concat(member.initializeMemory)
+    : member.initializeMemory;
+}
+
+function runStages(
   member: CompiledMember,
   instance: WebAssembly.Instance,
+  names: readonly string[],
   host: LinkHost,
+  live: () => void,
 ): void {
-  for (const name of member.initialize) {
+  for (const name of names) {
     host.checkActive();
+    live();
     exportedFunction(instance, member.id, name, 0)();
+    live();
   }
 }
 
@@ -223,6 +237,14 @@ function clearTable(table: WebAssembly.Table, ranges: readonly Range[]): void {
   for (const range of ranges) {
     for (let index = 0; index < range.size; index++) table.set(range.base + index, null);
   }
+}
+
+function claimMember(member: CompiledMember, imports: WebAssembly.Imports): void {
+  const base = imports.env?.__memory_base;
+  if (!(base instanceof WebAssembly.Global))
+    invalid(member.id, "PIE core requires a carved __memory_base");
+  if (claimedMembers.has(base)) invalid(member.id, "member bindings were already instantiated");
+  claimedMembers.add(base);
 }
 
 function linkLibrary(
@@ -237,10 +259,14 @@ function linkLibrary(
   got: WebAssembly.ModuleImports,
   coreBase: number,
   coreEnv: WebAssembly.ModuleImports | undefined,
+  live: () => void,
 ): void {
   host.checkActive();
+  live();
   const memoryBase = reserveMemory(core, member, plan.reserve, memory, libraries);
+  live();
   host.checkActive();
+  live();
   const layout = member.profile.memory!;
   const tableBase = reserveTable(table, member.id, layout.tableSize, layout.tableAlignment, ranges);
   if (
@@ -266,7 +292,9 @@ function linkLibrary(
     coreEnv,
   );
   host.checkActive();
+  live();
   const instance = instantiate(member, imports);
+  live();
   bindSelf(member, instance, table, slots);
   libraries.push({
     id: member.id,
@@ -276,19 +304,11 @@ function linkLibrary(
     memorySize: layout.memorySize,
     tableSize: layout.tableSize,
   });
-  if (instance.exports.__wasm_apply_data_relocs === undefined) return;
-  host.checkActive();
-  exportedFunction(instance, member.id, "__wasm_apply_data_relocs", 0)();
+  runStages(member, instance, memoryStages(member), host, live);
+  runStages(member, instance, member.initialize, host, live);
 }
 
-function initializeLibraries(
-  plan: PlanData,
-  libraries: readonly LinkedLibrary[],
-  host: LinkHost,
-): void {
-  for (let index = 0; index < libraries.length; index++)
-    initializeMember(plan.libraries[index]!, libraries[index]!.instance, host);
-}
+type LifecycleState = "linking" | "linked" | "initializing" | "ready" | "poisoned" | "disposed";
 
 export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   host.checkActive();
@@ -297,25 +317,24 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   if (pie && !host.coreImports?.env?.memory)
     invalid(plan.core.id, "PIE core requires a memory group");
   const coreImports = host.coreImports ?? host.wasi.imports(plan.core.module);
+  if (pie) claimMember(plan.core, coreImports);
   const core = instantiate(plan.core, coreImports);
-  const memory = pie ? coreImports.env!.memory : core.exports.memory,
-    table = pie
-      ? coreImports.env!.__indirect_function_table
-      : core.exports.__indirect_function_table;
+  const coreEnv = pie ? coreImports.env : undefined;
+  const memory = pie ? coreEnv!.memory : core.exports.memory,
+    table = pie ? coreEnv!.__indirect_function_table : core.exports.__indirect_function_table;
   if (!(memory instanceof WebAssembly.Memory)) invalid(plan.core.id, "core must export memory");
   if (!(table instanceof WebAssembly.Table))
     invalid(plan.core.id, "core must export __indirect_function_table");
   exportedFunction(core, plan.core.id, "_start", 0);
   exportedFunction(core, plan.core.id, plan.reserve, 2);
-  host.checkActive();
-  host.bindMemory?.(memory);
-  host.wasi.bindMemory(memory);
   const libraries: LinkedLibrary[] = [];
   const ranges: Range[] = [];
   const got: WebAssembly.ModuleImports = Object.create(null);
-  const coreBase = pie ? (coreImports.env!.__memory_base as WebAssembly.Global).value : 0;
-  const lifecycle: { state: "linked" | "initializing" | "ready" | "poisoned" | "disposed" } = {
-    state: "linked",
+  const coreBase = pie ? (coreEnv!.__memory_base as WebAssembly.Global).value : 0;
+  const lifecycle: { state: LifecycleState } = { state: "linking" };
+  const live = () => {
+    if (lifecycle.state !== "linking" && lifecycle.state !== "initializing")
+      throw new Error(`link group is ${lifecycle.state}`);
   };
   const dispose = () => {
     if (lifecycle.state === "disposed") return;
@@ -326,39 +345,48 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
     if (lifecycle.state !== "disposed") lifecycle.state = "poisoned";
   };
   try {
-    for (const member of plan.libraries)
-      linkLibrary(
-        member,
-        plan,
-        core,
-        host,
-        memory,
-        table,
-        libraries,
-        ranges,
-        got,
-        coreBase,
-        pie ? coreImports.env : undefined,
-      );
     host.checkActive();
+    host.bindMemory?.(memory);
+    host.wasi.bindMemory(memory);
+    runStages(plan.core, core, memoryStages(plan.core), host, live);
+    host.checkActive();
+    lifecycle.state = "linked";
   } catch (error) {
     dispose();
     throw error;
   }
+  let publishedLibraries: readonly LinkedLibrary[] = Object.freeze([]);
   return {
     entry: core,
     memory,
     table,
-    libraries: Object.freeze(libraries),
+    get libraries() {
+      return publishedLibraries;
+    },
     initialize() {
       if (lifecycle.state === "ready") return;
       if (lifecycle.state !== "linked") throw new Error(`link group is ${lifecycle.state}`);
       lifecycle.state = "initializing";
       try {
-        initializeMember(plan.core, core, host);
-        initializeLibraries(plan, libraries, host);
+        runStages(plan.core, core, plan.core.initialize, host, live);
+        for (const member of plan.libraries)
+          linkLibrary(
+            member,
+            plan,
+            core,
+            host,
+            memory,
+            table,
+            libraries,
+            ranges,
+            got,
+            coreBase,
+            coreEnv,
+            live,
+          );
         host.checkActive();
-        if (lifecycle.state !== "initializing") throw new Error(`link group is ${lifecycle.state}`);
+        live();
+        publishedLibraries = Object.freeze(libraries);
         lifecycle.state = "ready";
       } catch (error) {
         poison();
