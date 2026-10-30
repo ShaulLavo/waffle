@@ -473,14 +473,7 @@ test("full-pipe writes remain pending and removal waits for unawaited runtime I/
       return 0;
     }),
   );
-  const shell = await commandShell(owner, cleanups);
-  const output = new PipeController({ capacity: 4096, relay: "manual" });
-  cleanups.push(() => output.dispose());
-  const reader = output.retain(shell.root, "read");
-  cleanups.push(() => reader.close());
-  shell.descriptors.openAt(1, output.retain(shell.root, "write"), 64n, 0n);
-  const process = await shell.spawn("/bin/fixture", ["fixture"], [{ parent: 1, child: 1 }]);
-  shell.descriptors.close(1);
+  const { reader, child: process } = await stdoutCommand(owner);
   await entered.promise;
   let written = false;
   void write!.then(() => {
@@ -623,14 +616,7 @@ test("cancellation fences a pending unawaited pipe write without releasing the c
       return 0;
     }),
   );
-  const shell = await commandShell(owner, cleanups);
-  const output = new PipeController({ capacity: 4096, relay: "manual" });
-  cleanups.push(() => output.dispose());
-  const reader = output.retain(shell.root, "read");
-  cleanups.push(() => reader.close());
-  shell.descriptors.openAt(1, output.retain(shell.root, "write"), 64n, 0n);
-  const child = await shell.spawn("/bin/fixture", ["fixture"], [{ parent: 1, child: 1 }]);
-  shell.descriptors.close(1);
+  const { shell, child } = await stdoutCommand(owner);
   await entered.promise;
   await shell.service.kill(child.pid, 15);
   expect(await child.exit).toMatchObject({ kind: "signaled", code: 15 });
@@ -645,3 +631,15 @@ test("cancellation fences a pending unawaited pipe write without releasing the c
   physical.resolve();
   await removal;
 });
+
+async function stdoutCommand(owner: Runtime) {
+  const shell = await commandShell(owner, cleanups);
+  const output = new PipeController({ capacity: 4096, relay: "manual" });
+  cleanups.push(() => output.dispose());
+  const reader = output.retain(shell.root, "read");
+  cleanups.push(() => reader.close());
+  shell.descriptors.openAt(1, output.retain(shell.root, "write"), 64n, 0n);
+  const child = await shell.spawn("/bin/fixture", ["fixture"], [{ parent: 1, child: 1 }]);
+  shell.descriptors.close(1);
+  return { shell, reader, child };
+}

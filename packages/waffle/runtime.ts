@@ -42,7 +42,6 @@ import {
 export type { RuntimeHostIdentity, RuntimeProcessIdentity } from "./browser/process-context.js";
 import { ProcessIdentityAllocator } from "./proc/identity.js";
 import type { HostCommand } from "./proc/command.js";
-import { ExecutableFormatError } from "./proc/start-failure.js";
 import type {
   CommandExecutable,
   RegisteredCommand,
@@ -865,8 +864,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       },
       launchInterpreter: async (interpreter, context, service) => {
         const executable = await (await getRegistry()).check(interpreter);
-        if ("command" in executable)
+        if ("command" in executable) {
+          const { ExecutableFormatError } = await import("./proc/start-failure.js");
           throw new ExecutableFormatError("Registered script interpreters require a Wasm module");
+        }
         const launch = adapters.get(executable.adapter);
         if (!launch) throw new Error(`Unknown interpreter adapter: ${executable.adapter}`);
         return launch({ ...context, adapter: executable.adapter }, service);
