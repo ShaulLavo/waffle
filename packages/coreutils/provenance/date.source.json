@@ -1,0 +1,48 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "packages": {
+    "uu_date": {
+      "version": "0.13.0",
+      "path": "src/uu/date"
+    },
+    "uucore": {
+      "version": "0.13.0",
+      "path": "src/uucore"
+    }
+  },
+  "classification": "Unmodified pinned upstream date with original cwd and clock-setting rejection adapter",
+  "upstreamFiles": {
+    "src/uu/date/Cargo.toml": "3706627a2489336e9d2eb01f4a09a792630b1af467dc326a7d0f04b609338c8b",
+    "src/uu/date/src/date.rs": "bf6f68333cba619ea3490ff23238e82175ec92c3b902e35f282f7239228966a8",
+    "src/uu/date/src/format_modifiers.rs": "d7c5e39a3274a08d477b799dd088421d49a40e765086d014f73eabf82899128d",
+    "src/uu/date/src/locale.rs": "3b324bd31721cc61f64cdbd5846943ce7289bce2d3bb85fb51fc59116b708652",
+    "src/uu/date/locales/en-US.ftl": "344ba912c04381beb335b49750d9185761cb0fc3dfc145f9b23749af7af42657",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "license": {
+    "spdx": "MIT",
+    "upstreamPath": "LICENSE",
+    "localPath": "provenance/LICENSE.uutils",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "changes": [
+    "No edits to upstream parsing, formatting, timezone resolution, file timestamps or clock reads.",
+    "The date crate disables optional non-English date localization, consistent with the family English-only catalog policy.",
+    "Original entry initializes WASI cwd from PWD using the existing family helper.",
+    "Original entry rejects the parsed upstream set option before execution on every target, including native test builds. No host clock is changed.",
+    "GNU date is a test oracle only, never a runtime fallback. Diagnostics, help and version remain uutils."
+  ],
+  "oracle": {
+    "version": "date (GNU coreutils) 9.12",
+    "sha256": "7531de6570c4d067b6c73472407c89bc3e4e96c37bae20f55feab13d99d6771e",
+    "platform": "Linux x86_64",
+    "path": "/usr/bin/date",
+    "environment": {
+      "LC_ALL": "C",
+      "LANG": "C",
+      "LANGUAGE": "en_US",
+      "TZ": "UTC0"
+    }
+  }
+}

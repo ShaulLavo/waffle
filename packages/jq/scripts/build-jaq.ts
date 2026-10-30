@@ -9,9 +9,9 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -148,22 +148,16 @@ export async function buildJq(options: JqBuildOptions = {}) {
 }
 
 export function stageJq() {
-  const raw = readFileSync(guest);
   mkdirSync(resolve(packageRoot, "dist"), { recursive: true });
   const destination = resolve(packageRoot, "dist/jq.wasm");
-  stageProgram(guest, destination);
-  const stripped = readFileSync(destination);
-  const compressed = brotliCompressSync(stripped, {
-    params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
-  });
-  writeFileSync(`${destination}.br`, compressed);
+  const derivation = stageProgram(guest, destination);
   const sizes = {
     schemaVersion: 1,
     upstreamRevision: sourceLock.upstream.revision,
-    rawBytes: raw.length,
-    strippedBytes: stripped.length,
-    brotliBytes: compressed.length,
-    strippedSha256: createHash("sha256").update(stripped).digest("hex"),
+    rawBytes: derivation.input.bytes,
+    strippedBytes: derivation.output.bytes,
+    brotliBytes: statSync(`${destination}.br`).size,
+    strippedSha256: derivation.output.sha256,
   };
   writeFileSync(resolve(packageRoot, "dist/jq.sizes.json"), `${JSON.stringify(sizes, null, 2)}\n`);
   generateJqNotices();

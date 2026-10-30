@@ -36,7 +36,12 @@
     "test:nl:wasi": "bun test tests/nl-wasi.test.ts",
     "build:echo": "node scripts/build-echo.ts",
     "test:echo:wasi": "bun test tests/echo-wasi.test.ts",
-    "test:echo:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.echo.json"
+    "test:echo:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.echo.json",
+    "build:date": "node scripts/build-date.ts",
+    "test:date:wasi": "bun test tests/date-wasi.test.ts",
+    "test:date:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.date.json",
+    "test:date:source": "node --disable-warning=ExperimentalWarning --test scripts/date-source.test.ts",
+    "test:date:oracle": "node --disable-warning=ExperimentalWarning scripts/date-oracle.ts --compare dist/date.wasm"
   },
   "devDependencies": {
     "waffle": "workspace:*"

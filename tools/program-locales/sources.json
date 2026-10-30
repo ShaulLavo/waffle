@@ -100,6 +100,11 @@
         "package": "uu_mv",
         "path": "locales/en-US.ftl",
         "sha256": "e79223f866ced02515dc470a42b22a62048d401c5aa0f1517024e7c9a63cd51f"
+      },
+      "date/en-US.ftl": {
+        "package": "uu_date",
+        "path": "locales/en-US.ftl",
+        "sha256": "344ba912c04381beb335b49750d9185761cb0fc3dfc145f9b23749af7af42657"
       }
     }
   }
