@@ -77,7 +77,7 @@ import {
 
   var PITCH = 2.5, RIDGE_H = 0.72, SLAB = 0.5, LINE = 5.0, EDGE = 5.4, CORNER = 1.0;
   // cartoon waffle: chunky crowned ridges and square pockets with rounded corners
-  var TW = 0.33, WD = 0.24, RC = 0.36, INK_LIP = 0.038;
+  var TW = 0.33, WD = 0.24, RC = 0.36, INK_LIP = 0.013;
   var DOM = 5.625, SEG = 180;
   var AZ_FINAL = -34 * DEG, EL_FINAL = 37 * DEG, EL_START = 88.5 * DEG;
   function cellX(c) { return -3.75 + c * PITCH; }
@@ -127,9 +127,7 @@ import {
     disposables.push(gradMap);
 
     // The waffle's ink is drawn in its own shader from the same pocket outline the geometry uses,
-    // so it stays crisp at any zoom. Like a hand-inked cartoon, each pocket gets one stroke along
-    // the rim nearest the camera, where the ridge top overlaps the pocket behind it. The stroke
-    // tapers to nothing as the rim turns away, and the far rims stay clean.
+    // so it stays crisp at any zoom: one thin stroke all the way round each pocket's rim.
     function f(v) { return v.toFixed(4); }
     var WAFFLE_GLSL = [
       'uniform float uInk; uniform vec3 uInkCol; varying vec2 vP;',
@@ -140,18 +138,11 @@ import {
       'float waffleS(vec2 p) {',
       '  vec2 q = abs(pocketOffset(p)) - ' + f(PITCH / 2 - TW - RC) + ';',
       '  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - ' + f(RC) + ';',
-      '}',
-      'vec2 rimOutward(vec2 p) {',
-      '  vec2 d = pocketOffset(p), q = abs(d) - ' + f(PITCH / 2 - TW - RC) + ';',
-      '  vec2 o = (q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));',
-      '  return o * sign(d);',
       '}'
     ].join('\n');
     var WAFFLE_INK = [
       'float ws = waffleS(vP), aw = max(fwidth(ws), 1e-4);',
-      'float facing = dot(rimOutward(vP), normalize(cameraPosition.xz - vP));',
-      'float stroke = ' + f(INK_LIP) + ' * smoothstep(0.05, 0.6, facing);',
-      'float lipInk = (1.0 - smoothstep(stroke - aw, stroke + aw, abs(ws))) * smoothstep(0.02, 0.2, facing);',
+      'float lipInk = 1.0 - smoothstep(' + f(INK_LIP) + ' - aw, ' + f(INK_LIP) + ' + aw, abs(ws));',
       'gl_FragColor.rgb = mix(gl_FragColor.rgb, uInkCol, lipInk * uInk);'
     ].join('\n');
     function patch(m, waffle, matte) {
