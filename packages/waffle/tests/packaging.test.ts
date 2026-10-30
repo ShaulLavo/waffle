@@ -24,11 +24,21 @@ test("Node emission rewrites import syntax, never matching strings, comments or 
 export { value as other } from "./nested/thing.with.dots.ts";
 const later = import('./directory');
 const ordinary = './nested/thing.with.dots';
+const worker = new URL('./nested/thing.with.dots.ts', import.meta.url);
+const spaced = new /* worker */ URL('./nested/thing.with.dots.ts', import /* module */ .meta.url,);
+const payload = new URL('./nested/thing.with.dots.ts', location.href);
+const quoted = "new URL('./keep.ts', import.meta.url)";
 // import('./nested/thing.with.dots')
 const pattern = /import('keep')/;`;
     const emitted = rewriteNodeImports(code, join(root, "index.ts"), root);
     expect(emitted).toContain('from "./nested/thing.with.dots.js"');
     expect(emitted).toContain('import("./directory/index.js")');
+    expect(emitted).toContain('new URL("./nested/thing.with.dots.js", import.meta.url)');
+    expect(emitted).toContain(
+      'new /* worker */ URL("./nested/thing.with.dots.js", import /* module */ .meta.url,)',
+    );
+    expect(emitted).toContain("new URL('./nested/thing.with.dots.ts', location.href)");
+    expect(emitted).toContain("new URL('./keep.ts', import.meta.url)");
     expect(emitted).toContain("const ordinary = './nested/thing.with.dots'");
     expect(emitted).toContain("// import('./nested/thing.with.dots')");
     expect(emitted).toContain("const pattern = /import('keep')/");
