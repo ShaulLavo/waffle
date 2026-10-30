@@ -39,7 +39,7 @@ function alias(fs: MemFS, path: string): void {
   expect(fs.link(from, to)).toBe(0);
 }
 
-test("4097 identities outside a small file watch cause repeated first-capture refusal", () => {
+test("4097 identities outside a small file watch no longer refuse repeated first capture", () => {
   const fs = new MemFS();
   fs.writeFile("/target", empty);
   fs.mkdirp("/unrelated");
@@ -54,7 +54,9 @@ test("4097 identities outside a small file watch cause repeated first-capture re
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = visits;
-      refusal(() => f.open("/target"), "watch node bound exceeded");
+      const id = f.open("/target");
+      expect(f.service.read(1, id)).toEqual({ kind: "events", events: [] });
+      f.service.close(1, id);
       expect(visits - before).toBeGreaterThanOrEqual(4096);
       expect(f.backend.shared.watch.active).toBe(false);
     }
@@ -68,13 +70,15 @@ test("4097 identities outside a small file watch cause repeated first-capture re
   }
 });
 
-test("16385 namespace edges refuse capture independently of the two-identity namespace", () => {
+test("16385 namespace edges with two identities admit a small file watch", () => {
   const fs = new MemFS();
   fs.writeFile("/target", empty);
   for (let index = 1; index < 16385; index++) alias(fs, `/alias${index}`);
   const f = fixture(fs);
   try {
-    refusal(() => f.open("/target"), "watch edge bound exceeded");
+    const first = f.open("/target");
+    expect(f.backend.shared.watch.active).toBe(true);
+    f.service.close(1, first);
     expect(f.backend.shared.watch.active).toBe(false);
     expect(fs.remove("/alias1")).toBe(true);
     const id = f.open("/target");
@@ -85,22 +89,23 @@ test("16385 namespace edges refuse capture independently of the two-identity nam
   }
 });
 
-test("a tiny namespace admits 128 subscriptions across owners, rejects 129, and returns credits", () => {
+test("a tiny namespace admits beyond 128 subscriptions across owners and returns credits", () => {
   const fs = new MemFS();
   fs.writeFile("/target", empty);
   const f = fixture(fs);
   try {
     const ids = Array.from({ length: 128 }, (_, index) => f.open("/target", index % 2 ? 2 : 1));
     expect(Atomics.load(f.backend.shared.watch.cells, 0)).toBe(128);
-    refusal(() => f.open("/target"), "watch capacity exhausted");
+    const over128 = f.open("/target", 2);
+    expect(over128).toBeGreaterThan(ids[127]!);
     expect(() => f.service.read(2, ids[0]!)).toThrow(expect.objectContaining({ errno: 8 }));
     f.service.close(1, ids[0]!);
     f.service.close(1, ids[0]!);
     const replacement = f.open("/target");
     expect(replacement).toBeGreaterThan(ids[127]!);
-    expect(Atomics.load(f.backend.shared.watch.cells, 0)).toBe(128);
+    expect(Atomics.load(f.backend.shared.watch.cells, 0)).toBe(129);
     f.service.closeOwner(1);
-    expect(Atomics.load(f.backend.shared.watch.cells, 0)).toBe(64);
+    expect(Atomics.load(f.backend.shared.watch.cells, 0)).toBe(65);
     f.service.closeOwner(2);
     expect(f.backend.shared.watch.active).toBe(false);
     f.open("/target");
@@ -147,10 +152,7 @@ test("129 unread ring records overflow every watch and last close permits a fres
     });
     expect(f.service.read(1, first)).toEqual({ kind: "overflow", events: [] });
     expect(f.service.read(2, second)).toEqual({ kind: "overflow", events: [] });
-    refusal(
-      () => f.open("/target"),
-      "watch graph overflow; close watches before registering again",
-    );
+    refusal(() => f.open("/target"), "watch metadata incomplete");
     f.service.closeOwner(1);
     f.service.closeOwner(2);
     const fresh = f.open("/target");

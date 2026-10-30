@@ -402,6 +402,19 @@ test("stop observer accepts a revoked late admission that aborts without storage
   assertFilesystemStopped(auditFilesystem(fixture.identity), "after abort");
 });
 
+test("stop observer accepts an abandoned section after reaping", () => {
+  const fixture = stopObserverFixture();
+  fixture.stop();
+  Atomics.add(new Int32Array(fixture.identity.sections), 0, 1);
+  expect(auditFilesystem(fixture.identity)).toEqual({
+    sections: 1,
+    revocation: 2,
+    fileLocks: 0,
+    globalLock: false,
+  });
+  assertFilesystemStopped(auditFilesystem(fixture.identity), "abandoned section");
+});
+
 test("stop observer rejects a pre-revocation section still open at stop", () => {
   const fixture = stopObserverFixture();
   Atomics.store(fixture.shared.slots, fixture.lockWord, fixture.identity.owner + 1);

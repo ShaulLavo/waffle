@@ -17,7 +17,7 @@ export type WatchRecord =
   | { kind: "inode"; file: bigint; mode: number; directory: boolean }
   | { kind: "entry"; parent: bigint; before: bigint; after: bigint; name: string };
 
-export function validWatchName(name: string): boolean {
+export function validWatchName(name: string, maximum = WATCH_NAME_BYTES): boolean {
   let bytes = 0;
   for (let index = 0; index < name.length; index++) {
     const code = name.charCodeAt(index);
@@ -32,7 +32,7 @@ export function validWatchName(name: string): boolean {
       bytes += 4;
       index++;
     } else return false;
-    if (bytes > WATCH_NAME_BYTES) return false;
+    if (bytes > maximum) return false;
   }
   return true;
 }

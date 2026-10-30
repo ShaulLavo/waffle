@@ -17,6 +17,7 @@ export type {
   RootPreparationCompletion,
   WorkerMemoryObservation,
   ProgramDefinition,
+  ProgramLoadState,
   GuestLauncher,
   RuntimeHostIdentity,
   RuntimeProcessIdentity,
@@ -73,3 +74,11 @@ export {
   type ExportRefusal,
 } from "./fs/workspace-export.js";
 export { WorkspaceArchiveError } from "./fs/workspace-archive.js";
+
+export type {
+  RuntimePrograms,
+  ProgramHandle,
+  ProgramState,
+  ProgramMode,
+  ProgramsOptions,
+} from "./programs/collection.js";
