@@ -23,6 +23,9 @@
     "../packages/grep/src/index.ts",
     "../packages/sed/src/index.ts",
     "../packages/ripgrep/src/index.ts",
-    "../packages/python/src"
+    "../packages/python/src",
+    "../packages/diffutils/src",
+    "../packages/diffutils/scripts",
+    "../packages/diffutils/tests"
   ]
 }

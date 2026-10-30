@@ -421,3 +421,93 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
     expect(result.exitCode).toBe(id ? 0 : 1);
   }
 });
+
+test("diffutils selects its exact integration inputs", () => {
+  const job = record(jobs.diffutils);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(record(changes.outputs).diffutils).toBe("${{ steps.paths.outputs.diffutils }}");
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}",
+  );
+  for (const path of [
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "tools/program-build-tools.ts",
+    "tools/program-package.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/waffle/core/wasi.ts",
+    "packages/base/src/index.ts",
+    "packages/diffutils/src/index.ts",
+  ])
+    expect(selected("diffutils", path), path).toBe(true);
+  for (const path of [
+    "docs/bun-patches.md",
+    "site/package.json",
+    "packages/grep/src/index.ts",
+    "tools/other.ts",
+  ])
+    expect(selected("diffutils", path), path).toBe(false);
+});
+
+test("diffutils consumes the single verified network artifact before installation", () => {
+  const producer = stepsFor("network-wasm");
+  const steps = stepsFor("diffutils");
+  const cache = producer.find((step) => step.id === "network-artifact");
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(install).toBeGreaterThan(verify);
+  expect(record(steps[restore]?.with).key).toBe(record(cache?.with).key);
+  expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(record(record(jobs.diffutils).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(
+    producer.filter((step) => step.run === "bun run --cwd packages/waffle build:network"),
+  ).toHaveLength(1);
+  expect(steps.some((step) => /build:network|cargo\s/.test(String(step.run)))).toBe(false);
+  expect(
+    Object.keys(jobs)
+      .filter((name) => Array.isArray(record(jobs[name]).steps))
+      .flatMap((name) =>
+        stepsFor(name).filter((step) =>
+          String(step.run).includes("bun run --cwd packages/waffle build:network"),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("diffutils SDK uses supported step context and runner scratch", () => {
+  const job = record(jobs.diffutils);
+  expect(JSON.stringify(job.env)).not.toContain("runner.temp");
+  const steps = stepsFor("diffutils");
+  const sdk = steps.find((step) => step.id === "sdk");
+  const libcSdk = stepsFor("libc").find((step) => step.id === "sdk");
+  expect(record(sdk?.with)).toEqual(record(libcSdk?.with));
+  expect(steps.find((step) => step.name === "Install pinned wasi-sdk 34")?.run).toBe(
+    stepsFor("libc").find((step) => step.name === "Install pinned wasi-sdk 34")?.run,
+  );
+  const build = steps.find((step) => step.name === "Build and test diffutils");
+  expect(record(build?.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(build?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  expect(String(build?.run)).toContain("cmake --version");
+  expect(String(build?.run)).toContain("ninja --version");
+});
+
+test("diffutils package exposes its actual commands", async () => {
+  const { diffutils } = await import("../../diffutils/src/index.ts");
+  expect(diffutils.pick("diff", "/bin/cmp").programs.map((program) => program.path)).toEqual([
+    "/usr/bin/diff",
+    "/usr/bin/cmp",
+  ]);
+  expect(diffutils.programs.map((program) => [program.path, program.aliases])).toEqual([
+    ["/usr/bin/diff", ["/bin/diff"]],
+    ["/usr/bin/cmp", ["/bin/cmp"]],
+  ]);
+});
