@@ -122,3 +122,43 @@ test("disposal during a held module load creates no orphan instance", () => {
     execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
   ).toContain("subsequent instances=1 disposals=1");
 });
+
+test("concurrent network imports finish before the explicit shared compilation starts", () => {
+  const helperURL = new URL("../browser/net/helper.ts", import.meta.url).href;
+  const runtimeURL = new URL("../browser/net/runtime.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const script = `
+    import assert from "node:assert/strict";
+    import { mock } from "bun:test";
+    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
+    const release = Promise.withResolvers();
+    let imported = false, loads = 0, instances = 0;
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+      assert.equal(imported, true, "network compilation must not suspend module evaluation");
+      loads++;
+      await release.promise;
+      const compiled = await originalLoad();
+      return { create(...args) { instances++; return compiled.create(...args); } };
+    } }));
+    const [{ NetNamespace, NetHelper }, { createRuntimeNetwork }] = await Promise.all([
+      import(${JSON.stringify(helperURL)}), import(${JSON.stringify(runtimeURL)}),
+    ]);
+    imported = true;
+    assert.equal(loads, 0);
+    assert.equal(typeof NetHelper, "function");
+    const first = createRuntimeNetwork(() => {});
+    const second = NetNamespace.create();
+    assert.equal(loads, 1);
+    assert.equal(instances, 0);
+    release.resolve();
+    const [owner, namespace] = await Promise.all([first, second]);
+    try {
+      assert.equal(loads, 1);
+      assert.equal(instances, 2);
+    } finally { await owner.dispose(); namespace.dispose(); }
+    console.log("imports ready before compilation; shared loads=1, owned instances=2");
+  `;
+  expect(
+    execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
+  ).toContain("imports ready before compilation; shared loads=1, owned instances=2");
+});
