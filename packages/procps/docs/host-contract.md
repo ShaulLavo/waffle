@@ -25,7 +25,7 @@ Ordinary `supervisor.canSignal(commandPid, targetPid)` still rejects siblings. T
 
 A separate real-supervisor control projects admitted reservations into pure rows and checks ordinary sibling denial without sending a signal. The signal-number control retains Waffle's rejection of signal zero and unsupported stop signals.
 
-These original controls establish only the API distinction. The unchanged pure-size script retains its historical `runtimeAcceptance: "BLOCKED"` field, which is not an acceptance report for the optional catalog. `scripts/measure-commands.ts` measures the separate optional entry and lazy implementation.
+These original controls establish only the API distinction. The pure-size script explicitly does not measure runtime acceptance. `scripts/measure-commands.ts` measures the separate optional entry and lazy implementation.
 
 ## Optional adapter acceptance
 
