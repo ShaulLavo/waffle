@@ -212,16 +212,39 @@ export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer 
 
 const wasmMemoryBufferGetter = descriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
 const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLength")!.get!;
+const arrayBufferByteLength = (buffer: ArrayBuffer): number =>
+  apply(arrayBufferByteLengthGetter, buffer, []);
+type WasmBufferReader =
+  | { kind: "array"; buffer: ArrayBuffer; read: (buffer: ArrayBuffer) => number }
+  | { kind: "shared"; buffer: SharedArrayBuffer; read: (buffer: SharedArrayBuffer) => number };
+function bufferReader(buffer: ArrayBuffer | SharedArrayBuffer): WasmBufferReader {
+  if (isSharedArrayBuffer(buffer))
+    return { kind: "shared", buffer, read: sharedArrayBufferByteLength };
+  return { kind: "array", buffer, read: arrayBufferByteLength };
+}
+function readBuffer(reader: WasmBufferReader): number {
+  if (reader.kind === "shared") return reader.read(reader.buffer);
+  return reader.read(reader.buffer);
+}
 /** The memory's current buffer through the captured native getter. */
 export function wasmMemoryBuffer(memory: WebAssembly.Memory): ArrayBuffer | SharedArrayBuffer {
   return apply(wasmMemoryBufferGetter, memory, []);
 }
 /** Read the current buffer through captured natives, including after memory.grow. */
 export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
-  const buffer: ArrayBuffer | SharedArrayBuffer = apply(wasmMemoryBufferGetter, memory, []);
+  const buffer = apply(wasmMemoryBufferGetter, memory, []);
   return isSharedArrayBuffer(buffer)
     ? sharedArrayBufferByteLength(buffer)
-    : apply(arrayBufferByteLengthGetter, buffer, []);
+    : arrayBufferByteLength(buffer);
+}
+/** Cache the current buffer brand and refresh it only when memory.grow replaces the buffer. */
+export function wasmMemoryByteLengthReader(memory: WebAssembly.Memory): () => number {
+  let reader: WasmBufferReader | undefined;
+  return () => {
+    const buffer = apply(wasmMemoryBufferGetter, memory, []);
+    if (!reader || reader.buffer !== buffer) reader = bufferReader(buffer);
+    return readBuffer(reader);
+  };
 }
 
 export const wasmModuleImports = WebAssembly.Module.imports;

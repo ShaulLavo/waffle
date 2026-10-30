@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -644,13 +645,14 @@ async function verifyInstall(inputs: InstallInputs): Promise<InstallReceipt> {
   const check = ["bun", "check.ts", JSON.stringify(specifiers), resultPath];
   await runCommand(check, consumer, env, control);
   const result = JSON.parse(readFileSync(resultPath, "utf8")) as ConsumerResult;
-  const modules = resolve(consumer, "node_modules") + sep;
+  const consumerRoot = realpathSync(consumer);
+  const modules = realpathSync(resolve(consumerRoot, "node_modules")) + sep;
   const wasm = result.wasm.map((item) => {
     assert.ok(item.path.startsWith(modules), `${item.specifier} wasm escapes node_modules`);
     const bytes = readFileSync(item.path);
     return {
       specifier: item.specifier,
-      path: relative(consumer, item.path),
+      path: relative(consumerRoot, item.path),
       sha256: sha256(bytes),
     };
   });

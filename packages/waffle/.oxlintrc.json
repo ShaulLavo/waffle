@@ -172,7 +172,6 @@
         "proc/pipes.ts",
         "proc/supervisor.ts",
         "proc/worker-broker.ts",
-        "site/scripts/verify.ts",
         "tests/process-recycling-browser-runner.ts"
       ],
       "rules": {

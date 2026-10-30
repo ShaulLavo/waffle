@@ -9,6 +9,7 @@
         "playwright": "^1.64.1",
         "waffle": "workspace:*",
         "waffle-base": "workspace:*",
+        "waffle-gh": "workspace:*",
         "waffle-git": "workspace:*",
       },
     },
@@ -47,6 +48,20 @@
         "waffle": "*",
       },
     },
+    "packages/gh": {
+      "name": "waffle-gh",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "@types/node": "26.6.3",
+        "esbuild": "0.28.2",
+        "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
     "packages/git": {
       "name": "waffle-git",
       "version": "0.0.1",
@@ -71,6 +86,18 @@
       "name": "waffle-grep",
       "version": "0.0.0",
       "devDependencies": {
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
+    "packages/diffutils": {
+      "name": "waffle-diffutils",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "typescript": "7.0.2",
         "waffle": "workspace:*",
       },
       "peerDependencies": {
@@ -133,7 +160,7 @@
     },
     "packages/waffle": {
       "name": "waffle",
-      "version": "0.0.104",
+      "version": "0.0.105",
       "devDependencies": {
         "@astrojs/compiler-rs": "0.5.2",
         "@types/bun": "^1.4.3",
@@ -700,10 +727,13 @@
 
     "waffle-findutils": ["waffle-findutils@workspace:packages/findutils"],
 
+    "waffle-gh": ["waffle-gh@workspace:packages/gh"],
+
     "waffle-git": ["waffle-git@workspace:packages/git"],
 
     "waffle-grep": ["waffle-grep@workspace:packages/grep"],
 
+    "waffle-diffutils": ["waffle-diffutils@workspace:packages/diffutils"],
     "waffle-jq": ["waffle-jq@workspace:packages/jq"],
 
     "waffle-process-consumer": ["waffle-process-consumer@workspace:packages/process-consumer"],

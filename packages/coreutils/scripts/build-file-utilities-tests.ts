@@ -1,3 +1,4 @@
+import { verificationOptions } from "./programs.ts";
 import { stageProgram } from "../../../tools/program-build-tools.ts";
 import { build } from "esbuild";
 import { resolve } from "node:path";
@@ -19,7 +20,7 @@ const release = resolve(
   "wasm32-wasip1/release",
 );
 for (const name of fileUtilityNames)
-  stageProgram(resolve(release, `${name}.wasm`), `dist/${name}.wasm`);
+  stageProgram(resolve(release, `${name}.wasm`), `dist/${name}.wasm`, verificationOptions(name));
 await copyFile(resolve(release, "shell-runtime.wasm"), "dist/shell-runtime.wasm");
 await copyFile("scripts/serve.mjs", "dist/serve.mjs");
 await writeFile(
