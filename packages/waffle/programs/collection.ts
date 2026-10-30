@@ -6,7 +6,7 @@ import {
   type ProgramInstallation,
   type ProgramPackage,
 } from "./index.js";
-import { matchesProgram, packageIdentity } from "./catalog.js";
+import { matchesProgram, packageIdentity, defineProgramPackage } from "./catalog.js";
 
 export type ProgramMode = "onDemand" | "preload";
 export type ProgramState = ProgramLoadState | { readonly kind: "removed" };
@@ -269,7 +269,7 @@ export class ProgramCollection implements RuntimePrograms {
     if (member.removal) return;
     member.installing = installPrograms(
       this.runtime,
-      [{ name: member.package.name, programs: [member.program] }],
+      [{ ...defineProgramPackage(member.package).pick(member.program.path), dispose: undefined }],
       {
         signal: member.admission.signal,
         launcher: this.options.launcher ?? preview1Launcher,
