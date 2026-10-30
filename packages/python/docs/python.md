@@ -10,7 +10,7 @@ await python.dispose();
 ```
 
 `installPython` is the production composition with Waffle's generic installer. It uses
-`createPythonPackage` and applies `pythonLauncher` so requested cwd wins over missing or
+`createPythonPackage`, whose launch policy sets PWD so requested cwd wins over missing or
 stale PWD. Lower-level `createPythonProgram` remains the payload/source implementation.
 
 The program path is `/usr/bin/python`, and its fixed CPython argv0 is `/cross-build/wasm32-wasip1/python.wasm`. `createPythonProgram` is lazy: construction does not fetch the interpreter or payload. The first `source()` call loads the interpreter and prepares the payload, and concurrent calls share that work.
