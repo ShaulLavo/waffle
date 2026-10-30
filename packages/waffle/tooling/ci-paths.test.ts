@@ -133,10 +133,18 @@ test("browser failure retains structured recovery evidence before full protocol"
   const protocolUpload = artifactStep(steps, browserProtocolPath);
   expect(recoveryUpload.if).toBe("failure()");
   expect(record(recoveryUpload.with).name).toBe(
-    "browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}",
+    "browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   expect(steps.indexOf(recoveryUpload)).toBeLessThan(steps.indexOf(protocolUpload));
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
+});
+
+test("the browser suite runs its two ordered groups on separate runners", () => {
+  const browserTest = stepsFor("browser").find(
+    (step) =>
+      step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
+  );
+  expect(record(browserTest?.env).WAFFLE_BROWSER_GROUP).toBe("${{ matrix.group }}");
 });
 
 test("missing recovery report does not replace the browser failure", () => {

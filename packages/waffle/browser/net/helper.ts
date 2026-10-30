@@ -47,6 +47,7 @@ import {
   type RuntimeNetworkLookupResult,
 } from "./address.js";
 import { NetNamespace, LoopbackSocket, tcpReply } from "./namespace.js";
+import { readNetFetchResponseMetadata } from "./transport.js";
 export { NetNamespace } from "./namespace.js";
 
 const encoder = new TextEncoder();
@@ -808,12 +809,14 @@ export class NetHelper {
       await response.body?.cancel();
       throw new TypeError("Network policy hides the redirect destination");
     }
+    const metadata = readNetFetchResponseMetadata(response);
+    const targetURL = (metadata?.targetURL ?? response.url) || req.url;
     return {
       head: {
         status: response.status,
         statusText: response.statusText,
-        url: response.url || req.url,
-        redirected: response.redirected,
+        url: targetURL,
+        redirected: metadata?.redirected ?? response.redirected,
         headers: Array.from(response.headers),
       },
       body: response.body,

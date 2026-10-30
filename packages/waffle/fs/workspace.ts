@@ -68,6 +68,22 @@ function options(value: SnapshotOptions = {}): Required<SnapshotOptions> {
     throw new FilesystemError(28, "invalid snapshot options");
   return { prefix, includeDirs };
 }
+function ownsReadBytes(bytes: Uint8Array, length: number): bytes is Uint8Array<ArrayBuffer> {
+  const buffer = bytes.buffer;
+  return (
+    bytes.byteLength === length &&
+    buffer instanceof ArrayBuffer &&
+    !("resizable" in buffer && buffer.resizable) &&
+    bytes.byteOffset === 0 &&
+    bytes.byteLength === buffer.byteLength
+  );
+}
+function initialReadBytes(part: Uint8Array, length: number): Uint8Array<ArrayBuffer> {
+  if (ownsReadBytes(part, length)) return part;
+  const result = new Uint8Array(length);
+  result.set(part);
+  return result;
+}
 function chunkRefusal(value: unknown): ReadFailure {
   const refusal = readReply(value);
   if (refusal.kind === "ok") throw new FilesystemError(29);
@@ -311,24 +327,32 @@ class WorkspaceOwner implements WorkspaceVfs {
       const opened = readOpenReply(result.value);
       if (opened.serial !== id || opened.range.length > WORKSPACE_READ_LIMITS.result)
         throw new FilesystemError(29);
-      const bytes = new Uint8Array(opened.range.length);
-      for (let offset = 0; offset < bytes.length; offset += WORKSPACE_READ_LIMITS.chunk) {
+      let bytes: Uint8Array<ArrayBuffer> | undefined =
+        opened.range.length > WORKSPACE_READ_LIMITS.chunk
+          ? new Uint8Array(opened.range.length)
+          : undefined;
+      for (let offset = 0; offset < opened.range.length; offset += WORKSPACE_READ_LIMITS.chunk) {
         const part = await this.request(
           "publicationReadChunk",
           [id, offset],
           lifetime,
-          Math.min(WORKSPACE_READ_LIMITS.chunk, bytes.length - offset),
+          Math.min(WORKSPACE_READ_LIMITS.chunk, opened.range.length - offset),
         );
         if (!(part instanceof Uint8Array)) return chunkRefusal(part);
-        if (part.length !== Math.min(WORKSPACE_READ_LIMITS.chunk, bytes.length - offset))
+        if (part.length !== Math.min(WORKSPACE_READ_LIMITS.chunk, opened.range.length - offset))
           throw new FilesystemError(29);
-        bytes.set(part, offset);
+        if (bytes) bytes.set(part, offset);
+        else bytes = initialReadBytes(part, opened.range.length);
       }
       if (this.stopped || signal?.aborted)
         return this.stopped ? { kind: "stopped" } : { kind: "cancelled" };
       return {
         kind: "ok",
-        value: { stat: opened.stat, range: Object.freeze(opened.range), bytes },
+        value: {
+          stat: opened.stat,
+          range: Object.freeze(opened.range),
+          bytes: bytes ?? new Uint8Array(),
+        },
       };
     } catch (error) {
       return this.readFailure(error, signal);
