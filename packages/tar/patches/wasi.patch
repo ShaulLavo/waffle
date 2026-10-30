@@ -1,0 +1,286 @@
+--- a/src/uu/tar/src/tar.rs
++++ b/src/uu/tar/src/tar.rs
+@@ -10,7 +10,9 @@
+ use crate::errors::TarError;
+ use clap::{arg, crate_version, ArgAction, Command};
+ use std::fs::File;
+-use std::io::{self, IsTerminal};
++use std::io;
++#[cfg(not(target_os = "wasi"))]
++use std::io::IsTerminal;
+ use std::path::{Path, PathBuf};
+ use uucore::error::UResult;
+ use uucore::format_usage;
+@@ -143,8 +145,30 @@
+         }
+     };
+ 
++    let archive_path = matches.get_one::<PathBuf>("file").ok_or_else(|| {
++        uucore::error::USimpleError::new(64, "option requires an argument -- 'f'")
++    })?;
++    let archive_path = if archive_path == Path::new("-") || archive_path.is_absolute() {
++        archive_path.clone()
++    } else {
++        std::env::current_dir().map_err(TarError::Io)?.join(archive_path)
++    };
++    if let Some(directory) = matches.get_one::<PathBuf>("directory") {
++        std::env::set_current_dir(directory).map_err(TarError::Io)?;
++    }
++    #[cfg(target_os = "wasi")]
++    if matches.get_flag("create") || matches.get_flag("extract") {
++        return Err(TarError::TarOperationError(
++            "create/extract unavailable: WASI has no UID/GID or archive permission restoration; no files were changed".into(),
++        ).into());
++    }
++    if !matches.get_flag("create") && matches.contains_id("files") {
++        return Err(TarError::TarOperationError("member selection is not supported".into()).into());
++    }
+     let verbose = matches.get_flag("verbose");
++    #[cfg(not(target_os = "wasi"))]
+     let allow_absolute = matches.get_flag("absolute-names");
++    #[cfg(not(target_os = "wasi"))]
+     let recursive = !matches.get_flag("no-recursion");
+     let explicit_compression = if matches.get_flag("gzip") {
+         Some(CompressionMode::Gzip)
+@@ -154,11 +178,10 @@
+         None
+     };
+ 
+-    // Handle extract operation
++    // No native-only metadata implementation is linked into the WASI candidate.
++    #[cfg(not(target_os = "wasi"))]
+     if matches.get_flag("extract") {
+-        let archive_path = matches.get_one::<PathBuf>("file").ok_or_else(|| {
+-            uucore::error::USimpleError::new(64, "option requires an argument -- 'f'")
+-        })?;
++        let archive_path = &archive_path;
+ 
+         let compression = explicit_compression.unwrap_or(CompressionMode::Auto);
+         return if archive_path == Path::new("-") {
+@@ -170,11 +193,9 @@
+         };
+     }
+ 
+-    // Handle create operation
++    #[cfg(not(target_os = "wasi"))]
+     if matches.get_flag("create") {
+-        let archive_path = matches.get_one::<PathBuf>("file").ok_or_else(|| {
+-            uucore::error::USimpleError::new(64, "option requires an argument -- 'f'")
+-        })?;
++        let archive_path = &archive_path;
+ 
+         let files: Vec<&Path> = matches
+             .get_many::<PathBuf>("files")
+@@ -226,9 +247,7 @@
+ 
+     // Handle list operation
+     if matches.get_flag("list") {
+-        let archive_path = matches.get_one::<PathBuf>("file").ok_or_else(|| {
+-            uucore::error::USimpleError::new(64, "option requires an argument -- 'f'")
+-        })?;
++        let archive_path = &archive_path;
+ 
+         let compression = explicit_compression.unwrap_or(CompressionMode::Auto);
+         return if archive_path == Path::new("-") {
+@@ -272,6 +291,8 @@
+                 -P --"absolute-names"
+                 "Don't strip leading '/'s from file names"
+             ),
++            arg!(-C --directory <DIRECTORY> "Change directory for file operands")
++                .value_parser(clap::value_parser!(PathBuf)),
+             // Compression options
+             arg!(-z --gzip "Filter through gzip").conflicts_with("zstd"),
+             // arg!(-j --bzip2 "Filter through bzip2"),
+--- a/src/uu/tar/src/compression.rs
++++ b/src/uu/tar/src/compression.rs
+@@ -5,9 +5,12 @@
+ 
+ use crate::errors::TarError;
+ use crate::CompressionMode;
+-use flate2::read::GzDecoder;
++use flate2::read::MultiGzDecoder;
++#[cfg(not(target_os = "wasi"))]
+ use flate2::write::GzEncoder;
+-use std::io::{BufReader, Cursor, Read, Write};
++use std::io::{BufReader, Cursor, Read};
++#[cfg(not(target_os = "wasi"))]
++use std::io::Write;
+ 
+ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+ 
+@@ -26,23 +29,27 @@
+ 
+     let reader: Box<dyn Read + 'a> = match mode {
+         CompressionMode::Auto | CompressionMode::None => Box::new(BufReader::new(input)),
+-        CompressionMode::Gzip => Box::new(GzDecoder::new(input)),
+-        CompressionMode::Zstd => Box::new(zstd::stream::read::Decoder::new(input)?),
++        CompressionMode::Gzip => Box::new(MultiGzDecoder::new(input)),
++        CompressionMode::Zstd => return Err(TarError::TarOperationError(
++            "zstd is not supported by this build; no external compression helpers are run".into(),
++        )),
+     };
+ 
+     Ok(reader)
+ }
+ 
++#[cfg(not(target_os = "wasi"))]
+ pub(crate) struct ArchiveWriter<W: Write> {
+     inner: ArchiveWriterInner<W>,
+ }
+ 
++#[cfg(not(target_os = "wasi"))]
+ enum ArchiveWriterInner<W: Write> {
+     Plain(W),
+     Gzip(GzEncoder<W>),
+-    Zstd(zstd::stream::write::Encoder<'static, W>),
+ }
+ 
++#[cfg(not(target_os = "wasi"))]
+ impl<W: Write> ArchiveWriter<W> {
+     pub(crate) fn new(output: W, mode: CompressionMode) -> Result<Self, TarError> {
+         let inner = match mode {
+@@ -56,10 +63,9 @@
+             CompressionMode::Gzip => {
+                 ArchiveWriterInner::Gzip(GzEncoder::new(output, flate2::Compression::default()))
+             }
+-            CompressionMode::Zstd => {
+-                let encoder = zstd::stream::write::Encoder::new(output, 0)?;
+-                ArchiveWriterInner::Zstd(encoder)
+-            }
++            CompressionMode::Zstd => return Err(TarError::TarOperationError(
++                "zstd is not supported by this build; no external compression helpers are run".into(),
++            )),
+         };
+ 
+         Ok(Self { inner })
+@@ -72,20 +78,16 @@
+                 let mut output = encoder.finish().map_err(TarError::CannotFinalizeArchive)?;
+                 output.flush().map_err(TarError::from)
+             }
+-            ArchiveWriterInner::Zstd(encoder) => {
+-                let mut output = encoder.finish()?;
+-                output.flush().map_err(TarError::Io)
+-            }
+         }
+     }
+ }
+ 
++#[cfg(not(target_os = "wasi"))]
+ impl<W: Write> Write for ArchiveWriter<W> {
+     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+         match &mut self.inner {
+             ArchiveWriterInner::Plain(file) => file.write(buf),
+             ArchiveWriterInner::Gzip(encoder) => encoder.write(buf),
+-            ArchiveWriterInner::Zstd(encoder) => encoder.write(buf),
+         }
+     }
+ 
+@@ -93,7 +95,6 @@
+         match &mut self.inner {
+             ArchiveWriterInner::Plain(file) => file.flush(),
+             ArchiveWriterInner::Gzip(encoder) => encoder.flush(),
+-            ArchiveWriterInner::Zstd(encoder) => encoder.flush(),
+         }
+     }
+ }
+--- a/src/uu/tar/src/main.rs
++++ b/src/uu/tar/src/main.rs
+@@ -1 +1,30 @@
+-uucore::bin!(uu_tar);
++// Waffle adapter; parser and archive operations remain upstream uu_tar.
++#[cfg(target_os = "wasi")]
++fn initialize_cwd() -> std::io::Result<()> {
++    #[link(wasm_import_module = "runtime_proc")]
++    unsafe extern "C" {
++        fn cwd(output: *mut u8, capacity: usize) -> i32;
++    }
++    let length = unsafe { cwd(std::ptr::null_mut(), 0) };
++    if length < 0 {
++        return Err(std::io::Error::from_raw_os_error(-length));
++    }
++    if length > 1024 * 1024 {
++        return Err(std::io::Error::other("runtime cwd exceeds process request limit"));
++    }
++    let mut bytes = vec![0; length as usize];
++    if unsafe { cwd(bytes.as_mut_ptr(), bytes.len()) } != length {
++        return Err(std::io::Error::other("runtime cwd changed during startup"));
++    }
++    let path = std::str::from_utf8(&bytes).map_err(std::io::Error::other)?;
++    std::env::set_current_dir(path)
++}
++
++fn main() {
++    #[cfg(target_os = "wasi")]
++    if let Err(error) = initialize_cwd() {
++        eprintln!("tar: cannot initialize runtime cwd: {error}");
++        std::process::exit(2);
++    }
++    std::process::exit(uu_tar::uumain(uucore::args_os()));
++}
+--- a/src/uu/tar/src/operations/list.rs
++++ b/src/uu/tar/src/operations/list.rs
+@@ -37,6 +37,8 @@
+         }
+     }
+ 
++    // Consume the compressor trailer too, so a checksum error is not a successful listing.
++    io::copy(&mut archive.into_inner(), &mut io::sink()).map_err(TarError::Io)?;
+     out.flush().map_err(TarError::Io)?;
+     Ok(())
+ }
+@@ -45,7 +47,7 @@
+     let (mode, entry_type, owner, group, size, mtime) = {
+         let header = entry.header();
+         (
+-            header.mode().unwrap_or(0),
++            header.mode()?,
+             header.entry_type(),
+             header
+                 .username()
+@@ -59,8 +61,8 @@
+                 .flatten()
+                 .unwrap_or_default()
+                 .to_owned(),
+-            header.size().unwrap_or(0),
+-            header.mtime().unwrap_or(0),
++            header.size()?,
++            header.mtime()?,
+         )
+     };
+ 
+@@ -82,7 +84,7 @@
+     let dt: chrono::DateTime<Local> = Local
+         .timestamp_opt(mtime as i64, 0)
+         .single()
+-        .unwrap_or_else(Local::now);
++        .ok_or_else(|| TarError::InvalidArchive("invalid archive timestamp".into()))?;
+     let date_str = dt.format("%Y-%m-%d %H:%M");
+ 
+     let link_str = match (entry_type, entry.link_name().ok().flatten()) {
+--- a/src/uu/tar/src/operations/mod.rs
++++ b/src/uu/tar/src/operations/mod.rs
+@@ -3,19 +3,24 @@
+ // For the full copyright and license information, please view the LICENSE
+ // file that was distributed with this source code.
+ 
++#[cfg(not(target_os = "wasi"))]
+ use std::fmt::Display;
++#[cfg(not(target_os = "wasi"))]
+ use std::io::{self, Write};
+ #[cfg(test)]
+ use std::path::{Path, PathBuf};
+ #[cfg(test)]
+ use std::sync::{Mutex, MutexGuard, OnceLock};
+ 
++#[cfg(not(target_os = "wasi"))]
+ pub mod create;
++#[cfg(not(target_os = "wasi"))]
+ pub mod extract;
+ pub mod list;
+ 
+ /// The warning GNU tar gives when it strips a leading prefix (`/`, `../`)
+ /// from a member name.
++#[cfg(not(target_os = "wasi"))]
+ pub(crate) fn warn_removed_prefix(prefix: impl Display) -> io::Result<()> {
+     writeln!(
+         io::stderr(),

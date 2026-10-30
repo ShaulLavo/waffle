@@ -1,0 +1,43 @@
+{
+  "name": "waffle-tar",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Optional upstream tar for Waffle, with explicit WASI metadata limits.",
+  "license": "MIT",
+  "files": [
+    "src",
+    "dist",
+    "docs",
+    "scripts",
+    "tests",
+    "producer",
+    "patches",
+    "licenses",
+    "sources.lock.json",
+    "package-artifacts.json",
+    "LICENSE",
+    "README.md",
+    "tsconfig.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build-tar.ts",
+    "test:source": "node --test tests/source.test.ts",
+    "test:wasi": "bun test tests/tar-wasi.test.ts",
+    "typecheck": "tsc -p .",
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "@types/node": "26.6.3",
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  }
+}
