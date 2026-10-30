@@ -1,0 +1,25 @@
+{
+  "name": "waffle-procps",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pure process-command plans for Waffle. Runtime registration is not yet supported.",
+  "files": [
+    "src",
+    "docs",
+    "provenance",
+    "scripts",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test tests",
+    "typecheck": "tsc -p tsconfig.json",
+    "size": "bun scripts/measure.ts"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  }
+}

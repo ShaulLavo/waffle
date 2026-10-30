@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-30T14:27:14.999Z",
+  "modifiedSince": "2026-09-30T14:27:14.999Z",
+  "methodology": "Approximate lexical counts; one JSONL file is one session; no command arguments retained.",
+  "source": {
+    "survey": "/work/reports/wave-20261029/agent-command-survey/survey.ts",
+    "surveySha256": "f7bd5bdda3bb1a1c544775db67b363eb609d86c14567f1d9efb0f387ecbd7ce7",
+    "publishedCounts": "/work/reports/wave-20261029/agent-command-survey/counts.json",
+    "publishedCountsSha256": "715bddead7a97f0ebaa6cbe2c249c55cbb6ecc07e6668986f5b9a75aa9e3bef3",
+    "note": "The survey lexer was rerun without retaining arguments. Its ordinary JSON omits flags outside the top 30, so this derived file enables flags for exactly ps, pgrep and pkill."
+  },
+  "totals": {
+    "filesScanned": 9056,
+    "sessionsWithCommands": 6809,
+    "commands": 431513,
+    "invocations": 2407483
+  },
+  "publishedObservations": {
+    "ps": {
+      "uses": 8572,
+      "sessions": 2424
+    },
+    "pgrep": {
+      "uses": 2859,
+      "sessions": 813
+    }
+  },
+  "refreshedPrograms": {
+    "ps": {
+      "uses": 8673,
+      "sessions": 2455,
+      "flags": {
+        "-o": 8474,
+        "-e": 6376,
+        "-p": 1707,
+        "--sort": 318,
+        "-C": 219,
+        "-u": 212,
+        "--ppid": 100,
+        "--forest": 56,
+        "-f": 41,
+        "--no-headers": 33,
+        "-w": 26,
+        "-g": 12,
+        "--width": 7,
+        "-a": 6,
+        "-x": 6,
+        "-L": 3,
+        "-T": 3,
+        "--version": 2,
+        "--cols": 1,
+        "--pid": 1,
+        "--ww": 1
+      }
+    },
+    "pgrep": {
+      "uses": 2874,
+      "sessions": 820,
+      "flags": {
+        "-f": 2803,
+        "-a": 2273,
+        "-x": 35,
+        "-P": 24,
+        "-u": 13,
+        "-c": 12,
+        "-i": 4,
+        "-l": 3,
+        "--version": 2,
+        "-g": 2
+      }
+    },
+    "pkill": {
+      "uses": 207,
+      "sessions": 100,
+      "flags": {
+        "-f": 195,
+        "-T": 13,
+        "-E": 11,
+        "-M": 11,
+        "-R": 11,
+        "-P": 9,
+        "--newest": 2,
+        "--version": 2,
+        "-I": 2,
+        "-N": 2,
+        "-u": 2,
+        "-x": 2
+      }
+    }
+  }
+}
