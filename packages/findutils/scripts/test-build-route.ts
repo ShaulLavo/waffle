@@ -20,7 +20,7 @@ interface Call {
   env: NodeJS.ProcessEnv;
 }
 
-test("find and xargs share one ordinary WASI route with exact bins and verification", () => {
+test("find and xargs use separate catalog transactions with exact bins and verification", () => {
   const calls: Call[] = [];
   const execute: Execute = (command, args, options) => {
     calls.push({ command, args, cwd: options.cwd, env: options.env });
@@ -28,6 +28,11 @@ test("find and xargs share one ordinary WASI route with exact bins and verificat
   const checks: { path: string; options: WasiGuestVerification }[] = [];
   buildFindutils({
     execute,
+    locales: ({ env, program }) => ({
+      ...env,
+      CARGO_TARGET_DIR: resolve(workspaceRoot, targetDirectory),
+      WAFFLE_PROGRAM_LOCALE_INPUTS: program,
+    }),
     environment(recipe, target) {
       assert.deepEqual(recipe, familyRecipe);
       assert.equal(recipe.root, workspaceRoot);
@@ -39,12 +44,12 @@ test("find and xargs share one ordinary WASI route with exact bins and verificat
       checks.push({ path, options });
     },
   });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   const call = calls[0];
   assert.ok(call);
-  assert.equal(call.command, "cargo");
+  assert.equal(call.command, "flock");
   assert.equal(call.cwd, workspaceRoot);
-  assert.deepEqual(call.args, [
+  assert.deepEqual(call.args.slice(5), [
     "build",
     "--locked",
     "--release",
@@ -57,8 +62,6 @@ test("find and xargs share one ordinary WASI route with exact bins and verificat
     "waffle-findutils-source",
     "--bin",
     "find",
-    "--bin",
-    "xargs",
   ]);
   assert.equal(call.env.CARGO_ENCODED_RUSTFLAGS, "fixture-flags");
   assert.deepEqual(
@@ -72,6 +75,11 @@ test("xargs-only qualification does not rebuild the unchanged find guest", () =>
   const checks: string[] = [];
   buildFindutils({
     programs: ["xargs"],
+    locales: ({ env, program }) => ({
+      ...env,
+      CARGO_TARGET_DIR: resolve(workspaceRoot, targetDirectory),
+      WAFFLE_PROGRAM_LOCALE_INPUTS: program,
+    }),
     execute(_command, args) {
       calls.push(args.slice());
     },

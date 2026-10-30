@@ -163,6 +163,7 @@ export function prepareProgramLocales(options: {
     implementationId,
     basename(env.CARGO_TARGET_DIR),
   );
+  mkdirSync(target, { recursive: true });
   return {
     ...env,
     CARGO_TARGET_DIR: target,
@@ -244,15 +245,18 @@ export function finishProgramLocaleBuild(
   const destination = resolve(stableTarget, "wasm32-wasip1/release", `${program}.wasm`);
   mkdirSync(dirname(destination), { recursive: true });
   copyFileSync(source, destination);
+  assert.ok(env.WAFFLE_PROGRAM_LOCALE_INPUTS);
   const proof = {
+    program,
+    selection: readFileSync(resolve(env.WAFFLE_PROGRAM_LOCALE_INPUTS, "selection.json"), "utf8"),
     generated,
     originalGuest: { path: source, sha256: sha256(readFileSync(source)) },
   };
-  assert.ok(env.WAFFLE_PROGRAM_LOCALE_INPUTS);
   atomicWrite(
     resolve(env.WAFFLE_PROGRAM_LOCALE_INPUTS, "producer.json"),
     JSON.stringify(proof, null, 2) + "\n",
   );
+  atomicWrite(`${destination}.locales.json`, JSON.stringify(proof, null, 2) + "\n");
   return proof;
 }
 
@@ -263,7 +267,6 @@ export function programLocaleCargoCommand(
   args: readonly string[],
 ): [string, string[]] {
   assert.ok(env.CARGO_TARGET_DIR, "Missing producer target");
-  mkdirSync(env.CARGO_TARGET_DIR, { recursive: true });
   return [
     "flock",
     [
@@ -274,4 +277,41 @@ export function programLocaleCargoCommand(
       stableTarget,
     ].concat(args),
   ];
+}
+
+export function readProgramLocaleProof(guest: string, program: string): unknown {
+  const proof: unknown = JSON.parse(readFileSync(`${guest}.locales.json`, "utf8"));
+  assert.ok(proof && typeof proof === "object" && "program" in proof && proof.program === program);
+  assert.ok(
+    "originalGuest" in proof &&
+      proof.originalGuest &&
+      typeof proof.originalGuest === "object" &&
+      "sha256" in proof.originalGuest,
+  );
+  assert.ok("generated" in proof && Array.isArray(proof.generated) && proof.generated.length > 0);
+  for (const generated of proof.generated) {
+    assert.ok(
+      generated &&
+        typeof generated === "object" &&
+        "version" in generated &&
+        typeof generated.version === "string" &&
+        "keys" in generated,
+    );
+    assert.deepEqual(
+      generated.keys,
+      selectCatalogs(program, generated.version),
+      "Archived locale catalog selection differs",
+    );
+    assert.ok(
+      "sha256" in generated &&
+        typeof generated.sha256 === "string" &&
+        /^[a-f0-9]{64}$/.test(generated.sha256),
+    );
+  }
+  assert.equal(
+    proof.originalGuest.sha256,
+    sha256(readFileSync(guest)),
+    "Locale producer bytes differ from the original compiler artifact",
+  );
+  return proof;
 }

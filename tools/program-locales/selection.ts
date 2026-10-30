@@ -24,3 +24,7 @@ export function selectCatalogs(program: string, version: string): string[] {
   const common = ["uucore/en-US.ftl", "uucore-errors/en-US.ftl"];
   return utilities.has(program) ? common.concat([`${program}/en-US.ftl`]) : common;
 }
+
+export function usesProgramCatalogs(program: string): boolean {
+  return gitUtilities.has(program) || registryUtilities.has(program);
+}

@@ -23,7 +23,9 @@ fails the build. The Cargo registry and Git caches remain untouched.
 The producer writes content-addressed `selection.json` and version-specific input
 lists below `.build/program-locales/`. The selection records original build-script,
 implementation, and catalog hashes. `generated.json` records the generated Rust
-source hashes and exact catalog keys. Changing the implementation selects a fresh
+source hashes and exact catalog keys. The original compiler guest also has a
+`.wasm.locales.json` sidecar, bound to its byte hash. Same-run echo, xargs, and
+coreutils artifact copies preserve and check this proof. Changing the implementation selects a fresh
 Cargo cache namespace. Changing the utility input makes Cargo rerun the build script.
 Unchanged inputs reuse the same cache.
 
@@ -40,7 +42,7 @@ staged-byte transformation is a separate derivation, not a locale producer ident
 | echo, ls, env, cut, tr, wc, touch, rm, cp, mv | Git 0.13 utility English plus common English help and errors                                            |
 | head, sort, uniq                              | Registry 0.12 utility English plus common English help and errors                                       |
 | find, xargs, sed                              | Registry 0.12 common English only; no utility Fluent catalog is used                                    |
-| clear, cat, mkdir, seq, tail, which           | No linked Fluent localization use; common-only producer policy for any compiled uucore dependency       |
+| clear, cat, mkdir, seq, tail, which           | Not applicable; no linked Fluent localization use; unchanged compiler route                             |
 | grep, rg                                      | Not applicable; no uucore or Fluent catalog producer                                                    |
 | Python                                        | Not applicable to this transformation; CPython and its standard-library payload are not uucore catalogs |
 | Git, base                                     | Not applicable; JavaScript packages without a uucore catalog producer                                   |

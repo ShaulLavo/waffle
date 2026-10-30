@@ -42,6 +42,8 @@ test("echo-only changes select a same-run xargs producer without repeating its u
     "packages/process-consumer/src/wasi.rs",
     "packages/program-support/src/runtime/wasi.rs",
     "tools/program-build-tools.ts",
+    "tools/program-locales/generate.rs",
+    "tools/program-locales/sources.json",
     "tools/family-acceptance.ts",
   ])
     assert.ok(

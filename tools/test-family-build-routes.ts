@@ -45,6 +45,11 @@ test("sed uses its own Cargo route and the singular patched-sysroot recipe", () 
   const checks: { path: string; options: WasiGuestVerification }[] = [];
   buildSed({
     execute,
+    locales: ({ env, program }) => ({
+      ...env,
+      CARGO_TARGET_DIR: resolve(workspaceRoot, sedTarget),
+      WAFFLE_PROGRAM_LOCALE_INPUTS: program,
+    }),
     environment(recipe, target) {
       assert.deepEqual(recipe, sedRecipe);
       assert.equal(recipe.root, workspaceRoot);
@@ -57,9 +62,9 @@ test("sed uses its own Cargo route and the singular patched-sysroot recipe", () 
     },
   });
   const call = onlyCall(calls);
-  assert.equal(call.command, "cargo");
+  assert.equal(call.command, "flock");
   assert.equal(call.cwd, workspaceRoot);
-  assert.deepEqual(call.args, [
+  assert.deepEqual(call.args.slice(5), [
     "build",
     "--locked",
     "--release",
