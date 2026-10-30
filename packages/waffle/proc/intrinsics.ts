@@ -54,6 +54,7 @@ export {
   sharedArrayBufferByteLength,
   wasmMemoryBuffer,
   wasmMemoryByteLength,
+  wasmMemoryByteLengthReader,
   wasmModuleImports,
   PromiseConstructor,
   abortSignalAborted,
