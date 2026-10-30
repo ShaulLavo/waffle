@@ -562,6 +562,13 @@
       "node": "./dist/programs/catalog.js",
       "browser": "./programs/catalog.ts",
       "default": "./programs/catalog.ts"
+    },
+    "./proc/command": {
+      "types": "./proc/command.ts",
+      "node": "./dist/proc/command.js",
+      "bun": "./proc/command.ts",
+      "browser": "./proc/command.ts",
+      "default": "./proc/command.ts"
     }
   },
   "scripts": {

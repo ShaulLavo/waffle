@@ -119,6 +119,13 @@
     "packages/process-consumer": {
       "name": "waffle-process-consumer",
     },
+    "packages/procps": {
+      "name": "waffle-procps",
+      "version": "0.0.0",
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
     "packages/program-support": {
       "name": "waffle-program-support",
     },
@@ -751,6 +758,8 @@
     "waffle-jq": ["waffle-jq@workspace:packages/jq"],
 
     "waffle-process-consumer": ["waffle-process-consumer@workspace:packages/process-consumer"],
+
+    "waffle-procps": ["waffle-procps@workspace:packages/procps"],
 
     "waffle-program-support": ["waffle-program-support@workspace:packages/program-support"],
 

@@ -156,3 +156,9 @@ used for inference: its tuple serialization currently fails on real process ABI
 code. Keep transparent browser observers as the end-to-end proof: poison native
 entry points while delegating to the originals, confirm positive canaries, and
 require zero private-authority observations during real process lifecycles.
+
+## Trusted page commands
+
+`proc/command-runner.ts` and `proc/command-stdio.ts` run only on the page and are lazy-loaded for host commands. Their trusted-module classification does not extend to guest bootstrap. The command context borrows asynchronous stdio and copied root-local process data. It never receives the descriptor table, filesystem connection, process service, or raw supervisor. Host commands remain trusted JavaScript in the page realm, not a sandbox.
+
+Delegated command signals are broker-created closures bound to the actual admitted holder, its root record, the root controller's captured package grant, and the target found at delivery. No command field supplies an anchor or a caller PID. Installation alone grants nothing. Root-local copied queries and a `send` method are the only process operations in the command context. The existing guest authority checks are unchanged.
