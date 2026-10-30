@@ -73,7 +73,8 @@ function execute(command: string, argv: string[], id: string) {
     NO_COLOR: "1",
     GH_NO_UPDATE_NOTIFIER: "1",
   };
-  for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_REPO", "GH_HOST"]) delete env[name];
+  for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_REPO", "GH_HOST", "GITHUB_ACTIONS"])
+    delete env[name];
   if (id !== "missing-auth") env.GH_TOKEN = "GH_CONTRACT_FAKE_TOKEN_NEVER_VALID";
   const result = spawnSync(command, argv, { env, encoding: "utf8", timeout: 10_000 });
   if (result.error) throw result.error;
