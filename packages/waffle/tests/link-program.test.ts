@@ -729,7 +729,7 @@ for (const name of ["_start", "entry_alias"]) {
 }
 
 for (const name of ["__wasm_apply_data_relocs", "reloc_alias"]) {
-  test(`automatic relocation ${name} cannot be manually scheduled`, async () => {
+  test(`relocation ${name} must be a memory stage`, async () => {
     const input = source();
     await expect(
       prepareLinkPlan({

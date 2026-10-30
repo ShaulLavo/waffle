@@ -88,7 +88,7 @@ export function coreSource(
         body([0x41, 3, 0x10, 1, 0x23, 1, 0x41, 32, 0x6a]),
         body([0x41, 9, 0x10, 1]),
         body([0x23, tls, 0x28, 2, 0]),
-        body([0x23, counter, 0x41, 1, 0x6a, 0x24, counter]),
+        body([0x41, 7, 0x10, 1, 0x23, counter, 0x41, 1, 0x6a, 0x24, counter]),
       ]),
     ),
     ...(passive ? [section(11, vector([[1, 1, 42]]))] : []),

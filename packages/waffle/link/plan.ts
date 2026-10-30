@@ -201,9 +201,11 @@ function copyStageNames(
   field: "initializeMemory" | "initialize",
 ): readonly string[] {
   const stages = member[field];
-  if (!Array.isArray(stages) || !stages.every((name) => typeof name === "string"))
+  if (!Array.isArray(stages)) invalid(member.id, `${field} must list export names`);
+  const names = Array.from(stages);
+  if (!names.every((name) => typeof name === "string"))
     invalid(member.id, `${field} must list export names`);
-  return Array.from(stages);
+  return names;
 }
 
 function validateStages(member: LinkMemberSource, profile: ModuleProfile, side: boolean): boolean {

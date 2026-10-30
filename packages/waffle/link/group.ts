@@ -349,6 +349,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
     host.bindMemory?.(memory);
     host.wasi.bindMemory(memory);
     runStages(plan.core, core, memoryStages(plan.core), host, live);
+    host.checkActive();
     lifecycle.state = "linked";
   } catch (error) {
     dispose();

@@ -15,7 +15,7 @@ const plan = await prepareLinkPlan({
     source: coreBytes,
     cooperative: true,
     checkpoint: { module: "checkpoints", name: "poll" },
-    initializeMemory: ["initialize_memory", "apply_data_relocs"],
+    initializeMemory: ["initialize_memory", "__wasm_apply_data_relocs"],
     initialize: ["call_ctors"],
   },
   libraries: [
@@ -41,8 +41,20 @@ If it already has a `beforeFinish`, it must call the linked hook there too.
 Use the ordinary Waffle `bootstrap`, not a separate bootstrap. It installs the
 process ABI and descriptors first, then races asynchronous admission against
 startup cancellation. Memory binds before any allocation or side constructor.
-The existing `instantiated` hook completes before initialization. Entry keeps
+The existing `instantiated` hook completes before constructors. Entry keeps
 its existing final activity check and atomic launch commitment.
+
+| Step | Ordered work |
+| --- | --- |
+| `instantiateLinkPlan` | Instantiate core, bind memory, run core `initializeMemory`. Libraries stay empty. |
+| Host `instantiated` hook | Read initialized, relocated core data and install host state. |
+| `group.initialize()` | Core constructors, then each library's reservation, instantiation, memory stages and constructor stages. Publish libraries only after all succeed. |
+| Caller entry | Run `_start` through the ordinary WASI launch path. |
+| `group.dispose()` | Clear every reserved table range, even after a failed initialization. |
+
+Both ordered stage lists are required. Use `initializeMemory: []` for an active
+split core that needs no memory stages. A carved member binding is single-use,
+even after failure or disposal.
 
 `toSource()` returns fresh exact bytes and configuration. The receiving worker
 must prepare those bytes again. A cloned prepared object is not admitted.

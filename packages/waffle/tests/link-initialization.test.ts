@@ -58,10 +58,10 @@ test("initialization order keeps core memory before escape and side linking afte
     host(trace, resources.memory, resources.table),
   );
   try {
-    expect(trace).toEqual([1]);
+    expect(trace).toEqual([1, 7]);
     expect(group.libraries).toEqual([]);
     group.initialize();
-    expect(trace).toEqual([1, 2, 3, 4, 5]);
+    expect(trace).toEqual([1, 7, 2, 3, 4, 5]);
     expect(group.libraries).toHaveLength(1);
     expect(trace).not.toContain(9);
   } finally {
@@ -159,12 +159,12 @@ for (const declared of [false, true]) {
     const resources = freshResources();
     const group = instantiateLinkPlan(plan, host(trace, resources.memory, resources.table));
     try {
-      expect(trace).toEqual([1]);
+      expect(trace).toEqual([1, 7]);
       group.initialize();
-      expect(trace).toEqual([1, 2, 3, 6, 4, 5]);
+      expect(trace).toEqual([1, 7, 2, 3, 6, 4, 5]);
       expect(globalValue(group.libraries[0]!.instance, "relocations")).toBe(1);
       group.initialize();
-      expect(trace).toEqual([1, 2, 3, 6, 4, 5]);
+      expect(trace).toEqual([1, 7, 2, 3, 6, 4, 5]);
     } finally {
       group.dispose();
     }
@@ -249,7 +249,7 @@ for (const stage of [2, 3, 4, 5]) {
     };
     const group = instantiateLinkPlan(await prepareLinkPlan(source()), h);
     expect(() => group.initialize()).toThrow("disposed");
-    expect(trace).toEqual([1, 2, 3, 4, 5].slice(0, stage));
+    expect(trace).toEqual([1, 7].concat([2, 3, 4, 5].slice(0, stage - 1)));
     expect(group.libraries).toEqual([]);
     for (let slot = 1; slot < resources.table.length; slot++)
       expect(resources.table.get(slot)).toBeNull();
