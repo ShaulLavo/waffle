@@ -17,8 +17,8 @@ async function until<T>(read: () => T, ready: (value: T) => boolean): Promise<T>
   }
   throw Error("Network progress timed out");
 }
-test("namespace canonicalizes expanded IPv6 connect targets", () => {
-  const namespace = new NetNamespace();
+test("namespace canonicalizes expanded IPv6 connect targets", async () => {
+  const namespace = await NetNamespace.create();
   const owner = {};
   try {
     expect(
@@ -37,11 +37,13 @@ test("namespace canonicalizes expanded IPv6 connect targets", () => {
   }
 });
 
-function fixture() {
-  const namespace = new NetNamespace();
+async function fixture() {
+  const namespace = await NetNamespace.create();
+  const namespaces = new Set([namespace]);
   const helpers: NetHelper[] = [];
   const hosts: NetHost[] = [];
   const add = (space = namespace) => {
+    namespaces.add(space);
     const ring = createRing();
     const helper = new NetHelper(
       ring,
@@ -63,12 +65,13 @@ function fixture() {
     close() {
       for (const host of hosts) host.dispose();
       for (const helper of helpers) helper.dispose();
+      for (const space of namespaces) space.dispose();
     },
   };
 }
 
 test("namespace routes independent rings with duplex HTTP, identity and half-close", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const server = f.add().host,
       client = f.add().host;
@@ -117,12 +120,12 @@ test("namespace routes independent rings with duplex HTTP, identity and half-clo
   }
 });
 
-test("namespace bind conflicts, ephemeral ports and isolated runtimes", () => {
-  const f = fixture();
+test("namespace bind conflicts, ephemeral ports and isolated runtimes", async () => {
+  const f = await fixture();
   try {
     const a = f.add().host,
       b = f.add().host,
-      isolated = f.add(new NetNamespace()).host;
+      isolated = f.add(await NetNamespace.create()).host;
     const first = a.listen("::", 0),
       second = b.listen("localhost", 0);
     expect(a.localPort(first)).not.toBe(b.localPort(second));
@@ -138,7 +141,7 @@ test("namespace bind conflicts, ephemeral ports and isolated runtimes", () => {
 });
 
 test("listener close rejects queued accepts but preserves accepted sockets and other owners", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const a = f.add(),
       b = f.add(),
@@ -181,7 +184,7 @@ test("listener close rejects queued accepts but preserves accepted sockets and o
 });
 
 test("namespace limits unread bytes, wakes after reads and preserves copied FIFO chunks", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const a = f.add().host,
       b = f.add().host;
@@ -222,11 +225,11 @@ test("namespace limits unread bytes, wakes after reads and preserves copied FIFO
 });
 
 test("owner disposal removes live listeners and pending sockets without touching a different runtime", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const owner = f.add(),
       client = f.add(),
-      isolated = f.add(new NetNamespace());
+      isolated = f.add(await NetNamespace.create());
     owner.host.listen("localhost", 32127);
     const conn = client.host.connect("localhost", 32127);
     const foreign = isolated.host.listen("localhost", 32127);
@@ -248,7 +251,7 @@ test("owner disposal removes live listeners and pending sockets without touching
 });
 
 test("reading a full connection wakes the blocked peer's ring and closing releases the port", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const server = f.add().host,
       client = f.add().host;
@@ -281,7 +284,7 @@ test("reading a full connection wakes the blocked peer's ring and closing releas
 });
 
 test("HTTP fetch crosses helpers with a body larger than the receive window", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const server = f.add().host,
       client = f.add().host;
@@ -336,7 +339,7 @@ test("HTTP fetch crosses helpers with a body larger than the receive window", as
 });
 
 test("disposing a host inside its news callback stops the watcher and releases its own listener", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const owner = f.add(),
       client = f.add();
@@ -363,7 +366,7 @@ test("disposing a host inside its news callback stops the watcher and releases i
 });
 
 test("disposing a cross-helper preview client reports failure and releases a blocked sender", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const server = f.add(),
       client = f.add();
@@ -390,9 +393,15 @@ test("disposing a cross-helper preview client reports failure and releases a blo
 
 test("host disposal revokes a news callback already queued by a local pipe", async () => {
   const ring = createRing();
-  const helper = new NetHelper(ring, async () => {
-    throw Error("Unexpected fetch");
-  });
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    ring,
+    async () => {
+      throw Error("Unexpected fetch");
+    },
+    {},
+    namespace,
+  );
   const host = new NetHost(ring, (request) => helper.handle(request));
   let calls = 0;
   try {
@@ -407,11 +416,12 @@ test("host disposal revokes a news callback already queued by a local pipe", asy
   } finally {
     host.dispose();
     helper.dispose();
+    namespace.dispose();
   }
 });
 
 test("host-side async sink receipts retain credit and wake the shared writer", async () => {
-  const f = fixture();
+  const f = await fixture();
   const receipt = Promise.withResolvers<void>();
   try {
     const server = f.add(),

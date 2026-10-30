@@ -24,6 +24,10 @@ function sourceFixture(context: TestContext) {
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const sources = [
     "tools/program-build-tools.ts",
+    "tools/program-locales/prepare.ts",
+    "tools/program-locales/selection.ts",
+    "tools/program-locales/patch.ts",
+    "tools/program-locales/sources.json",
     "packages/coreutils/scripts/build-family.ts",
     "packages/coreutils/scripts/build-config.ts",
     "packages/coreutils/scripts/programs.ts",

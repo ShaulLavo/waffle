@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readProgramLocaleProof } from "../../../tools/program-locales/prepare.ts";
 import { verifyWasiGuest, wasiBuildConfiguration } from "../../../tools/program-build-tools.ts";
 
 export const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -20,6 +21,7 @@ const inputs = [
   "packages/findutils/scripts/xargs-artifact.ts",
   "packages/process-consumer",
   "tools/program-build-tools.ts",
+  "tools/program-locales",
   "packages/waffle/scripts/build-wasi-libc.sh",
   "packages/waffle/patches/wasi-libc/preopen-scan.patch",
 ];
@@ -69,12 +71,13 @@ function environment() {
   };
 }
 
-function receipt(bytes: Uint8Array) {
+function receipt(bytes: Uint8Array, locales: unknown) {
   return {
     schema: "waffle-xargs-process-artifact/v1",
     identity: githubIdentity(),
     inputs: sourceInputs(inputs),
     environment: environment(),
+    locales,
     guest: { bytes: bytes.length, sha256: sha256(bytes) },
   };
 }
@@ -83,9 +86,10 @@ export function writeXargsArtifact(directory: string) {
   const guest = resolve(workspaceRoot, ".build/findutils/wasm32-wasip1/release/xargs.wasm");
   verifyWasiGuest(guest);
   const bytes = readFileSync(guest);
-  const proof = receipt(bytes);
+  const proof = receipt(bytes, readProgramLocaleProof(guest, "xargs"));
   mkdirSync(directory, { recursive: true });
   copyFileSync(guest, resolve(directory, "xargs.wasm"));
+  copyFileSync(`${guest}.locales.json`, resolve(directory, "xargs.wasm.locales.json"));
   writeFileSync(resolve(directory, "receipt.json"), JSON.stringify(proof, null, 2) + "\n");
   console.log(JSON.stringify(proof));
 }
@@ -94,7 +98,7 @@ export function verifyXargsArtifact(directory: string) {
   const path = resolve(directory, "xargs.wasm");
   const bytes = readFileSync(path);
   const actual: unknown = JSON.parse(readFileSync(resolve(directory, "receipt.json"), "utf8"));
-  const expected = receipt(bytes);
+  const expected = receipt(bytes, readProgramLocaleProof(path, "xargs"));
   assert.deepEqual(actual, expected, "xargs artifact source/run/input/checksum identity mismatch");
   verifyWasiGuest(path);
   return { bytes, receipt: expected };

@@ -82,7 +82,8 @@ jobs:
             ~/.cargo/git
             target
             .build/wasi-libc
-          key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}
+            .build/program-locales
+          key: ${{ runner.os }}-${{ runner.arch }}-program-release-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-locales/**') }}
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun test scripts/program-release.test.ts
       - name: Prepare every family in the closure with its own route

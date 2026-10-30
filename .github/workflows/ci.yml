@@ -73,11 +73,13 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/findutils/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
               - "packages/grep/tests/fixtures/grep-usage-cases.json"
               - "packages/ripgrep/tests/helpers/rg-fixtures.ts"
             sed:
+              - "tools/program-locales/**"
               - ".github/**"
               - "packages/waffle/**"
               - "packages/sed/**"
@@ -93,6 +95,7 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/program-support/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
               - "packages/coreutils/fixtures/cut-tr.json"
@@ -474,7 +477,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
