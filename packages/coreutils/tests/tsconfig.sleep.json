@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tools/tsconfig.programs.json",
+  "include": [
+    "sleep-wasi.test.ts",
+    "../scripts/build-sleep.ts",
+    "../scripts/sleep-oracle.ts",
+    "../scripts/sleep-source.test.ts",
+    "../fixtures/sleep-cases.ts"
+  ]
+}
