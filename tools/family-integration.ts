@@ -4,7 +4,7 @@ import { basePackages, basePrograms, installBase } from "waffle-base";
 import { runFamilyAcceptance } from "./family-acceptance.ts";
 
 export async function runLazyBaseAcceptance(runtime: Runtime, workerUrl: URL) {
-  assert.equal(basePrograms.length, 25);
+  assert.equal(basePrograms.length, 26);
   const fetches: string[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = new Proxy(original, {
@@ -28,7 +28,7 @@ export async function runLazyBaseAcceptance(runtime: Runtime, workerUrl: URL) {
         }),
     });
     assert.deepEqual(installed.path, ["/usr/bin", "/bin"]);
-    assert.equal(installed.executables.length, 50);
+    assert.equal(installed.executables.length, 52);
     for (const path of installed.executables)
       assert.equal((await runtime.filesystem.lookup(path))?.kind, "file", path);
     assert.equal(fetches.length, 0, "installation eagerly fetched a guest");

@@ -23,6 +23,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `network/src/{abi,module,virtual_net}.rs`, `browser/net/module.ts`                                                                    | Original adapter | Waffle binary ABI, virtual-only namespace, explicit loader and per-runtime module ownership. No Bun API facade copied.                                                                                                                                                                                                                                                                                                       |
 | `tools/licenses/`                                                                                                                     | License copy     | Exact upstream MIT license texts for fluent-langneg 0.13.1 and intl_pluralrules 7.0.2, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                         |
 | `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                   | Adaptation       | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                         |
+| `packages/coreutils/crates/date/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/date` and `src/uucore` at `07763857f6b9a547742a994b58aef0ccd036198b`. Isolated entry, existing WASI cwd helper, and rejection of clock setting before upstream execution. See [External date entry](#external-date-entry). |
 | `packages/coreutils/crates/echo/`                                                                                                     | Original adapter | Calls unchanged uutils/coreutils `src/uu/echo` at `07763857f6b9a547742a994b58aef0ccd036198b`; isolated entry and actual WASI write-failure observation, without flag/output logic.                                                                                                                                                                                                                                           |
 | `tools/program-locales/patch.ts`                                                                                                      | Adaptation       | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs.                                                                                                                                                                     |
 | `tools/program-locales/{prepare,selection,rustc-wrapper,build}.ts`, `generate.rs`                                                     | Original adapter | Build-source selection, isolated producer identity, compiler pass-through, transaction lock, catalog generation and receipts. No runtime or command implementation copied.                                                                                                                                                                                                                                                   |
@@ -325,3 +326,19 @@ member filters and external compressors, validates gzip trailers and numeric
 metadata, and excludes native-only writer/extractor code on WASI. Missing UID/GID
 and permission restoration cause status 2 before filesystem changes. See
 `packages/tar/docs/compatibility.md`; create/extract remain unqualified.
+
+## External date entry
+
+`packages/coreutils/crates/date/src/main.rs` is an original MIT adapter to unchanged
+uutils/coreutils `src/uu/date` and `src/uucore` at
+`07763857f6b9a547742a994b58aef0ccd036198b`. Upstream owns date parsing,
+formatting, timezone resolution, file timestamps, and wall-clock reads. The entry
+uses the existing WASI cwd helper and rejects the parsed `set` option on every
+target before execution. It cannot set the native host clock during verification.
+The optional date-localization feature is disabled under the family's English-only
+locale policy. No date parser, timezone data, clock data, or command implementation
+is copied or fabricated. The receipt is
+`packages/coreutils/provenance/date.source.json`. GNU date is a hash-pinned test
+oracle only, never a production fallback. A declared fixed clock belongs only to
+the Node WASI comparison fixture. The actual runtime test uses the real clock and
+file metadata on the caller's single runtime.

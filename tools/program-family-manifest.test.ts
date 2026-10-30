@@ -8,10 +8,10 @@ import { sed } from "../packages/sed/src/index.ts";
 
 const families = [coreutils, findutils, grep, ripgrep, sed];
 
-test("base family sources cover 25 unique canonical programs", () => {
+test("base family sources cover 26 unique canonical programs", () => {
   const programs = families.flatMap((family) => family.programs);
-  assert.equal(programs.length, 25);
-  assert.equal(new Set(programs.map((program) => program.path)).size, 25);
+  assert.equal(programs.length, 26);
+  assert.equal(new Set(programs.map((program) => program.path)).size, 26);
   for (const program of programs) {
     assert.match(program.path, /^\/usr\/bin\/[^/]+$/);
     assert.deepEqual(program.aliases, [program.path.replace("/usr/", "/")]);
@@ -47,6 +47,7 @@ test("family identities and program names are stable", () => {
       "cp",
       "mv",
       "echo",
+      "date",
     ],
   );
 });

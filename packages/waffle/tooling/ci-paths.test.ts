@@ -808,3 +808,17 @@ test("gh restores the exact network asset and does not set up native compilers",
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });
+
+test("tar scratch path is resolved by a runner step, not job-context evaluation", () => {
+  const job = record(jobs.tar);
+  expect(record(job.env).TAR_SCRATCH_ROOT).toBeUndefined();
+  const steps = stepsFor("tar");
+  const scratch = steps.find((step) => step.name === "Set run-owned tar scratch root");
+  const build = steps.find((step) => step.name === "Build matching native and WASI tar");
+  expect(scratch).toBeDefined();
+  expect(build).toBeDefined();
+  expect(String(scratch?.run)).toContain("TAR_SCRATCH_ROOT=%s");
+  expect(String(scratch?.run)).toContain('"$RUNNER_TEMP"');
+  expect(String(scratch?.run)).toContain('"$GITHUB_ENV"');
+  expect(steps.indexOf(record(scratch))).toBeLessThan(steps.indexOf(record(build)));
+});

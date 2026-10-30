@@ -199,6 +199,29 @@ describe("base closure", () => {
     expect(manifest.assetBase).toBe(assetBase);
   });
 
+  test("records both compressed companions for every raw Wasm artifact", () => {
+    const raw = manifest.packages.flatMap((item) =>
+      item.artifacts
+        .filter((artifact) => artifact.path.endsWith(".wasm"))
+        .map((artifact) => ({ item, artifact })),
+    );
+    expect(raw).toHaveLength(25);
+    for (const { item, artifact } of raw) {
+      const gzip = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.gz`);
+      const brotli = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.br`);
+      expect(gzip).toBeDefined();
+      expect(brotli).toBeDefined();
+      if (!gzip || !brotli) continue;
+      expect(gzip.bytes).toBeGreaterThan(0);
+      expect(brotli.bytes).toBeGreaterThan(0);
+      expect(new Set([artifact.sha256, gzip.sha256, brotli.sha256]).size).toBe(3);
+    }
+    const base = manifest.packages.find((item) => item.name === "waffle-base");
+    expect(
+      base?.artifacts.filter((artifact) => /\.wasm(?:\.gz|\.br)?$/.test(artifact.path)),
+    ).toEqual([]);
+  });
+
   test("packed manifests name only immutable asset URLs, never workspace or 0.0.0", () => {
     const urls = new Map(manifest.packages.map((item) => [item.name, item.url]));
     for (const item of manifest.packages) {
@@ -236,7 +259,7 @@ describe("base closure", () => {
     expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm).toHaveLength(25);
+    expect(wasm).toHaveLength(26);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
@@ -245,6 +268,7 @@ describe("base closure", () => {
       "dist/clear.wasm",
       "dist/cp.wasm",
       "dist/cut.wasm",
+      "dist/date.wasm",
       "dist/echo.wasm",
       "dist/env.wasm",
       "dist/head.wasm",
@@ -291,7 +315,7 @@ describe("base closure", () => {
       ...(await fixtureOptions(linkedRoot, "unused-output")),
       out: link,
     });
-    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(25);
+    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(26);
     for (const guest of receipt.installCheck.wasm)
       expect(guest.path.startsWith("node_modules/")).toBe(true);
   }, 60_000);

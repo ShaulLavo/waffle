@@ -543,12 +543,13 @@ jobs:
   tar:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-      TAR_SCRATCH_ROOT: ${{ runner.temp }}
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.tar == 'true') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Set run-owned tar scratch root
+        run: printf 'TAR_SCRATCH_ROOT=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -895,8 +896,40 @@ jobs:
       - run: bun test scripts/program-release.test.ts
       - run: bun run programs:routes
       - run: bun run programs:source
+      - uses: actions/setup-node@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        with:
+          node-version: 26.12.1
+      - name: Record exact GNU date source and native compiler identity
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        id: gnu-date-identity
+        run: |
+          set -euo pipefail
+          identity=$(node packages/coreutils/scripts/build-native-date-oracle.ts --identity)
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        id: gnu-date-native
+        with:
+          path: .build/gnu-date-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-gnu-date-9.12-v1-${{ steps.gnu-date-identity.outputs.identity }}
+      - name: Build or verify only the pinned GNU date native oracle
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        env:
+          GNU_DATE_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-date-native-oracle
+          GNU_DATE_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          df -h "$GITHUB_WORKSPACE" "$GNU_DATE_ORACLE_SCRATCH_ROOT"
+          bash packages/coreutils/scripts/provision-native-date.sh
+          node packages/coreutils/scripts/build-native-date-oracle.ts --verify-only
+          printf 'GNU_DATE=%s/date\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
+          printf 'GNU_DATE_ORACLE_ROOT=%s\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
+      - name: Verify date source against the pinned native GNU oracle
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        run: node --disable-warning=ExperimentalWarning --test packages/coreutils/scripts/date-source.test.ts
       - run: bun run --cwd packages/python test:composition
       - run: bun run --cwd packages/python test:build
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo
+      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date

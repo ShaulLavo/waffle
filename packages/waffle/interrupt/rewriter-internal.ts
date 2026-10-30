@@ -1,10 +1,10 @@
 // Bump on every edit. interrupt-transform-pin.test.ts binds this revision to the implementation.
-export const INTERRUPT_REWRITER_REVISION = 1;
+export const INTERRUPT_REWRITER_REVISION = 2;
 
 /**
  * Fail-closed core-Wasm interrupt instrumentation. Supported features are MVP,
  * SIMD, multi-value, sign extension, saturating conversions, bulk memory,
- * untyped reference tables, tail calls, and non-waiting threads instructions.
+ * untyped reference tables, standard exceptions, tail calls, and non-waiting threads instructions.
  *
  * Every defined-function entry and loop header consumes one module-wide tick.
  * The host is called only when the countdown reaches zero. Resetting BEFORE the
@@ -26,7 +26,7 @@ const encoder = new TextEncoder();
 // Wasm names are length-delimited: a leading U+FEFF is content, not a BOM.
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const HEADER = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
-const SECTION_ORDER = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 10, 11];
+const SECTION_ORDER = [1, 2, 3, 4, 5, 13, 6, 7, 8, 9, 12, 10, 11];
 const FATAL_IMPORT_NAME = "__waffle_fatal";
 
 interface FunctionSignature {
@@ -176,6 +176,7 @@ function valueType(reader: Reader): number {
     case 0x7d:
     case 0x7c: // numeric
     case 0x7b: // v128
+    case 0x69: // exnref
     case 0x70:
     case 0x6f: // untyped funcref/externref
       return reader.bytes[reader.position - 1]!;
@@ -201,6 +202,7 @@ interface ImportSummary {
   readonly importedFunctions: number;
   readonly memories: number;
   readonly globals: number;
+  readonly tags: number;
 }
 function validateImports(
   reader: Reader,
@@ -210,6 +212,7 @@ function validateImports(
   let importedFunctions = 0;
   let memories = 0;
   let globals = 0;
+  let tags = 0;
   for (let i = 0; i < count; i++) {
     const namespace = reader.name();
     const name = reader.name();
@@ -242,19 +245,52 @@ function validateImports(
         if (reader.byte() > 1) fail("unsupported global mutability");
         globals++;
         break;
+      case 4:
+        tagType(reader, functionTypes);
+        tags++;
+        break;
       default:
-        fail("unsupported import kind (tags or unknown proposal)");
+        fail("unsupported import kind");
     }
   }
-  return { importedFunctions, memories, globals };
+  return { importedFunctions, memories, globals, tags };
 }
+function tagType(reader: Reader, functionTypes: readonly FunctionSignature[]): void {
+  if (reader.byte() !== 0) fail("unsupported tag attribute");
+  const signature = functionTypes[reader.u32()];
+  if (!signature || signature.results.length !== 0) fail("invalid tag function type");
+}
+
+function tagSection(reader: Reader, functionTypes: readonly FunctionSignature[]): number {
+  const count = reader.u32();
+  for (let index = 0; index < count; index++) tagType(reader, functionTypes);
+  reader.done();
+  return count;
+}
+
+function tagIndex(reader: Reader, tags: number): void {
+  if (reader.u32() >= tags) fail("invalid tag index");
+}
+
+function catchTable(reader: Reader, tags: number, depth: number): void {
+  const count = reader.u32();
+  for (let index = 0; index < count; index++) {
+    const kind = reader.byte();
+    if (kind > 3) fail("unsupported try_table catch kind");
+    if (kind < 2) tagIndex(reader, tags);
+    // Catch labels exclude the try_table body, but include the function label.
+    if (reader.u32() > depth) fail("invalid try_table catch target");
+  }
+}
+
 function referenceType(reader: Reader): void {
   const type = reader.byte();
-  if (type !== 0x70 && type !== 0x6f) fail("unsupported typed reference or GC heap type");
+  if (type !== 0x70 && type !== 0x6f && type !== 0x69)
+    fail("unsupported typed reference or GC heap type");
 }
 function blockType(reader: Reader): void {
   const type = reader.signed(5);
-  if (type >= 0 || [-64, -1, -2, -3, -4, -5, -16, -17].includes(type)) return;
+  if (type >= 0 || [-64, -1, -2, -3, -4, -5, -16, -17, -23].includes(type)) return;
   fail("unsupported block type (GC or typed reference)");
 }
 function limits(reader: Reader, memory: boolean): void {
@@ -340,6 +376,7 @@ function simdInstruction(reader: Reader, constant: boolean): void {
 
 interface InstructionContext {
   importedFunctions: number;
+  tags: number;
   checkpoint: Uint8Array;
 }
 function shifted(index: number, importedFunctions: number): number {
@@ -363,6 +400,16 @@ function instructions(
       fail("unsupported constant-expression instruction");
     }
     switch (opcode) {
+      case 0x1f:
+        blockType(reader);
+        catchTable(reader, context.tags, depth);
+        depth++;
+        break;
+      case 0x08:
+        tagIndex(reader, context.tags);
+        break;
+      case 0x0a: // throw_ref has no immediate
+        break;
       case 0x02:
       case 0x03:
       case 0x04:
@@ -441,7 +488,7 @@ function instructions(
         // Unlike a table's reftype byte, ref.null carries signed LEB33.
         // Accept its legal padded encodings, but never concrete/GC heap types.
         const heapType = reader.signed(5);
-        if (heapType !== -16 && heapType !== -17)
+        if (heapType !== -16 && heapType !== -17 && heapType !== -23)
           fail("unsupported typed reference or GC heap type");
         break;
       }
@@ -511,7 +558,7 @@ function instructions(
         if (opcode >= 0x28 && opcode <= 0x3e) memoryArgument(reader);
         else if (opcode < 0x45 || opcode > 0xc4) {
           fail(
-            `unsupported opcode 0x${opcode.toString(16)} (SIMD/GC/EH/typed calls or unknown proposal)`,
+            `unsupported opcode 0x${opcode.toString(16)} (GC/legacy EH/typed calls or unknown proposal)`,
           );
         }
     }
@@ -566,6 +613,7 @@ export function rewriteInterruptsOwned(
   const header = reader.take(8);
   if (!header.every((byte, i) => byte === HEADER[i])) fail("not a core Wasm version 1 module");
   const sections = new Map<number, Uint8Array>();
+  let previousSection = -1;
   while (reader.position < bytes.length) {
     const id = reader.byte();
     const data = reader.take(reader.u32());
@@ -581,8 +629,10 @@ export function rewriteInterruptsOwned(
       }
       continue;
     }
-    if (!SECTION_ORDER.includes(id) || sections.has(id))
-      fail(`unsupported or duplicate section ${id}`);
+    const order = SECTION_ORDER.indexOf(id);
+    if (order < 0 || sections.has(id)) fail(`unsupported or duplicate section ${id}`);
+    if (order <= previousSection) fail(`out-of-order section ${id}`);
+    previousSection = order;
     sections.set(id, data);
   }
   const get = (id: number) => new Reader(sections.get(id) ?? new Uint8Array([0]));
@@ -648,11 +698,14 @@ export function rewriteInterruptsOwned(
   for (let i = 0; i < memoryCount; i++) limits(memoryReader, true);
   memoryReader.done();
 
+  const tags = importSummary.tags + tagSection(get(13), functionTypes);
+
   const globalReader = get(6);
   const definedGlobals = globalReader.u32();
   globals += definedGlobals;
   const context: InstructionContext = {
     importedFunctions,
+    tags,
     checkpoint: checkpoint(globals, importedFunctions, interval),
   };
   const globalWriter = new Writer();
@@ -680,9 +733,10 @@ export function rewriteInterruptsOwned(
     const start = exportReader.position;
     exportReader.name();
     const kind = exportReader.byte();
-    if (kind > 3) fail("unsupported export kind");
+    if (kind > 4) fail("unsupported export kind");
     exportWriter.bytes(exportReader.bytes.subarray(start, exportReader.position));
     const index = exportReader.u32();
+    if (kind === 4 && index >= tags) fail("invalid exported tag index");
     exportWriter.u32(kind === 0 ? shifted(index, importedFunctions) : index);
   }
   exportReader.done();

@@ -151,8 +151,12 @@ test("failed staging does not replace an existing destination", (context) => {
   const output = resolve(root, "output.wasm");
   writeFileSync(input, named.subarray(0, -1));
   writeFileSync(output, "untouched");
+  writeFileSync(`${output}.gz`, "untouched gzip");
+  writeFileSync(`${output}.br`, "untouched Brotli");
   assert.throws(() => stageProgram(input, output));
   assert.equal(readFileSync(output, "utf8"), "untouched");
+  assert.equal(readFileSync(`${output}.gz`, "utf8"), "untouched gzip");
+  assert.equal(readFileSync(`${output}.br`, "utf8"), "untouched Brotli");
 });
 
 test("base and JavaScript Git packages have no own Wasm artifacts to strip", () => {

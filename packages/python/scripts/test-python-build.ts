@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import {
   familyRecipe,
   familyTargetRoot,
@@ -193,10 +194,14 @@ test("a validated artifact stages without building and rejects an altered interp
   stagePythonArtifact(output, staged);
   assert.deepEqual(
     regularFiles(staged),
-    regularFiles(output).concat(["python-program.json"]).sort(),
+    regularFiles(output).concat(["python-program.json", "python.wasm.gz", "python.wasm.br"]).sort(),
   );
   const finalBytes = readFileSync(resolve(staged, "python.wasm"));
   assert.ok(WebAssembly.validate(finalBytes));
+  assert.ok(gunzipSync(readFileSync(resolve(staged, "python.wasm.gz"))).equals(finalBytes));
+  assert.ok(
+    brotliDecompressSync(readFileSync(resolve(staged, "python.wasm.br"))).equals(finalBytes),
+  );
   assert.equal(
     WebAssembly.Module.customSections(new WebAssembly.Module(finalBytes), "name").length,
     0,
