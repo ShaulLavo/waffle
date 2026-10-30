@@ -103,6 +103,46 @@ test("module-less commands execute without compiling Wasm or exposing runtime au
   }
 });
 
+test("command argv0 preserves the frozen context and request", async () => {
+  const owner = create();
+  let observed:
+    | { context: boolean; request: boolean; argv: boolean; args: readonly string[] }
+    | undefined;
+  await owner.programs.onDemand(
+    defineProgramPackage({
+      name: "argv0-command",
+      programs: [
+        {
+          path: "/bin/argv0-command",
+          argv0: "chosen-name",
+          command: {
+            load: async () => async (context) => {
+              observed = {
+                context: Object.isFrozen(context),
+                request: Object.isFrozen(context.request),
+                argv: Object.isFrozen(context.request.argv),
+                args: context.request.argv,
+              };
+              return 0;
+            },
+          },
+        },
+      ],
+    }),
+  );
+  const shell = await createProgramShell(owner, tables);
+  expect(await shell.exec("/bin/argv0-command", ["original-name", "argument"])).toMatchObject({
+    kind: "exited",
+    code: 0,
+  });
+  expect(observed).toEqual({
+    context: true,
+    request: true,
+    argv: true,
+    args: ["chosen-name", "argument"],
+  });
+});
+
 test("aliases and picks share lazy preparation, preload, and retry after failure", async () => {
   const owner = create();
   const loading = deferred();

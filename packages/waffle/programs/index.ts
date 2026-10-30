@@ -333,13 +333,15 @@ function trackedCommand(
       if (typeof run !== "function") throw new TypeError("Command loader must return a function");
       if (argv0 === undefined) return run;
       return (context) =>
-        run({
-          ...context,
-          request: {
-            ...context.request,
-            argv: Object.freeze([argv0].concat(context.request.argv.slice(1))),
-          },
-        });
+        run(
+          Object.freeze({
+            ...context,
+            request: Object.freeze({
+              ...context.request,
+              argv: Object.freeze([argv0].concat(context.request.argv.slice(1))),
+            }),
+          }),
+        );
     },
   };
 }
