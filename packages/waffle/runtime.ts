@@ -1,3 +1,8 @@
+import {
+  ProgramCollection,
+  type ProgramsOptions,
+  type RuntimePrograms,
+} from "./programs/collection.js";
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
 export type {
   RuntimeNetwork,
@@ -36,7 +41,7 @@ import {
 } from "./browser/process-context.js";
 export type { RuntimeHostIdentity, RuntimeProcessIdentity } from "./browser/process-context.js";
 import { ProcessIdentityAllocator } from "./proc/identity.js";
-import type { ExecutableRegistry, Executable } from "./proc/registry.js";
+import type { ExecutableRegistry, Executable, ScriptExecutable } from "./proc/registry.js";
 import type { ProcessSupervisor } from "./proc/supervisor.js";
 import type { ProcessContext, ProcessHandle } from "./proc/types.js";
 import type { FilesystemIdentity } from "./fs/protocol.js";
@@ -82,11 +87,18 @@ export type GuestLauncher = (
   context: RuntimeProcessContext,
   service: ProcessService,
 ) => ProcessHandle | Promise<ProcessHandle>;
-export type ProgramDefinition = { readonly adapter: string } & (
+export type ProgramLoadState =
+  | { readonly kind: "registered" | "preparing" | "loaded" }
+  | { readonly kind: "error"; readonly error: unknown };
+export type ProgramDefinition = {
+  readonly adapter: string;
+  readonly onLoad?: (state: ProgramLoadState) => void;
+} & (
   | {
       readonly source: Uint8Array | (() => Uint8Array | Promise<Uint8Array>);
       readonly module?: never;
       readonly cooperative?: never;
+      readonly script?: never;
     }
   | {
       readonly module:
@@ -94,9 +106,17 @@ export type ProgramDefinition = { readonly adapter: string } & (
         | (() => WebAssembly.Module | Promise<WebAssembly.Module>);
       readonly cooperative: true;
       readonly source?: never;
+      readonly script?: never;
+    }
+  | {
+      readonly script: { readonly interpreter: string; readonly prepare: () => Promise<void> };
+      readonly source?: never;
+      readonly module?: never;
+      readonly cooperative?: never;
     }
 );
 export interface RuntimeOptions {
+  readonly programs?: ProgramsOptions;
   /** Explicit runtime host identity. Omission leaves host identity unsupported. */
   hostIdentity?: RuntimeHostIdentity;
   filesystem?: SharedFilesystemOptions;
@@ -113,6 +133,7 @@ export interface RuntimeOptions {
   memoryGroups?: MemoryGroupPolicyOptions;
 }
 export interface Runtime {
+  readonly programs: RuntimePrograms;
   readonly hostIdentity: RuntimeHostIdentity | null;
   readonly filesystem: RuntimeFilesystem;
   /** Shared before process activation so synchronous worker stubs can reserve identities. */
@@ -344,7 +365,19 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     throw error;
   }
   const adapters = new Map<string, GuestLauncher>();
-  const programs = new Map<string, Executable>();
+  const programs = new Map<string, Executable | ScriptExecutable>();
+  let registryActivation: Promise<ExecutableRegistry> | undefined;
+  const getRegistry = (): Promise<ExecutableRegistry> => {
+    registryActivation ??= import("./proc/registry.js").then(({ ExecutableRegistry }) => {
+      registry = new ExecutableRegistry(
+        (path) => filesystem.resolvePath(path),
+        (path) => filesystem.readFile(path),
+      );
+      for (const [name, executable] of programs) registry.register(name, executable);
+      return registry;
+    });
+    return registryActivation;
+  };
   const launching = new Set<Promise<ProcessHandle>>();
   const physicalStops = new Map<object, PhysicalStop>();
   const cleanupDebt = new Map<object, Promise<void>>();
@@ -363,21 +396,32 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   };
   // One loader per source function, so a program registered at several paths compiles once.
   const sourceModules = new WeakMap<object, Executable["module"]>();
-  const sourceModule = (source: Uint8Array | (() => Uint8Array | Promise<Uint8Array>)) => {
+  const sourceModule = (
+    source: Uint8Array | (() => Uint8Array | Promise<Uint8Array>),
+    onLoad: ProgramDefinition["onLoad"],
+  ) => {
     const shared = typeof source === "function" ? sourceModules.get(source) : undefined;
     if (shared) return shared;
     const ownedSource = source instanceof Uint8Array ? new Uint8Array(source) : source;
     const module = async () => {
       assertLive();
-      const bytes = typeof ownedSource === "function" ? await ownedSource() : ownedSource;
-      if (!(bytes instanceof Uint8Array))
-        throw new TypeError("Program source loader must return Wasm bytes");
-      // Own source bytes before an asynchronous import can yield to a mutating caller.
-      const snapshot = new Uint8Array(bytes);
-      const { compileInterruptible } = await import("./interrupt/loader.js");
-      const compiled = await compileInterruptible(snapshot);
-      assertLive();
-      return compiled;
+      onLoad?.({ kind: "preparing" });
+      try {
+        assertLive();
+        const bytes = typeof ownedSource === "function" ? await ownedSource() : ownedSource;
+        if (!(bytes instanceof Uint8Array))
+          throw new TypeError("Program source loader must return Wasm bytes");
+        // Own source bytes before an asynchronous import can yield to a mutating caller.
+        const snapshot = new Uint8Array(bytes);
+        const { compileInterruptible } = await import("./interrupt/loader.js");
+        const compiled = await compileInterruptible(snapshot);
+        assertLive();
+        onLoad?.({ kind: "loaded" });
+        return compiled;
+      } catch (error) {
+        onLoad?.({ kind: "error", error });
+        throw error;
+      }
     };
     if (typeof source === "function") sourceModules.set(source, module);
     return module;
@@ -397,6 +441,9 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   };
   const runtime: Runtime = {
     hostIdentity,
+    get programs() {
+      return programCollection.view;
+    },
     filesystem: borrowedFilesystem,
     identities,
     get disposed() {
@@ -435,10 +482,28 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (!adapters.has(program.adapter)) throw new Error(`Unknown adapter: ${program.adapter}`);
       const source = program.source;
       const module = program.module;
-      let executable: Executable;
+      let executable: Executable | ScriptExecutable;
       if (source !== undefined && module !== undefined)
         throw new TypeError("A program must choose either source bytes or a cooperative module");
-      if (source !== undefined) {
+      if (program.script) {
+        if (source !== undefined || module !== undefined || program.cooperative !== undefined)
+          throw new TypeError("A script must declare only its interpreter and preparation");
+        if (
+          !program.script.interpreter.startsWith("/") ||
+          typeof program.script.prepare !== "function"
+        )
+          throw new TypeError(
+            "Scripts require an absolute interpreter path and preparation function",
+          );
+        executable = {
+          adapter: program.adapter,
+          script: {
+            interpreter: program.script.interpreter,
+            prepare: sharedPreparation(program.script.prepare, program.onLoad, assertLive),
+          },
+          onLoad: program.onLoad,
+        };
+      } else if (source !== undefined) {
         if (program.cooperative !== undefined)
           throw new TypeError("Source bytes use interrupt admission, not cooperative module trust");
         if (!(source instanceof Uint8Array) && typeof source !== "function")
@@ -446,7 +511,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         executable = {
           adapter: program.adapter,
           interruptible: true,
-          module: sourceModule(source),
+          module: sourceModule(source, program.onLoad),
         };
       } else {
         if (program.cooperative !== true)
@@ -516,15 +581,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (activation) return activation;
       const pendingHost = Promise.resolve().then(async (): Promise<BrowserProcessBroker> => {
-        const [{ ExecutableRegistry }, { ProcessTable }] = await Promise.all([
-          import("./proc/registry.js"),
+        await programCollection.startup();
+        const [activeRegistry, { ProcessTable }] = await Promise.all([
+          getRegistry(),
           import("./proc/table.js"),
         ]);
-        registry = new ExecutableRegistry(
-          (path) => filesystem.resolvePath(path),
-          (path) => filesystem.readFile(path),
-        );
-        for (const [name, executable] of programs) registry.register(name, executable);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {
           hostIdentity,
@@ -536,7 +597,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             sweep: () => filesystem.client.sweep(),
           },
           identities,
-          registry,
+          registry: activeRegistry,
           table,
           onProcessAdmission: options.onProcessAdmission,
           memoryGroups: options.memoryGroups,
@@ -617,6 +678,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     dispose() {
       if (disposal) return disposal;
       disposed = true;
+      const programRemoval = programCollection.close();
+      void programRemoval.catch(() => {});
       let releaseTermination!: () => void;
       terminationFence = new Promise<void>((resolve) => {
         releaseTermination = resolve;
@@ -681,6 +744,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             joinStop({ owner: hostOwner, stop: hostStop, physicalStops, cleanupDebt }),
           );
         if (networkFailed || cleanupDebt.size) throwFailures();
+        await attempt(() => programRemoval);
         consumers.clear();
         const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());
@@ -718,6 +782,23 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       return disposal;
     },
   };
+  const programCollection = new ProgramCollection(
+    runtime,
+    {
+      load: async (path) => {
+        assertLive();
+        return (await getRegistry()).resolve(path, "/", assertLive);
+      },
+      launchInterpreter: async (interpreter, context, service) => {
+        const executable = await (await getRegistry()).check(interpreter);
+        const launch = adapters.get(executable.adapter);
+        if (!launch) throw new Error(`Unknown interpreter adapter: ${executable.adapter}`);
+        return launch({ ...context, adapter: executable.adapter }, service);
+      },
+    },
+    options.programs,
+  );
+  programCollection.initialize();
   return Object.freeze(runtime);
 }
 
@@ -725,3 +806,23 @@ export type {
   RootDescendantPreparation,
   RootPreparationCompletion,
 } from "./browser/process-broker.js";
+
+function sharedPreparation(
+  prepare: () => Promise<void>,
+  onLoad: ProgramDefinition["onLoad"],
+  assertLive: () => void,
+): () => Promise<void> {
+  let pending: Promise<void> | undefined;
+  return () => {
+    if (pending) return pending;
+    assertLive();
+    onLoad?.({ kind: "preparing" });
+    const attempt = Promise.resolve().then(prepare).then(assertLive);
+    pending = attempt;
+    void attempt.catch((error: unknown) => {
+      if (pending === attempt) pending = undefined;
+      onLoad?.({ kind: "error", error });
+    });
+    return attempt;
+  };
+}
