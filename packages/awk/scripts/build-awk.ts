@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { brotliCompressSync, constants } from "node:zlib";
 import {
   stageProgram,
   verifyWasiGuest,
@@ -117,14 +116,12 @@ function stage(guest: string): void {
   const directory = resolve(packageRoot, "dist");
   mkdirSync(directory, { recursive: true });
   const output = resolve(directory, "awk.wasm");
-  stageProgram(guest, output);
+  const config = wasiBuildConfiguration(familyRecipe);
+  const derivation = stageProgram(guest, output, { sdk: config.sdk });
   const raw = readFileSync(guest);
   const stripped = readFileSync(output);
-  const compressed = brotliCompressSync(stripped, {
-    params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
-  });
-  writeFileSync(`${output}.br`, compressed);
-  const config = wasiBuildConfiguration(familyRecipe);
+  const compressed = readFileSync(`${output}.br`);
+  const gzip = readFileSync(`${output}.gz`);
   const receipt = {
     schemaVersion: 1,
     revision: sourceLock.upstream.revision,
@@ -136,7 +133,9 @@ function stage(guest: string): void {
     raw: { bytes: raw.length, sha256: sha256(raw) },
     stripped: { bytes: stripped.length, sha256: sha256(stripped) },
     brotli: { bytes: compressed.length, sha256: sha256(compressed) },
-    operation: "shared stageProgram name-section removal; no unmerged optimizer assumed",
+    gzip: { bytes: gzip.length, sha256: sha256(gzip) },
+    operation: derivation.operation,
+    transformer: derivation.transformer,
     compiler: run(config.linker, ["--version"], packageRoot).toString().split("\n")[0],
   };
   writeFileSync(resolve(directory, "awk.sizes.json"), JSON.stringify(receipt, null, 2) + "\n");

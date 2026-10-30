@@ -808,3 +808,71 @@ test("gh restores the exact network asset and does not set up native compilers",
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });
+
+test("awk has one bounded leaf using the normal finalizer and verified network bytes", () => {
+  const job = record(jobs.awk);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true') }}",
+  );
+  expect(record(changes.outputs).awk).toBe("${{ steps.paths.outputs.awk }}");
+  expect(job["timeout-minutes"]).toBe(15);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  const steps = stepsFor("awk");
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  const optimizer = steps.findIndex((step) => step.uses === "./.github/actions/program-optimizer");
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(install).toBeGreaterThan(verify);
+  expect(optimizer).toBeGreaterThanOrEqual(0);
+  const producer = steps.find((step) => step.run === "bun run programs:awk");
+  expect(producer).toBeDefined();
+  expect(steps.indexOf(record(producer))).toBeGreaterThan(optimizer);
+  expect(record(producer?.env).AWK_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  const network = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  expect(record(steps[restore]?.with).key).toBe(record(network?.with).key);
+  expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
+  const commands = steps.map((step) => step.run).join("\n");
+  expect(commands).not.toMatch(
+    /cargo\s|programs:(?:integration|check|prepare|pack|packed)|build:network/,
+  );
+  expect(steps.filter((step) => step.run === "bun run programs:awk")).toHaveLength(1);
+});
+
+test("awk selects its source and shared transformations without selecting unrelated guests", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".github/actions/program-optimizer/action.yml",
+    "package.json",
+    "bun.lock",
+    "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
+    "tools/program-package.ts",
+    "tools/program-notices.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/patches/wasi-libc/preopen-scan.patch",
+    "packages/base/src/index.ts",
+    "packages/awk/scripts/build-awk.ts",
+    "packages/awk/tests/awk-wasi.test.ts",
+  ])
+    expect(selected("awk", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "packages/coreutils/src/lib.rs",
+    "packages/diffutils/scripts/build-diffutils.ts",
+    "packages/jq/src/index.ts",
+    "packages/curl/src/index.ts",
+    "docs/bun-patches.md",
+    "site/package.json",
+  ])
+    expect(selected("awk", path), path).toBe(false);
+});

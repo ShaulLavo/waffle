@@ -38,5 +38,5 @@ test("WASI build retains real setjmp and uses the shared verifier before name st
   for (const flag of ["-wasm-enable-sjlj", "-wasm-use-legacy-eh=false", "-lsetjmp"])
     assert.ok(build.includes(flag), flag);
   assert.ok(build.includes("verifyWasiGuest(guest"));
-  assert.ok(build.includes("stageProgram(guest, output)"));
+  assert.ok(build.includes("stageProgram(guest, output, { sdk: config.sdk })"));
 });

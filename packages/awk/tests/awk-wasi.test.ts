@@ -70,7 +70,11 @@ async function proveAwk(session: FamilyAcceptanceSession): Promise<void> {
     const expected = oracle[fixture.name];
     assert.ok(expected, fixture.name);
     const result = await execute(session, fixture);
-    assert.deepEqual(result.exit, { kind: "exited", code: expected.exit }, fixture.name);
+    assert.deepEqual(
+      result.exit,
+      { kind: "exited", code: expected.exit, status: expected.exit },
+      fixture.name,
+    );
     assert.equal(decoder.decode(result.stdout), expected.stdout, `${fixture.name}: stdout`);
     assert.equal(decoder.decode(result.stderr), expected.stderr, `${fixture.name}: stderr`);
     for (const [name, contents] of Object.entries(expected.files))
@@ -90,7 +94,7 @@ async function proveAwk(session: FamilyAcceptanceSession): Promise<void> {
 async function proveUnsupported(session: FamilyAcceptanceSession): Promise<void> {
   for (const fixture of unsupportedCases) {
     const result = await execute(session, { name: fixture.name, args: [fixture.program] });
-    assert.equal(result.exit.kind === "exited" && result.exit.code, 2, fixture.name);
+    assert.deepEqual(result.exit, { kind: "exited", code: 2, status: 2 }, fixture.name);
     assert.equal(result.stdout.length, 0, fixture.name);
     assert.ok(decoder.decode(result.stderr).includes(fixture.diagnostic), fixture.name);
   }
@@ -122,8 +126,9 @@ async function proveStopFence(session: FamilyAcceptanceSession): Promise<void> {
     assert.equal(removed, false, "removal must wait for the running guest's physical stop");
     running.interrupt();
     assert.deepEqual(await bounded("interrupt infinite awk", exit, 5_000), {
-      kind: "exited",
-      code: 130,
+      kind: "signaled",
+      code: 2,
+      status: 130,
     });
     await bounded("remove after physical stop", removal);
     assert.equal(await session.filesystem.lookup("/usr/bin/awk"), undefined);

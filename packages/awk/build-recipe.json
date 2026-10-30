@@ -13,7 +13,14 @@
   "wasiLibc": "2e6fb9d8ee0c",
   "maxMemoryBytes": 268435456,
   "toolRecipe": "scripts/build-awk.ts",
-  "generatedOutputs": ["awk.wasm", "awk.wasm.br", "awk.sizes.json", "THIRD_PARTY_NOTICES.txt"],
+  "generatedOutputs": [
+    "awk.wasm",
+    "awk-program.json",
+    "awk.wasm.gz",
+    "awk.wasm.br",
+    "awk.sizes.json",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
   "upstream": {
     "repository": "https://github.com/onetrueawk/awk",
     "revision": "5739fd79bcfc75ba7526773d0cf634521f8aca3c",
@@ -25,6 +32,7 @@
     "sha256": "f86abb28d347886ff591e4e4a6569cdeea86c1010cc3c67f9d33807e92b0825c"
   },
   "nativeOracle": "The native executable is compiled from the same prepared source tree and patch; it is never the host awk implementation.",
-  "qualification": "Native and Wasmtime oracle checks pass. Real Waffle onDemand admission is blocked by its unsupported exception tag section; tests retain the required stdin, files, argv, alias, error, interruption and physical-disposal controls.",
-  "exceptionHandling": "-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false and exact shared sysroot libsetjmp.a"
+  "qualification": "Real Waffle acceptance uses the enabled package suite and ordinary source rewriting. The shared optimizer must admit standard exception-handling before current-finalizer package output can qualify.",
+  "exceptionHandling": "-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false and exact shared sysroot libsetjmp.a",
+  "finalization": "Shared stageProgram runs pinned Binaryen optimization, validates the named guest, strips names, and stages derivation and compression receipts."
 }

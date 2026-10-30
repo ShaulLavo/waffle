@@ -1,6 +1,6 @@
-import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
+import { defineProgramPackage } from "waffle/programs/catalog";
 
-export const awk: ProgramCatalog = defineProgramPackage({
+export const awk = defineProgramPackage({
   name: "awk",
   programs: [
     {
