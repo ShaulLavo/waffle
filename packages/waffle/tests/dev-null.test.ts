@@ -28,17 +28,7 @@ function fixture() {
   const open = (flags = 0, fdflags = 0) => {
     const path = encoder.encode("dev/null");
     bytes.set(path, 256);
-    const result = calls.path_open(
-      3,
-      1,
-      256,
-      path.length,
-      flags,
-      ALL_RIGHTS,
-      0n,
-      fdflags,
-      1024,
-    );
+    const result = calls.path_open(3, 1, 256, path.length, flags, ALL_RIGHTS, 0n, fdflags, 1024);
     return { result, fd: result === 0 ? view.getUint32(1024, true) : undefined };
   };
   const io = (name: "fd_read" | "fd_write", fd: number, text = "payload") => {
@@ -63,6 +53,8 @@ test("actual WASI opens /dev/null without creating a MemFS node", () => {
 
     const truncate = f.open(O_CREAT | O_TRUNC, 1);
     expect(truncate.result).toBe(0);
+    expect(f.calls.fd_fdstat_get(truncate.fd!, 512)).toBe(0);
+    expect(f.view.getUint16(514, true)).toBe(1);
     expect(f.wasi.descriptors.get(truncate.fd!)?.resource.kind).toBe("device");
 
     expect(f.open(O_CREAT | O_EXCL).result).toBe(20);
@@ -107,8 +99,8 @@ test("actual WASI /dev/null exposes character metadata and descriptor lifetime",
     expect(f.view.getUint16(514, true)).toBe(0);
     expect(f.calls.fd_filestat_get(fd, 544)).toBe(0);
     expect(f.view.getUint8(560)).toBe(2);
-    expect(f.view.getBigUint64(568, true)).toBe(0n);
-    expect(f.view.getBigUint64(576, true)).toBe(1n);
+    expect(f.view.getBigUint64(568, true)).toBe(1n);
+    expect(f.view.getBigUint64(576, true)).toBe(0n);
 
     const duplicate = f.wasi.descriptors.dup(fd);
     expect(f.calls.fd_close(fd)).toBe(0);

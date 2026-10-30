@@ -9,6 +9,7 @@ import { ProcessError } from "../proc/types";
 import type { WorkerDescriptorCodec } from "../proc/worker-client";
 import { createRuntimeTerminalCodec } from "../browser/runtime-terminals";
 import { deliveredTerminalOutput } from "../browser/terminal-output";
+import { createNullDevice } from "../core/devices";
 
 const text = (value: string) => new TextEncoder().encode(value);
 function terminal(): Stream {
@@ -52,6 +53,26 @@ function borrowed(description: OpenDescription): Descriptor {
     rightsInheriting: 0n,
   };
 }
+
+test("null devices transfer without filesystem payloads or terminal provenance", () => {
+  const state = fixture();
+  const table = new DescriptorTable();
+  try {
+    const fd = table.open(createNullDevice(1), (1n << 29n) - 1n, 0n);
+    const token = state.codec.export(table.get(fd)!, 2);
+    expect(token).toEqual({ kind: "null-device", fdflags: 1 });
+    const description = state.codec.import(token, 3);
+    const resource = description.resource;
+    if (resource.kind !== "device") throw Error("not a null device");
+    expect(resource.fdflags).toBe(1);
+    expect(resource.read([new Uint8Array(8)])).toBe(0);
+    expect(resource.write([text("discarded")])).toBe(9);
+    state.codec.discard(token);
+  } finally {
+    table.dispose();
+    state.table.dispose();
+  }
+});
 
 test("a stdin-only resolver keeps checked default output and EOF for declined targets", () => {
   const state = fixture();

@@ -8,6 +8,8 @@ import type { Descriptor, DescriptorTable } from "./descriptors.js";
 import type { FileSystem } from "./filesystem.js";
 import { normalize } from "./path.js";
 
+export type DescriptorPath = { source: number } | { device: "null" };
+
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
   table: DescriptorTable,
@@ -80,9 +82,13 @@ function descriptorPath(path: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+function devicePath(path: string): "null" | undefined {
+  return path === "/dev/null" ? "null" : undefined;
+}
+
 type PathEntry = { prefix: string } & (
   | { kind: "symlink"; handle: number; source?: never }
-  | { kind: "file" | "directory" | "socket"; handle?: number; source?: number }
+  | { kind: "file" | "directory" | "socket" | "device"; handle?: number; source?: number }
 );
 const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 
@@ -105,6 +111,7 @@ function lookupEntry(
         resource.kind === "directory" || resource.kind === "file" ? resource.handle : undefined,
     };
   }
+  if (devicePath(prefix) !== undefined) return { prefix, kind: "device" };
   const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name, false);
   if (typeof path === "number") return path;
   if (path?.node !== undefined) return { prefix, handle: path.node, kind: fs.stat(path.node).kind };
@@ -128,11 +135,13 @@ export function resolveDescriptorPath(
   directory: Descriptor,
   path: string,
   finalLink: FinalLinkPolicy,
-): { source: number } | number | undefined {
+): DescriptorPath | number | undefined {
   // Normalization only selects candidates. The walker below authorizes the ORIGINAL path:
   // canceled components, root escape and terminal slashes/dots are never discarded there.
   if (!path.includes("dev") && !path.includes("proc")) return undefined;
-  if (descriptorPath(normalize(path)) === undefined) return undefined;
+  const normalized = normalize(path);
+  if (descriptorPath(normalized) === undefined && devicePath(normalized) === undefined)
+    return undefined;
   if (directory.resource.kind !== "directory") return undefined;
   const handle = directory.resource.handle;
   if (directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
@@ -173,5 +182,6 @@ export function resolveDescriptorPath(
     current = next;
   }
   if (path.endsWith("/") && current.kind !== "directory") return 54;
-  return current.source === undefined ? undefined : { source: current.source };
+  if (current.source !== undefined) return { source: current.source };
+  return current.kind === "device" ? { device: "null" } : undefined;
 }

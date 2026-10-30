@@ -20,7 +20,8 @@ export interface Readiness {
  * I/O returns a byte count or negative WASI errno. Preview1 adapters may block inside read/write.
  */
 export interface Stream {
-  kind: "pipe" | "terminal";
+  kind: "pipe" | "terminal" | "device";
+  device?: "null";
   /** Supported fdflags share open-description state across duplication and endpoint transfer. */
   fdflags?: number;
   read(chunks: readonly Uint8Array[]): number;
@@ -46,7 +47,7 @@ function describeResource(resource: Resource, release?: () => void): OpenDescrip
   return new OpenDescription(
     resource,
     release ??
-      (resource.kind === "pipe" || resource.kind === "terminal"
+      (resource.kind === "pipe" || resource.kind === "terminal" || resource.kind === "device"
         ? () => resource.close?.()
         : undefined),
   );
@@ -129,6 +130,8 @@ export class DescriptorTable {
         return 1;
       case "terminal":
         return 2;
+      case "device":
+        return 0;
       case "file":
         return 3;
       case "directory":

@@ -1,5 +1,6 @@
 // Original browser adapter: terminal destinations are host sinks, not shared pipe rings.
 import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors.js";
+import { createNullDevice } from "../core/devices.js";
 import { guardedStream } from "./guarded-stream.js";
 import { ProcessError } from "../proc/types.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
@@ -10,6 +11,10 @@ type TerminalTarget = 0 | 1 | 2;
 interface TerminalToken {
   kind: "web-terminal";
   target: TerminalTarget;
+}
+interface NullDeviceToken {
+  kind: "null-device";
+  fdflags: number;
 }
 // A remapped fd is not a new destination. Imported terminals retain their provenance across
 // codec instances and later generations; WeakMap entries disappear with their local streams.
@@ -27,6 +32,20 @@ export interface RuntimeTerminalCodecOptions {
   resolveTerminal?(target: TerminalTarget): Stream | undefined;
   checkActive?(): void;
 }
+function nullDeviceToken(value: unknown): NullDeviceToken | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("kind" in value) ||
+    value.kind !== "null-device"
+  )
+    return;
+  const fdflags = "fdflags" in value ? value.fdflags : undefined;
+  if (typeof fdflags !== "number" || !Number.isInteger(fdflags) || fdflags < 0 || fdflags > 31)
+    throw new TypeError("invalid null device flags");
+  return value as NullDeviceToken;
+}
+
 function terminalToken(value: unknown): TerminalToken | undefined {
   if (
     typeof value !== "object" ||
@@ -65,6 +84,8 @@ export function createRuntimeTerminalCodec(
   return {
     export(descriptor, pid) {
       const resource = descriptor.resource;
+      if (resource.kind === "device" && resource.device === "null")
+        return { kind: "null-device", fdflags: resource.fdflags ?? 0 } satisfies NullDeviceToken;
       if (resource.kind !== "terminal" && resource.kind !== "pipe")
         return options.fallback.export(descriptor, pid);
       const target = weakMapGet(targets, resource);
@@ -77,6 +98,8 @@ export function createRuntimeTerminalCodec(
       return { kind: "web-terminal", target } satisfies TerminalToken;
     },
     import(value, pid) {
+      const nullDevice = nullDeviceToken(value);
+      if (nullDevice) return new OpenDescription(createNullDevice(nullDevice.fdflags));
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
       const resolved = resolveTerminal(options, token.target);
@@ -95,8 +118,8 @@ export function createRuntimeTerminalCodec(
       return new OpenDescription(stream);
     },
     discard(value) {
-      // The token carries a stateless destination, not a retained filesystem or pipe reference.
-      if (!terminalToken(value)) options.fallback.discard(value);
+      if (nullDeviceToken(value) || terminalToken(value)) return;
+      options.fallback.discard(value);
     },
   };
 }
