@@ -1,6 +1,6 @@
-import type { ProgramPackage } from "waffle/programs";
+import { defineProgramPackage } from "waffle/programs/catalog";
 
-export const sed: ProgramPackage = {
+export const sed = defineProgramPackage({
   name: "sed",
   programs: [
     {
@@ -9,4 +9,4 @@ export const sed: ProgramPackage = {
       wasm: new URL("../dist/sed.wasm", import.meta.url),
     },
   ],
-};
+});
