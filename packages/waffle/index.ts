@@ -82,3 +82,10 @@ export type {
   ProgramMode,
   ProgramsOptions,
 } from "./programs/collection.js";
+
+export {
+  openWorkspaceRead,
+  WorkspaceReadContractError,
+  type WorkspaceReadStream,
+  type WorkspaceReadStep,
+} from "./fs/workspace-stream.js";

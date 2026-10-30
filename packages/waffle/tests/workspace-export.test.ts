@@ -446,10 +446,17 @@ for (const resource of ["cursor", "lease"] as const) {
       void work.then(() => {
         done = true;
       });
-      await closed.promise;
+      // A stream owns the wrapped read too, not only the underlying service ticket.
+      // Cursor close still starts immediately; lease close joins the accepted read first.
+      if (resource === "cursor") await closed.promise;
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(done).toBe(false);
+      if (resource === "lease") {
+        expect(closes).toBe(0);
+        expect(value.service.resources().readerLeases).toBe(1);
+      }
       gate.resolve();
+      await closed.promise;
       expect(await work).toEqual({ kind: "error", error: false });
       expect(closes).toBe(1);
       released(value);
