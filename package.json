@@ -41,7 +41,8 @@
     "programs:integration": "bun test tools/family-integration.test.ts packages/coreutils/tests/nl-wasi.test.ts packages/coreutils/tests/date-wasi.test.ts",
     "programs:browser": "bun tools/family-browser.ts",
     "programs:packed": "bun tools/family-packed.ts",
-    "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack"
+    "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack",
+    "relay:check": "bun run --cwd packages/waffle-relay build && bun run --cwd packages/waffle-relay typecheck && bun run --cwd packages/waffle-relay test && bun run --cwd packages/waffle-relay test:native && bun run --cwd packages/waffle-relay test:worker && bun run --cwd packages/waffle-relay pack:check"
   },
   "devDependencies": {
     "@waffle/python": "workspace:*",
