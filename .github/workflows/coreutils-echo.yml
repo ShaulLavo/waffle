@@ -22,6 +22,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - uses: ./.github/actions/program-optimizer
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.1
@@ -70,14 +71,14 @@ jobs:
             ~/.cargo/git
             .build/coreutils
             .build/program-locales
-          key: ${{ runner.os }}-${{ runner.arch }}-echo-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}-${{ hashFiles('packages/coreutils/crates/echo/**') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-echo-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-echo-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}-${{ hashFiles('packages/coreutils/crates/echo/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-echo-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}-
       - name: Cache singular patched libc for dependent guest jobs
         uses: actions/cache@v4
         id: libc
         with:
           path: .build/wasi-libc
-          key: wasi-libc-34.0-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
+          key: wasi-libc-34.0-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/preopen-scan.patch') }}
       - name: Prepare existing runtime modules without rebuilding its network asset
         run: |
           bun run --cwd packages/waffle tooling/build-network.ts --verify

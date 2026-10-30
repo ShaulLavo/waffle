@@ -76,6 +76,8 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/findutils/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -98,6 +100,8 @@ jobs:
               - "packages/process-consumer/**"
               - "packages/program-support/**"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-locales/**"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -141,6 +145,8 @@ jobs:
               - "package.json"
               - "bun.lock"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-package.ts"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -161,6 +167,8 @@ jobs:
               - "bun.lock"
               - "rust-toolchain.toml"
               - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
               - "tools/program-package.ts"
               - "tools/family-acceptance.ts"
               - "tools/tsconfig.programs.json"
@@ -355,6 +363,7 @@ jobs:
         run: |
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
+      - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
       - run: bun run programs:check
@@ -500,6 +509,7 @@ jobs:
         run: |
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
+      - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
       - run: bun run programs:check
@@ -756,19 +766,52 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-locales/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
       - run: cargo fetch --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
       - run: bun run --cwd packages/git test:unit
       - run: bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
+      - uses: ./.github/actions/program-optimizer
       - run: bun run programs:tools
       - run: bun test scripts/program-release.test.ts
       - run: bun run programs:routes
       - run: bun run programs:source
+      - uses: actions/setup-node@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        with:
+          node-version: 26.12.1
+      - name: Record exact GNU date source and native compiler identity
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        id: gnu-date-identity
+        run: |
+          set -euo pipefail
+          identity=$(node packages/coreutils/scripts/build-native-date-oracle.ts --identity)
+          printf 'identity=%s\n' "$identity" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        id: gnu-date-native
+        with:
+          path: .build/gnu-date-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-gnu-date-9.12-v1-${{ steps.gnu-date-identity.outputs.identity }}
+      - name: Build or verify only the pinned GNU date native oracle
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        env:
+          GNU_DATE_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-date-native-oracle
+          GNU_DATE_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          df -h "$GITHUB_WORKSPACE" "$GNU_DATE_ORACLE_SCRATCH_ROOT"
+          bash packages/coreutils/scripts/provision-native-date.sh
+          node packages/coreutils/scripts/build-native-date-oracle.ts --verify-only
+          printf 'GNU_DATE=%s/date\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
+          printf 'GNU_DATE_ORACLE_ROOT=%s\n' "$GNU_DATE_ORACLE_ROOT" >> "$GITHUB_ENV"
+      - name: Verify date source against the pinned native GNU oracle
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true' }}
+        run: node --disable-warning=ExperimentalWarning --test packages/coreutils/scripts/date-source.test.ts
       - run: bun run --cwd packages/python test:composition
       - run: bun run --cwd packages/python test:build
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo
+      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date

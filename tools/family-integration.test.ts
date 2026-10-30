@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const workerUrl = new URL("../packages/waffle/browser/preview1-worker.ts", import.meta.url);
 
-test("25 real programs install lazily, run on one generic runtime, and release their paths", async () => {
+test("26 real programs install lazily, run on one generic runtime, and release their paths", async () => {
   const runtime = createRuntime({
     filesystem: {
       mode: "memory",
