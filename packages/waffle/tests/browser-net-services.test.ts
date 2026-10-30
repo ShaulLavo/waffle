@@ -283,19 +283,24 @@ test("generic filesystem notices wake the host without replaying contents", asyn
   }
 });
 
+async function loopbackFixture() {
+  const sab = createRing();
+  const reader = new RingReader(sab);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(
+    sab,
+    async () => {
+      throw new Error("Unexpected external fetch");
+    },
+    {},
+    namespace,
+  );
+  return { reader, namespace, helper };
+}
+
 for (const ending of ["end", "error"] as const) {
   test(`loopback response writes keep every chunk in FIFO order with ${ending} last`, async () => {
-    const sab = createRing();
-    const reader = new RingReader(sab);
-    const namespace = await NetNamespace.create();
-    const helper = new NetHelper(
-      sab,
-      async () => {
-        throw new Error("Unexpected external fetch");
-      },
-      {},
-      namespace,
-    );
+    const { reader, namespace, helper } = await loopbackFixture();
     let records: RingRecord[] = [];
     try {
       helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
@@ -417,17 +422,7 @@ test("closing a listener still refuses unaccepted helper-owned connections", asy
 
 for (const delivered of [false, true]) {
   test(`closing a loopback fetch releases its preview connection ${delivered ? "after" : "before"} request delivery`, async () => {
-    const sab = createRing();
-    const reader = new RingReader(sab);
-    const namespace = await NetNamespace.create();
-    const helper = new NetHelper(
-      sab,
-      async () => {
-        throw new Error("Unexpected external fetch");
-      },
-      {},
-      namespace,
-    );
+    const { reader, namespace, helper } = await loopbackFixture();
     let records: RingRecord[] = [];
     try {
       helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
