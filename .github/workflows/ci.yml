@@ -318,8 +318,12 @@ jobs:
       - run: echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"
       - run: bun run prepare:package
       - run: bun run programs:procps
-      - run: bun run --cwd packages/waffle oxlint ../procps/src ../procps/tests ../procps/scripts
-      - run: bun run --cwd packages/waffle oxfmt --check --config .oxfmtrc.json ../procps/src ../procps/tests ../procps/scripts ../procps/docs ../procps/provenance ../procps/package.json ../procps/tsconfig.json
+      - name: Lint procps
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts
+      - name: Check procps formatting
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json
   diffutils:
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}
