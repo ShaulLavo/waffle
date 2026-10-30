@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  stageProgram,
   verifyWasiGuest,
   wasiBuildEnvironment,
   wasiTarget,
@@ -13,6 +14,12 @@ import {
   targetDirectory,
   workspaceRoot,
 } from "./build-config.ts";
+import {
+  prepareProgramLocales,
+  programLocaleCargoCommand,
+  singleProgramBuilds,
+} from "../../../tools/program-locales/prepare.ts";
+import { usesProgramCatalogs } from "../../../tools/program-locales/selection.ts";
 import { verificationOptions } from "./programs.ts";
 
 type Execute = typeof execFileSync;
@@ -23,6 +30,8 @@ export interface BuildOptions {
   execute?: Execute;
   environment?: Environment;
   rustflags?: readonly string[];
+  localeProgram?: string;
+  locales?: typeof prepareProgramLocales;
 }
 
 export function buildFamilyPackages(args: readonly string[], options: BuildOptions = {}) {
@@ -32,24 +41,35 @@ export function buildFamilyPackages(args: readonly string[], options: BuildOptio
   const flags = env.CARGO_ENCODED_RUSTFLAGS;
   if (!flags) throw new Error("The WASI build must supply encoded Rust flags");
   const encoded = [flags].concat(options.rustflags ?? []);
-  execute(
-    "cargo",
-    [
-      "build",
-      "--locked",
-      "--release",
-      "--target",
-      wasiTarget,
-      "--manifest-path",
-      resolve(packageRoot, "Cargo.toml"),
-      "-j2",
-    ].concat(args),
-    {
-      cwd: workspaceRoot,
-      env: { ...env, CARGO_ENCODED_RUSTFLAGS: encoded.join("\x1f") },
-      stdio: "inherit",
-    },
-  );
+  const buildArgs = [
+    "build",
+    "--locked",
+    "--release",
+    "--target",
+    wasiTarget,
+    "--manifest-path",
+    resolve(packageRoot, "Cargo.toml"),
+    "-j2",
+  ].concat(args);
+  const flagsEnv = { ...env, CARGO_ENCODED_RUSTFLAGS: encoded.join("\x1f") };
+  const program = options.localeProgram;
+  const buildEnv = program
+    ? (options.locales ?? prepareProgramLocales)({
+        root: workspaceRoot,
+        program,
+        env: flagsEnv,
+      })
+    : flagsEnv;
+  const invocation: [string, string[]] = program
+    ? programLocaleCargoCommand(
+        buildEnv,
+        resolve(workspaceRoot, targetDirectory),
+        program,
+        buildArgs,
+      )
+    : ["cargo", buildArgs];
+  const [command, commandArgs] = invocation;
+  execute(command, commandArgs, { cwd: workspaceRoot, env: buildEnv, stdio: "inherit" });
 }
 
 export interface ProgramBuildOptions extends BuildOptions {
@@ -61,7 +81,12 @@ export function buildFamilyPrograms(
   names: readonly string[],
   options: ProgramBuildOptions = {},
 ) {
-  buildFamilyPackages(args, options);
+  for (const build of singleProgramBuilds(args, names)) {
+    buildFamilyPackages(build.args, {
+      ...options,
+      localeProgram: usesProgramCatalogs(build.program) ? build.program : undefined,
+    });
+  }
   const verifier = options.verifier ?? verifyWasiGuest;
   for (const name of names) {
     verifier(resolve(releaseDirectory, `${name}.wasm`), verificationOptions(name));
@@ -72,7 +97,7 @@ export function stageFamilyPrograms(names: readonly string[]) {
   for (const name of names) {
     for (const directory of ["dist", "public/programs"]) {
       mkdirSync(resolve(packageRoot, directory), { recursive: true });
-      copyFileSync(
+      stageProgram(
         resolve(releaseDirectory, `${name}.wasm`),
         resolve(packageRoot, directory, `${name}.wasm`),
       );

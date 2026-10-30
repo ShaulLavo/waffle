@@ -1,3 +1,4 @@
+import { stageProgram } from "../../../tools/program-build-tools.ts";
 import { build } from "esbuild";
 import { copyFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -16,8 +17,8 @@ const release = resolve(
   process.env.CARGO_TARGET_DIR ?? ".build/coreutils",
   "wasm32-wasip1/release",
 );
-for (const name of ["env", "shell-runtime"])
-  await copyFile(resolve(release, `${name}.wasm`), `dist/${name}.wasm`);
+stageProgram(resolve(release, "env.wasm"), "dist/env.wasm");
+await copyFile(resolve(release, "shell-runtime.wasm"), "dist/shell-runtime.wasm");
 await copyFile("scripts/serve.mjs", "dist/serve.mjs");
 await writeFile(
   "dist/env-tests.html",

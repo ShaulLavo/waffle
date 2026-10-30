@@ -59,6 +59,7 @@ export class WatchService {
     if (this.incomplete)
       throw new FilesystemError(6, "watch graph overflow; close watches before registering again");
     const node = this.backend.fs.nodeForHandle(handle);
+    if (!this.backend.fs.hasNode(node)) throw new FilesystemError(44);
     const root = this.backend.ensureIdentity(node).id;
     const metadata = this.nodes.get(root);
     if (!metadata) throw new FilesystemError(44);
