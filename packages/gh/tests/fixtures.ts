@@ -48,15 +48,20 @@ type StreamExpectation =
 
 const fixtureBytes = await readFile(new URL("../fixtures/cases.json", import.meta.url));
 const lock = JSON.parse(await readFile(new URL("../sources.lock.json", import.meta.url), "utf8"));
-assert.equal(createHash("sha256").update(fixtureBytes).digest("hex"), lock.fixtures["cases.json"].sha256);
+assert.equal(
+  createHash("sha256").update(fixtureBytes).digest("hex"),
+  lock.fixtures["cases.json"].sha256,
+);
 const contract = JSON.parse(decode(fixtureBytes));
 const cases = contract.cases as FixtureCase[];
-const selected = cases.filter((fixture) =>
-  fixture.execution === "fixture-only" ||
-  (fixture.execution === "oracle-offline" && fixture.id !== "invalid-jq"),
+const selected = cases.filter(
+  (fixture) =>
+    fixture.execution === "fixture-only" ||
+    (fixture.execution === "oracle-offline" && fixture.id !== "invalid-jq"),
 );
 const temporary = new Set<string>();
-const cleanup = () => Promise.all(Array.from(temporary, (path) => rm(path, { recursive: true, force: true })));
+const cleanup = () =>
+  Promise.all(Array.from(temporary, (path) => rm(path, { recursive: true, force: true })));
 process.once("SIGINT", () => void cleanup().then(() => process.exit(130)));
 process.once("SIGTERM", () => void cleanup().then(() => process.exit(143)));
 
@@ -96,8 +101,12 @@ async function runFixture(fixture: FixtureCase): Promise<void> {
       cwd: root,
       env,
       stdin: async () => encode(fixture.stdin ?? ""),
-      stdout: (bytes) => { stdout.push(bytes); },
-      stderr: (bytes) => { stderr.push(bytes); },
+      stdout: (bytes) => {
+        stdout.push(bytes);
+      },
+      stderr: (bytes) => {
+        stderr.push(bytes);
+      },
       filesystem: nodeFileSystem,
       evaluator: executeJq,
       transport: async (request) => {
@@ -120,7 +129,10 @@ async function runFixture(fixture: FixtureCase): Promise<void> {
       assert.ok(!out.includes(secret) && !err.includes(secret), `${fixture.id}: token redaction`);
     }
     if (fixture.expect.fileAbsent)
-      await assert.rejects(readFile(join(root, fixture.expect.fileAbsent)), `${fixture.id}: file absent`);
+      await assert.rejects(
+        readFile(join(root, fixture.expect.fileAbsent)),
+        `${fixture.id}: file absent`,
+      );
     await checkFiles(root, fixture);
   } catch (error) {
     throw new Error(`${fixture.id} failed`, { cause: error });
@@ -140,7 +152,9 @@ function checkRequest(id: string, request: HttpRequest, expected: ExpectedReques
   );
   assert.deepEqual(actualQuery, wantedQuery, `${id}: query`);
   for (const [name, value] of Object.entries(expected.headers ?? {})) {
-    const actual = Object.entries(request.headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+    const actual = Object.entries(request.headers).find(
+      ([key]) => key.toLowerCase() === name.toLowerCase(),
+    );
     assert.equal(actual?.[1], value, `${id}: header ${name}`);
   }
   if (expected.body !== undefined) {
@@ -152,8 +166,11 @@ function checkRequest(id: string, request: HttpRequest, expected: ExpectedReques
 function responseBytes(response: FixtureResponse): HttpResponse {
   return {
     status: response.status,
-    headers: Object.fromEntries(Object.entries(response.headers).map(([name, value]) => [name.toLowerCase(), value])),
-    body: response.body === null ? new Uint8Array() : encode(JSON.stringify(response.body, null, 2)),
+    headers: Object.fromEntries(
+      Object.entries(response.headers).map(([name, value]) => [name.toLowerCase(), value]),
+    ),
+    body:
+      response.body === null ? new Uint8Array() : encode(JSON.stringify(response.body, null, 2)),
   };
 }
 

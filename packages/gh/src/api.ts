@@ -18,8 +18,14 @@ interface Page {
 export async function api(invocation: Invocation, command: ApiCommand): Promise<void> {
   const placeholders = new PlaceholderResolver(invocation);
   const endpoint = await placeholders.expand(command.endpoint);
-  const fields = await prepareFields(invocation, command.rawFields, command.typedFields, placeholders);
-  const input = command.input === undefined ? undefined : await readRequired(invocation, command.input);
+  const fields = await prepareFields(
+    invocation,
+    command.rawFields,
+    command.typedFields,
+    placeholders,
+  );
+  const input =
+    command.input === undefined ? undefined : await readRequired(invocation, command.input);
   const headers = requestHeaders(command.headers, command.previews);
   const client = new GitHubClient(invocation.transport, await resolveToken(invocation));
   const prepared = prepareRequest(command, endpoint, fields.values, fields.count, input, headers);
@@ -45,9 +51,12 @@ function prepareRequest(
   headers: Readonly<Record<string, string>>,
 ): ApiRequest {
   const graphql = endpoint.replace(/^\//, "") === "graphql";
-  const method = (command.method ?? (graphql || fieldCount || input ? "POST" : "GET")).toUpperCase();
+  const method = (
+    command.method ?? (graphql || fieldCount || input ? "POST" : "GET")
+  ).toUpperCase();
   const getFields = method === "GET" || input !== undefined;
-  const body = input ?? (getFields || !fieldCount ? undefined : graphql ? graphqlBody(fields) : fields);
+  const body =
+    input ?? (getFields || !fieldCount ? undefined : graphql ? graphqlBody(fields) : fields);
   const query = getFields ? flattenFields(fields) : [];
   const path = command.paginate && !graphql ? setQuery(endpoint, "per_page", "100") : endpoint;
   return { method, path, query, headers, body };
@@ -87,24 +96,38 @@ function nextRequest(
   const pageInfo = value === undefined ? undefined : findPageInfo(value);
   if (!pageInfo) throw new GhError("gh: GraphQL pagination response has no pageInfo");
   if (!pageInfo.hasNextPage) return undefined;
-  const requestBody = request.body instanceof Uint8Array ? null : request.body ?? null;
+  const requestBody = request.body instanceof Uint8Array ? null : (request.body ?? null);
   const body = object(requestBody, "GraphQL request body");
   const variables = object(body.variables ?? {}, "GraphQL variables");
-  return { ...request, body: { ...body, variables: { ...variables, endCursor: pageInfo.endCursor } } };
+  return {
+    ...request,
+    body: { ...body, variables: { ...variables, endCursor: pageInfo.endCursor } },
+  };
 }
 
 function validateGraphQL(body: ApiRequest["body"]): void {
-  const requestBody = body instanceof Uint8Array ? null : body ?? null;
+  const requestBody = body instanceof Uint8Array ? null : (body ?? null);
   const root = object(requestBody, "GraphQL request body");
-  if (typeof root.query !== "string" || !/\$endCursor\b/.test(root.query) || !/pageInfo\s*\{/.test(root.query))
-    throw new GhError("gh: GraphQL pagination requires $endCursor and pageInfo { hasNextPage, endCursor }");
+  if (
+    typeof root.query !== "string" ||
+    !/\$endCursor\b/.test(root.query) ||
+    !/pageInfo\s*\{/.test(root.query)
+  )
+    throw new GhError(
+      "gh: GraphQL pagination requires $endCursor and pageInfo { hasNextPage, endCursor }",
+    );
 }
 
-function findPageInfo(value: JsonValue): { hasNextPage: boolean; endCursor: string | null } | undefined {
+function findPageInfo(
+  value: JsonValue,
+): { hasNextPage: boolean; endCursor: string | null } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   if (value.pageInfo && typeof value.pageInfo === "object" && !Array.isArray(value.pageInfo)) {
     const page = value.pageInfo;
-    if (typeof page.hasNextPage === "boolean" && (typeof page.endCursor === "string" || page.endCursor === null))
+    if (
+      typeof page.hasNextPage === "boolean" &&
+      (typeof page.endCursor === "string" || page.endCursor === null)
+    )
       return { hasNextPage: page.hasNextPage, endCursor: page.endCursor };
   }
   for (const child of Object.values(value)) {
@@ -114,13 +137,17 @@ function findPageInfo(value: JsonValue): { hasNextPage: boolean; endCursor: stri
   return undefined;
 }
 
-async function writePages(invocation: Invocation, command: ApiCommand, pages: readonly Page[]): Promise<void> {
+async function writePages(
+  invocation: Invocation,
+  command: ApiCommand,
+  pages: readonly Page[],
+): Promise<void> {
   if (command.slurp) {
     await writeText(invocation, "stdout", `${stableJson(pages.map((page) => page.value))}\n`);
     return;
   }
   if (command.paginate && pages.every((page) => Array.isArray(page.value))) {
-    const merged = pages.flatMap((page) => Array.isArray(page.value) ? page.value : []);
+    const merged = pages.flatMap((page) => (Array.isArray(page.value) ? page.value : []));
     await writeText(invocation, "stdout", `${stableJson(merged)}\n`);
     return;
   }
@@ -132,11 +159,16 @@ async function writePages(invocation: Invocation, command: ApiCommand, pages: re
 }
 
 async function writeHeaders(invocation: Invocation, response: HttpResponse): Promise<void> {
-  const headers = Object.entries(response.headers).map(([name, value]) => `${name}: ${value}\n`).join("");
+  const headers = Object.entries(response.headers)
+    .map(([name, value]) => `${name}: ${value}\n`)
+    .join("");
   await writeText(invocation, "stdout", `HTTP/1.1 ${response.status}\n${headers}\n`);
 }
 
-function requestHeaders(headers: readonly string[], previews: readonly string[]): Record<string, string> {
+function requestHeaders(
+  headers: readonly string[],
+  previews: readonly string[],
+): Record<string, string> {
   const result: Record<string, string> = {};
   for (const header of headers) {
     const colon = header.indexOf(":");

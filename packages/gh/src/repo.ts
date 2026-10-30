@@ -11,19 +11,30 @@ type RepoView = Extract<Command, { kind: "repo-view" }>;
 export async function repoView(invocation: Invocation, command: RepoView): Promise<void> {
   const format = command.output;
   const context = await commandContext(invocation, command.repo);
-  const repository = object(await context.client.json({
-    method: "GET",
-    path: repositoryPath(context.git.repository),
-  }), "repository");
+  const repository = object(
+    await context.client.json({
+      method: "GET",
+      path: repositoryPath(context.git.repository),
+    }),
+    "repository",
+  );
   if (format.kind === "json") {
     await emitJson(invocation, project("repo", repository, format.fields), format);
     return;
   }
-  const readme = await readmeText(context.client, repositoryPath(context.git.repository), command.branch);
+  const readme = await readmeText(
+    context.client,
+    repositoryPath(context.git.repository),
+    command.branch,
+  );
   await writeText(invocation, "stdout", plainRepository(repository, readme));
 }
 
-async function readmeText(client: import("./transport.ts").GitHubClient, path: string, branch?: string) {
+async function readmeText(
+  client: import("./transport.ts").GitHubClient,
+  path: string,
+  branch?: string,
+) {
   try {
     const response = await client.send({
       method: "GET",

@@ -11,7 +11,10 @@ export interface GitContext {
 }
 
 export function parseRepository(input: string): Repository {
-  const parts = input.replace(/\.git$/, "").split("/").filter(Boolean);
+  const parts = input
+    .replace(/\.git$/, "")
+    .split("/")
+    .filter(Boolean);
   if (parts.length === 3 && parts[0] === "github.com") parts.shift();
   if (parts.length !== 2 || !parts[0] || !parts[1])
     throw new GhError(`invalid repository: ${input}`);
@@ -99,7 +102,9 @@ function parseConfig(source: string | undefined): ParsedConfig {
 }
 
 function selectRemote(remotes: ReadonlyMap<string, string>): Repository | undefined {
-  const names = remotes.has("origin") ? ["origin"].concat(Array.from(remotes.keys())) : Array.from(remotes.keys());
+  const names = remotes.has("origin")
+    ? ["origin"].concat(Array.from(remotes.keys()))
+    : Array.from(remotes.keys());
   for (const name of names) {
     const repository = parseRemote(remotes.get(name) ?? "");
     if (repository) return repository;
@@ -109,7 +114,9 @@ function selectRemote(remotes: ReadonlyMap<string, string>): Repository | undefi
 
 function parseRemote(remote: string): Repository | undefined {
   const https = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(remote);
-  const ssh = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(remote);
+  const ssh = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(
+    remote,
+  );
   const match = https ?? ssh;
   return match ? parseRepository(match[1]) : undefined;
 }

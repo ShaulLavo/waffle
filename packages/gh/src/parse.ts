@@ -98,7 +98,12 @@ export type Command =
 
 const repoValues = { "-R": "repo", "--repo": "repo" };
 const formatValues = { "--json": "json", "-q": "jq", "--jq": "jq" };
-const bodyValues = { "-b": "body", "--body": "body", "-F": "body-file", "--body-file": "body-file" };
+const bodyValues = {
+  "-b": "body",
+  "--body": "body",
+  "-F": "body-file",
+  "--body-file": "body-file",
+};
 
 export function parseCommand(argv: readonly string[]): Command {
   if (argv.length === 1 && argv[0] === "--version") return { kind: "version" };
@@ -121,7 +126,16 @@ function parsePr(subcommand: string | undefined, argv: readonly string[]): Comma
 }
 
 function parsePrList(argv: readonly string[]): Command {
-  const spec = specWith({ "--state": "state", "-s": "state", "--head": "head", "-H": "head", "--base": "base", "-B": "base", "--limit": "limit", "-L": "limit" });
+  const spec = specWith({
+    "--state": "state",
+    "-s": "state",
+    "--head": "head",
+    "-H": "head",
+    "--base": "base",
+    "-B": "base",
+    "--limit": "limit",
+    "-L": "limit",
+  });
   const args = parseArgs(argv, spec);
   arity(args, 0);
   const head = args.values.get("head");
@@ -149,10 +163,21 @@ function parsePrView(argv: readonly string[]): Command {
 }
 
 function parsePrCreate(argv: readonly string[]): Command {
-  const args = parseArgs(argv, specWith({
-    "--title": "title", "-t": "title", "--head": "head", "-H": "head",
-    "--base": "base", "-B": "base", ...bodyValues,
-  }, { "--draft": "draft", "-d": "draft", "--no-maintainer-edit": "no-maintainer-edit" }));
+  const args = parseArgs(
+    argv,
+    specWith(
+      {
+        "--title": "title",
+        "-t": "title",
+        "--head": "head",
+        "-H": "head",
+        "--base": "base",
+        "-B": "base",
+        ...bodyValues,
+      },
+      { "--draft": "draft", "-d": "draft", "--no-maintainer-edit": "no-maintainer-edit" },
+    ),
+  );
   arity(args, 0);
   const title = args.values.get("title");
   if (!title) throw new GhError("--title is required in noninteractive mode");
@@ -171,10 +196,15 @@ function parsePrCreate(argv: readonly string[]): Command {
 
 function parseIssue(subcommand: string | undefined, argv: readonly string[]): Command {
   if (subcommand === "list" || subcommand === "ls") {
-    const args = parseArgs(argv, specWith({ "--state": "state", "-s": "state", "--limit": "limit", "-L": "limit" }));
+    const args = parseArgs(
+      argv,
+      specWith({ "--state": "state", "-s": "state", "--limit": "limit", "-L": "limit" }),
+    );
     arity(args, 0);
     return {
-      kind: "issue-list", repo: optionalRepository(args), output: outputFormat(args, "issue"),
+      kind: "issue-list",
+      repo: optionalRepository(args),
+      output: outputFormat(args, "issue"),
       state: choice(args.values.get("state"), "open", ["open", "closed", "all"], "--state"),
       limit: positiveInt(args.values.get("limit"), 30, "--limit"),
     };
@@ -182,41 +212,76 @@ function parseIssue(subcommand: string | undefined, argv: readonly string[]): Co
   if (subcommand === "view") {
     const args = parseArgs(argv, specWith({}));
     arity(args, 1);
-    return { kind: "issue-view", repo: optionalRepository(args), output: outputFormat(args, "issue"), selector: args.positionals[0] };
+    return {
+      kind: "issue-view",
+      repo: optionalRepository(args),
+      output: outputFormat(args, "issue"),
+      selector: args.positionals[0],
+    };
   }
   if (subcommand === "create" || subcommand === "new") {
     const args = parseArgs(argv, specWith({ "--title": "title", "-t": "title", ...bodyValues }));
     arity(args, 0);
     const title = args.values.get("title");
     if (!title) throw new GhError("--title is required in noninteractive mode");
-    return { kind: "issue-create", repo: optionalRepository(args), title, body: args.values.get("body"), bodyFile: args.values.get("body-file") };
+    return {
+      kind: "issue-create",
+      repo: optionalRepository(args),
+      title,
+      body: args.values.get("body"),
+      bodyFile: args.values.get("body-file"),
+    };
   }
   throw new GhError(`unknown command: issue ${subcommand ?? ""}`);
 }
 
 function parseRun(subcommand: string | undefined, argv: readonly string[]): Command {
   if (subcommand === "list" || subcommand === "ls") {
-    const args = parseArgs(argv, specWith({
-      "--limit": "limit", "-L": "limit", "--branch": "branch", "-b": "branch",
-      "--status": "status", "-s": "status", "--commit": "commit", "-c": "commit", "--event": "event", "-e": "event",
-    }));
+    const args = parseArgs(
+      argv,
+      specWith({
+        "--limit": "limit",
+        "-L": "limit",
+        "--branch": "branch",
+        "-b": "branch",
+        "--status": "status",
+        "-s": "status",
+        "--commit": "commit",
+        "-c": "commit",
+        "--event": "event",
+        "-e": "event",
+      }),
+    );
     arity(args, 0);
     const status = args.values.get("status");
     if (status) choice(status, "completed", runStatuses, "--status");
     return {
-      kind: "run-list", repo: optionalRepository(args), output: outputFormat(args, "run"),
-      limit: positiveInt(args.values.get("limit"), 20, "--limit"), branch: args.values.get("branch"),
-      status, commit: args.values.get("commit"), event: args.values.get("event"),
+      kind: "run-list",
+      repo: optionalRepository(args),
+      output: outputFormat(args, "run"),
+      limit: positiveInt(args.values.get("limit"), 20, "--limit"),
+      branch: args.values.get("branch"),
+      status,
+      commit: args.values.get("commit"),
+      event: args.values.get("event"),
     };
   }
   if (subcommand === "view") {
-    const args = parseArgs(argv, specWith({ "--attempt": "attempt", "-a": "attempt" }, { "--exit-status": "exit-status" }));
+    const args = parseArgs(
+      argv,
+      specWith({ "--attempt": "attempt", "-a": "attempt" }, { "--exit-status": "exit-status" }),
+    );
     arity(args, 1);
     const id = args.positionals[0];
     if (!/^\d+$/.test(id)) throw new GhError("run ID must be numeric");
     return {
-      kind: "run-view", repo: optionalRepository(args), output: outputFormat(args, "run"), id,
-      attempt: args.values.has("attempt") ? positiveInt(args.values.get("attempt"), 1, "--attempt") : undefined,
+      kind: "run-view",
+      repo: optionalRepository(args),
+      output: outputFormat(args, "run"),
+      id,
+      attempt: args.values.has("attempt")
+        ? positiveInt(args.values.get("attempt"), 1, "--attempt")
+        : undefined,
       exitStatus: args.flags.has("exit-status"),
     };
   }
@@ -230,8 +295,10 @@ function parseRepoView(argv: readonly string[]): Command {
   arity(args, 0, 1);
   const repository = args.positionals[0];
   return {
-    kind: "repo-view", repo: repository ? parseRepository(repository) : undefined,
-    output: outputFormat(args, "repo"), branch: args.values.get("branch"),
+    kind: "repo-view",
+    repo: repository ? parseRepository(repository) : undefined,
+    output: outputFormat(args, "repo"),
+    branch: args.values.get("branch"),
   };
 }
 
@@ -248,12 +315,28 @@ function parseAuth(argv: readonly string[]): Command {
 function parseApi(argv: readonly string[]): Command {
   const args = parseArgs(argv, {
     values: {
-      "-X": "method", "--method": "method", "-f": "raw-field", "--raw-field": "raw-field",
-      "-F": "field", "--field": "field", "-H": "header", "--header": "header",
-      "--hostname": "hostname", "--input": "input", "-q": "jq", "--jq": "jq",
-      "-p": "preview", "--preview": "preview",
+      "-X": "method",
+      "--method": "method",
+      "-f": "raw-field",
+      "--raw-field": "raw-field",
+      "-F": "field",
+      "--field": "field",
+      "-H": "header",
+      "--header": "header",
+      "--hostname": "hostname",
+      "--input": "input",
+      "-q": "jq",
+      "--jq": "jq",
+      "-p": "preview",
+      "--preview": "preview",
     },
-    flags: { "--paginate": "paginate", "--slurp": "slurp", "--silent": "silent", "-i": "include", "--include": "include" },
+    flags: {
+      "--paginate": "paginate",
+      "--slurp": "slurp",
+      "--silent": "silent",
+      "-i": "include",
+      "--include": "include",
+    },
     repeated: ["raw-field", "field", "header", "preview"],
   });
   arity(args, 1);
@@ -265,15 +348,27 @@ function parseApi(argv: readonly string[]): Command {
   const hostname = args.values.get("hostname");
   if (hostname && hostname !== "github.com") throw new GhError("only github.com is supported");
   return {
-    kind: "api", endpoint: args.positionals[0], method: args.values.get("method"),
-    rawFields: args.repeated.get("raw-field") ?? [], typedFields: args.repeated.get("field") ?? [],
-    headers: args.repeated.get("header") ?? [], previews: args.repeated.get("preview") ?? [],
-    hostname, input: args.values.get("input"), jq, paginate, slurp,
-    silent: args.flags.has("silent"), include: args.flags.has("include"),
+    kind: "api",
+    endpoint: args.positionals[0],
+    method: args.values.get("method"),
+    rawFields: args.repeated.get("raw-field") ?? [],
+    typedFields: args.repeated.get("field") ?? [],
+    headers: args.repeated.get("header") ?? [],
+    previews: args.repeated.get("preview") ?? [],
+    hostname,
+    input: args.values.get("input"),
+    jq,
+    paginate,
+    slurp,
+    silent: args.flags.has("silent"),
+    include: args.flags.has("include"),
   };
 }
 
-function specWith(values: Readonly<Record<string, string>>, flags: Readonly<Record<string, string>> = {}): OptionSpec {
+function specWith(
+  values: Readonly<Record<string, string>>,
+  flags: Readonly<Record<string, string>> = {},
+): OptionSpec {
   return { values: { ...repoValues, ...formatValues, ...values }, flags };
 }
 
@@ -294,6 +389,19 @@ function outputFormat(args: ParsedArgs, kind: ResourceKind): OutputFormat {
 }
 
 const runStatuses = [
-  "queued", "completed", "in_progress", "requested", "waiting", "pending", "action_required",
-  "cancelled", "failure", "neutral", "skipped", "stale", "startup_failure", "success", "timed_out",
+  "queued",
+  "completed",
+  "in_progress",
+  "requested",
+  "waiting",
+  "pending",
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "skipped",
+  "stale",
+  "startup_failure",
+  "success",
+  "timed_out",
 ] as const;

@@ -31,7 +31,8 @@ export function flattenFields(values: JsonObject): QueryEntry[] {
 
 function flattenValue(key: string, value: JsonValue): QueryEntry[] {
   if (Array.isArray(value)) return value.flatMap((entry) => flattenValue(`${key}[]`, entry));
-  if (value && typeof value === "object") return flattenFields(value).map(([child, item]) => [`${key}[${child}]`, item]);
+  if (value && typeof value === "object")
+    return flattenFields(value).map(([child, item]) => [`${key}[${child}]`, item]);
   return [[key, scalar(value)]];
 }
 
@@ -79,7 +80,11 @@ function fieldPath(key: string): Segment[] {
   return segments;
 }
 
-function setPath(target: JsonObject, path: readonly Segment[], value: JsonValue | typeof EMPTY_ARRAY): void {
+function setPath(
+  target: JsonObject,
+  path: readonly Segment[],
+  value: JsonValue | typeof EMPTY_ARRAY,
+): void {
   const [head, ...rest] = path;
   if (typeof head !== "string") throw new GhError("invalid array field");
   if (!rest.length) {

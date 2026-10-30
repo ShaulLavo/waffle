@@ -27,7 +27,8 @@ export async function emitJson(
 }
 
 export async function evaluate(invocation: Invocation, expression: string, value: JsonValue) {
-  if (!invocation.evaluator) throw new GhError("gh: --jq requires the installed /usr/bin/jq program");
+  if (!invocation.evaluator)
+    throw new GhError("gh: --jq requires the installed /usr/bin/jq program");
   const output = await invocation.evaluator(expression, value, {
     cwd: invocation.cwd,
     env: invocation.env,

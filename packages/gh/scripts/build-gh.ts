@@ -13,7 +13,10 @@ const result = await build({
   metafile: true,
 });
 const inputs = Object.keys(result.metafile.inputs);
-assert.ok(!inputs.some((input) => input.includes("node_modules/")), "Unexpected bundled dependency");
+assert.ok(
+  !inputs.some((input) => input.includes("node_modules/")),
+  "Unexpected bundled dependency",
+);
 await mkdir(".build", { recursive: true });
 await mkdir("dist", { recursive: true });
 await writeFile(".build/gh-inputs.json", JSON.stringify(inputs));

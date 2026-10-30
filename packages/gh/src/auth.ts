@@ -8,7 +8,9 @@ const MISSING_AUTH =
   "To get started with GitHub CLI, please run:  gh auth login\n" +
   "Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n";
 
-export function environmentToken(invocation: Invocation): { name: string; value: string } | undefined {
+export function environmentToken(
+  invocation: Invocation,
+): { name: string; value: string } | undefined {
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN"]) {
     const value = invocation.env[name];
     if (value) return { name, value };
@@ -35,7 +37,8 @@ export async function loginWithToken(invocation: Invocation, hostname?: string):
     );
   }
   const token = decode(await invocation.stdin()).trim();
-  if (!token || /[\r\n]/.test(token)) throw new GhError("a single authentication token is required");
+  if (!token || /[\r\n]/.test(token))
+    throw new GhError("a single authentication token is required");
   const client = new GitHubClient(invocation.transport, token);
   const root = await client.send({ method: "GET", path: "/" });
   validateScopes(responseHeader(root, "x-oauth-scopes"));
@@ -49,7 +52,8 @@ export async function loginWithToken(invocation: Invocation, hostname?: string):
   );
   const data = object(result.data ?? null, "GraphQL data");
   const viewer = object(data.viewer ?? null, "GraphQL viewer");
-  if (typeof viewer.login !== "string" || !viewer.login) throw new GhError("token validation failed");
+  if (typeof viewer.login !== "string" || !viewer.login)
+    throw new GhError("token validation failed");
   const path = hostsPath(invocation);
   const yaml = `github.com:\n    oauth_token: ${JSON.stringify(token)}\n    user: ${JSON.stringify(viewer.login)}\n`;
   await invocation.filesystem.mkdir(parentDirectory(path));

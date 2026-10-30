@@ -43,7 +43,11 @@ async function dispatch(invocation: Invocation, command: Command): Promise<numbe
       await writeText(invocation, "stdout", HELP);
       return 0;
     case "version":
-      await writeText(invocation, "stdout", "gh version 2.103.0 (2026-10-21)\nhttps://github.com/cli/cli/releases/tag/v2.103.0\n");
+      await writeText(
+        invocation,
+        "stdout",
+        "gh version 2.103.0 (2026-10-21)\nhttps://github.com/cli/cli/releases/tag/v2.103.0\n",
+      );
       return 0;
     case "auth-login":
       await loginWithToken(invocation, command.hostname);

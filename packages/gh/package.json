@@ -25,9 +25,10 @@
   },
   "scripts": {
     "build": "node scripts/build-gh.ts && node scripts/size.ts",
-    "test": "node scripts/build-gh.ts && node --test tests/*.test.ts && node tests/fixtures.ts && node scripts/compare-native.ts",
+    "test": "node scripts/build-gh.ts && node --test tests/*.test.ts && node tests/fixtures.ts && node scripts/compare-native.ts && bun test ./tests/program-runtime.ts",
     "test:fixtures": "node tests/fixtures.ts",
     "test:native": "node scripts/compare-native.ts",
+    "test:runtime": "bun test ./tests/program-runtime.ts",
     "typecheck": "tsc -p .",
     "pack": "node ../../tools/program-package.ts pack",
     "prepack": "node ../../tools/program-package.ts check",

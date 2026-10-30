@@ -88,7 +88,7 @@ const registries = { pr, issue, run, repo } satisfies Record<ResourceKind, Recor
 
 export function validateFields(kind: ResourceKind, fields: readonly string[]): void {
   for (const field of fields) {
-    if (!registries[kind][field]) throw new GhError(`Unknown JSON field: \"${field}\"`);
+    if (!registries[kind][field]) throw new GhError(`Unknown JSON field: "${field}"`);
   }
 }
 
@@ -191,7 +191,8 @@ function numberAt(record: JsonObject, path: readonly string[]): number | null {
 function booleanAt(record: JsonObject, path: readonly string[]): boolean | null {
   const value = at(record, path);
   if (value === undefined || value === null) return null;
-  if (typeof value !== "boolean") throw new GhError(`gh: invalid response field: ${path.join(".")}`);
+  if (typeof value !== "boolean")
+    throw new GhError(`gh: invalid response field: ${path.join(".")}`);
   return value;
 }
 
