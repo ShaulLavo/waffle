@@ -352,7 +352,7 @@ test("programs prepares locked Cargo sources after cache restore and before sour
       step.uses === "actions/cache@v4" && String(record(step.with).path).includes("~/.cargo/git"),
   );
   const fetches = steps.filter(
-    (step) => step.run === "cargo fetch --locked --target wasm32-wasip1",
+    (step) => step.run === "cargo fetch --locked",
   );
   expect(fetches).toHaveLength(1);
   const fetch = fetches[0];
