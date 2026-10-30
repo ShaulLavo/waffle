@@ -430,9 +430,11 @@ test("jq restores and verifies the single network artifact before install", () =
 
 test("jq provisions the pinned SDK before its native program build", () => {
   const job = record(jobs.jq);
-  expect(record(job.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
-  expect(record(job.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  expect(record(job.env)).toEqual({ WAFFLE_NETWORK_PREBUILT: "1" });
   const steps = stepsFor("jq");
+  const build = steps.find((step) => step.run === "bun run programs:jq");
+  expect(record(build?.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(build?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
   const sdk = steps.find((step) => step.id === "sdk");
   expect(record(sdk?.with).path).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
   expect(record(sdk?.with).key).toBe(

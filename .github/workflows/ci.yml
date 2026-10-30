@@ -251,8 +251,6 @@ jobs:
   jq:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
-      WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
-      WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}
     runs-on: ubuntu-latest
@@ -331,6 +329,9 @@ jobs:
       - run: bun run prepare:package
       - run: bun run programs:check
       - run: bun run programs:jq
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
   package:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
