@@ -205,7 +205,7 @@ describe("base closure", () => {
         .filter((artifact) => artifact.path.endsWith(".wasm"))
         .map((artifact) => ({ item, artifact })),
     );
-    expect(raw).toHaveLength(24);
+    expect(raw).toHaveLength(25);
     for (const { item, artifact } of raw) {
       const gzip = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.gz`);
       const brotli = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.br`);

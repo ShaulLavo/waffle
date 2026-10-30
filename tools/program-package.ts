@@ -108,7 +108,8 @@ export function admitProgramPackage(root: string): string[] {
     const producer =
       name === "assets/python.wasm" ? requiredFile(root, "assets/python-build.json") : undefined;
     validateProgramDerivation(JSON.parse(requiredFile(root, sidecar).toString()), bytes, producer);
-    companions.push(...admitProgramCompanions(root, name, bytes));
+    const discovered = admitProgramCompanions(root, name, bytes);
+    companions.push(...discovered.filter((companion) => !files.includes(companion)));
   }
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));

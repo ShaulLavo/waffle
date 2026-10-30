@@ -202,3 +202,33 @@ test("package artifact recipes declare a derivation for every Wasm asset", () =>
     }
   }
 });
+
+test("declared companions are validated once and remain required", () => {
+  const parent = resolve(import.meta.dirname, "../.build");
+  mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(resolve(parent, "declared-companions-"));
+  try {
+    mkdirSync(resolve(root, "dist"));
+    const input = resolve(root, "input.wasm");
+    const output = resolve(root, "dist/program.wasm");
+    writeFileSync(input, cappedWasiFixture);
+    stageProgram(input, output);
+    const files = ["dist/program.wasm", "dist/program-program.json", "dist/program.wasm.br"];
+    writeFileSync(resolve(root, "package-artifacts.json"), JSON.stringify({ files }));
+    assert.deepEqual(admitProgramPackage(root), files.concat(["dist/program.wasm.gz"]));
+    writeFileSync(`${output}.br`, brotliCompressSync(cappedWasiFixture));
+    assert.throws(() => admitProgramPackage(root), /differs from final bytes/);
+    rmSync(`${output}.br`);
+    assert.throws(() => admitProgramPackage(root), /ENOENT/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("optional leaf staging leaves compression to the shared final-output helper", () => {
+  for (const recipe of ["jq/scripts/build-jaq.ts", "diffutils/scripts/build-diffutils.ts"]) {
+    const source = readFileSync(new URL(`../packages/${recipe}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /brotliCompressSync|gzipSync/);
+    assert.equal(Array.from(source.matchAll(/stageProgram\(guest, destination\)/g)).length, 1);
+  }
+});
