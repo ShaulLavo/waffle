@@ -82,3 +82,19 @@ export type {
   ProgramMode,
   ProgramsOptions,
 } from "./programs/collection.js";
+
+export { CommandStdioError } from "./proc/command.js";
+export type {
+  HostCommand,
+  HostCommandDefinition,
+  HostCommandContext,
+  CommandInput,
+  CommandOutput,
+  ProcessQuery,
+  CommandProcessRow,
+  SignalSend,
+  DelegatedSignals,
+} from "./proc/command.js";
+export type { CommandProcessContext } from "./proc/types.js";
+
+export type { SignalDelegation } from "./programs/index.js";
