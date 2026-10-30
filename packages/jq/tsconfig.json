@@ -1,0 +1,4 @@
+{
+  "extends": "../../tools/tsconfig.programs.json",
+  "include": ["src", "scripts", "tests"]
+}

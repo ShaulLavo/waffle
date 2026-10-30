@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "name": "jaq",
+    "version": "3.1.2",
+    "repository": "https://github.com/01mf02/jaq",
+    "revision": "f7fea9219d8d5364c91c6a0278765eaa0e6fa95e",
+    "archive": "https://codeload.github.com/01mf02/jaq/tar.gz/f7fea9219d8d5364c91c6a0278765eaa0e6fa95e",
+    "archiveSha256": "ba670544901c6f9d2faeb03cbdf78e3ef84dac27fe42675cc5ccf81f8cbbea06",
+    "license": "MIT"
+  },
+  "localAdaptation": "Original Waffle build, packaging, and verification recipes. patches/jaq-wasi.patch makes rustyline and the interactive repl native-only; the WASI evaluator and noninteractive CLI remain upstream. mimalloc is disabled for portability."
+}
