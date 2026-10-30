@@ -176,7 +176,7 @@ test("one stage operation publishes identical final bytes and receipts to multip
       readFileSync(resolve(directory, "second-program.json")),
     );
     validateProgramDerivation(receipt, bytes);
-    assert.throws(() => stageProgram(source, source), /must differ/);
+    assert.throws(() => stageProgram(source, source), /must differ|aliases compiler input/);
     assert.deepEqual(readFileSync(source), Buffer.from(cappedWasiFixture));
   } finally {
     rmSync(directory, { recursive: true, force: true });

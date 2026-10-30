@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import {
   copyFileSync,
@@ -48,6 +49,22 @@ function sourceFixture(context: TestContext) {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(resolve(repository, name), target);
   }
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "copied staging inputs",
+    ],
+    { cwd: root },
+  );
   return (name: string) => pathToFileURL(resolve(root, name)).href;
 }
 

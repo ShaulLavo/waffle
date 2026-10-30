@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -247,6 +248,21 @@ describe("base closure", () => {
     });
     expect(guests.get("waffle-base")).toEqual({ descriptor: [], staticReference: [] });
   });
+
+  test("a symlinked output directory still proves guest containment in the real install", async () => {
+    const linkedRoot = preparedFixture("symlink-output");
+    const target = resolve(scratch, "actual-output");
+    mkdirSync(target);
+    const link = resolve(scratch, "linked-output");
+    symlinkSync(target, link);
+    const receipt = await buildRelease({
+      ...(await fixtureOptions(linkedRoot, "unused-output")),
+      out: link,
+    });
+    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(24);
+    for (const guest of receipt.installCheck.wasm)
+      expect(guest.path.startsWith("node_modules/")).toBe(true);
+  }, 60_000);
 
   test("never mutates the source checkout", () => {
     expect(git(root, ["status", "--porcelain"])).toBe("");
