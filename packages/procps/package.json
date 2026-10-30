@@ -7,7 +7,8 @@
     "src",
     "docs",
     "provenance",
-    "scripts",
+    "scripts/measure.ts",
+    "scripts/measure-commands.ts",
     "LICENSE"
   ],
   "type": "module",
@@ -18,7 +19,11 @@
   "scripts": {
     "test": "bun test tests",
     "typecheck": "tsc -p tsconfig.json",
-    "size": "bun scripts/measure.ts"
+    "size": "bun scripts/measure.ts",
+    "test:pure": "bun test tests/commands.test.ts tests/oracle.test.ts tests/runtime-gap.test.ts",
+    "test:runtime": "bun test tests/runtime.test.ts",
+    "pack:check": "bun scripts/check-packed.ts",
+    "size:commands": "bun scripts/measure-commands.ts"
   },
   "peerDependencies": {
     "waffle": "*"

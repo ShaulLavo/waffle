@@ -1,6 +1,6 @@
 # Waffle contract and procps boundary
 
-Status: Pure package only. Waffle supplies host-command and delegated-signal APIs, but procps does not implement an executable adapter.
+Status: Optional executable adapter on the merged Waffle host-command and delegated-signal APIs.
 
 ## Historical blocker
 
@@ -25,10 +25,14 @@ Ordinary `supervisor.canSignal(commandPid, targetPid)` still rejects siblings. T
 
 A separate real-supervisor control projects admitted reservations into pure rows and checks ordinary sibling denial without sending a signal. The signal-number control retains Waffle's rejection of signal zero and unsupported stop signals.
 
-These controls establish the current API distinction. They do not qualify `ps`, `pgrep`, or `pkill` for shell execution. The size report's `runtimeAcceptance: "BLOCKED"` refers to that unimplemented procps integration, not an absent Waffle API.
+These original controls establish only the API distinction. The unchanged pure-size script retains its historical `runtimeAcceptance: "BLOCKED"` field, which is not an acceptance report for the optional catalog. `scripts/measure-commands.ts` measures the separate optional entry and lazy implementation.
 
-## Remaining procps integration
+## Optional adapter acceptance
 
-No shared runtime changes or executable catalog are included in this package. A future procps adapter needs package-level controls for registration, lazy loading, alias identity, stdio, delegated delivery, removal, revocation, and physical completion. Pure fixture comparisons remain required and do not prove those behaviors.
+`tests/runtime.test.ts` executes the catalog on the real memory-filesystem runtime and actual root controllers. It covers command output, self exclusion, controller grants, stale and revoked authority, bounded output, abort, missing descriptors, broken pipes, lazy identity, uninstall, and physical completion. Test-only scheduling hooks trigger stale and revoked cases between the real snapshot and send. They retain the original runtime grant and never install a caller-provided signal callback in production.
+
+`scripts/check-packed.ts` extracts the source archive, binds its existing Waffle peer without another install, and runs ps, pgrep, and granted sibling pkill from that extracted entry. Its owned temporary directory is removed on completion. These checks do not launch Wasm or native commands.
+
+No Waffle runtime files change. This contract is grounded in merged source `94aedc717551ef496d014ec2fed4f0770122553d`, including host-command commit `db1bcd95c06a8130fd85caa510754a7f14bf9b98`. It makes no claim that a published package or a consumer's current pin includes that source. No release or pin update is part of this feature.
 
 Timestamp, resource, terminal, account, session, and Linux scheduling-state fields remain unsupported. Optional oldest/newest support needs a genuine immutable start-order or timestamp contract, not numeric PID order. Signal-zero emulation is not part of the bounded TERM, INT, KILL, and PIPE subset.
