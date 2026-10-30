@@ -35,7 +35,7 @@
     "programs:pack": "bun run --cwd packages/coreutils pack && bun run --cwd packages/grep pack && bun run --cwd packages/findutils pack && bun run --cwd packages/sed pack && bun run --cwd packages/ripgrep pack && bun run --cwd packages/base pack",
     "programs:prepare": "bun run --cwd packages/git prepare:package",
     "programs:check": "bun run programs:prepare && bun run --cwd packages/waffle tsc -p ../../tools/tsconfig.programs.json",
-    "programs:integration": "bun test tools/family-integration.test.ts",
+    "programs:integration": "bun test tools/family-integration.test.ts packages/coreutils/tests/nl-wasi.test.ts",
     "programs:browser": "bun tools/family-browser.ts",
     "programs:packed": "bun tools/family-packed.ts"
   },

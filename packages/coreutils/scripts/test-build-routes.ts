@@ -70,7 +70,7 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
     "-j2",
   ]);
   assert.equal(calls[0].env.CARGO_ENCODED_RUSTFLAGS, "fixture-flags");
-  assert.equal(checks.length, 14);
+  assert.equal(checks.length, 15);
   assert.deepEqual(
     calls.map((call) => call.env.WAFFLE_PROGRAM_LOCALE_INPUTS),
     coreutilsPackageNames.map((name) => (usesProgramCatalogs(name) ? name : undefined)),
@@ -124,9 +124,9 @@ test("artifact receipts preserve names, source identity, verification and stagin
     }
     const checks: { path: string; options: WasiGuestVerification }[] = [];
     writeCoreutilsArtifacts(workspaceRoot, release, output, verifier(checks));
-    assert.equal(checks.length, 19);
+    assert.equal(checks.length, 20);
     const lines = readFileSync(resolve(output, "source-sha256.txt"), "utf8").split("\n");
-    assert.equal(lines.length, 21);
+    assert.equal(lines.length, 22);
     assert.match(lines[0], /^source [a-f0-9]{40}$/);
     assert.deepEqual(
       lines.slice(1, -1).map((line) => line.split("  ")[1]),
