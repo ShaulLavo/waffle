@@ -45,6 +45,7 @@ import {
 import { DescriptorTable, MAX_DESCRIPTOR, type Resource, type Stream } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 import { GuestWatchTable, type GuestWatchReadiness } from "../fs/guest-watch.js";
+import { createNullDevice } from "./devices.js";
 
 // errno
 const SUCCESS = 0;
@@ -281,6 +282,23 @@ export class Wasi {
       );
       fd++;
     }
+  }
+
+  private openDevice(
+    fdflags: number,
+    base: bigint,
+    inheriting: bigint,
+    oflags: number,
+    out: number,
+  ): number {
+    if ((out >>> 0) + 4 > this.bytes().length) return EFAULT;
+    if (oflags & O_DIRECTORY) return ENOTDIR;
+    if (oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
+    if (oflags & ~15 || fdflags & ~31) return EINVAL;
+    return this.writeResult(
+      this.descriptors.open(createNullDevice(fdflags), base, inheriting),
+      out >>> 0,
+    );
   }
 
   private openFileAt(
@@ -715,7 +733,7 @@ export class Wasi {
         if (!entry) return EBADF;
         const view = this.view();
         const filetype =
-          entry.resource.kind === "terminal"
+          entry.resource.kind === "terminal" || entry.resource.kind === "device"
             ? FT_CHAR
             : entry.resource.kind === "directory"
               ? FT_DIR
@@ -1002,15 +1020,19 @@ export class Wasi {
               : "nofollow",
         );
         if (typeof alias === "number") return alias;
-        if (alias !== undefined) {
+        if (alias !== undefined && !("resolved" in alias)) {
+          if ("device" in alias)
+            return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
           if (!this.descriptors.get(alias.source)) return ENOENT;
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
-        const path = this.opts.fs.resolve(
-          dir.resource.handle,
-          name,
-          (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
-        );
+        const path =
+          alias?.resolved ??
+          this.opts.fs.resolve(
+            dir.resource.handle,
+            name,
+            (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
+          );
         if (typeof path === "number") return path;
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
