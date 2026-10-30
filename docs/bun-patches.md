@@ -28,6 +28,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/program-locales/patch.ts` | Adaptation | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs. |
 | `tools/program-locales/{prepare,selection,rustc-wrapper,build}.ts`, `generate.rs` | Original adapter | Build-source selection, isolated producer identity, compiler pass-through, transaction lock, catalog generation and receipts. No runtime or command implementation copied. |
 | `tools/program-build-tools.ts` | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied. |
+| `packages/jq/patches/jaq-wasi.patch`, `packages/jq/scripts/` | Adaptation | jaq 3.1.2 at `f7fea9219d8d5364c91c6a0278765eaa0e6fa95e`; target-gate rustyline and the interactive `repl` off WASI. Original Waffle recipe preserves the upstream evaluator and noninteractive CLI, disables mimalloc, and adds packaging, notices, native jq oracle and runtime tests. |
 
 ## Node WASI descriptor adapter
 
@@ -300,3 +301,7 @@ operator, and branch-anchor rules at Waffle `19b3a67`. Backreferences are explic
 rejected, so this does not claim complete GNU BRE parity. Matching is byte-oriented.
 There is no native command, Bash, or second-runtime fallback. The nl-only TypeScript
 oracle runs GNU separately as a test reference and compares identical inputs.
+
+## jaq WASI packaging
+
+`packages/jq/sources.lock.json` pins the immutable jaq archive and SHA-256. The local patch changes only `jaq/Cargo.toml` and `jaq/src/funs.rs`: rustyline, dirs and `repl` remain native-only, while WASI registers the unchanged noninteractive evaluator. Build, packaging, license staging, Brotli measurement and tests are original Waffle adapters. Known jaq, jq and gojq differences are in `packages/jq/docs/compatibility.md`; no full-parity claim is made.
