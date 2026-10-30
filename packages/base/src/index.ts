@@ -1,6 +1,7 @@
 import type { GuestLauncher, Runtime } from "waffle";
 import {
   installPrograms,
+  defineProgramPackage,
   type InstallProgramsOptions,
   type ProgramInstallation,
   type ProgramPackage,
@@ -11,10 +12,20 @@ import { grep } from "waffle-grep";
 import { ripgrep } from "waffle-ripgrep";
 import { sed } from "waffle-sed";
 
-export const basePackages = [coreutils, findutils, grep, ripgrep, sed] as const satisfies
-  readonly ProgramPackage[];
+export const basePackages = [
+  coreutils,
+  findutils,
+  grep,
+  ripgrep,
+  sed,
+] as const satisfies readonly ProgramPackage[];
 
 export const basePrograms = basePackages.flatMap((family) => family.programs);
+export const base = defineProgramPackage({
+  name: "base",
+  programs: basePrograms,
+  packages: basePackages,
+});
 
 export interface BaseInstallOptions {
   readonly launcher: GuestLauncher;

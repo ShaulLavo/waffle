@@ -1,3 +1,4 @@
+import { defineProgramPackage } from "waffle/programs";
 import type { Runtime } from "waffle";
 import { FilesystemClient } from "waffle/fs/client";
 import { FilesystemError } from "waffle/fs/protocol";
@@ -100,4 +101,27 @@ async function removeOwned(runtime: Runtime, path: string, ino: number, bytes: U
   if (entry?.kind !== "file" || entry.ino !== ino) return;
   if (!sameBytes(await runtime.filesystem.readFile(path), bytes)) return;
   await runtime.filesystem.remove(path);
+}
+
+/** A script package borrows an explicitly registered interpreter. It never installs one. */
+export function createGitPackage(options: {
+  readonly interpreter: string;
+  readonly source?: () => Promise<string>;
+}) {
+  return defineProgramPackage({
+    name: "git",
+    programs: [
+      {
+        path: "/usr/bin/git",
+        aliases: ["/bin/git"],
+        script: { interpreter: options.interpreter, source: options.source ?? gitSource },
+      },
+    ],
+  });
+}
+
+async function gitSource(): Promise<string> {
+  const response = await fetch(GIT_CLI_URL);
+  if (!response.ok) throw new Error(`Git script fetch failed: ${response.status}`);
+  return response.text();
 }

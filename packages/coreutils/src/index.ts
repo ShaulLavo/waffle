@@ -1,4 +1,4 @@
-import type { ProgramPackage } from "waffle/programs";
+import { defineProgramPackage } from "waffle/programs";
 
 const names = [
   "env",
@@ -22,13 +22,13 @@ const names = [
   "echo",
 ] as const;
 
-export const coreutils: ProgramPackage = {
+export const coreutils = defineProgramPackage({
   name: "coreutils",
   programs: names.map((name) => ({
     path: `/usr/bin/${name}`,
     aliases: [`/bin/${name}`],
     wasm: new URL(`../dist/${name}.wasm`, import.meta.url),
   })),
-};
+});
 
 export const coreutilsPrograms = coreutils.programs;

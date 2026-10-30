@@ -1,7 +1,7 @@
 import type { SearchWorkers, SearchWorkerRequest } from "waffle/search";
-import type { ProgramLaunch, ProgramPackage } from "waffle/programs";
+import { defineProgramPackage, type ProgramLaunch, type ProgramCatalog } from "waffle/programs";
 
-export const ripgrep: ProgramPackage = {
+export const ripgrep = defineProgramPackage({
   name: "ripgrep",
   programs: [
     {
@@ -10,12 +10,12 @@ export const ripgrep: ProgramPackage = {
       wasm: new URL("../dist/rg.wasm", import.meta.url),
     },
   ],
-};
+});
 
 export function fastRipgrep(
   workers: SearchWorkers,
   options: { readonly stdoutIsTTY?: boolean } = {},
-): ProgramPackage {
+): ProgramCatalog {
   const launch: ProgramLaunch = async (context, service, fallback) => {
     if ((context.request.env.PWD || "/") !== context.request.cwd) return fallback(context, service);
     const { planRg } = await import("./plan.ts");
@@ -33,5 +33,8 @@ export function fastRipgrep(
       },
     });
   };
-  return { ...ripgrep, programs: ripgrep.programs.map((program) => ({ ...program, launch })) };
+  return defineProgramPackage({
+    ...ripgrep,
+    programs: ripgrep.programs.map((program) => ({ ...program, launch })),
+  });
 }
