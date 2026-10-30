@@ -136,6 +136,7 @@ generateRustNotices({
     "waffle-wc",
     "waffle-clear",
     "waffle-echo",
+    "waffle-date",
   ],
   features: "cooperative-wasi",
   prefix: readFileSync(resolve(root, "dist/THIRD_PARTY_NOTICES.txt"), "utf8"),

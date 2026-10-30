@@ -33,11 +33,11 @@
     "programs:jq": "bun run --cwd packages/jq prepare:package && bun run --cwd packages/jq test:source && bun run --cwd packages/jq test:oracle && bun run --cwd packages/jq test && bun run --cwd packages/jq test:wasi && bun run --cwd packages/jq typecheck && bun run --cwd packages/jq pack",
     "programs:curl": "bun run --cwd packages/curl typecheck && bun run --cwd packages/curl test && bun run --cwd packages/curl build && bun run --cwd packages/curl prepack && bun run --cwd packages/curl pack",
     "programs:tools": "bun test tools/program-locales/*.test.ts tools/program-name-section.test.ts tools/program-build-tools.test.ts tools/program-build-tools-verifier.test.ts tools/program-family-manifest.test.ts tools/family-acceptance.test.ts tools/program-package.test.ts tools/program-notices.test.ts packages/git/scripts/patch-git-source.test.ts packages/git/tests/program-strip.test.ts tools/program-optimize.test.ts tools/program-derivation.test.ts",
-    "programs:native": "cargo test --locked --offline -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo",
+    "programs:native": "cargo test --locked --offline -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date",
     "programs:pack": "bun run --cwd packages/coreutils pack && bun run --cwd packages/grep pack && bun run --cwd packages/findutils pack && bun run --cwd packages/sed pack && bun run --cwd packages/ripgrep pack && bun run --cwd packages/base pack",
     "programs:prepare": "bun run --cwd packages/git prepare:package && bun run --cwd packages/gh prepare:package",
     "programs:check": "bun run programs:prepare && bun run --cwd packages/waffle tsc -p ../../tools/tsconfig.programs.json",
-    "programs:integration": "bun test tools/family-integration.test.ts packages/coreutils/tests/nl-wasi.test.ts",
+    "programs:integration": "bun test tools/family-integration.test.ts packages/coreutils/tests/nl-wasi.test.ts packages/coreutils/tests/date-wasi.test.ts",
     "programs:browser": "bun tools/family-browser.ts",
     "programs:packed": "bun tools/family-packed.ts",
     "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack"

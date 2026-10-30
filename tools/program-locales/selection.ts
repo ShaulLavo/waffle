@@ -12,6 +12,7 @@ const gitUtilities = new Set([
   "cp",
   "mv",
   "nl",
+  "date",
 ]);
 const registryUtilities = new Set(["head", "sort", "uniq"]);
 const commonOnly = new Set([
