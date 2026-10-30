@@ -296,6 +296,28 @@ jobs:
         with:
           path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - uses: actions/cache@v4
+        id: jq-native
+        with:
+          path: ${{ runner.temp }}/jq-native
+          key: ${{ runner.os }}-${{ runner.arch }}-jq-native-1.8.2-x86_64-b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
+      - name: Download pinned jq native oracle
+        if: steps.jq-native.outputs.cache-hit != 'true'
+        env:
+          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
+          JQ_NATIVE_URL: https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
+        run: |
+          mkdir -p "$JQ_NATIVE_DIR"
+          curl -fL --retry 3 "$JQ_NATIVE_URL" -o "$JQ_NATIVE_DIR/jq"
+      - name: Verify and expose pinned jq native oracle
+        env:
+          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
+          JQ_NATIVE_SHA256: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
+        run: |
+          test -f "$JQ_NATIVE_DIR/jq"
+          echo "$JQ_NATIVE_SHA256  $JQ_NATIVE_DIR/jq" | sha256sum -c -
+          chmod 700 "$JQ_NATIVE_DIR/jq"
+          echo "$JQ_NATIVE_DIR" >> "$GITHUB_PATH"
       - name: Install pinned wasi-sdk 34
         if: steps.sdk.outputs.cache-hit != 'true'
         run: |
@@ -328,6 +350,12 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
       - run: bun run programs:check
+      - name: Assert pinned jq native oracle
+        env:
+          JQ_NATIVE_DIR: ${{ runner.temp }}/jq-native
+        run: |
+          test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"
+          test "$(jq --version)" = "jq-1.8.2"
       - run: bun run programs:jq
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux

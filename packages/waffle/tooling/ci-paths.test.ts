@@ -450,6 +450,43 @@ test("jq provisions the pinned SDK before its native program build", () => {
   );
 });
 
+test("jq pins and verifies its native oracle without a host-jq fallback", () => {
+  const steps = stepsFor("jq");
+  const cache = steps.find((step) => step.id === "jq-native");
+  const download = steps.find((step) => step.name === "Download pinned jq native oracle");
+  const verify = steps.find((step) => step.name === "Verify and expose pinned jq native oracle");
+  const version = steps.find((step) => step.name === "Assert pinned jq native oracle");
+  const oracle = steps.find((step) => step.run === "bun run programs:jq");
+  expect(cache).toBeDefined();
+  expect(record(cache?.with).path).toBe("${{ runner.temp }}/jq-native");
+  expect(record(cache?.with).key).toBe(
+    "${{ runner.os }}-${{ runner.arch }}-jq-native-1.8.2-x86_64-b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+  );
+  expect(download?.if).toBe("steps.jq-native.outputs.cache-hit != 'true'");
+  expect(record(download?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(record(download?.env).JQ_NATIVE_URL).toBe(
+    "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
+  );
+  expect(String(download?.run)).toContain('curl -fL --retry 3 "$JQ_NATIVE_URL"');
+  expect(String(download?.run)).toContain('"$JQ_NATIVE_DIR/jq"');
+  expect(record(verify?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(record(verify?.env).JQ_NATIVE_SHA256).toBe(
+    "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+  );
+  expect(String(verify?.run)).toContain("sha256sum -c -");
+  expect(String(verify?.run)).toContain('chmod 700 "$JQ_NATIVE_DIR/jq"');
+  expect(String(verify?.run)).toContain('echo "$JQ_NATIVE_DIR" >> "$GITHUB_PATH"');
+  expect(record(version?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(String(version?.run)).toContain('test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"');
+  expect(String(version?.run)).toContain('test "$(jq --version)" = "jq-1.8.2"');
+  expect(String(version?.run)).not.toContain("|| jq");
+  expect(String(version?.run)).not.toContain("apt-get");
+  expect(steps.indexOf(record(cache))).toBeLessThan(steps.indexOf(record(download)));
+  expect(steps.indexOf(record(download))).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(version)));
+  expect(steps.indexOf(record(version))).toBeLessThan(steps.indexOf(record(oracle)));
+});
+
 test("the browser gate runs memory groups on the fixture built once by libc", () => {
   for (const path of [
     "packages/waffle/group/state.ts",
