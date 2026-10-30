@@ -140,6 +140,8 @@ async function compileEntry(
   ]);
   const compiled = results[0],
     digest = results[1];
+  if (compiled.status === "rejected") storeError("compile-stored", start, compiled.reason);
+  if (digest.status === "rejected") storeError("verify", start, digest.reason);
   const module = verified(compiled, digest, entry.admittedSha256);
   programStage("store-verify", start, {
     bytes: Number(copy.headers.get("content-length")),

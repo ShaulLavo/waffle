@@ -22,7 +22,8 @@ export interface AdmittedEntry {
 
 /** Trusted app cache only. Body hashes detect corruption, not a same-origin forger who can
  * replace both bytes and metadata. The fatal import rejects accidentally stored raw source;
- * it does not prove instrumentation. No guest or process authority belongs in this store.
+ * it does not prove instrumentation or the source-to-output mapping. Both trust the app writer.
+ * No guest or process authority belongs in this store.
  */
 export interface AdmittedModuleStore {
   open(sourceSha256: string): Promise<AdmittedEntry | undefined>;
