@@ -303,8 +303,9 @@ async function assertStopped(launch: Launch, label: string): Promise<void> {
 }
 
 /** Browsers stop nested workers asynchronously after terminate() returns. Safety was already
- * proven at the termination instant; this waits for helper activity to cease and checks that
- * none of it reached a filesystem section. Returns how long activity continued. */
+ * proven at the stop instant by revocation followed by zero sections. A later admission raises
+ * the sections word before it aborts, and termination can strand that count. During quiet we
+ * check revocation and storage locks while waiting for helper activity to cease. */
 async function quiet(activity: () => number, sample: () => void, label: string): Promise<number> {
   const started = performance.now();
   let last = activity();
