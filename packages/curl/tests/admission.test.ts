@@ -12,7 +12,7 @@ const script: PackageProgram = {
   script: { interpreter: "/bin/bun", source: async () => "" },
 };
 
-test("curl uses the published command variant without Wasm or an interpreter", () => {
+test("curl uses the merged command variant without Wasm or an interpreter", () => {
   expect(installed.path).toBe("/usr/bin/curl");
   expect("command" in installed).toBe(true);
   expect("wasm" in installed).toBe(false);

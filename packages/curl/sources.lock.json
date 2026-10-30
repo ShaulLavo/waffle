@@ -2,6 +2,6 @@
   "implementation": "Original MIT-licensed TypeScript adapter; no copied curl or libcurl source",
   "producer": { "name": "Bun", "version": "1.4.4" },
   "upstreamPayloads": [],
-  "runtimeAdmission": "Published ProgramPackage host command with caller-owned capabilities",
+  "runtimeAdmission": "ProgramPackage host command in merged Waffle source with caller-owned capabilities",
   "specification": "https://fetch.spec.whatwg.org/"
 }

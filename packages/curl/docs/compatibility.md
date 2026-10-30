@@ -2,7 +2,7 @@
 
 `waffle-curl` implements one HTTP request with explicit caller capabilities. It is
 not upstream curl, libcurl, or a browser security bypass. `createCurlPackage` uses
-Waffle's published host-command registration. No interpreter, Wasm stub, fallback
+Waffle's merged host-command registration API. No interpreter, Wasm stub, fallback
 launcher, second runtime, or default catalog entry is included.
 
 ## Supported arguments
