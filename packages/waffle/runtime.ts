@@ -43,8 +43,13 @@ export type { RuntimeHostIdentity, RuntimeProcessIdentity } from "./browser/proc
 import { ProcessIdentityAllocator } from "./proc/identity.js";
 import type { HostCommand } from "./proc/command.js";
 import { ExecutableFormatError } from "./proc/start-failure.js";
-import type { CommandExecutable, RegisteredCommand } from "./proc/registry.js";
-import type { ExecutableRegistry, Executable, ScriptExecutable } from "./proc/registry.js";
+import type {
+  CommandExecutable,
+  RegisteredCommand,
+  ExecutableRegistry,
+  Executable,
+  ScriptExecutable,
+} from "./proc/registry.js";
 import type { ProcessSupervisor } from "./proc/supervisor.js";
 import type { ProcessContext, ProcessHandle } from "./proc/types.js";
 import type { FilesystemIdentity } from "./fs/protocol.js";
@@ -478,25 +483,29 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   const ownLaunch = (
     launch: () => ProcessHandle | Promise<ProcessHandle>,
   ): Promise<ProcessHandle> => {
-    const pending = Promise.resolve()
-      .then(launch)
-      .then((handle) => {
-        if (!handle || typeof handle.terminate !== "function")
-          throw new TypeError("Launcher must return a process handle");
-        let stopping: Promise<void> | undefined;
-        const owned: ProcessHandle = {
-          terminate() {
-            stopping ??= Promise.resolve().then(async () => {
-              if (terminationFence) await terminationFence;
-              await handle.terminate();
-              physicalStops.delete(owned);
-            });
-            return stopping;
-          },
-        };
-        physicalStops.set(owned, owned.terminate);
-        return owned;
-      });
+    let launched: ProcessHandle | Promise<ProcessHandle>;
+    try {
+      launched = launch();
+    } catch (error) {
+      launched = Promise.reject(error);
+    }
+    const pending = Promise.resolve(launched).then((handle) => {
+      if (!handle || typeof handle.terminate !== "function")
+        throw new TypeError("Launcher must return a process handle");
+      let stopping: Promise<void> | undefined;
+      const owned: ProcessHandle = {
+        terminate() {
+          stopping ??= Promise.resolve().then(async () => {
+            if (terminationFence) await terminationFence;
+            await handle.terminate();
+            physicalStops.delete(owned);
+          });
+          return stopping;
+        },
+      };
+      physicalStops.set(owned, owned.terminate);
+      return owned;
+    });
     launching.add(pending);
     void pending.then(
       () => launching.delete(pending),
@@ -565,16 +574,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (source !== undefined && module !== undefined)
         throw new TypeError("A program must choose either source bytes or a cooperative module");
       if (program.command) {
-        if (
-          program.adapter !== undefined ||
-          source !== undefined ||
-          module !== undefined ||
-          program.script !== undefined ||
-          program.cooperative !== undefined
-        )
-          throw new TypeError("A command must declare only its command definition");
-        const command = program.command;
-        if (typeof command.load !== "function") throw new TypeError("Command loader is required");
+        const command = checkedCommand(program);
         executable = {
           command: Object.freeze({
             ...command,
@@ -901,4 +901,18 @@ function sharedPreparation(
     });
     return attempt;
   };
+}
+
+function checkedCommand(program: ProgramDefinition): RegisteredCommand {
+  if (
+    program.adapter !== undefined ||
+    program.source !== undefined ||
+    program.module !== undefined ||
+    program.script !== undefined ||
+    program.cooperative !== undefined
+  )
+    throw new TypeError("A command must declare only its command definition");
+  if (!program.command || typeof program.command.load !== "function")
+    throw new TypeError("Command loader is required");
+  return program.command;
 }

@@ -1,4 +1,3 @@
-import { ExecutableFormatError } from "./start-failure.js";
 import {
   isInstance,
   isSharedArrayBuffer,
@@ -11,7 +10,7 @@ import {
   typedArrayBuffer,
   typedArrayLength,
 } from "./intrinsics.ts";
-import { spawnError, startFailure } from "./start-failure.js";
+import { ExecutableFormatError, spawnError, startFailure } from "./start-failure.js";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
 import {

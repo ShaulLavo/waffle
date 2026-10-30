@@ -80,3 +80,36 @@ The lower-level `registerProgram` and `installPrograms` APIs remain available fo
 ## Publish family metadata
 
 Family packages create their catalog with `defineProgramPackage` from `waffle/programs/catalog`. This small entry imports no runtime owner, process service, or compiler. Bun can read its source before preparing Node exports. Node consumers use the prepared catalog module. Picks preserve the same package identity across source and prepared entrypoints.
+
+## Install trusted host commands
+
+A command definition loads a page-thread function instead of Wasm bytes. Installation and access checks do not load it. Aliases, picks, preload, and concurrent execution share the definition's lazy loader. A failed load can be retried.
+
+```ts
+import { defineProgramPackage } from "waffle/programs/catalog";
+
+const commands = defineProgramPackage({
+  name: "page-tools",
+  programs: [
+    {
+      path: "/usr/bin/hello",
+      aliases: ["/bin/hello"],
+      command: {
+        load:
+          async () =>
+          async ({ stdout }) => {
+            await stdout.write(new TextEncoder().encode("hello\n"));
+            return 0;
+          },
+      },
+    },
+  ],
+});
+await runtime.programs.onDemand(commands);
+```
+
+The context has the real PID, original parent PID, a copied request, asynchronous stdin/stdout/stderr, root-local copied process rows, and an abort signal. It has no module, launcher, process service, or runtime owner. File redirections use the admitted process's filesystem identity. Pipe and terminal I/O apply backpressure. An uncaught `EPIPE` takes the default SIGPIPE action. Other uncaught errors and invalid exit codes produce exit 126. Valid exit codes are integers from 0 to 255.
+
+Host commands are trusted page code, not sandboxed guests. Cancellation aborts the signal and revokes borrowed capabilities immediately. It cannot preempt JavaScript. The command's physical stop waits for its callback and every admitted I/O operation to settle or fence. A callback that ignores abort keeps its package hold and prevents runtime disposal from completing. No timeout changes that result.
+
+Removal closes new admission synchronously but does not kill running commands. It waits for lazy preparation and physical stop before releasing package resources. Declared script packages still require a module interpreter. A user-written shebang may name a command and receives the normal argv rewrite.

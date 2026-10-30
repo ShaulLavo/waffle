@@ -17,6 +17,7 @@ export function runCommand(
 ): ProcessHandle {
   const abort = new AbortController();
   const revoke = () => {
+    if (abort.signal.aborted) return;
     abort.abort();
     controlNotify(context.interrupt, 0);
   };

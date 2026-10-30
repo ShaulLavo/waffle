@@ -34,10 +34,14 @@ export class CommandStdio {
   private output(fd: number): CommandOutput {
     return Object.freeze({
       write: (bytes: Uint8Array) => {
-        this.check();
-        if (!(bytes instanceof Uint8Array)) return Promise.reject(new TypeError("Expected bytes"));
-        const owned = new Uint8Array(bytes);
-        return this.admit(fd, () => this.write(fd, owned));
+        try {
+          this.check();
+          if (!(bytes instanceof Uint8Array)) throw new TypeError("Expected bytes");
+          const owned = new Uint8Array(bytes);
+          return this.admit(fd, () => this.write(fd, owned));
+        } catch (error) {
+          return rejected<void>(error);
+        }
       },
     });
   }
@@ -57,9 +61,7 @@ export class CommandStdio {
       );
       return pending;
     } catch (error) {
-      const pending = Promise.reject<T>(error);
-      void pending.catch(() => {});
-      return pending;
+      return rejected<T>(error);
     }
   }
 
@@ -178,6 +180,7 @@ export class CommandStdio {
 
   async settle(): Promise<void> {
     while (this.pending.size) await Promise.allSettled(Array.from(this.pending));
+    await this.filesystem?.stopResidentPublication();
     this.filesystem?.dispose();
   }
 }
@@ -187,4 +190,10 @@ function stdioError(result: number): CommandStdioError {
   if (result === -8 || result === -76) return new CommandStdioError("EBADF");
   if (result === -11) return new CommandStdioError("CANCELED");
   return new CommandStdioError("EIO", `I/O failed with errno ${-result}`);
+}
+
+function rejected<T>(error: unknown): Promise<T> {
+  const pending = Promise.reject<T>(error);
+  void pending.catch(() => {});
+  return pending;
 }
