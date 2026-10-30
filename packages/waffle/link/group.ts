@@ -266,6 +266,7 @@ function linkLibrary(
   const memoryBase = reserveMemory(core, member, plan.reserve, memory, libraries);
   live();
   host.checkActive();
+  live();
   const layout = member.profile.memory!;
   const tableBase = reserveTable(table, member.id, layout.tableSize, layout.tableAlignment, ranges);
   if (
@@ -320,9 +321,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   const core = instantiate(plan.core, coreImports);
   const coreEnv = pie ? coreImports.env : undefined;
   const memory = pie ? coreEnv!.memory : core.exports.memory,
-    table = pie
-      ? coreEnv!.__indirect_function_table
-      : core.exports.__indirect_function_table;
+    table = pie ? coreEnv!.__indirect_function_table : core.exports.__indirect_function_table;
   if (!(memory instanceof WebAssembly.Memory)) invalid(plan.core.id, "core must export memory");
   if (!(table instanceof WebAssembly.Table))
     invalid(plan.core.id, "core must export __indirect_function_table");
@@ -386,7 +385,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
           );
         host.checkActive();
         live();
-        publishedLibraries = Object.freeze(libraries.slice());
+        publishedLibraries = Object.freeze(libraries);
         lifecycle.state = "ready";
       } catch (error) {
         poison();

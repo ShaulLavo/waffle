@@ -16,7 +16,9 @@ export interface LinkMemberSource {
   readonly source: Uint8Array;
   readonly cooperative: true;
   readonly checkpoint: { readonly module: string; readonly name: string };
+  /** Ordered memory and relocation stages, completed before the instance escapes. */
   readonly initializeMemory: readonly string[];
+  /** Ordered constructor and registration stages, run by initialize(). */
   readonly initialize: readonly string[];
 }
 export interface LinkPlanSource {
@@ -194,8 +196,10 @@ function snapshot(member: LinkMemberSource): LinkMemberSource {
 
 const RELOCATION = "__wasm_apply_data_relocs";
 
-function copyStageNames(member: LinkMemberSource, field: "initializeMemory" | "initialize"):
-  readonly string[] {
+function copyStageNames(
+  member: LinkMemberSource,
+  field: "initializeMemory" | "initialize",
+): readonly string[] {
   const stages = member[field];
   if (!Array.isArray(stages) || !stages.every((name) => typeof name === "string"))
     invalid(member.id, `${field} must list export names`);
@@ -221,10 +225,16 @@ function validateStages(member: LinkMemberSource, profile: ModuleProfile, side: 
   if (profile.passiveData && !memoryStages.length)
     invalid(member.id, "passive data requires declared memory stages");
   const listedRelocation = Boolean(
-    relocation && memoryStages.some((name) => profile.functions.get(name)?.index === relocation.index),
+    relocation &&
+    memoryStages.some((name) => profile.functions.get(name)?.index === relocation.index),
   );
   const firstStage = memoryStages[0];
-  if (profile.passiveData && relocation && firstStage && profile.functions.get(firstStage)?.index === relocation.index)
+  if (
+    profile.passiveData &&
+    relocation &&
+    firstStage !== undefined &&
+    profile.functions.get(firstStage)?.index === relocation.index
+  )
     invalid(member.id, "relocation cannot precede passive memory initialization");
   if (relocation && !listedRelocation && (profile.passiveData || profile.pie))
     invalid(member.id, `${RELOCATION} must be a declared memory stage`);

@@ -424,6 +424,14 @@ function call(instance: WebAssembly.Instance, name: string, ...args: number[]): 
   return fn(...args);
 }
 
+function expectPoisoned(group: ReturnType<typeof instantiateLinkPlan>, message: string): void {
+  expect(() => group.initialize()).toThrow(message);
+  expect(group.libraries).toEqual([]);
+  expect(() => group.initialize()).toThrow("poisoned");
+  group.dispose();
+  for (let slot = 1; slot < group.table.length; slot++) expect(group.table.get(slot)).toBeNull();
+}
+
 test("actual core and PIC share memory, table, stack and data GOT; init is explicit", async () => {
   const plan = await prepareLinkPlan(source());
   const h = host();
@@ -647,8 +655,7 @@ for (const [pointer, message] of [
       core: { ...input.core, source: core({ reserve: [0x41].concat(u32(pointer)) }) },
     });
     const group = instantiateLinkPlan(plan, host());
-    expect(() => group.initialize()).toThrow(message);
-    group.dispose();
+    expectPoisoned(group, message);
   });
 }
 
@@ -660,8 +667,7 @@ test("overlapping core reservations reject the second library and clear table sl
     libraries: input.libraries.concat([{ ...input.libraries[0]!, id: "second" }]),
   });
   const group = instantiateLinkPlan(plan, host());
-  expect(() => group.initialize()).toThrow("overlaps engine");
-  group.dispose();
+  expectPoisoned(group, "overlaps engine");
 });
 
 test("GOT.func without a function provider and true Wasm start fail before any instance", async () => {
@@ -912,8 +918,7 @@ for (const [symbol, bounds, ok] of [
     });
     if (!ok) {
       const group = instantiateLinkPlan(plan, host());
-      expect(() => group.initialize()).toThrow("outside core memory");
-      group.dispose();
+      expectPoisoned(group, "outside core memory");
       return;
     }
     const group = instantiateLinkPlan(plan, host());
