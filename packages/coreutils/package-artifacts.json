@@ -6,6 +6,7 @@
     "dist/cut.wasm",
     "dist/tr.wasm",
     "dist/head.wasm",
+    "dist/nl.wasm",
     "dist/which.wasm",
     "dist/ls.wasm",
     "dist/mkdir.wasm",

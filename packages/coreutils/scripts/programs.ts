@@ -5,6 +5,7 @@ export const coreutilsNames = [
   "cut",
   "tr",
   "head",
+  "nl",
   "which",
   "ls",
   "mkdir",

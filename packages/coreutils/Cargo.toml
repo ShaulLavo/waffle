@@ -19,6 +19,8 @@ uu_ls = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a54774
 uu_head = "=0.12.0"
 uu_sort = "=0.12.0"
 uu_uniq = "=0.12.0"
+clap = { version = "=4.6.7", features = ["wrap_help", "cargo", "color"] }
+uu_nl = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
 uucore = "=0.12.0"
 rustix = { version = "1.1.5", features = ["std"] }
 uu_touch = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
@@ -62,6 +64,7 @@ ignored = [
   "uu_ls",
   "uu_sort",
   "uu_uniq",
+  "uu_nl",
   "uu_touch",
   "uu_rm",
   "uu_cp",
