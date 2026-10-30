@@ -3,9 +3,19 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": ["bun", "node"],
-    "typeRoots": ["../packages/waffle/node_modules/@types", "../packages/git/node_modules/@types"],
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "bun",
+      "node"
+    ],
+    "typeRoots": [
+      "../packages/waffle/node_modules/@types",
+      "../packages/git/node_modules/@types"
+    ],
     "strict": true,
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
@@ -31,6 +41,11 @@
     "../packages/python/src",
     "../packages/jq/src",
     "../packages/jq/scripts",
-    "../packages/jq/tests"
+    "../packages/jq/tests",
+    "../packages/coreutils/tests/date-wasi.test.ts",
+    "../packages/coreutils/scripts/build-date.ts",
+    "../packages/coreutils/scripts/date-oracle.ts",
+    "../packages/coreutils/scripts/date-source.test.ts",
+    "../packages/coreutils/fixtures/date-cases.ts"
   ]
 }

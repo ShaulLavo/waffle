@@ -229,7 +229,7 @@ describe("base closure", () => {
     expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm).toHaveLength(25);
+    expect(wasm).toHaveLength(26);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
@@ -238,6 +238,7 @@ describe("base closure", () => {
       "dist/clear.wasm",
       "dist/cp.wasm",
       "dist/cut.wasm",
+      "dist/date.wasm",
       "dist/echo.wasm",
       "dist/env.wasm",
       "dist/head.wasm",

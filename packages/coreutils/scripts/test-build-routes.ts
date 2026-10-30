@@ -124,9 +124,9 @@ test("artifact receipts preserve names, source identity, verification and stagin
     }
     const checks: { path: string; options: WasiGuestVerification }[] = [];
     writeCoreutilsArtifacts(workspaceRoot, release, output, verifier(checks));
-    assert.equal(checks.length, 20);
+    assert.equal(checks.length, 21);
     const lines = readFileSync(resolve(output, "source-sha256.txt"), "utf8").split("\n");
-    assert.equal(lines.length, 22);
+    assert.equal(lines.length, 23);
     assert.match(lines[0], /^source [a-f0-9]{40}$/);
     assert.deepEqual(
       lines.slice(1, -1).map((line) => line.split("  ")[1]),
