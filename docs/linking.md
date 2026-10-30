@@ -15,7 +15,8 @@ const plan = await prepareLinkPlan({
     source: coreBytes,
     cooperative: true,
     checkpoint: { module: "checkpoints", name: "poll" },
-    initialize: ["initialize"],
+    initializeMemory: ["initialize_memory", "apply_data_relocs"],
+    initialize: ["call_ctors"],
   },
   libraries: [
     {
@@ -23,7 +24,8 @@ const plan = await prepareLinkPlan({
       source: engineBytes,
       cooperative: true,
       checkpoint: { module: "checkpoints", name: "poll" },
-      initialize: ["initialize_memory", "apply_data_relocs", "call_ctors"],
+      initializeMemory: ["initialize_memory", "apply_data_relocs"],
+      initialize: ["call_ctors"],
     },
   ],
   reserve: "bun_core_alloc",
@@ -59,7 +61,7 @@ The whole process heap is discarded after a trap or cancellation.
 The core defines and exports `memory`, `__indirect_function_table`, `_start`,
 and the selected `(i32 bytes, i32 alignment) -> i32` reservation function.
 Reservation returns a nonzero aligned pointer or zero on allocation failure.
-It must work before constructors, own its static/stack/heap exclusions, and
+It runs after the core's memory and constructor stages, owns its static/stack/heap exclusions, and
 never overlap another live allocation. Waffle checks bounds, alignment and
 inter-library overlap. Core owns allocator and memory growth policy, including
 both C and Rust allocation families. Side code must not grow memory itself.
@@ -96,14 +98,19 @@ Defined side globals may use `i32.const` or the extended-const form
 including its one-past address, and their final addresses must not overflow wasm32.
 Active default-index segments use their imported base global,
 optionally plus a constant, and must lie inside the `dylink.0` reservation
-without overlapping each other. Passive data
-requires explicit ordered memory initialization and relocation. For passive
-members, rename the generic `__wasm_apply_data_relocs` export and list it after
-memory initialization. Waffle will not guess that order. For active-only
-members, an exported generic data-relocation function runs before constructors.
-Declared zero-argument initializers run once, core then libraries.
-Preparation rejects repeated function targets, including export aliases.
-Command entry and automatic relocation cannot also be explicit initializers.
+without overlapping each other. Passive data requires a nonempty
+`initializeMemory` list. A passive member that exports the generic
+`__wasm_apply_data_relocs` must list that function in `initializeMemory`, after
+its own memory initialization stage. A PIE core must also declare that
+relocation. An active-only library may omit it; Waffle runs the generic
+relocation automatically first in that library's memory phase. A declared
+relocation is never run automatically. Waffle validates the ordered memory
+and constructor lists by function identity, so aliases count as duplicates.
+The core's memory stages run before `instantiateLinkPlan` returns. Then the
+existing `instantiated` hook runs, `initialize()` runs core constructors and
+links libraries in plan order, and the caller owns `_start`. Libraries are
+published only after initialization succeeds. Preparation rejects `_start`,
+repeated function targets and relocation in the constructor list.
 
 `GOT.mem` names resolve only to immutable core i32 address exports inside the
 same memory: nonzero and below the memory size, except the linker stack bounds

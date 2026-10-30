@@ -190,6 +190,7 @@ function source(): LinkPlanSource {
     source: bytes,
     cooperative: true as const,
     checkpoint: { module: "env", name: "check" },
+    initializeMemory: [],
     initialize: ["init"],
   });
   return {
@@ -224,6 +225,7 @@ test("weak import metadata binds an exact real core provider and survives readmi
     libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.mem", 4, { dylink }) }],
   });
   const group = instantiateLinkPlan(plan, host());
+  group.initialize();
   try {
     expect(call(group.entry, "invoke", 5)).toBe(12);
   } finally {
@@ -231,6 +233,7 @@ test("weak import metadata binds an exact real core provider and survives readmi
   }
   const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
   const readmitted = instantiateLinkPlan(restored, host());
+  readmitted.initialize();
   try {
     expect(call(readmitted.entry, "invoke", 5)).toBe(12);
   } finally {
@@ -425,6 +428,7 @@ test("actual core and PIC share memory, table, stack and data GOT; init is expli
   const plan = await prepareLinkPlan(source());
   const h = host();
   const group = instantiateLinkPlan(plan, h);
+  group.initialize();
   try {
     const lib = group.libraries[0]!;
     expect(lib.memoryBase).toBe(1024);
@@ -475,6 +479,7 @@ test("side ranges are nonzero/nonoverlapping and GOT cells are shared across lib
     libraries: input.libraries.concat([{ ...input.libraries[0]!, id: "second" }]),
   });
   const group = instantiateLinkPlan(plan, host());
+  group.initialize();
   try {
     const [a, b] = group.libraries;
     expect(b!.memoryBase).toBeGreaterThanOrEqual(a!.memoryBase + a!.memorySize);
@@ -600,6 +605,7 @@ for (const symbol of ["stdout", "_CLOCK_MONOTONIC", "errno"]) {
       libraries: [{ ...input.libraries[0]!, source: side(symbol) }],
     });
     const group = instantiateLinkPlan(plan, host());
+    group.initialize();
     try {
       const coreSymbol = group.entry.exports[symbol];
       const imported = group.libraries[0]!.instance.exports.got;
@@ -620,6 +626,7 @@ test("core reserves a real nonzero four-MiB aligned static range", async () => {
     libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.mem", 22) }],
   });
   const group = instantiateLinkPlan(plan, host());
+  group.initialize();
   try {
     expect(group.libraries[0]!.memoryBase).toBe(4 * 1024 * 1024);
     group.initialize();
@@ -639,7 +646,9 @@ for (const [pointer, message] of [
       ...input,
       core: { ...input.core, source: core({ reserve: [0x41].concat(u32(pointer)) }) },
     });
-    expect(() => instantiateLinkPlan(plan, host())).toThrow(message);
+    const group = instantiateLinkPlan(plan, host());
+    expect(() => group.initialize()).toThrow(message);
+    group.dispose();
   });
 }
 
@@ -650,7 +659,9 @@ test("overlapping core reservations reject the second library and clear table sl
     core: { ...input.core, source: core({ reserve: [0x41].concat(u32(1024)) }) },
     libraries: input.libraries.concat([{ ...input.libraries[0]!, id: "second" }]),
   });
-  expect(() => instantiateLinkPlan(plan, host())).toThrow("overlaps engine");
+  const group = instantiateLinkPlan(plan, host());
+  expect(() => group.initialize()).toThrow("overlaps engine");
+  group.dispose();
 });
 
 test("GOT.func without a function provider and true Wasm start fail before any instance", async () => {
@@ -703,6 +714,7 @@ for (const name of ["_start", "entry_alias"]) {
         core: {
           ...input.core,
           source: core({ aliases: [["entry_alias", 3]] }),
+          initializeMemory: [],
           initialize: [name],
         },
       }),
@@ -720,11 +732,12 @@ for (const name of ["__wasm_apply_data_relocs", "reloc_alias"]) {
           {
             ...input.libraries[0]!,
             source: side("errno", "GOT.mem", 4, { aliases: [["reloc_alias", 4]] }),
+            initializeMemory: [],
             initialize: [name],
           },
         ],
       }),
-    ).rejects.toThrow("automatic relocation");
+    ).rejects.toThrow("must be a memory stage");
   });
 }
 
@@ -736,6 +749,7 @@ test("constructor aliases cannot schedule the same function twice", async () => 
       core: {
         ...input.core,
         source: core({ aliases: [["init_alias", 4]] }),
+        initializeMemory: [],
         initialize: ["init", "init_alias"],
       },
     }),
@@ -897,10 +911,13 @@ for (const [symbol, bounds, ok] of [
       libraries: [{ ...input.libraries[0]!, source: side(symbol) }],
     });
     if (!ok) {
-      expect(() => instantiateLinkPlan(plan, host())).toThrow("outside core memory");
+      const group = instantiateLinkPlan(plan, host());
+      expect(() => group.initialize()).toThrow("outside core memory");
+      group.dispose();
       return;
     }
     const group = instantiateLinkPlan(plan, host());
+    group.initialize();
     const expected = symbol === "stdout" ? 32 : symbol === "__stack_low" ? bounds[0] : bounds[1];
     expect((group.libraries[0]!.instance.exports.got as WebAssembly.Global).value).toBe(expected);
     group.dispose();
@@ -930,6 +947,7 @@ for (const field of ["hostOnly", "\uFEFFhostOnly"]) {
         [namespace]: { [field]: (value: number) => value + 11 },
       }),
     );
+    group.initialize();
     try {
       expect(call(group.entry, "invoke", 7)).toBe(18);
     } finally {
@@ -977,6 +995,7 @@ for (const field of ["add", "\uFEFFadd"]) {
       libraries: [{ ...input.libraries[0]!, source: bytes }],
     });
     const group = instantiateLinkPlan(plan, host());
+    group.initialize();
     try {
       expect(call(group.entry, "invoke", 5)).toBe(12);
     } finally {
@@ -1053,6 +1072,7 @@ function selfSource(...libraries: Uint8Array[]): LinkPlanSource {
 
 test("a side binds its own defined export through a typed relay when core lacks it", async () => {
   const group = instantiateLinkPlan(await prepareLinkPlan(selfSource(selfSide())), host());
+  group.initialize();
   try {
     const lib = group.libraries[0]!;
     expect(call(lib.instance, "entry", 7)).toBe(8);
@@ -1072,6 +1092,7 @@ test("core preempts a same-side definition of the same symbol", async () => {
     await prepareLinkPlan(selfSource(selfSide({ field: "add" }))),
     host(),
   );
+  group.initialize();
   try {
     const lib = group.libraries[0]!;
     expect(call(lib.instance, "entry", 7)).toBe(14);
@@ -1100,6 +1121,7 @@ test("function GOT cells address the selected provider in the shared table", asy
     ),
     host(),
   );
+  group.initialize();
   try {
     const [own, preempted] = group.libraries;
     const cell = (lib: typeof own) => (lib!.instance.exports.got as WebAssembly.Global).value;
@@ -1117,6 +1139,7 @@ test("two sides keep independent same-side definitions and clear their slots", a
     ),
     host(),
   );
+  group.initialize();
   const [a, b] = group.libraries;
   const cells = [a, b].map((lib) => (lib!.instance.exports.got as WebAssembly.Global).value);
   expect(call(a!.instance, "entry", 7)).toBe(8);
@@ -1131,6 +1154,7 @@ test("same-side function aliases have the same GOT address", async () => {
     await prepareLinkPlan(selfSource(selfSide({ got: true, alias: "g" }))),
     host(),
   );
+  group.initialize();
   try {
     const lib = group.libraries[0]!;
     expect(lib.instance.exports.f).toBe(lib.instance.exports.g);
@@ -1170,3 +1194,99 @@ for (const [base, offset, encoded] of [
     ).rejects.toThrow("relative global exceeds dylink.0 reservation");
   });
 }
+
+test("passive relocation ownership is explicit and ordered", async () => {
+  const input = source();
+  const passive = {
+    ...input.libraries[0]!,
+    source: side("errno", "GOT.mem", 4, { dataSegments: [[1, 3, 1, 2, 3]] }),
+    initializeMemory: ["init", "__wasm_apply_data_relocs"],
+    initialize: [],
+  };
+  const plan = await prepareLinkPlan({ ...input, libraries: [passive] });
+  const group = instantiateLinkPlan(plan, host());
+  try {
+    expect(group.libraries).toEqual([]);
+    group.initialize();
+    const library = group.libraries[0]!;
+    expect(new DataView(group.memory.buffer).getUint32(library.memoryBase + 8, true)).toBe(1);
+  } finally {
+    group.dispose();
+  }
+});
+
+for (const [label, initializeMemory, initialize, message] of [
+  ["empty memory stages", [], [], "passive data requires declared memory stages"],
+  ["unlisted relocation", ["init"], [], "must be a declared memory stage"],
+  ["constructor relocation", [], ["__wasm_apply_data_relocs"], "must be a memory stage"],
+  ["relocation first", ["__wasm_apply_data_relocs", "init"], [], "cannot precede"],
+] as const) {
+  test(`passive ${label} fails closed`, async () => {
+    const input = source();
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        libraries: [
+          {
+            ...input.libraries[0]!,
+            source: side("errno", "GOT.mem", 4, { dataSegments: [[1, 3, 1, 2, 3]] }),
+            initializeMemory,
+            initialize,
+          },
+        ],
+      }),
+    ).rejects.toThrow(message);
+  });
+}
+
+test("relocation aliases share identity across the memory stages", async () => {
+  const input = source();
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      libraries: [
+        {
+          ...input.libraries[0]!,
+          source: side("errno", "GOT.mem", 4, {
+            dataSegments: [[1, 3, 1, 2, 3]],
+            aliases: [["reloc_alias", 4]],
+          }),
+          initializeMemory: ["init", "reloc_alias", "__wasm_apply_data_relocs"],
+          initialize: [],
+        },
+      ],
+    }),
+  ).rejects.toThrow("duplicate initializer");
+});
+
+test("active library relocation is automatic unless declared in memory stages", async () => {
+  const input = source();
+  const automatic = instantiateLinkPlan(await prepareLinkPlan(input), host());
+  try {
+    automatic.initialize();
+    const library = automatic.libraries[0]!;
+    expect(new DataView(automatic.memory.buffer).getUint32(library.memoryBase + 8, true)).toBe(1);
+  } finally {
+    automatic.dispose();
+  }
+  const explicit = instantiateLinkPlan(
+    await prepareLinkPlan({
+      ...input,
+      libraries: [
+        {
+          ...input.libraries[0]!,
+          initializeMemory: ["init", "__wasm_apply_data_relocs"],
+          initialize: [],
+        },
+      ],
+    }),
+    host(),
+  );
+  try {
+    explicit.initialize();
+    const library = explicit.libraries[0]!;
+    expect(new DataView(explicit.memory.buffer).getUint32(library.memoryBase + 8, true)).toBe(1);
+  } finally {
+    explicit.dispose();
+  }
+});
