@@ -107,7 +107,11 @@ async function prepareRuntimeFixture() {
   await buildNodeModules(root, async () => {});
   const destination = resolve(scratch, "runtime-archive");
   mkdirSync(destination);
-  execFileSync("bun", ["pm", "pack", "--destination", destination], { cwd: root, stdio: "pipe" });
+  execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--destination", destination], {
+    cwd: root,
+    env: { ...process.env, WAFFLE_NETWORK_PREBUILT: "1" },
+    stdio: "pipe",
+  });
   runtimeArchive = resolve(destination, `waffle-${runtimeVersion}.tgz`);
   runtimeSha256 = sha256(runtimeArchive);
 }
@@ -149,6 +153,15 @@ describe("base closure", () => {
       out,
     });
   }, 180_000);
+
+  test("runtime fixture packaging preserves its explicit metadata-only network bytes", () => {
+    const network = execFileSync("tar", [
+      "-xzOf",
+      runtimeArchive,
+      "package/browser/net/network.wasm",
+    ]);
+    expect(network).toEqual(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
+  });
 
   test("orders dependencies before base and records every asset", () => {
     expect(manifest.order.at(-1)).toBe("waffle-base");
