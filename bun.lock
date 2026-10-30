@@ -181,6 +181,19 @@
         "vite": "8.3.4",
       },
     },
+    "packages/waffle-relay": {
+      "name": "waffle-relay",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "@types/node": "26.6.3",
+        "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
   },
   "trustedDependencies": [
     "bun-wasm",
@@ -749,6 +762,8 @@
     "waffle-procps": ["waffle-procps@workspace:packages/procps"],
 
     "waffle-program-support": ["waffle-program-support@workspace:packages/program-support"],
+
+    "waffle-relay": ["waffle-relay@workspace:packages/waffle-relay"],
 
     "waffle-ripgrep": ["waffle-ripgrep@workspace:packages/ripgrep"],
 
