@@ -4,7 +4,7 @@ import {
   type PythonPayloadOptions,
   type PythonPayloadRuntime,
 } from "./python-payload.ts";
-import { defineProgramPackage, type ProgramCatalog } from "waffle/programs";
+import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
 import { pythonLauncher } from "./launcher.ts";
 
 export const PYTHON_PATH = "/usr/bin/python";

@@ -548,6 +548,13 @@
       "types": "./search/shard-worker.ts",
       "bun": "./search/shard-worker.ts",
       "browser": "./search/shard-worker.ts"
+    },
+    "./programs/catalog": {
+      "types": "./programs/catalog.ts",
+      "bun": "./programs/catalog.ts",
+      "node": "./dist/programs/catalog.js",
+      "browser": "./programs/catalog.ts",
+      "default": "./programs/catalog.ts"
     }
   },
   "scripts": {
