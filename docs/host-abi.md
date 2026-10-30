@@ -812,8 +812,8 @@ The largest record is 8 + 12,288 bytes (4,096 UTF-16 units at no more than 3 byt
 
 `watch_open` errors: `EBADF` 8 (bad fd), `EINVAL` 28 (fd is not a file or directory, or bad flags),
 `EFAULT` 21. The rest pass through from the service: `EACCES` 2 (read permission, plus search for a
-directory), `ENOENT` 44 (detached node), `EAGAIN` 6 (128 watches per root across all processes, or the
-graph/namespace bounds), `ENOTSUP` 58 (backend can't watch), and `ECANCELED` 11 (revoked). No
+directory), `ENOENT` 44 (detached node), `EAGAIN` 6 (the root watch allocation/work budget or an incomplete
+notification index), `ENOMEM` 48 (native backing allocation failure), `ENOTSUP` 58 (backend can't watch), and `ECANCELED` 11 (revoked). No
 descriptor rights are required. The authority is the caller's own open description plus the
 service's capability and inode checks.
 
