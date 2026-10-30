@@ -58,3 +58,17 @@ The `Program family release` workflow runs the same steps on a `programs-v*` tag
 on main. It uploads the verified assets as a workflow artifact, and creates the GitHub release
 only when `publish` is set. Python stages a qualified interpreter artifact, so it is released
 with the local command rather than the workflow.
+
+## Final program bytes
+
+Family build routes verify compiler outputs before staging program assets. Staging
+removes only Wasm `name` custom sections through `tools/program-build-tools.ts`.
+Compiler intermediates retain names because the patched-libc verifier uses them.
+Package admission rejects named program assets. Release receipts and archive hashes
+therefore identify the final stripped bytes. Producers, target features, memory limits,
+imports and other custom sections do not change. The base package has no own Wasm;
+Git builds JavaScript, so both are no-ops for this operation.
+
+Python stages its accepted producer archive without changing its original receipt or
+payload. Its separate `python-program.json` records the producer receipt hash and
+interpreter hashes before and after name stripping. It does not claim a new producer.

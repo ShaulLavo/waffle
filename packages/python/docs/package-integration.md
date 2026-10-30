@@ -27,13 +27,16 @@ The producer's output directory is an intermediate artifact. The staging helper 
 the externally accepted producer receipt SHA-256, pinned CPython/source-patch identity,
 all 2,650 payload entries, interpreter admission and memory cap, and the receipt's asset
 hashes before copying anything. The original `python-build.json` remains byte-identical;
-consumer qualification records the current Waffle source separately.
+consumer qualification records the current Waffle source separately. Staging removes only
+the interpreter's `name` custom sections after verification. `python-program.json` links
+the unchanged producer receipt and interpreter hash to the final staged bytes. It does
+not identify the staging runtime as a new producer.
 
 ```sh
 bun run --cwd packages/python prepare:package --receipt-sha256 HEX /path/to/accepted-artifact
 ```
 
 The public defaults read `assets/python.wasm` and `assets/python-stdlib.json`. Packing
-checks the staged interpreter, payload files, notices, licenses and original receipt.
+checks the staged interpreter, payload files, notices, licenses, original receipt and final-program derivation receipt.
 It does not rebuild CPython. Disposal waits for admitted processes, removes only owned
 unchanged payload files, and preserves borrowed identical files and caller data.

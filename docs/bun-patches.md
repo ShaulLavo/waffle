@@ -25,6 +25,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                   | Adaptation       | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                         |
 
 | `packages/coreutils/crates/echo/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/echo` at `07763857f6b9a547742a994b58aef0ccd036198b`; isolated entry and actual WASI write-failure observation, without flag/output logic. |
+| `tools/program-build-tools.ts` | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied. |
 
 ## Node WASI descriptor adapter
 
@@ -254,3 +255,15 @@ coreutils implementations are unchanged.
 
 The memory group owner, member imports and broker integration are original Waffle code. The Chromium fixture image is adapted from the Engines track's shared-memory prototype, which proved that one PIE image instantiates into one shared `WebAssembly.Memory` at several bases. The adaptation replaces `memory.grow` with `runtime_shm.group_grow`, adds `runtime_shm` region and futex calls, and runs a command loop that the test page drives through the member's own statics.
 
+
+## Program artifact finalization
+
+`tools/program-build-tools.ts` originated in bash-web `9ef027d7`, from
+`scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. Its original byte reader
+now rejects integers outside the Wasm u32 range. Waffle's original `stripWasmNames`
+and `stageProgram` operations use that reader to remove only complete custom sections
+whose name is exactly `name`. All other bytes, including producer metadata, target
+features and dynamic-linking metadata, remain unchanged. Compiler intermediates keep
+their names until the existing patched-libc verification finishes. Family staging
+strips final program assets before release hashing. Python keeps its accepted producer
+receipt and writes a separate final-program derivation receipt.
