@@ -428,6 +428,26 @@ test("jq restores and verifies the single network artifact before install", () =
   expect(String(record(cache?.with).key)).toContain("tools/program-build-tools.ts");
 });
 
+test("jq provisions the pinned SDK before its native program build", () => {
+  const job = record(jobs.jq);
+  expect(record(job.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(job.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  const steps = stepsFor("jq");
+  const sdk = steps.find((step) => step.id === "sdk");
+  expect(record(sdk?.with).path).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(sdk?.with).key).toBe(
+    "${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4",
+  );
+  const provision = steps.find((step) => step.name === "Install pinned wasi-sdk 34");
+  expect(provision?.if).toBe("steps.sdk.outputs.cache-hit != 'true'");
+  expect(String(provision?.run)).toContain(
+    "b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz",
+  );
+  expect(steps.indexOf(record(provision))).toBeLessThan(
+    steps.findIndex((step) => step.run === "bun run programs:jq"),
+  );
+});
+
 test("the browser gate runs memory groups on the fixture built once by libc", () => {
   for (const path of [
     "packages/waffle/group/state.ts",
