@@ -108,27 +108,35 @@ function limits(reader: Reader, shared = false): void {
 
 function importGlobal(
   reader: Reader,
-  side: boolean,
+  relocatable: boolean,
+  core: boolean,
   namespace: string,
   name: string,
   index: number,
 ): GlobalImport {
-  if (!side) invalid(reader.member, "core must own its globals");
+  if (!relocatable) invalid(reader.member, "core must own its globals");
   if (reader.byte() !== 0x7f) invalid(reader.member, "only i32 global imports are supported");
   const mutable = reader.byte();
   if (mutable > 1) invalid(reader.member, "invalid global mutability");
+  if (core && namespace === "GOT.mem" && !["__stack_low", "__stack_high"].includes(name))
+    invalid(reader.member, `core GOT.mem.${name} is unsupported`);
   if (namespace === "env" && name === "__stack_pointer" && mutable !== 1)
-    invalid(reader.member, "side stack pointer must be mutable i32");
+    invalid(reader.member, `${core ? "core" : "side"} stack pointer must be mutable i32`);
   if (namespace === "env" && ["__memory_base", "__table_base"].includes(name) && mutable !== 0)
-    invalid(reader.member, "side bases must be immutable i32");
+    invalid(reader.member, `${core ? "core" : "side"} bases must be immutable i32`);
   if (namespace.startsWith("GOT.") && mutable !== 1)
     invalid(reader.member, `${namespace} requires mutable i32 address globals`);
-  if (side && !["env", "GOT.mem", "GOT.func"].includes(namespace))
+  if (relocatable && !core && !["env", "GOT.mem", "GOT.func"].includes(namespace))
     invalid(reader.member, "side globals must import env, GOT.mem or GOT.func");
   return { module: namespace, name, index, value: 0x7f, mutable: mutable === 1 };
 }
 
-function imports(reader: Reader, side: boolean, types: readonly FunctionSignature[]) {
+function imports(
+  reader: Reader,
+  relocatable: boolean,
+  core: boolean,
+  types: readonly FunctionSignature[],
+) {
   const globals: GlobalImport[] = [];
   const functions: FunctionImport[] = [];
   let memories = 0;
@@ -139,7 +147,7 @@ function imports(reader: Reader, side: boolean, types: readonly FunctionSignatur
       name = reader.name(),
       kind = reader.byte();
     const got = namespace === "GOT.mem" || namespace === "GOT.func";
-    if (namespace.startsWith("GOT.") && (!got || !side || kind !== 3))
+    if (namespace.startsWith("GOT.") && (!got || !relocatable || kind !== 3))
       invalid(reader.member, `unsupported ${namespace}.${name}`);
     if (kind === 0)
       functions.push({
@@ -153,22 +161,22 @@ function imports(reader: Reader, side: boolean, types: readonly FunctionSignatur
       if (reader.byte() !== 0x70) invalid(reader.member, "only funcref tables are supported");
       limits(reader);
       tables++;
-      if (side && (namespace !== "env" || name !== "__indirect_function_table"))
+      if (relocatable && !core && (namespace !== "env" || name !== "__indirect_function_table"))
         invalid(reader.member, "side table must import env.__indirect_function_table");
     } else if (kind === 2) {
-      limits(reader, side);
+      limits(reader, relocatable);
       memories++;
-      if (side && (namespace !== "env" || name !== "memory"))
+      if (relocatable && !core && (namespace !== "env" || name !== "memory"))
         invalid(reader.member, "side memory must import env.memory");
     } else if (kind === 3) {
-      globals.push(importGlobal(reader, side, namespace, name, globals.length));
+      globals.push(importGlobal(reader, relocatable, core, namespace, name, globals.length));
     } else invalid(reader.member, "tags and unknown import kinds are unsupported");
   }
-  if (!side && (memories || tables))
+  if (!relocatable && (memories || tables))
     invalid(reader.member, "core must define its own memory and table");
   if (memories > 1 || tables > 1)
     invalid(reader.member, "multiple memories/tables are unsupported");
-  if (side && (memories !== 1 || tables !== 1))
+  if (relocatable && !core && (memories !== 1 || tables !== 1))
     invalid(reader.member, "side requires one imported memory and table");
   reader.done();
   return { globals, functions };
@@ -189,18 +197,34 @@ function readImportInfo(reader: Reader, records: ImportInfo[]): void {
 
 function bindImports(
   functions: readonly FunctionImport[],
+  globals: readonly GlobalImport[],
   records: readonly ImportInfo[],
   member: string,
+  core: boolean,
 ): readonly FunctionImport[] {
   for (const record of records) {
-    if (
-      record.module !== "env" ||
-      !functions.some((entry) => entry.module === record.module && entry.name === record.name)
-    )
+    const functionImport =
+      record.module === "env" &&
+      functions.some((entry) => entry.module === record.module && entry.name === record.name);
+    const stackImport =
+      core &&
+      record.module === "env" &&
+      ["__stack_low", "__stack_high"].includes(record.name) &&
+      globals.some((entry) => entry.module === "GOT.mem" && entry.name === record.name);
+    if (!functionImport && !stackImport)
       invalid(
         member,
         `import-info ${record.module}.${record.name} must name an imported env function`,
       );
+  }
+  if (core) {
+    for (const entry of globals) {
+      if (entry.module !== "GOT.mem") continue;
+      if (
+        !records.some((record) => record.module === "env" && record.name === entry.name)
+      )
+        invalid(member, `core GOT.mem.${entry.name} requires weak import-info`);
+    }
   }
   return functions.map((entry) => ({
     ...entry,
@@ -506,8 +530,11 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   const relocatable = Boolean(memory);
   const imported = sections.get(2);
   const types = functionTypes(new Reader(sections.get(1)?.bytes ?? new Uint8Array([0]), member));
-  const entries = imported ? imports(imported, relocatable, types) : { globals: [], functions: [] };
-  const functionImports = bindImports(entries.functions, importInfo, member);
+  const core = relocatable && !side;
+  const entries = imported
+    ? imports(imported, relocatable, core, types)
+    : { globals: [], functions: [] };
+  const functionImports = bindImports(entries.functions, entries.globals, importInfo, member, core);
   const globalImports = entries.globals;
   const functions = functionExports(sections, types, functionImports, member);
   const importedGlobals: readonly GlobalType[] = globalImports;
