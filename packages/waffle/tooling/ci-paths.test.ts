@@ -345,6 +345,167 @@ test("programs normal CI runs the release closure test from the folded source ch
   ).toBe(true);
 });
 
+test("programs prepares locked Cargo sources after cache restore and before source checks", () => {
+  const steps = stepsFor("programs");
+  const cache = steps.findIndex(
+    (step) =>
+      step.uses === "actions/cache@v4" && String(record(step.with).path).includes("~/.cargo/git"),
+  );
+  const fetches = steps.filter((step) => step.run === "cargo fetch --locked");
+  expect(fetches).toHaveLength(1);
+  const fetch = fetches[0];
+  expect(fetch?.if).toBeUndefined();
+  const fetched = steps.indexOf(record(fetch));
+  expect(cache).toBeGreaterThanOrEqual(0);
+  expect(fetched).toBeGreaterThan(cache);
+  for (const command of ["bun run programs:routes", "bun run programs:source"]) {
+    const check = steps.findIndex((step) => step.run === command);
+    expect(check).toBeGreaterThan(fetched);
+  }
+});
+
+test("jq has a separate leaf with the shared network artifact prerequisite", () => {
+  const job = record(jobs.jq);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}",
+  );
+  expect(record(changes.outputs).jq).toBe("${{ steps.paths.outputs.jq }}");
+  const steps = stepsFor("jq");
+  expect(steps.some((step) => step.run === "bun run prepare:package")).toBe(true);
+  expect(steps.some((step) => step.run === "bun run programs:check")).toBe(true);
+  expect(steps.some((step) => step.run === "bun run programs:jq")).toBe(true);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+});
+
+test("jq selects only its package and shared runtime inputs", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "rust-toolchain.toml",
+    "tools/program-build-tools.ts",
+    "tools/program-package.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/base/src/index.ts",
+    "packages/jq/src/index.ts",
+    "packages/jq/scripts/build-jaq.ts",
+    "packages/jq/tests/jq-wasi.test.ts",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/programs/collection.ts",
+    "packages/waffle/browser/fs-worker.ts",
+  ])
+    expect(selected("jq", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "packages/coreutils/src/lib.rs",
+    "packages/findutils/src/index.ts",
+    "packages/grep/src/index.ts",
+    "packages/sed/src/index.ts",
+    "packages/ripgrep/src/index.ts",
+    "packages/python/src/launcher.ts",
+    "packages/git/src/index.ts",
+    "docs/bun-patches.md",
+    "site/src/pages/index.astro",
+  ])
+    expect(selected("jq", path), path).toBe(false);
+});
+
+test("jq restores and verifies the single network artifact before install", () => {
+  const steps = stepsFor("jq");
+  const restore = steps.find((step) => step.id === "network-artifact");
+  const verify = steps.find(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.find(
+    (step) => typeof step.run === "string" && step.run.startsWith("bun install"),
+  );
+  expect(restore).toBeDefined();
+  expect(verify).toBeDefined();
+  expect(install).toBeDefined();
+  expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(String(record(restore?.with).path)).toContain("packages/waffle/browser/net/network.wasm");
+  expect(steps.indexOf(record(restore))).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(install)));
+  expect(
+    steps.some((step) => typeof step.run === "string" && step.run.includes("build:network")),
+  ).toBe(false);
+  const cache = steps.find((step) => step.id === "jq-cache");
+  expect(cache).toBeDefined();
+  for (const path of [
+    "~/.rustup/toolchains",
+    "~/.cargo/registry",
+    "~/.cargo/git",
+    ".build/jq",
+    ".build/wasi-libc",
+    "packages/jq/.build",
+    "packages/jq/.sources",
+  ])
+    expect(String(record(cache?.with).path)).toContain(path);
+  expect(String(record(cache?.with).key)).toContain("packages/jq/sources.lock.json");
+  expect(String(record(cache?.with).key)).toContain("tools/program-build-tools.ts");
+});
+
+test("jq provisions the pinned SDK before its native program build", () => {
+  const job = record(jobs.jq);
+  expect(record(job.env)).toEqual({ WAFFLE_NETWORK_PREBUILT: "1" });
+  const steps = stepsFor("jq");
+  const build = steps.find((step) => step.run === "bun run programs:jq");
+  expect(record(build?.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(build?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  const sdk = steps.find((step) => step.id === "sdk");
+  expect(record(sdk?.with).path).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(sdk?.with).key).toBe(
+    "${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4",
+  );
+  const provision = steps.find((step) => step.name === "Install pinned wasi-sdk 34");
+  expect(provision?.if).toBe("steps.sdk.outputs.cache-hit != 'true'");
+  expect(String(provision?.run)).toContain(
+    "b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz",
+  );
+  expect(steps.indexOf(record(provision))).toBeLessThan(
+    steps.findIndex((step) => step.run === "bun run programs:jq"),
+  );
+});
+
+test("jq pins and verifies its native oracle without a host-jq fallback", () => {
+  const steps = stepsFor("jq");
+  const cache = steps.find((step) => step.id === "jq-native");
+  const download = steps.find((step) => step.name === "Download pinned jq native oracle");
+  const verify = steps.find((step) => step.name === "Verify and expose pinned jq native oracle");
+  const version = steps.find((step) => step.name === "Assert pinned jq native oracle");
+  const oracle = steps.find((step) => step.run === "bun run programs:jq");
+  expect(cache).toBeDefined();
+  expect(record(cache?.with).path).toBe("${{ runner.temp }}/jq-native");
+  expect(record(cache?.with).key).toBe(
+    "${{ runner.os }}-${{ runner.arch }}-jq-native-1.8.2-x86_64-b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+  );
+  expect(download?.if).toBe("steps.jq-native.outputs.cache-hit != 'true'");
+  expect(record(download?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(record(download?.env).JQ_NATIVE_URL).toBe(
+    "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
+  );
+  expect(String(download?.run)).toContain('curl -fL --retry 3 "$JQ_NATIVE_URL"');
+  expect(String(download?.run)).toContain('"$JQ_NATIVE_DIR/jq"');
+  expect(record(verify?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(record(verify?.env).JQ_NATIVE_SHA256).toBe(
+    "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+  );
+  expect(String(verify?.run)).toContain("sha256sum -c -");
+  expect(String(verify?.run)).toContain('chmod 700 "$JQ_NATIVE_DIR/jq"');
+  expect(String(verify?.run)).toContain('echo "$JQ_NATIVE_DIR" >> "$GITHUB_PATH"');
+  expect(record(version?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
+  expect(String(version?.run)).toContain('test "$(command -v jq)" = "$JQ_NATIVE_DIR/jq"');
+  expect(String(version?.run)).toContain('test "$(jq --version)" = "jq-1.8.2"');
+  expect(String(version?.run)).not.toContain("|| jq");
+  expect(String(version?.run)).not.toContain("apt-get");
+  expect(steps.indexOf(record(cache))).toBeLessThan(steps.indexOf(record(download)));
+  expect(steps.indexOf(record(download))).toBeLessThan(steps.indexOf(record(verify)));
+  expect(steps.indexOf(record(verify))).toBeLessThan(steps.indexOf(record(version)));
+  expect(steps.indexOf(record(version))).toBeLessThan(steps.indexOf(record(oracle)));
+});
+
 test("the browser gate runs memory groups on the fixture built once by libc", () => {
   for (const path of [
     "packages/waffle/group/state.ts",
@@ -420,4 +581,230 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
     });
     expect(result.exitCode).toBe(id ? 0 : 1);
   }
+});
+
+test("program producers explicitly provision the pinned optimizer before running build routes", () => {
+  const producers = [
+    ["programs", "bun run programs:tools"],
+    ["jq", "bun run programs:jq"],
+    ["diffutils", "bun run programs:diffutils"],
+  ] satisfies readonly [string, string][];
+  for (const [job, command] of producers) {
+    const steps = stepsFor(job);
+    const optimizer = steps.findIndex(
+      (step) => step.uses === "./.github/actions/program-optimizer",
+    );
+    const consumer = steps.findIndex((step) => String(step.run).includes(command));
+    expect(optimizer).toBeGreaterThanOrEqual(0);
+    expect(consumer).toBeGreaterThan(optimizer);
+    expect(steps[optimizer]?.if).toBeUndefined();
+    expect(steps[optimizer]?.["continue-on-error"]).toBeUndefined();
+  }
+  expect(
+    stepsFor("network-wasm").some((step) => step.uses === "./.github/actions/program-optimizer"),
+  ).toBe(false);
+  for (const path of [
+    "ci.yml",
+    "coreutils-echo.yml",
+    "findutils-xargs.yml",
+    "program-release.yml",
+  ]) {
+    const source = readFileSync(
+      new URL(`../../../.github/workflows/${path}`, import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("uses: ./.github/actions/program-optimizer");
+  }
+  for (const filter of ["programs", "coreutils", "findutils", "jq", "diffutils"]) {
+    expect(selected(filter, "tools/program-optimize.ts")).toBe(true);
+    expect(selected(filter, "tools/program-derivation.ts")).toBe(true);
+    expect(selected(filter, ".github/actions/program-optimizer/action.yml")).toBe(true);
+  }
+});
+
+test("diffutils selects its exact integration inputs", () => {
+  const job = record(jobs.diffutils);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(record(changes.outputs).diffutils).toBe("${{ steps.paths.outputs.diffutils }}");
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}",
+  );
+  for (const path of [
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "tools/program-build-tools.ts",
+    "tools/program-package.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/waffle/core/wasi.ts",
+    "packages/base/src/index.ts",
+    "packages/diffutils/src/index.ts",
+  ])
+    expect(selected("diffutils", path), path).toBe(true);
+  for (const path of [
+    "docs/bun-patches.md",
+    "site/package.json",
+    "packages/grep/src/index.ts",
+    "tools/other.ts",
+  ])
+    expect(selected("diffutils", path), path).toBe(false);
+});
+
+test("diffutils consumes the single verified network artifact before installation", () => {
+  const producer = stepsFor("network-wasm");
+  const steps = stepsFor("diffutils");
+  const cache = producer.find((step) => step.id === "network-artifact");
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(install).toBeGreaterThan(verify);
+  expect(record(steps[restore]?.with).key).toBe(record(cache?.with).key);
+  expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(record(record(jobs.diffutils).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(
+    producer.filter((step) => step.run === "bun run --cwd packages/waffle build:network"),
+  ).toHaveLength(1);
+  expect(steps.some((step) => /build:network|cargo\s/.test(String(step.run)))).toBe(false);
+  expect(
+    Object.keys(jobs)
+      .filter((name) => Array.isArray(record(jobs[name]).steps))
+      .flatMap((name) =>
+        stepsFor(name).filter((step) =>
+          String(step.run).includes("bun run --cwd packages/waffle build:network"),
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("diffutils SDK uses supported step context and runner scratch", () => {
+  const job = record(jobs.diffutils);
+  expect(JSON.stringify(job.env)).not.toContain("runner.temp");
+  const steps = stepsFor("diffutils");
+  const sdk = steps.find((step) => step.id === "sdk");
+  const libcSdk = stepsFor("libc").find((step) => step.id === "sdk");
+  expect(record(sdk?.with)).toEqual(record(libcSdk?.with));
+  expect(steps.find((step) => step.name === "Install pinned wasi-sdk 34")?.run).toBe(
+    stepsFor("libc").find((step) => step.name === "Install pinned wasi-sdk 34")?.run,
+  );
+  const build = steps.find((step) => step.name === "Build and test diffutils");
+  expect(record(build?.env).WASI_SDK_PATH).toBe("${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux");
+  expect(record(build?.env).WASI_LIBC_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  expect(String(build?.run)).toContain("cmake --version");
+  expect(String(build?.run)).toContain("ninja --version");
+});
+
+test("diffutils provisions one exact native GNU oracle", () => {
+  const steps = stepsFor("diffutils");
+  const compiler = steps.find((step) => step.id === "native-compiler");
+  const cache = steps.find((step) => step.id === "native-oracle");
+  const recipe = steps.find((step) => step.name === "Build or verify native GNU diffutils oracle");
+  const build = steps.find((step) => step.name === "Build and test diffutils");
+  expect(compiler?.run).toContain("cc -dumpmachine");
+  expect(compiler?.run).toContain("cc --version");
+  expect(cache?.uses).toBe("actions/cache@v4");
+  expect(record(cache?.with).path).toBe(".build/diffutils-native-oracle");
+  const key = String(record(cache?.with).key);
+  expect(key).toContain("${{ runner.os }}");
+  expect(key).toContain("${{ runner.arch }}");
+  expect(key).toContain("gnu-3.12");
+  expect(key).toContain(
+    "${{ hashFiles('packages/diffutils/sources.lock.json', 'packages/diffutils/scripts/build-native-oracle.ts') }}",
+  );
+  expect(key).toContain("${{ steps.native-compiler.outputs.identity }}");
+  expect(recipe?.run).toBe("bun run --cwd packages/diffutils native-oracle");
+  expect(record(recipe?.env).NATIVE_ORACLE_COMPILER_IDENTITY).toBe(
+    "${{ steps.native-compiler.outputs.identity }}",
+  );
+  if (!compiler || !cache || !recipe || !build) throw new Error("missing native oracle steps");
+  expect(steps.indexOf(compiler)).toBeLessThan(steps.indexOf(cache));
+  expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(recipe));
+  expect(steps.indexOf(recipe)).toBeLessThan(steps.indexOf(build));
+  expect(record(build?.env).GNU_DIFF).toBe(
+    "${{ github.workspace }}/.build/diffutils-native-oracle/diff",
+  );
+  expect(record(build?.env).GNU_CMP).toBe(
+    "${{ github.workspace }}/.build/diffutils-native-oracle/cmp",
+  );
+  expect(
+    Object.keys(jobs)
+      .filter((name) => Array.isArray(record(jobs[name]).steps))
+      .flatMap((name) =>
+        stepsFor(name).filter(
+          (step) => step.run === "bun run --cwd packages/diffutils native-oracle",
+        ),
+      ),
+  ).toHaveLength(1);
+});
+
+test("diffutils package exposes its actual commands", async () => {
+  const { diffutils } = await import("../../diffutils/src/index.ts");
+  expect(diffutils.pick("diff", "/bin/cmp").programs.map((program) => program.path)).toEqual([
+    "/usr/bin/diff",
+    "/usr/bin/cmp",
+  ]);
+  expect(diffutils.programs.map((program) => [program.path, program.aliases])).toEqual([
+    ["/usr/bin/diff", ["/bin/diff"]],
+    ["/usr/bin/cmp", ["/bin/cmp"]],
+  ]);
+});
+
+test("gh selects its inputs without selecting native program jobs for gh-only changes", () => {
+  const job = record(jobs.gh);
+  expect(record(changes.outputs).gh).toBe("${{ steps.paths.outputs.gh }}");
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(String(job.if)).toContain("needs.changes.outputs.gh == 'true'");
+  for (const path of [
+    "packages/gh/src/program.ts",
+    "packages/gh/tests/fixtures.ts",
+    "packages/waffle/runtime.ts",
+    "tools/program-package.ts",
+    "package.json",
+    "bun.lock",
+    ".github/workflows/ci.yml",
+  ])
+    expect(selected("gh", path), path).toBe(true);
+  for (const path of [
+    "docs/development.md",
+    "site/package.json",
+    "packages/jq/src/index.ts",
+    "packages/git/src/index.ts",
+  ])
+    expect(selected("gh", path), path).toBe(false);
+  for (const name of ["programs", "coreutils", "findutils", "network", "browser", "libc"])
+    expect(selected(name, "packages/gh/src/program.ts"), name).toBe(false);
+});
+
+test("gh restores the exact network asset and does not set up native compilers", () => {
+  const steps = stepsFor("gh");
+  const producer = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  const restore = steps.find((step) => step.id === "network-artifact");
+  expect(record(restore?.with).key).toBe(record(producer?.with).key);
+  expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  expect(steps.indexOf(record(restore))).toBeLessThan(verify);
+  expect(verify).toBeLessThan(install);
+  expect(record(record(jobs.gh).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(
+    steps.some((step) =>
+      /cargo|rust-toolchain|wasi-sdk|wasmtime/i.test(
+        String(step.uses ?? "") + " " + String(step.run ?? ""),
+      ),
+    ),
+  ).toBe(false);
+  expect(
+    record(steps.find((step) => step.uses === "actions/setup-node@v4")?.with)["node-version"],
+  ).toBe("26.12.1");
+  expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });

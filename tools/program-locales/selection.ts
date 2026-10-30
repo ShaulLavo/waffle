@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 
-const gitUtilities = new Set(["echo", "ls", "env", "cut", "tr", "wc", "touch", "rm", "cp", "mv"]);
+const gitUtilities = new Set([
+  "echo",
+  "ls",
+  "env",
+  "cut",
+  "tr",
+  "wc",
+  "touch",
+  "rm",
+  "cp",
+  "mv",
+  "nl",
+  "date",
+]);
 const registryUtilities = new Set(["head", "sort", "uniq"]);
 const commonOnly = new Set([
   "clear",

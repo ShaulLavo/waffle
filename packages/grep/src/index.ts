@@ -1,7 +1,8 @@
 import type { SearchWorkers, SearchWorkerRequest } from "waffle/search";
-import type { ProgramLaunch, ProgramPackage } from "waffle/programs";
+import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
+import type { ProgramLaunch } from "waffle/programs";
 
-export const grep: ProgramPackage = {
+export const grep = defineProgramPackage({
   name: "grep",
   programs: [
     {
@@ -10,9 +11,9 @@ export const grep: ProgramPackage = {
       wasm: new URL("../dist/grep.wasm", import.meta.url),
     },
   ],
-};
+});
 
-export function fastGrep(workers: SearchWorkers): ProgramPackage {
+export function fastGrep(workers: SearchWorkers): ProgramCatalog {
   const launch: ProgramLaunch = async (context, service, fallback) => {
     if ((context.request.env.PWD || "/") !== context.request.cwd) return fallback(context, service);
     const { planGrep } = await import("./plan.ts");
@@ -30,5 +31,8 @@ export function fastGrep(workers: SearchWorkers): ProgramPackage {
       },
     });
   };
-  return { ...grep, programs: grep.programs.map((program) => ({ ...program, launch })) };
+  return defineProgramPackage({
+    ...grep,
+    programs: grep.programs.map((program) => ({ ...program, launch })),
+  });
 }

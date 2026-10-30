@@ -25,16 +25,23 @@
   },
   "scripts": {
     "build": "node scripts/build-coreutils.ts",
-    "test:build-routes": "node --test scripts/test-build-routes.ts && bun test scripts/echo-ci.test.ts",
+    "test:build-routes": "node --test scripts/test-build-routes.ts scripts/nl-source.test.ts && bun test scripts/echo-ci.test.ts",
     "test:native": "cargo test --offline --locked -p waffle-program-support -p waffle-coreutils -p waffle-clear -p waffle-echo",
     "verify:transfer": "node scripts/verify-transfer.ts",
     "pack": "node ../../tools/program-package.ts pack",
     "prepack": "node ../../tools/program-package.ts check",
     "notices": "node scripts/notices.ts",
     "prepare:package": "bun run build && bun run notices",
+    "build:nl": "node scripts/build-nl.ts",
+    "test:nl:wasi": "bun test tests/nl-wasi.test.ts",
     "build:echo": "node scripts/build-echo.ts",
     "test:echo:wasi": "bun test tests/echo-wasi.test.ts",
-    "test:echo:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.echo.json"
+    "test:echo:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.echo.json",
+    "build:date": "node scripts/build-date.ts",
+    "test:date:wasi": "bun test tests/date-wasi.test.ts",
+    "test:date:types": "bun ../waffle/node_modules/typescript/bin/tsc -p tests/tsconfig.date.json",
+    "test:date:source": "node --disable-warning=ExperimentalWarning --test scripts/date-source.test.ts",
+    "test:date:oracle": "node --disable-warning=ExperimentalWarning scripts/date-oracle.ts --compare dist/date.wasm"
   },
   "devDependencies": {
     "waffle": "workspace:*"

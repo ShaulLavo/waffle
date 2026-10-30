@@ -1,3 +1,5 @@
+import { stageProgram } from "../tools/program-build-tools.ts";
+import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,9 +11,11 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { buildNodeModules } from "../packages/waffle/build.ts";
 import {
   assertGuestsReached,
   auditPackedImports,
@@ -26,18 +30,23 @@ import {
 } from "./program-release.ts";
 
 const repository = resolve(import.meta.dirname, "..");
-const runtimeUrl =
-  "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-0.0.91.tgz";
-const runtimeSha256 = "4802672be0fc458d3ef6ae4f5d4998c4c349cae790c6d99236d60a373f4faaea";
+const runtimeVersion: unknown = JSON.parse(
+  readFileSync(resolve(repository, "packages/waffle/package.json"), "utf8"),
+).version;
+if (typeof runtimeVersion !== "string") throw new Error("Runtime fixture needs a package version");
+const runtimeUrl = runtimeReleaseUrl("ShaulLavo/waffle", runtimeVersion);
+let runtimeSha256 = "";
+let runtimeArchive = "";
 const baseFamilies = ["coreutils", "findutils", "grep", "sed", "ripgrep", "base"];
 const tag = "programs-v0.0.92";
 const assetBase = `https://github.com/ShaulLavo/waffle/releases/download/${tag}`;
 
 let scratch = "";
 
-beforeAll(() => {
+beforeAll(async () => {
   mkdirSync(resolve(repository, ".build"), { recursive: true });
   scratch = mkdtempSync(resolve(repository, ".build/program-release-"));
+  await prepareRuntimeFixture();
 });
 
 afterAll(() => {
@@ -78,24 +87,44 @@ function writeArtifacts(packageRoot: string) {
   for (const file of recipe.files as string[]) {
     const path = resolve(packageRoot, file);
     mkdirSync(dirname(path), { recursive: true });
-    const label = Buffer.from(file);
-    const wasm = Buffer.concat([
-      Buffer.from([0, 97, 115, 109, 1, 0, 0, 0, 0, label.length + 1, 0]),
-      label,
-    ]);
-    writeFileSync(path, file.endsWith(".wasm") ? wasm : `stand-in notice for ${file}\n`);
+    if (file.endsWith("-program.json")) continue;
+    if (!file.endsWith(".wasm")) {
+      writeFileSync(path, `stand-in notice for ${file}\n`);
+      continue;
+    }
+    const input = resolve(packageRoot, ".build/fixture-input.wasm");
+    mkdirSync(dirname(input), { recursive: true });
+    writeFileSync(input, cappedWasiFixture);
+    stageProgram(input, path);
+    rmSync(input);
   }
 }
 
-async function runtimeTarball() {
-  const local = process.env.WAFFLE_RUNTIME_TARBALL;
-  if (local) return local;
-  const path = resolve(scratch, "waffle-0.0.91.tgz");
-  if (existsSync(path)) return path;
-  const response = await fetch(runtimeUrl);
-  if (!response.ok) throw new Error(`GET ${runtimeUrl}: ${response.status}`);
-  writeFileSync(path, new Uint8Array(await response.arrayBuffer()));
-  return path;
+async function prepareRuntimeFixture() {
+  const root = resolve(scratch, "runtime-source");
+  cpSync(resolve(repository, "packages/waffle"), root, {
+    recursive: true,
+    filter: (path) => !/\/(node_modules|dist|\.build|target|\.sources)$/.test(path),
+  });
+  // This suite executes package metadata, not networking. Keep its network fixture explicit.
+  writeFileSync(
+    resolve(root, "browser/net/network.wasm"),
+    Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0),
+  );
+  await buildNodeModules(root, async () => {});
+  const destination = resolve(scratch, "runtime-archive");
+  mkdirSync(destination);
+  execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--destination", destination], {
+    cwd: root,
+    env: { ...process.env, WAFFLE_NETWORK_PREBUILT: "1" },
+    stdio: "pipe",
+  });
+  runtimeArchive = resolve(destination, `waffle-${runtimeVersion}.tgz`);
+  runtimeSha256 = sha256(runtimeArchive);
+}
+
+function runtimeTarball() {
+  return runtimeArchive;
 }
 
 function sha256(path: string) {
@@ -132,6 +161,15 @@ describe("base closure", () => {
     });
   }, 180_000);
 
+  test("runtime fixture packaging preserves its explicit metadata-only network bytes", () => {
+    const network = execFileSync("tar", [
+      "-xzOf",
+      runtimeArchive,
+      "package/browser/net/network.wasm",
+    ]);
+    expect(network).toEqual(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
+  });
+
   test("orders dependencies before base and records every asset", () => {
     expect(manifest.order.at(-1)).toBe("waffle-base");
     expect(manifest.order.toSorted()).toEqual([
@@ -143,7 +181,7 @@ describe("base closure", () => {
       "waffle-sed",
     ]);
     expect(manifest.runtime).toMatchObject({
-      version: "0.0.91",
+      version: runtimeVersion,
       url: runtimeUrl,
       sha256: runtimeSha256,
     });
@@ -159,6 +197,29 @@ describe("base closure", () => {
     expect(manifest.dirty).toBe(false);
     expect(manifest.tagState).toBe("tagged");
     expect(manifest.assetBase).toBe(assetBase);
+  });
+
+  test("records both compressed companions for every raw Wasm artifact", () => {
+    const raw = manifest.packages.flatMap((item) =>
+      item.artifacts
+        .filter((artifact) => artifact.path.endsWith(".wasm"))
+        .map((artifact) => ({ item, artifact })),
+    );
+    expect(raw).toHaveLength(25);
+    for (const { item, artifact } of raw) {
+      const gzip = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.gz`);
+      const brotli = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.br`);
+      expect(gzip).toBeDefined();
+      expect(brotli).toBeDefined();
+      if (!gzip || !brotli) continue;
+      expect(gzip.bytes).toBeGreaterThan(0);
+      expect(brotli.bytes).toBeGreaterThan(0);
+      expect(new Set([artifact.sha256, gzip.sha256, brotli.sha256]).size).toBe(3);
+    }
+    const base = manifest.packages.find((item) => item.name === "waffle-base");
+    expect(
+      base?.artifacts.filter((artifact) => /\.wasm(?:\.gz|\.br)?$/.test(artifact.path)),
+    ).toEqual([]);
   });
 
   test("packed manifests name only immutable asset URLs, never workspace or 0.0.0", () => {
@@ -195,10 +256,10 @@ describe("base closure", () => {
     expect(check.registry).toBe("none");
     const served = new Set(check.requests);
     for (const item of manifest.packages) expect(served.has(`/${item.filename}`)).toBe(true);
-    expect(served.has("/waffle-0.0.91.tgz")).toBe(true);
+    expect(served.has(`/waffle-${runtimeVersion}.tgz`)).toBe(true);
     expect(check.imports).toContain("waffle-base");
     const wasm = manifest.packages.flatMap(packedGuests);
-    expect(wasm).toHaveLength(24);
+    expect(wasm).toHaveLength(26);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
     const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
@@ -207,12 +268,14 @@ describe("base closure", () => {
       "dist/clear.wasm",
       "dist/cp.wasm",
       "dist/cut.wasm",
+      "dist/date.wasm",
       "dist/echo.wasm",
       "dist/env.wasm",
       "dist/head.wasm",
       "dist/ls.wasm",
       "dist/mkdir.wasm",
       "dist/mv.wasm",
+      "dist/nl.wasm",
       "dist/rm.wasm",
       "dist/seq.wasm",
       "dist/sort.wasm",
@@ -241,6 +304,21 @@ describe("base closure", () => {
     });
     expect(guests.get("waffle-base")).toEqual({ descriptor: [], staticReference: [] });
   });
+
+  test("a symlinked output directory still proves guest containment in the real install", async () => {
+    const linkedRoot = preparedFixture("symlink-output");
+    const target = resolve(scratch, "actual-output");
+    mkdirSync(target);
+    const link = resolve(scratch, "linked-output");
+    symlinkSync(target, link);
+    const receipt = await buildRelease({
+      ...(await fixtureOptions(linkedRoot, "unused-output")),
+      out: link,
+    });
+    expect(new Set(receipt.installCheck.wasm.map((guest) => guest.path)).size).toBe(26);
+    for (const guest of receipt.installCheck.wasm)
+      expect(guest.path.startsWith("node_modules/")).toBe(true);
+  }, 60_000);
 
   test("never mutates the source checkout", () => {
     expect(git(root, ["status", "--porcelain"])).toBe("");
@@ -444,7 +522,9 @@ describe("review r621 refusals", () => {
 
   test("asset and runtime URLs are bound to their release tags and the runtime version", async () => {
     expect(releaseAssetBase("ShaulLavo/waffle", tag)).toBe(assetBase);
-    expect(runtimeReleaseUrl("ShaulLavo/waffle", "0.0.91")).toBe(runtimeUrl);
+    expect(runtimeReleaseUrl("ShaulLavo/waffle", "0.0.91")).toBe(
+      "https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-0.0.91.tgz",
+    );
     expect(() => releaseAssetBase("https://example.invalid/latest", tag)).toThrow(/owner\/name/);
     expect(() => runtimeReleaseUrl("ShaulLavo/waffle", "latest")).toThrow(/not exact/);
     const root = preparedFixture("urls");
@@ -457,7 +537,7 @@ describe("review r621 refusals", () => {
     await expect(buildRelease(withRuntime(other))).rejects.toThrow(/Runtime URL is not ours/);
     const older = runtimeReleaseUrl("ShaulLavo/waffle", "0.0.90");
     await expect(buildRelease(withRuntime(older))).rejects.toThrow(
-      /Runtime URL names 0\.0\.90, its package is 0\.0\.91/,
+      `Runtime URL names 0.0.90, its package is ${runtimeVersion}`,
     );
     await expect(
       buildRelease({ ...options, repository: "example.invalid/latest/x" }),

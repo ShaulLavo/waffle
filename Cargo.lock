@@ -1749,6 +1749,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "uu_date"
+version = "0.13.0"
+source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
+dependencies = [
+ "clap",
+ "fluent",
+ "jiff",
+ "jiff-tzdb",
+ "libc",
+ "parse_datetime",
+ "rustix",
+ "thiserror",
+ "uucore 0.13.0",
+ "windows-sys",
+]
+
+[[package]]
 name = "uu_echo"
 version = "0.13.0"
 source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
@@ -1815,6 +1832,18 @@ dependencies = [
  "thiserror",
  "uucore 0.13.0",
  "windows-sys",
+]
+
+[[package]]
+name = "uu_nl"
+version = "0.13.0"
+source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
+dependencies = [
+ "clap",
+ "fluent",
+ "itoa",
+ "regex",
+ "uucore 0.13.0",
 ]
 
 [[package]]
@@ -1960,10 +1989,13 @@ dependencies = [
  "fluent",
  "fluent-syntax",
  "glob",
+ "icu_calendar",
  "icu_collator",
+ "icu_datetime",
  "icu_locale",
  "itertools",
  "jiff",
+ "jiff-icu",
  "libc",
  "nix 0.31.3",
  "num-traits",
@@ -2018,6 +2050,7 @@ version = "0.0.1"
 name = "waffle-coreutils"
 version = "0.0.2"
 dependencies = [
+ "clap",
  "futures",
  "rustix",
  "serde_json",
@@ -2026,6 +2059,7 @@ dependencies = [
  "uu_head",
  "uu_ls",
  "uu_mv",
+ "uu_nl",
  "uu_rm",
  "uu_sort",
  "uu_touch",
@@ -2040,6 +2074,14 @@ name = "waffle-cut"
 version = "0.1.0"
 dependencies = [
  "uu_cut",
+ "uucore 0.13.0",
+]
+
+[[package]]
+name = "waffle-date"
+version = "0.0.0"
+dependencies = [
+ "uu_date",
  "uucore 0.13.0",
 ]
 

@@ -46,6 +46,11 @@
         "path": "locales/errors/en-US.ftl",
         "sha256": "e9142ecba95ab9f7fccb89658dd76b8118746cbc05ef6128eb5268dd2a906651"
       },
+      "nl/en-US.ftl": {
+        "package": "uu_nl",
+        "path": "locales/en-US.ftl",
+        "sha256": "680e90adf9c994be07bcc7517e02b4155d7f5ba143a4fffd2a03cc96e2cd6144"
+      },
       "echo/en-US.ftl": {
         "package": "uu_echo",
         "path": "locales/en-US.ftl",
@@ -95,6 +100,11 @@
         "package": "uu_mv",
         "path": "locales/en-US.ftl",
         "sha256": "e79223f866ced02515dc470a42b22a62048d401c5aa0f1517024e7c9a63cd51f"
+      },
+      "date/en-US.ftl": {
+        "package": "uu_date",
+        "path": "locales/en-US.ftl",
+        "sha256": "344ba912c04381beb335b49750d9185761cb0fc3dfc145f9b23749af7af42657"
       }
     }
   }

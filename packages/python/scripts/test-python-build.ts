@@ -1,11 +1,15 @@
+import { validateProgramDerivation } from "../../../tools/program-derivation.ts";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import {
   familyRecipe,
   familyTargetRoot,
   pythonBuildRecipe,
+  pythonAuditScript,
   repositoryRoot,
   withPythonWorkspace,
   stagePythonArtifact,
@@ -13,6 +17,7 @@ import {
   validatePythonPayload,
 } from "./build-python.ts";
 import { pythonSource, regularFiles, sha256, verifyPythonSource } from "./python-source.ts";
+import { auditWaffleSource } from "./waffle-source.ts";
 import { cappedWasiFixture } from "./wasi-artifact-fixture.ts";
 
 function fixture(context: TestContext) {
@@ -78,8 +83,8 @@ test("official build stages scope patched SDK34 flags to host configure and cap 
       assert.equal(step.env.LDFLAGS, undefined);
       continue;
     }
-    assert.equal(step.env.CFLAGS, "--target=wasm32-wasip1 --sysroot=/patched-sysroot");
-    assert.equal(step.env.CPPFLAGS, step.env.CFLAGS);
+    assert.equal(step.env.CFLAGS, "--target=wasm32-wasip1 --sysroot=/patched-sysroot -Oz -flto");
+    assert.equal(step.env.CPPFLAGS, "--target=wasm32-wasip1 --sysroot=/patched-sysroot");
     assert.equal(step.env.LDFLAGS, `${step.env.CFLAGS} -Wl,--max-memory=268435456`);
   }
 });
@@ -189,16 +194,24 @@ test("a validated artifact stages without building and rejects an altered interp
   stagePythonArtifact(output, staged);
   assert.deepEqual(
     regularFiles(staged),
-    regularFiles(output).concat(["python-program.json"]).sort(),
+    regularFiles(output).concat(["python-program.json", "python.wasm.gz", "python.wasm.br"]).sort(),
   );
-  assert.deepEqual(readFileSync(resolve(staged, "python.wasm")), Buffer.from(cappedWasiFixture));
+  const finalBytes = readFileSync(resolve(staged, "python.wasm"));
+  assert.ok(WebAssembly.validate(finalBytes));
+  assert.ok(gunzipSync(readFileSync(resolve(staged, "python.wasm.gz"))).equals(finalBytes));
+  assert.ok(
+    brotliDecompressSync(readFileSync(resolve(staged, "python.wasm.br"))).equals(finalBytes),
+  );
+  assert.equal(
+    WebAssembly.Module.customSections(new WebAssembly.Module(finalBytes), "name").length,
+    0,
+  );
   assert.deepEqual(readFileSync(resolve(output, "python.wasm")), interpreter);
-  assert.deepEqual(JSON.parse(readFileSync(resolve(staged, "python-program.json"), "utf8")), {
-    operation: "strip-wasm-name-sections",
-    producerReceiptSha256: sha256(readFileSync(resolve(output, "python-build.json"))),
-    input: { bytes: interpreter.length, sha256: sha256(interpreter) },
-    output: { bytes: cappedWasiFixture.length, sha256: sha256(cappedWasiFixture) },
-  });
+  validateProgramDerivation(
+    JSON.parse(readFileSync(resolve(staged, "python-program.json"), "utf8")),
+    finalBytes,
+    readFileSync(resolve(output, "python-build.json")),
+  );
   for (const path of regularFiles(output).filter((name) => name !== "python.wasm"))
     assert.deepEqual(
       readFileSync(resolve(staged, path)),
@@ -257,4 +270,19 @@ test("owned compiler scratch is removed after failure while caller data survives
   );
   assert.equal(readFileSync(resolve(directory, "scratch/caller.txt"), "utf8"), "preserve");
   assert.throws(() => readFileSync(resolve(created, "compiler-output")), /ENOENT/);
+});
+
+test("generated Python audit imports resolve in Node from the package directory", (context) => {
+  const { directory, put } = fixture(context);
+  put("audit-api.mjs", "export class Wasi {}\nexport class MemFS {}\n");
+  const script = pythonAuditScript(
+    resolve(directory, "audit-api.mjs"),
+    auditWaffleSource(repositoryRoot),
+  );
+  const body = script.indexOf("const output=");
+  assert.ok(body > 0);
+  execFileSync("node", ["--input-type=module", "-e", script.slice(0, body)], {
+    cwd: resolve(repositoryRoot, "packages/python"),
+    stdio: "pipe",
+  });
 });

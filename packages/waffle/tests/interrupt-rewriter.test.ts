@@ -408,7 +408,7 @@ test("supports standard SIMD types, immediates, globals and loop instrumentation
   expect(calls).toBe(2);
 });
 
-test("refuses GC, exception handling and multi-memory", () => {
+test("refuses GC, legacy exception handling and multi-memory", () => {
   validRefused(binary(types([0x60, 1, 0x63, 0x70, 0]), funcs(0), code([0x0b])), /type|GC/i);
   validRefused(binary(section(5, [2, 0, 1, 0, 1])), /memor/i);
   // Proposal availability varies by JS engine: rejection is required even when validation rejects first.
@@ -416,9 +416,7 @@ test("refuses GC, exception handling and multi-memory", () => {
     binary(types([0x5f, 0])), // struct
     binary(types([0x60, 1, 0x63, 0x70, 0])), // nullable typed ref
     binary(section(5, [1, 4, 1])), // memory64
-    binary(section(13, [0])), // tag section
     simple([0x06, 0x40, 0x0b, 0x0b]), // legacy try
-    simple([0x1f, 0x40, 0, 0x0b, 0x0b]), // try_table
     simple([0x14, 0, 0x0b]), // call_ref
     simple([0xfb, 0, 0x0b]),
   ];

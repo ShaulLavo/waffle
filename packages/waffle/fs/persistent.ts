@@ -935,6 +935,7 @@ export class PersistentBackend extends MemoryBackend {
     await this.captureCheckpoint(true);
     this.stopPersistence();
     await this.storage.close();
+    this.watchAccount.close();
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;

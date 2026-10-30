@@ -5,6 +5,7 @@ export const coreutilsNames = [
   "cut",
   "tr",
   "head",
+  "nl",
   "which",
   "ls",
   "mkdir",
@@ -18,10 +19,11 @@ export const coreutilsNames = [
   "cp",
   "mv",
   "echo",
+  "date",
 ] as const;
 
 export const coreutilsPackageNames = coreutilsNames.filter(
-  (name) => !["clear", "cut", "tr", "wc", "echo"].includes(name),
+  (name) => !["clear", "cut", "tr", "wc", "echo", "date"].includes(name),
 );
 
 const cooperative = new Set(["cat", "mkdir", "seq", "tail"]);

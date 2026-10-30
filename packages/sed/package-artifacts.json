@@ -1,3 +1,7 @@
 {
-  "files": ["dist/sed.wasm", "dist/THIRD_PARTY_NOTICES.txt"]
+  "files": [
+    "dist/sed.wasm",
+    "dist/sed-program.json",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
 }

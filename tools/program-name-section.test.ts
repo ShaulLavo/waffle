@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import {
   copyFileSync,
@@ -11,10 +12,13 @@ import {
 import { dirname, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { programBytesIdentity, validateProgramDerivation } from "./program-derivation.ts";
 import { stageProgram, stripWasmNames } from "./program-build-tools.ts";
 
 const header = [0, 97, 115, 109, 1, 0, 0, 0];
-const named = Uint8Array.from(header.concat([0, 5, 4, 110, 97, 109, 101]));
+const named = Uint8Array.from(
+  header.concat([5, 5, 1, 1, 1, 128, 32], [0, 5, 4, 110, 97, 109, 101]),
+);
 
 function sourceFixture(context: TestContext) {
   const repository = resolve(import.meta.dirname, "..");
@@ -24,6 +28,8 @@ function sourceFixture(context: TestContext) {
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const sources = [
     "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
     "tools/program-locales/prepare.ts",
     "tools/program-locales/selection.ts",
     "tools/program-locales/patch.ts",
@@ -43,6 +49,22 @@ function sourceFixture(context: TestContext) {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(resolve(repository, name), target);
   }
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "copied staging inputs",
+    ],
+    { cwd: root },
+  );
   return (name: string) => pathToFileURL(resolve(root, name)).href;
 }
 
@@ -129,8 +151,12 @@ test("failed staging does not replace an existing destination", (context) => {
   const output = resolve(root, "output.wasm");
   writeFileSync(input, named.subarray(0, -1));
   writeFileSync(output, "untouched");
+  writeFileSync(`${output}.gz`, "untouched gzip");
+  writeFileSync(`${output}.br`, "untouched Brotli");
   assert.throws(() => stageProgram(input, output));
   assert.equal(readFileSync(output, "utf8"), "untouched");
+  assert.equal(readFileSync(`${output}.gz`, "utf8"), "untouched gzip");
+  assert.equal(readFileSync(`${output}.br`, "utf8"), "untouched Brotli");
 });
 
 test("base and JavaScript Git packages have no own Wasm artifacts to strip", () => {
@@ -166,7 +192,16 @@ function programFixture(
   }
   return () => {
     for (const path of originals) assert.deepEqual(readFileSync(path), Buffer.from(named));
-    for (const path of staged) assert.deepEqual(readFileSync(path), Buffer.from(header));
+    for (const path of staged) {
+      const bytes = readFileSync(path);
+      assert.equal(
+        WebAssembly.Module.customSections(new WebAssembly.Module(bytes), "name").length,
+        0,
+      );
+      const metadata = JSON.parse(readFileSync(path.replace(/\.wasm$/, "-program.json"), "utf8"));
+      validateProgramDerivation(metadata, bytes);
+      assert.deepEqual(metadata.input, programBytesIdentity(named));
+    }
   };
 }
 

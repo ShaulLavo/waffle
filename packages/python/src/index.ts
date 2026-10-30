@@ -4,7 +4,8 @@ import {
   type PythonPayloadOptions,
   type PythonPayloadRuntime,
 } from "./python-payload.ts";
-import type { ProgramPackage } from "waffle/programs";
+import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
+import { pythonLauncher } from "./launcher.ts";
 
 export const PYTHON_PATH = "/usr/bin/python";
 export { PYTHON_ARGV0 };
@@ -75,17 +76,19 @@ export function createPythonProgram(
 export function createPythonPackage(
   runtime: PythonRuntime,
   options: PythonOptions = {},
-): ProgramPackage {
+): ProgramCatalog {
   const program = createPythonProgram(runtime, options);
-  return {
+  return defineProgramPackage({
     name: program.name,
     programs: [
       {
         path: program.path,
+        aliases: ["/usr/bin/python3", "/bin/python3"],
         argv0: program.argv0,
         source: program.source,
+        launch: (context, service, fallback) => pythonLauncher(fallback)(context, service),
       },
     ],
     dispose: program.dispose,
-  };
+  });
 }

@@ -1,3 +1,7 @@
 {
-  "files": ["dist/rg.wasm", "dist/rg.NOTICES.txt"]
+  "files": [
+    "dist/rg.wasm",
+    "dist/rg-program.json",
+    "dist/rg.NOTICES.txt"
+  ]
 }

@@ -18,7 +18,8 @@ members = ["third-party/uutils-sed"]
 resolver = "3"
 
 [profile.release]
-opt-level = "s"
-lto = "thin"
+opt-level = "z"
+lto = "fat"
+panic = "abort"
 codegen-units = 1
 strip = "debuginfo"
