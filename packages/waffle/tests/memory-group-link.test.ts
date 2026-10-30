@@ -227,7 +227,7 @@ test("a PIE core admits only weak carved stack-bound GOT.mem imports", async () 
         check() {},
         memory,
         __indirect_function_table: table,
-        __stack_pointer: global(4 * 65536, true),
+        __stack_pointer: global(3 * 65536, true),
         __memory_base: global(65536),
         __table_base: global(1),
       },
