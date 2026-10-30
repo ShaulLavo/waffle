@@ -2,6 +2,7 @@
 // small marker file per path and registers it; nothing is fetched, prepared or compiled until
 // the first exec.
 import type { GuestLauncher, Runtime, ProgramLoadState } from "../runtime.js";
+import { packageIdentity } from "./catalog.js";
 import type { HostCommandDefinition } from "../proc/command.js";
 import type { RegisteredCommand } from "../proc/registry.js";
 import type { ProcessHandle } from "../proc/types.js";
@@ -126,6 +127,7 @@ interface Installed {
   readonly runtime: Runtime;
   readonly packages: readonly ProgramPackage[];
   readonly activity: Activity;
+  readonly admission: AbortController;
   readonly leases: Array<() => void>;
   readonly created: Entry[];
 }
@@ -165,13 +167,15 @@ export async function installPrograms(
 ): Promise<ProgramInstallation> {
   if (runtime.disposed) throw new Error("Runtime is disposed");
   const activity = new Activity();
-  const entries = programEntries(packages, activity, options);
-  const installed: Installed = { runtime, packages, activity, leases: [], created: [] };
+  const admission = new AbortController();
+  const entries = programEntries(packages, activity, { ...options, signal: admission.signal });
+  const installed: Installed = { runtime, packages, activity, admission, leases: [], created: [] };
   const signal = options.signal;
   if (signal?.aborted) throw new Error("Program installation was cancelled");
   if (signal) {
     const close = () => {
       activity.closing = true;
+      admission.abort();
     };
     signal.addEventListener("abort", close, { once: true });
     installed.leases.push(() => signal.removeEventListener("abort", close));
@@ -233,8 +237,8 @@ function programEntries(
   activity: Activity,
   options: InstallProgramsOptions,
 ): Entry[] {
-  const entries = packages.flatMap(({ name, programs }) =>
-    programs.flatMap((program) => programPaths(name, program, activity, options)),
+  const entries = packages.flatMap((pkg) =>
+    pkg.programs.flatMap((program) => programPaths(pkg, program, activity, options)),
   );
   const claimed = new Set<string>();
   for (const { path } of entries) {
@@ -246,7 +250,7 @@ function programEntries(
 }
 
 function programPaths(
-  name: string,
+  pkg: ProgramPackage,
   program: PackageProgram,
   activity: Activity,
   options: InstallProgramsOptions,
@@ -255,9 +259,16 @@ function programPaths(
     throw new TypeError(`Program ${program.path} argv0 must be a string`);
   const source =
     program.script || program.command ? undefined : trackedSource(programLoader(program), activity);
-  const marker = encoder.encode(`waffle program: ${name} ${program.path}\n`);
+  const marker = encoder.encode(`waffle program: ${pkg.name} ${program.path}\n`);
   const command = program.command
-    ? trackedCommand(program.command, activity, options.signal, marker, program.argv0)
+    ? trackedCommand(
+        program.command,
+        packageIdentity(pkg),
+        activity,
+        options.signal,
+        marker,
+        program.argv0,
+      )
     : undefined;
   const argv0 = program.argv0;
   const launch = program.script ? scriptLaunch(program, options) : program.launch;
@@ -296,6 +307,7 @@ function trackedSource(load: () => Promise<Uint8Array>, activity: Activity) {
 
 function trackedCommand(
   definition: HostCommandDefinition,
+  owner: object,
   activity: Activity,
   admission: AbortSignal | undefined,
   marker: Uint8Array,
@@ -303,6 +315,8 @@ function trackedCommand(
 ): RegisteredCommand {
   if (typeof definition.load !== "function") throw new TypeError("Command loader is required");
   return {
+    owner,
+    signals: definition.signals,
     admission,
     marker,
     retain: () => {
@@ -419,6 +433,7 @@ async function uninstall(installed: Installed): Promise<unknown[]> {
     errors.push(failure);
   };
   activity.closing = true;
+  installed.admission.abort();
   if (!runtime.disposed) {
     // Consume a failed install write's queued error before reading the tree back.
     await runtime.filesystem.drain().catch(collect);

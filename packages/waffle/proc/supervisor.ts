@@ -25,7 +25,7 @@ import {
   OpenDescription,
   type Descriptor,
 } from "../core/descriptors.js";
-import { ExecutableRegistry } from "./registry.js";
+import { ExecutableRegistry, type ResolvedExecutable } from "./registry.js";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
 import {
   OutcomeCell,
@@ -713,18 +713,7 @@ export class ProcessSupervisor {
         acquired = resolve;
       });
       try {
-        if (executable.kind === "command") {
-          if (!this.options.launchCommand)
-            throw new ExecutableFormatError("Host commands are unavailable in this supervisor");
-          record.handle = await this.options.launchCommand({ ...context, command: executable });
-        } else {
-          record.handle = await this.options.launch({
-            ...context,
-            module: executable.module,
-            adapter: executable.adapter,
-            interruptible: executable.interruptible,
-          });
-        }
+        record.handle = await this.launchExecutable(context, executable);
       } finally {
         record.acquiring = undefined;
         acquired();
@@ -734,6 +723,22 @@ export class ProcessSupervisor {
     } catch (error) {
       this.failStart(record.pid, error);
     }
+  }
+  private launchExecutable(
+    context: ProcessLifecycle,
+    executable: ResolvedExecutable,
+  ): ProcessHandle | Promise<ProcessHandle> {
+    if (executable.kind === "command") {
+      if (!this.options.launchCommand)
+        throw new ExecutableFormatError("Host commands are unavailable in this supervisor");
+      return this.options.launchCommand({ ...context, command: executable });
+    }
+    return this.options.launch({
+      ...context,
+      module: executable.module,
+      adapter: executable.adapter,
+      interruptible: executable.interruptible,
+    });
   }
   /** Launch handles do not prove entry; the executing host calls this at its entry boundary. */
   started(pid: number): boolean {

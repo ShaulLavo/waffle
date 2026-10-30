@@ -59,6 +59,7 @@ export interface ScriptExecutable {
   ) => void;
 }
 export interface RegisteredCommand extends HostCommandDefinition {
+  readonly owner?: object;
   readonly admission?: AbortSignal;
   readonly marker?: Uint8Array;
   /** A package hold released only after the callback and its admitted I/O physically settle. */

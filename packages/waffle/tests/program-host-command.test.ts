@@ -70,6 +70,7 @@ test("module-less commands execute without compiling Wasm or exposing runtime au
       "pid",
       "processes",
       "request",
+      "signals",
       "stderr",
       "stdin",
       "stdout",
@@ -77,6 +78,7 @@ test("module-less commands execute without compiling Wasm or exposing runtime au
     await context.stdout.write(new TextEncoder().encode(context.request.argv.join(" ")));
     return 3;
   };
+  const compiledModule = spyOn(WebAssembly, "Module");
   const compile = spyOn(WebAssembly, "compile");
   const compileStreaming = spyOn(WebAssembly, "compileStreaming");
   try {
@@ -91,9 +93,11 @@ test("module-less commands execute without compiling Wasm or exposing runtime au
     });
     expect(shell.output.join("")).toBe("fixture hello");
     expect(loads).toBe(1);
+    expect(compiledModule).not.toHaveBeenCalled();
     expect(compile).not.toHaveBeenCalled();
     expect(compileStreaming).not.toHaveBeenCalled();
   } finally {
+    compiledModule.mockRestore();
     compile.mockRestore();
     compileStreaming.mockRestore();
   }
@@ -571,4 +575,25 @@ test("failed physical I/O cleanup retains disposal debt and the page guard", asy
   expect(code).toBe(0);
   expect(stdout).toContain("physical cleanup debt rejects disposal and retains the page guard");
   expect(stderr).toContain("injected physical I/O cleanup failure");
+});
+
+test("the page entry keeps command execution and stdio in lazy import chunks", async () => {
+  const built = await Bun.build({
+    entrypoints: [new URL("../runtime.ts", import.meta.url).pathname],
+    target: "browser",
+    format: "esm",
+    splitting: true,
+    minify: false,
+  });
+  expect(built.success).toBe(true);
+  const entry = built.outputs.find((output) => output.kind === "entry-point");
+  expect(entry).toBeDefined();
+  const text = await entry!.text();
+  expect(text).not.toContain("function runCommand(");
+  expect(text).not.toContain("class CommandStdio ");
+  const chunks = await Promise.all(
+    built.outputs.filter((output) => output.kind === "chunk").map((output) => output.text()),
+  );
+  expect(chunks.some((text) => text.includes("function runCommand("))).toBe(true);
+  expect(chunks.some((text) => text.includes("class CommandStdio "))).toBe(true);
 });

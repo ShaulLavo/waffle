@@ -92,5 +92,8 @@ export type {
   CommandOutput,
   ProcessQuery,
   CommandProcessRow,
+  SignalDelegation,
+  SignalSend,
+  DelegatedSignals,
 } from "./proc/command.js";
 export type { CommandProcessContext } from "./proc/types.js";

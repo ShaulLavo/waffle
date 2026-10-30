@@ -1,6 +1,11 @@
 import { atomicsWaitAsync, atomicsWaitAsyncBigInt } from "./intrinsics.js";
 import type { FilesystemConnection } from "../fs/protocol.js";
-import { CommandStdioError, type HostCommandContext, type ProcessQuery } from "./command.js";
+import {
+  CommandStdioError,
+  type HostCommandContext,
+  type ProcessQuery,
+  type DelegatedSignals,
+} from "./command.js";
 import { CommandStdio } from "./command-stdio.js";
 import { TaggedCells, controlLoad, controlNotify } from "./control.js";
 import { readOutcome } from "./outcome.js";
@@ -8,7 +13,8 @@ import type { CommandProcessContext, ProcessHandle } from "./types.js";
 
 export interface CommandCapabilities {
   readonly processes: ProcessQuery;
-  readonly filesystem?: FilesystemConnection;
+  readonly signals: DelegatedSignals | null;
+  readonly connectFilesystem?: () => FilesystemConnection;
 }
 
 export function runCommand(
@@ -23,8 +29,19 @@ export function runCommand(
   };
   const unregister = context.registerRevocation(revoke);
   const admission = context.command.definition.admission;
-  const stdio = new CommandStdio(context.descriptors, abort.signal, capabilities.filesystem);
   const leave = context.command.definition.retain?.();
+  let stdio: CommandStdio;
+  try {
+    stdio = new CommandStdio(
+      context.descriptors,
+      abort.signal,
+      abort.signal.aborted ? undefined : capabilities.connectFilesystem?.(),
+    );
+  } catch (error) {
+    unregister();
+    leave?.();
+    throw error;
+  }
   let stopping: Promise<void> | undefined;
   const task = execute(context, capabilities, stdio, abort.signal);
   const watching = watchSignals(context, abort.signal);
@@ -74,6 +91,7 @@ export function runCommand(
       stdout: io.stdout,
       stderr: io.stderr,
       processes: borrowed.processes,
+      signals: borrowed.signals,
       abort: signal,
     });
     try {

@@ -912,6 +912,8 @@ function checkedCommand(program: ProgramDefinition): RegisteredCommand {
     program.cooperative !== undefined
   )
     throw new TypeError("A command must declare only its command definition");
+  if (program.command?.signals !== undefined && program.command.signals !== "delegated")
+    throw new TypeError("Unknown command signal policy");
   if (!program.command || typeof program.command.load !== "function")
     throw new TypeError("Command loader is required");
   return program.command;

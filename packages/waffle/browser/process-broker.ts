@@ -38,7 +38,7 @@ import { type FilesystemConnection, type FilesystemIdentity, isRevoked } from ".
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor.js";
 import type { ExecutableRegistry } from "../proc/registry.js";
 import type { ProcessIdentityAllocator } from "../proc/identity.js";
-import type { ProcessTable } from "../proc/table.js";
+import type { ProcessRecord, ProcessTable } from "../proc/table.js";
 import {
   type ChildExitEvent,
   type ProcessContext,
@@ -94,7 +94,14 @@ import {
 } from "./terminal-output.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
 import type { RuntimeNetworkPathScope } from "./net/runtime.js";
-import { CommandStdioError, type ProcessQuery } from "../proc/command.js";
+import { packageIdentity } from "../programs/catalog.js";
+import {
+  CommandStdioError,
+  type ProcessQuery,
+  type SignalDelegation,
+  type CommandProcessRow,
+  type DelegatedSignals,
+} from "../proc/command.js";
 import type { CommandCapabilities } from "../proc/command-runner.js";
 import type { FileHandle } from "../core/filesystem.js";
 
@@ -107,6 +114,7 @@ export interface ProcessFilesystem {
   sweep?(): void;
 }
 export interface ProcessController {
+  readonly signalDelegation?: SignalDelegation;
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
   launch?(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
@@ -175,6 +183,7 @@ export interface RootDescendantPreparation {
   settled?(descendant: RuntimeDescendant, completion: RootPreparationCompletion): undefined;
 }
 export interface RuntimeRootOptions {
+  readonly signalDelegation?: SignalDelegation;
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
   /** Takes every terminal byte of this root's processes, in order. Exclusive with tryOutput. */
@@ -277,6 +286,10 @@ export class BrowserProcessBroker {
   private readonly completedRoots = new Set<number>();
   private readonly rootLeases = new Map<number, number>();
   private readonly controllers = new Map<number, ProcessController>();
+  private readonly signalPolicies = new Map<
+    number,
+    { controller: ProcessController; packages: ReadonlySet<object> }
+  >();
   private revokedControllers?: Set<number>;
   private readonly quiescedControllers = new Set<number>();
   private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
@@ -634,43 +647,99 @@ export class BrowserProcessBroker {
     if (!launch) throw new ProcessError(45, "Host commands are unavailable");
     const record = this.options.table.require(context.pid);
     const rootPid = record.rootPid;
+    if (rootPid === undefined) throw new ProcessError(ProcessErrno.SRCH, "Command root is missing");
+    const root = this.options.table.require(rootPid);
     const processes: ProcessQuery = Object.freeze({
       snapshot: () => {
         if (
           this.suspended ||
           record.revoked ||
+          root.revoked ||
+          this.options.table.get(rootPid) !== root ||
+          readOutcome(root.outcome) ||
           readOutcome(record.outcome) ||
           context.command.definition.admission?.aborted ||
           this.options.table.get(record.pid) !== record
         )
           throw new CommandStdioError("CANCELED");
-        return Array.from(this.options.table.values())
-          .filter(
-            (row) =>
-              row.rootPid === rootPid && row.request && !row.revoked && !readOutcome(row.outcome),
+        const rows: CommandProcessRow[] = [];
+        for (const row of this.options.table.values()) {
+          if (
+            row.rootPid !== rootPid ||
+            !row.request ||
+            row.revoked ||
+            row.state === "exited" ||
+            readOutcome(row.outcome)
           )
-          .map((row) => ({
+            continue;
+          rows.push({
             pid: row.pid,
             parentPid: row.parentPid,
-            executable: row.request!.executable,
-            argv: row.request!.argv.slice(),
-            state: row.state === "exited" ? ("running" as const) : row.state,
-          }))
-          .sort((left, right) => left.pid - right.pid);
+            executable: row.request.executable,
+            argv: row.request.argv.slice(),
+            state: row.state,
+          });
+        }
+        return rows.sort((left, right) => left.pid - right.pid);
       },
     });
     const transport = this.transport.get(context.pid);
     const identity = transport
       ? this.filesystem(transport)
       : this.controllers.get(context.pid)?.filesystem;
-    const filesystem = identity ? this.options.filesystem.connect(identity) : undefined;
     if (identity) context.registerRevocation(() => this.options.filesystem.revoke(identity));
-    try {
-      return launch(context, { processes, ...(filesystem ? { filesystem } : {}) });
-    } catch (error) {
-      filesystem?.port.close();
-      throw error;
-    }
+    const connectFilesystem = identity
+      ? () => {
+          if (this.suspended || record.revoked || readOutcome(record.outcome))
+            throw new CommandStdioError("CANCELED");
+          return this.options.filesystem.connect(identity);
+        }
+      : undefined;
+    return launch(context, {
+      processes,
+      signals: this.commandSignals(context, record, rootPid),
+      connectFilesystem,
+    });
+  }
+
+  private commandSignals(
+    context: CommandProcessContext,
+    holder: ProcessRecord,
+    rootPid: number,
+  ): DelegatedSignals | null {
+    const definition = context.command.definition;
+    const policy = this.signalPolicies.get(rootPid);
+    const anchor = this.options.table.get(rootPid);
+    if (
+      definition.signals !== "delegated" ||
+      !definition.owner ||
+      !policy ||
+      !anchor ||
+      !policy.packages.has(definition.owner)
+    )
+      return null;
+    const live = () =>
+      !this.suspended &&
+      !holder.revoked &&
+      !anchor.revoked &&
+      !definition.admission?.aborted &&
+      this.options.table.get(holder.pid) === holder &&
+      this.options.table.get(anchor.pid) === anchor &&
+      this.signalPolicies.get(anchor.pid) === policy &&
+      this.controllers.get(anchor.pid) === policy.controller &&
+      !readOutcome(holder.outcome) &&
+      !readOutcome(anchor.outcome);
+    return Object.freeze({
+      send: (pid: number, signal: number) => {
+        const sig = checkedSignal(signal);
+        if (!live()) return "revoked";
+        const target = this.options.table.get(pid);
+        if (!target || target.revoked || readOutcome(target.outcome)) return "missing";
+        if (target.rootPid !== anchor.pid || target === anchor) return "denied";
+        this.publishProcessSignal(pid, sig, target);
+        return "sent";
+      },
+    });
   }
 
   /** Register an explicit adapter controller (including legacy transports), not a default adapter. */
@@ -709,6 +778,12 @@ export class BrowserProcessBroker {
     };
     this.registerController(pid, controller);
     this.reservedRoots.set(pid, reserved);
+    const packages = controller.signalDelegation?.packages;
+    if (packages)
+      this.signalPolicies.set(pid, {
+        controller,
+        packages: new Set(packages.map((pkg) => packageIdentity(pkg))),
+      });
     if (this.supervisor) {
       this.supervisor.createRoot(reserved);
       this.supervisor.registerRevocation(pid, () => this.revokeController(pid));
@@ -773,6 +848,7 @@ export class BrowserProcessBroker {
       this.completedRoots.delete(pid);
       this.reservedRoots.delete(pid);
       this.descendantHooks.delete(pid);
+      this.signalPolicies.delete(pid);
       this.controllers.delete(pid);
       this.quiescedControllers.delete(pid);
       this.revokedControllers?.delete(pid);
@@ -1716,18 +1792,26 @@ export class BrowserProcessBroker {
     );
   }
   async kill(pid: number, signal: number): Promise<void> {
-    const sig = checkedSignal(signal),
-      state = this.states().find((state) => state.pid === pid);
-    const target = state?.signals ?? this.options.table.get(pid) ?? this.reservedRoots.get(pid);
-    if (target) {
-      requestSignal(target, sig);
-      if (readOutcome(target.outcome)?.kind === "signaled") this.revokeRuntimeProcess(pid);
-      this.wake();
-    }
+    const sig = checkedSignal(signal);
+    const found = this.publishProcessSignal(pid, sig);
     const supervisor = await this.ready();
     if (this.suspended) return;
     if (supervisor.get(pid)) supervisor.observeSignal(pid, sig);
-    else if (!state && !target) supervisor.kill(pid, sig);
+    else if (!found) supervisor.kill(pid, sig);
+  }
+  private publishProcessSignal(pid: number, signal: number, captured?: ProcessRecord): boolean {
+    const target =
+      captured ??
+      this.states().find((state) => state.pid === pid)?.signals ??
+      this.options.table.get(pid) ??
+      this.reservedRoots.get(pid);
+    if (!target) return false;
+    requestSignal(target, signal);
+    if (readOutcome(target.outcome)?.kind === "signaled") this.revokeRuntimeProcess(pid);
+    this.wake();
+    if (captured && this.supervisor?.get(pid) === captured)
+      this.supervisor.observeSignal(pid, signal);
+    return true;
   }
   private requestSignalIfPresent(target: SignalTransport, signal: number): void {
     try {
@@ -2001,6 +2085,7 @@ export class BrowserProcessBroker {
       this.retirementGate.resolve();
       this.reservedRoots.clear();
       this.descendantHooks.clear();
+      this.signalPolicies.clear();
       this.completedRoots.clear();
       this.rootLeases.clear();
       this.roots.clear();
