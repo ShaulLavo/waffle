@@ -6,6 +6,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
+  CatmullRomCurve3,
   Clock,
   Color,
   ConeGeometry,
@@ -40,6 +41,7 @@ import {
   SphereGeometry,
   Sprite,
   SpriteMaterial,
+  TubeGeometry,
   Vector2,
   Vector3,
   WebGLRenderer
@@ -73,7 +75,9 @@ import {
   }
   function hash(x, z) { var s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return s - Math.floor(s); }
 
-  var PITCH = 2.5, HW = 0.56, RIDGE_H = 0.72, SLAB = 0.5, LINE = 5.0, EDGE = 5.4, CORNER = 0.8;
+  var PITCH = 2.5, RIDGE_H = 0.72, SLAB = 0.5, LINE = 5.0, EDGE = 5.4, CORNER = 1.0;
+  // cartoon waffle: chunky crowned ridges and square pockets with rounded corners
+  var TW = 0.33, WD = 0.24, RC = 0.36, INK_LIP = 0.038;
   var DOM = 5.625, SEG = 180;
   var AZ_FINAL = -34 * DEG, EL_FINAL = 37 * DEG, EL_START = 88.5 * DEG;
   function cellX(c) { return -3.75 + c * PITCH; }
@@ -113,7 +117,7 @@ import {
     var scene = new Scene();
     var overlay = new Scene();
     var camera = new PerspectiveCamera(30, 1, 0.5, 400);
-    var U = { uFlat: { value: 1 }, uEdge: { value: 0.02 } };
+    var U = { uFlat: { value: 1 }, uEdge: { value: 0.02 }, uInk: { value: 0 }, uInkCol: { value: new Color(0x2A1F33) } };
     var disposables = [];
     var REG_INIT = null;
 
@@ -122,21 +126,49 @@ import {
     gradMap.minFilter = gradMap.magFilter = NearestFilter; gradMap.generateMipmaps = false; gradMap.needsUpdate = true;
     disposables.push(gradMap);
 
-    function patch(m, waffle) {
+    // The waffle's ink is drawn in its own shader from the same pocket outline the geometry uses,
+    // so it stays crisp at any zoom. Like a hand-inked cartoon, each pocket gets one stroke along
+    // the rim nearest the camera, where the ridge top overlaps the pocket behind it. The stroke
+    // tapers to nothing as the rim turns away, and the far rims stay clean.
+    function f(v) { return v.toFixed(4); }
+    var WAFFLE_GLSL = [
+      'uniform float uInk; uniform vec3 uInkCol; varying vec2 vP;',
+      'vec2 pocketOffset(vec2 p) {',
+      '  vec2 cell = clamp(floor((p + ' + f(LINE) + ') / ' + f(PITCH) + '), 0.0, 3.0);',
+      '  return p - (-' + f(LINE) + ' + (cell + 0.5) * ' + f(PITCH) + ');',
+      '}',
+      'float waffleS(vec2 p) {',
+      '  vec2 q = abs(pocketOffset(p)) - ' + f(PITCH / 2 - TW - RC) + ';',
+      '  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - ' + f(RC) + ';',
+      '}',
+      'vec2 rimOutward(vec2 p) {',
+      '  vec2 d = pocketOffset(p), q = abs(d) - ' + f(PITCH / 2 - TW - RC) + ';',
+      '  vec2 o = (q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));',
+      '  return o * sign(d);',
+      '}'
+    ].join('\n');
+    var WAFFLE_INK = [
+      'float ws = waffleS(vP), aw = max(fwidth(ws), 1e-4);',
+      'float facing = dot(rimOutward(vP), normalize(cameraPosition.xz - vP));',
+      'float stroke = ' + f(INK_LIP) + ' * smoothstep(0.05, 0.6, facing);',
+      'float lipInk = (1.0 - smoothstep(stroke - aw, stroke + aw, abs(ws))) * smoothstep(0.02, 0.2, facing);',
+      'gl_FragColor.rgb = mix(gl_FragColor.rgb, uInkCol, lipInk * uInk);'
+    ].join('\n');
+    function patch(m, waffle, matte) {
       m.onBeforeCompile = function (s) {
         s.uniforms.uFlat = U.uFlat;
         if (waffle) {
-          s.uniforms.uEdge = U.uEdge;
+          s.uniforms.uEdge = U.uEdge; s.uniforms.uInk = U.uInk; s.uniforms.uInkCol = U.uInkCol;
           s.vertexShader = s.vertexShader
-            .replace('#include <common>', '#include <common>\nattribute float aOut;\nvarying float vOut;')
-            .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOut = aOut;');
+            .replace('#include <common>', '#include <common>\nattribute float aOut;\nvarying float vOut;\nvarying vec2 vP;')
+            .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOut = aOut;\nvP = transformed.xz;');
         }
         s.fragmentShader = s.fragmentShader
-          .replace('#include <common>', '#include <common>\nuniform float uFlat;' + (waffle ? '\nuniform float uEdge;\nvarying float vOut;' : ''))
+          .replace('#include <common>', '#include <common>\nuniform float uFlat;' + (waffle ? '\nuniform float uEdge;\nvarying float vOut;\n' + WAFFLE_GLSL : ''))
           .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>' + (waffle ? '\nif (vOut > uEdge) discard;' : ''))
-          .replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb = mix(gl_FragColor.rgb, diffuseColor.rgb + totalEmissiveRadiance, uFlat);');
+          .replace('#include <opaque_fragment>', '#include <opaque_fragment>\nfloat rimK = 1.0 - max(dot(normal, normalize(vViewPosition)), 0.0);\ngl_FragColor.rgb += vec3(1.0, 0.96, 0.9) * smoothstep(0.55, 0.95, rimK) * ' + (waffle || matte ? '0.0' : '0.14') + ';\ngl_FragColor.rgb = mix(gl_FragColor.rgb, diffuseColor.rgb + totalEmissiveRadiance, uFlat);' + (waffle ? '\n' + WAFFLE_INK : ''));
       };
-      m.customProgramCacheKey = function () { return waffle ? 'toon-waffle' : 'toon-flat'; };
+      m.customProgramCacheKey = function () { return (waffle ? 'toon-waffle' : 'toon-flat') + (matte ? '-matte' : ''); };
       disposables.push(m);
       return m;
     }
@@ -200,6 +232,41 @@ import {
     function G() { return new Group(); }
     function dyn(o) { o.userData.dyn = true; return o; }
 
+    // Ink shells push a back-face copy out along the normals. Flat-shaded edges (box corners,
+    // cylinder rims, gear teeth) have one normal per face, so the copy splits apart and shows
+    // black spikes. Each geometry gets one averaged direction per corner instead, scaled down for
+    // small parts so a door knob gets a hairline and a wall gets the full line.
+    var INK_FULL = 0.16;
+    function inkDirs(geo) {
+      if (geo.userData.inkDirs) return geo.userData.inkDirs;
+      var p = geo.attributes.position, n = geo.attributes.normal, sums = new Map(), keys = new Array(p.count), out = new Float32Array(p.count * 3);
+      for (var i = 0; i < p.count; i++) {
+        var key = Math.round(p.getX(i) * 1e4) + ',' + Math.round(p.getY(i) * 1e4) + ',' + Math.round(p.getZ(i) * 1e4), e = sums.get(key);
+        if (!e) { e = [0, 0, 0]; sums.set(key, e); }
+        e[0] += n.getX(i); e[1] += n.getY(i); e[2] += n.getZ(i); keys[i] = key;
+      }
+      for (var j = 0; j < p.count; j++) { var v = sums.get(keys[j]), L = Math.hypot(v[0], v[1], v[2]) || 1; out[j * 3] = v[0] / L; out[j * 3 + 1] = v[1] / L; out[j * 3 + 2] = v[2] / L; }
+      geo.userData.inkDirs = out;
+      return out;
+    }
+    function inkWeight(radius) { return Math.max(0.3, Math.min(1, radius / INK_FULL)); }
+    function inkGeometry(geo) {
+      if (geo.userData.inkGeo) return geo.userData.inkGeo;
+      var ink = geo.attributes.ink;
+      if (!ink) {
+        if (!geo.boundingSphere) geo.computeBoundingSphere();
+        var dirs = inkDirs(geo), w = geo.userData.inkWeight || inkWeight(geo.boundingSphere.radius), arr = new Float32Array(dirs.length);
+        for (var i = 0; i < dirs.length; i++) arr[i] = dirs[i] * w;
+        ink = new BufferAttribute(arr, 3);
+      }
+      var h = new BufferGeometry();
+      h.setAttribute('position', geo.attributes.position); h.setAttribute('normal', ink);
+      if (geo.index) h.setIndex(geo.index);
+      h.boundingSphere = geo.boundingSphere; disposables.push(h);
+      geo.userData.inkGeo = h;
+      return h;
+    }
+
     // merge static meshes of a building by material to save draw calls
     function bake(root) {
       root.updateMatrixWorld(true);
@@ -215,20 +282,25 @@ import {
         for (var i = 0; i < o.children.length; i++) walk(o.children[i], d);
       })(root, false);
       Object.keys(buckets).forEach(function (k) {
-        var bk = buckets[k], posArr = [], norArr = [], m4 = new Matrix4(), n3 = new Matrix3();
+        var bk = buckets[k], posArr = [], norArr = [], inkArr = [], m4 = new Matrix4(), n3 = new Matrix3();
         bk.parts.forEach(function (o) {
-          var g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry;
+          var src = o.geometry, idx = src.index, g = idx ? src.toNonIndexed() : src;
           m4.multiplyMatrices(inv, o.matrixWorld); n3.getNormalMatrix(m4);
+          if (!src.boundingSphere) src.computeBoundingSphere();
+          var dirs = inkDirs(src), w = inkWeight(src.boundingSphere.radius * m4.getMaxScaleOnAxis());
           var p = g.attributes.position, n = g.attributes.normal, v = new Vector3();
           for (var i = 0; i < p.count; i++) {
             v.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(m4); posArr.push(v.x, v.y, v.z);
             v.set(n.getX(i), n.getY(i), n.getZ(i)).applyMatrix3(n3).normalize(); norArr.push(v.x, v.y, v.z);
+            var s3 = (idx ? idx.getX(i) : i) * 3;
+            v.set(dirs[s3], dirs[s3 + 1], dirs[s3 + 2]).applyMatrix3(n3).normalize().multiplyScalar(w); inkArr.push(v.x, v.y, v.z);
           }
-          if (g !== o.geometry) g.dispose();
+          if (g !== src) g.dispose();
         });
         var mg = new BufferGeometry();
         mg.setAttribute('position', new Float32BufferAttribute(posArr, 3));
         mg.setAttribute('normal', new Float32BufferAttribute(norArr, 3));
+        mg.setAttribute('ink', new Float32BufferAttribute(inkArr, 3));
         mg.computeBoundingSphere(); disposables.push(mg);
         root.add(mesh(mg, bk.mat));
       });
@@ -239,14 +311,16 @@ import {
     var hullU = { uThick: { value: 0.0 }, uCol: { value: new Color(0x2A1F33) } };
     var hullMat = new ShaderMaterial({
       uniforms: hullU, side: BackSide,
-      vertexShader: 'uniform float uThick; void main(){ vec3 p = position + normalize(normal) * uThick; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }',
+      // `normal` here is the ink direction, already scaled by the part's line weight.
+      vertexShader: 'uniform float uThick; void main(){ vec3 p = position + normal * uThick; gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0); }',
       fragmentShader: 'uniform vec3 uCol; void main(){ gl_FragColor = vec4(uCol, 1.0);\n#include <colorspace_fragment>\n}'
     });
     disposables.push(hullMat);
+    function inkShell(x) { var h = new Mesh(inkGeometry(x.geometry), hullMat); h.castShadow = false; h.receiveShadow = false; h.userData.hull = true; x.add(h); return h; }
     function outline(root) {
       var list = [];
-      root.traverse(function (x) { if (x.isMesh && x.material && !x.material.map && !x.material.transparent && !x.isSprite && x.material.type !== 'MeshBasicMaterial' && x.material !== hullMat && x.geometry.attributes.normal) list.push(x); });
-      list.forEach(function (x) { var h = new Mesh(x.geometry, hullMat); h.castShadow = false; h.receiveShadow = false; h.userData.hull = true; x.add(h); });
+      root.traverse(function (x) { if (x.isMesh && x.material && (!x.material.map || x.userData.ink) && !x.material.transparent && !x.isSprite && x.material.type !== 'MeshBasicMaterial' && x.material !== hullMat && !x.userData.hull && x.geometry.attributes.normal) list.push(x); });
+      list.forEach(inkShell);
     }
 
     // ---------- canvas textures ----------
@@ -330,32 +404,46 @@ import {
     var blob = new Mesh(blobGeo, blobMat); blob.position.y = GROUND_Y + 0.002; blob.renderOrder = -1; scene.add(blob);
 
     // ---------- the waffle: crisp interior grid inside a rounded rim ----------
-    var SEGI = 160;
+    var SEGI = 192;
     var wGeo = new PlaneGeometry(LINE * 2, LINE * 2, SEGI, SEGI); wGeo.rotateX(-Math.PI / 2); wGeo.deleteAttribute('uv'); disposables.push(wGeo);
     var wPos = wGeo.attributes.position, nV = wPos.count;
     var vR = new Float32Array(nV);
     var colFlat = new Float32Array(nV * 3), colWaffle = new Float32Array(nV * 3), colors = new Float32Array(nV * 3);
     var cT = new Color(), cA = new Color(), cB = new Color();
-    var SHEET = 0x2C5AD4, FLOOR = 0xFFDC92, FLOOR_AO = 0xEDA142, WALL = 0xF4AC48, TOP = 0xD07A28, TOP_HI = 0xFFCF6A, CRUST = 0xB86826;
-    function prof(d) { var u = d / HW; return u >= 1 ? 0 : 1 - sstep(0.5, 0.86, u); }
-    function nearLine(v) { var k = Math.round((v + LINE) / PITCH); k = Math.max(0, Math.min(4, k)); return Math.abs(v - (k * PITCH - LINE)); }
-    function paint(out, r, ao, lip, n) {
-      out.setHex(FLOOR).lerp(cB.setHex(FLOOR_AO), ao * 0.75);
-      out.lerp(cB.setHex(WALL), sstep(0.02, 0.45, r));
-      var top = sstep(0.86, 0.995, r);
-      out.lerp(cB.setHex(TOP), top * 0.85);
-      out.lerp(cB.setHex(TOP_HI), top * lip * 0.85);
+    // cartoon colours: bright golden ridges, deeper orange pockets, a pale shine on the crowns
+    var SHEET = 0x2C5AD4, FLOOR = 0xE58E2E, FLOOR_AO = 0xCF7724, WALL = 0xF7BA4E, TOP = 0xF2A83A, TOP_HI = 0xFFD98A, CRUST = 0xB5621F, TOAST = 0xC9752C;
+    function vnoise(x, z) {
+      var xi = Math.floor(x), zi = Math.floor(z), xf = x - xi, zf = z - zi, u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+      return lerp(lerp(hash(xi, zi), hash(xi + 1, zi), u), lerp(hash(xi, zi + 1), hash(xi + 1, zi + 1), u), v);
+    }
+    function toastAt(x, z) { return vnoise(x * 1.3 + 11, z * 1.3 + 5) * 0.6 + vnoise(x * 4.1 + 3, z * 4.1 + 9) * 0.4; }
+    // signed distance to the nearest pocket's opening: negative inside the pocket, positive on a ridge
+    function waffleS(x, z) {
+      var cx = -LINE + (Math.max(0, Math.min(3, Math.floor((x + LINE) / PITCH))) + 0.5) * PITCH;
+      var cz = -LINE + (Math.max(0, Math.min(3, Math.floor((z + LINE) / PITCH))) + 0.5) * PITCH;
+      var a = PITCH / 2 - TW - RC, qx = Math.abs(x - cx) - a, qz = Math.abs(z - cz) - a;
+      return Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0) - RC;
+    }
+    function ridgeR(s) { return 0.9 * sstep(-WD, 0, s) + 0.1 * sstep(0, TW, s); }
+    function paint(out, s, toast, pocket) {
+      var r = ridgeR(s), floorK = 1 - sstep(-WD, -WD * 0.4, s), ao = s < -WD ? 1 - sstep(0, 0.5, -WD - s) : 1;
+      out.setHex(FLOOR).lerp(cB.setHex(FLOOR_AO), ao * 0.6 * floorK);
+      out.lerp(cB.setHex(WALL), (1 - floorK) * (1 - sstep(-0.05, 0.04, s)));
+      var top = sstep(-0.05, 0.04, s);
+      out.lerp(cB.setHex(TOP), top);
+      // a pale crown along the middle of each ridge, like a cartoon highlight
+      out.lerp(cB.setHex(TOP_HI), sstep(TW * 0.45, TW * 0.95, s) * 0.55);
+      out.lerp(cB.setHex(TOAST), sstep(0.55, 0.9, toast) * 0.18 * (floorK + top));
+      var n = (pocket - 0.5) * 0.05 + (toast - 0.5) * 0.04;
       out.r = clamp01(out.r * (1 + n)); out.g = clamp01(out.g * (1 + n)); out.b = clamp01(out.b * (1 + n));
       return out;
     }
     for (var i = 0; i < nV; i++) {
-      var x = wPos.getX(i), z = wPos.getZ(i);
-      var dx = nearLine(x), dz = nearLine(z), px = prof(dx), pz = prof(dz);
-      var r = Math.max(px, pz), dDom = px >= pz ? dx : dz, dmin = Math.min(dx, dz);
-      vR[i] = r;
+      var x = wPos.getX(i), z = wPos.getZ(i), sd = waffleS(x, z);
+      vR[i] = ridgeR(sd);
       cT.setHex(SHEET).toArray(colFlat, i * 3);
-      var ao = 1 - sstep(HW * 0.86, HW + 0.5, dmin);
-      paint(cA, r, ao, sstep(0.14, 0.24, dDom), (hash(Math.round(x * 5), Math.round(z * 5)) - 0.5) * 0.05).toArray(colWaffle, i * 3);
+      var pocket = hash(Math.floor((x + LINE) / PITCH) + 0.5, Math.floor((z + LINE) / PITCH) + 0.5);
+      paint(cA, sd, toastAt(x, z), pocket).toArray(colWaffle, i * 3);
     }
     wGeo.setAttribute('color', new BufferAttribute(colors, 3));
     wGeo.setAttribute('aOut', new BufferAttribute(new Float32Array(nV), 1));
@@ -369,7 +457,9 @@ import {
       gX[gk] = (vR[gr] - vR[gl]) / (wPos.getX(gr) - wPos.getX(gl));
       gZ[gk] = (vR[gd] - vR[gu]) / (wPos.getZ(gd) - wPos.getZ(gu));
     }
-    var wMat = patch(new MeshToonMaterial({ vertexColors: true, gradientMap: gradMap }), true);
+    var bakeMap = new DataTexture(new Uint8Array([138, 200, 255]), 3, 1, RedFormat);
+    bakeMap.minFilter = bakeMap.magFilter = NearestFilter; bakeMap.generateMipmaps = false; bakeMap.needsUpdate = true; disposables.push(bakeMap);
+    var wMat = patch(new MeshToonMaterial({ vertexColors: true, gradientMap: bakeMap }), true); wMat.extensions = { derivatives: true };
     var waffle = new Mesh(wGeo, wMat); waffle.castShadow = true; waffle.receiveShadow = true; scene.add(waffle);
 
     // rim: an extruded rounded-square ring with a soft bevel
@@ -381,10 +471,11 @@ import {
       s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
       return s;
     }
-    var BV = 0.16, RIM_H = RIDGE_H + SLAB;
+    var BV = 0.28, RIM_H = RIDGE_H + SLAB, HOLE = 2 * (LINE + BV - 0.16) - 0.02;
     var rimShape = rrShape(2 * (EDGE - BV), 2 * (EDGE - BV), CORNER - BV);
-    rimShape.holes.push(rrShape(2 * LINE - 0.02, 2 * LINE - 0.02, 0.3, new Path()));
-    var rimGeo = new ExtrudeGeometry(rimShape, { depth: RIM_H - 2 * BV, bevelEnabled: true, bevelThickness: BV, bevelSize: BV, bevelSegments: 4, curveSegments: 12 });
+    // the hole follows the outer edge's corner, or its corners poke through and the cap fills in
+    rimShape.holes.push(rrShape(HOLE, HOLE, CORNER - BV - (EDGE - BV - HOLE / 2), new Path()));
+    var rimGeo = new ExtrudeGeometry(rimShape, { depth: RIM_H - 2 * BV, bevelEnabled: true, bevelThickness: BV, bevelSize: BV, bevelSegments: 7, curveSegments: 14 });
     rimGeo.rotateX(-Math.PI / 2); rimGeo.translate(0, BV, 0); rimGeo.deleteAttribute('uv');
     rimGeo.computeVertexNormals(); disposables.push(rimGeo);
     var rp = rimGeo.attributes.position, nR = rp.count;
@@ -392,13 +483,14 @@ import {
     for (var ri = 0; ri < nR; ri++) {
       var fy = rp.getY(ri) / RIM_H, ax = Math.max(Math.abs(rp.getX(ri)), Math.abs(rp.getZ(ri)));
       cT.setHex(SHEET).toArray(rimFlat, ri * 3);
-      var topK = sstep(0.9, 0.995, fy);
-      cA.setHex(CRUST).lerp(cB.setHex(WALL), sstep(0.1, 0.8, fy)).lerp(cB.setHex(TOP), topK * 0.8);
-      cA.lerp(cB.setHex(TOP_HI), topK * sstep(LINE + 0.05, LINE + 0.2, ax) * (1 - sstep(EDGE - 0.12, EDGE, ax)) * 0.8);
+      var topK = sstep(0.86, 0.99, fy), rx = rp.getX(ri), rz = rp.getZ(ri);
+      cA.setHex(CRUST).lerp(cB.setHex(0xEFA03C), sstep(0.05, 0.7, fy)).lerp(cB.setHex(TOP), topK);
+      cA.lerp(cB.setHex(TOP_HI), topK * sstep(LINE + 0.05, LINE + 0.22, ax) * (1 - sstep(EDGE - 0.22, EDGE - 0.05, ax)) * 0.55);
+      cA.lerp(cB.setHex(TOAST), sstep(0.55, 0.9, toastAt(rx + rz * 0.3, rz + fy * 2)) * 0.2);
       cA.toArray(rimWaffle, ri * 3);
     }
     rimGeo.setAttribute('color', new BufferAttribute(rimCol, 3));
-    var rim = new Mesh(rimGeo, patch(new MeshToonMaterial({ vertexColors: true, gradientMap: gradMap }))); rim.castShadow = true; rim.receiveShadow = true; scene.add(rim);
+    var rim = new Mesh(rimGeo, patch(new MeshToonMaterial({ vertexColors: true, gradientMap: bakeMap }), false, true)); rim.castShadow = true; rim.receiveShadow = true; scene.add(rim);
     function smoothCopy(geo) {
       var p = geo.attributes.position, nn = geo.attributes.normal, map = {}, keys = [], out = new Float32Array(p.count * 3), v = new Vector3();
       for (var i = 0; i < p.count; i++) {
@@ -410,7 +502,8 @@ import {
       return g;
     }
     var rimHull = new Mesh(smoothCopy(rimGeo), hullMat); rim.add(rimHull);
-    var waffleHull = new Mesh(wGeo, hullMat); waffle.add(waffleHull);
+    // The waffle itself carries no inner ink lines: on a height field they only appear on the walls
+    // facing away from the camera and read as cuts. The rim keeps its outline.
 
     var lastShape = '';
     function shapeWaffle(ph) {
@@ -466,10 +559,16 @@ import {
       at(g, rb(w, h, 0.05, C.glass, 0.015), x, y, z + 0.012);
       at(g, rb(0.025, h, 0.055, C.trim, 0.008), x, y, z + 0.016);
     }
+    // cartoon smoke: small inked clouds of three blobs that swell as they rise, then shrink away
     function puffSet(g, n, color, x, y, z) {
-      var arr = [];
-      for (var i = 0; i < n; i++) { var m = toon(color, { t: true, uniq: true }); var p = sph(0.13, m); p.castShadow = false; p.userData.dyn = true; at(g, p, x, y, z); arr.push({ m: p, mat: m, o: i / n }); }
-      return { update: function (t, rate) { for (var i = 0; i < arr.length; i++) { var q = (t * rate + arr[i].o) % 1; arr[i].m.position.set(x + Math.sin(q * 5 + i) * 0.06 - q * 0.18, y + q * 0.9, z + q * 0.08); var s = 0.55 + q * 1.15; arr[i].m.scale.set(s, s, s); arr[i].mat.opacity = (1 - q) * sstep(0, 0.12, q); arr[i].m.visible = arr[i].mat.opacity > 0.25; } } };
+      var arr = [], m = toon(color);
+      for (var i = 0; i < n; i++) {
+        var p = dyn(G()); at(g, p, x, y, z);
+        at(p, sph(0.07, m), 0, 0, 0); at(p, sph(0.05, m), 0.06, -0.012, 0.012); at(p, sph(0.046, m), -0.056, -0.016, -0.008);
+        bake(p); p.traverse(function (o) { o.castShadow = false; });
+        arr.push({ m: p, o: i / n });
+      }
+      return { update: function (t, rate) { for (var i = 0; i < arr.length; i++) { var q = (t * rate + arr[i].o) % 1, P = arr[i].m; P.position.set(x + Math.sin(q * 5 + i) * 0.05 - q * 0.16, y + q * 0.8, z + q * 0.06); P.rotation.y = i * 1.7 + q * 1.2; var s = (0.7 + q * 1.1) * sstep(0, 0.14, q) * (1 - sstep(0.6, 1, q)); P.scale.set(s, s * 0.9, s); P.visible = s > 0.04; } } };
     }
     var blockHex = ['#FF8A7A', '#7FB6FF', '#FFD86B', '#8EE3C4', '#C3A8FF'];
     var blockMats = blockHex.map(function (h) { return toon(parseInt(h.slice(1), 16)); });
@@ -547,9 +646,12 @@ import {
       }
       at(g, rb(0.22, 0.66, 0.22, brick, 0.03), 0.45, 0.6, -0.45);
       at(g, rb(0.28, 0.08, 0.28, C.dark, 0.03), 0.45, 1.26, -0.45);
-      var ring = cyl(0.24, 0.24, 0.05, 24, C.dark); ring.rotation.x = Math.PI / 2; at(g, ring, -0.24, 0.36, 0.43);
       var glow = toon(0xFF9F43, { e: 0xFFB13B, ei: 0.7, uniq: true });
-      var gl = cyl(0.18, 0.18, 0.06, 24, glow); gl.rotation.x = Math.PI / 2; gl.userData.dyn = true; at(g, gl, -0.24, 0.36, 0.44);
+      at(g, rb(0.48, 0.34, 0.05, C.trim, 0.03), -0.24, 0.16, 0.4);
+      var gl = rb(0.4, 0.26, 0.05, glow, 0.025); gl.userData.dyn = true; at(g, gl, -0.24, 0.2, 0.412);
+      at(g, rb(0.035, 0.26, 0.056, C.trim, 0.01), -0.24, 0.2, 0.414);
+      at(g, rb(0.54, 0.03, 0.11, C.trim, 0.01), -0.24, 0.14, 0.45);
+      var aw = tb(0.56, 0.03, 0.15, toon(0xffffff, { map: stripes('#E8A658', '#FFF8EC', 8, true).tex })); aw.position.set(-0.24, 0.55, 0.47); aw.rotation.x = 0.5; g.add(aw);
       at(g, rb(0.36, 0.52, 0.05, C.trim, 0.02), 0.34, 0.08, 0.42);
       at(g, rb(0.28, 0.46, 0.05, toon(0x8A4B2F), 0.02), 0.34, 0.1, 0.436);
       var sign = signPlane('bun', 0.5, 0.17, '#FFF3E0', '#8A4B2F', { scale: 0.7 }); sign.position.set(0.0, 0.745, 0.47); g.add(sign);
@@ -793,25 +895,66 @@ import {
       };
     }
 
+    // a cartoon python in the Python colours: a banded blue coil, a raised neck, eyes and a tongue
+    function mkSnake() {
+      var sn = dyn(G()), skinCol = 0x3B7DD8;
+      var skin = tex(64, 16, function (ctx, w, h) { ctx.fillStyle = '#3B7DD8'; ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#FFD43B'; ctx.fillRect(w * 0.6, 0, w * 0.24, h); }, true);
+      skin.tex.repeat.set(12, 1);
+      var pts = [], n = 36;
+      for (var i = 0; i <= n; i++) { var u = i / n, a = 0.4 + u * 2.15 * Math.PI * 2, r = lerp(0.25, 0.12, u); pts.push(new Vector3(Math.cos(a) * r, 0.06 + u * 0.15, Math.sin(a) * r)); }
+      var end = pts[n];
+      pts.push(new Vector3(end.x * 0.45, 0.31, end.z * 0.45 + 0.03), new Vector3(0, 0.44, 0.08));
+      var curve = new CatmullRomCurve3(pts), TS = 150, RS = 12, c = new Vector3();
+      var tg = new TubeGeometry(curve, TS, 1, RS, false), tp = tg.attributes.position;
+      for (var k = 0; k <= TS; k++) {
+        var t = k / TS; curve.getPointAt(t, c);
+        var rad = 0.012 + 0.056 * sstep(0, 0.22, t) * (1 - 0.22 * sstep(0.8, 1, t));
+        for (var j = 0; j <= RS; j++) { var q = k * (RS + 1) + j; tp.setXYZ(q, c.x + (tp.getX(q) - c.x) * rad, c.y + (tp.getY(q) - c.y) * rad, c.z + (tp.getZ(q) - c.z) * rad); }
+      }
+      tg.computeBoundingSphere(); tg.userData.inkWeight = 0.7; disposables.push(tg);
+      var tube = mesh(tg, toon(0xffffff, { map: skin.tex })); tube.userData.ink = true; sn.add(tube);
+      var head = G(); curve.getPointAt(1, c); head.position.copy(c); sn.add(head);
+      var skull = sph(0.1, toon(skinCol)); skull.scale.set(0.95, 0.68, 1.28); at(head, skull, 0, 0, 0.035);
+      var white = toon(0xFFFFFF);
+      [-1, 1].forEach(function (side) { at(head, sph(0.034, white), side * 0.056, 0.042, 0.07); at(head, sph(0.018, C.dark), side * 0.062, 0.048, 0.096); });
+      var tongue = G(); tongue.position.set(0, -0.025, 0.15); head.add(tongue);
+      var red = toon(0xF2405A);
+      at(tongue, rb(0.018, 0.012, 0.08, red, 0.005), 0, 0, 0.04);
+      [-0.35, 0.35].forEach(function (ang) { var tip = rb(0.012, 0.01, 0.04, red, 0.004); tip.rotation.y = ang; at(tongue, tip, Math.sin(ang) * 0.015, 0.001, 0.09); });
+      var rear = 0;
+      return {
+        g: sn,
+        update: function (t, dt) {
+          rear = Math.max(0, rear - dt * 1.6);
+          head.rotation.y = Math.sin(t * 1.1) * 0.35; head.rotation.x = -0.12 + Math.sin(t * 1.7) * 0.06;
+          var ph = t % 2.6, flick = rear > 0.5 ? 1 : ph < 0.36 ? Math.sin(ph / 0.36 * Math.PI) : 0;
+          tongue.scale.set(1, 1, Math.max(0.001, flick)); tongue.visible = flick > 0.05;
+          var up = Math.sin((1 - rear) * Math.PI) * rear; sn.scale.set(1 - up * 0.08, 1 + up * 0.35, 1 - up * 0.08);
+        },
+        pulse: function () { rear = 1; }
+      };
+    }
     function mkChart() {
       var g = G();
-      var blue = toon(0x4C7DFF);
+      var blue = toon(0x3B7DD8), yellow = toon(0xFFD43B);
       at(g, rb(1.46, 0.1, 1.12, toon(0xD3D9E4), 0.04), 0, 0, -0.12);
       at(g, rb(1.38, 0.66, 1.04, toon(0xFAF6EE), 0.06, 0.98), 0, 0.08, -0.12);
+      at(g, rb(1.42, 0.05, 1.08, yellow, 0.02), 0, 0.68, -0.12);
       at(g, rb(1.44, 0.09, 1.1, blue, 0.04), 0, 0.72, -0.12);
       windowAt(g, -0.42, 0.3, 0.41, 0.3, 0.24); windowAt(g, 0.42, 0.3, 0.41, 0.3, 0.24);
       at(g, rb(0.3, 0.46, 0.05, blue, 0.02), 0, 0.08, 0.41);
-      at(g, rb(1.2, 0.05, 0.4, C.metal, 0.02), 0, 0.81, -0.2);
-      var bars = [], cols = [toon(0x7FB6FF), toon(0x8EE3C4), toon(0xFFD86B), toon(0xFF8A7A)];
-      for (var i = 0; i < 4; i++) { var b = rb(0.2, 1, 0.2, cols[i], 0.04); b.userData.dyn = true; at(g, b, -0.42 + i * 0.28, 0.86, -0.2); bars.push(b); }
-      var dish = sph(0.2, C.white, true); dish.rotation.x = Math.PI * 0.75; dish.scale.set(1, 0.45, 1); at(g, dish, 0.5, 1.02, 0.18);
-      at(g, cyl(0.025, 0.03, 0.2, 8, C.metal), 0.5, 0.81, 0.18);
+      at(g, sph(0.022, yellow), 0.09, 0.3, 0.445);
+      // the notebook: a little live bar chart at the back of the roof
+      at(g, rb(0.62, 0.05, 0.3, C.metal, 0.02), -0.36, 0.81, -0.36);
+      var bars = [], cols = [toon(0x7FB6FF), toon(0xFFD86B), toon(0xFF8A7A)];
+      for (var i = 0; i < 3; i++) { var b = rb(0.15, 1, 0.15, cols[i], 0.04); b.userData.dyn = true; at(g, b, -0.54 + i * 0.18, 0.86, -0.36); bars.push(b); }
+      var snake = mkSnake(); snake.g.position.set(0.3, 0.81, 0.02); g.add(snake.g);
       bush(g, -0.72, 0.52, 0.85); tree(g, 0.74, 0.55, 0.9);
       var kick = 0;
       return {
         g: g, h: 1.85,
-        update: function (t, dt) { kick = Math.max(0, kick - dt); for (var i = 0; i < 4; i++) { bars[i].scale.y = 0.25 + 0.42 * (0.5 + 0.5 * Math.sin(t * (0.7 + i * 0.23) + i * 1.7)) + 0.25 * (0.5 + 0.5 * Math.sin(t * 0.31 + i)) + kick * 0.2; } },
-        pulse: function () { kick = 1; }
+        update: function (t, dt) { kick = Math.max(0, kick - dt); for (var i = 0; i < 3; i++) { bars[i].scale.y = 0.22 + 0.36 * (0.5 + 0.5 * Math.sin(t * (0.7 + i * 0.23) + i * 1.7)) + 0.2 * (0.5 + 0.5 * Math.sin(t * 0.31 + i)) + kick * 0.2; } snake.update(t, dt); },
+        pulse: function () { kick = 1; snake.pulse(); }
       };
     }
 
@@ -839,7 +982,7 @@ import {
       var big = mesh(gearGeo(10, 0.32, 0.26, 0.08, 0.06), C.gold); big.userData.dyn = true; at(g, big, -0.32, 0.4, 0.46);
       var small = mesh(gearGeo(7, 0.22, 0.17, 0.08, 0.045), toon(0xFF9F43)); small.userData.dyn = true; at(g, small, 0.12, 0.3, 0.47);
       var door = tb(0.36, 0.44, 0.04, toon(0xffffff, { map: stripes('#9AA5BD', '#7E8AA6', 10, false).tex })); door.position.set(0.5, 0.08, 0.41); g.add(door);
-      var puffs = puffSet(g, 4, 0xD9DEE8, 0.55, 1.9, -0.5);
+      var puffs = puffSet(g, 4, 0xEEF1F6, 0.55, 1.9, -0.5);
       bush(g, -0.74, 0.58, 0.8);
       var sp = 1;
       return {
@@ -849,26 +992,60 @@ import {
       };
     }
 
+    function crateOf(w, h, d) {
+      var c = G(), card = toon(0xD9A567), tape = toon(0xF6E3BC);
+      at(c, rb(w, h, d, card, 0.03), 0, 0, 0); at(c, rb(w * 0.24, 0.015, d + 0.012, tape, 0.005), 0, h - 0.008, 0);
+      return c;
+    }
+    function mkForklift() {
+      var f = G(), body = toon(0xFFC94D);
+      at(f, rb(0.2, 0.1, 0.26, body, 0.03), 0, 0.04, 0.02);
+      at(f, rb(0.2, 0.1, 0.07, C.dark, 0.025), 0, 0.05, 0.14);
+      at(f, rb(0.12, 0.05, 0.08, C.dark, 0.02), 0, 0.14, 0.07);
+      [-0.08, 0.08].forEach(function (x) { at(f, rb(0.018, 0.22, 0.018, C.dark, 0.006), x, 0.14, 0.12); at(f, rb(0.018, 0.22, 0.018, C.dark, 0.006), x, 0.14, -0.06); });
+      at(f, rb(0.21, 0.02, 0.22, C.dark, 0.008), 0, 0.36, 0.03);
+      [[-0.1, -0.06], [0.1, -0.06], [-0.1, 0.12], [0.1, 0.12]].forEach(function (q) { var w = cyl(0.045, 0.045, 0.04, 14, C.dark); w.rotation.z = Math.PI / 2; at(f, w, q[0] + (q[0] > 0 ? -0.02 : 0.02), 0.045, q[1]); });
+      [-0.06, 0.06].forEach(function (x) { at(f, rb(0.02, 0.36, 0.02, C.metal, 0.006), x, 0.03, -0.12); });
+      var forks = dyn(G()); forks.position.set(0, 0.03, 0); f.add(forks);
+      at(forks, rb(0.16, 0.08, 0.015, C.dark, 0.005), 0, 0, -0.135);
+      [-0.045, 0.045].forEach(function (x) { at(forks, rb(0.022, 0.012, 0.16, C.metal, 0.004), x, 0, -0.21); });
+      at(forks, rb(0.18, 0.03, 0.17, C.wood, 0.008), 0, 0.012, -0.215);
+      at(forks, crateOf(0.14, 0.12, 0.14), 0, 0.042, -0.215, 0.2);
+      return { g: f, forks: forks };
+    }
     function mkPackages() {
       var g = G();
-      var tan = toon(0xF1C98E), card = toon(0xD9A567), tape = toon(0xF6E3BC);
-      at(g, rb(1.54, 0.1, 1.16, C.concrete, 0.04), 0, 0, -0.16);
-      at(g, rb(1.42, 0.62, 1.04, tan, 0.06), 0, 0.08, -0.16);
-      var arcG = new CylinderGeometry(0.53, 0.53, 1.46, 26, 1, false, -Math.PI / 2, Math.PI); arcG.rotateZ(Math.PI / 2); arcG.deleteAttribute('uv'); disposables.push(arcG);
-      at(g, mesh(arcG, toon(0xA7B7CF)), 0, 0.68, -0.16);
-      var door = tb(0.62, 0.48, 0.04, toon(0xffffff, { map: stripes('#B9C3D6', '#98A4BC', 12, false).tex })); door.position.set(-0.22, 0.08, 0.37); g.add(door);
-      var sign = signPlane('PACKAGES', 0.66, 0.15, '#2E2840', '#FFD86B'); sign.position.set(-0.22, 0.62, 0.385); g.add(sign);
-      function crate(w, h, d) { var c = G(); at(c, rb(w, h, d, card, 0.03), 0, 0, 0); at(c, rb(w * 0.24, 0.015, d + 0.012, tape, 0.005), 0, h - 0.008, 0); return c; }
-      at(g, rb(0.5, 0.05, 0.42, C.wood, 0.015), 0.5, 0, 0.52);
-      at(g, crate(0.26, 0.22, 0.24), 0.38, 0.05, 0.52, 0.1);
-      at(g, crate(0.22, 0.2, 0.22), 0.62, 0.05, 0.5, -0.2);
-      var c3 = dyn(crate(0.2, 0.18, 0.2)); at(g, c3, 0.48, 0.27, 0.52, 0.3);
-      bush(g, -0.76, 0.55, 0.8);
-      var hop = 0;
+      var wall = toon(0x37B3A2), deck = toon(0xE4DED2);
+      var doorTex = stripes('#B9C3D6', '#98A4BC', 12, false).tex;
+      at(g, rb(1.56, 0.1, 1.24, C.concrete, 0.04), 0, 0, -0.1);
+      at(g, rb(1.44, 0.66, 0.76, wall, 0.06, 0.98), 0, 0.08, -0.32);
+      at(g, rb(1.5, 0.08, 0.82, C.trim, 0.03), 0, 0.74, -0.32);
+      at(g, rb(1.38, 0.05, 0.7, deck, 0.02), 0, 0.82, -0.32);
+      at(g, rb(0.3, 0.16, 0.24, C.metal, 0.04), -0.4, 0.86, -0.44);
+      at(g, cyl(0.075, 0.075, 0.03, 16, C.dark), -0.4, 1.02, -0.44);
+      at(g, rb(0.42, 0.07, 0.22, C.glass, 0.02), 0.3, 0.86, -0.4);
+      var sign = signPlane('PACKAGES', 0.96, 0.18, '#2E2840', '#FFD86B'); sign.position.set(0, 0.64, 0.068); g.add(sign);
+      [-0.36, 0.36].forEach(function (x) {
+        at(g, rb(0.52, 0.46, 0.06, C.trim, 0.02), x, 0.08, 0.03);
+        var d = tb(0.44, 0.38, 0.04, toon(0xffffff, { map: doorTex })); d.position.set(x, 0.15, 0.06); g.add(d);
+      });
+      // loading dock with a hazard edge
+      at(g, rb(1.44, 0.07, 0.27, C.concrete, 0.02), 0, 0.08, 0.195);
+      var edge = tb(1.4, 0.035, 0.012, toon(0xffffff, { map: stripes('#FFC94D', '#2E2840', 14, true).tex })); edge.position.set(0, 0.1, 0.33); g.add(edge);
+      at(g, crateOf(0.2, 0.18, 0.2), -0.54, 0.15, 0.2, 0.1);
+      at(g, crateOf(0.15, 0.13, 0.15), -0.52, 0.33, 0.2, 0.5);
+      var c3 = dyn(crateOf(0.17, 0.15, 0.17)); at(g, c3, -0.22, 0.15, 0.21, 0.3);
+      var lift = mkForklift(); lift.g.position.set(0.46, 0.1, 0.48); lift.g.rotation.y = Math.PI / 2 + 0.25; g.add(lift.g);
+      bush(g, -0.74, 0.58, 0.75);
+      var hop = 0, speed = 1, lt = 0;
       return {
         g: g, h: 1.3,
-        update: function (t, dt) { hop = Math.max(0, hop - dt * 2); c3.position.y = 0.27 + (hop > 0 ? Math.sin((1 - hop) * Math.PI) * 0.35 : 0); c3.rotation.y = 0.3 + (hop > 0 ? (1 - hop) * Math.PI : 0); },
-        pulse: function () { hop = 1; }
+        update: function (t, dt) {
+          hop = Math.max(0, hop - dt * 2); speed = lerp(speed, 1, dt);
+          c3.position.y = 0.15 + (hop > 0 ? Math.sin((1 - hop) * Math.PI) * 0.35 : 0); c3.rotation.y = 0.3 + (hop > 0 ? (1 - hop) * Math.PI : 0);
+          lt += dt * speed; lift.forks.position.y = 0.03 + 0.15 * (0.5 - 0.5 * Math.cos(lt * 1.3));
+        },
+        pulse: function () { hop = 1; speed = 3; }
       };
     }
 
@@ -925,7 +1102,7 @@ import {
       [[-0.4, 0.24, -0.3], [0.32, 0.24, -0.36], [0.0, 0.24, 0.16], [-0.1, 0.64, -0.14], [0.4, 0.24, 0.3]].forEach(function (q, i) {
         var b = dyn(G()); b.position.set(q[0], q[1], q[2]); b.userData.y0 = q[1]; bs.push(b);
         at(b, sph(0.26, bm), 0, 0, 0);
-        for (var k = 0; k < 5; k++) { var a = k / 5 * Math.PI * 2; var pt = cone(0.035, 0.08, 4, bd); pt.position.set(Math.cos(a) * 0.05, 0.22, Math.sin(a) * 0.05); pt.rotation.set(Math.sin(a) * 0.8, 0, -Math.cos(a) * 0.8); b.add(pt); }
+        at(b, cyl(0.08, 0.055, 0.04, 5, bd), 0, 0.235, 0);
         b.rotation.set(hash(i, 1) * 0.6, hash(i, 2) * 3, hash(i, 4) * 0.5);
         g.add(b);
       });
@@ -1222,7 +1399,7 @@ import {
         var bk = Math.round(ph.world * 200);
         if (bk !== state.bgKey) { state.bgKey = bk; canvas.style.background = 'linear-gradient(180deg,' + mixRGB(SKY_TOP_A, SKY_TOP_B, ph.world) + ' 0%,' + mixRGB(SKY_BOT_A, SKY_BOT_B, ph.world) + ' 100%)'; }
       }
-      U.uFlat.value = 1 - ph.lit;
+      U.uFlat.value = 1 - ph.lit; U.uInk.value = ph.lit;
       U.uEdge.value = 1.0;
       shapeWaffle(ph);
       lineMat.opacity = ph.lines; lines.visible = ph.lines > 0.01; lines.position.y = RIDGE_H * ph.ridge + 0.012;

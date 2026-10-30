@@ -19,6 +19,8 @@
   --font-sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --font-logo: "Fredoka", "Arial Rounded MT Bold", ui-rounded, system-ui, sans-serif;
+  /* Titles use the logo's rounded face; body text stays in Bricolage Grotesque. */
+  --font-title: var(--font-logo);
 
   --line: 2px solid var(--ink);
   --lift: 0 4px 0 var(--ink);
@@ -43,6 +45,8 @@
 }
 
 html {
+  /* The page opens on the blueprint; landing.ts keeps this in step with the top of the viewport. */
+  background-color: var(--blueprint);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   scroll-padding-top: 88px;
@@ -56,7 +60,8 @@ html {
 
 body {
   margin: 0;
-  background: var(--paper);
+  /* Safari 26 paints its top bar with this colour; landing.ts keeps it matched to the page. */
+  background: var(--blueprint);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: 17px;
@@ -139,18 +144,20 @@ canvas {
 }
 
 .display {
-  font-size: clamp(40px, 5.6vw, 76px);
-  font-weight: 800;
-  line-height: 0.98;
-  letter-spacing: -0.03em;
+  font-family: var(--font-title);
+  font-size: clamp(40px, 5.4vw, 74px);
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.012em;
   text-wrap: balance;
 }
 
 .title {
-  font-size: clamp(34px, 4.4vw, 58px);
-  font-weight: 800;
-  line-height: 1.02;
-  letter-spacing: -0.03em;
+  font-family: var(--font-title);
+  font-size: clamp(34px, 4.2vw, 56px);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
   text-wrap: balance;
 }
 
@@ -398,19 +405,26 @@ kbd {
   height: 100lvh;
   margin-bottom: -100vh;
   margin-bottom: -100lvh;
-  overflow: hidden;
   z-index: 0;
 }
 
-.stage__sky,
-.stage__blueprint,
 .stage__scene {
   position: absolute;
   inset: 0;
 }
 
+/* The colour layers run 40vh past the stage. Safari 26 draws page content under its floating
+   bottom toolbar, below the layout viewport; without this the body shows through there. The
+   next section paints over the overhang once the story scrolls away. */
+.stage__sky,
+.stage__blueprint {
+  position: absolute;
+  inset: 0 0 -40vh;
+}
+
 .stage__sky {
-  background: linear-gradient(180deg, #86ccff 0%, #cdeaff 52%, var(--paper) 100%);
+  background: linear-gradient(180deg, #86ccff 0, #cdeaff 52vh, var(--paper) 100vh);
+  background: linear-gradient(180deg, #86ccff 0, #cdeaff 52lvh, var(--paper) 100lvh);
 }
 
 .stage__blueprint {
@@ -594,10 +608,11 @@ kbd {
 }
 
 .card h2 {
-  font-size: clamp(26px, 2.3vw, 32px);
-  font-weight: 800;
-  line-height: 1.06;
-  letter-spacing: -0.025em;
+  font-family: var(--font-title);
+  font-size: clamp(26px, 2.3vw, 31px);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.005em;
   text-wrap: balance;
 }
 
@@ -865,10 +880,11 @@ kbd {
 }
 
 .feature__title h3 {
-  font-size: clamp(28px, 2.6vw, 34px);
-  font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.03em;
+  font-family: var(--font-title);
+  font-size: clamp(28px, 2.6vw, 33px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
 }
 
 .feature__body p {
@@ -927,10 +943,11 @@ kbd {
 }
 
 .packages__head h3 {
+  font-family: var(--font-title);
   font-size: 26px;
-  font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.005em;
 }
 
 .packages__head p {
@@ -1157,10 +1174,11 @@ kbd {
 }
 
 .stat dd {
+  font-family: var(--font-title);
   font-size: clamp(36px, 4vw, 52px);
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.01em;
   color: var(--white);
   font-variant-numeric: tabular-nums;
 }
@@ -1336,10 +1354,11 @@ kbd {
 
 .footer__line {
   max-width: 15em;
+  font-family: var(--font-title);
   font-size: clamp(28px, 3.2vw, 40px);
-  font-weight: 800;
-  line-height: 1.08;
-  letter-spacing: -0.03em;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
   text-wrap: balance;
 }
 

@@ -64,6 +64,76 @@ function progressAt(anchors: readonly Anchor[], offset: number): number {
   return anchors.at(-1)?.progress ?? 1;
 }
 
+function mixHex(from: string, to: string, t: number): string {
+  const channel = (hex: string, index: number) =>
+    Number.parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16);
+  const k = Math.min(1, Math.max(0, t));
+  let out = "#";
+  for (let index = 0; index < 3; index++) {
+    const value = Math.round(
+      channel(from, index) + (channel(to, index) - channel(from, index)) * k,
+    );
+    out += value.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+const BLUEPRINT = "#2350c7";
+const SKY = "#86ccff";
+
+/** A stretch of the page and the colour at its top and bottom edges. */
+interface Band {
+  top: number;
+  bottom: number;
+  from: string;
+  to: string;
+}
+
+/**
+ * Keeps the browser's own bars the colour of whatever sits under the top of the viewport.
+ * Chrome and older Safari read `theme-color`. Safari 26 ignores it and paints its top bar with
+ * the body's background colour (checked in the iOS 26.5 simulator), so the body follows too.
+ * The sections all paint their own backgrounds, so the body colour only shows in the bars and
+ * in overscroll. Nothing is written unless the colour changes.
+ */
+class BrowserTint {
+  private readonly meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  private bands: Band[] = [];
+  private storyBottom = 0;
+  private current = "";
+
+  measure(story: HTMLElement) {
+    const scroll = window.scrollY;
+    const box = (element: Element) => element.getBoundingClientRect();
+    this.storyBottom = box(story).bottom + scroll;
+    this.bands = Array.from(document.querySelectorAll<HTMLElement>("[data-tint]"), (element) => {
+      const rect = box(element);
+      const [from = "#ffffff", to = from] = (element.dataset.tint ?? "").split(" ");
+      return { top: rect.top + scroll, bottom: rect.bottom + scroll, from, to };
+    });
+  }
+
+  /** The colour under document position `y`; inside the story, the top of the stage. */
+  private colorAt(y: number, stageColor: string): string {
+    if (y < this.storyBottom) return stageColor;
+    const band = this.bands.find((item) => y >= item.top && y < item.bottom) ?? this.bands.at(-1);
+    if (!band) return stageColor;
+    return mixHex(band.from, band.to, (y - band.top) / Math.max(1, band.bottom - band.top));
+  }
+
+  update(storyProgress: number) {
+    const color = this.colorAt(
+      window.scrollY,
+      mixHex(BLUEPRINT, SKY, smoothstep(0.5, 0.78, storyProgress)),
+    );
+    if (color === this.current) return;
+    this.current = color;
+    this.meta?.setAttribute("content", color);
+    document.documentElement.style.backgroundColor = color;
+    document.body.style.backgroundColor = color;
+  }
+}
+
 /** Snap to the nearest anchor, so reduced motion gets still frames instead of a camera fly. */
 function nearestAnchor(anchors: readonly Anchor[], offset: number): number {
   let best = anchors[0];
@@ -91,6 +161,8 @@ class Story {
   private measureFrame = 0;
   private inHero = true;
   private scene: WaffleSceneInstance | null = null;
+  private sceneProgress = 0;
+  private readonly tint = new BrowserTint();
   private alive = true;
 
   constructor(private readonly root: HTMLElement) {
@@ -167,6 +239,7 @@ class Story {
     }
     anchors.push({ offset: end, progress: 1 });
     this.anchors = anchors.sort((a, b) => a.offset - b.offset);
+    this.tint.measure(this.root);
     this.update(true);
   }
 
@@ -180,6 +253,7 @@ class Story {
   }
 
   private update(force = false) {
+    this.tint.update(this.scene ? this.sceneProgress : this.progress);
     const offset = window.scrollY - this.top;
     const progress = this.reduced.matches
       ? nearestAnchor(this.anchors, offset)
@@ -197,7 +271,9 @@ class Story {
 
   /** The blueprint layer fades out as the waffle meets the sky, in step with the scene. */
   private paintSky = (progress: number) => {
+    this.sceneProgress = progress;
     this.blueprint.style.opacity = String(1 - smoothstep(0.5, 0.78, progress));
+    this.tint.update(progress);
   };
 
   /** Where the waffle sits, as fractions of the canvas. */
@@ -220,9 +296,11 @@ class Story {
         hf: ((visible - top) * 0.9) / height,
       };
     }
-    // Phones: under the hero copy at first, then centred above the docked step cards.
+    // Phones: under the hero copy at first, then centred above the docked step cards. The copy's
+    // bottom is measured from the top of the story, which is where the stage sits at scroll zero,
+    // so coming back up mid-scroll still frames the waffle under the copy, not under the logo.
     const copyBottom = this.heroCopy
-      ? this.heroCopy.getBoundingClientRect().bottom - this.stage.getBoundingClientRect().top
+      ? this.heroCopy.getBoundingClientRect().bottom - this.root.getBoundingClientRect().top
       : visible * 0.5;
     const top = this.inHero ? Math.min(visible * 0.62, copyBottom + 8) : nav;
     // Leave room for a docked step card, about 260px, but never squeeze the waffle below 55%.

@@ -1,4 +1,4 @@
-The Waffle landing page uses three fonts first downloaded from Google Fonts (fonts.gstatic.com): Bricolage Grotesque, Fredoka and Martian Mono. The files served with the page are modified versions. They are subset to Basic Latin, Latin-1 and common punctuation, and instanced with fontTools 4.68.0: Bricolage Grotesque at width 100 with weights 400 to 800, Fredoka at weight 700, and Martian Mono at width 100 with weights 400 to 700. Each family's license follows and still applies to its files.
+The Waffle landing page uses three fonts first downloaded from Google Fonts (fonts.gstatic.com): Bricolage Grotesque, Fredoka and Martian Mono. The files served with the page are modified versions. They are subset to Basic Latin, Latin-1 and common punctuation, and instanced with fontTools 4.68.0: Bricolage Grotesque at width 100, optical size 18 and weights 400 to 700, Fredoka at weight 700, and Martian Mono at width 100 with weights 400 to 700. Each family's license follows and still applies to its files.
 
 Bricolage Grotesque
 
