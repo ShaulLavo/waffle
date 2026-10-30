@@ -5,7 +5,12 @@ import { WatchService } from "../fs/watch-service.js";
 import { ORDINARY_WATCH_LIMITS } from "../fs/watch-account.js";
 import { FilesystemService } from "../fs/service.js";
 import { FilesystemClient } from "../fs/client.js";
-import { createFilesystemConnection } from "../fs/protocol.js";
+import {
+  createFilesystemConnection,
+  createProcessFilesystemIdentity,
+  reapFilesystem,
+  State,
+} from "../fs/protocol.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 
 const empty = new Uint8Array();
@@ -243,4 +248,66 @@ test("service disposal releases the root watch account after session response cl
   } finally {
     await f.close();
   }
+});
+
+async function readyWatchReply(reply: ReturnType<FilesystemClient["submit"]>) {
+  const deadline = performance.now() + 1000;
+  while (!reply.ready) {
+    if (performance.now() > deadline) throw new Error("Watch reply did not become ready");
+    await Bun.sleep(0);
+  }
+}
+
+test("reaped unconsumed watch replies release events and reuse bounded arena capacity", async () => {
+  const first = createFilesystemConnection();
+  const second = createFilesystemConnection(createProcessFilesystemIdentity(first.client));
+  const backend = new MemoryBackend();
+  const service = new FilesystemService(backend);
+  service.connect(first.server);
+  service.connect(second.server);
+  const a = new FilesystemClient(first.client);
+  const b = new FilesystemClient(second.client);
+  try {
+    const rootA = await a.asyncCall("preopen", ["/"]);
+    const rootB = await b.asyncCall("preopen", ["/"]);
+    const watchA = await a.asyncCall("watchOpen", [rootA, false]);
+    const watchB = await b.asyncCall("watchOpen", [rootB, false]);
+    await b.asyncCall("writeFile", ["/held", false], new Uint8Array([1]));
+    const held = a.submit("watchRead", [watchA]);
+    await readyWatchReply(held);
+    expect(Atomics.load(held.cells, 0)).toBe(State.Complete);
+    expect(backend.watchAccount.resources().eventBytes).toBeGreaterThan(0);
+    reapFilesystem(first.client);
+    service.sweep();
+    const watches: unknown = Reflect.get(service, "watchService");
+    if (!(watches instanceof WatchService)) throw new Error("Watch service is not active");
+    const afterReap = watches.resources().queuedEvents;
+    const batch = await b.asyncCall("watchRead", [watchB]);
+    expect(afterReap).toBe(batch.events.length);
+    expect(batch.events).toContainEqual(expect.objectContaining({ name: "held" }));
+    await b.asyncCall("stat", [rootB]);
+    await Bun.sleep(0);
+    expect(watches.resources().queuedEvents).toBe(0);
+    const capacity = backend.watchAccount.resources().eventBytes;
+    expect(capacity).toBeGreaterThan(0);
+    for (let turn = 0; turn < 16; turn++) {
+      await b.asyncCall("writeFile", ["/held", false], new Uint8Array([turn]));
+      await b.asyncCall("watchRead", [watchB]);
+      await b.asyncCall("stat", [rootB]);
+      expect(watches.resources().queuedEvents).toBe(0);
+      expect(backend.watchAccount.resources().eventBytes).toBe(capacity);
+    }
+    await b.asyncCall("watchClose", [watchB]);
+    expect(backend.watchAccount.resources().eventBytes).toBe(0);
+  } finally {
+    a.dispose();
+    b.dispose();
+    await service.shutdown();
+  }
+  expect(backend.watchAccount.resources()).toMatchObject({
+    backingBytes: 0,
+    liveBytes: 0,
+    eventBytes: 0,
+    controlUnits: 0,
+  });
 });
