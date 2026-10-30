@@ -55,7 +55,7 @@ test("lookup size query survives ring reuse before bounded byte copies", async (
   const bulk = Array.from({ length: 40_000 }, () => record);
   const bulkBytes = encoder.encode(JSON.stringify(bulk));
   expect(bulkBytes.byteLength).toBeGreaterThan(CAPACITY);
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const f = fixture((hostname) => (hostname === "bulk.example" ? bulk : records), namespace);
   try {
     const handle = f.host.lookupStart("sized.example");
@@ -105,7 +105,7 @@ test("fragmented lookup failure preserves UTF-8 identity and request option snap
   let hintsReads = 0;
   let family: 4 | 6 = 6;
   let hints = 42;
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const f = fixture((receivedHostname, options) => {
     seen.push([receivedHostname, options]);
     throw Object.assign(new Error(identity.message), identity);
@@ -144,7 +144,7 @@ test("fragmented lookup failure preserves UTF-8 identity and request option snap
 
 test("closing another kind and cancelling a queued head preserve sibling ring generations", async () => {
   const pending = Promise.withResolvers<RuntimeNetworkLookupResult[]>();
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const first = fixture(
     (hostname) => (hostname === "late.example" ? pending.promise : records),
     namespace,

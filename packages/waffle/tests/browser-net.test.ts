@@ -130,10 +130,11 @@ test("request serialization sets host, length and connection: close", () => {
 });
 
 test("raw preview connections preserve upgrade and duplex frame bytes", async () => {
-  const { NetHelper } = await import("../browser/net/helper");
+  const { NetHelper, NetNamespace } = await import("../browser/net/helper");
   const sab = createRing();
   const reader = new RingReader(sab);
-  const helper = new NetHelper(sab, noFetch);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(sab, noFetch, {}, namespace);
   const received: Uint8Array[] = [];
   let ended = false;
   try {
@@ -184,6 +185,7 @@ test("raw preview connections preserve upgrade and duplex frame bytes", async ()
     expect(helper.connect(9999, { data() {}, end() {}, error() {} })).toBeNull();
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
@@ -216,12 +218,13 @@ test("disposing a full ring releases blocked writes and drops queued records", a
 });
 
 test("shared-filesystem notifications wake HMR without replaying stale saved bytes", async () => {
-  const { NetHelper } = await import("../browser/net/helper");
+  const { NetHelper, NetNamespace } = await import("../browser/net/helper");
   const { NetHost } = await import("../browser/net/host");
   const sab = createRing();
   const fs = new MemFS();
   const replacements: string[] = [];
-  const helper = new NetHelper(sab, noFetch);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(sab, noFetch, {}, namespace);
   const host = new NetHost(
     sab,
     () => {},
@@ -251,12 +254,14 @@ test("shared-filesystem notifications wake HMR without replaying stale saved byt
     expect(replacements).toEqual(["/app.ts"]);
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
 test("shared-filesystem notifications reject invalid paths and stopped workers", async () => {
-  const { NetHelper } = await import("../browser/net/helper");
-  const helper = new NetHelper(createRing(), noFetch);
+  const { NetHelper, NetNamespace } = await import("../browser/net/helper");
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(createRing(), noFetch, {}, namespace);
   try {
     await expect(helper.notifyFileChanged("relative.ts")).rejects.toThrow(
       "Expected an absolute guest path",
@@ -268,14 +273,16 @@ test("shared-filesystem notifications reject invalid paths and stopped workers",
     await expect(helper.notifyFileChanged("/app.ts")).rejects.toThrow("The server stopped");
   } finally {
     helper.dispose();
+    namespace.dispose();
   }
 });
 
 test("stopping a worker rejects a file update blocked behind a full ring", async () => {
-  const { NetHelper } = await import("../browser/net/helper");
+  const { NetHelper, NetNamespace } = await import("../browser/net/helper");
   const sab = createRing();
   const reader = new RingReader(sab);
-  const helper = new NetHelper(sab, noFetch);
+  const namespace = await NetNamespace.create();
+  const helper = new NetHelper(sab, noFetch, {}, namespace);
   const pending = helper.changeFile("/app.ts", new Uint8Array(CAPACITY * 2)).then(
     () => null,
     (error: unknown) => error,
@@ -297,6 +304,7 @@ test("stopping a worker rejects a file update blocked behind a full ring", async
     clearTimeout(timeout);
     reader.drain();
     helper.dispose();
+    namespace.dispose();
     await pending;
   }
 });
