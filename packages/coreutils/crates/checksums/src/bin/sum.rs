@@ -6,6 +6,7 @@ mod upstream {
 }
 
 fn main() {
+    uucore::checksum::stdio::initialize();
     cwd::initialize("sum");
     upstream::main();
 }

@@ -28,7 +28,7 @@ test("checksum source stays a pinned isolated upstream leaf", () => {
   for (const name of checksumNames) {
     assert.equal(
       text(resolve(crateRoot, `src/bin/${name}.rs`)),
-      `#[path = "../cwd.rs"]\nmod cwd;\n\nmod upstream {\n    uucore::bin!(uu_${name});\n}\n\nfn main() {\n    cwd::initialize("${name}");\n    upstream::main();\n}\n`,
+      `#[path = "../cwd.rs"]\nmod cwd;\n\nmod upstream {\n    uucore::bin!(uu_${name});\n}\n\nfn main() {\n    uucore::checksum::stdio::initialize();\n    cwd::initialize("${name}");\n    upstream::main();\n}\n`,
     );
     assert.match(manifest, new RegExp(`uu_${name}`));
   }

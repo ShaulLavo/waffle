@@ -6,6 +6,7 @@ mod upstream {
 }
 
 fn main() {
+    uucore::checksum::stdio::initialize();
     cwd::initialize("sha512sum");
     upstream::main();
 }
