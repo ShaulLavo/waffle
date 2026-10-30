@@ -23,9 +23,10 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `network/src/{abi,module,virtual_net}.rs`, `browser/net/module.ts`                                                                    | Original adapter | Waffle binary ABI, virtual-only namespace, explicit loader and per-runtime module ownership. No Bun API facade copied.                                                                                                                                                                                                                                                                                                       |
 | `tools/licenses/`                                                                                                                     | License copy     | Exact upstream MIT license texts for fluent-langneg 0.13.1 and intl_pluralrules 7.0.2, omitted from their registry archives. Source commits and SHA-256 records accompany the texts.                                                                                                                                                                                                                                         |
 | `packages/findutils/vendor/uutils-xargs/src/lib.rs`                                                                                   | Adaptation       | uutils/findutils `src/xargs/mod.rs` at `505421d4e03586efeb7b9c55adf057599e192e0a`; original Waffle process-consumer adapter, owned EOF stdin, child status mapping, empty byte-delimited items and explicit unsupported-mode checks.                                                                                                                                                                                         |
-
 | `packages/coreutils/crates/echo/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/echo` at `07763857f6b9a547742a994b58aef0ccd036198b`; isolated entry and actual WASI write-failure observation, without flag/output logic. |
 | `packages/coreutils/src/bin/nl.rs`, `packages/coreutils/src/bin/nl_bre/` | Original adapter | Calls unchanged uutils/coreutils `src/uu/nl` and `src/uucore` at `07763857f6b9a547742a994b58aef0ccd036198b`. Initializes WASI cwd and translates bounded common BRE styles into upstream's byte regex grammar; no command algorithm copied. See [External nl entry](#external-nl-entry). |
+| `tools/program-locales/patch.ts` | Adaptation | Transforms only the hash-pinned uutils/coreutils `src/uucore/build.rs` at `dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69` and `07763857f6b9a547742a994b58aef0ccd036198b`. Retains target aliases and replaces catalog discovery with explicit English inputs. |
+| `tools/program-locales/{prepare,selection,rustc-wrapper,build}.ts`, `generate.rs` | Original adapter | Build-source selection, isolated producer identity, compiler pass-through, transaction lock, catalog generation and receipts. No runtime or command implementation copied. |
 | `tools/program-build-tools.ts` | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds bounded final-program name-section stripping; no external Wasm parser is copied. |
 
 ## Node WASI descriptor adapter
@@ -255,6 +256,22 @@ coreutils implementations are unchanged.
 ## Memory group sources
 
 The memory group owner, member imports and broker integration are original Waffle code. The Chromium fixture image is adapted from the Engines track's shared-memory prototype, which proved that one PIE image instantiates into one shared `WebAssembly.Memory` at several bases. The adaptation replaces `memory.grow` with `runtime_shm.group_grow`, adds `runtime_shm` region and futex calls, and runs a command loop that the test page drives through the member's own statics.
+
+## English program catalog build scripts
+
+`tools/program-locales/patch.ts` adapts uutils/coreutils `src/uucore/build.rs`
+under the MIT license. The two original file hashes and upstream revisions are
+recorded in `tools/program-locales/sources.json`. The generated patched source
+retains the original copyright header and, for revision
+`07763857f6b9a547742a994b58aef0ccd036198b`, its target configuration aliases.
+Waffle replaces the upstream directory scan with its original single-program
+English catalog generator. The build wrapper never edits the dependency caches.
+Original dependency identities and license notices remain unchanged.
+
+The wrapper, input selection, generation, locking, and proof collection are original
+Waffle adapters. They record source and generated hashes separately from final guest
+hashes. The shipped command code and uucore language fallback are not patched.
+See [English program catalogs](program-locales.md) for coverage and build identities.
 
 ## Program artifact finalization
 

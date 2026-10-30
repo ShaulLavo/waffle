@@ -8,6 +8,7 @@ import {
   verifyXargsArtifact,
   workspaceRoot,
 } from "../../findutils/scripts/xargs-artifact.ts";
+import { readProgramLocaleProof } from "../../../tools/program-locales/prepare.ts";
 import { stripWasmNames, verifyWasiGuest } from "../../../tools/program-build-tools.ts";
 
 const input = process.env.ECHO_XARGS_ARTIFACT;
@@ -35,9 +36,11 @@ const proof = {
     "packages/coreutils/scripts/echo-artifact.ts",
     "packages/coreutils/provenance/echo.source.json",
     "tools/program-build-tools.ts",
+    "tools/program-locales",
     "packages/waffle/scripts/build-wasi-libc.sh",
     "packages/waffle/patches/wasi-libc/preopen-scan.patch",
   ]),
+  locales: readProgramLocaleProof(guest, "echo"),
   echoGuest: { bytes: bytes.length, sha256: sha256(bytes) },
   xargs: xargs.receipt,
   acceptance:
@@ -46,5 +49,6 @@ const proof = {
 const output = resolve(workspaceRoot, ".build/echo-artifact");
 mkdirSync(output, { recursive: true });
 copyFileSync(guest, resolve(output, "echo.wasm"));
+copyFileSync(`${guest}.locales.json`, resolve(output, "echo.wasm.locales.json"));
 writeFileSync(resolve(output, "receipt.json"), JSON.stringify(proof, null, 2) + "\n");
 console.log(JSON.stringify(proof));
