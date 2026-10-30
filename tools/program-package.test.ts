@@ -5,11 +5,59 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import {
   admitProgramPackage,
   packProgramPackage,
   verifyProgramTarball,
 } from "./program-package.ts";
+
+const companionEncoders = [
+  [".gz", gzipSync],
+  [".br", brotliCompressSync],
+] as const;
+
+function checkProgramCompanions(root: string) {
+  const guest = resolve(root, "dist/program.wasm");
+  const raw = readFileSync(guest);
+  assert.equal(admitProgramPackage(root).length, 6);
+  for (const [suffix, encode] of companionEncoders) {
+    const path = `${guest}${suffix}`;
+    const valid = readFileSync(path);
+    const corrupt = Buffer.from(valid);
+    corrupt[0] = corrupt[0]! ^ 0xff;
+    const invalid = [
+      ["stale", encode(Buffer.concat([raw, Uint8Array.of(0)]))],
+      ["truncated", valid.subarray(0, -1)],
+      ["corrupt", corrupt],
+      ["wrong content", raw],
+      ["wrong encoded content", encode(cappedWasiFixture)],
+      ["empty", new Uint8Array()],
+    ] as const;
+    for (const [description, bytes] of invalid) {
+      writeFileSync(path, bytes);
+      assert.throws(() => admitProgramPackage(root), Error, `${suffix} ${description}`);
+      writeFileSync(path, valid);
+      assert.equal(admitProgramPackage(root).length, 6);
+    }
+  }
+  const gzip = readFileSync(`${guest}.gz`);
+  const brotli = readFileSync(`${guest}.br`);
+  rmSync(`${guest}.gz`);
+  const partial = admitProgramPackage(root);
+  assert.equal(partial.length, 5);
+  assert.equal(partial.includes("dist/program.wasm.gz"), false);
+  rmSync(`${guest}.br`);
+  assert.deepEqual(admitProgramPackage(root), [
+    "dist/program.wasm",
+    "dist/program-program.json",
+    "dist/NOTICES.txt",
+    "dist/payload.bin",
+  ]);
+  writeFileSync(`${guest}.gz`, gzip);
+  writeFileSync(`${guest}.br`, brotli);
+  assert.equal(admitProgramPackage(root).length, 6);
+}
 
 test("pack rejects absent guests and notices, and verifies actual archive closure", () => {
   const parent = resolve(import.meta.dirname, "../.build");
@@ -44,7 +92,7 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     writeFileSync(guest, Buffer.concat([original, Uint8Array.of(0, 5, 4, 110, 97, 109, 101)]));
     assert.throws(() => admitProgramPackage(root), /still contains a name section/);
     writeFileSync(guest, original);
-    assert.equal(admitProgramPackage(root).length, 4);
+    checkProgramCompanions(root);
     const archive = packProgramPackage(root);
     assert.ok(readFileSync(archive).length > 0);
     writeFileSync(resolve(root, "dist/NOTICES.txt"), "changed license\n");
@@ -96,7 +144,7 @@ test("Python packing binds its derivation to original producer and final interpr
   const receipt = resolve(assets, "python-program.json");
   const writeReceipt = (value: unknown) => writeFileSync(receipt, JSON.stringify(value));
   writeReceipt(derivation);
-  assert.equal(admitProgramPackage(root).length, 3);
+  assert.equal(admitProgramPackage(root).length, 5);
   const invalid = [
     {},
     { ...derivation, operation: "unknown" },
@@ -120,6 +168,6 @@ test("Python packing binds its derivation to original producer and final interpr
   writeFileSync(resolve(assets, "python-build.json"), Buffer.concat([producer, Buffer.from(" ")]));
   assert.throws(() => admitProgramPackage(root), /Original producer receipt hash/);
   writeFileSync(resolve(assets, "python-build.json"), producer);
-  assert.equal(admitProgramPackage(root).length, 3);
+  assert.equal(admitProgramPackage(root).length, 5);
   assert.deepEqual(readFileSync(resolve(assets, "python-build.json")), producer);
 });

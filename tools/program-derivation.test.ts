@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { stageProgram } from "./program-build-tools.ts";
 import { programBytesIdentity, validateProgramDerivation } from "./program-derivation.ts";
 import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
@@ -159,7 +160,7 @@ test("every optimizer policy and chain field is checked, not just nonempty recei
   });
 });
 
-test("one stage operation publishes identical final bytes and receipts to multiple destinations", () => {
+test("one stage operation publishes deterministic final outputs to multiple destinations", () => {
   const parent = resolve(import.meta.dirname, "../.build");
   mkdirSync(parent, { recursive: true });
   const directory = mkdtempSync(resolve(parent, "stage-twins-"));
@@ -168,14 +169,25 @@ test("one stage operation publishes identical final bytes and receipts to multip
     writeFileSync(source, cappedWasiFixture);
     const first = resolve(directory, "first.wasm");
     const second = resolve(directory, "second.wasm");
+    for (const path of [first, second]) {
+      writeFileSync(`${path}.gz`, "stale gzip");
+      writeFileSync(`${path}.br`, "stale Brotli");
+    }
     const receipt = stageProgram(source, [first, second]);
-    const bytes = readFileSync(first);
-    assert.deepEqual(bytes, readFileSync(second));
-    assert.deepEqual(
-      readFileSync(resolve(directory, "first-program.json")),
-      readFileSync(resolve(directory, "second-program.json")),
-    );
-    validateProgramDerivation(receipt, bytes);
+    const readOutputs = (path: string) => ({
+      bytes: readFileSync(path),
+      gzip: readFileSync(`${path}.gz`),
+      brotli: readFileSync(`${path}.br`),
+      receipt: readFileSync(path.replace(/\.wasm$/, "-program.json")),
+    });
+    const firstOutputs = readOutputs(first);
+    assert.deepEqual(readOutputs(second), firstOutputs);
+    assert.ok(gunzipSync(firstOutputs.gzip).equals(firstOutputs.bytes));
+    assert.ok(brotliDecompressSync(firstOutputs.brotli).equals(firstOutputs.bytes));
+    validateProgramDerivation(receipt, firstOutputs.bytes);
+    stageProgram(source, [first, second]);
+    assert.deepEqual(readOutputs(first), firstOutputs, "repeat staging is deterministic");
+    assert.deepEqual(readOutputs(second), firstOutputs, "repeat twin staging is deterministic");
     assert.throws(() => stageProgram(source, source), /must differ|aliases compiler input/);
     assert.deepEqual(readFileSync(source), Buffer.from(cappedWasiFixture));
   } finally {

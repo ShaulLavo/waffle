@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { validateProgramDerivation } from "./program-derivation.ts";
 import { stripWasmNames } from "./program-build-tools.ts";
 
@@ -57,11 +58,47 @@ function payloadFiles(root: string, path: string): string[] {
   });
 }
 
+function isMissing(error: unknown) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function optionalCompanion(root: string, name: string) {
+  try {
+    const path = localPath(root, name);
+    assert.ok(lstatSync(path).isFile(), `Program companion is not a regular file: ${name}`);
+    const bytes = readFileSync(path);
+    assert.ok(bytes.length, `Empty program companion: ${name}`);
+    return bytes;
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+}
+
+const companionDecoders = [
+  [".gz", gunzipSync],
+  [".br", brotliDecompressSync],
+] as const;
+
+function admitProgramCompanions(root: string, name: string, raw: Buffer) {
+  const admitted: string[] = [];
+  for (const [suffix, decode] of companionDecoders) {
+    const companion = `${name}${suffix}`;
+    const encoded = optionalCompanion(root, companion);
+    if (!encoded) continue;
+    const decoded = decode(encoded, { maxOutputLength: raw.length });
+    assert.ok(decoded.equals(raw), `Program companion differs from final bytes: ${companion}`);
+    admitted.push(companion);
+  }
+  return admitted;
+}
+
 /** Admission consumes prepared artifacts only; it never builds or fetches them. */
 export function admitProgramPackage(root: string): string[] {
   const recipe = record(JSON.parse(readFileSync(resolve(root, "package-artifacts.json"), "utf8")));
   assert.ok(Array.isArray(recipe.files) && recipe.files.every((name) => typeof name === "string"));
   const files: string[] = recipe.files;
+  const companions: string[] = [];
   for (const name of files) {
     const bytes = requiredFile(root, name);
     if (!name.endsWith(".wasm")) continue;
@@ -71,6 +108,7 @@ export function admitProgramPackage(root: string): string[] {
     const producer =
       name === "assets/python.wasm" ? requiredFile(root, "assets/python-build.json") : undefined;
     validateProgramDerivation(JSON.parse(requiredFile(root, sidecar).toString()), bytes, producer);
+    companions.push(...admitProgramCompanions(root, name, bytes));
   }
   if (recipe.dependencies !== undefined) {
     assert.ok(Array.isArray(recipe.dependencies));
@@ -79,9 +117,9 @@ export function admitProgramPackage(root: string): string[] {
       admitProgramPackage(resolve(root, "..", name));
     }
   }
-  if (recipe.payloadManifest === undefined) return files;
+  if (recipe.payloadManifest === undefined) return files.concat(companions);
   assert.ok(typeof recipe.payloadManifest === "string");
-  return files.concat(payloadFiles(root, recipe.payloadManifest));
+  return files.concat(companions, payloadFiles(root, recipe.payloadManifest));
 }
 
 /** Check the actual archive, including files removed by package files/ignore rules. */
