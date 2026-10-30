@@ -244,6 +244,7 @@ describe("base closure", () => {
       "dist/ls.wasm",
       "dist/mkdir.wasm",
       "dist/mv.wasm",
+      "dist/nl.wasm",
       "dist/rm.wasm",
       "dist/seq.wasm",
       "dist/sort.wasm",
