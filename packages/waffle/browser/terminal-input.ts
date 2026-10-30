@@ -2,11 +2,14 @@ import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import type { Readiness } from "../core/descriptors.js";
 import {
   TERMINAL_SESSION_LIMITS,
+  type InputCut,
+  type InputFlushBinding,
   type TerminalDisplay,
   type TerminalFailure,
   type TerminalPolicy,
   type TerminalResult,
   type TerminalTurn,
+  registerTerminalInputFlush,
   terminalInputSection,
 } from "./terminal-session.js";
 import {
@@ -200,6 +203,61 @@ class InputBuffer implements TerminalInput {
     } finally {
       this.unlock();
     }
+  }
+  /** The flush binding: the same token fence and lock as a read, around one channel cut. */
+  flushBinding(): InputFlushBinding {
+    return {
+      observe: () => this.observe(),
+      withLock: (turn, work) => {
+        const token = atomicsAdd(this.identity, 1, 1n) + 1n;
+        if (token <= 1n) {
+          this.poison();
+          return { kind: "done", result: { kind: "error", code: "CLOSED" } };
+        }
+        return terminalInputSection(turn, atomicsLoad(this.identity, 0), token, () =>
+          this.lockedCut(token, work),
+        );
+      },
+    };
+  }
+  private lockedCut(
+    token: bigint,
+    work: (cut: InputCut) => TerminalResult<void>,
+  ): ReturnType<InputFlushBinding["withLock"]> {
+    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) {
+      this.contend();
+      return { kind: "busy" };
+    }
+    let live = true;
+    const cut: InputCut = {
+      check: () => {
+        if (atomicsLoad(this.state, H.poisoned) !== 0) return { kind: "error", code: "CLOSED" };
+        if (this.cancelled()) return { kind: "error", code: "CANCELED" };
+        return { kind: "ok", value: undefined };
+      },
+      commit: () => {
+        if (!live) throw new TypeError("terminal input cut expired");
+        live = false;
+        this.discardUnread();
+      },
+    };
+    try {
+      return { kind: "done", result: work(cut) };
+    } finally {
+      live = false;
+      this.unlock();
+    }
+  }
+  /** Under the input lock. The cooked record indexes [read, write), so it must move with the
+   * cursor: a stale cookedEnd behind write would let readCooked rewind into dropped bytes. */
+  private discardUnread(): void {
+    const write = atomicsLoad(this.state, H.write);
+    atomicsStore(this.state, H.cookedReady, 0);
+    atomicsStore(this.state, H.cookedEnd, write);
+    atomicsStore(this.state, H.cookedOutputEnd, write);
+    atomicsStore(this.state, H.skipLineFeed, 0);
+    atomicsStore(this.state, H.read, write);
+    this.signal();
   }
   private contend(): number {
     atomicsStore(this.state, H.contended, 1);
@@ -492,7 +550,7 @@ export function pushTerminalInput(
 
 export function createTerminalInputPolicy(options: TerminalInputPolicyOptions): TerminalPolicy {
   const input = inputBuffer(options.input);
-  return {
+  const policy: TerminalPolicy = {
     tryRead(turn: TerminalTurn, chunks: readonly Uint8Array[]): number {
       return input.read(turn, chunks, turn.mode === "cooked");
     },
@@ -511,4 +569,6 @@ export function createTerminalInputPolicy(options: TerminalInputPolicyOptions): 
       return options.outputReadiness?.(target) ?? { writable: false };
     },
   };
+  registerTerminalInputFlush(policy, input.flushBinding());
+  return policy;
 }
