@@ -4,8 +4,8 @@ import { NetHost } from "../browser/net/host.js";
 import { AGAIN, BADF, CONN_BASE, ERROR, UNSUPPORTED } from "../browser/net/protocol.js";
 import { createRing } from "../browser/net/ring.js";
 
-function fixture(shared: boolean) {
-  const namespace = new NetNamespace();
+async function fixture(shared: boolean) {
+  const namespace = await NetNamespace.create();
   const helpers: NetHelper[] = [];
   const hosts: NetHost[] = [];
   let externalFetches = 0;
@@ -40,6 +40,7 @@ function fixture(shared: boolean) {
     close() {
       for (const host of hosts) host.dispose();
       for (const helper of helpers) helper.dispose();
+      namespace.dispose();
     },
   };
 }
@@ -68,7 +69,7 @@ for (const shared of [false, true]) {
   test.each(bindings)(
     `endpoint metadata shared=${shared} bind=%s connect=%s`,
     async (bind, target, family, acceptedAddress, clientFamily) => {
-      const f = fixture(shared);
+      const f = await fixture(shared);
       try {
         const server = f.add().host;
         const client = shared ? f.add().host : server;
@@ -116,8 +117,8 @@ for (const shared of [false, true]) {
     },
   );
 
-  test(`unsupported binds and family mismatch do not allocate shared=${shared}`, () => {
-    const f = fixture(shared);
+  test(`unsupported binds and family mismatch do not allocate shared=${shared}`, async () => {
+    const f = await fixture(shared);
     try {
       const server = f.add().host;
       const client = shared ? f.add().host : server;
@@ -140,8 +141,8 @@ for (const shared of [false, true]) {
 
   test.each(invalidPorts)(
     `listen rejects invalid port %s without retention shared=${shared}`,
-    (_name, port) => {
-      const f = fixture(shared);
+    async (_name, port) => {
+      const f = await fixture(shared);
       try {
         const { host, requestCount } = f.add();
         expect(host.listen("127.0.0.1", port)).toBe(ERROR);
@@ -158,8 +159,8 @@ for (const shared of [false, true]) {
     },
   );
 
-  test.each([1, 65535])(`listen accepts boundary port %s shared=${shared}`, (port) => {
-    const f = fixture(shared);
+  test.each([1, 65535])(`listen accepts boundary port %s shared=${shared}`, async (port) => {
+    const f = await fixture(shared);
     try {
       const host = f.add().host;
       const listener = host.listen("127.0.0.1", port);
@@ -173,7 +174,7 @@ for (const shared of [false, true]) {
   });
 
   test(`preview peers use the virtual listener family shared=${shared}`, async () => {
-    const f = fixture(shared);
+    const f = await fixture(shared);
     try {
       const { host, helper } = f.add();
       const listener = host.listen("::", 32156);
@@ -334,7 +335,7 @@ for (const shared of [false, true]) {
   test.each(refusedFetches)(
     `virtual HTTP refuses incompatible destinations without allocation shared=${shared} bind=%s fetch=%s`,
     async (bind, destination, valid) => {
-      const f = fixture(shared);
+      const f = await fixture(shared);
       try {
         const server = f.add().host;
         const client = shared ? f.add().host : server;
@@ -364,7 +365,7 @@ for (const shared of [false, true]) {
   test.each(acceptedFetches)(
     `virtual HTTP retains destination endpoints and completes shared=${shared} bind=%s fetch=%s`,
     async (bind, destination, address, family) => {
-      const f = fixture(shared);
+      const f = await fixture(shared);
       try {
         const server = f.add().host;
         const client = shared ? f.add().host : server;

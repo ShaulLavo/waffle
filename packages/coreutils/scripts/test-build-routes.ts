@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { selectCatalogs, usesProgramCatalogs } from "../../../tools/program-locales/selection.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -8,6 +10,7 @@ import { writeCoreutilsArtifacts, stageCoreutilsArtifacts } from "./artifacts.ts
 import { familyRecipe, packageRoot, workspaceRoot } from "./build-config.ts";
 import { buildFamilyPrograms } from "./build-family.ts";
 import { buildWc } from "./build-wc.ts";
+import type { prepareProgramLocales } from "../../../tools/program-locales/prepare.ts";
 import { coreutilsNames, coreutilsPackageNames } from "./programs.ts";
 
 function environment(recipe: WasiBuildRecipe, target: string) {
@@ -16,6 +19,14 @@ function environment(recipe: WasiBuildRecipe, target: string) {
   assert.equal(recipe.waffle, resolve(workspaceRoot, "packages/waffle"));
   assert.equal(target, ".build/coreutils");
   return { CARGO_ENCODED_RUSTFLAGS: "fixture-flags" };
+}
+
+function locales(options: Parameters<typeof prepareProgramLocales>[0]) {
+  return {
+    ...options.env,
+    CARGO_TARGET_DIR: resolve(workspaceRoot, ".build/coreutils"),
+    WAFFLE_PROGRAM_LOCALE_INPUTS: options.program,
+  };
 }
 
 function capture() {
@@ -43,11 +54,12 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
   buildFamilyPrograms(
     ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi"],
     coreutilsPackageNames,
-    { execute, environment, verifier: verifier(checks) },
+    { execute, environment, locales, verifier: verifier(checks) },
   );
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].command, "cargo");
-  assert.deepEqual(calls[0].args.slice(0, 8), [
+  assert.equal(calls.length, coreutilsPackageNames.length);
+  assert.equal(calls[0].command, "flock");
+  assert.equal(calls[0].env.WAFFLE_PROGRAM_LOCALE_INPUTS, coreutilsPackageNames[0]);
+  assert.deepEqual(calls[0].args.slice(5, 13), [
     "build",
     "--locked",
     "--release",
@@ -59,6 +71,11 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
   ]);
   assert.equal(calls[0].env.CARGO_ENCODED_RUSTFLAGS, "fixture-flags");
   assert.equal(checks.length, 14);
+  assert.deepEqual(
+    calls.map((call) => call.env.WAFFLE_PROGRAM_LOCALE_INPUTS),
+    coreutilsPackageNames.map((name) => (usesProgramCatalogs(name) ? name : undefined)),
+  );
+  assert.ok(calls.every((call) => !call.args.includes("--bins")));
   for (const check of checks) {
     const cooperative = /\/(?:cat|mkdir|seq|tail)\.wasm$/.test(check.path);
     assert.equal(
@@ -71,7 +88,7 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
 test("wc retains the scalar target feature and one final guest verification", () => {
   const { calls, execute } = capture();
   const checks: { path: string; options: WasiGuestVerification }[] = [];
-  buildWc({ execute, environment, verifier: verifier(checks) });
+  buildWc({ execute, environment, locales, verifier: verifier(checks) });
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0].env.CARGO_ENCODED_RUSTFLAGS,
@@ -91,7 +108,20 @@ test("artifact receipts preserve names, source identity, verification and stagin
     const output = resolve(scratch, "artifacts");
     const staged = resolve(scratch, "staged");
     mkdirSync(release, { recursive: true });
-    for (const name of coreutilsNames) writeFileSync(resolve(release, `${name}.wasm`), name);
+    for (const name of coreutilsNames) {
+      writeFileSync(resolve(release, `${name}.wasm`), name);
+      if (!usesProgramCatalogs(name)) continue;
+      const sha256 = createHash("sha256").update(name).digest("hex");
+      const version = ["head", "sort", "uniq"].includes(name) ? "0.12.0" : "0.13.0";
+      writeFileSync(
+        resolve(release, `${name}.wasm.locales.json`),
+        JSON.stringify({
+          program: name,
+          originalGuest: { sha256 },
+          generated: [{ version, keys: selectCatalogs(name, version), sha256 }],
+        }),
+      );
+    }
     const checks: { path: string; options: WasiGuestVerification }[] = [];
     writeCoreutilsArtifacts(workspaceRoot, release, output, verifier(checks));
     assert.equal(checks.length, 19);
@@ -117,7 +147,7 @@ test("echo has a separate ordinary WASI route with no old coreutils feature unio
   const { buildEcho } = await import("./build-echo.ts");
   const { calls, execute } = capture();
   const checks: { path: string; options: WasiGuestVerification }[] = [];
-  buildEcho({ execute, environment, verifier: verifier(checks) });
+  buildEcho({ execute, environment, locales, verifier: verifier(checks) });
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].args.slice(-4), ["-p", "waffle-echo", "--bin", "echo"]);
   assert.equal(calls[0].args.includes("cooperative-wasi"), false);

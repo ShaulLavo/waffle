@@ -71,7 +71,7 @@ function peer(namespace: NetNamespace, hooks: NetHelperHooks = {}) {
   };
 }
 test("actual Worker failed publication rolls back its listener before a healthy retry", async () => {
-  const namespace = new NetNamespace();
+  const namespace = await NetNamespace.create();
   const bad = peer(namespace, {
     listening() {
       throw Error("Observer failed");
@@ -86,13 +86,14 @@ test("actual Worker failed publication rolls back its listener before a healthy 
   } finally {
     bad.close();
     good.close();
+    namespace.dispose();
   }
 }, 5000);
 
 test.each([false, true])(
   "actual Worker HTTP credit, read wakeups, EOF and cancellation, same helper=%s",
   async (sameHelper) => {
-    const namespace = new NetNamespace();
+    const namespace = await NetNamespace.create();
     const server = peer(namespace),
       client = sameHelper ? server : peer(namespace);
     try {
@@ -102,6 +103,7 @@ test.each([false, true])(
     } finally {
       server.close();
       client.close();
+      namespace.dispose();
     }
   },
   5000,

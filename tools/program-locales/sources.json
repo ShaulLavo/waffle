@@ -1,0 +1,101 @@
+{
+  "0.12.0": {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "revision": "dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69",
+    "buildScriptSha256": "b9267b6910c7a976f0c89de1573d515c66e6c1df63d4cd04d077f61c6fc4f6b8",
+    "catalogs": {
+      "uucore/en-US.ftl": {
+        "package": "uucore",
+        "path": "locales/en-US.ftl",
+        "sha256": "29d45d6788690ddb08720d7683086bef2bbcfb4a98ddc94bd6242bc61daaa922"
+      },
+      "uucore-errors/en-US.ftl": {
+        "package": "uucore",
+        "path": "locales/errors/en-US.ftl",
+        "sha256": "aa9fd4d2da4c8cb12d4c22c66dab5372616c371604d4461e4fe4a2452d46f7a8"
+      },
+      "head/en-US.ftl": {
+        "package": "uu_head",
+        "path": "locales/en-US.ftl",
+        "sha256": "5657b88b1a2597b4f663a1b02687dae8e5521646115cd14adc70d4fe293f0eb7"
+      },
+      "sort/en-US.ftl": {
+        "package": "uu_sort",
+        "path": "locales/en-US.ftl",
+        "sha256": "90389e7be276b0fe7b3056a89c1c1758d662cadf852322e959f3284b93cdf08d"
+      },
+      "uniq/en-US.ftl": {
+        "package": "uu_uniq",
+        "path": "locales/en-US.ftl",
+        "sha256": "ff466f61a6e127f4eb95874f5ea10254a0ae02f05b6da3040015ff66a0173e54"
+      }
+    }
+  },
+  "0.13.0": {
+    "source": "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b",
+    "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+    "buildScriptSha256": "db9856f5ce5523e261992f004ff607a0e49111c00993ee8cb902136677ff5331",
+    "catalogs": {
+      "uucore/en-US.ftl": {
+        "package": "uucore",
+        "path": "locales/en-US.ftl",
+        "sha256": "7548cbce0052ac54fb480e3d5888ee62216fd640be1a361629969c9ff12e6ab0"
+      },
+      "uucore-errors/en-US.ftl": {
+        "package": "uucore",
+        "path": "locales/errors/en-US.ftl",
+        "sha256": "e9142ecba95ab9f7fccb89658dd76b8118746cbc05ef6128eb5268dd2a906651"
+      },
+      "echo/en-US.ftl": {
+        "package": "uu_echo",
+        "path": "locales/en-US.ftl",
+        "sha256": "5475356eeb4d031aab7f44743bfdfce4673ddaec1d00a68a8d7192ae97f2e742"
+      },
+      "ls/en-US.ftl": {
+        "package": "uu_ls",
+        "path": "locales/en-US.ftl",
+        "sha256": "a426d133b0fb26e04a97be2413b552a8f639afde5cb30e4ce56eda9ca995e832"
+      },
+      "env/en-US.ftl": {
+        "package": "uu_env",
+        "path": "locales/en-US.ftl",
+        "sha256": "1e951c21651bf601fc1101f0d22674208999857bac8a865842ffd635e1cc07eb"
+      },
+      "cut/en-US.ftl": {
+        "package": "uu_cut",
+        "path": "locales/en-US.ftl",
+        "sha256": "185adb2d547001cce0e4113a42945bd70e0f381c5f4a82e917f70063cf37a1bd"
+      },
+      "tr/en-US.ftl": {
+        "package": "uu_tr",
+        "path": "locales/en-US.ftl",
+        "sha256": "4530562c29b5587f73ae918ee4fad0516162c12bb741c22f2c1c5acee3902847"
+      },
+      "wc/en-US.ftl": {
+        "package": "uu_wc",
+        "path": "locales/en-US.ftl",
+        "sha256": "0dcf500d76df9c47b18f1504e3c488dd76cc5be67ded2500df60dd28c0f45f38"
+      },
+      "touch/en-US.ftl": {
+        "package": "uu_touch",
+        "path": "locales/en-US.ftl",
+        "sha256": "575034f9c3c201571a60928d66c358cbb6679049adbfbfc80d09e14d34fd17b0"
+      },
+      "rm/en-US.ftl": {
+        "package": "uu_rm",
+        "path": "locales/en-US.ftl",
+        "sha256": "ed7bd8033604bdf95576c2f7c3d7d144b8a1c749e55f55dfd32f9d7aa5dfa98b"
+      },
+      "cp/en-US.ftl": {
+        "package": "uu_cp",
+        "path": "locales/en-US.ftl",
+        "sha256": "ee0783cda43a5cf447638e96ba9b63f8be711d4cc94f7bb6c55635dc17d30f45"
+      },
+      "mv/en-US.ftl": {
+        "package": "uu_mv",
+        "path": "locales/en-US.ftl",
+        "sha256": "e79223f866ced02515dc470a42b22a62048d401c5aa0f1517024e7c9a63cd51f"
+      }
+    }
+  }
+}

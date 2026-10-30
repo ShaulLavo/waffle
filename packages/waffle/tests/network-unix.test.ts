@@ -70,15 +70,18 @@ class FakeTree {
 const identity = {} as FilesystemIdentity;
 afterEach(disposeLive);
 
-function runtime(tree = new FakeTree()) {
-  const owner = createRuntimeNetwork(
+async function runtime(tree = new FakeTree()) {
+  const owner = await createRuntimeNetwork(
     () => {},
     async (_identity, directory) => tree.scope(directory),
   );
   return { tree, owner, network: owner.network };
 }
 
-function guest(network: ReturnType<typeof runtime>["network"], directory: number | null = 1) {
+function guest(
+  network: Awaited<ReturnType<typeof runtime>>["network"],
+  directory: number | null = 1,
+) {
   const ring = createRing();
   const helper = network.createHelper({
     ring,
@@ -89,7 +92,10 @@ function guest(network: ReturnType<typeof runtime>["network"], directory: number
   return new Guest(helper, ring);
 }
 
-async function connected(network: ReturnType<typeof runtime>["network"], path = "/run/s.sock") {
+async function connected(
+  network: Awaited<ReturnType<typeof runtime>>["network"],
+  path = "/run/s.sock",
+) {
   const server = guest(network);
   const client = guest(network);
   const listener = await server.call("listenPath", path);
@@ -101,7 +107,7 @@ async function connected(network: ReturnType<typeof runtime>["network"], path = 
 }
 
 test("path streams carry FIFO bytes both ways with Unix addresses", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const { server, client, listener, conn, accepted } = await connected(network);
   expect(JSON.parse(await server.call("localAddr", listener))).toEqual({
     family: "Unix",
@@ -131,7 +137,7 @@ test("path streams carry FIFO bytes both ways with Unix addresses", async () => 
 });
 
 test("1 MiB credit stops a writer with AGAIN until the reader consumes, then Writable wakes it", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const { server, client, conn, accepted } = await connected(network);
   const bytes = new Uint8Array((1 << 20) + 4096);
   for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
@@ -148,7 +154,7 @@ test("1 MiB credit stops a writer with AGAIN until the reader consumes, then Wri
 });
 
 test("half-close orders bytes before EOF and keeps the reverse direction", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const { server, client, conn, accepted } = await connected(network);
   expect(await client.call("write", conn, new Uint8Array([1, 2, 3]))).toBe(3);
   expect(await client.call("shutdown", conn)).toBe(OK);
@@ -165,7 +171,7 @@ test("half-close orders bytes before EOF and keeps the reverse direction", async
 });
 
 test("full close delivers earlier bytes then EOF, and the peer's next write fails EPIPE", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const { server, client, conn, accepted } = await connected(network);
   expect(await client.call("write", conn, new Uint8Array([7, 7]))).toBe(2);
   expect(await server.call("write", accepted, new Uint8Array([5]))).toBe(1);
@@ -176,7 +182,7 @@ test("full close delivers earlier bytes then EOF, and the peer's next write fail
 });
 
 test("listener close keeps accepted streams, ends unaccepted peers, and unlinks by default", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const { server, client, listener, conn, accepted } = await connected(network);
   const late = await client.call("connectPath", "/run/s.sock");
   expect(late).toBeGreaterThan(0);
@@ -195,7 +201,7 @@ test("listener close keeps accepted streams, ends unaccepted peers, and unlinks 
 });
 
 test("unlinkOnClose false leaves a stale name: connect refused, bind in use", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const server = guest(network);
   const listener = await server.call("listenPath", "/stale", { unlinkOnClose: false });
   expect(await server.call("close", listener)).toBe(OK);
@@ -207,7 +213,7 @@ test("unlinkOnClose false leaves a stale name: connect refused, bind in use", as
 });
 
 test("invalid paths fail before any filesystem work", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const server = guest(network);
   const cases: [string, string][] = [
     ["/a\0b", "EINVAL"],
@@ -227,7 +233,7 @@ test("invalid paths fail before any filesystem work", async () => {
 });
 
 test("a helper without a path scope gets ENOTCAPABLE; another root cannot reach a binding", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const unscoped = guest(network, null);
   expect(await unscoped.call("listenPath", "/s")).toBe(ERROR);
   expect((await unscoped.error()).code).toBe("ENOTCAPABLE");
@@ -238,7 +244,7 @@ test("a helper without a path scope gets ENOTCAPABLE; another root cannot reach 
   const foreign = guest(network, 2);
   expect(await foreign.call("connectPath", "/s")).toBe(ERROR);
   expect((await foreign.error()).code).toBe("ECONNREFUSED");
-  const second = runtime();
+  const second = await runtime();
   const otherRuntime = guest(second.network, 1);
   second.tree.nodes.set("/s", { kind: "socket", ino: 1 });
   expect(await otherRuntime.call("connectPath", "/s")).toBe(ERROR);
@@ -258,7 +264,7 @@ test("standalone hosts report ENOTSUP for path calls", () => {
 });
 
 test("a full backlog refuses; runtime pair and listener caps fail with ENOBUFS and create nothing", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const server = guest(network);
   const client = guest(network);
   const listener = await server.call("listenPath", "/backlog");
@@ -288,7 +294,7 @@ test("a full backlog refuses; runtime pair and listener caps fail with ENOBUFS a
 });
 
 test("helper disposal during bind rolls the node back by lease and never publishes a handle", async () => {
-  const { network, tree, owner } = runtime();
+  const { network, tree, owner } = await runtime();
   const gate = Promise.withResolvers<void>();
   tree.gate = gate.promise;
   const server = guest(network);
@@ -304,7 +310,7 @@ test("helper disposal during bind rolls the node back by lease and never publish
 });
 
 test("helper disposal honors unlinkOnClose and leaves other helpers' peers at EOF", async () => {
-  const { network, tree, owner } = runtime();
+  const { network, tree, owner } = await runtime();
   const { server, client, conn } = await connected(network, "/kept-by-flag");
   await server.call("listenPath", "/stays", { unlinkOnClose: false });
   server.helper.dispose();
@@ -320,7 +326,7 @@ test("helper disposal honors unlinkOnClose and leaves other helpers' peers at EO
 });
 
 test("failed unbinds stay retained across owner dispose until a retry settles them", async () => {
-  const { network, tree, owner } = runtime();
+  const { network, tree, owner } = await runtime();
   const server = guest(network);
   await server.call("listenPath", "/retry");
   tree.failUnbinds = 2;
@@ -335,7 +341,7 @@ test("failed unbinds stay retained across owner dispose until a retry settles th
 });
 
 test("acknowledged close reports an unbind failure and keeps the lease for the owner", async () => {
-  const { network, tree, owner } = runtime();
+  const { network, tree, owner } = await runtime();
   const server = guest(network);
   const listener = await server.call("listenPath", "/ack");
   tree.failUnbinds = 1;
@@ -350,7 +356,7 @@ test("acknowledged close reports an unbind failure and keeps the lease for the o
 });
 
 test("a blocked poll wakes for accept, data and EOF without periodic polling", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const server = guest(network);
   const client = guest(network);
   const listener = await server.call("listenPath", "/wake");
@@ -374,7 +380,7 @@ test("a blocked poll wakes for accept, data and EOF without periodic polling", a
 });
 
 test("literal unix-* requests and reply cells", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const server = guest(network);
   const client = guest(network);
   const listener = await server.call("listenPath", "/w.sock");
@@ -404,7 +410,7 @@ test("literal unix-* requests and reply cells", async () => {
 
 test("a scope attach that never answers does not hold owner disposal", async () => {
   const stuck = new Promise<never>(() => {});
-  const owner = createRuntimeNetwork(
+  const owner = await createRuntimeNetwork(
     () => {},
     () => stuck,
   );
@@ -427,7 +433,7 @@ async function failsWith(guest: Guest, call: Promise<number>, code: string, sysc
 }
 
 test("abstract names stream across helpers with NUL addresses and no filesystem work", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const { server, client, listener, conn, accepted } = await connected(network, ABSTRACT);
   const named = { family: "Unix", path: ABSTRACT };
   const unnamed = { family: "Unix", path: null };
@@ -453,7 +459,7 @@ test("abstract names stream across helpers with NUL addresses and no filesystem 
 });
 
 test("abstract listener close frees the name at once and keeps accepted streams", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const { server, client, listener, conn, accepted } = await connected(network, ABSTRACT);
   const late = await client.call("connectPath", ABSTRACT);
   expect(late).toBeGreaterThan(0);
@@ -473,7 +479,7 @@ test("abstract listener close frees the name at once and keeps accepted streams"
 });
 
 test("abstract names need no path scope; that helper's pathname calls stay ENOTCAPABLE", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const unscoped = guest(network, null);
   const peer = guest(network, null);
   const listener = await unscoped.call("listenPath", ABSTRACT);
@@ -487,7 +493,7 @@ test("abstract names need no path scope; that helper's pathname calls stay ENOTC
 });
 
 test("abstract identity is the exact string; only a leading NUL is abstract", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const server = guest(network);
   const client = guest(network);
   const invalid = [
@@ -529,12 +535,12 @@ test("abstract identity is the exact string; only a leading NUL is abstract", as
 });
 
 test("abstract refusals: missing name, another runtime, standalone host", async () => {
-  const { network } = runtime();
+  const { network } = await runtime();
   const server = guest(network);
   const client = guest(network);
   expect(await server.call("listenPath", ABSTRACT)).toBeGreaterThan(0);
   await failsWith(client, client.call("connectPath", "\0missing"), "ECONNREFUSED", "connect");
-  const second = runtime();
+  const second = await runtime();
   const foreign = guest(second.network);
   await failsWith(foreign, foreign.call("connectPath", ABSTRACT), "ECONNREFUSED", "connect");
   expect(await foreign.call("listenPath", ABSTRACT)).toBeGreaterThan(0);
@@ -550,7 +556,7 @@ test("abstract refusals: missing name, another runtime, standalone host", async 
 });
 
 test("abstract and pathname sockets share the listener, pair and backlog caps", async () => {
-  const { network, tree } = runtime();
+  const { network, tree } = await runtime();
   const server = guest(network);
   const client = guest(network);
   const abstract = await server.call("listenPath", "\0backlog");
@@ -578,7 +584,7 @@ test("abstract and pathname sockets share the listener, pair and backlog caps", 
 });
 
 test("helper disposal and runtime end release abstract names synchronously", async () => {
-  const { network, owner, tree } = runtime();
+  const { network, owner, tree } = await runtime();
   const { server, client, conn } = await connected(network, ABSTRACT);
   const kept = await server.call("listenPath", "\0second");
   expect(kept).toBeGreaterThan(0);

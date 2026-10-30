@@ -16,8 +16,8 @@ export {
   type RuntimeNetworkLookupResult,
 } from "./browser/net/address.js";
 
-type RuntimeNetworkOwner = ReturnType<
-  (typeof import("./browser/net/runtime.js"))["createRuntimeNetwork"]
+type RuntimeNetworkOwner = Awaited<
+  ReturnType<(typeof import("./browser/net/runtime.js"))["createRuntimeNetwork"]>
 >;
 
 import { SharedFilesystem, type SharedFilesystemOptions } from "./browser/shared-fs.js";
@@ -553,13 +553,22 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     network() {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (networkActivation) return networkActivation;
-      const pending = import("./browser/net/runtime.js").then(({ createRuntimeNetwork }) =>
-        disposed
-          ? undefined
-          : createRuntimeNetwork(assertLive, (guest, directory) =>
-              filesystem.attachSocketScope(guest, directory),
-            ),
-      );
+      const canceled = new Error("Runtime is disposed");
+      const checkNetworkOwner = () => {
+        if (disposed) throw canceled;
+      };
+      const pending = import("./browser/net/runtime.js")
+        .then(({ createRuntimeNetwork }) =>
+          disposed
+            ? undefined
+            : createRuntimeNetwork(checkNetworkOwner, (guest, directory) =>
+                filesystem.attachSocketScope(guest, directory),
+              ),
+        )
+        .catch((error: unknown) => {
+          if (error !== canceled) throw error;
+          return undefined;
+        });
       ownedNetwork = pending;
       networkActivation = pending.then((owner) => {
         assertLive();
