@@ -769,3 +769,57 @@ test("gh restores the exact network asset and does not set up native compilers",
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });
+
+test("procps pure selects its exact inputs and skips native filters for package-only changes", () => {
+  const job = record(jobs["procps-pure"]);
+  expect(record(changes.outputs)["procps-pure"]).toBe("${{ steps.paths.outputs.procps-pure }}");
+  expect(job.needs).toBe("changes");
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps-pure == 'true') }}",
+  );
+  expect(filters["procps-pure"]).toEqual([
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "packages/waffle/**",
+    "packages/procps/**",
+  ]);
+  for (const path of ["packages/procps/src/index.ts", "packages/procps/tests/oracle.test.ts"])
+    for (const name of [
+      "programs",
+      "coreutils",
+      "findutils",
+      "network",
+      "browser",
+      "libc",
+      "jq",
+      "diffutils",
+    ])
+      expect(selected(name, path), `${name}: ${path}`).toBe(false);
+  expect(selected("procps-pure", "packages/procps/src/index.ts")).toBe(true);
+  expect(selected("procps-pure", "packages/gh/src/index.ts")).toBe(false);
+});
+
+test("procps pure runs the real leaf without a producer or native setup", () => {
+  const steps = stepsFor("procps-pure");
+  const runs = steps.map((step) => String(step.run ?? ""));
+  expect(runs).toContain("bun install --frozen-lockfile --ignore-scripts");
+  expect(runs).toContain(
+    'ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types',
+  );
+  expect(runs).toContain(
+    'echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"',
+  );
+  expect(runs).toContain("bun run programs:procps:pure");
+  expect(
+    steps.some((step) =>
+      /cargo|rust-toolchain|wasi-sdk|wasmtime|build:network|prepare/i.test(
+        String(step.uses ?? "") + " " + String(step.run ?? ""),
+      ),
+    ),
+  ).toBe(false);
+  const root = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+  expect(root.scripts["programs:procps:pure"]).toBe(
+    "bun run --cwd packages/procps test && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
+  );
+});
