@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { jqCases, type JqCase } from "./jq-cases.ts";
+import { runEvaluator } from "./evaluator-command.ts";
 
 export interface JqObservation {
   readonly exit: number;
@@ -16,22 +16,28 @@ export interface JqOracle {
   readonly cases: Readonly<Record<string, JqObservation>>;
 }
 
-export function executeNative(executable: string, fixture: JqCase): JqObservation {
-  const result = spawnSync(executable, fixture.args, {
-    input: fixture.stdin ?? "",
-    env: { ...process.env, NO_COLOR: "1", ...fixture.env },
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
+export function executeNative(
+  executable: string,
+  fixture: JqCase,
+  timeoutMs = 15_000,
+): JqObservation {
+  const result = runEvaluator(
+    {
+      name: fixture.name,
+      executable,
+      args: fixture.args,
+      input: fixture.stdin ?? "",
+      env: { ...process.env, NO_COLOR: "1", ...fixture.env },
+    },
+    timeoutMs,
+  );
   assert.equal(result.signal, null, fixture.name);
   assert.ok(typeof result.status === "number", fixture.name);
   return { exit: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
 export function nativeVersion(executable: string): string {
-  const result = spawnSync(executable, ["--version"], { encoding: "utf8" });
-  if (result.error) throw result.error;
+  const result = runEvaluator({ name: "native version probe", executable, args: ["--version"] });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
 }

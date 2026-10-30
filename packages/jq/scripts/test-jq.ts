@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { jqCases, type JqCase } from "../tests/jq-cases.ts";
+import { runEvaluator } from "../tests/evaluator-command.ts";
 import { executeNative, readOracle, type JqObservation } from "../tests/record-jq-oracle.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -22,12 +22,12 @@ function executeWasm(fixture: JqCase): JqObservation {
   ]);
   const guest = resolve(root, "dist/jq.wasm");
   assert.ok(existsSync(guest), "Build dist/jq.wasm first");
-  const result = spawnSync(wasmtime, ["run", ...env, guest, ...fixture.args], {
+  const result = runEvaluator({
+    name: fixture.name,
+    executable: wasmtime,
+    args: ["run"].concat(env, [guest], fixture.args),
     input: fixture.stdin ?? "",
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
   });
-  if (result.error) throw result.error;
   assert.equal(result.signal, null, fixture.name);
   assert.ok(typeof result.status === "number", fixture.name);
   return { exit: result.status, stdout: result.stdout, stderr: result.stderr };

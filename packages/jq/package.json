@@ -26,7 +26,7 @@
     "test": "node scripts/test-jq.ts",
     "test:wasi": "bun test tests/jq-wasi.test.ts",
     "test:oracle": "node scripts/test-jq.ts --native jq",
-    "test:source": "node --test scripts/jaq-source.test.ts",
+    "test:source": "node --test scripts/jaq-source.test.ts tests/command-deadline.test.ts",
     "typecheck": "tsc -p .",
     "pack": "node ../../tools/program-package.ts pack",
     "prepack": "node ../../tools/program-package.ts check",
