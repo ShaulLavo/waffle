@@ -831,7 +831,7 @@ for (const [label, field, replacement] of [
 function throwingCut(stat: VersionStat, reason: unknown): VersionStat {
   return {
     ...stat,
-    get cut() {
+    get cut(): VersionStat["cut"] {
       throw reason;
     },
   };
