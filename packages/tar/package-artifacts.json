@@ -1,0 +1,8 @@
+{
+  "files": [
+    "dist/tar.wasm",
+    "dist/tar.wasm.br",
+    "dist/tar.sizes.json",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
+}
