@@ -664,6 +664,7 @@ test("diffutils provisions one exact native GNU oracle", () => {
   expect(record(recipe?.env).NATIVE_ORACLE_COMPILER_IDENTITY).toBe(
     "${{ steps.native-compiler.outputs.identity }}",
   );
+  if (!compiler || !cache || !recipe || !build) throw new Error("missing native oracle steps");
   expect(steps.indexOf(compiler)).toBeLessThan(steps.indexOf(cache));
   expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(recipe));
   expect(steps.indexOf(recipe)).toBeLessThan(steps.indexOf(build));
