@@ -1,4 +1,5 @@
 import { ProcessError, ProcessErrno } from "./errors.js";
+import { atomicsWait, Int32ArrayConstructor, SharedArrayBufferConstructor } from "./intrinsics.ts";
 
 let controlDepth = 0;
 let policyDepth = 0;
@@ -48,7 +49,7 @@ function captureWaitPlacement(): "page" | "worker" {
   const scope = host.WorkerGlobalScope;
   if (typeof scope !== "function" || !(globalThis instanceof scope)) return "page";
   try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 1, 0);
+    atomicsWait(new Int32ArrayConstructor(new SharedArrayBufferConstructor(4)), 0, 1, 0);
     return "worker";
   } catch {
     return "page";
