@@ -46,6 +46,17 @@ test(
     const receipt: unknown = JSON.parse(read("dist/tar.sizes.json"));
     assert.ok(receipt && typeof receipt === "object" && "strippedSha256" in receipt);
     assert.equal(sha256(bytes), receipt.strippedSha256);
+    assert.ok(
+      "rawSha256" in receipt && "patchSha256" in receipt && "producerLockSha256" in receipt,
+    );
+    assert.equal(receipt.patchSha256, lock.patch.sha256);
+    assert.equal(receipt.producerLockSha256, sha256(read("producer/Cargo.lock")));
+    const derivation: unknown = JSON.parse(read("dist/tar-program.json"));
+    assert.ok(derivation && typeof derivation === "object" && "input" in derivation);
+    assert.ok(
+      derivation.input && typeof derivation.input === "object" && "sha256" in derivation.input,
+    );
+    assert.equal(derivation.input.sha256, receipt.rawSha256);
     assert.deepEqual(
       brotliDecompressSync(readFileSync(resolve(packageRoot, "dist/tar.wasm.br"))),
       bytes,

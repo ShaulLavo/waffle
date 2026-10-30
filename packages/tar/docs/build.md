@@ -34,12 +34,10 @@ worker, owned VFS, actual on-demand registration and alias identity, file and pi
 I/O, negative metadata controls, package-archive listing, and removal/disposal.
 These negative controls do not claim that extraction succeeded.
 
-The source-side guest verifier runs before stripping. `stageProgram` on accepted
-main strips name sections only. Waffle PR 231 owns size optimization and the
-producer/finalizer/compressed-serving contract. No unprovided prerequisite head
-or copied finalizer is used here. Brotli in this candidate is a measured package
-artifact, not proof that the runtime downloads the compressed representation.
-The current public catalog downloads the stripped `.wasm` lazily.
+The source-side guest verifier runs before the pinned optimizer and name stripping.
+`dist/tar-program.json` records the transformation from the raw guest to the
+published bytes. Brotli is a measured package artifact; the current public
+catalog downloads the final `.wasm` lazily.
 
 `dist/tar.sizes.json` records raw, stripped and Brotli bytes plus source, producer
 lock and output hashes. Notices include upstream tar and the actual WASI

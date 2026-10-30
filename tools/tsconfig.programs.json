@@ -35,6 +35,9 @@
     "../packages/diffutils/tests",
     "../packages/jq/src",
     "../packages/jq/scripts",
-    "../packages/jq/tests"
+    "../packages/jq/tests",
+    "../packages/tar/src",
+    "../packages/tar/scripts",
+    "../packages/tar/tests"
   ]
 }

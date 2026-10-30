@@ -102,9 +102,11 @@ function makeFixtures(directory: string): FixtureSet {
   );
   assert.equal(produced.status, 0, text(produced.stderr));
   const archive = readFileSync(archivePath);
+  assert.equal(sha256(archive), "918988ada7dc61ddcda879f47af68b04e420539464e2863946ef38b6e524b9df");
   const compressed = command("/usr/bin/gzip", ["-n", "-c", archivePath], directory);
   assert.equal(compressed.status, 0, text(compressed.stderr));
   const gzip = compressed.stdout;
+  assert.equal(sha256(gzip), "5e227e3ec9bad7e895da81242c87ab26d8ad73f4c1b29bfb43fd64154aa42e94");
   writeFileSync(resolve(directory, "fixture.tar.gz"), gzip);
   const corruptGzip = Uint8Array.from(gzip);
   const crcIndex = corruptGzip.length - 8;

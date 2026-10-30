@@ -177,7 +177,9 @@ export function stageTar(guest: string) {
     strippedBytes: stripped.length,
     strippedSha256: sha256(stripped),
     brotliBytes: compressed.length,
-    finalization: "name stripping only; optimizer/finalizer prerequisite is Waffle PR 231",
+    producerManifestSha256: sha256(readFileSync(resolve(packageRoot, "producer/Cargo.toml"))),
+    patchSha256: lock.patch.sha256,
+    finalization: "pinned optimizer followed by name stripping; see tar-program.json",
   };
   writeFileSync(resolve(directory, "tar.sizes.json"), JSON.stringify(receipt, null, 2) + "\n");
   writeFileSync(resolve(directory, "THIRD_PARTY_NOTICES.txt"), dependencyNotices());
