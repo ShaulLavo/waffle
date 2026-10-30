@@ -1,0 +1,43 @@
+{
+  "name": "waffle-jq",
+  "version": "0.0.0",
+  "private": true,
+  "description": "jq-compatible WASI queries for Waffle runtimes.",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "licenses",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "LICENSE.jaq",
+    "sources.lock.json",
+    "tsconfig.json",
+    "package-artifacts.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build-jaq.ts",
+    "test": "node scripts/test-jq.ts",
+    "test:wasi": "bun test tests/jq-wasi.test.ts",
+    "test:oracle": "node scripts/test-jq.ts --native jq",
+    "test:source": "node --test scripts/jaq-source.test.ts",
+    "typecheck": "tsc -p .",
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check",
+    "prepare:package": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  }
+}
