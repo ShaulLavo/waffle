@@ -126,8 +126,11 @@ function importGlobal(
     invalid(reader.member, `${core ? "core" : "side"} bases must be immutable i32`);
   if (namespace.startsWith("GOT.") && mutable !== 1)
     invalid(reader.member, `${namespace} requires mutable i32 address globals`);
-  if (relocatable && !core && !["env", "GOT.mem", "GOT.func"].includes(namespace))
-    invalid(reader.member, "side globals must import env, GOT.mem or GOT.func");
+  if (!["env", "GOT.mem", "GOT.func"].includes(namespace))
+    invalid(
+      reader.member,
+      `${core ? "core" : "side"} globals must import env, GOT.mem or GOT.func`,
+    );
   return { module: namespace, name, index, value: 0x7f, mutable: mutable === 1 };
 }
 
@@ -161,13 +164,16 @@ function imports(
       if (reader.byte() !== 0x70) invalid(reader.member, "only funcref tables are supported");
       limits(reader);
       tables++;
-      if (relocatable && !core && (namespace !== "env" || name !== "__indirect_function_table"))
-        invalid(reader.member, "side table must import env.__indirect_function_table");
+      if (relocatable && (namespace !== "env" || name !== "__indirect_function_table"))
+        invalid(
+          reader.member,
+          `${core ? "core" : "side"} table must import env.__indirect_function_table`,
+        );
     } else if (kind === 2) {
       limits(reader, relocatable);
       memories++;
-      if (relocatable && !core && (namespace !== "env" || name !== "memory"))
-        invalid(reader.member, "side memory must import env.memory");
+      if (relocatable && (namespace !== "env" || name !== "memory"))
+        invalid(reader.member, `${core ? "core" : "side"} memory must import env.memory`);
     } else if (kind === 3) {
       globals.push(importGlobal(reader, relocatable, core, namespace, name, globals.length));
     } else invalid(reader.member, "tags and unknown import kinds are unsupported");
@@ -176,8 +182,8 @@ function imports(
     invalid(reader.member, "core must define its own memory and table");
   if (memories > 1 || tables > 1)
     invalid(reader.member, "multiple memories/tables are unsupported");
-  if (relocatable && !core && (memories !== 1 || tables !== 1))
-    invalid(reader.member, "side requires one imported memory and table");
+  if (relocatable && (memories !== 1 || tables !== 1))
+    invalid(reader.member, `${core ? "core" : "side"} requires one imported memory and table`);
   reader.done();
   return { globals, functions };
 }
@@ -217,14 +223,10 @@ function bindImports(
         `import-info ${record.module}.${record.name} must name an imported env function`,
       );
   }
-  if (core) {
-    for (const entry of globals) {
-      if (entry.module !== "GOT.mem") continue;
-      if (
-        !records.some((record) => record.module === "env" && record.name === entry.name)
-      )
-        invalid(member, `core GOT.mem.${entry.name} requires weak import-info`);
-    }
+  for (const entry of globals) {
+    if (!core || entry.module !== "GOT.mem") continue;
+    if (!records.some((record) => record.module === "env" && record.name === entry.name))
+      invalid(member, `core GOT.mem.${entry.name} requires weak import-info`);
   }
   return functions.map((entry) => ({
     ...entry,

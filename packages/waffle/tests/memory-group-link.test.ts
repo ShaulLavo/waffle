@@ -3,6 +3,8 @@ import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
 import { instantiateLinkPlan, prepareLinkPlan } from "../link/index.js";
 import { inspectProfile } from "../link/metadata.js";
+import { PAGE_BYTES } from "../group/protocol.js";
+import { MemoryGroups, type MemberLease } from "../group/state.js";
 
 const leb = (n: number): number[] =>
   n < 128 ? [n] : [(n % 128) + 128].concat(leb(Math.floor(n / 128)));
@@ -24,8 +26,18 @@ const sleb = (n: number): number[] => {
 };
 const body = (ops: number[]) => leb(ops.length + 2).concat([0], ops, [0x0b]);
 
+interface CoreResourceImports {
+  readonly memory?: number[] | null;
+  readonly table?: number[] | null;
+  readonly globals?: readonly number[][];
+}
+
 /** A PIE core: imports shared memory, table, bases and stack; exports a const data address. */
-function pieCore(stackBounds = false, foreignStackName = false): Uint8Array<ArrayBuffer> {
+function pieCore(
+  stackBounds = false,
+  foreignStackName = false,
+  resources: CoreResourceImports = {},
+): Uint8Array<ArrayBuffer> {
   const stackNames = foreignStackName ? ["foreign"] : ["__stack_high", "__stack_low"];
   const importInfo = stackBounds
     ? leb(stackNames.length).concat(
@@ -39,7 +51,7 @@ function pieCore(stackBounds = false, foreignStackName = false): Uint8Array<Arra
   const stackImports = stackBounds
     ? stackNames.map((field) => globalImp("GOT.mem", field, true))
     : [];
-  const dataGlobal = 3 + stackImports.length;
+  const dataGlobal = 3 + stackImports.length + (resources.globals?.length ?? 0);
   return new Uint8Array(
     [0, 97, 115, 109, 1, 0, 0, 0].concat(
       section(0, dylink),
@@ -52,15 +64,23 @@ function pieCore(stackBounds = false, foreignStackName = false): Uint8Array<Arra
       ),
       section(
         2,
-        vec([
-          imp("check", [0, 0]),
-          imp("memory", [2, 3, 1].concat(leb(65536))),
-          imp("__indirect_function_table", [1, 0x70, 0, 1]),
-          imp("__stack_pointer", [3, 0x7f, 1]),
-          imp("__memory_base", [3, 0x7f, 0]),
-          imp("__table_base", [3, 0x7f, 0]),
-          ...stackImports,
-        ]),
+        vec(
+          [imp("check", [0, 0])].concat(
+            resources.memory === null
+              ? []
+              : [resources.memory ?? imp("memory", [2, 3, 1].concat(leb(65536)))],
+            resources.table === null
+              ? []
+              : [resources.table ?? imp("__indirect_function_table", [1, 0x70, 0, 1])],
+            [
+              imp("__stack_pointer", [3, 0x7f, 1]),
+              imp("__memory_base", [3, 0x7f, 0]),
+              imp("__table_base", [3, 0x7f, 0]),
+            ],
+            stackImports,
+            resources.globals ?? [],
+          ),
+        ),
       ),
       section(3, vec([[1], [0]])),
       section(6, vec([[0x7f, 0, 0x41, 16, 0x0b]])),
@@ -232,4 +252,127 @@ test("a PIE core admits only weak carved stack-bound GOT.mem imports", async () 
       reserve: "bun_core_alloc",
     }),
   ).rejects.toThrow("core GOT.mem.foreign is unsupported");
+});
+
+for (const [label, resources] of [
+  ["foreign global namespace", { globals: [globalImp("foreign", "unexpected", false)] }],
+  [
+    "foreign memory namespace",
+    { memory: name("foreign").concat(name("memory"), [2, 3, 1], leb(65536)) },
+  ],
+  [
+    "foreign table namespace",
+    { table: name("foreign").concat(name("__indirect_function_table"), [1, 0x70, 0, 1]) },
+  ],
+  ["wrong memory name", { memory: imp("other_memory", [2, 3, 1].concat(leb(65536))) }],
+  ["wrong table name", { table: imp("other_table", [1, 0x70, 0, 1]) }],
+  ["missing memory", { memory: null }],
+  ["missing table", { table: null }],
+] satisfies readonly [string, CoreResourceImports][]) {
+  test(`PIE core closed shape rejects ${label}`, async () => {
+    const source = pieCore(true, false, resources);
+    expect(WebAssembly.validate(source)).toBe(true);
+    await expect(
+      prepareLinkPlan({
+        core: {
+          id: "core",
+          source,
+          cooperative: true,
+          checkpoint: { module: "env", name: "check" },
+          initialize: [],
+        },
+        libraries: [],
+        reserve: "bun_core_alloc",
+      }),
+    ).rejects.toThrow();
+  });
+}
+
+function memberReply(worker: Worker): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }: MessageEvent<unknown>) => resolve(data);
+    worker.onerror = reject;
+  });
+}
+
+function stackObservation(input: unknown) {
+  if (!input || typeof input !== "object") throw new Error("missing stack observation");
+  if (!("low" in input) || typeof input.low !== "number") throw new Error("missing low");
+  if (!("high" in input) || typeof input.high !== "number") throw new Error("missing high");
+  if (!("pointer" in input) || typeof input.pointer !== "number")
+    throw new Error("missing pointer");
+  if (!("mark" in input) || typeof input.mark !== "number") throw new Error("missing mark");
+  return { low: input.low, high: input.high, pointer: input.pointer, mark: input.mark };
+}
+
+function stackMember(
+  groups: MemoryGroups,
+  pid: number,
+  join: Parameters<MemoryGroups["admit"]>[2],
+) {
+  const lease = groups.admit(pid, "stack-binding-control", join);
+  const worker = new Worker(new URL("./memory-group-stack-worker.ts", import.meta.url).href);
+  return { lease, worker };
+}
+
+async function stopStackMember(member: { lease: MemberLease; worker: Worker }) {
+  try {
+    member.worker.postMessage({ kind: "close" });
+  } finally {
+    await member.worker.terminate();
+    member.lease.stopped();
+  }
+}
+
+test("real members bind nonoverlapping stack bounds and the matching stack pointer", async () => {
+  const prepared = await prepareLinkPlan({
+    core: {
+      id: "core",
+      source: pieCore(true),
+      cooperative: true,
+      checkpoint: { module: "env", name: "check" },
+      initialize: [],
+    },
+    libraries: [],
+    reserve: "bun_core_alloc",
+  });
+  const groups = new MemoryGroups({
+    stackBytes: PAGE_BYTES + 16,
+    maximumPages: 32,
+    budgetBytes: 32 * PAGE_BYTES,
+  });
+  const first = stackMember(groups, 101, "new");
+  const second = stackMember(groups, 102, first.lease.group);
+  const launch = async (member: typeof first, mark: number) => {
+    const response = memberReply(member.worker);
+    const started = member.lease.launch();
+    member.worker.postMessage(
+      {
+        kind: "launch",
+        request: started.request,
+        source: prepared.toSource(),
+        mark,
+      },
+      started.transfer,
+    );
+    return stackObservation(await response);
+  };
+  try {
+    const a = await launch(first, 111);
+    const b = await launch(second, 222);
+    expect(a.high - a.low).toBe(2 * PAGE_BYTES);
+    expect(b.high - b.low).toBe(2 * PAGE_BYTES);
+    expect(a.pointer).toBe(a.high);
+    expect(b.pointer).toBe(b.high);
+    expect(a.high <= b.low || b.high <= a.low).toBe(true);
+    expect(a.mark).toBe(111);
+    expect(b.mark).toBe(222);
+    const reread = memberReply(first.worker);
+    first.worker.postMessage({ kind: "read" });
+    expect(stackObservation(await reread)).toEqual(a);
+  } finally {
+    await Promise.all([stopStackMember(first), stopStackMember(second)]);
+    expect(groups.snapshot()).toEqual([]);
+    expect(groups.budget.committed).toBe(0);
+  }
 });
