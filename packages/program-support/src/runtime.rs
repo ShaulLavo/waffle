@@ -1,7 +1,7 @@
 //! Minimal guest reactor over runtime_proc descriptors and a preview1 root.
 //! Shell process groups, spawning, job reaping and input pumps stay in Bash.
 use crate::io::{
-    DescriptorKind, Endpoint, FdTable, FileSystem, HostEndpoint, IoError, OpenOptions,
+    DescriptorKind, Endpoint, FdTable, FileMetadata, FileSystem, HostEndpoint, IoError, OpenOptions,
 };
 use futures::{FutureExt, future::LocalBoxFuture};
 use std::{
@@ -22,8 +22,8 @@ const AGAIN: i32 = 6;
 #[cfg(all(target_os = "wasi", feature = "cooperative-wasi"))]
 const SIGNAL_DISPOSITION_HANDLE: i32 = 2;
 
-#[cfg(all(target_os = "wasi", feature = "cooperative-wasi"))]
-fn decode_descriptor_kind(kind: u32) -> DescriptorKind {
+/// Decode runtime_proc's append-only descriptor categories, not Preview1 types.
+pub fn decode_descriptor_kind(kind: u32) -> DescriptorKind {
     match kind {
         1 => DescriptorKind::Pipe,
         2 => DescriptorKind::Terminal,
@@ -31,6 +31,53 @@ fn decode_descriptor_kind(kind: u32) -> DescriptorKind {
         4 => DescriptorKind::Directory,
         _ => DescriptorKind::Other,
     }
+}
+
+/// Decode preview1's fixed 64-byte filestat record without relying on Rust
+/// layout/alignment. Preview1 exposes no Unix mode, owner or effective access
+/// information, so those capabilities remain absent rather than guessed.
+pub fn decode_filestat(bytes: &[u8; 64]) -> FileMetadata {
+    use crate::io::FileKind;
+    let u64_at = |offset| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+    FileMetadata {
+        kind: match bytes[16] {
+            1 => FileKind::BlockDevice,
+            2 => FileKind::CharacterDevice,
+            3 => FileKind::Directory,
+            4 => FileKind::Regular,
+            5 | 6 => FileKind::Socket,
+            7 => FileKind::Symlink,
+            _ => FileKind::Unknown,
+        },
+        size: u64_at(32),
+        mode: None,
+        device: Some(u64_at(0)),
+        inode: Some(u64_at(8)),
+        uid: None,
+        gid: None,
+        accessed_ns: Some(u64_at(40)),
+        modified_ns: Some(u64_at(48)),
+        readable: None,
+        writable: None,
+        executable: None,
+        owned_by_effective_uid: None,
+        owned_by_effective_gid: None,
+    }
+}
+
+/// The runtime_fs record is four little-endian u32s, independent of filestat.
+pub fn decode_permissions(metadata: &mut FileMetadata, bytes: &[u8; 16]) {
+    let word = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    metadata.mode = Some(crate::io::FileMode {
+        bits: word(0),
+        supported: word(4),
+    });
+    let access = word(8);
+    let supported = word(12);
+    let allowed = |bit| (supported & bit != 0).then_some(access & bit != 0);
+    metadata.readable = allowed(4);
+    metadata.writable = allowed(2);
+    metadata.executable = allowed(1);
 }
 
 #[cfg(all(target_os = "wasi", feature = "cooperative-wasi"))]
@@ -83,6 +130,15 @@ pub trait Abi {
     fn dup(&self, fd: u32) -> Result<u32, i32>;
     fn close(&self, fd: u32);
     fn mkdir(&self, path: &str, allow_existing: bool) -> Result<(), i32>;
+    /// Metadata only: must not allocate descriptors or open the named node.
+    fn stat(&self, path: &str, follow_symlinks: bool) -> Result<FileMetadata, i32>;
+    /// Incremental directory operations; descriptor ownership stays with Runtime.
+    fn open_dir(&self, _path: &str) -> Result<u32, i32> {
+        Err(58)
+    }
+    fn read_dir(&self, _fd: u32, _cookie: u64, _output: &mut [u8]) -> Result<usize, i32> {
+        Err(58)
+    }
     fn open(&self, path: &str, options: &OpenOptions) -> Result<u32, i32>;
     fn read(&self, fd: u32, output: &mut [u8]) -> Result<usize, i32>;
     fn write(&self, fd: u32, input: &[u8]) -> Result<usize, i32>;
@@ -148,12 +204,34 @@ impl Runtime {
         Ok(fds)
     }
 
+    /// Register a readiness wait on its first poll, not at construction.
+    /// The embedding owns kind/id meanings and notifies after publishing state.
     pub fn ready(&self, kind: u32, id: u32) -> Ready {
         Ready {
             runtime: self.clone(),
             kind,
             id,
             token: None,
+        }
+    }
+
+    /// Number of registered readiness waits, without retaining their owners.
+    pub fn waiter_count(&self) -> usize {
+        self.0.waiters.borrow().len()
+    }
+
+    /// Complete matching waits after the embedding updates its own state.
+    /// Wakers run only after the waiter registry borrow has been released.
+    pub fn notify(&self, kind: u32, id: u32) {
+        let wakers: Vec<_> = self
+            .0
+            .waiters
+            .borrow_mut()
+            .extract_if(.., |_, waiter| waiter.kind == kind && waiter.id == id)
+            .map(|(_, waiter)| waiter.waker)
+            .collect();
+        for waker in wakers {
+            waker.wake();
         }
     }
 
@@ -199,6 +277,7 @@ impl Runtime {
     }
 }
 
+/// One reactor registration, removed on completion, notification or drop.
 pub struct Ready {
     runtime: Runtime,
     kind: u32,
@@ -290,7 +369,176 @@ impl HostEndpoint for RuntimeEndpoint {
     }
 }
 
+const DIRECTORY_PAGE_BYTES: usize = crate::io::MAX_PATH_BYTES + 24;
+
+struct DirectoryPage {
+    bytes: Vec<u8>,
+    used: usize,
+    offset: usize,
+    cookie: u64,
+}
+
+impl DirectoryPage {
+    fn new() -> Result<Self, IoError> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(DIRECTORY_PAGE_BYTES)
+            .map_err(|_| IoError::LimitExceeded)?;
+        bytes.resize(DIRECTORY_PAGE_BYTES, 0);
+        Ok(Self {
+            bytes,
+            used: 0,
+            offset: 0,
+            cookie: 0,
+        })
+    }
+}
+
+enum DirectoryParse {
+    Entry(crate::io::DirectoryEntry),
+    Tail,
+}
+
+struct RuntimeDirectory {
+    runtime: Runtime,
+    fd: u32,
+    page: RefCell<DirectoryPage>,
+}
+
+impl RuntimeDirectory {
+    fn refill(&self, cookie: u64, page: &mut DirectoryPage) -> Result<(), IoError> {
+        let used = self
+            .runtime
+            .0
+            .abi
+            .read_dir(self.fd, cookie, &mut page.bytes)
+            .map_err(io_error)?;
+        if used > page.bytes.len() {
+            return Err(IoError::LimitExceeded);
+        }
+        page.used = used;
+        page.offset = 0;
+        page.cookie = cookie;
+        Ok(())
+    }
+
+    fn read(
+        &self,
+        cookie: u64,
+        output: &mut [u8],
+    ) -> Result<Option<crate::io::DirectoryEntry>, IoError> {
+        let mut page = self.page.borrow_mut();
+        loop {
+            if page.cookie != cookie || page.offset == page.used {
+                self.refill(cookie, &mut page)?;
+            }
+            if page.used == 0 {
+                return Ok(None);
+            }
+            let parsed = parse_directory_entry(&mut page, cookie, output)?;
+            if let DirectoryParse::Entry(entry) = parsed {
+                return Ok(Some(entry));
+            }
+            page.offset = page.used;
+        }
+    }
+}
+
+fn parse_directory_entry(
+    page: &mut DirectoryPage,
+    cookie: u64,
+    output: &mut [u8],
+) -> Result<DirectoryParse, IoError> {
+    let remaining = page.used - page.offset;
+    if remaining < 24 {
+        if page.offset == 0 {
+            return Err(IoError::LimitExceeded);
+        }
+        return Ok(DirectoryParse::Tail);
+    }
+    let header = page.offset;
+    let next_cookie = u64::from_le_bytes(page.bytes[header..header + 8].try_into().unwrap());
+    let length =
+        u32::from_le_bytes(page.bytes[header + 16..header + 20].try_into().unwrap()) as usize;
+    let end = (header + 24)
+        .checked_add(length)
+        .ok_or(IoError::LimitExceeded)?;
+    if end > page.used {
+        if page.offset == 0 {
+            return Err(IoError::LimitExceeded);
+        }
+        return Ok(DirectoryParse::Tail);
+    }
+    if next_cookie == cookie || length > output.len() {
+        return Err(IoError::LimitExceeded);
+    }
+    output[..length].copy_from_slice(&page.bytes[header + 24..end]);
+    page.offset = end;
+    page.cookie = next_cookie;
+    Ok(DirectoryParse::Entry(crate::io::DirectoryEntry {
+        next_cookie,
+        name: 0..length,
+    }))
+}
+
+impl Drop for RuntimeDirectory {
+    fn drop(&mut self) {
+        self.runtime.0.abi.close(self.fd);
+    }
+}
+impl crate::io::Directory for RuntimeDirectory {
+    fn read_entry<'a>(
+        &'a self,
+        cookie: u64,
+        output: &'a mut [u8],
+    ) -> LocalBoxFuture<'a, Result<Option<crate::io::DirectoryEntry>, IoError>> {
+        async move {
+            crate::executor::yield_now().await;
+            self.read(cookie, output)
+        }
+        .boxed_local()
+    }
+}
 impl FileSystem for Runtime {
+    fn open_dir<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> LocalBoxFuture<'a, Result<Rc<dyn crate::io::Directory>, IoError>> {
+        async move {
+            if !path.starts_with('/')
+                || path.len() > crate::io::MAX_PATH_BYTES
+                || path.contains('\0')
+            {
+                return Err(IoError::InvalidPath);
+            }
+            crate::executor::yield_now().await;
+            let page = DirectoryPage::new()?;
+            let fd = self.0.abi.open_dir(path).map_err(io_error)?;
+            Ok(Rc::new(RuntimeDirectory {
+                runtime: self.clone(),
+                fd,
+                page: RefCell::new(page),
+            }) as Rc<dyn crate::io::Directory>)
+        }
+        .boxed_local()
+    }
+    fn stat<'a>(
+        &'a self,
+        path: &'a str,
+        follow_symlinks: bool,
+    ) -> LocalBoxFuture<'a, Result<FileMetadata, IoError>> {
+        async move {
+            if !path.starts_with('/')
+                || path.len() > crate::io::MAX_PATH_BYTES
+                || path.contains('\0')
+            {
+                return Err(IoError::InvalidPath);
+            }
+            crate::executor::yield_now().await;
+            self.0.abi.stat(path, follow_symlinks).map_err(io_error)
+        }
+        .boxed_local()
+    }
     fn mkdir<'a>(
         &'a self,
         path: &'a str,
@@ -336,6 +584,7 @@ impl FileSystem for Runtime {
     }
 }
 
+/// Translate a positive WASI errno without applying command exit policy.
 pub fn io_error(errno: i32) -> IoError {
     match errno {
         8 | 76 => IoError::BadDescriptor,
@@ -346,5 +595,42 @@ pub fn io_error(errno: i32) -> IoError {
         28 | 37 => IoError::InvalidPath,
         33 | 48 | 51 => IoError::LimitExceeded,
         _ => IoError::Runtime(errno),
+    }
+}
+
+/// The root occupies a free slot after at most one slot per launch binding.
+#[cfg(any(test, all(target_os = "wasi", feature = "cooperative-wasi")))]
+fn find_root_preopen(
+    inherited_count: usize,
+    mut is_root: impl FnMut(u32) -> bool,
+) -> Result<u32, i32> {
+    let count = u32::try_from(inherited_count).map_err(|_| 28)?;
+    let last = 3u32.checked_add(count).ok_or(28)?;
+    (3..=last).find(|&fd| is_root(fd)).ok_or(44)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_root_preopen;
+
+    #[test]
+    fn inherited_root_scan_is_bounded_by_binding_count_not_sparse_fd() {
+        let inherited = [0, 3, 1_000_000];
+        let mut scanned = Vec::new();
+        assert_eq!(
+            find_root_preopen(inherited.len(), |fd| {
+                scanned.push(fd);
+                fd == 6
+            }),
+            Ok(6)
+        );
+        assert_eq!(scanned, [3, 4, 5, 6]);
+        assert_eq!(find_root_preopen(0, |fd| fd == 3), Ok(3));
+        assert_eq!(find_root_preopen(300, |fd| fd == 303), Ok(303));
+        assert_eq!(find_root_preopen(1, |_| false), Err(44));
+        assert_eq!(
+            find_root_preopen(usize::MAX, |_| panic!("must not scan overflow")),
+            Err(28)
+        );
     }
 }
