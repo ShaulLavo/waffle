@@ -218,3 +218,38 @@ test("rotation interval and not-yet-valid certificates fail before publication",
   expect((await operator.owner.failure).manualActionRequired).toBe(true);
   await operator.owner.close();
 });
+
+test("a failure retains its original terminal deadline after serialization releases", async () => {
+  const run = fixture({ holdReady: 2, holdClosed: 2 });
+  await run.owner.ready;
+  run.tick();
+  await until(() => run.endpoints.length === 2);
+  run.mono(13000);
+  run.endpoints[1]!.ready.reject(new Error("late candidate failure"));
+  await run.owner.failure;
+  expect(run.owner.status().ownedEndpoints).toBe(1);
+  const started = performance.now();
+  const closing = run.owner.close();
+  await expect(closing).rejects.toThrow("deadline");
+  expect(performance.now() - started).toBeLessThan(100);
+  expect(run.owner.close()).toBe(closing);
+  run.endpoints[1]!.closed.resolve();
+  await until(() => run.owner.status().ownedEndpoints === 0);
+});
+
+test("a wall-clock jump during candidate readiness cannot publish an invalid hash", async () => {
+  const run = fixture({ holdReady: 2 });
+  try {
+    await run.owner.ready;
+    run.tick();
+    await until(() => run.endpoints.length === 2);
+    run.jump(1);
+    run.endpoints[1]!.ready.resolve();
+    await run.owner.failure;
+    expect(run.owner.discovery()).toBeNull();
+    expect(run.owner.status().generation).toBe(1);
+    expect(run.endpoints.map((entry) => entry.stops)).toEqual([1, 1]);
+  } finally {
+    await run.owner.close();
+  }
+});
