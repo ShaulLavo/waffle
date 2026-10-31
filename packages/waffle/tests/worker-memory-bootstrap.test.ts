@@ -20,6 +20,7 @@ function run(module: WebAssembly.Module, executor: WorkerExecutor, observe = tru
   const errors: string[] = [];
   const pending = bootstrap(
     {
+      controlGrant: { kind: "unbounded" },
       module,
       args: [],
       env: {},

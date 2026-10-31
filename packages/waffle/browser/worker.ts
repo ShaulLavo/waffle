@@ -86,7 +86,7 @@ import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import type { GroupMember } from "../group/member.js";
 
 export interface RuntimeWorkerRequest {
-  readonly controlGrant?: SharedControlGrant;
+  readonly controlGrant: SharedControlGrant;
   /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
   memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
@@ -467,12 +467,25 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   executor: WorkerExecutor<R> | HostProgramExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
-  const { postToHost, addListener, removeListener } = captureWorkerHost(host);
-  const allocateShared = createSharedControlAllocator(
-    req.controlGrant ?? { kind: "unbounded" },
-    (buffer) => postToHost({ type: "shared-control-allocation", buffer }),
+  const hooks = captureWorkerHost(host);
+  if (!req.controlGrant) throw new TypeError("Worker bootstrap requires a shared control grant");
+  const allocateShared = createSharedControlAllocator(req.controlGrant, (buffer) =>
+    hooks.postToHost({ type: "shared-control-allocation", buffer }),
   );
-  if (req.controlGrant) installSharedControlAllocator(allocateShared);
+  const restoreAllocator = installSharedControlAllocator(allocateShared);
+  try {
+    await bootstrapAllocated(req, executor, host, hooks, allocateShared);
+  } finally {
+    restoreAllocator();
+  }
+}
+async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  host: RuntimeWorkerHost,
+  { postToHost, addListener, removeListener }: ReturnType<typeof captureWorkerHost>,
+  allocateShared: (length: number) => SharedArrayBuffer,
+): Promise<void> {
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
@@ -955,11 +968,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         transport: req.runtimeProcess,
         postMessage,
         fallback: createFilesystemDescriptorCodec(fs),
-        registry: (
-          req.runtimeProcess.data as
-            | { pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle }
-            | undefined
-        )?.pipeRegistry,
+        registry: runtime!.workerProcessPipeRegistry(req.runtimeProcess),
       });
       runtimeProcess = new runtime!.WorkerProcessClient({
         transport: req.runtimeProcess,
@@ -1158,7 +1167,7 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
 ): HostProgramContext<R> {
   const { wasi, fs, checkActive } = context;
   const cwd = context.request.runtimeProcess?.cwd ?? "/";
-  const memory = allocateHostProgramMemory(context.request.controlGrant ?? { kind: "unbounded" });
+  const memory = allocateHostProgramMemory(context.request.controlGrant);
   bindMemory(memory);
   enter();
   const buffer = wasmMemoryBuffer(memory);

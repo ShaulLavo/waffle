@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { expect, test } from "bun:test";
 import { browserRuntimeDiagnostic, diagnosticDeadline } from "./child-diagnostic-browser.js";
 import { bootstrap, type RuntimeWorkerMessage } from "../browser/worker.js";
@@ -24,7 +25,14 @@ test("generic child error writes the complete diagnostic before closing inherite
   error.stack = "";
   try {
     await bootstrap(
-      { module, args: [], env: {}, filesystem: connection.client, runtimeProcess },
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess: standaloneRuntimeProcess(runtimeProcess),
+      },
       {
         setup({ fs }) {
           fs.preopen = () => 1;

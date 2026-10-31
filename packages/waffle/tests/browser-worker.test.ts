@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { controlLoad, controlStore } from "../proc/control.js";
 import { compileInterruptible } from "../interrupt/loader.js";
 import { expect, spyOn, test } from "bun:test";
@@ -50,7 +51,13 @@ test("injected worker executor observes live descriptors, then acknowledgement f
   let released = false;
   try {
     await bootstrap(
-      { module, args: ["fixture"], env: {}, filesystem: connection.client },
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: ["fixture"],
+        env: {},
+        filesystem: connection.client,
+      },
       {
         setup({ fs }) {
           // The fixture has no filesystem calls. Keep its preopen local so this unit test
@@ -116,7 +123,13 @@ test("bootstrap captures explicit host methods before executor setup replaces th
   };
   try {
     await bootstrap(
-      { module, args: [], env: {}, filesystem: connection.client },
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: [],
+        env: {},
+        filesystem: connection.client,
+      },
       {
         setup({ fs }) {
           fs.preopen = () => 1;
@@ -184,11 +197,12 @@ async function fixture(
   try {
     await bootstrap(
       {
+        controlGrant: { kind: "unbounded" },
         module: options.module ?? module,
         args: ["fixture"],
         env: options.env ?? {},
         filesystem: connection.client,
-        runtimeProcess: options.runtimeProcess,
+        runtimeProcess: standaloneRuntimeProcess(options.runtimeProcess),
         interruptible: options.interruptible,
       },
       {
@@ -443,6 +457,7 @@ test("a delayed stale Worker releases its filesystem and reports startup failure
   const old = notices.find((message) => message.operation === "spawn")!;
   if (old.operation !== "spawn") throw new Error("missing spawn fixture");
   const state = workerProcessState(old.transport);
+  standaloneRuntimeProcess(old.transport);
   claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
   confirmDirectoryProcess(old.transport);
   collectDirectoryJob(root.directory, state.jobSlot, state.job);
@@ -460,7 +475,14 @@ test("a delayed stale Worker releases its filesystem and reports startup failure
   try {
     await expect(
       bootstrap(
-        { module, args: [], env: {}, filesystem: connection.client, runtimeProcess: old.transport },
+        {
+          controlGrant: { kind: "unbounded" },
+          module,
+          args: [],
+          env: {},
+          filesystem: connection.client,
+          runtimeProcess: old.transport,
+        },
         {
           setup() {
             entered = true;
@@ -1108,6 +1130,7 @@ function armingRequest(
   extras: Pick<Partial<RuntimeWorkerRequest>, "runtimeProcess" | "outcome"> = {},
 ): RuntimeWorkerRequest {
   return {
+    controlGrant: { kind: "unbounded" },
     module: guestModule({
       namespace: "extension",
       name: "start",
@@ -1119,6 +1142,7 @@ function armingRequest(
     env: {},
     filesystem,
     ...extras,
+    runtimeProcess: standaloneRuntimeProcess(extras.runtimeProcess),
   };
 }
 
@@ -2257,7 +2281,7 @@ function terminalStartupWorker(): string {
  const terminal=attachTerminal({context:workerData.context,process:workerData.process,checkActive:()=>guard(),
  policy:{tryRead:()=>-6,inputReadiness:()=>({readable:false,nbytes:0}),transition:()=>({kind:'ok',value:undefined}),tryWrite:()=>0,outputReadiness:()=>({writable:true})}});
  try {
- await bootstrap({module:workerData.module,args:[],env:{},filesystem:connection.client,runtimeProcess:workerData.process}, {
+ await bootstrap({controlGrant:{kind:"unbounded"},module:workerData.module,args:[],env:{},filesystem:connection.client,runtimeProcess:workerData.process}, {
  setup(context){guard=()=>{context.checkActive();if(Atomics.load(cells,4)!==0)throw Error('Shell revoked')};Atomics.store(cells,2,1);parentPort.postMessage({phase:'setup'});
  const ready=workerData.runControl?{kind:'ok'}:terminal.ready();if(ready.kind==='error')throw Error(ready.code);
  context.fs.preopen=()=>1;context.fs.retain=()=>{};context.fs.release=()=>{};},
@@ -2394,7 +2418,7 @@ for (const action of [
       worker = new Worker(terminalStartupWorker(), {
         eval: true,
         workerData: {
-          process: child,
+          process: standaloneRuntimeProcess(child),
           context: planned.context,
           effects,
           module: terminalEntryModule(),
@@ -2554,11 +2578,12 @@ test("guest constructor calls the real ProcessABI with bound memory before insta
   try {
     await bootstrap(
       {
+        controlGrant: { kind: "unbounded" },
         module: guest,
         args: [],
         env: {},
         filesystem: connection.client,
-        runtimeProcess: createWorkerProcessTransport(),
+        runtimeProcess: standaloneRuntimeProcess(createWorkerProcessTransport()),
       },
       {
         ...armingExecutor(() => {}),

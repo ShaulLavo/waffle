@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { browserStartupPool } from "./startup-pool-browser.js";
 import { nestedWasi } from "./fixtures/nested-wasi.js";
@@ -496,11 +497,12 @@ async function bootstrapCheckActive(
   try {
     await bootstrap(
       {
+        controlGrant: { kind: "unbounded" },
         module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
         args: [],
         env: {},
         filesystem: connection.client,
-        runtimeProcess: client.options.transport,
+        runtimeProcess: standaloneRuntimeProcess(client.options.transport),
       },
       {
         setup(context) {

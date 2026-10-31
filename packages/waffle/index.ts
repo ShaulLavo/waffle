@@ -113,8 +113,10 @@ export {
   measureSharedMemory,
   SharedMemoryAdmissionError,
   declareModuleMemory,
+  createSharedControlAllocator,
 } from "./memory/index.js";
 export type {
+  SharedControlGrant,
   ReservedBytes,
   WasmPages,
   CountedKinds,

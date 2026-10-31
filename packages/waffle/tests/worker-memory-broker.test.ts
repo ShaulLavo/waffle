@@ -180,6 +180,22 @@ async function fixture(
   }
 }
 
+test("child bootstrap receives its root's charged registry even without inherited metadata", async () => {
+  const f = await fixture(false);
+  try {
+    const child = f.workers.find((worker) => worker.request)?.request?.runtimeProcess;
+    const rootData = f.root.data;
+    const childData = child?.data;
+    if (!rootData || typeof rootData !== "object" || !("pipeRegistry" in rootData))
+      throw new Error("missing charged root registry");
+    if (!childData || typeof childData !== "object" || !("pipeRegistry" in childData))
+      throw new Error("missing charged child registry");
+    expect(childData.pipeRegistry).toEqual(rootData.pipeRegistry);
+  } finally {
+    await f.dispose();
+  }
+});
+
 test("shipped generic Worker samples allocation/growth while blocked and retains it until physical stop", async () => {
   const stop = Promise.withResolvers<void>();
   const f = await fixture(true, stop.promise);

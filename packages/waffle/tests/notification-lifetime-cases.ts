@@ -72,6 +72,7 @@ export async function bootstrapNotificationCase(
   try {
     worker.postMessage(
       {
+        controlGrant: { kind: "unbounded" },
         module: processContextGuest,
         filesystem: pair.client,
         notifications: bridge.connection,

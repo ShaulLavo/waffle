@@ -929,6 +929,15 @@ export class BrowserProcessBroker {
     if (transport.identity !== this.options.identities.buffer)
       throw new TypeError("root must borrow the runtime identity allocator");
     this.filesystem(transport);
+    const data = transport.data as {
+      filesystem: FilesystemIdentity;
+      pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle;
+    };
+    if (
+      data.pipeRegistry &&
+      !this.options.reservations.ownsBuffer("pipe-registry", data.pipeRegistry.buffer)
+    )
+      throw new TypeError("Root bootstrap requires a ledger-charged registry");
     const ticket = this.options.reservations.admit({
       pid: workerProcessState(transport).pid,
       executable: "adopted root",
@@ -945,10 +954,6 @@ export class BrowserProcessBroker {
       this.transport.adoptRoot(transport);
       this.roots.set(state.pid, transport);
       this.outputs.set(state.pid, rootOutput(options));
-      const data = transport.data as {
-        filesystem: FilesystemIdentity;
-        pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle;
-      };
       const registry = data.pipeRegistry
         ? attachPipePublicationRegistry(data.pipeRegistry)
         : new PipePublicationRegistry({
@@ -986,6 +991,16 @@ export class BrowserProcessBroker {
       if (this.suspended) throw new Error("Process broker is disposed");
       this.activateRuntimeRoot(supervisor, transport);
     }
+  }
+  private bindPipeRegistry(transport: WorkerProcessTransport): void {
+    const state = workerProcessState(transport);
+    const registry = this.registries.get(state.rootPid);
+    if (!registry)
+      throw new ProcessError(ProcessErrno.SRCH, "Process has no admitted pipe registry");
+    registry.registerProcess(state.pid);
+    const data = transport.data;
+    if (!data || typeof data !== "object") throw new TypeError("Process has no bootstrap data");
+    transport.data = { ...data, pipeRegistry: registry.handle() };
   }
   private activateRuntimeRoot(
     supervisor: ProcessSupervisor,
@@ -1527,6 +1542,7 @@ export class BrowserProcessBroker {
     let worker: Worker;
     let output: TerminalOutputReader;
     try {
+      this.bindPipeRegistry(transport);
       output = child.output = createTerminalOutput();
       let budget = this.terminalOutputs.get(state.rootPid);
       if (!budget) this.terminalOutputs.set(state.rootPid, (budget = new TerminalOutputBudget()));

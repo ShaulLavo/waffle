@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
@@ -284,11 +285,12 @@ test("externally launched roots use the page snapshot and their actual zero pare
   });
   const worker = new IdentityFixtureWorker("identity-guest.js");
   worker.postMessage({
+    controlGrant: { kind: "unbounded" },
     module: processContextGuest,
     args: [],
     env: {},
     filesystem: owner.filesystem.fork(),
-    runtimeProcess: transport,
+    runtimeProcess: standaloneRuntimeProcess(transport),
     hostIdentity: owner.hostIdentity,
   });
   await Promise.all(completions);
@@ -303,6 +305,7 @@ test("bootstrap does not invent process identity without an admitted transport",
   let observed = false;
   await bootstrap(
     {
+      controlGrant: { kind: "unbounded" },
       module: processContextGuest,
       args: [],
       env: {},

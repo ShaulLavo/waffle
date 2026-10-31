@@ -1,3 +1,4 @@
+import { bytes, type RuntimeReservations } from "../memory/reservations.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { startFixtureChild } from "./fixtures/browser-process-child.js";
 import { ProcessErrno } from "../proc/types.js";
@@ -40,6 +41,21 @@ import {
 } from "../proc/outcome.js";
 import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
 import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes.js";
+
+function chargedRegistry(
+  reservations: RuntimeReservations,
+  options: ConstructorParameters<typeof PipePublicationRegistry>[0] = {},
+): PipePublicationRegistry {
+  return new PipePublicationRegistry({
+    ...options,
+    allocate: (initial, maximum) =>
+      reservations.buffer("pipe-registry", {
+        kind: "growable-buffer",
+        initial,
+        maximum: bytes(maximum),
+      }),
+  });
+}
 
 function unusedFilesystem(): ProcessFilesystem {
   return {
@@ -153,11 +169,11 @@ test("root admission cannot create a live process behind concurrent disposal", a
 });
 
 test("revocation never allocates a process in an unrelated root pipe registry", async () => {
-  const { PipePublicationRegistry } = await import("../proc/pipes.js");
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
+  const reservations = testReservations();
   const broker = new BrowserProcessBroker({
-    reservations: testReservations(),
+    reservations,
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -174,7 +190,7 @@ test("revocation never allocates a process in an unrelated root pipe registry", 
     });
     transport.data = {
       filesystem: createFilesystemIdentity(),
-      pipeRegistry: new PipePublicationRegistry({
+      pipeRegistry: chargedRegistry(reservations, {
         processCapacity: 1,
         cellsPerProcess: 1,
         maxCells: 1,
@@ -450,8 +466,9 @@ test("disposal settles every consumer stop before disposing fenced relays and re
     startedStop = resolve;
   });
   const events: string[] = [];
+  const reservations = testReservations();
   const broker = new BrowserProcessBroker({
-    reservations: testReservations(),
+    reservations,
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -473,7 +490,7 @@ test("disposal settles every consumer stop before disposing fenced relays and re
       job: identities.job(),
       identity: identities.buffer,
     });
-    const registry = new PipePublicationRegistry();
+    const registry = chargedRegistry(reservations);
     registry.registerProcess(root.pid);
     root.data = { filesystem: createFilesystemIdentity(), pipeRegistry: registry.handle() };
     return { root, registry };
@@ -552,8 +569,9 @@ test("a rejected filesystem fence does not stop consumers or force relay disposa
   });
   let stops = 0,
     relayDisposals = 0;
+  const reservations = testReservations();
   const broker = new BrowserProcessBroker({
-    reservations: testReservations(),
+    reservations,
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -575,7 +593,7 @@ test("a rejected filesystem fence does not stop consumers or force relay disposa
     job: identities.job(),
     identity: identities.buffer,
   });
-  const registry = new PipePublicationRegistry();
+  const registry = chargedRegistry(reservations);
   registry.registerProcess(root.pid);
   root.data = { filesystem: createFilesystemIdentity(), pipeRegistry: registry.handle() };
   const publications: Promise<void>[] = [];
@@ -661,8 +679,9 @@ for (const kind of ["direct", "runtime"] as const)
       stops = 0,
       retired = 0;
     const filesystem = createFilesystemIdentity();
+    const reservations = testReservations();
     const broker = new BrowserProcessBroker({
-      reservations: testReservations(),
+      reservations,
       identities,
       table,
       registry: new ExecutableRegistry(),
@@ -695,7 +714,7 @@ for (const kind of ["direct", "runtime"] as const)
           });
           root.data = {
             filesystem,
-            pipeRegistry: new PipePublicationRegistry({
+            pipeRegistry: chargedRegistry(reservations, {
               processCapacity: 1,
               cellsPerProcess: 1,
               maxCells: 4,

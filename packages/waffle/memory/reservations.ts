@@ -197,6 +197,7 @@ export interface RuntimeReservations {
   readonly arenas: ArenaSource;
   readonly groups: GroupMemorySource;
   buffer(label: RuntimeBufferLabel, shape: BufferShape): SharedArrayBuffer;
+  ownsBuffer(label: RuntimeBufferLabel, buffer: SharedArrayBuffer): boolean;
   admit(plan: ProcessPlan): Ticket;
   settled(): Promise<void>;
   snapshot(): SharedMemorySnapshot;
@@ -319,6 +320,10 @@ export class SharedMemoryLedger {
       },
       buffer: (label, shape) =>
         this.construct(runtime, label, shape, null, () => this.allocations.buffer(shape)),
+      ownsBuffer: (label, buffer) => {
+        const holder = this.values.get(buffer);
+        return holder?.runtime === runtime && holder.label === label && holder.state === "live";
+      },
       admit: (plan) => this.admit(runtime, sizing, plan),
       settled: () => this.pending ?? Promise.resolve(),
       snapshot: () => this.snapshot(),
