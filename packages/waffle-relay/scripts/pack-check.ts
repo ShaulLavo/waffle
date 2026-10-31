@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,6 +21,12 @@ try {
   mkdirSync(join(scratch, "node_modules"));
   symlinkSync(resolve(root, "../waffle"), join(scratch, "node_modules/waffle"), "dir");
   symlinkSync(resolve(root, "node_modules/ws"), join(scratch, "node_modules/ws"), "dir");
+  const executable = resolve(packed, manifest.bin["waffle-relay"]);
+  const cli = spawnSync(executable, [], { encoding: "utf8", timeout: 5000 });
+  assert.equal(cli.error, undefined, "Packed CLI must execute directly");
+  assert.equal(cli.status, 1, "Invalid arguments must reach the CLI validation path");
+  assert.ok(cli.stderr.includes("Relay startup failed."), "Packed CLI did not run its entry point");
+  assert.ok(readFileSync(executable, "utf8").startsWith("#!/usr/bin/env node\n"));
   for (const [name, conditions] of Object.entries(manifest.exports)) {
     assert.ok(existsSync(resolve(packed, conditions.types)), `Missing types for ${name}`);
     assert.ok(existsSync(resolve(packed, conditions.node)), `Missing Node entry for ${name}`);
