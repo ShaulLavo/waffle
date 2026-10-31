@@ -177,6 +177,19 @@
         "waffle": "*",
       },
     },
+    "packages/tar": {
+      "name": "waffle-tar",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "@types/node": "26.6.3",
+        "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
     "packages/waffle": {
       "name": "waffle",
       "version": "0.0.105",
@@ -782,6 +795,8 @@
     "waffle-ripgrep": ["waffle-ripgrep@workspace:packages/ripgrep"],
 
     "waffle-sed": ["waffle-sed@workspace:packages/sed"],
+
+    "waffle-tar": ["waffle-tar@workspace:packages/tar"],
 
     "walk-up-path": ["walk-up-path@4.0.0", "", {}, "sha512-3hu+tD8YzSLGuFYtPRb48vdhKMi0KQV5sn+uWr8+7dMEq/2G/dtLrdDinkLjqq5TIbIBjYJ4Ax/n3YiaW7QM8A=="],
 

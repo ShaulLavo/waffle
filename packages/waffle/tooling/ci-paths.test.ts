@@ -885,6 +885,20 @@ test("awk selects its source and shared transformations without selecting unrela
     expect(selected("awk", path), path).toBe(false);
 });
 
+test("tar scratch path is resolved by a runner step, not job-context evaluation", () => {
+  const job = record(jobs.tar);
+  expect(record(job.env).TAR_SCRATCH_ROOT).toBeUndefined();
+  const steps = stepsFor("tar");
+  const scratch = steps.find((step) => step.name === "Set run-owned tar scratch root");
+  const build = steps.find((step) => step.name === "Build matching native and WASI tar");
+  expect(scratch).toBeDefined();
+  expect(build).toBeDefined();
+  expect(String(scratch?.run)).toContain("TAR_SCRATCH_ROOT=%s");
+  expect(String(scratch?.run)).toContain('"$RUNNER_TEMP"');
+  expect(String(scratch?.run)).toContain('"$GITHUB_ENV"');
+  expect(steps.indexOf(record(scratch))).toBeLessThan(steps.indexOf(record(build)));
+});
+
 test("procps selects its exact inputs without selecting native work for package-only changes", () => {
   const job = record(jobs.procps);
   expect(record(changes.outputs).procps).toBe("${{ steps.paths.outputs.procps }}");
