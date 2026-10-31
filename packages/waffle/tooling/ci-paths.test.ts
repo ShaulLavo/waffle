@@ -968,6 +968,26 @@ test("checksums has a bounded leaf using the existing producer route", () => {
   );
 });
 
+test("checksums fetches pinned Cargo sources before preparing the checksum leaf", () => {
+  const steps = stepsFor("coreutils-checksums");
+  const cache = steps.findIndex((step) => step.id === "checksum-cache");
+  const rust = steps.findIndex((step) => step.uses === "dtolnay/rust-toolchain@stable");
+  const fetches = steps.filter((step) => step.run === "cargo fetch --locked");
+  expect(fetches).toHaveLength(1);
+  const fetch = fetches[0];
+  expect(fetch?.if).toBeUndefined();
+  const fetched = steps.indexOf(record(fetch));
+  const producer = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/coreutils build:checksums",
+  );
+  expect(cache).toBeGreaterThanOrEqual(0);
+  expect(fetched).toBeGreaterThan(cache);
+  expect(fetched).toBeGreaterThan(rust);
+  expect(producer).toBeGreaterThan(fetched);
+  for (const path of ["Cargo.toml", "Cargo.lock"])
+    expect(selected("checksums", path), path).toBe(true);
+});
+
 test("checksums caches the pinned toolchain, Cargo inputs and actual build outputs", () => {
   const steps = stepsFor("coreutils-checksums");
   const cache = steps.find((step) => step.id === "checksum-cache");

@@ -91,6 +91,8 @@ jobs:
               - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
+              - "Cargo.toml"
+              - "Cargo.lock"
               - "rust-toolchain.toml"
               - "tools/program-build-tools.ts"
               - "tools/program-optimize.ts"
@@ -1035,6 +1037,8 @@ jobs:
         with:
           toolchain: 1.98.1
           targets: wasm32-wasip1
+      - name: Fetch locked Cargo sources before checksum source preparation
+        run: cargo fetch --locked
       - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
