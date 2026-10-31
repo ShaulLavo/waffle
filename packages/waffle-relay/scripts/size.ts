@@ -82,6 +82,14 @@ try {
     "Fetch metadata entered the eager runtime graph",
   );
   const client = await bundle("packages/waffle-relay/src/index.ts");
+  assert.ok(
+    !client.initialInputs.some((input) => input.endsWith("tcp-websocket.ts")),
+    "TCP carrier entered the eager client graph",
+  );
+  assert.ok(
+    !client.allInputs.some((input) => /node-websocket|tcp-server/.test(input)),
+    "Node TCP implementation entered the browser graph",
+  );
   const worker = await bundle("packages/waffle-relay/src/worker.ts");
   console.log(
     JSON.stringify(

@@ -20,6 +20,7 @@ try {
   const packed = join(scratch, "package");
   mkdirSync(join(scratch, "node_modules"));
   symlinkSync(resolve(root, "../waffle"), join(scratch, "node_modules/waffle"), "dir");
+  symlinkSync(resolve(root, "node_modules/ws"), join(scratch, "node_modules/ws"), "dir");
   for (const [name, conditions] of Object.entries(manifest.exports)) {
     assert.ok(existsSync(resolve(packed, conditions.types)), `Missing types for ${name}`);
     assert.ok(existsSync(resolve(packed, conditions.node)), `Missing Node entry for ${name}`);
