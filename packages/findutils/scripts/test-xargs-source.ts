@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { registerSourceContractTest } from "./source-contract-test.ts";
+import { registerSourceContractTest } from "../../../tools/source-contract-test.ts";
 import { verifyXargsSource } from "./xargs-source.ts";
 
 const root = resolve(import.meta.dirname, "..");

@@ -1,12 +1,11 @@
-import { stageProgram } from "../tools/program-build-tools.ts";
-import { transformationProvenance } from "../tools/program-derivation.ts";
-import { programToolSources } from "../packages/waffle/tooling/program-tools-package.ts";
-import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
+import {
+  preparedFixture as makePreparedFixture,
+  prepareRuntimeFixture,
+} from "./program-release-fixtures.ts";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,8 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { buildNodeModules } from "../packages/waffle/build.ts";
+import { resolve } from "node:path";
 import {
   assertGuestsReached,
   auditPackedImports,
@@ -57,7 +55,9 @@ let scratch = "";
 beforeAll(async () => {
   mkdirSync(resolve(repository, ".build"), { recursive: true });
   scratch = mkdtempSync(resolve(repository, ".build/program-release-"));
-  await prepareRuntimeFixture();
+  const fixture = await prepareRuntimeFixture(scratch);
+  runtimeArchive = fixture.archive;
+  runtimeSha256 = fixture.sha256;
 });
 
 afterAll(() => {
@@ -68,78 +68,8 @@ function git(root: string, args: string[]) {
   return execFileSync("git", ["-C", root].concat(args), { encoding: "utf8" }).trim();
 }
 
-/** Copies the real family sources and writes stand-in prepared outputs into a disposable repo. */
 function preparedFixture(name: string) {
-  const root = resolve(scratch, name);
-  for (const family of baseFamilies) {
-    cpSync(resolve(repository, "packages", family), resolve(root, "packages", family), {
-      recursive: true,
-      filter: (path) => !/\/(node_modules|dist|\.build|target|\.sources)$/.test(path),
-    });
-  }
-  writeFileSync(resolve(root, ".gitignore"), "dist/\nnode_modules/\n");
-  git(root, ["init", "-q"]);
-  git(root, ["add", "-A"]);
-  git(root, [
-    "-c",
-    "user.name=fixture",
-    "-c",
-    "user.email=fixture@invalid",
-    "commit",
-    "-qm",
-    "fixture",
-  ]);
-  for (const family of baseFamilies) writeArtifacts(resolve(root, "packages", family));
-  return root;
-}
-
-function writeArtifacts(packageRoot: string) {
-  const recipe = JSON.parse(readFileSync(resolve(packageRoot, "package-artifacts.json"), "utf8"));
-  for (const file of recipe.files as string[]) {
-    const path = resolve(packageRoot, file);
-    mkdirSync(dirname(path), { recursive: true });
-    if (file.endsWith("-program.json")) continue;
-    if (!file.endsWith(".wasm")) {
-      writeFileSync(path, `stand-in notice for ${file}\n`);
-      continue;
-    }
-    const input = resolve(packageRoot, ".build/fixture-input.wasm");
-    mkdirSync(dirname(input), { recursive: true });
-    writeFileSync(input, cappedWasiFixture);
-    stageProgram(input, path);
-    rmSync(input);
-  }
-}
-
-async function prepareRuntimeFixture() {
-  const root = resolve(scratch, "runtime-source");
-  cpSync(resolve(repository, "packages/waffle"), root, {
-    recursive: true,
-    filter: (path) => !/\/(node_modules|dist|\.build|target|\.sources)$/.test(path),
-  });
-  const tools = resolve(root, "tooling/program");
-  mkdirSync(tools, { recursive: true });
-  for (const file of programToolSources)
-    cpSync(resolve(repository, "tools", file), resolve(tools, file));
-  writeFileSync(
-    resolve(tools, "program-transformer.json"),
-    JSON.stringify(transformationProvenance()) + "\n",
-  );
-  // This suite executes package metadata, not networking. Keep its network fixture explicit.
-  writeFileSync(
-    resolve(root, "browser/net/network.wasm"),
-    Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0),
-  );
-  await buildNodeModules(root, async () => {});
-  const destination = resolve(scratch, "runtime-archive");
-  mkdirSync(destination);
-  execFileSync("bun", ["pm", "pack", "--ignore-scripts", "--destination", destination], {
-    cwd: root,
-    env: { ...process.env, WAFFLE_NETWORK_PREBUILT: "1" },
-    stdio: "pipe",
-  });
-  runtimeArchive = resolve(destination, `waffle-${runtimeVersion}.tgz`);
-  runtimeSha256 = sha256(runtimeArchive);
+  return makePreparedFixture(scratch, name);
 }
 
 function runtimeTarball() {
@@ -153,6 +83,12 @@ function sha256(path: string) {
 function packedGuests(item: ReleaseManifest["packages"][number]) {
   const guests = item.artifacts.filter((file) => file.path.endsWith(".wasm"));
   return guests.map((file) => `node_modules/${item.name}/${file.path}`);
+}
+
+function rawArtifacts(item: ReleaseManifest["packages"][number]) {
+  return item.artifacts
+    .filter((artifact) => artifact.path.endsWith(".wasm"))
+    .map((artifact) => ({ item, artifact }));
 }
 
 function packedManifest(archive: string) {
@@ -190,6 +126,8 @@ describe("base closure", () => {
   });
 
   test("orders dependencies before base and records every asset", () => {
+    expect(manifest.operation).toBe("release");
+    expect(manifest.installCheck.runtimeRoots).toBe(1);
     expect(manifest.order.at(-1)).toBe("waffle-base");
     expect(manifest.order.toSorted()).toEqual([
       "waffle-base",
@@ -219,11 +157,7 @@ describe("base closure", () => {
   });
 
   test("records both compressed companions for every raw Wasm artifact", () => {
-    const raw = manifest.packages.flatMap((item) =>
-      item.artifacts
-        .filter((artifact) => artifact.path.endsWith(".wasm"))
-        .map((artifact) => ({ item, artifact })),
-    );
+    const raw = manifest.packages.flatMap(rawArtifacts);
     expect(raw).toHaveLength(baseGuestCount);
     for (const { item, artifact } of raw) {
       const gzip = item.artifacts.find((candidate) => candidate.path === `${artifact.path}.gz`);

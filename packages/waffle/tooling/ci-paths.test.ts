@@ -72,7 +72,7 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("release workflow publishes only the runtime tarball and checksum", () => {
+test("release workflow stages only the runtime tarball and checksum as a draft", () => {
   const release = record(
     YAML.parse(
       readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
@@ -85,9 +85,11 @@ test("release workflow publishes only the runtime tarball and checksum", () => {
     .map(record)
     .find((step) => step.name === "Publish the GitHub release assets");
   expect(publish).toBeDefined();
-  expect(String(publish?.run)).toContain("gh release create");
-  expect(String(publish?.run)).toContain(".sha256");
-  expect(String(publish?.run)).not.toContain("npm publish");
+  const command = String(publish?.run).replace(/\\\r?\n\s*/g, " ");
+  expect(command).toMatch(/gh release create[^\n]*\s--draft(?:\s|$)/);
+  expect(command).toContain("--verify-tag");
+  expect(command).toContain(".sha256");
+  expect(command).not.toContain("npm publish");
 });
 
 test("browser selects runners, shared controls and guest fixtures", () => {
@@ -332,6 +334,9 @@ test("programs selects every consumed tool, workspace dependency, installer and 
     "tools/program-package.ts",
     "scripts/program-release.ts",
     "scripts/program-release.test.ts",
+    "scripts/program-release-fixtures.ts",
+    "scripts/program-rebind.ts",
+    "scripts/program-rebind.test.ts",
     "scripts/tsconfig.json",
     "tools/program-notices.ts",
     "packages/waffle/programs/index.ts",
@@ -349,7 +354,10 @@ test("programs selects every consumed tool, workspace dependency, installer and 
 
 test("programs normal CI runs the release closure test from the folded source checkpoint", () => {
   expect(
-    stepsFor("programs").some((step) => step.run === "bun test scripts/program-release.test.ts"),
+    stepsFor("programs").some(
+      (step) =>
+        step.run === "bun test scripts/program-release.test.ts scripts/program-rebind.test.ts",
+    ),
   ).toBe(true);
 });
 
