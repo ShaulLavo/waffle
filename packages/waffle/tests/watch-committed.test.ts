@@ -48,13 +48,84 @@ async function fixture(backend = new MemoryBackend()) {
   return { backend, service, page, guest, root, guestRoot, close };
 }
 
-/** A terminated worker can stop inside a filesystem section. Its owner revokes before the stop
- * and reaps after it, or service shutdown waits for that section forever. */
-function stopWorker(worker: Worker, connection: FilesystemConnection): void {
+function workerStopped(worker: Worker): Promise<void> {
+  return new Promise((resolve) => {
+    worker.addEventListener("close", () => resolve(), { once: true });
+  });
+}
+
+async function stopWorker(
+  worker: Worker,
+  connection: FilesystemConnection,
+  stopped: Promise<void>,
+): Promise<void> {
   revokeFilesystem(connection);
   worker.terminate();
+  await stopped;
   reapFilesystem(connection);
 }
+
+function failureRace<T>(pending: Promise<T>, failed: Promise<never>): Promise<T> {
+  const result = Promise.race([pending, failed]);
+  // An earlier assertion or startup failure can leave a later operation unawaited.
+  void result.catch(() => {});
+  return result;
+}
+
+test("worker cleanup waits for close before reaping and shares the same completion", async () => {
+  const f = await fixture();
+  const connection = f.page.fork();
+  const worker = new Worker(new URL("./fixtures/watch-lifecycle-worker.ts", import.meta.url).href);
+  const stopped = workerStopped(worker);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      worker.onmessage = () => resolve();
+      worker.onerror = (event) => reject(event.error ?? new Error(event.message));
+    });
+    const revocation = new Int32Array(connection.revocations[0]!);
+    const stopping = stopWorker(worker, connection, stopped);
+    expect(Atomics.load(revocation, 0)).toBe(1);
+    await stopping;
+    expect(Atomics.load(revocation, 0)).toBe(2);
+    await stopWorker(worker, connection, stopped);
+  } finally {
+    await stopWorker(worker, connection, stopped);
+    await f.close();
+  }
+});
+
+for (const stage of ["startup", "delivery"])
+  test(`worker ${stage} errors remain observable without orphan rejections`, async () => {
+    const path =
+      stage === "startup"
+        ? "./fixtures/watch-startup-error-worker.ts"
+        : "./fixtures/watch-delivery-error-worker.ts";
+    const worker = new Worker(new URL(path, import.meta.url).href);
+    const stopped = workerStopped(worker);
+    const failed = new Promise<never>((_, reject) => {
+      worker.onerror = (event) => reject(event.error ?? new Error(event.message));
+    });
+    let ready!: () => void;
+    const started = failureRace(
+      new Promise<void>((resolve) => {
+        ready = resolve;
+      }),
+      failed,
+    );
+    const done = failureRace(new Promise<never>(() => {}), failed);
+    worker.onmessage = () => ready();
+    try {
+      if (stage === "startup") {
+        await expect(started).rejects.toThrow("watch worker startup failure");
+        return;
+      }
+      await started;
+      await expect(done).rejects.toThrow("watch worker delivery failure");
+    } finally {
+      worker.terminate();
+      await stopped;
+    }
+  });
 
 async function file(client: FilesystemClient, root: number, name: string) {
   const path = await client.asyncCall("resolve", [root, name]);
@@ -157,6 +228,7 @@ test("registration capture excludes a real DIRECT worker until cursor and subscr
   const f = await fixture();
   const connection = f.page.fork();
   const worker = new Worker(new URL("./watch-direct-worker.ts", import.meta.url).href);
+  const stopped = workerStopped(worker);
   try {
     const handle = await file(f.page, f.root, "one");
     await f.page.asyncCall("resize", [handle, 16, false]);
@@ -201,7 +273,7 @@ test("registration capture excludes a real DIRECT worker until cursor and subscr
     expect(messages.length).toBe(2);
     await watch.close();
   } finally {
-    stopWorker(worker, connection);
+    await stopWorker(worker, connection, stopped);
     await f.close();
   }
 }, 10000);
@@ -428,6 +500,7 @@ for (const killed of [false, true])
     const f = await fixture();
     const connection = f.page.fork();
     const worker = new Worker(new URL("./watch-direct-worker.ts", import.meta.url).href);
+    const stopped = workerStopped(worker);
     try {
       const handle = await file(f.guest, f.guestRoot, "one");
       await f.guest.asyncCall("resize", [handle, 16, false]);
@@ -437,18 +510,18 @@ for (const killed of [false, true])
       const failed = new Promise<never>((_, reject) => {
         worker.onerror = (event) => reject(event.error ?? new Error(event.message));
       });
-      const started = Promise.race([
+      const started = failureRace(
         new Promise<void>((resolve) => {
           ready = resolve;
         }),
         failed,
-      ]);
-      const done = Promise.race([
+      );
+      const done = failureRace(
         new Promise<{ events: { name: string }[] }>((resolve) => {
           finish = resolve;
         }),
         failed,
-      ]);
+      );
       worker.onmessage = ({ data }) => {
         if (data === "ready") ready();
         else finish(data);
@@ -459,7 +532,7 @@ for (const killed of [false, true])
       await started;
       expect(f.backend.shared.watch.active).toBe(true);
       if (killed) {
-        stopWorker(worker, connection);
+        await stopWorker(worker, connection, stopped);
         f.service.sweep();
         expect(f.backend.shared.watch.active).toBe(false);
         return;
@@ -467,7 +540,7 @@ for (const killed of [false, true])
       expect(f.guest.write(handle, [new Uint8Array([4])], 0)).toBe(1);
       expect((await done).events.map((event) => event.name)).toEqual(["one"]);
     } finally {
-      stopWorker(worker, connection);
+      await stopWorker(worker, connection, stopped);
       await f.close();
     }
   }, 10000);
