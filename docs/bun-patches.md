@@ -34,6 +34,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/program-build-tools.ts`                                                                                                        | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds verified optimization and bounded final-program name stripping with original optimizer/derivation adapters; no external Wasm parser is copied.                                                                                                                                                |
 | `packages/awk/patches/wasi-unsupported-ops.patch`, `packages/awk/scripts/`                                                            | Adaptation       | The One True Awk 20260426 at `5739fd79bcfc75ba7526773d0cf634521f8aca3c`. Preserves the evaluator and real setjmp exit behavior. WASI-only startup and capability guards reject unavailable system commands and command pipes.                                                                                                                                                                                                |
 | `packages/tar/patches/wasi.patch`, `packages/tar/producer/`, `packages/tar/scripts/`                                                  | Adaptation       | uutils/tar at `dffa9350f78b3bfbc9b4fc70a0f0205a53a937b6`; standalone locked producer, runtime cwd adapter, `-C`, pure Rust gzip with trailer checks, rejected unsupported helpers/member filters, and explicit WASI metadata failures. Read-only candidate; create/extract are not qualified.                                                                                                                                |
+| `packages/program-support/src/{executor,io,runtime}.rs`, `src/runtime/wasi.rs`                                                        | Adaptation       | Neutral guest support from bash-web `shell/engine/src/{executor,io,runtime}.rs` and `runtime/wasi.rs` at `ed31b2bf47fe92afa4c9568868f206f35b9add27`. Public lifetime/cancellation hooks, filesystem adapter and wire decoders; shell policy stays in bash-web. See [Guest program support](#guest-program-support).                                                                                                          |
 
 ## GNU diffutils
 
@@ -378,3 +379,24 @@ oracle, never a runtime fallback.
 ## Optional One True Awk
 
 `packages/awk` builds the authoritative onetrueawk/awk archive at `5739fd79bcfc75ba7526773d0cf634521f8aca3c`, SHA-256 `14b636bec87f5817012d883b9b318e808eee28881a7b4388f92ef6b5f940d7ef`. The package retains its Lucent license and upstream FIXES. The WASI-only patch initializes cwd from `PWD`, omits native signal and close-on-exec setup, and rejects unavailable system commands and command pipes. It does not change expression evaluation, parsing, field processing or nonlocal exit. Real `setjmp` and `longjmp` use the exact shared sysroot's `libsetjmp.a` and standard Wasm exception handling. Package notices retain incorporated wasi-libc notices. Native oracle fixtures use the same archive and patch with the WASI guards inactive. Build, tests, catalog and receipts are original Waffle adapters.
+
+## Guest program support
+
+`packages/program-support` owns the neutral executor, cancellation, descriptor and
+filesystem code originally extracted from bash-web. The public hooks follow
+`shell/engine/src/executor.rs`, `io.rs`, `runtime.rs` and `runtime/wasi.rs` at
+`ed31b2bf47fe92afa4c9568868f206f35b9add27`, under the retained MIT license.
+
+The directory page reader, Preview1 filestat decoder, runtime permission decoder,
+buffered source and weak endpoint behavior are reused without shell policy.
+Waffle makes the existing cancellation and event registrations public, adds a
+kind-and-id readiness notification that releases its registry borrow before waking,
+and exposes stack measurements only for tests or the opt-in `stack-observation`
+feature. `WasiAbi::with_inherited_fds` accepts the embedding's launch metadata and
+uses the existing bounded root-preopen scan. Shell process groups, access requests,
+signals and prompt imports remain in bash-web. No new guest import is introduced.
+
+[Program-support APIs](../packages/program-support/docs/api.md) lists the public
+contracts. Native public-API tests cover descriptor lifetime, allocation accounting,
+cancellation, reentrant notification, stat and directory decoding. The WASI library
+check compiles the import adapter without building any guest program.

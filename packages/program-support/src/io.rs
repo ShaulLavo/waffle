@@ -5,7 +5,7 @@ use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
-    rc::Rc,
+    rc::{Rc, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -274,6 +274,13 @@ struct BufferedInput {
     data: Vec<u8>,
     offset: Cell<usize>,
 }
+/// Fixed allocation charge for one buffered input, excluding its byte capacity.
+/// Includes the open description, shared input and two Rc allocation headers.
+pub fn buffered_input_metadata_bytes() -> usize {
+    std::mem::size_of::<Open>()
+        + std::mem::size_of::<BufferedInput>()
+        + 4 * std::mem::size_of::<usize>()
+}
 impl BufferedInput {
     fn read(&self, output: &mut [u8]) -> usize {
         let start = self.offset.get();
@@ -296,6 +303,7 @@ enum Open {
         data: Rc<BufferedInput>,
         exported: RefCell<Option<Rc<dyn HostEndpoint>>>,
     },
+    BytesSource(Rc<BufferedInput>),
     Host(Rc<dyn HostEndpoint>),
     Null,
 }
@@ -318,6 +326,14 @@ impl Drop for Open {
 /// offsets. A separate filesystem open creates an independent offset.
 #[derive(Clone)]
 pub struct Endpoint(Rc<Open>);
+/// Observing an open description must not keep its pipe reader/writer alive.
+#[derive(Clone)]
+pub struct WeakEndpoint(Weak<Open>);
+impl WeakEndpoint {
+    pub fn upgrade(&self) -> Option<Endpoint> {
+        self.0.upgrade().map(Endpoint)
+    }
+}
 pub fn pipe() -> (Endpoint, Endpoint) {
     let pipe = Rc::new(Pipe {
         state: RefCell::new(PipeState {
@@ -334,9 +350,52 @@ pub fn pipe() -> (Endpoint, Endpoint) {
     )
 }
 impl Endpoint {
-    #[cfg(test)]
-    pub(crate) fn same_open(&self, other: &Self) -> bool {
+    /// Observe this description without extending its last-close lifetime.
+    pub fn downgrade(&self) -> WeakEndpoint {
+        WeakEndpoint(Rc::downgrade(&self.0))
+    }
+    /// Weak ownership of a host endpoint, including an exported buffered input.
+    pub fn host_owner(&self) -> Option<Weak<dyn HostEndpoint>> {
+        match self.0.as_ref() {
+            Open::Host(host) => Some(Rc::downgrade(host)),
+            Open::Bytes { exported, .. } => exported.borrow().as_ref().map(Rc::downgrade),
+            _ => None,
+        }
+    }
+    /// Allocated payload capacity, not remaining bytes or the current read offset.
+    pub fn buffered_input_bytes(&self) -> Option<usize> {
+        match self.0.as_ref() {
+            Open::Bytes { data, .. } => Some(data.data.capacity()),
+            _ => None,
+        }
+    }
+    /// Whether both endpoints share one open description and read offset.
+    pub fn same_open(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+    /// Read the original bytes and shared offset even after host export.
+    /// The source retains no exported host endpoint.
+    ///
+    /// # Panics
+    /// Panics unless this endpoint was created by `Endpoint::bytes`.
+    pub fn buffered_source(&self) -> Self {
+        let Open::Bytes { data, .. } = self.0.as_ref() else {
+            unreachable!("buffered input source")
+        };
+        Self(Rc::new(Open::BytesSource(data.clone())))
+    }
+    /// Route future reads and descriptor exports through a retained host reader.
+    /// Existing buffered sources continue reading the original shared bytes.
+    ///
+    /// # Panics
+    /// Panics unless `self` was created by `Endpoint::bytes` and `reader` by
+    /// `Endpoint::host`.
+    pub fn export_buffer(&self, reader: &Self) {
+        let (Open::Bytes { exported, .. }, Open::Host(host)) = (self.0.as_ref(), reader.0.as_ref())
+        else {
+            unreachable!("buffered input exported through a host pipe")
+        };
+        *exported.borrow_mut() = Some(host.clone());
     }
     pub fn runtime_fd(&self) -> Option<u32> {
         match self.0.as_ref() {
@@ -352,7 +411,9 @@ impl Endpoint {
         match self.0.as_ref() {
             Open::PipeRead(_) | Open::PipeWrite(_) => Ok(DescriptorKind::Pipe),
             Open::Host(host) => host.descriptor_kind(),
-            Open::File(_) | Open::Bytes { .. } => Ok(DescriptorKind::Regular),
+            Open::File(_) | Open::Bytes { .. } | Open::BytesSource(_) => {
+                Ok(DescriptorKind::Regular)
+            }
             Open::Capture(_) | Open::Null => Ok(DescriptorKind::Other),
         }
     }
@@ -424,6 +485,7 @@ impl Endpoint {
                     None => Ok(data.read(output)),
                 }
             }
+            Open::BytesSource(data) => Ok(data.read(output)),
             Open::Null => Ok(0),
             _ => Err(IoError::BadDescriptor),
         }
@@ -1005,7 +1067,8 @@ fn reopen_descriptor(
         | Open::PipeWrite(_)
         | Open::Capture(_)
         | Open::Null
-        | Open::Bytes { .. } => Ok(DescriptorOpen::Local(endpoint)),
+        | Open::Bytes { .. }
+        | Open::BytesSource(_) => Ok(DescriptorOpen::Local(endpoint)),
     }
 }
 
@@ -1013,6 +1076,16 @@ fn reopen_descriptor(
 mod tests {
     use super::*;
     use crate::executor::Executor;
+
+    #[test]
+    fn buffered_input_charge_matches_the_two_shared_allocations() {
+        assert_eq!(
+            buffered_input_metadata_bytes(),
+            std::mem::size_of::<Open>()
+                + std::mem::size_of::<BufferedInput>()
+                + 4 * std::mem::size_of::<usize>()
+        );
+    }
     use futures::{FutureExt, task::noop_waker};
     use std::{
         future::Future,
