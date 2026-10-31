@@ -1,7 +1,7 @@
 # A wgpu backend for Waffle guests
 
-Status: **Proposed plan. Nothing here is implemented.** Rust source work needs
-[ADR 006 (proposed)](guest-graphics.md#adr-006-proposed-rust-guest-crates).
+Status: **Proposed plan. Nothing here is implemented.** The crate lives outside this repository
+([where the code lives](guest-graphics.md#where-the-code-lives)).
 
 Prepared: 2026-10-31. Inspected Waffle baseline
 [`9b66e3aa2462771f65ca263745a23c80e2c8fea3`](https://github.com/ShaulLavo/waffle/commit/9b66e3aa2462771f65ca263745a23c80e2c8fea3),
@@ -72,8 +72,8 @@ Single-threaded `wasm32-wasip1` apps do not need the patch.
 
 ### Crate layout
 
-- `waffle-gpu-sys`: raw `runtime_gpu` imports and the generated opcode constants from the
-  [bridge's opcode table](gpu-bridge.md#stream-records).
+- `waffle-gpu-sys`: raw `runtime_gpu` imports and the opcode and record constants generated from
+  [Waffle's data table](gpu-bridge.md#wire-format).
 - `waffle-wgpu`: the backend. It depends on `wgpu` with `custom`, on `naga` with `wgsl-out` for
   IR translation, and optionally on naga's `glsl-in` and `spv-in` behind features.
 
@@ -91,8 +91,9 @@ traits are empty markers.
 
 ### Identity and lifetime
 
-Every object holds a `u32` id from a per-type allocator and an `Arc` to its connection. `Drop`
-appends `release(type, id)`. wgpu wraps implementations in `Arc<dyn …Interface>` and drops them
+Every object holds an `(id, generation)` handle from a per-type allocator and an `Arc` to its
+connection, following [the bridge's identity rules](gpu-bridge.md#wire-format). `Drop` appends
+`release`. wgpu wraps implementations in `Arc<dyn …Interface>` and drops them
 when the last user does, so release order follows wgpu's own rules.
 
 ### Buffering and flushing

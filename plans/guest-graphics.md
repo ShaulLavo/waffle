@@ -35,24 +35,23 @@ The page owns the canvas, the display module and the GPU service. A guest proces
 grant. Its winit event loop blocks in `events_read`; its wgpu calls become stream records the GPU
 service replays. Neither the canvas nor any WebGPU object enters guest JavaScript.
 
-## ADR 006 (proposed): Rust guest crates
+## Where the code lives
 
-`AGENTS.md` allows Rust only for the network module ([ADR 005](../docs/adr/005-lazy-rust-wasm-network.md)).
-These plans need Rust on the **guest** side: libraries that guest programs link, which never enter
-a browser bundle. Proposal, to be recorded as ADR 006 when approved:
+Waffle needs only the interface. Libraries that call it compile into guest programs and never enter
+a Waffle bundle, so they live outside this repository, as Bun's adapter and Bash Web already do.
+No exception to the TypeScript rule in `AGENTS.md` is needed.
 
-- A second Cargo workspace, `packages/waffle-guest/`, with `waffle-window`, `waffle-gpu-sys` and
-  `waffle-wgpu` (and later `waffle-net`, see [networking](#networking)). Targets
-  `wasm32-wasip1` and `wasm32-wasip1-threads` only.
-- Consumers depend on it by exact Git revision, as they pin the runtime today. Not published to
-  crates.io in the first release.
-- `rust-version` stays at or below the oldest supported consumer toolchain (Horizon needs 1.95).
-  CI builds with Waffle's pinned toolchain and with that minimum.
-- The bridge's opcode table has one TypeScript source. A generator writes the Rust constants, the
-  generated file is checked in, and CI fails when it is stale.
-- Page-side code stays TypeScript. No Rust enters the display module or the GPU service.
-- The winit fork lives in a separate repository unless the owner prefers vendoring
-  ([options](guest-windows.md#where-the-fork-lives)).
+| In this repository                                                                                                               | In a separate repository (name to be chosen)                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Page-side TypeScript: the display module and the GPU service                                                                     | `waffle-window`, `waffle-gpu-sys`, `waffle-wgpu`, and later `waffle-net` ([networking](#networking)) |
+| `runtime_window` and `runtime_gpu` in `docs/host-abi.md`                                                                         | The winit fork, in the same repository or next to it                                                 |
+| The stream's opcode and record table as a data file that clients generate code from ([wire format](gpu-bridge.md#wire-format))   | Tests of those crates against a pinned Waffle                                                        |
+| Small C and Rust guest fixtures for Waffle's own tests (allowed today as "guest fixtures", see [guest threads](wasi-threads.md)) |                                                                                                      |
+
+Interface changes follow `AGENTS.md`: change matching consumers together, no compatibility
+negotiation, and a `waffleHostInterface` bump when an old client cannot run on the new contract.
+The guest crates keep `rust-version` at or below the oldest supported consumer toolchain (Horizon
+needs 1.95).
 
 ## Order of work
 
@@ -68,7 +67,7 @@ reach S4, W5 and B3 finish the threaded paths, and Horizon can boot.
 | Lane              | Engineer-days | Depends on               |
 | ----------------- | ------------- | ------------------------ |
 | Windows W0–W4     | 16–25         | Nothing new              |
-| GPU G0–G3         | 21–32         | Nothing new              |
+| GPU G0–G3         | 22–34         | Nothing new              |
 | wgpu B0–B2        | 17–26         | G1, G2, W2 (surface ids) |
 | Threaded W5, B3   | 6–10          | Threads S4               |
 | Release G4–G5, B4 | 14–24         | All of the above         |
@@ -141,9 +140,19 @@ WebTransport planned) gives guests a route out. Horizon on Waffle then needs:
 
 ## Open questions for the owner
 
-1. Approve ADR 006 as proposed, or keep guest Rust crates out of this repository?
-2. Winit fork in a separate repository (recommended) or vendored?
-3. One GPU service per runtime (recommended), or one per process for stronger isolation at the cost
-   of one canvas per process?
-4. Should the stream also target a C `webgpu.h` implementation later? It changes nothing now but
-   argues for keeping opcodes WebGPU-shaped, which the bridge plan already does.
+1. Winit fork: its own fork repository, or inside the guest-crates repository? Either way not
+   vendored here: winit 0.30.13 is about 57,000 lines of upstream Rust for a patch of about 2,000.
+2. Name of the guest-crates repository.
+
+## Decided
+
+- **The stream stays usable by a C `webgpu.h` client** (owner, 2026-10-31). Opcodes and records
+  follow WebGPU, not wgpu, and are generated from `webgpu.yml` ([wire format](gpu-bridge.md#wire-format)).
+
+## Recommended, awaiting confirmation
+
+- **Guest Rust crates live outside this repository.** Waffle owns the interface, its data table and
+  fixtures ([where the code lives](#where-the-code-lives)). Replaces the earlier proposal for an
+  ADR allowing Rust guest crates here.
+- **One GPU service per runtime, one isolated connection per process.** From prior art; bridge
+  slice G0 confirms it by measurement. See [prior art](gpu-bridge.md#prior-art).

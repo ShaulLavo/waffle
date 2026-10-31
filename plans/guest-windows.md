@@ -1,7 +1,7 @@
 # Windows, input and a winit backend for guests
 
-Status: **Proposed plan. Nothing here is implemented.** Needs owner approval of
-[ADR 006 (proposed)](guest-graphics.md#adr-006-proposed-rust-guest-crates) before source work.
+Status: **Proposed plan. Nothing here is implemented.** Rust crates live outside this repository
+([where the code lives](guest-graphics.md#where-the-code-lives)).
 
 Prepared: 2026-10-31. Inspected Waffle baseline
 [`9b66e3aa2462771f65ca263745a23c80e2c8fea3`](https://github.com/ShaulLavo/waffle/commit/9b66e3aa2462771f65ca263745a23c80e2c8fea3),
@@ -37,7 +37,7 @@ multiple browser windows (`window.open`), native menus, system tray, drag-out, a
 | Input transport | One shared-memory ring per surface, single producer (the page's main thread), single consumer (the guest's event-loop thread).                                      | The main thread never blocks. The guest blocks in `Atomics.wait` on the ring's wake word, which keeps Preview 1 semantics.                           |
 | Overflow        | Coalesce pointer motion, wheel and resize. Never drop key, button or focus records; on backlog overflow publish one `input-reset` record instead.                   | A dropped key-up sticks a key forever. A reset lets the guest release every held key and button.                                                     |
 | winit           | Fork winit 0.30.13 with `platform_impl/waffle`, based on the orbital backend. Consumers apply it through `[patch.crates-io]`.                                       | Orbital's `run` is a blocking loop (1,593 lines in total), which matches a guest that blocks. The web backend (6,556 lines) depends on JS callbacks. |
-| Rust layering   | The fork stays thin. ABI wrappers live in a Waffle-owned crate, `waffle-window`, which the fork depends on.                                                         | The ABI and its only Rust wrapper change together in one repository, as `AGENTS.md` requires.                                                        |
+| Rust layering   | The fork stays thin. ABI wrappers live in `waffle-window`, which the fork depends on.                                                                               | Apps without winit can use `waffle-window` directly, and the fork stays a small rebase per winit release.                                            |
 | Window handle   | `RawWindowHandle::Web(WebWindowHandle { id })`, where `id` is the surface id. `RawDisplayHandle::Web`.                                                              | raw-window-handle 0.6 defines a `u32` web id. The wgpu backend reads it in `create_surface`. No JS object pointer exists in a WASI guest.            |
 | Gestures        | Operations that browsers gate on a user gesture (pointer lock, fullscreen, keyboard lock) are **armed** by the guest and completed by the page on the next gesture. | A guest call never runs inside a DOM event handler, so it cannot satisfy the gesture rule directly.                                                  |
 
@@ -159,8 +159,8 @@ tick and read with a `gamepads_read` import. winit has no gamepad API; consumers
 
 Safe wrappers over `runtime_window`: `Surface`, typed `Event` decoding, `Command` encoding,
 `wake()`, and the clipboard slot. It has no winit dependency and works for apps that do not use
-winit. It lives in the Rust guest workspace proposed by
-[ADR 006](guest-graphics.md#adr-006-proposed-rust-guest-crates) and builds for `wasm32-wasip1` and
+winit. It lives in the guest-crates repository
+([where the code lives](guest-graphics.md#where-the-code-lives)) and builds for `wasm32-wasip1` and
 `wasm32-wasip1-threads`.
 
 ### The winit fork
@@ -195,11 +195,10 @@ message. `Window` is `Send + Sync`; every operation is a `command`.
 
 ### Where the fork lives
 
-Recommended: a fork repository (for example `ShaulLavo/winit`, branch `waffle-0.30`) that depends
-on `waffle-window` by exact Git revision. Consumers pin both. Vendoring winit into this repository
-would add about 30,000 lines of upstream code for a patch of roughly 2,000. If the owner prefers
-one repository, vendor it under the Rust guest workspace and add the classified row to
-`docs/bun-patches.md`.
+Not in this repository. winit 0.30.13 is about 57,000 lines of upstream Rust (`src/`), and the
+Waffle patch is about 2,000. Keep it as a fork (for example a `waffle-0.30` branch) that depends on
+`waffle-window` by exact Git revision, either in its own fork repository or inside the guest-crates
+repository ([open question](guest-graphics.md#open-questions-for-the-owner)). Consumers pin both.
 
 Upstreaming is not planned: 0.30 is a maintenance branch and 0.31 changes the API. Revisit after
 the first consumer ships.
