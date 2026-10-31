@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
 import { ProcessABI } from "../proc/abi.js";
-import { claimOutcome } from "../proc/outcome.js";
+import { claimOutcome, readOutcome } from "../proc/outcome.js";
 import { collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory.js";
 import {
   createWorkerProcessTransport,
@@ -796,30 +796,62 @@ function transitionFixture() {
     },
   };
 }
-for (const operation of ["bind", "admit", "select"] as const)
+for (const operation of ["bind", "admit"] as const)
   test(`participant death during ${operation} policy cannot publish authority`, () => {
     const f = transitionFixture();
     try {
       const child = f.spawn(),
         group = must(f.authority.createGroup({ initialMode: "cooked" }));
       const plan = must(f.authority.planMember({ group, parent: f.editorMember.member }));
-      if (operation !== "select") must(f.authority.transfer({ from: f.editorLease, to: group }));
-      if (operation === "select") must(f.authority.admitExisting({ group, pid: child.pid }));
+      must(f.authority.transfer({ from: f.editorLease, to: group }));
       f.fault(() => {
         claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 0 });
       });
       const result =
         operation === "bind"
           ? f.authority.bindMember({ planned: plan.member, pid: child.pid })
-          : operation === "admit"
-            ? f.authority.admitExisting({ group, pid: child.pid })
-            : f.authority.transfer({ from: f.editorLease, to: group });
+          : f.authority.admitExisting({ group, pid: child.pid });
       expect(result.kind === "error" ? result.code : "OK").toBe("CLOSED");
       expect(f.display.snapshot()).toEqual({ kind: "error", code: "CLOSED" });
     } finally {
       f.cleanup();
     }
   });
+
+test("descendant exit during selection confirmation rolls back without closing the editor", async () => {
+  const f = transitionFixture();
+  try {
+    const child = f.spawn();
+    const group = must(f.authority.createGroup({ initialMode: "cooked" }));
+    must(f.authority.admitExisting({ group, pid: child.pid }));
+    f.fault(() => {
+      f.fault(() => {});
+      claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 0 });
+    });
+
+    const result = await f.authority.control(() =>
+      f.authority.transfer({ from: f.editorLease, to: group }),
+    );
+
+    expect(result.kind).toBe("error");
+    if (result.kind !== "error") throw new Error("selection unexpectedly committed");
+    expect(result.code).toBe("PROCESS_GONE");
+    expect(result.receipt.phase).toBe("rolled-back");
+    expect(result.receipt.lease(f.editorLease)).toBe(true);
+    expect(result.receipt.state?.kind).toBe("open");
+    expect(readOutcome(workerProcessState(f.root).signals.outcome)).toBeNull();
+    expect(f.display.snapshot().kind).toBe("ok");
+
+    const restored = f.authority.transfer({ from: f.editorLease, to: f.editor });
+    expect(restored.kind).toBe("ok");
+    expect(f.input([66])).toEqual({ kind: "ok", value: 1 });
+    const bytes = new Uint8Array(1);
+    expect(f.attachment.resolve(0).tryRead!([bytes])).toBe(1);
+    expect(bytes[0]).toBe(65);
+  } finally {
+    f.cleanup();
+  }
+});
 
 test("one incarnation cannot bind two plans in the same group", () => {
   const f = fixture();

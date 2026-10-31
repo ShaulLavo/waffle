@@ -70,7 +70,7 @@ export const payloadExceptions: readonly PayloadException[] = [
   },
   {
     file: "proc/pipes.ts",
-    scope: "Ring.write",
+    scope: "Ring.writeEntered",
     rule: "private-iteration",
     expression: "chunks",
     reason: "Caller-owned source iovecs; ring copies use captured natives.",

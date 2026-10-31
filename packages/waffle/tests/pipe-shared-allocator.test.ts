@@ -42,7 +42,7 @@ test("fixed pipe, local wake and endpoint controls charge exact allocations", ()
     expect(writer.tryWrite([new Uint8Array([9])])).toBe(1);
     expect(reader.tryRead([new Uint8Array(1)])).toBe(1);
     expect(Object.values(writer.handle()).some((value) => typeof value === "function")).toBe(false);
-    expect(structuredClone(writer.handle()).slot).toBe(0);
+    expect(structuredClone(writer.handle()).incarnation).toBe(0);
   } finally {
     pipe.dispose();
   }
@@ -112,7 +112,7 @@ for (const failAt of [2, 3]) {
       expect(() => pipe.retain(1, "read")).toThrow(failure);
       fail = false;
       const reader = pipe.retain(1, "read");
-      expect(reader.handle().slot).toBe(0);
+      expect(reader.handle().incarnation).toBe(0);
       expect(Atomics.load(new Int32Array(reader.handle().buffer, 40 + 2 * 176 + 4, 1), 0)).toBe(1);
     } finally {
       pipe.dispose();
