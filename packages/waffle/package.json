@@ -369,6 +369,13 @@
       "bun": "./browser/fs-worker.ts",
       "browser": "./browser/fs-worker.ts"
     },
+    "./browser/net/outbound": {
+      "types": "./browser/net/outbound.ts",
+      "node": "./dist/browser/net/outbound.js",
+      "bun": "./browser/net/outbound.ts",
+      "browser": "./browser/net/outbound.ts",
+      "default": "./browser/net/outbound.ts"
+    },
     "./browser/net/helper": {
       "types": "./browser/net/helper.ts",
       "node": "./dist/browser/net/helper.js",

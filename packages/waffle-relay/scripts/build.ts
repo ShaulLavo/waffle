@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -13,3 +13,5 @@ for (const file of await readdir(resolve(root, "src"))) {
     transpiler.transformSync(code),
   );
 }
+
+await chmod(resolve(root, "dist/cli.js"), 0o755);

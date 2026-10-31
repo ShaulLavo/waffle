@@ -73,7 +73,7 @@ for (const entry of ["../browser/net/host.ts", "./network-browser-worker.ts"]) {
     if (!result.metafile) throw new Error("missing guest graph");
     expect(
       Object.keys(result.metafile.inputs).filter((path) =>
-        /browser\/net\/(?:module|namespace|runtime|helper)\.ts$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
+        /browser\/net\/(?:module|namespace|runtime|helper|outbound-socket)\.ts$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
           path,
         ),
       ),
@@ -230,5 +230,22 @@ for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]
     expect(
       execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
     ).toContain("loader rejection preserved by identity during disposal; accessor reads=0");
+  });
+}
+
+for (const entry of ["../index.ts", "../browser/net/helper.ts"]) {
+  test(`${entry} never imports relay or carrier implementations`, async () => {
+    const result = await Bun.build({
+      entrypoints: [new URL(entry, import.meta.url).pathname],
+      target: "browser",
+      metafile: true,
+    });
+    expect(result.success).toBe(true);
+    if (!result.metafile) throw Error("missing no-relay import graph");
+    expect(
+      Object.keys(result.metafile.inputs).filter((path) =>
+        /waffle-relay|(?:^|\/)carriers?\//.test(path),
+      ),
+    ).toEqual([]);
   });
 }

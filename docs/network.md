@@ -1,4 +1,4 @@
-# Runtime-scoped loopback networking
+# Runtime-scoped networking
 
 `await runtime.network()` returns one lazy network capability per `createRuntime()`.
 Each guest worker borrows a distinct helper and ring. Helpers share localhost on
@@ -44,10 +44,12 @@ Do not mix standalone and shared hosts inside one runtime's shared network.
 
 ## Socket contract
 
-- Loopback aliases share one port space. Non-loopback TCP remains unsupported.
+- Loopback aliases share one port space. Non-loopback TCP remains unsupported unless the page
+  explicitly injects a `NetConnect` policy into the helper. The connector receives the original
+  hostname and port and returns a Web Streams duplex plus the actual remote address.
   Listeners retain their bind family. IPv6-any listeners accept both families and
   report mapped IPv4 endpoints. See [Browser TCP addresses](browser-network-addresses.md).
-- Bind and connect report conflicts and refused connections synchronously.
+- Loopback bind and connect report conflicts and refused connections synchronously.
   Port zero allocates an unused port from 49152 through 65535.
 - Accepted handles belong to the listener's helper. Their peer address matches
   the connecting handle's local address, mapped for an IPv4 connection accepted by
@@ -93,6 +95,49 @@ The shared namespace is smaller than another broker layer. Existing per-worker
 messages carry commands, existing rings carry replies and data, and helpers route
 ordinary owned socket objects. No additional cross-thread registry is needed.
 
+## Outbound connectors
+
+The page can supply `connect?: NetConnect` alongside its fetch policy:
+
+```ts
+import type { NetConnect } from "waffle/browser/net/outbound";
+
+const connect: NetConnect = appConnect;
+const helper = network.createHelper({ ring, fetch: fetchPolicy, connect });
+```
+
+`appConnect` is trusted page code. It receives `{ host, port }` with the original unresolved
+host and an `AbortSignal`. It returns `Promise<NetOutboundStream>` with `readable`, `writable`,
+and the actual remote `PeerAddr`. The function is captured once when the helper is created.
+Low-level `NetHelper` construction accepts the same connector as its optional eighth argument.
+No connector function, stream, token or carrier object crosses into the guest worker.
+Waffle imports no relay or carrier implementation. See [ADR 006](adr/006-outbound-tcp-through-an-injected-connector.md).
+
+The synchronous helper reply is `TCP_PENDING = 1` with local port 0. The host returns a handle,
+then receives either `Kind.Open = 12` with `{ local, peer }` or `Kind.Error`. While pending,
+reads and writes, including empty writes, return `AGAIN`. Address calls fail with `ENOTCONN`.
+An empty write returns 0 after open and `ERROR` after failure. The failure is available through
+both the handle's error and `error(0)`. Pre-open error codes are `EACCES`, `ECONNREFUSED`,
+`ENOTFOUND`, `ETIMEDOUT`, `EHOSTUNREACH`, `ENETUNREACH` and `ECONNRESET`.
+Unknown errors and post-open failures map to `ECONNRESET`. Guest errors carry the requested
+host and port, not private connector diagnostics.
+
+Each receive direction admits at most 1 MiB of unread guest bytes. The helper stops pulling
+when that credit is exhausted and resumes only after `tcp-read` acknowledgements. A connector
+must supply bounded, pull-driven chunks and bound its own upstream queues. Guest writes accept
+at most 1 MiB of unsettled bytes, with partial writes or `AGAIN` at the limit. A settlement
+publishes `Kind.Writable` when capacity returns. One writer preserves accepted byte order.
+
+Shutdown closes that writer after accepted bytes, including when shutdown arrives before open.
+Target EOF produces `Kind.End`, but guest writes remain allowed. Guest close flushes accepted
+writes and cancels reads without aborting an established connector. Closing while pending aborts
+the connect signal. Helper disposal aborts the signal, writer and reader immediately, including
+a graceful close still draining. The connector owns its underlying socket cleanup and drain deadline.
+
+Loopback connects never invoke this function. External lookup and non-loopback listeners
+remain unsupported. The connector resolves names at connect time, while `lookup` remains
+localhost-only. See [Browser TCP addresses](browser-network-addresses.md#outbound-connections).
+
 ## Verification
 
 `bun test tests/runtime-network.test.ts` checks lazy ownership, retained-capability
@@ -106,6 +151,11 @@ half-close, listener/connection cleanup and runtime isolation.
 `bun test tests/network-flow-control.test.ts` runs actual workers against the same
 paused-reader, bounded-buffer, read-wakeup, streaming-EOF and cancellation cases
 used by the browser matrix. It also checks rollback after a listening hook throws.
+
+`bun test tests/network-outbound.test.ts` drives real worker hosts against controlled streams
+and a test-only `node:net` connector. It checks pending and failed opens, both credit limits,
+half-close, EOF, graceful close, cancellation and disposal. Every native listener and socket
+is closed by its test. Relay carriers and browser-engine outbound coverage are separate work.
 
 Run the real browser check through the repository's process supervisor:
 
@@ -126,6 +176,6 @@ this transport fixture and are not claimed as verified by it.
 
 ## Portable socket implementation
 
-The existing lazy `runtime.network()` activation loads a separate Rust WASM module. Each runtime namespace owns one instance. Rust owns virtual ports, endpoint metadata, byte queues, credit, and half-close state. The TypeScript helper still owns rings, fetch, HTTP, preview callbacks, and cleanup ordering. Browser TCP remains virtual-only.
+The existing lazy `runtime.network()` activation loads a separate Rust WASM module. Each runtime namespace owns one instance. Rust owns virtual ports, endpoint metadata, byte queues, credit, and half-close state. The TypeScript helper still owns rings, fetch, HTTP, preview callbacks, and cleanup ordering. The Rust module remains virtual-only in browsers; outbound streams bypass it through the page connector.
 
 Native embedders can load the same module explicitly and wire Waffle's native `socket2` adapter. IPv6-any listeners disable IPv6-only mode and fall back to IPv4 when IPv6 is unavailable. Bun retains its own JSON, handle table, JavaScript APIs, engine wiring, and policy. See [Network module ABI](network-module.md) and [ADR 005](adr/005-lazy-rust-wasm-network.md).

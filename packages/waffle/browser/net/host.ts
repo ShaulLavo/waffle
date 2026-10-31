@@ -25,12 +25,13 @@ import {
   type TcpCommand,
   type NewConn,
   OK,
+  TCP_PENDING,
   type PeerAddr,
   type SocketAddr,
   UNSUPPORTED,
 } from "./protocol.js";
 import { ENOTSUP, unixCode } from "./unix-status.js";
-import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
+import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID, TCP_RESET } from "./tcp-status.js";
 import { RingReader } from "./ring.js";
 import type { NotificationWaitSet } from "../notification-wait.js";
 import type { GuestWatchReadiness } from "../../fs/guest-watch.js";
@@ -38,6 +39,7 @@ import {
   acceptedAddress,
   loopbackAddress,
   tcpAddress,
+  isPeerAddr,
   type RuntimeNetworkLookupOptions,
 } from "./address.js";
 
@@ -69,7 +71,8 @@ interface ListenerHandle {
 interface ConnHandle extends Stream {
   kind: "conn";
   local: SocketAddr;
-  peer: SocketAddr;
+  peer: SocketAddr | null;
+  connecting: boolean;
   /** For a connection between two of the guest's own handles (connect to its own listener): the other end. */
   pipe: number | null;
   writeEnded?: boolean;
@@ -341,15 +344,18 @@ export class NetHost {
         this.send({ type: "tcp-read", id: handle, bytes: chunk.length });
       return chunk;
     }
-    if (h.error) return ERROR;
+    if (h.error) return this.fail(h.error);
     return h.ended ? 0 : AGAIN;
   }
 
   /** Copy and queue at most MAX_WRITE bytes, without transferring the caller's buffer. */
   write(handle: number, bytes: Uint8Array): number {
+    this.drain();
     const h = this.handles.get(handle);
     if (!h) return BADF;
     if (h.kind !== "conn") return UNSUPPORTED;
+    if (h.connecting) return AGAIN;
+    if (h.error) return this.fail(h.error);
     if (h.writeEnded) return ERROR;
     const n = Math.min(bytes.length, MAX_WRITE);
     if (n === 0) return 0;
@@ -359,7 +365,7 @@ export class NetHost {
       if (written === AGAIN) return AGAIN;
       if (written < 0) {
         h.error = this.tcpError(written);
-        return ERROR;
+        return this.fail(h.error);
       }
       return written;
     }
@@ -396,7 +402,10 @@ export class NetHost {
   }
 
   localAddr(handle: number): string | number {
+    this.drain();
     const h = this.handles.get(handle);
+    if (h?.kind === "conn" && (h.connecting || !h.peer))
+      return this.fail({ name: "Error", message: "socket is not connected", code: "ENOTCONN" });
     if (h?.kind !== "conn" && h?.kind !== "listener") return BADF;
     return JSON.stringify(h.local);
   }
@@ -448,6 +457,7 @@ export class NetHost {
       local: { family: "Unix", path: null },
       peer: { family: "Unix", path },
       pipe: null,
+      connecting: false,
       chunks: [],
       ended: false,
       error: null,
@@ -528,12 +538,31 @@ export class NetHost {
 
   /**
    * Shared hosts route loopback through their runtime's helpers. Standalone hosts use an in-host
-   * pipe. Outbound TCP to non-loopback addresses is unsupported in either mode.
+   * pipe. Only shared hosts can use a helper's injected outbound connector.
    */
   connect(host: string, port: number): number {
     if (this.disposed) return BADF;
     const address = tcpAddress(host);
-    if (!address) {
+    if (address) {
+      const target = loopbackAddress(address);
+      if (this.options.shared) return this.connectShared(target, port);
+      const state = Array.from(this.handles.values()).find(
+        (handle): handle is ListenerHandle & { local: PeerAddr } =>
+          handle.kind === "listener" &&
+          handle.local.family !== "Unix" &&
+          handle.local.port === port,
+      );
+      const accepted = state && acceptedAddress(state.local, target);
+      if (!state || !accepted) {
+        return this.fail({
+          name: "Error",
+          message: `connect ECONNREFUSED ${host}:${port}`,
+          code: "ECONNREFUSED",
+        });
+      }
+      return this.connectPipe(port, target, state, accepted);
+    }
+    if (!this.options.shared) {
       this.lastError = {
         name: "Error",
         message: `connect ${host}:${port}: TCP connections are not available in the browser`,
@@ -541,20 +570,15 @@ export class NetHost {
       };
       return UNSUPPORTED;
     }
-    const target = loopbackAddress(address);
-    if (this.options.shared) return this.connectShared(target, port);
-    const state = Array.from(this.handles.values()).find(
-      (handle): handle is ListenerHandle & { local: PeerAddr } =>
-        handle.kind === "listener" && handle.local.family !== "Unix" && handle.local.port === port,
-    );
-    const accepted = state && acceptedAddress(state.local, target);
-    if (!state || !accepted) {
-      return this.fail({
-        name: "Error",
-        message: `connect ECONNREFUSED ${host}:${port}`,
-        code: "ECONNREFUSED",
-      });
-    }
+    return this.connectExternal(host, port);
+  }
+
+  private connectPipe(
+    port: number,
+    target: Omit<PeerAddr, "port">,
+    state: ListenerHandle & { local: PeerAddr },
+    accepted: Omit<PeerAddr, "port">,
+  ): number {
     const client = this.nextHandle++;
     const server = this.nextHandle++;
     const clientPort = EPHEMERAL_BASE + 10000 + (client % 5000);
@@ -563,6 +587,7 @@ export class NetHost {
       kind: "conn",
       local: { ...target, port: clientPort },
       peer: { ...target, port },
+      connecting: false,
       pipe: server,
       ...stream(),
     });
@@ -570,12 +595,42 @@ export class NetHost {
       kind: "conn",
       local: { ...accepted, port },
       peer: { ...accepted, port: clientPort },
+      connecting: false,
       pipe: client,
       ...stream(),
     });
     state.pending.push(server);
     this.news();
     return client;
+  }
+
+  private connectExternal(host: string, port: number): number {
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
+    const id = this.nextHandle++;
+    const [status] = this.call({ type: "tcp-connect", id, host, port });
+    if (status < 0) {
+      if (status === UNSUPPORTED) {
+        this.lastError = {
+          name: "Error",
+          message: `connect ${host}:${port}: TCP connections are not available in the browser`,
+          code: "ENOTSUP",
+        };
+        return UNSUPPORTED;
+      }
+      return this.fail(this.tcpError(status));
+    }
+    this.handles.set(id, {
+      kind: "conn",
+      local: { address: "0.0.0.0", family: "IPv4", port: 0 },
+      peer: null,
+      connecting: status === TCP_PENDING,
+      pipe: null,
+      chunks: [],
+      ended: false,
+      error: null,
+    });
+    return id;
   }
 
   /** Close this host's handles. The launcher must also dispose its helper on worker exit. */
@@ -613,10 +668,15 @@ export class NetHost {
       [TCP_REFUSED]: "ECONNREFUSED",
       [TCP_PIPE]: "EPIPE",
       [TCP_INVALID]: "EINVAL",
+      [TCP_RESET]: "ECONNRESET",
       [UNSUPPORTED]: "ENOTSUP",
     };
     const code = codes[status] ?? "ECANCELED";
-    return { name: "Error", message: `loopback TCP: ${code}`, code };
+    return {
+      name: "Error",
+      message: `${status === TCP_RESET ? "outbound" : "loopback"} TCP: ${code}`,
+      code,
+    };
   }
 
   private call(request: TcpCommand, transfer: Transferable[] = []): [number, number] {
@@ -649,6 +709,7 @@ export class NetHost {
       local: { ...target, port: local },
       peer: { ...target, port },
       pipe: null,
+      connecting: false,
       chunks: [],
       ended: false,
       error: null,
@@ -662,6 +723,7 @@ export class NetHost {
   }
 
   localPort(handle: number): number {
+    this.drain();
     const h = this.handles.get(handle);
     if (h?.kind !== "conn" && h?.kind !== "listener") return BADF;
     return h.local.family === "Unix" ? UNSUPPORTED : h.local.port;
@@ -682,14 +744,18 @@ export class NetHost {
   }
 
   error(handle: number): string | number {
+    this.drain();
     const err = handle === 0 ? this.lastError : (this.handles.get(handle)?.error ?? null);
     if (handle !== 0 && !this.handles.has(handle)) return BADF;
     return JSON.stringify(err ?? { name: "Error", message: "no error" });
   }
 
   peerAddr(handle: number): string | number {
+    this.drain();
     const h = this.handles.get(handle);
     if (h?.kind !== "conn") return BADF;
+    if (h.connecting || !h.peer)
+      return this.fail({ name: "Error", message: "socket is not connected", code: "ENOTCONN" });
     return JSON.stringify(h.peer);
   }
 
@@ -725,6 +791,10 @@ export class NetHost {
       this.onConn(handle, payload);
       return;
     }
+    if (kind === Kind.Open) {
+      this.onOpen(handle, payload);
+      return;
+    }
     // Events for handles the guest already closed are dropped.
     const h = this.handles.get(handle) ?? this.unaccepted.get(handle);
     if (!h || h.kind === "listener") return;
@@ -738,7 +808,10 @@ export class NetHost {
     if (kind === Kind.Head && h.kind === "fetch") h.head = payload;
     else if (kind === Kind.Data) h.chunks.push(payload);
     else if (kind === Kind.End) h.ended = true;
-    else if (kind === Kind.Error) h.error = JSON.parse(decoder.decode(payload)) as NetError;
+    else if (kind === Kind.Error) {
+      h.error = JSON.parse(decoder.decode(payload)) as NetError;
+      if (h.kind === "conn") h.connecting = false;
+    }
   }
 
   private lookupPayload(state: LookupHandle, payload: Uint8Array): Uint8Array {
@@ -797,11 +870,24 @@ export class NetHost {
       local,
       peer,
       pipe: null,
+      connecting: false,
       chunks: [],
       ended: false,
       error: null,
     });
     h.pending.push(conn);
+  }
+
+  private onOpen(handle: number, payload: Uint8Array): void {
+    const h = this.handles.get(handle);
+    if (h?.kind !== "conn" || !h.connecting) return;
+    const opened = JSON.parse(decoder.decode(payload)) as { local: SocketAddr; peer: SocketAddr };
+    if (!isPeerAddr(opened.peer) || !isPeerAddr(opened.local, true))
+      throw new TypeError("Invalid outbound open record");
+    h.local = opened.local;
+    h.peer = opened.peer;
+    h.connecting = false;
+    this.news();
   }
 
   private closeUnaccepted(conn: number): void {

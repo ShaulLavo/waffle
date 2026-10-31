@@ -10,3 +10,8 @@ export type {
   RelayHandler,
   RelayErrorCode,
 } from "./protocol.js";
+
+export { createRelayConnect } from "./tcp-client.js";
+export type { RelayConnectOptions } from "./tcp-client.js";
+export { RelayConnectError } from "./tcp-protocol.js";
+export type { TcpTarget, TcpRemote, TcpStream } from "./tcp-protocol.js";
