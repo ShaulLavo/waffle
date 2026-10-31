@@ -738,6 +738,25 @@ Shared hosts also carry pathname stream sockets through `listenPath` and `connec
 
 Waffle does not promise compatibility with an older runtime package or a stale consumer. Consumers pin one exact Git commit and use the matching exports and lockfile.
 
+Installable Waffle packages also carry a positive safe integer named `waffleHostInterface`.
+The runtime provides the integer, and every family requires one. A family can run only when
+its required integer equals the runtime integer. Missing, malformed, non-positive, non-safe,
+and mismatched values fail before installation or execution.
+
+The integer covers the guest imports and public family modules that a family can observe. This
+includes Preview 1, `runtime_fs`, `runtime_proc`, `runtime_shm`, the filesystem, process, and
+memory-group services behind them, the network module, and the exported `waffle/programs`,
+`waffle/programs/catalog`, `waffle/search`, `waffle/core/filesystem`, and declared `waffle/fs/*`
+and `waffle/proc/*` modules. It covers signatures, results, errors, readiness, ordering,
+authority, revocation, and lifetime rules.
+
+Package versions, source commits, URLs, archive hashes, transformer inputs, producer receipts,
+and artifact hashes remain integrity evidence. They do not substitute for
+`waffleHostInterface`. A runtime implementation can change without an interface bump when the
+observable contract stays compatible. Bump the integer when an old family cannot safely run on
+the new contract. A family changes its required integer only when it starts using a newer
+contract.
+
 ## Inode permission query
 
 `runtime_fs.path_permissions_get(dirfd: u32, path_ptr: u32, path_len: u32, flags: u32, out_ptr: u32) -> i32`

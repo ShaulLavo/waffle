@@ -30,12 +30,14 @@
       "name": "waffle-base",
       "version": "0.0.0",
       "dependencies": {
-        "waffle": "workspace:*",
         "waffle-coreutils": "workspace:*",
         "waffle-findutils": "workspace:*",
         "waffle-grep": "workspace:*",
         "waffle-ripgrep": "workspace:*",
         "waffle-sed": "workspace:*",
+      },
+      "devDependencies": {
+        "waffle": "workspace:*",
       },
       "peerDependencies": {
         "waffle": "*",
@@ -147,6 +149,9 @@
     "packages/procps": {
       "name": "waffle-procps",
       "version": "0.0.0",
+      "devDependencies": {
+        "waffle": "workspace:*",
+      },
       "peerDependencies": {
         "waffle": "*",
       },
@@ -157,9 +162,6 @@
     "packages/python": {
       "name": "@waffle/python",
       "version": "0.0.0",
-      "dependencies": {
-        "waffle": "workspace:*",
-      },
       "devDependencies": {
         "@types/bun": "^1.4.3",
         "esbuild": "0.28.2",
@@ -783,9 +785,9 @@
 
     "waffle-base": ["waffle-base@workspace:packages/base"],
 
-    "waffle-curl": ["waffle-curl@workspace:packages/curl"],
-
     "waffle-coreutils": ["waffle-coreutils@workspace:packages/coreutils"],
+
+    "waffle-curl": ["waffle-curl@workspace:packages/curl"],
 
     "waffle-diffutils": ["waffle-diffutils@workspace:packages/diffutils"],
 
