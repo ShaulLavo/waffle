@@ -9,6 +9,7 @@ import {
   type ProcessPlan,
 } from "../memory/reservations.js";
 import { moduleMemoryDeclarations, type MemoryDeclaration } from "../memory/declarations.js";
+import type { Preview1Network } from "./preview1-network-types.js";
 import {
   prepareTerminalDescendant,
   terminalPreparationReceipt,
@@ -219,6 +220,8 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   /** Module entry stays inert until its first request; unused workers may be prestarted. */
   workerUrl: string;
   notificationWorkerUrl?: string;
+  /** Ownership moves to the broker, including all failed launch and termination paths. */
+  network?: Preview1Network;
   request: Omit<
     T,
     | "filesystem"
@@ -230,6 +233,7 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
     | "terminalOutput"
     | "memoryGroup"
     | "controlGrant"
+    | "network"
   >;
   /** Join a memory group. Admission is reserved before the Worker is constructed. */
   memoryGroup?: MemoryGroupLaunch;
@@ -277,6 +281,7 @@ interface RuntimeChild {
   quiescence?: Promise<void>;
   stopping?: Promise<void>;
   startupStderr?: PipeEndpoint;
+  network?: Preview1Network;
   cleanup?(): void;
   wake?(): void;
   output?: TerminalOutputReader;
@@ -1516,10 +1521,42 @@ export class BrowserProcessBroker {
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
   ): ProcessHandle {
-    if (this.suspended) throw new Error("Process broker is disposed");
+    const owner = options.network;
+    let released = false;
+    const network = owner && {
+      connection: owner.connection,
+      dispose() {
+        if (released) return;
+        released = true;
+        owner.dispose();
+      },
+    };
+    try {
+      return this.launchOwnedWorker(context, { ...options, network });
+    } catch (error) {
+      try {
+        network?.dispose();
+      } catch (cleanup) {
+        this.report(cleanup);
+      }
+      throw error;
+    }
+  }
+  private launchOwnedWorker<T extends RuntimeWorkerRequest>(
+    context: ProcessContext,
+    options: WorkerLaunchOptions<T>,
+  ): ProcessHandle {
+    if (this.suspended) {
+      options.network?.dispose();
+      throw new Error("Process broker is disposed");
+    }
     const transport = this.transport.get(context.pid);
-    if (!transport) throw new Error("process has no admitted worker transport");
-    if (this.children.has(context.pid)) throw new Error("process already has a worker");
+    if (!transport || this.children.has(context.pid)) {
+      options.network?.dispose();
+      throw new Error(
+        !transport ? "process has no admitted worker transport" : "process already has a worker",
+      );
+    }
     const state = workerProcessState(transport);
     const ticket = this.options.reservations.admit(this.workerPlan(context, options));
     let memory: BigInt64Array;
@@ -1548,9 +1585,11 @@ export class BrowserProcessBroker {
       failed: false,
       stopped: false,
       cleanup: options.cleanup,
+      network: options.network,
       wake: options.wake,
     };
     this.children.set(context.pid, child);
+    context.registerRevocation(() => this.disposeNetwork(child));
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
     let output: TerminalOutputReader;
@@ -1591,6 +1630,7 @@ export class BrowserProcessBroker {
       ticket.abort();
       child.failed = true;
       this.disposeNotifications(child);
+      this.disposeNetwork(child);
       connection?.port.close();
       throw error;
     }
@@ -1605,6 +1645,7 @@ export class BrowserProcessBroker {
       startupStderr: child.startupStderr?.handle(),
       notifications: child.notifications?.connection,
       terminalOutput: output.buffer,
+      network: options.network?.connection,
     };
     const group = child.group?.launch();
     if (group) Object.assign(request, { memoryGroup: group.request });
@@ -1674,6 +1715,7 @@ export class BrowserProcessBroker {
         return;
       }
       this.disposeNotifications(child);
+      this.disposeNetwork(child);
       child.acknowledged = true;
       this.options.filesystem.reap(filesystem);
       if (data.cleanupErrors?.length)
@@ -1687,6 +1729,7 @@ export class BrowserProcessBroker {
     worker.onerror = (event) => {
       event.preventDefault();
       child.failed = true;
+      this.disposeNetwork(child);
       let status: number;
       try {
         status = startStatus(context.outcome);
@@ -1705,11 +1748,13 @@ export class BrowserProcessBroker {
     try {
       const ports: Transferable[] = [request.filesystem.port];
       if (request.notifications) ports.push(request.notifications.port);
+      if (request.network) ports.push(request.network.port);
       worker.postMessage(request, group ? ports.concat(group.transfer) : ports);
     } catch (error) {
       child.failed = true;
       this.disposeNotifications(child);
       request.filesystem.port.close();
+      this.disposeNetwork(child);
       throw error;
     }
     return { terminate: () => this.stop(child) };
@@ -1897,6 +1942,15 @@ export class BrowserProcessBroker {
     if (child.acknowledged) return;
     return (child.quiescence ??= this.options.filesystem.quiesce(child.filesystem));
   }
+  private disposeNetwork(child: RuntimeChild): void {
+    const network = child.network;
+    child.network = undefined;
+    try {
+      network?.dispose();
+    } catch (error) {
+      this.report(error);
+    }
+  }
   private disposeNotifications(child: RuntimeChild | undefined): void {
     void child?.notifications?.dispose().catch((error) => this.report(error));
   }
@@ -1908,6 +1962,7 @@ export class BrowserProcessBroker {
       if (child.stopped) return;
       child.stopped = true;
       const errors: unknown[] = [];
+      this.disposeNetwork(child);
       const notifications = child.notifications;
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(async () => {

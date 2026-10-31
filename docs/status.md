@@ -42,7 +42,7 @@ The CI `browser` job installs Playwright's Chromium, Firefox and WebKit on `ubun
 - **WASI Preview 1 command that exports `_start` and memory:** runs through the generic `preview1` worker. See [Run a WASI program](guides/run-a-wasi-program.md).
 - **Module that imports `runtime_proc`:** gets spawn, pipes, jobs, signals and poll. See [Host ABI](host-abi.md).
 - **Module that imports an unknown namespace or name:** fails at link time. Waffle adds no stub that returns `ENOSYS`.
-- **Preview 1 `sock_accept`, `sock_recv`, `sock_shutdown`:** return `ENOTSUP`. TCP reaches guests only through an adapter such as Bun's.
+- **Preview 1 launch-bound sockets:** `sock_send`, `sock_recv`, `sock_shutdown`, descriptor I/O and polling work on explicit connect bindings. The responsive owner holds the connector and helper. Preview 1 has no connect import; listener bindings and `sock_accept` are not implemented. bun-wasm's separate launcher handoff and outside line/echo coverage remain consumer gates. See [Run a WASI program](guides/run-a-wasi-program.md#bind-a-socket-before-launch).
 - **Symlinks (`path_symlink`):** return `ENOTSUP`.
 - **Guest that inherits file descriptor 3 and scans preopens:** needs a wasi-libc rebuilt with the patch in [Guest libc](wasi-libc.md).
 - **Bun and Bash Web:** run on Waffle through their own adapters, in their own repositories.
@@ -78,15 +78,15 @@ Numeric `127.0.0.1` and `::1` also resolve. Unsupported names and nonzero hints 
 
 The lazy Rust `wasm32-unknown-unknown` module and Waffle-owned native `socket2` binding are implemented in PR105. This is a scoped Rust exception, recorded in [ADR 005](adr/005-lazy-rust-wasm-network.md). The runtime loads the module at `runtime.network()`, with one instance per runtime and no OS socket binding in browser hosts. Guest network calls, rings, JSON and handles are unchanged.
 
-Measured on 2026-10-25 with the pinned Rust toolchain and `bun run size:network`:
+Measured on 2026-10-31 with the pinned Rust toolchain and `bun run size:network`:
 
 | Artifact                     |  Bytes | Separate budget |
 | ---------------------------- | -----: | --------------: |
-| Network WASM                 | 85,060 |          88,000 |
-| Network WASM, gzip           | 26,856 |          28,000 |
+| Network WASM                 | 90,501 |          92,000 |
+| Network WASM, gzip           | 28,479 |          29,000 |
 | Lazy JavaScript loader, gzip |    664 |             800 |
 
-The core measured 9,196 gzip bytes. Its existing 9,782-byte budget is unchanged. Source installation now needs the pinned Rust toolchain and WASM target. Generated assets are not checked in.
+The core measured 11,311 gzip bytes with `bun run size` on Bun 1.4.4. Its socket-descriptor budget is 12,644 bytes, with about 12% headroom. Source installation now needs the pinned Rust toolchain and WASM target. Generated assets are not checked in.
 
 Native tests cover real IPv4 and IPv6 connections, IPv6-only OS controls, disposable-child IPv4 fallback, partial host operations, backpressure, readiness, half-close and cleanup. The browser network matrix passes in Chromium, Firefox and WebKit and remains virtual-only. Bun consumer wiring, its matching dependency pin and facade fixtures are not delivered here. The host ABI supports immediate nonblocking bind and readiness-driven connect/I/O, not asynchronous bind completion, DNS, TLS or close-linger timers. The reference readiness wait is Unix-only. See [Network module ABI](network-module.md).
 

@@ -136,6 +136,7 @@ export const enforcedModules = [
   "proc/errors.ts",
   "browser/worker.ts",
   "browser/worker-memory.ts",
+  "browser/preview1-socket.ts",
   "browser/guarded-stream.ts",
   "browser/runtime-terminals.ts",
   "browser/terminal-session.ts",

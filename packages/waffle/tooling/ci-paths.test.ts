@@ -31,7 +31,9 @@ for (const name of ["browser", "libc"]) {
   test(`${name} waits for paths and runs on manual dispatch or filter failure`, () => {
     const job = record(jobs[name]);
     // libc is also the single producer of the memory group fixture the browser gate consumes.
-    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm", "libc"] : "changes");
+    expect(job.needs).toEqual(
+      name === "browser" ? ["changes", "network-wasm", "libc"] : ["changes", "network-wasm"],
+    );
     const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
     expect(job.if).toBe(
       `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer}) }}`,

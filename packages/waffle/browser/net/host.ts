@@ -43,13 +43,13 @@ import {
   type RuntimeNetworkLookupOptions,
 } from "./address.js";
 
-interface Stream {
+interface NetworkByteStream {
   chunks: Uint8Array[];
   ended: boolean;
   error: NetError | null;
 }
 
-interface FetchHandle extends Stream {
+interface FetchHandle extends NetworkByteStream {
   kind: "fetch";
   head: Uint8Array | null;
 }
@@ -68,7 +68,7 @@ interface ListenerHandle {
   error: NetError | null;
 }
 
-interface ConnHandle extends Stream {
+interface ConnHandle extends NetworkByteStream {
   kind: "conn";
   local: SocketAddr;
   peer: SocketAddr | null;
@@ -76,6 +76,7 @@ interface ConnHandle extends Stream {
   /** For a connection between two of the guest's own handles (connect to its own listener): the other end. */
   pipe: number | null;
   writeEnded?: boolean;
+  readEnded?: boolean;
 }
 
 type Handle = FetchHandle | LookupHandle | ListenerHandle | ConnHandle;
@@ -335,6 +336,7 @@ export class NetHost {
     this.drain();
     const h = this.handles.get(handle);
     if (h?.kind !== "conn" && h?.kind !== "fetch") return BADF;
+    if (h.kind === "conn" && h.readEnded) return 0;
     if (h.kind === "fetch" && !h.head) return h.error ? ERROR : AGAIN;
     if (h.chunks.length > 0) {
       const chunk = this.take(h, cap);
@@ -384,6 +386,45 @@ export class NetHost {
     other.chunks.push(count === n ? data : data.slice(0, count));
     this.news();
     return count;
+  }
+
+  /** Non-consuming socket state for descriptor adapters. Does not perform I/O. */
+  socketState(handle: number) {
+    this.drain();
+    const h = this.handles.get(handle);
+    if (h?.kind !== "conn")
+      return { readable: true, writable: true, hangup: true, nbytes: 0, error: "EBADF" };
+    const nbytes = h.chunks.reduce((size, chunk) => size + chunk.length, 0);
+    return {
+      readable: nbytes > 0 || h.ended || !!h.readEnded || !!h.error,
+      writable: !!h.error || !!h.writeEnded || (!h.connecting && this.socketWritable(handle, h)),
+      hangup: h.ended || !!h.readEnded || !!h.error,
+      nbytes,
+      error: h.error?.code,
+    };
+  }
+
+  private socketWritable(handle: number, socket: ConnHandle): boolean {
+    if (socket.pipe !== null) {
+      const peer = this.connection(socket.pipe);
+      return !peer || peer.chunks.reduce((size, chunk) => size + chunk.length, 0) < MAX_WRITE;
+    }
+    if (!this.options.shared) return true;
+    return this.call({ type: "tcp-ready", id: handle })[0] !== 0;
+  }
+
+  /** Local SHUT_RD discards present and future bytes while releasing helper receive credit. */
+  shutdownRead(handle: number): number {
+    this.drain();
+    const h = this.handles.get(handle);
+    if (h?.kind !== "conn") return BADF;
+    if (h.readEnded) return OK;
+    h.readEnded = true;
+    const bytes = h.chunks.reduce((size, chunk) => size + chunk.length, 0);
+    h.chunks = [];
+    if (bytes && this.options.shared) this.send({ type: "tcp-read", id: handle, bytes });
+    this.news();
+    return OK;
   }
 
   shutdown(handle: number): number {
@@ -582,7 +623,7 @@ export class NetHost {
     const client = this.nextHandle++;
     const server = this.nextHandle++;
     const clientPort = EPHEMERAL_BASE + 10000 + (client % 5000);
-    const stream = (): Stream => ({ chunks: [], ended: false, error: null });
+    const stream = (): NetworkByteStream => ({ chunks: [], ended: false, error: null });
     this.handles.set(client, {
       kind: "conn",
       local: { ...target, port: clientPort },
@@ -806,8 +847,11 @@ export class NetHost {
       return;
     }
     if (kind === Kind.Head && h.kind === "fetch") h.head = payload;
-    else if (kind === Kind.Data) h.chunks.push(payload);
-    else if (kind === Kind.End) h.ended = true;
+    else if (kind === Kind.Data) {
+      if (h.kind === "conn" && h.readEnded)
+        this.send({ type: "tcp-read", id: handle, bytes: payload.length });
+      else h.chunks.push(payload);
+    } else if (kind === Kind.End) h.ended = true;
     else if (kind === Kind.Error) {
       h.error = JSON.parse(decoder.decode(payload)) as NetError;
       if (h.kind === "conn") h.connecting = false;
@@ -904,7 +948,7 @@ export class NetHost {
   }
 
   /** Takes up to `cap` buffered bytes. */
-  private take(stream: Stream, cap: number): Uint8Array {
+  private take(stream: NetworkByteStream, cap: number): Uint8Array {
     let size = 0;
     for (const chunk of stream.chunks) {
       size += chunk.length;

@@ -5,6 +5,7 @@ import {
   installSharedControlAllocator,
   type SharedControlGrant,
 } from "../memory/control.js";
+import type { Preview1NetworkConnection } from "./preview1-network-types.js";
 import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
@@ -90,6 +91,7 @@ export interface RuntimeWorkerRequest {
   /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
   memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
+  network?: Preview1NetworkConnection;
   /** Supplied by the owning page or broker, never read from guest env. */
   hostIdentity?: RuntimeHostIdentity | null;
   module: WebAssembly.Module;
@@ -574,6 +576,10 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
+  let socketNetwork:
+    | ReturnType<(typeof import("./preview1-socket.js"))["attachPreview1Sockets"]>
+    | undefined;
+  const releaseNetworkPort = captureNetworkPort(req.network);
   let writeDiagnostic: ((data: Uint8Array) => number) | undefined;
   let pendingFinish: Promise<void> | undefined;
   const finish = (result: WorkerResult): void => {
@@ -652,6 +658,8 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       const streams = ownedStreams(ownedStdio);
       closeDiscardedStdio(streams, new SetConstructor());
     });
+    attempt(() => socketNetwork?.dispose());
+    attempt(releaseNetworkPort);
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
       try {
@@ -896,9 +904,10 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         }
       },
     };
-    const reservedFds = bindingTargets(req.runtimeProcess);
+    const hostCallFd = executor.hostCallFd;
+    const reservedFds = bindingTargets(req.runtimeProcess, req.network, hostCallFd);
     wasi = new Wasi({
-      hostCallFd: executor.hostCallFd,
+      hostCallFd,
       args: req.args,
       env,
       fs,
@@ -1065,6 +1074,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
+    if (req.network?.sockets.length) {
+      const { attachPreview1Sockets } = await import("./preview1-socket.js");
+      checkActive();
+      socketNetwork = attachPreview1Sockets(req.network, checkActive, socketWait(checkActive));
+      socketNetwork.install(wasi.descriptors, checkIoActive);
+    }
     const enter = () => {
       checkActive();
       const committed = runtimeProcess
@@ -1144,12 +1159,39 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   }
 }
 
+function socketWait(checkActive: () => void): (word: Int32Array, expected: number) => void {
+  return (word, expected) => {
+    checkActive();
+    assertTerminalWaitAllowed();
+    controlWait(word, 0, expected, 10);
+    checkActive();
+  };
+}
+
+function captureNetworkPort(connection: Preview1NetworkConnection | undefined): () => void {
+  if (!connection) return () => {};
+  const port = connection.port;
+  const close = port.close;
+  return () => reflectApply(close, port, []);
+}
+
 /** Child descriptor numbers the process's bindings reserve before preopens are placed. */
-function bindingTargets(transport: WorkerProcessTransport | undefined): number[] | undefined {
-  if (!transport) return undefined;
+function bindingTargets(
+  transport: WorkerProcessTransport | undefined,
+  network?: Preview1NetworkConnection,
+  hostCallFd?: number,
+): number[] {
   const fds: number[] = [];
-  for (let index = 0; index < transport.bindings.length; index++)
-    fds[index] = transport.bindings[index]!.fd;
+  if (transport)
+    for (let index = 0; index < transport.bindings.length; index++)
+      arrayAppend(fds, transport.bindings[index]!.fd);
+  if (!network) return fds;
+  for (let index = 0; index < network.sockets.length; index++) {
+    const fd = network.sockets[index]!.fd;
+    if (fd === hostCallFd)
+      throw new ExecutableFormatError("socket descriptor collides with executor.hostCallFd");
+    arrayAppend(fds, fd);
+  }
   return fds;
 }
 
