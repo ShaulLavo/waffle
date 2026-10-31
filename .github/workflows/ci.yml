@@ -35,6 +35,7 @@ jobs:
       diffutils: ${{ steps.paths.outputs.diffutils }}
       gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
+      curl: ${{ steps.paths.outputs.curl }}
       awk: ${{ steps.paths.outputs.awk }}
       tar: ${{ steps.paths.outputs.tar }}
       procps: ${{ steps.paths.outputs.procps }}
@@ -225,6 +226,13 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
               - "packages/jq/**"
+            curl:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-package.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/curl/**"
             awk:
               - ".github/**"
               - "package.json"
@@ -724,6 +732,68 @@ jobs:
         env:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+
+  curl:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.curl == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Select runner-local oracle cache and scratch
+        run: |
+          printf 'NATIVE_CURL_CACHE=%s/curl-native-cache\nCURL_NATIVE_SCRATCH_ROOT=%s/curl-native-scratch\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Record the actual hosted runner image for native cache isolation
+        id: curl-image
+        run: |
+          test -n "$ImageOS"
+          test -n "$ImageVersion"
+          printf 'identity=%s-%s\n' "$ImageOS" "$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: Compute native oracle source, recipe and compiler identity
+        id: curl-native-key
+        run: bun packages/curl/scripts/native-oracle.ts key
+      - uses: actions/cache/restore@v4
+        id: curl-native
+        with:
+          path: ${{ steps.curl-native-key.outputs.directory }}
+          key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
+      - name: Provision or validate the pinned HTTP-only native oracle
+        run: bun packages/curl/scripts/native-oracle.ts provision
+      - name: Run curl library, native fixture and cache rejection gates
+        run: bun run programs:curl
+      - name: Save only a validated oracle after the curl gate passes
+        if: steps.curl-native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.curl-native-key.outputs.directory }}
+          key: ${{ steps.curl-native-key.outputs.key }}-${{ steps.curl-image.outputs.identity }}
+      - name: Remove native build scratch
+        if: always()
+        env:
+          CURL_NATIVE_SCRATCH_ROOT: ${{ runner.temp }}/curl-native-scratch
+        run: |
+          bun -e 'import { rmSync } from "node:fs"; const p=process.env.CURL_NATIVE_SCRATCH_ROOT; if (!p || p !== `${process.env.RUNNER_TEMP}/curl-native-scratch`) throw Error("Unexpected scratch path"); rmSync(p, { recursive: true, force: true });'
 
   tar:
     env:
