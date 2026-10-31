@@ -2,6 +2,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildNetwork } from "./tooling/build-network";
+import { packageProgramTools, programToolSources } from "./tooling/program-tools-package";
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -277,8 +278,10 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
 export async function buildNodeModules(
   root = import.meta.dir,
   prepareNetwork = buildNetwork,
+  prepareProgramTools = packageProgramTools,
 ): Promise<void> {
   await prepareNetwork(root);
+  prepareProgramTools(root);
   const outdir = join(root, "dist");
   rmSync(outdir, { recursive: true, force: true });
   const transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });
@@ -313,6 +316,16 @@ export async function buildNodeModules(
   ])
     await visit(directory);
   for (const file of ["index.ts", "runtime.ts"]) if (existsSync(join(root, file))) await emit(file);
+  if (existsSync(join(root, "tooling/program"))) {
+    await visit("tooling/program");
+    // Derivations bind original TypeScript bytes, not transpiler output.
+    for (const file of programToolSources)
+      copyFileSync(join(root, "tooling/program", file), join(outdir, "tooling/program", file));
+    copyFileSync(
+      join(root, "tooling/program/program-transformer.json"),
+      join(outdir, "tooling/program/program-transformer.json"),
+    );
+  }
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
 }
 

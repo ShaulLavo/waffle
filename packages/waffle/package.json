@@ -38,6 +38,11 @@
       "browser": "./index.ts",
       "default": "./index.ts"
     },
+    "./program-build-tools": {
+      "types": "./tooling/program/program-build-tools.ts",
+      "bun": "./tooling/program/program-build-tools.ts",
+      "node": "./dist/tooling/program/program-build-tools.js"
+    },
     "./runtime": {
       "types": "./runtime.ts",
       "node": "./dist/runtime.js",
