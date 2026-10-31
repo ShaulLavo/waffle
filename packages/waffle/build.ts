@@ -311,6 +311,7 @@ export async function buildNodeModules(
     "browser",
     "group",
     "link",
+    "memory",
     "search",
     "programs",
   ])

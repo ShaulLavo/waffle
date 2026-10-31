@@ -1,10 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { programToolSources } from "../tooling/program-tools-package";
+import { packageProgramTools, programToolSources } from "../tooling/program-tools-package";
 
 const packageRoot = resolve(import.meta.dir, "..");
 const repository = resolve(packageRoot, "../..");
@@ -114,6 +114,28 @@ writeFileSync(guest, Uint8Array.from(header.concat([0, featurePayload.length], f
 assert.throws(() => optimizer.optimizeProgram({ source: guest, destination: resolve(root, "out.wasm"), verify() {} }), /Unsupported program target feature/);
 `;
 
+function checkWorkspacePrepare(scratch: string, installed: string): void {
+  const workspace = join(scratch, "packages/waffle");
+  cpSync(installed, workspace, { recursive: true });
+  mkdirSync(join(scratch, "tools"));
+  for (const file of programToolSources)
+    writeFileSync(join(scratch, "tools", file), "// foreign consumer helper\n");
+  const receipt = readFileSync(join(installed, "tooling/program/program-transformer.json"));
+  execFileSync(process.execPath, [join(workspace, "prepare.ts")], {
+    cwd: workspace,
+    env: { ...process.env, CARGO: "/bin/false", WAFFLE_NETWORK_PREBUILT: "1" },
+    stdio: "pipe",
+  });
+  for (const directory of ["tooling/program", "dist/tooling/program"]) {
+    assert.deepEqual(readFileSync(join(workspace, directory, "program-transformer.json")), receipt);
+    for (const file of programToolSources)
+      assert.deepEqual(
+        readFileSync(join(workspace, directory, file)),
+        readFileSync(join(installed, "tooling/program", file)),
+      );
+  }
+}
+
 test("packed build tools work without the repository in Node, Bun and a typed consumer", () => {
   const scratch = mkdtempSync(join(tmpdir(), "waffle-build-tools-"));
   try {
@@ -163,6 +185,7 @@ test("packed build tools work without the repository in Node, Bun and a typed co
       ],
       { cwd: scratch },
     );
+    checkWorkspacePrepare(scratch, installed);
     for (const runtime of ["node", "bun"]) {
       execFileSync(runtime, ["consumer.ts"], {
         cwd: scratch,
@@ -200,3 +223,49 @@ test("packed build tools work without the repository in Node, Bun and a typed co
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test.each(["consumer", "waffle-monorepo"])(
+  "workspace-shaped consumers preserve packaged tools (%s)",
+  (name) => {
+    const scratch = mkdtempSync(join(tmpdir(), "waffle-tool-workspace-"));
+    try {
+      const installed = join(scratch, "packages/waffle");
+      const staged = join(installed, "tooling/program");
+      mkdirSync(staged, { recursive: true });
+      mkdirSync(join(scratch, "tools"));
+      writeFileSync(join(scratch, "package.json"), JSON.stringify({ name, private: true }));
+      execFileSync("git", ["init", "--quiet"], { cwd: scratch });
+      execFileSync("git", ["remote", "add", "origin", "https://github.com/example/consumer.git"], {
+        cwd: scratch,
+      });
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "--quiet",
+          "-m",
+          "consumer",
+        ],
+        { cwd: scratch },
+      );
+      for (const file of programToolSources) {
+        writeFileSync(join(staged, file), "packaged " + file);
+        writeFileSync(join(scratch, "tools", file), "consumer " + file);
+      }
+      const metadata = join(staged, "program-transformer.json");
+      const receipt = '{"commit":"' + "a".repeat(40) + '"}\n';
+      writeFileSync(metadata, receipt);
+      packageProgramTools(installed);
+      for (const file of programToolSources)
+        assert.equal(readFileSync(join(staged, file), "utf8"), "packaged " + file);
+      assert.equal(readFileSync(metadata, "utf8"), receipt);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  },
+);

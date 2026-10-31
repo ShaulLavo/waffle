@@ -12,6 +12,7 @@
     "interrupt",
     "group",
     "link",
+    "memory",
     "search",
     "proc",
     "programs",
