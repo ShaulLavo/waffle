@@ -1,0 +1,40 @@
+{
+  "schema": "waffle-starship-source/v1",
+  "status": "blocked-source-only",
+  "classification": "Unmodified upstream source pin and build recipe. No runtime implementation, accepted adaptation, guest binary or executable descriptor.",
+  "upstream": {
+    "repository": "https://github.com/starship/starship",
+    "version": "1.27.0",
+    "revision": "f8e4e2155542cc84f49b342122d371f74e0ad253",
+    "archive": "https://codeload.github.com/starship/starship/tar.gz/f8e4e2155542cc84f49b342122d371f74e0ad253",
+    "archiveSha256": "061eb25de7e5e35e06d36e09fbb56361d916547bd281cd3631d50b21f445c738",
+    "releasePublishedAt": "2026-10-17T09:17:43Z",
+    "selection": "GitHub releases/latest and the v1.27.0 tag both resolved to this commit on 2026-10-31. This is a source pin, not a promise that wasm32-wasip1 is supported upstream.",
+    "files": {
+      "Cargo.lock": "80b54ed2371469e647c0accd70ee32f0e0e1489c4b33925aad99f9833ee4e4c9",
+      "Cargo.toml": "3d40efa77dd5727da751803ab001964f8b4242fecfd127b206de5fe7a256acc5",
+      "LICENSE": "2587580d0ec4ddc43d1534745a19ffeec0b63186497c2ed4bc36832da91b13e2",
+      "src/main.rs": "dfd37a78c760b644b79a2c5354bfb668dc1d25e17f209c379183304a87b90686",
+      "src/lib.rs": "48eb8f932a9ac7c41be8d1b497ce4e10d198637c745a67caaf5655f978600fa6",
+      "src/init/mod.rs": "78dc8b83e895dd12ad31c2fa194c4d00ffcb4cf3f63aa6924faca6620e4c4e9d",
+      "src/init/starship.bash": "7aa27e5ff8f79229545d887da6e5aa12f2416de011196a9227bdef1e938f6968",
+      "src/utils/mod.rs": "c00f53611c352782193cd8e83fc6d577e0851306712abb4c301c590c16d046c9",
+      "src/modules/custom.rs": "59e783bf5d0ea85d48aee1771b70f69891ebfa2a45a93c56367c925ffa4fcad2"
+    }
+  },
+  "dependencyLock": {
+    "upstreamPath": "Cargo.lock",
+    "localPath": "upstream/Cargo.lock",
+    "sha256": "80b54ed2371469e647c0accd70ee32f0e0e1489c4b33925aad99f9833ee4e4c9",
+    "modified": false
+  },
+  "license": {
+    "spdx": "ISC",
+    "upstreamPath": "LICENSE",
+    "localPath": "LICENSE",
+    "sha256": "2587580d0ec4ddc43d1534745a19ffeec0b63186497c2ed4bc36832da91b13e2"
+  },
+  "acceptedPatches": [],
+  "runtimeExports": [],
+  "productionQualification": "not attempted; no supported compiler/runtime route exists yet"
+}

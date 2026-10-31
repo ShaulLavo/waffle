@@ -1,0 +1,64 @@
+{
+  "schema": "waffle-program-build-recipe/v1",
+  "status": "blocked-source-only",
+  "sourceLock": "sources.lock.json",
+  "upstreamLock": "upstream/Cargo.lock",
+  "program": "starship",
+  "target": "wasm32-wasip1",
+  "sharedTools": "../../tools/program-build-tools.ts",
+  "sharedOptimizer": "../../tools/program-optimize.ts",
+  "optimizationPolicy": "waffle-program-size-v2",
+  "wasiSdk": "34.0",
+  "wasiLibc": "2e6fb9d8ee0c",
+  "maxMemoryBytes": 268435456,
+  "compiler": "rustc 1.98.1",
+  "minimalDiagnostic": {
+    "command": [
+      "cargo",
+      "build",
+      "--locked",
+      "--release",
+      "--target",
+      "wasm32-wasip1",
+      "--no-default-features"
+    ],
+    "scope": "Diagnostic only. Disabling optional battery and notify is not an accepted production policy.",
+    "outcome": "errno 0.2.8 requests unstable feature(thread_local) on the stable toolchain. No guest was linked.",
+    "environment": {
+      "RUSTUP_TOOLCHAIN": "1.98.1",
+      "CARGO_HOME": "/work/cache/cargo",
+      "CARGO_TARGET_DIR": "owned scratch target directory"
+    }
+  },
+  "supportedProducer": null,
+  "requiredProducerSequence": [
+    "Verify the source archive, upstream Cargo.lock and LICENSE against sources.lock.json before source preparation.",
+    "Apply only reviewed source adaptations, each with immutable source/patch and dependency/license identities. None are accepted yet.",
+    "Use wasiBuildEnvironment from the existing shared tools for the patched SDK/libc route and programReleaseEnvironment for the current size policy.",
+    "Build only the Starship binary with its locked dependency graph; retain the named compiler output and honest producer receipt.",
+    "Use shared stageProgram and strict derivation validation, not a new optimizer or a relabeled retained artifact.",
+    "Generate notices for the actual locked production/build dependency graph and SDK/libc inputs.",
+    "Qualify real init, prompt, time, continuation, formatter, modules, filesystem, git and child process effects on the caller-owned runtime.",
+    "Only then add an optional lazy descriptor, package-artifacts manifest, packed-entry controls and path-filtered single-producer CI."
+  ],
+  "blockers": [
+    {
+      "id": "dependency-platform",
+      "detail": "errno 0.2.8, guess_host_triple 0.1.5, process_control 5.2.0 and open 5.4.4 have observed WASI compile failures. Scratch diagnostics are not accepted patches."
+    },
+    {
+      "id": "process-capture-and-deadline",
+      "detail": "Starship std::process::Command and process_control need a genuine adapter to the existing runtime_proc spawn, descriptor, wait, cancellation and physical-retirement contracts. The current process-consumer API is not a std::process backend."
+    },
+    {
+      "id": "parallel-render-and-scan",
+      "detail": "Starship initializes a Rayon pool, spawns log cleanup, uses parallel formatting and starts a directory-scan thread. The supported execution strategy needs an explicit design, with deadlines preserved."
+    },
+    {
+      "id": "module-authority",
+      "detail": "Audit identity, permissions, memory/OS information, external programs and git effects. No host filesystem/process privilege or invented metadata is allowed; unsupported effects cannot disappear silently."
+    }
+  ],
+  "publishedArtifacts": [],
+  "runtimeRegistration": false
+}
