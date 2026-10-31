@@ -14,6 +14,7 @@ import { ProcessABI, ProcessSignalExit, type ProcessABIOptions } from "../proc/a
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import { Signal } from "../proc/types.js";
+import { SIGNAL_PENDING, signalPending } from "../proc/signals.js";
 
 type WakeRegisteringStream = Stream & {
   registerWake(wake: Int32Array): (() => void) | void;
@@ -1049,7 +1050,32 @@ test("the wait hook receives the sequence captured before a racing ready publica
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(1);
 });
 
-for (const mode of ["signal", "child"] as const) {
+function holdSignalHintsUntilPollCapture(
+  signals: ReturnType<typeof fixture>["signals"],
+  captured: Int32Array,
+): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(signals, "requestedSignal")!;
+  const requestedSignal = signals.requestedSignal;
+  let paused = false;
+  Object.defineProperty(signals, "requestedSignal", {
+    configurable: true,
+    get() {
+      if (paused || (controlLoad(signals.signalState, 2) & SIGNAL_PENDING) === 0)
+        return requestedSignal;
+      paused = true;
+      expect(controlLoad(requestedSignal, 0)).toBe(0);
+      expect(controlLoad(signals.interrupt, 0)).toBe(0);
+      // Pause the real publisher after pending is visible but before its hint writes.
+      // This separate acknowledgement never wakes the poll's common-wake word.
+      controlWait(captured, 0, 0, 1000);
+      expect(controlLoad(captured, 0)).toBe(1);
+      return requestedSignal;
+    },
+  });
+  return () => Object.defineProperty(signals, "requestedSignal", descriptor);
+}
+
+for (const mode of ["signal", "signal-before-hint", "child"] as const) {
   test(`native worker poll wakes for a ${mode} change without any common-wake notification`, async () => {
     const f = fixture(),
       wake = new Int32Array(new SharedArrayBuffer(4));
@@ -1062,9 +1088,12 @@ for (const mode of ["signal", "child"] as const) {
       job: 0,
       fds: [],
     });
+    const captured =
+      mode === "signal-before-hint" ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
     const worker = new Worker(new URL("./fixtures/process-abi-poll-guest.ts", import.meta.url), {
       workerData: {
-        mode,
+        mode: mode === "child" ? "child" : "signal",
+        captured,
         pid: f.pid,
         child,
         childOutcome: f.supervisor.get(child)!.outcome,
@@ -1077,6 +1106,7 @@ for (const mode of ["signal", "child"] as const) {
         },
       },
     });
+    const restore = captured ? holdSignalHintsUntilPollCapture(f.signals, captured) : () => {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -1095,19 +1125,23 @@ for (const mode of ["signal", "child"] as const) {
           if (message.phase === "waiting") {
             if (published) return;
             published = true;
-            if (mode === "signal") f.supervisor.kill(f.pid, 2);
+            if (mode !== "child") f.supervisor.kill(f.pid, 2);
             else f.supervisor.exit(child, 23);
           } else resolve(message);
         });
       });
       expect(result).toEqual(
-        mode === "signal"
-          ? { phase: "done", ready: 0, interrupt: 2, code: 0 }
-          : { phase: "done", ready: 1, interrupt: 0, code: 23 },
+        mode !== "child"
+          ? { phase: "done", ready: 0, pending: true, code: 0 }
+          : { phase: "done", ready: 1, pending: false, code: 23 },
       );
+      // The synchronous publisher has finished now; the worker's earlier snapshot may precede it.
+      expect(controlLoad(f.signals.interrupt, 0)).toBe(mode === "child" ? 0 : 2);
+      expect(signalPending(f.signals)).toBe(mode !== "child");
       expect(controlLoad(wake, 0)).toBe(0);
     } finally {
       clearTimeout(timer);
+      restore();
       await worker.terminate();
     }
   });
