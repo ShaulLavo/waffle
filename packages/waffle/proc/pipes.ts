@@ -161,6 +161,8 @@ export class PipePublicationRegistry {
       cellsPerProcess?: number;
       maxCells?: number;
       wake?: Int32Array;
+      /** Host allocator charges the declared backing before constructing it. */
+      allocate?: (length: number, maxByteLength: number) => SharedArrayBuffer;
     } = {},
     attached?: PipePublicationRegistryHandle,
   ) {
@@ -187,10 +189,12 @@ export class PipePublicationRegistry {
     };
     const buffer =
       attached?.buffer ??
-      new SharedBuffer(this.cellBase + initialCells * 16, {
-        __proto__: null,
-        maxByteLength: this.cellBase + this.maxCells * 16,
-      });
+      (options.allocate
+        ? options.allocate(this.cellBase + initialCells * 16, this.cellBase + this.maxCells * 16)
+        : new SharedBuffer(this.cellBase + initialCells * 16, {
+            __proto__: null,
+            maxByteLength: this.cellBase + this.maxCells * 16,
+          }));
     this.data = { buffer, processCapacity, cellsPerProcess, wake: this.wake };
     this.allocated = new Int32ArrayConstructor(buffer, 0, 1);
     this.owners = new BigInt64ArrayConstructor(buffer, 16, processCapacity);
