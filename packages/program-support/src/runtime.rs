@@ -148,7 +148,7 @@ impl Runtime {
         Ok(fds)
     }
 
-    fn ready(&self, kind: u32, id: u32) -> Ready {
+    pub fn ready(&self, kind: u32, id: u32) -> Ready {
         Ready {
             runtime: self.clone(),
             kind,
@@ -199,7 +199,7 @@ impl Runtime {
     }
 }
 
-struct Ready {
+pub struct Ready {
     runtime: Runtime,
     kind: u32,
     id: u32,
@@ -336,7 +336,7 @@ impl FileSystem for Runtime {
     }
 }
 
-fn io_error(errno: i32) -> IoError {
+pub fn io_error(errno: i32) -> IoError {
     match errno {
         8 | 76 => IoError::BadDescriptor,
         64 => IoError::BrokenPipe,

@@ -235,16 +235,16 @@ struct EventState {
 }
 /// Edge-triggered local notification with one removable registration per wait.
 #[derive(Clone, Default)]
-pub(crate) struct Event(Rc<RefCell<EventState>>);
+pub struct Event(Rc<RefCell<EventState>>);
 impl Event {
-    pub(crate) fn listen(&self) -> EventWait {
+    pub fn listen(&self) -> EventWait {
         EventWait {
             event: self.clone(),
             epoch: self.0.borrow().epoch,
             id: None,
         }
     }
-    pub(crate) fn notify(&self) {
+    pub fn notify(&self) {
         let waiters = {
             let mut state = self.0.borrow_mut();
             state.epoch = state.epoch.wrapping_add(1);
@@ -259,7 +259,7 @@ impl Event {
         self.0.borrow().waiters.len()
     }
 }
-pub(crate) struct EventWait {
+pub struct EventWait {
     event: Event,
     epoch: u64,
     id: Option<u64>,
@@ -336,8 +336,7 @@ impl Cancel {
     }
     /// A reader-local abort must not cancel its caller. Parent interruption
     /// still reaches parked operations and descendants that outlive the reader.
-    #[cfg(test)]
-    pub(crate) fn child(&self) -> Self {
+    pub fn child(&self) -> Self {
         Self {
             parent: Some(Rc::new(self.clone())),
             ..Self::default()
@@ -348,8 +347,7 @@ impl Cancel {
             self.event.notify();
         }
     }
-    #[cfg(test)]
-    pub(crate) fn without_probe(&self) -> Self {
+    pub fn without_probe(&self) -> Self {
         Self {
             shared: self.shared.clone(),
             event: self.event.clone(),
