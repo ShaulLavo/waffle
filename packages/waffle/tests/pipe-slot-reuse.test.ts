@@ -275,14 +275,54 @@ test("concurrent writer limit leaves all occupied words unchanged", () => {
   );
 });
 
-test("closed undrained writer cannot be reused until consumed", () => {
+test("50 sequential closed writers append before a delayed reader drains", () => {
+  const { pipe, reader, writer } = fixture(1, 64);
+  const original = words(writer.handle());
+  expect(writer.tryWrite([new Uint8Array([0])])).toBe(1);
+  writer.close();
+  for (let pid = 3; pid < 53; pid++) {
+    const next = pipe.retain(pid, "write");
+    expect(next.tryWrite([new Uint8Array([pid - 2])])).toBe(1);
+    fence(next.handle(), pid, 1, (pid - 2) * 256);
+    next.close();
+  }
+  expect(Atomics.load(original.consumed, 0)).toBe(0n);
+  expect(Atomics.load(original.published, 0) & 0xffffffffn).toBe(51n);
+  for (let value = 0; value <= 50; value++) readByte(reader, value);
+  expect(reader.tryRead([new Uint8Array(1)])).toBe(0);
+});
+
+test("append reclaim preserves a pinned old record and global ticket order", () => {
+  const { pipe, reader, writer } = fixture(2, 16);
+  const parent = pipe.retain(3, "write");
+  expect(writer.tryWrite([new Uint8Array([10, 11])])).toBe(2);
+  readByte(reader, 10);
+  const selection = new BigInt64Array(writer.handle().buffer, 32, 1);
+  const pin = Atomics.load(selection, 0);
+  const consumed = Atomics.load(words(writer.handle()).consumed, 0);
+  writer.close();
+  const next = pipe.retain(4, "write");
+  expect(Atomics.load(selection, 0)).toBe(pin);
+  expect(Atomics.load(words(next.handle()).consumed, 0)).toBe(consumed);
+  expect(parent.tryWrite([new Uint8Array([12])])).toBe(1);
+  expect(next.tryWrite([new Uint8Array([13])])).toBe(1);
+  readByte(reader, 11);
+  readByte(reader, 12);
+  readByte(reader, 13);
+  fence(next.handle(), 4, 1, 256);
+});
+
+test("append reclaim clears an abandoned consumed record pin without resetting cursors", () => {
   const { pipe, reader, writer } = fixture();
   expect(writer.tryWrite([byte])).toBe(1);
-  writer.close();
-  expect(() => pipe.retain(3, "write")).toThrow("unread");
   readByte(reader);
+  writer.close();
   const next = pipe.retain(3, "write");
-  fence(next.handle(), 3, 1, 256);
+  const selection = new BigInt64Array(writer.handle().buffer, 32, 1);
+  Atomics.store(selection, 0, 1n);
+  expect(next.tryWrite([byte])).toBe(1);
+  readByte(reader);
+  expect(Atomics.load(selection, 0)).toBe(0n);
 });
 
 test("incarnations never wrap, and active section overflow is explicit", () => {

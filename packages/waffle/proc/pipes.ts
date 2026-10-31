@@ -928,10 +928,9 @@ class PipeState {
     const incarnation = epoch >>> INCARNATION_SHIFT;
     if (owner <= 0 || epoch & SECTION_MASK || incarnation === LAST_INCARNATION) return undefined;
     if (!ring.closed || (ring.references > 0 && !this.registry?.isRevoked(owner))) return undefined;
-    if (
-      recordCounter(atomicsLoad(ring.consumed, 0)) !== recordCounter(atomicsLoad(ring.published, 0))
-    )
-      return undefined;
+    // Writers append after old committed records. The consumer keeps its cursor and pin;
+    // counted sections exclude old producers even when committed bytes remain.
+    if (mode === "read" && ring.available !== 0) return undefined;
     if (atomicsCompareExchange(ring.pid, 0, owner, RECLAIMING) !== owner) return undefined;
     if (!ring.advance(incarnation)) {
       atomicsStore(ring.pid, 0, owner);
