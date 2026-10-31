@@ -414,7 +414,12 @@ fn neutral_wire_decoders_preserve_native_widths_and_unknown_capabilities() {
     }
     let mut metadata = decode_filestat(&bytes);
     let mut permissions = [0; 16];
-    for (chunk, value) in permissions.chunks_exact_mut(4).zip([0o640u32, 0o777, 4, 6]) {
+    for (chunk, value) in permissions
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([0o640u32, 0o777, 4, 6])
+    {
         chunk.copy_from_slice(&value.to_le_bytes());
     }
     decode_permissions(&mut metadata, &permissions);

@@ -363,6 +363,17 @@ failure unwinds earlier registrations before rethrowing. This wrapper does not a
 `poll` readiness, publication, CHILD_START handling or the existing 10 ms fallback
 for uncovered sources.
 
+### Zero-time read observation
+
+`runtime_proc.poll` with timeout 0 scans once without waiting. Kind 0 observes
+regular files as ready, including write-only files and files with pending I/O or
+a contended shared offset. The observation neither acquires that offset nor
+starts filesystem I/O. The actual read still enforces descriptor rights and may
+return `EAGAIN`. Positive and indefinite polls retain their I/O-completion wait.
+Null is ready. A pipe reader is ready with data or no writers; a pipe writer is
+read-ready only when no readers remain. A pending signal returns zero events
+without consuming the signal or input.
+
 ### Host executable-entry boundary
 
 The browser bootstrap completes `WebAssembly.Instance` construction (including a
