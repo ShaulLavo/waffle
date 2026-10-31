@@ -16,6 +16,7 @@ import {
   atomicsNotify,
   atomicsWaitAsync,
   sharedArrayBufferByteLength,
+  sharedArrayBufferMaxByteLength,
   sharedArrayBufferGrow,
   createGrowableSharedArrayBuffer,
   isSharedArrayBuffer,
@@ -24,6 +25,7 @@ import {
 export const REQUEST_HEADER = 32;
 export const REQUEST_BUDGET_BYTES = 32;
 export const REQUEST_CONTROL_BYTES = 64;
+export const FALLBACK_REQUEST_CONNECTION_BYTES = 64 * 1024 * 1024;
 /** @public Hard transport bounds; retained backing and live request counts are separate quotas. */
 export const FILESYSTEM_REQUEST_LIMITS = objectFreeze({
   bytes: 8 * 2 ** 30,
@@ -91,6 +93,7 @@ export function captureRequestMemory(memory: unknown): FilesystemRequestMemory {
 interface Construction {
   allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
 }
+export type RequestArenaAllocator = (bytes: number, maximum: number) => SharedArrayBuffer;
 interface Arena {
   control: SharedArrayBuffer;
   readonly data: SharedArrayBuffer;
@@ -300,11 +303,34 @@ export function requestBudgetBytes(budget: SharedArrayBuffer): number {
 function arenaMemory(arena: Arena, budget: SharedArrayBuffer): FilesystemRequestMemory {
   return { budget, control: arena.control, data: arena.data, generation: arena.generation };
 }
+function validateConnectionBytes(bytes: number): number {
+  if (
+    !Number.isSafeInteger(bytes) ||
+    bytes < REQUEST_HEADER ||
+    bytes > FILESYSTEM_REQUEST_LIMITS.connectionBytes
+  )
+    throw new FilesystemError(28, "invalid filesystem connection request memory cap");
+  return bytes;
+}
+export function createRequestArenaData(allocate: RequestArenaAllocator): SharedArrayBuffer {
+  try {
+    return allocate(0, FILESYSTEM_REQUEST_LIMITS.connectionBytes);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    return allocate(0, FALLBACK_REQUEST_CONNECTION_BYTES);
+  }
+}
 /** Trusted host owner. Retained arena backing, including idle arenas, stays charged. */
 export class FilesystemRequestPool {
   private readonly arenas: Arena[] = [];
   private readonly receipts: SharedArrayBuffer[] = [];
-  constructor(readonly budget: SharedArrayBuffer) {}
+  readonly connectionBytes: number;
+  constructor(
+    readonly budget: SharedArrayBuffer,
+    connectionBytes = FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+  ) {
+    this.connectionBytes = validateConnectionBytes(connectionBytes);
+  }
   /** Host connector probe; only that namespace's sole host connector writes word 3. */
   assertBudget(budget: SharedArrayBuffer): void {
     if (sharedArrayBufferByteLength(budget) !== REQUEST_BUDGET_BYTES) throw new FilesystemError(2);
@@ -351,9 +377,13 @@ export class FilesystemRequestPool {
   }
   private create(revocation: SharedArrayBuffer, construction?: Construction): Arena {
     const control = this.createControl(construction);
+    const allocate: RequestArenaAllocator = construction
+      ? (bytes, maximum) => construction.allocateShared(bytes, maximum)
+      : (bytes, maximum) => createGrowableSharedArrayBuffer(bytes, maximum);
     const data =
-      construction?.allocateShared(0, FILESYSTEM_REQUEST_LIMITS.connectionBytes) ??
-      createGrowableSharedArrayBuffer(0, FILESYSTEM_REQUEST_LIMITS.connectionBytes);
+      this.connectionBytes === FILESYSTEM_REQUEST_LIMITS.connectionBytes
+        ? createRequestArenaData(allocate)
+        : allocate(0, this.connectionBytes);
     const arena = { control, data, revocation, generation: 0 };
     this.arenas[this.arenas.length] = arena;
     return arena;
@@ -434,7 +464,8 @@ export class FilesystemRequestAllocator {
       }
       at += atomicsLoad(block, 1);
     }
-    if (needed > FILESYSTEM_REQUEST_LIMITS.connectionBytes - used)
+    const maximum = sharedArrayBufferMaxByteLength(this.memory.data);
+    if (needed > maximum - used)
       throw new FilesystemError(48, "filesystem connection request memory exhausted");
     this.grow(used + needed);
     update(this.memory, C.used, () => used + needed);
@@ -563,6 +594,7 @@ export function requestMemoryResources(memory: FilesystemRequestMemory) {
     retainedBytes: Number(atomicsLoad(new BigInt64ArrayConstructor(memory.budget), 0)),
     namespaceRequests: atomicsLoad(new Int32ArrayConstructor(memory.budget), B.pending),
     connectionBytes: sharedArrayBufferByteLength(memory.data) + REQUEST_CONTROL_BYTES,
+    maximumBytes: sharedArrayBufferMaxByteLength(memory.data),
     requests: stale ? 0 : get(memory, C.count),
     pendingBytes: stale ? 0 : get(memory, C.bytes),
   };
