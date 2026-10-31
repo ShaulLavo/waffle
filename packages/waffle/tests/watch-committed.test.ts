@@ -9,7 +9,12 @@ import { SharedFilesystemState } from "../fs/shared.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemClient } from "../fs/client.js";
 import { FilesystemService } from "../fs/service.js";
-import { createFilesystemConnection, revokeFilesystem, reapFilesystem } from "../fs/protocol.js";
+import {
+  createFilesystemConnection,
+  revokeFilesystem,
+  reapFilesystem,
+  type FilesystemConnection,
+} from "../fs/protocol.js";
 import { WatchService } from "../fs/watch-service.js";
 import { Wasi } from "../core/wasi.js";
 import { FilesystemError, type FileSystem, type WatchFileSystem } from "../core/filesystem.js";
@@ -41,6 +46,14 @@ async function fixture(backend = new MemoryBackend()) {
     await service.shutdown();
   };
   return { backend, service, page, guest, root, guestRoot, close };
+}
+
+/** A terminated worker can stop inside a filesystem section. Its owner revokes before the stop
+ * and reaps after it, or service shutdown waits for that section forever. */
+function stopWorker(worker: Worker, connection: FilesystemConnection): void {
+  revokeFilesystem(connection);
+  worker.terminate();
+  reapFilesystem(connection);
 }
 
 async function file(client: FilesystemClient, root: number, name: string) {
@@ -142,6 +155,7 @@ test("overflow is explicit and close or process revocation wakes pending next", 
 
 test("registration capture excludes a real DIRECT worker until cursor and subscriber activation commit", async () => {
   const f = await fixture();
+  const connection = f.page.fork();
   const worker = new Worker(new URL("./watch-direct-worker.ts", import.meta.url).href);
   try {
     const handle = await file(f.page, f.root, "one");
@@ -162,7 +176,6 @@ test("registration capture excludes a real DIRECT worker until cursor and subscr
       if (data === "ready") ready();
       else finish(data);
     };
-    const connection = f.page.fork();
     worker.postMessage({ connection, control: controlBuffer }, [connection.port]);
     await started;
     const ensureIdentity = f.backend.ensureIdentity.bind(f.backend);
@@ -188,7 +201,7 @@ test("registration capture excludes a real DIRECT worker until cursor and subscr
     expect(messages.length).toBe(2);
     await watch.close();
   } finally {
-    worker.terminate();
+    stopWorker(worker, connection);
     await f.close();
   }
 }, 10000);
@@ -413,32 +426,40 @@ test("AbortSignal closes an armed next and enforces subscription ownership", asy
 for (const killed of [false, true])
   test(`real guest watcher receives peer direct commit or is forcibly reaped, killed=${killed}`, async () => {
     const f = await fixture();
+    const connection = f.page.fork();
     const worker = new Worker(new URL("./watch-direct-worker.ts", import.meta.url).href);
     try {
       const handle = await file(f.guest, f.guestRoot, "one");
       await f.guest.asyncCall("resize", [handle, 16, false]);
       let ready!: () => void;
       let finish!: (batch: { events: { name: string }[] }) => void;
-      const started = new Promise<void>((resolve) => {
-        ready = resolve;
+      // A worker startup failure rejects instead of looking like a missed delivery.
+      const failed = new Promise<never>((_, reject) => {
+        worker.onerror = (event) => reject(event.error ?? new Error(event.message));
       });
-      const done = new Promise<{ events: { name: string }[] }>((resolve) => {
-        finish = resolve;
-      });
+      const started = Promise.race([
+        new Promise<void>((resolve) => {
+          ready = resolve;
+        }),
+        failed,
+      ]);
+      const done = Promise.race([
+        new Promise<{ events: { name: string }[] }>((resolve) => {
+          finish = resolve;
+        }),
+        failed,
+      ]);
       worker.onmessage = ({ data }) => {
         if (data === "ready") ready();
         else finish(data);
       };
-      const connection = f.page.fork();
       worker.postMessage({ connection, mode: "watch", control: new SharedArrayBuffer(8) }, [
         connection.port,
       ]);
       await started;
       expect(f.backend.shared.watch.active).toBe(true);
       if (killed) {
-        revokeFilesystem(connection);
-        worker.terminate();
-        reapFilesystem(connection);
+        stopWorker(worker, connection);
         f.service.sweep();
         expect(f.backend.shared.watch.active).toBe(false);
         return;
@@ -446,7 +467,7 @@ for (const killed of [false, true])
       expect(f.guest.write(handle, [new Uint8Array([4])], 0)).toBe(1);
       expect((await done).events.map((event) => event.name)).toEqual(["one"]);
     } finally {
-      worker.terminate();
+      stopWorker(worker, connection);
       await f.close();
     }
   }, 10000);
