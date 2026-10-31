@@ -398,6 +398,13 @@
       "browser": "./browser/net/ring.ts",
       "default": "./browser/net/ring.ts"
     },
+    "./browser/net/transport": {
+      "types": "./browser/net/transport.ts",
+      "node": "./dist/browser/net/transport.js",
+      "bun": "./browser/net/transport.ts",
+      "browser": "./browser/net/transport.ts",
+      "default": "./browser/net/transport.ts"
+    },
     "./browser/preview-protocol": {
       "types": "./browser/preview-protocol.ts",
       "node": "./dist/browser/preview-protocol.js",
@@ -555,6 +562,13 @@
       "node": "./dist/programs/catalog.js",
       "browser": "./programs/catalog.ts",
       "default": "./programs/catalog.ts"
+    },
+    "./proc/command": {
+      "types": "./proc/command.ts",
+      "node": "./dist/proc/command.js",
+      "bun": "./proc/command.ts",
+      "browser": "./proc/command.ts",
+      "default": "./proc/command.ts"
     }
   },
   "scripts": {

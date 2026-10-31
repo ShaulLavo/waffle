@@ -46,5 +46,5 @@ const code: unknown = await module.runCurl(invocation);
 if (code !== 0 || stdout !== "bundle smoke\n")
   throw new Error("built curl library behavior differs");
 console.log(
-  "Built portable library smoke passed. Actual Waffle runtime admission remains BLOCKED.",
+  "Built portable library smoke passed; runtime execution is checked by tests/runtime.test.ts.",
 );

@@ -120,3 +120,9 @@ After commit/publication, a final entry check can still cancel launch. That comp
 `tests/descendant-preparation.test.ts` runs the real broker, supervisor, shared directory and terminal authority. The root admits a same-job grandchild in the hook, and the grandchild reads queued input through its unchanged identity-only context. The tests also cover cleanup alongside a foreign adapter's controller, hook failures, a kill, root exit or disposal from inside the hook, a cross-worker kill before entry, and root isolation. The adapter's Worker is replaced by a launch callback.
 
 `tests/runtime-process-context.test.ts` changes configured UID, EUID, and hostname and checks values stored by an original Wasm fixture. It verifies real shared-directory ancestry, unavailable host identity, frozen snapshots, and rejection of adapter and environment overrides. Its in-process Worker fixture runs the actual broker and bootstrap. It is not a native-browser campaign or a Shell compatibility-score claim. Shell must adopt the API and wire its own guest imports before its automatic variables can use these values.
+
+## Page-thread command contexts
+
+`HostCommandContext` is distinct from `ProcessContext`. It contains no `WebAssembly.Module` and no adapter key. Its request and process-query rows contain copied metadata, never descriptors, environment from other processes, shared process controls, or a supervisor. Queries contain only live admitted processes under the command's captured root. The runner calls the normal executable-entry boundary and uses the existing signal and exit paths.
+
+The runner owns its task and asynchronous stdio until physical cleanup completes. Logical exit revokes capabilities and aborts the callback's signal. A page callback may still be running after that point. Package removal and runtime disposal retain the callback and admitted I/O instead of treating logical exit as proof of physical stop.

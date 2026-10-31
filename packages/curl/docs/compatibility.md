@@ -1,10 +1,9 @@
 # Fetch command contract
 
 `waffle-curl` implements one HTTP request with explicit caller capabilities. It is
-not upstream curl, libcurl, or a browser security bypass. Actual Waffle executable
-admission is **blocked** until Waffle publishes runtime-native command registration.
-No interpreter, Wasm stub, fallback launcher, runtime pin, or default catalog entry
-is included.
+not upstream curl, libcurl, or a browser security bypass. `createCurlPackage` uses
+Waffle's merged host-command registration API. No interpreter, Wasm stub, fallback
+launcher, second runtime, or default catalog entry is included.
 
 ## Supported arguments
 
@@ -53,9 +52,53 @@ be bounded by its owner. Cancellation cannot be proved merely by an exit code.
 
 `createCurlCommand()` adds a package-domain stop controller. Both `curlPaths`
 aliases use that same object. Its idempotent `dispose()` closes admission at once,
-then aborts and awaits active commands. This is not a Waffle process, registry,
-loading-state, or physical-stop implementation. The runtime must bind real captured
-invocation identities and retirement fences when the prerequisite lands.
+then aborts and awaits active commands. The portable factory alone is not a Waffle registration.
+`createCurlPackage` binds it to the runtime-owned process and package lifecycle.
+
+## Install in an existing runtime
+
+```ts
+import { createCurlPackage } from "waffle-curl";
+
+const curl = createCurlPackage({ fetch: applicationFetch, timeoutMs: 30_000 });
+await runtime.programs.onDemand(curl);
+// The shell can now execute /usr/bin/curl or /bin/curl.
+await runtime.programs.get("curl")?.remove();
+```
+
+The application already owns `runtime`. The package neither creates nor disposes
+that runtime, its filesystem, or its Fetch transport. `curl.pick("curl")` preserves
+the same program identity. Registration writes runtime markers without network
+access. Canonical and alias execution, picks, and explicit preload share one lazy
+command loader. A loaded callback uses the captured request's arguments after
+argv[0], cwd, abort signal, and actual process stdin/stdout/stderr.
+
+The host-command API does not provide a file-opening capability. Omit `files` to
+deny `@path` with exit 26 and `-o path` with exit 23. `@-`, `-o -`, and shell stdio
+redirections still work. To grant file access, supply `files.read(request)` and
+`files.write(request)`. Each receives `{ path, cwd, signal }`; paths pass through
+unchanged. The caller resolves the actual guest tree, symlinks, and rights and
+returns the portable input stream or owned `CurlOutput`. This is explicit trusted
+page authority, not a claim of implicit per-process filesystem isolation. No Node
+filesystem bridge is supplied. File callbacks must finish cancellation cleanup,
+even if the runtime has already revoked its public filesystem projection. The
+caller chooses partial-file retention. The test grant retains committed bytes.
+
+Runtime stdio applies backpressure. A curl deadline cancels its input-stream
+wrapper or stops waiting on output. Waffle still tracks the original read/write,
+revokes it when the callback exits, and holds physical cleanup debt until it has
+settled. This does not close the parent's borrowed descriptors. Diagnostics have
+a separate ceiling of `timeoutMs`; an aborted diagnostic is dropped instead of
+extending physical cleanup indefinitely. Stdout failures use the library's exit
+23, not native curl's exact stderr or SIGPIPE behavior.
+
+Removal closes both paths synchronously and waits for preparation and running
+commands without killing them. The package's disposal hook runs after those
+consumers physically stop. Use the runtime's normal signaling or disposal to
+interrupt active commands. Runtime disposal aborts transfers and waits for the
+callback and owned file cleanup. Direct portable-command disposal still aborts
+and joins its active library invocations. Neither API can preempt uncooperative
+JavaScript or make an uncooperative Fetch/file callback physically stop.
 
 ## Fetch differences
 

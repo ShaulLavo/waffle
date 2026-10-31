@@ -45,6 +45,22 @@
       "devDependencies": {
         "@types/bun": "^1.4.3",
         "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
+      },
+    },
+    "packages/diffutils": {
+      "name": "waffle-diffutils",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
       },
     },
     "packages/findutils": {
@@ -101,18 +117,6 @@
         "waffle": "*",
       },
     },
-    "packages/diffutils": {
-      "name": "waffle-diffutils",
-      "version": "0.0.0",
-      "devDependencies": {
-        "@types/bun": "^1.4.3",
-        "typescript": "7.0.2",
-        "waffle": "workspace:*",
-      },
-      "peerDependencies": {
-        "waffle": "*",
-      },
-    },
     "packages/jq": {
       "name": "waffle-jq",
       "version": "0.0.0",
@@ -127,6 +131,13 @@
     },
     "packages/process-consumer": {
       "name": "waffle-process-consumer",
+    },
+    "packages/procps": {
+      "name": "waffle-procps",
+      "version": "0.0.0",
+      "peerDependencies": {
+        "waffle": "*",
+      },
     },
     "packages/program-support": {
       "name": "waffle-program-support",
@@ -181,6 +192,19 @@
         "playwright-core": "1.64.1",
         "typescript": "^7.0.2",
         "vite": "8.3.4",
+      },
+    },
+    "packages/waffle-relay": {
+      "name": "waffle-relay",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.3",
+        "@types/node": "26.6.3",
+        "typescript": "7.0.2",
+        "waffle": "workspace:*",
+      },
+      "peerDependencies": {
+        "waffle": "*",
       },
     },
   },
@@ -736,6 +760,8 @@
 
     "waffle-coreutils": ["waffle-coreutils@workspace:packages/coreutils"],
 
+    "waffle-diffutils": ["waffle-diffutils@workspace:packages/diffutils"],
+
     "waffle-findutils": ["waffle-findutils@workspace:packages/findutils"],
 
     "waffle-gh": ["waffle-gh@workspace:packages/gh"],
@@ -744,12 +770,15 @@
 
     "waffle-grep": ["waffle-grep@workspace:packages/grep"],
 
-    "waffle-diffutils": ["waffle-diffutils@workspace:packages/diffutils"],
     "waffle-jq": ["waffle-jq@workspace:packages/jq"],
 
     "waffle-process-consumer": ["waffle-process-consumer@workspace:packages/process-consumer"],
 
+    "waffle-procps": ["waffle-procps@workspace:packages/procps"],
+
     "waffle-program-support": ["waffle-program-support@workspace:packages/program-support"],
+
+    "waffle-relay": ["waffle-relay@workspace:packages/waffle-relay"],
 
     "waffle-ripgrep": ["waffle-ripgrep@workspace:packages/ripgrep"],
 

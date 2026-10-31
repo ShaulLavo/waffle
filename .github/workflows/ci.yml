@@ -35,6 +35,7 @@ jobs:
       gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
       curl: ${{ steps.paths.outputs.curl }}
+      procps: ${{ steps.paths.outputs.procps }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -183,6 +184,12 @@ jobs:
               - "tools/program-package.ts"
               - "tools/tsconfig.programs.json"
               - "packages/curl/**"
+            procps:
+              - ".github/workflows/ci.yml"
+              - "package.json"
+              - "bun.lock"
+              - "packages/waffle/**"
+              - "packages/procps/**"
             browser:
               - ".github/**"
               - "packages/waffle/Cargo.toml"
@@ -285,6 +292,46 @@ jobs:
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
+  procps:
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.1
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types
+      - run: echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: bun run prepare:package
+      - run: bun run programs:procps
+      - name: Lint procps
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts
+      - name: Check procps formatting
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json
   diffutils:
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}
@@ -623,6 +670,10 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --cwd site --frozen-lockfile
       - run: bun run quality
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.12.1
+      - run: bun run relay:check
       - run: bun run test && bun run test:ci
       - run: bun run size && bun run size:network
       - run: bun run pack
@@ -722,6 +773,12 @@ jobs:
     needs: [changes, network-wasm, libc]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
+    # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [parallel, serial]
+    name: browser (${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -770,14 +827,16 @@ jobs:
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
+          WAFFLE_BROWSER_GROUP: ${{ matrix.group }}
       - run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
+        if: matrix.group == 'parallel'
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
       - name: Retain recovery failure report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/recovery-r42-report.json
           if-no-files-found: ignore
           retention-days: 7
@@ -785,7 +844,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-protocol-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-protocol-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/waffle-browser-protocol.log
           retention-days: 7
   site:

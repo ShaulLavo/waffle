@@ -133,10 +133,18 @@ test("browser failure retains structured recovery evidence before full protocol"
   const protocolUpload = artifactStep(steps, browserProtocolPath);
   expect(recoveryUpload.if).toBe("failure()");
   expect(record(recoveryUpload.with).name).toBe(
-    "browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}",
+    "browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   expect(steps.indexOf(recoveryUpload)).toBeLessThan(steps.indexOf(protocolUpload));
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
+});
+
+test("the browser suite runs its two ordered groups on separate runners", () => {
+  const browserTest = stepsFor("browser").find(
+    (step) =>
+      step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
+  );
+  expect(record(browserTest?.env).WAFFLE_BROWSER_GROUP).toBe("${{ matrix.group }}");
 });
 
 test("missing recovery report does not replace the browser failure", () => {
@@ -807,4 +815,91 @@ test("gh restores the exact network asset and does not set up native compilers",
     record(steps.find((step) => step.uses === "actions/setup-node@v4")?.with)["node-version"],
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
+});
+
+test("procps selects its exact inputs without selecting native work for package-only changes", () => {
+  const job = record(jobs.procps);
+  expect(record(changes.outputs).procps).toBe("${{ steps.paths.outputs.procps }}");
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}",
+  );
+  expect(filters.procps).toEqual([
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "packages/waffle/**",
+    "packages/procps/**",
+  ]);
+  for (const path of ["packages/procps/src/index.ts", "packages/procps/tests/oracle.test.ts"])
+    for (const name of [
+      "programs",
+      "coreutils",
+      "findutils",
+      "network",
+      "browser",
+      "libc",
+      "jq",
+      "diffutils",
+    ])
+      expect(selected(name, path), `${name}: ${path}`).toBe(false);
+  expect(selected("procps", "packages/procps/src/index.ts")).toBe(true);
+  expect(selected("procps", "packages/gh/src/index.ts")).toBe(false);
+});
+
+test("procps runs pure and runtime controls once using verified network bytes without a producer", () => {
+  const steps = stepsFor("procps");
+  const runs = steps.map((step) => String(step.run ?? ""));
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = runs.indexOf("bun run --cwd packages/waffle tooling/build-network.ts --verify");
+  const install = runs.indexOf("bun install --frozen-lockfile --ignore-scripts");
+  const prepare = runs.indexOf("bun run prepare:package");
+  const execute = runs.indexOf("bun run programs:procps");
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(install).toBeGreaterThan(verify);
+  expect(prepare).toBeGreaterThan(install);
+  expect(execute).toBeGreaterThan(prepare);
+  expect(runs.filter((run) => run === "bun run prepare:package")).toHaveLength(1);
+  expect(runs.filter((run) => run === "bun run programs:procps")).toHaveLength(1);
+  const network = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  expect(record(steps[restore]?.with).key).toBe(record(network?.with).key);
+  expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(runs).toContain(
+    'ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types',
+  );
+  expect(
+    steps.some((step) =>
+      /cargo|rust-toolchain|wasi-sdk|wasmtime|build:network/.test(
+        String(step.uses ?? "") + " " + String(step.run ?? ""),
+      ),
+    ),
+  ).toBe(false);
+  const root = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+  expect(root.scripts["programs:procps:pure"]).toBe(
+    "bun run --cwd packages/procps test:pure && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
+  );
+  expect(root.scripts["programs:procps"]).toBe(
+    "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands",
+  );
+});
+
+test("procps CLI checks use package-local input paths and explicit configuration", () => {
+  const steps = stepsFor("procps");
+  for (const check of [
+    {
+      name: "Lint procps",
+      run: "../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts",
+    },
+    {
+      name: "Check procps formatting",
+      run: "../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json",
+    },
+  ]) {
+    const step = steps.find((entry) => entry.name === check.name);
+    expect(step).toBeDefined();
+    expect(step?.["working-directory"]).toBe("packages/procps");
+    expect(step?.run).toBe(check.run);
+  }
 });

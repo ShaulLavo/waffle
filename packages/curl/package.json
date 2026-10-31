@@ -2,7 +2,7 @@
   "name": "waffle-curl",
   "version": "0.0.0",
   "private": true,
-  "description": "Optional curl-like Fetch and guest I/O boundaries; runtime-native admission is blocked.",
+  "description": "Optional Fetch-based curl command for caller-owned Waffle runtimes.",
   "files": [
     "dist",
     "src",
@@ -34,6 +34,10 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
   }
 }

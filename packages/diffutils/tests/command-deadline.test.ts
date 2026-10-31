@@ -12,6 +12,23 @@ test("command helper preserves a completed process result", () => {
   assert.equal(result.stdout, "complete\n");
 });
 
+test("command helper preserves a completed result when stdin closes early", () => {
+  const result = runCommand({
+    name: "early stdin close control",
+    executable: process.execPath,
+    args: [
+      "--input-type=module",
+      "-e",
+      "process.stdout.write(\"out\"); process.stderr.write(\"err\"); process.exit(7)",
+    ],
+    input: "x".repeat(4 * 1024 * 1024),
+  });
+  assert.equal(result.status, 7);
+  assert.equal(result.signal, null);
+  assert.equal(result.stdout, "out");
+  assert.equal(result.stderr, "err");
+});
+
 test("command helper terminates a nonterminating process at its deadline", () => {
   assert.throws(
     () =>
