@@ -1,3 +1,12 @@
+import {
+  SharedMemoryLedger,
+  SharedMemoryAdmissionError,
+  declareSharedMemoryPlatform,
+  bytes,
+  type RuntimeReservations,
+} from "../memory/reservations.js";
+import { FilesystemRequestPool } from "../fs/request-memory.js";
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 import { expect, test } from "bun:test";
 import { Worker as NodeWorker } from "node:worker_threads";
@@ -40,11 +49,13 @@ async function fixture(
   real: boolean,
   stopping: Promise<void> = Promise.resolve(),
   rootRetired?: () => void,
+  reservations: RuntimeReservations = testReservations(),
 ) {
   const previousWorker = globalThis.Worker;
   const workers: EmbeddingWorker[] = [];
   const filesystem = new FilesystemService(new MemoryBackend());
   const ports: MessagePort[] = [];
+  const pools = new WeakMap<SharedArrayBuffer, FilesystemRequestPool>();
   const errors: unknown[] = [];
   class EmbeddingWorker {
     onmessage: ((event: { data: RuntimeWorkerMessage }) => void) | null = null;
@@ -78,13 +89,18 @@ async function fixture(
   const module = memoryObservationGuest();
   registry.register("fixture", { module, adapter: "preview1" });
   const broker = new BrowserProcessBroker({
+    reservations,
     identities,
     table,
     registry,
     onError: (error) => errors.push(error),
     filesystem: {
-      connect(identity) {
-        const pair = connectFilesystemIdentity(identity);
+      connect(identity, headroom) {
+        const pool =
+          pools.get(identity.requestBudget) ??
+          new FilesystemRequestPool(identity.requestBudget, undefined, reservations.arenas);
+        pools.set(identity.requestBudget, pool);
+        const pair = connectFilesystemIdentity(identity, pool, undefined, headroom);
         ports.push(pair.server.port, pair.client.port);
         filesystem.connect(pair.server);
         return pair.client;
@@ -139,7 +155,7 @@ async function fixture(
   };
   globalThis.Worker = EmbeddingWorker as unknown as typeof Worker;
   try {
-    await broker.adoptRuntimeRoot(root, { retired: rootRetired });
+    await broker.adoptRuntimeRoot(root, { memory: [], retired: rootRetired });
     const supervisor = await broker.ready();
     let handled = 0;
     const spawn = async () => {
@@ -163,6 +179,22 @@ async function fixture(
     throw error;
   }
 }
+
+test("child bootstrap receives its root's charged registry even without inherited metadata", async () => {
+  const f = await fixture(false);
+  try {
+    const child = f.workers.find((worker) => worker.request)?.request?.runtimeProcess;
+    const rootData = f.root.data;
+    const childData = child?.data;
+    if (!rootData || typeof rootData !== "object" || !("pipeRegistry" in rootData))
+      throw new Error("missing charged root registry");
+    if (!childData || typeof childData !== "object" || !("pipeRegistry" in childData))
+      throw new Error("missing charged child registry");
+    expect(childData.pipeRegistry).toEqual(rootData.pipeRegistry);
+  } finally {
+    await f.dispose();
+  }
+});
 
 test("shipped generic Worker samples allocation/growth while blocked and retains it until physical stop", async () => {
   const stop = Promise.withResolvers<void>();
@@ -311,6 +343,59 @@ test("disposal retires successful independent controllers but retains a failed c
     expect(failedRetired).toBe(0);
     expect(successfulStopped).toBe(1);
     expect(successfulRetired).toBe(1);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("bounded declarations run the real guest and keep its reservation until physical stop", async () => {
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(6 * 1024 ** 3),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+  });
+  const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
+  const stopped = Promise.withResolvers<void>();
+  const f = await fixture(true, stopped.promise, undefined, reservations);
+  try {
+    await until(() => f.broker.workerMemory()[0]?.bytes === 196608);
+    const before = reservations.snapshot().reservedBytes;
+    expect(before).toBeGreaterThanOrEqual(67_108_864 + 8 * 65_536);
+    await f.broker.kill(f.pid, 9);
+    await f.supervisor.waitForExit(f.root.pid, f.pid);
+    expect(reservations.snapshot().reservedBytes).toBe(before);
+    stopped.resolve();
+    await until(() => f.broker.workerMemory().length === 0);
+    expect(reservations.snapshot().reservedBytes).toBe(
+      before - 8 * 65_536 - 64 * 1024 * 1024 + reservations.snapshot().debtBytes,
+    );
+    expect(f.errors).toEqual([]);
+  } finally {
+    stopped.resolve();
+    await f.dispose();
+  }
+});
+
+test("actual supervisor returns ENOMEM before allocating a child arena, group, or Worker", async () => {
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(96 * 1024 ** 2),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+  });
+  const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
+  const f = await fixture(false, Promise.resolve(), undefined, reservations);
+  try {
+    const result = await f.supervisor.waitForExit(f.root.pid, f.pid);
+    expect(result).toMatchObject({ kind: "start-failed", error: "ENOMEM", code: 12 });
+    expect(f.workers).toHaveLength(0);
+    expect(f.broker.workerMemory()).toHaveLength(0);
+    expect(f.broker.memoryGroups()).toHaveLength(0);
+    expect(
+      f.errors.some((error) => error instanceof SharedMemoryAdmissionError && error.errno === 48),
+    ).toBe(true);
+    expect(
+      reservations.snapshot().holders.filter((holder) => holder.label === "request-arena"),
+    ).toHaveLength(0);
   } finally {
     await f.dispose();
   }

@@ -1,9 +1,9 @@
+import { allocateSharedControl } from "../memory/control.js";
 import {
   isInstance,
   isSharedArrayBuffer,
   isInt32Array,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsAdd,
   atomicsNotify,
   objectFreeze,
@@ -112,7 +112,7 @@ function signalWord(source?: ControlCells | SharedArrayBuffer): ControlCells {
     ? source
     : isInt32Array(source)
       ? source
-      : new Int32ArrayConstructor(source ?? new SharedArrayBufferConstructor(4));
+      : new Int32ArrayConstructor(source ?? allocateSharedControl(4));
   if (
     !isSharedArrayBuffer(isInstance(word, TaggedCells) ? word.buffer : typedArrayBuffer(word)) ||
     (isInstance(word, TaggedCells) ? word.length : typedArrayLength(word)) !== 1

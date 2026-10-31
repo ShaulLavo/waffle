@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { readOutcome, claimOutcome, outcomeWord, serializeOutcome } from "../proc/outcome.js";
 import { expect, test } from "bun:test";
 import { ProcessABI } from "../proc/abi.js";
@@ -222,11 +223,12 @@ test("a generic root retains typed EIO when its first process import fails", asy
     const messages: unknown[] = [];
     await failFirstWorkerImport(
       {
+        controlGrant: { kind: "unbounded" },
         module,
         args: [],
         env: {},
         filesystem: connection.client,
-        runtimeProcess: transport,
+        runtimeProcess: standaloneRuntimeProcess(transport),
         outcome: serializeOutcome(state.signals.outcome),
       },
       (message) => messages.push(message),

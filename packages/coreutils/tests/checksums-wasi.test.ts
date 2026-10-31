@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -182,6 +183,7 @@ test("pinned checksum guests stream through Waffle with lazy fetch and disposal"
   const fixture = verifyFixture(readFixture());
   const loaded: string[] = [];
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

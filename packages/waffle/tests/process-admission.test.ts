@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import type { ProcessHandle } from "../proc/types.js";
@@ -53,6 +54,7 @@ async function fixture(
     enteredLaunch = resolve;
   });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -91,7 +93,7 @@ async function fixture(
     identity: identities.buffer,
   });
   root.data = { filesystem: createFilesystemIdentity() };
-  await broker.adoptRuntimeRoot(root);
+  await broker.adoptRuntimeRoot(root, { memory: [] });
   const messages: WorkerProcessMessage[] = [],
     descriptors = new DescriptorTable();
   cleanups.push(() => {
@@ -305,7 +307,7 @@ test("wrong-sender diagnostics leave an authenticated later delivery's resources
     identity: f.identities.buffer,
   });
   other.data = { filesystem: createFilesystemIdentity() };
-  await f.broker.adoptRuntimeRoot(other);
+  await f.broker.adoptRuntimeRoot(other, { memory: [] });
   await expect(
     f.broker.runtimeMessage(child.message, workerProcessState(other).pid),
   ).rejects.toThrow(/wrong sender/);

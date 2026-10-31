@@ -1,3 +1,4 @@
+import { declareModuleMemory } from "../memory/declarations.js";
 import { ExecutableFormatError } from "../proc/start-failure.js";
 import { rewriteInterruptsOwned } from "./rewriter-internal.js";
 import {
@@ -61,6 +62,7 @@ export class InterruptModuleCache {
       programStage("admit", admitStart, { bytes: bytes.length });
       const compileStart = programTime();
       const module = await WebAssembly.compile(admitted);
+      declareModuleMemory(module, admitted);
       programStage("compile", compileStart, { bytes: admitted.length });
       void this.persist(hash, admitted);
       return module;
@@ -137,13 +139,17 @@ async function compileEntry(
   const copy = entry.response.clone();
   const results = await Promise.allSettled([
     compileStored(entry.response),
-    copy.arrayBuffer().then((body) => sha256Hex(new Uint8Array(body))),
+    copy.arrayBuffer().then(async (body) => {
+      const bytes = new Uint8Array(body);
+      return { bytes, digest: await sha256Hex(bytes) };
+    }),
   ]);
   const compiled = results[0],
     digest = results[1];
   if (compiled.status === "rejected") storeError("compile-stored", start, compiled.reason);
   if (digest.status === "rejected") storeError("verify", start, digest.reason);
   const module = verified(compiled, digest, entry.admittedSha256);
+  if (module && digest.status === "fulfilled") declareModuleMemory(module, digest.value.bytes);
   programStage("store-verify", start, {
     bytes: Number(copy.headers.get("content-length")),
     result: module ? "hit" : "rejected",
@@ -153,11 +159,11 @@ async function compileEntry(
 
 function verified(
   compiled: PromiseSettledResult<WebAssembly.Module>,
-  digest: PromiseSettledResult<string>,
+  digest: PromiseSettledResult<{ bytes: Uint8Array; digest: string }>,
   expected: string,
 ): WebAssembly.Module | undefined {
   if (compiled.status !== "fulfilled" || digest.status !== "fulfilled") return undefined;
-  if (digest.value !== expected) return undefined;
+  if (digest.value.digest !== expected) return undefined;
   const fatal = WebAssembly.Module.imports(compiled.value).some(
     (entry) =>
       entry.module === "runtime_proc" &&

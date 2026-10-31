@@ -24,11 +24,11 @@ test("no module compilation before network(), and exactly one instance belongs t
     const Instance = WebAssembly.Instance;
     WebAssembly.compile = (...args) => { compiled++; return compile(...args); };
     WebAssembly.Instance = class extends Instance { constructor(...args) { super(...args); instances++; } };
-    const { createRuntime } = await import(${JSON.stringify(root)});
+    const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
     const { createRing } = await import(${JSON.stringify(ring)});
     assert.equal(compiled, 0); assert.equal(instances, 0);
     for (let index = 0; index < 2; index++) {
-      const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
+      const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
       try {
         await runtime.filesystem.listFiles("/");
         const unregisterAdapter = runtime.registerAdapter("unused", () => { throw Error("must stay inactive"); });
@@ -101,9 +101,9 @@ test("disposal during a held module load creates no orphan instance", () => {
         return { ...instance, dispose() { disposals++; instance.dispose(); } };
       } };
     } }));
-    const { createRuntime } = await import(${JSON.stringify(root)});
+    const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
     const options = { filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } };
-    const runtime = createRuntime(options);
+    const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), ...options });
     const outcome = runtime.network().then(() => "unexpected", error => error.message);
     await started.promise;
     const disposal = runtime.dispose();
@@ -111,7 +111,7 @@ test("disposal during a held module load creates no orphan instance", () => {
     await disposal;
     assert.match(await outcome, /disposed/i);
     assert.equal(instances, 0); assert.equal(disposals, 0);
-    const next = createRuntime(options);
+    const next = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), ...options });
     await next.network();
     assert.equal(instances, 1);
     await next.dispose(); await next.dispose();
@@ -212,8 +212,8 @@ for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]
         await release.promise;
         throw failure;
       } }));
-      const { createRuntime } = await import(${JSON.stringify(root)});
-      const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
+      const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
+      const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
       const outcome = runtime.network().then(() => ({ resolved: true }), reason => ({ resolved: false, reason }));
       await started.promise;
       const disposal = runtime.dispose().then(() => ({ resolved: true }), reason => ({ resolved: false, reason }));

@@ -368,8 +368,8 @@ producer cannot publish past that frozen watermark, and killed buffers are never
 
 Registry cells are append-only, 16 bytes each, in a growable shared buffer. A simple same-process
 pipe uses four cells, or 64 bytes of lifetime metadata after its pipe buffers are released.
-Defaults allocate about 2 MiB initially and allow 16,777,216 cells (256 MiB plus the header),
-roughly 4,194,304 simple pipes per service; additional process endpoints consume more cells.
+Defaults allocate about 2 MiB initially and allow 1,048,576 cells (16 MiB plus the header),
+roughly 262,144 simple pipes per service; additional process endpoints consume more cells.
 The separate process directory supports 1,024 simultaneously enrolled processes; collected
 process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
 
@@ -392,10 +392,11 @@ a responsive controller starts the automatic relay.
 Pass `onProcessAdmission` to `createRuntime` to observe child admission without console logging:
 
 ```ts
-import { createRuntime, type ProcessAdmissionEvent } from "waffle";
+import { createRuntime, measureSharedMemory, type ProcessAdmissionEvent } from "waffle";
 
 const admissions: ProcessAdmissionEvent[] = [];
 const runtime = createRuntime({
+  sharedMemory: await measureSharedMemory(),
   onProcessAdmission(event) {
     if (admissions.length === 256) admissions.shift();
     admissions.push(event);

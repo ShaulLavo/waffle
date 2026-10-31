@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -32,6 +33,7 @@ async function provision(runtime: Runtime) {
 async function run(script: string) {
   installNodeWorkers();
   const runtime = waffle.createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../.build/node/fs.mjs", import.meta.url) },
   });
   const stderr: Buffer[] = [];

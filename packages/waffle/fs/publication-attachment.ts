@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import {
   REQUEST_BUDGET_BYTES,
   requestLengths,
@@ -689,7 +690,7 @@ export async function attachResidentPublication(
 }
 
 function workspaceIdentityBuffer(source: SharedArrayBuffer, words: number): SharedArrayBuffer {
-  const buffer = new SharedArrayBufferConstructor((words + 1) * 4);
+  const buffer = allocateSharedControl((words + 1) * 4);
   typedArraySet(
     new Int32ArrayConstructor(buffer, 0, words),
     new Int32ArrayConstructor(source, 0, words),

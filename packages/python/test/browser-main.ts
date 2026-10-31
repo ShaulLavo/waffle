@@ -1,3 +1,5 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import { createRuntime } from "waffle";
 import { qualifyPython } from "./qualification.ts";
 import { browserUsageCases } from "./public-usage.ts";
@@ -7,6 +9,7 @@ Reflect.set(
   "pythonPackageResult",
   (async () => {
     const runtime = createRuntime({
+      sharedMemory,
       filesystem: { mode: "memory", workerURL: "/waffle-dist/browser/fs-worker.js" },
     });
     try {

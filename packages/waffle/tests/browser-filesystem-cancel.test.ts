@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { withVfsImplementation } from "../fs/vfs-internal.js";
 import { afterEach, expect, test } from "bun:test";
 import { SharedFilesystem, type SharedFilesystemOptions } from "../browser/shared-fs.js";
@@ -141,6 +142,7 @@ for (const filesystemOptions of [
   test(`runtime cancels pending ${filesystemOptions.mode} ${"whenBusy" in filesystemOptions ? filesystemOptions.whenBusy : "default"} startup before draining queued mutations`, async () => {
     globalThis.Worker = TestWorker as unknown as typeof Worker;
     const runtime = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { ...filesystemOptions, workerURL: "https://example.test/fs.js" },
     });
     const worker = workers[0]!;
@@ -168,6 +170,7 @@ test("a disposed state observer reenters the same runtime disposal", async () =>
   globalThis.Worker = TestWorker as unknown as typeof Worker;
   let reentered: Promise<void> | undefined;
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: withVfsImplementation("opfs-memory", {
       mode: "fast",
       workerURL: "https://example.test/fs.js",
@@ -202,6 +205,7 @@ for (const whenBusy of ["takeover", "wait"] as const) {
   test(`pending IndexedDB ${whenBusy} disposal fences admitted consumers before aborting storage`, async () => {
     globalThis.Worker = TestWorker as unknown as typeof Worker;
     const runtime = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { whenBusy, workerURL: "https://example.test/fs.js" },
     });
     const worker = workers[0]!;
@@ -239,7 +243,10 @@ for (const whenBusy of ["takeover", "wait"] as const) {
 
 test("runtime disposal preserves a fatal IndexedDB startup error", async () => {
   globalThis.Worker = TestWorker as unknown as typeof Worker;
-  const runtime = createRuntime({ filesystem: { workerURL: "https://example.test/fs.js" } });
+  const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
+    filesystem: { workerURL: "https://example.test/fs.js" },
+  });
   const worker = workers[0]!;
   worker.emit("message", { data: { type: "filesystem-error", message: "IndexedDB open failed" } });
   await expect(runtime.dispose()).rejects.toThrow("IndexedDB open failed");

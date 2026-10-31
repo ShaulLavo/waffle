@@ -19,9 +19,10 @@ Omitting `mode` means `"fast"`. `name` selects the saved workspace and defaults 
 A write returns when shared memory has it, not when IndexedDB does. Await `flush()` to wait for storage. Create `persist.ts`. It counts page loads:
 
 ```ts
-import { createRuntime } from "waffle";
+import { createRuntime, measureSharedMemory } from "waffle";
 
 const runtime = createRuntime({
+  sharedMemory: await measureSharedMemory(),
   filesystem: { workerURL: "/fs-worker.js", mode: "fast", name: "notes" },
 });
 try {
@@ -54,12 +55,13 @@ Only one page can own a persistent workspace. `whenBusy` decides what a second p
 Watch the state to tell the user. Create `busy.ts`:
 
 ```ts
-import { createRuntime } from "waffle";
+import { createRuntime, measureSharedMemory } from "waffle";
 
 const whenBusy =
   new URLSearchParams(location.search).get("whenBusy") === "wait" ? "wait" : "takeover";
 const statuses: string[] = [];
 const runtime = createRuntime({
+  sharedMemory: await measureSharedMemory(),
   filesystem: {
     workerURL: "/fs-worker.js",
     mode: "fast",

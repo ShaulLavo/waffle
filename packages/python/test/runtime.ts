@@ -1,3 +1,5 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import assert from "node:assert/strict";
 import { createRuntime } from "waffle";
 import { serveTestFiles } from "./assets-server.ts";
@@ -9,6 +11,7 @@ const nodeRoot = new URL(".", import.meta.resolve("waffle"));
 const server = await serveTestFiles(new URL("..", import.meta.url).pathname);
 installNodeWorkers();
 const runtime = createRuntime({
+  sharedMemory,
   filesystem: { mode: "memory", workerURL: new URL("browser/fs-worker.js", nodeRoot) },
 });
 try {

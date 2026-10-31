@@ -1,6 +1,7 @@
 import { FilesystemError } from "../core/filesystem.js";
 import { FilesystemSection } from "./section.js";
 import type { FilesystemIdentity } from "./protocol.js";
+import type { ArenaSource, Headroom } from "../memory/reservations.js";
 import {
   Int32ArrayConstructor,
   BigInt64ArrayConstructor,
@@ -99,6 +100,7 @@ interface Arena {
   readonly data: SharedArrayBuffer;
   revocation: SharedArrayBuffer;
   generation: number;
+  stranded: boolean;
 }
 export class FilesystemTransportError extends FilesystemError {
   readonly code = "CLOSED";
@@ -301,7 +303,12 @@ export function requestBudgetBytes(budget: SharedArrayBuffer): number {
   return Number(atomicsLoad(new BigInt64ArrayConstructor(budget), 0));
 }
 function arenaMemory(arena: Arena, budget: SharedArrayBuffer): FilesystemRequestMemory {
-  return { budget, control: arena.control, data: arena.data, generation: arena.generation };
+  return {
+    budget,
+    control: arena.control,
+    data: arena.data,
+    generation: arena.generation,
+  };
 }
 function validateConnectionBytes(bytes: number): number {
   if (
@@ -328,6 +335,8 @@ export class FilesystemRequestPool {
   constructor(
     readonly budget: SharedArrayBuffer,
     connectionBytes = FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+    readonly source?: ArenaSource,
+    readonly allocate?: RequestArenaAllocator,
   ) {
     this.connectionBytes = validateConnectionBytes(connectionBytes);
   }
@@ -342,18 +351,25 @@ export class FilesystemRequestPool {
     atomicsStore(own, B.probe, previous);
     if (!same) throw new FilesystemError(2, "filesystem connector namespace mismatch");
   }
-  take(revocation: SharedArrayBuffer, construction?: Construction): FilesystemRequestMemory {
+  take(
+    revocation: SharedArrayBuffer,
+    construction?: Construction,
+    headroom: Headroom | null = null,
+  ): FilesystemRequestMemory {
     const generation = nextGeneration(this.budget);
     let arena: Arena | undefined;
     for (let i = 0; i < this.arenas.length; i++) {
       const candidate = this.arenas[i]!;
       if (atomicsLoad(new Int32ArrayConstructor(candidate.revocation), 0) !== 2) continue;
       if (!get(arenaMemory(candidate, this.budget), C.retired)) continue;
-      if (get(arenaMemory(candidate, this.budget), C.retirementError)) continue;
+      if (get(arenaMemory(candidate, this.budget), C.retirementError)) {
+        this.strand(candidate);
+        continue;
+      }
       arena = candidate;
       break;
     }
-    if (!arena) arena = this.create(revocation, construction);
+    if (!arena) arena = this.create(revocation, construction, headroom);
     else {
       const previous = arenaMemory(arena, this.budget);
       update(previous, C.closed, () => 2);
@@ -375,16 +391,26 @@ export class FilesystemRequestPool {
       generation,
     });
   }
-  private create(revocation: SharedArrayBuffer, construction?: Construction): Arena {
-    const control = this.createControl(construction);
+  private strand(arena: Arena): void {
+    if (arena.stranded) return;
+    arena.stranded = true;
+    this.source?.strand(arena.data);
+  }
+  private create(
+    revocation: SharedArrayBuffer,
+    construction?: Construction,
+    headroom: Headroom | null = null,
+  ): Arena {
     const allocate: RequestArenaAllocator = construction
       ? (bytes, maximum) => construction.allocateShared(bytes, maximum)
-      : (bytes, maximum) => createGrowableSharedArrayBuffer(bytes, maximum);
-    const data =
-      this.connectionBytes === FILESYSTEM_REQUEST_LIMITS.connectionBytes
+      : (this.allocate ?? ((bytes, maximum) => createGrowableSharedArrayBuffer(bytes, maximum)));
+    const control = this.createControl(construction);
+    const data = this.source
+      ? this.source.create(headroom)
+      : this.connectionBytes === FILESYSTEM_REQUEST_LIMITS.connectionBytes
         ? createRequestArenaData(allocate)
         : allocate(0, this.connectionBytes);
-    const arena = { control, data, revocation, generation: 0 };
+    const arena = { control, data, revocation, generation: 0, stranded: false };
     this.arenas[this.arenas.length] = arena;
     return arena;
   }
@@ -393,6 +419,7 @@ export class FilesystemRequestPool {
     try {
       const control =
         construction?.allocateShared(REQUEST_CONTROL_BYTES) ??
+        this.allocate?.(REQUEST_CONTROL_BYTES, REQUEST_CONTROL_BYTES) ??
         new SharedArrayBufferConstructor(REQUEST_CONTROL_BYTES);
       this.receipts[this.receipts.length] = control;
       return control;

@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { installBunAdapters } from "bun-wasm";
 import { createShell, SharedBridge, control } from "bash-web";
@@ -29,7 +30,11 @@ async function sharedRepository(runtime: Runtime) {
   try {
     await runtime.filesystem.mkdirp("/work/shared");
     await runtime.filesystem.writeFile("/work/shared/notes.txt", "shared\n");
-    for (const argv of [["init", "-b", "main"], ["add", "notes.txt"], ["commit", "-m", "Shared commit"]])
+    for (const argv of [
+      ["init", "-b", "main"],
+      ["add", "notes.txt"],
+      ["commit", "-m", "Shared commit"],
+    ])
       check((await run(...argv)) === 0, `seed git ${argv.join(" ")}`);
   } finally {
     await git.dispose();
@@ -106,11 +111,14 @@ async function viaBun(runtime: Runtime) {
 }
 
 async function head(runtime: Runtime, dir: string) {
-  return decoder.decode((await runtime.filesystem.readFile(`${dir}/.git/HEAD`)) ?? new Uint8Array());
+  return decoder.decode(
+    (await runtime.filesystem.readFile(`${dir}/.git/HEAD`)) ?? new Uint8Array(),
+  );
 }
 
 Reflect.set(globalThis, "gitLookup", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("./fs-worker.js", location.href) },
   });
   const started = performance.now();
@@ -122,19 +130,28 @@ Reflect.set(globalThis, "gitLookup", async () => {
       wasmUrl: new URL("./bun.wasm", location.href),
       executables: ["/bin/bun"],
     });
-    const git = await installGitProgram(runtime, { source: await (await fetch("./git-cli.js")).text() });
+    const git = await installGitProgram(runtime, {
+      source: await (await fetch("./git-cli.js")).text(),
+    });
     try {
       await sharedRepository(runtime);
       result.bash = await viaBash(runtime);
       result.bun = await viaBun(runtime);
-      result.heads = { bash: await head(runtime, "/work/bashrepo"), bun: await head(runtime, "/work/bunrepo") };
+      result.heads = {
+        bash: await head(runtime, "/work/bashrepo"),
+        bun: await head(runtime, "/work/bunrepo"),
+      };
     } finally {
       await git.dispose();
       bun.dispose();
     }
     return { ok: true, ...result, ms: performance.now() - started };
   } catch (error) {
-    return { ok: false, ...result, error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error) };
+    return {
+      ok: false,
+      ...result,
+      error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
+    };
   } finally {
     await runtime.dispose();
   }

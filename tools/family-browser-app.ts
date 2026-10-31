@@ -1,7 +1,10 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import { createRuntime } from "waffle";
 import { runLazyBaseAcceptance } from "./family-integration.ts";
 
 const runtime = createRuntime({
+  sharedMemory,
   filesystem: { mode: "memory", workerURL: new URL("/fs-worker.js", location.href) },
 });
 try {

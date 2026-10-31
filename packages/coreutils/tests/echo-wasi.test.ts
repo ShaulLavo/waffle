@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -202,6 +203,7 @@ async function proveGap(session: FamilyAcceptanceSession) {
 
 test("real registered echo closes the xargs gap and cleans up a canceled pipeline", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

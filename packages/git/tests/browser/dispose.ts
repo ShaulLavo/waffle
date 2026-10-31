@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { FilesystemClient } from "waffle/fs/client";
 import { installGitProgram } from "../../src/program";
@@ -48,6 +49,7 @@ async function entries(runtime: Runtime, path: string) {
 
 Reflect.set(globalThis, "gitDispose", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("./fs-worker.js", location.href) },
   });
   const results: Record<string, unknown> = {};
@@ -63,7 +65,11 @@ Reflect.set(globalThis, "gitDispose", async () => {
     }
     return { ok: true, results };
   } catch (error) {
-    return { ok: false, results, error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error) };
+    return {
+      ok: false,
+      results,
+      error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
+    };
   } finally {
     await runtime.dispose();
   }

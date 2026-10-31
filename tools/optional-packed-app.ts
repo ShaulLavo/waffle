@@ -1,3 +1,5 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
@@ -19,6 +21,7 @@ assert.ok(realpathSync(GIT_CLI_URL).startsWith(expected));
 const pythonEntry = new URL(import.meta.resolve("@waffle/python"));
 const nodeRoot = new URL(".", import.meta.resolve("waffle"));
 const runtime = createRuntime({
+  sharedMemory,
   filesystem: { mode: "memory", workerURL: new URL("browser/fs-worker.js", nodeRoot) },
 });
 try {

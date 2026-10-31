@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { installBunAdapters, type BunAdapterInstallation } from "bun-wasm";
 import { installGit, type GitInstallation } from "waffle-git";
@@ -93,6 +94,7 @@ function cases(oid: string): { argv: string[]; cwd: string; expected: Result }[]
 Reflect.set(globalThis, "gitRevParseSmoke", async () => {
   let admissions = 0;
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("./fs-worker.js", location.href) },
     onProcessAdmission() {
       admissions++;

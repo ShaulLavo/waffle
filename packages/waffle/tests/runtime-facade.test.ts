@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { posix } from "node:path";
 import {
@@ -59,8 +60,9 @@ afterEach(async () => {
   for (const port of ports) port.close();
   globalThis.Worker = previousWorker;
 });
-function create(options: RuntimeOptions = {}): Runtime {
+function create(options: Omit<RuntimeOptions, "sharedMemory"> = {}): Runtime {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: "https://example.test/filesystem.js", mode: "memory" },
     ...options,
   });
@@ -877,7 +879,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
   // process as that page, then destroy it in finally rather than deleting a live owner's guard.
   const script = `
     import { createRing } from ${JSON.stringify(new URL("../browser/net/ring.ts", import.meta.url).href)};
-    import { createRuntime } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
+    import { createRuntime, declareSharedMemoryPlatform } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
     import { ProcessSupervisor } from ${JSON.stringify(new URL("../proc/supervisor.ts", import.meta.url).href)};
     import { MemoryBackend } from ${JSON.stringify(new URL("../fs/backend.ts", import.meta.url).href)};
     import { FilesystemService } from ${JSON.stringify(new URL("../fs/service.ts", import.meta.url).href)};
@@ -886,7 +888,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
     const filesystem = new FilesystemService(backend);
     let filesystemStops = 0, consumerStops = 0, relayStops = 0, networkStops = 0;
     globalThis.Worker = class { addEventListener() {} postMessage(message) { filesystem.connect(message.connect); } terminate() { filesystem.dispose(); filesystemStops++; } };
-    const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" }, processHost: options => {
+    const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" }, processHost: options => {
       const supervisor = new ProcessSupervisor({ registry: options.registry, table: options.table, launch: options.launch });
       return { ready: async () => supervisor, suspend: () => supervisor.dispose(),
         quiesce: async () => { throw new Error("fence failed"); }, dispose: async () => { relayStops++; } };
@@ -904,7 +906,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
     let error;
     try { await disposal; } catch (failure) { error = failure.message; }
     let guardHeld = false;
-    try { createRuntime(); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
+    try { createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }) }); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
     console.log(JSON.stringify({ error, filesystemStops, consumerStops, relayStops, networkStops, guardHeld, sameDisposal: runtime.dispose() === disposal }));
     process.exit(0);
   `;
@@ -1174,11 +1176,11 @@ test.each(["filesystem", "revoke", "stop"] as const)(
 
 test("a rejected retained-consumer fence fails closed even without process activation", async () => {
   const script = `
-    import { createRuntime } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
+    import { createRuntime, declareSharedMemoryPlatform } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
     let filesystemStops = 0, consumerStops = 0, cancels = 0;
     const ports = [];
     globalThis.Worker = class { addEventListener() {} postMessage(message) { ports.push(message.connect.port); } terminate() { filesystemStops++; } };
-    const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" } });
+    const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" } });
     const release = runtime.retainConsumer({ filesystem: { ...runtime.filesystem.createIdentity(), sections: new SharedArrayBuffer(0) },
       revoke() { cancels++; }, stop() { consumerStops++; } });
     const disposal = runtime.dispose();
@@ -1186,7 +1188,7 @@ test("a rejected retained-consumer fence fails closed even without process activ
     try { await disposal; } catch { fenceFailed = true; }
     release();
     let guardHeld = false;
-    try { createRuntime(); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
+    try { createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }) }); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
     console.log(JSON.stringify({ fenceFailed, filesystemStops, consumerStops, cancels, guardHeld, sameDisposal: runtime.dispose() === disposal }));
     for (const port of ports) port.close();
     process.exit(0);

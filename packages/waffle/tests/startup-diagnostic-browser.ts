@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import type { StartupDiagnosticRequest } from "./fixtures/startup-diagnostic-request.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -48,6 +49,7 @@ export async function browserStartupDiagnostic(
   });
   const timer = setTimeout(() => reject(new Error("startup diagnostic worker timeout")), 10_000);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -113,7 +115,7 @@ export async function browserStartupDiagnostic(
   });
   const reader = pipe.retain(parent.pid, "read");
   try {
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const pid = parent.spawn(parent.pid, {
       executable: "fixture",
       argv: [],

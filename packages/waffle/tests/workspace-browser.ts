@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "../index.js";
 import {
   FilesystemClient,
@@ -265,7 +266,10 @@ function directWrites(
 async function run(mode: "memory" | "fast"): Promise<void> {
   const name = `workspace-public-${crypto.randomUUID()}`;
   const workerURL = `/fs-worker.js?owner=${name}`;
-  const runtime = createRuntime({ filesystem: { mode, workspace: true, name, workerURL } });
+  const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
+    filesystem: { mode, workspace: true, name, workerURL },
+  });
   let peer: FilesystemClient | undefined;
   let guest: Worker | undefined;
   const guestURL = `/guest.js?owner=${name}`;
@@ -384,6 +388,7 @@ async function run(mode: "memory" | "fast"): Promise<void> {
 async function reopen(name: string, saved: Awaited<ReturnType<typeof complete>>): Promise<void> {
   const url = `/fs-worker.js?reopen=${name}`;
   const runtime: Runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "fast", name, workspace: true, workerURL: url },
   });
   try {

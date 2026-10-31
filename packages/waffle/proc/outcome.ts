@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import { startFailureName, startFailureErrno } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 import { packedControl, type CellValidity } from "./control.ts";
@@ -5,7 +6,6 @@ import {
   atomicsCompareExchange,
   atomicsLoad,
   BigInt64ArrayConstructor,
-  SharedArrayBufferConstructor,
   objectFreeze,
   typedArrayBuffer,
   typedArrayByteOffset,
@@ -65,7 +65,7 @@ export function outcomeWord(source?: OutcomeWord | SharedArrayBuffer): OutcomeWo
   if (isInstance(source, OutcomeCell)) return source;
   const word = isBigInt64Array(source)
     ? source
-    : new BigInt64ArrayConstructor(source ?? new SharedArrayBufferConstructor(8));
+    : new BigInt64ArrayConstructor(source ?? allocateSharedControl(8));
   if (!isSharedArrayBuffer(typedArrayBuffer(word)) || typedArrayLength(word) !== 1)
     throw new TypeError("outcome word must be one shared int64");
   return word;

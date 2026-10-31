@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "../../waffle/index.ts";
 import { DescriptorTable } from "../../waffle/core/descriptors.ts";
 import { PipeController, type PipeEndpoint } from "../../waffle/proc/pipes.ts";
@@ -29,6 +30,7 @@ export function deferred() {
 
 export function runtime() {
   const owner = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),
@@ -49,6 +51,7 @@ export async function shell(runtime: Runtime) {
   const stdout: Uint8Array[] = [];
   const stderr: Uint8Array[] = [];
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (fd, bytes) => (fd === 2 ? stderr : stdout).push(bytes.slice()),
   });
   const descriptors = new DescriptorTable();

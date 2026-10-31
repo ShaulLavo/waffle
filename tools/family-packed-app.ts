@@ -1,3 +1,5 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import { createRuntime } from "waffle";
 import { basePackages } from "waffle-base";
 import { realpathSync } from "node:fs";
@@ -29,6 +31,7 @@ for (const family of basePackages) {
   }
 }
 const runtime = createRuntime({
+  sharedMemory,
   filesystem: {
     mode: "memory",
     workerURL: new URL(import.meta.resolve("waffle/browser/fs-worker")),

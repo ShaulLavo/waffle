@@ -3,9 +3,10 @@
 Choose guarantees, not a browser storage API.
 
 ```ts
-import { createRuntime, getVfsDescriptor, VfsError } from "waffle";
+import { createRuntime, measureSharedMemory, getVfsDescriptor, VfsError } from "waffle";
 
 const runtime = createRuntime({
+  sharedMemory: await measureSharedMemory(),
   filesystem: { name: "workspace", mode: "fast", whenBusy: "wait" },
 });
 const selected = runtime.filesystem.vfs;

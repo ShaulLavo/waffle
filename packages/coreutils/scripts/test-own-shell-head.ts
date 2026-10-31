@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -24,6 +25,7 @@ async function run(context: TestContext, script: string, installed = true, inter
   const admitted = Promise.withResolvers<number>();
   installNodeWorkers();
   const runtime = api.createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: new URL("fs.mjs", nodeDirectory), mode: "memory" },
     onProcessAdmission(event) {
       if (event.stage === "launched") admitted.resolve(event.pid);

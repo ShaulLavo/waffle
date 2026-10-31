@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./shared-memory-platform.js";
 import { createRuntime, type Runtime, type RuntimeOptions } from "../../runtime.js";
 import { ProcessSupervisor } from "../../proc/supervisor.js";
 import { MemoryBackend } from "../../fs/backend.js";
@@ -122,6 +123,7 @@ async function exercise(mode: string, failure: unknown, events: string[]) {
   const siblingFailure = new Error("sibling stop failed");
   const hostJoin = mode === "host" ? originalStop.promise : Promise.resolve();
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" },
     processHost: hostFactory(events, hostJoin, mode === "host" ? stopStarted.resolve : () => {}),
   });
@@ -194,6 +196,7 @@ async function exercise(mode: string, failure: unknown, events: string[]) {
   let next: Runtime | undefined;
   try {
     next = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" },
     });
   } catch (error) {

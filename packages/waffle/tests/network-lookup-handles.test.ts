@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { NetHelper, NetNamespace, type NetLookup } from "../browser/net/helper.js";
 import { NetHost } from "../browser/net/host.js";
@@ -51,6 +52,7 @@ function decode(value: Uint8Array | number): unknown {
 }
 function runtime() {
   return createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
     processHost() {
       throw Error("Lookup activated processes");

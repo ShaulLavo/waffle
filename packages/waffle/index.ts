@@ -105,3 +105,26 @@ export type {
 export type { CommandProcessContext } from "./proc/types.js";
 
 export type { SignalDelegation } from "./programs/index.js";
+
+export {
+  bytes,
+  pages,
+  declareSharedMemoryPlatform,
+  measureSharedMemory,
+  SharedMemoryAdmissionError,
+  declareModuleMemory,
+  createSharedControlAllocator,
+} from "./memory/index.js";
+export type {
+  SharedControlGrant,
+  ReservedBytes,
+  WasmPages,
+  CountedKinds,
+  SharedMemoryPlatform,
+  SharedMemorySnapshot,
+  SharedMemoryRefusal,
+  MemoryDeclaration,
+  ProcessPlan,
+  ProcessGuestPlan,
+  SharedMemoryMeasureOptions,
+} from "./memory/index.js";

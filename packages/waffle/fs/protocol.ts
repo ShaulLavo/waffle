@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import { wakeFilesystemWatch } from "./watch-ring.js";
 import { FilesystemSection } from "./section.js";
 export { FilesystemSection, isRevoked } from "./section.js";
@@ -6,7 +7,6 @@ import {
   BigIntConstructor,
   bigintToString,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   Uint8ArrayConstructor,
   objectDefineProperty,
 } from "../proc/intrinsics.js";
@@ -26,7 +26,9 @@ import {
   REQUEST_CONTROL_BYTES,
   REQUEST_HEADER,
   type FilesystemRequestMemory,
+  FILESYSTEM_REQUEST_LIMITS,
 } from "./request-memory.js";
+import type { ArenaSource, Headroom } from "../memory/reservations.js";
 import {
   DEFAULT_SHARED_MAX_BYTES,
   SHARED_SEGMENT_BYTES,
@@ -119,7 +121,9 @@ export interface FilesystemReservation {
 export type FilesystemIdentity = Omit<FilesystemConnection, "port" | "requests">;
 export interface FilesystemOwnerConstruction {
   readonly shared: SharedArrayBuffer;
+  readonly arenas?: ArenaSource;
   allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
+  allocatePublication?(bytes: number): SharedArrayBuffer;
 }
 export function filesystemOwnerPlan(publication: PublicationConfiguration) {
   const arena = publicationBufferPlan(publication.limits, publication.observe);
@@ -161,10 +165,10 @@ export function createFilesystemIdentity(
 ): FilesystemIdentity {
   if (construction && parent) throw new TypeError("owner construction cannot fork an identity");
   const allocate = (bytes: number) =>
-    construction ? construction.allocateShared(bytes) : new SharedArrayBuffer(bytes);
+    construction ? construction.allocateShared(bytes) : allocateSharedControl(bytes);
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared =
-    parent?.shared ?? construction?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
+    parent?.shared ?? construction?.shared ?? allocateSharedControl(CONNECTION_SHARED_BYTES);
   const segments = identitySegments(parent, maxBytes, construction);
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)
@@ -174,7 +178,7 @@ export function createFilesystemIdentity(
   const capabilityBytes = (CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4;
   const capabilities = construction
     ? construction.allocateShared(capabilityBytes)
-    : new SharedArrayBufferConstructor(capabilityBytes);
+    : allocateSharedControl(capabilityBytes);
   const entries = new Int32ArrayConstructor(capabilities, 0, CAPABILITY_LENGTH);
   entries.fill(-1);
   entries[0] = 0;
@@ -211,7 +215,18 @@ function identityPublication(
     const configuration = "workspace" in publication ? workspacePublication : publication;
     const buffers = createPublicationBuffers(configuration.limits, configuration.observe, {
       checkpoint: configuration.restore,
-      ...(construction ? { backing: { kind: "construction", construction } } : {}),
+      ...(construction
+        ? {
+            backing: {
+              kind: "construction",
+              construction: {
+                allocateShared: (bytes: number, maximum?: number) =>
+                  construction.allocatePublication?.(bytes) ??
+                  construction.allocateShared(bytes, maximum),
+              },
+            },
+          }
+        : {}),
     });
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
@@ -290,7 +305,7 @@ function reserveCapability(
       target: target.capabilities,
       targetKey,
       targetOwner: target.owner,
-      state: new SharedArrayBuffer(8),
+      state: allocateSharedControl(8),
     };
     Atomics.store(destination, targetKey, handle);
     Atomics.store(destination, targetKey + 2, 0);
@@ -330,9 +345,10 @@ export function connectFilesystemIdentity(
   identity: FilesystemIdentity,
   pool = new FilesystemRequestPool(identity.requestBudget),
   construction?: FilesystemOwnerConstruction,
+  headroom: Headroom | null = null,
 ) {
   pool.assertBudget(identity.requestBudget);
-  const requests = pool.take(identity.revocations[0]!, construction);
+  const requests = pool.take(identity.revocations[0]!, construction, headroom);
   const channel = new NativeMessageChannel();
   const pair = {
     client: { ...identity, port: channel.port1, requests },
@@ -349,7 +365,15 @@ export function createFilesystemConnection(
   construction?: FilesystemOwnerConstruction,
 ) {
   const identity = createFilesystemIdentity(parent, undefined, publication, construction);
-  return connectFilesystemIdentity(identity, undefined, construction);
+  const pool = construction?.arenas
+    ? new FilesystemRequestPool(
+        identity.requestBudget,
+        FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+        construction.arenas,
+        construction.allocateShared,
+      )
+    : undefined;
+  return connectFilesystemIdentity(identity, pool, construction);
 }
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {

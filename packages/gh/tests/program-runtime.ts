@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { afterEach, expect, test } from "bun:test";
 import { basePackages } from "../../base/src/index.ts";
@@ -40,6 +41,7 @@ test("gh loads on demand through the explicitly registered interpreter", async (
     },
   });
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

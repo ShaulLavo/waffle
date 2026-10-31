@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime } from "waffle";
 import { installPrograms } from "waffle/programs";
 import { coreutils } from "waffle-coreutils";
@@ -5,6 +6,7 @@ import { createProgramTestRoot } from "../../../tools/program-test-root.ts";
 import assert from "../../../tools/test-assert.ts";
 
 const runtime = createRuntime({
+  sharedMemory: testSharedMemory,
   filesystem: { mode: "memory", workerURL: new URL("/fs-worker.js", location.href) },
 });
 const full = "\x1b[H\x1b[2J\x1b[3J";

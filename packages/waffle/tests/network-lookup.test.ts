@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { expect, spyOn, test } from "bun:test";
 import {
   createRuntime,
@@ -8,6 +9,7 @@ import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 
 function create() {
   return createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
       mode: "memory",

@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
@@ -92,6 +93,7 @@ async function fixture(context: TestContext, launcher = launchWorker) {
   const { installPython } = await import("../src/install.ts");
   const { createProgramTestRoot } = await import("../../../tools/program-test-root.ts");
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("browser/fs-worker.js", nodeRoot) },
     programs: { launcher },
   });

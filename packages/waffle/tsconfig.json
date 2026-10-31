@@ -17,6 +17,7 @@
     "build.ts",
     "tooling",
     "core",
+    "memory",
     "fs",
     "proc",
     "interrupt",

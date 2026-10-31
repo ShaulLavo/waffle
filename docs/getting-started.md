@@ -33,9 +33,10 @@ import "waffle/browser/fs-worker";
 Create `app.ts`:
 
 ```ts
-import { createRuntime } from "waffle";
+import { createRuntime, measureSharedMemory } from "waffle";
 
 const runtime = createRuntime({
+  sharedMemory: await measureSharedMemory(),
   filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
 });
 try {

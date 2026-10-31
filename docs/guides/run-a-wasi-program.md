@@ -40,7 +40,7 @@ import "waffle/browser/preview1-worker";
 Create `run.ts`. It registers an adapter that starts the generic worker, registers the program at an absolute path, and spawns it from a root process that stands in for the page:
 
 ```ts
-import { createRuntime } from "waffle";
+import { createRuntime, measureSharedMemory } from "waffle";
 import { DescriptorTable } from "waffle/core/descriptors";
 import {
   createWorkerProcessTransport,
@@ -49,6 +49,7 @@ import {
 } from "waffle/proc/worker-client";
 
 const runtime = createRuntime({
+  sharedMemory: await measureSharedMemory(),
   filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
 });
 const descriptors = new DescriptorTable();

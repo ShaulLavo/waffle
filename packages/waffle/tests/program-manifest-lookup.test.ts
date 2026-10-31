@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { base, basePackages } from "../../base/src/index.js";
 import { createPythonPackage } from "../../python/src/index.js";
@@ -86,6 +87,7 @@ async function metadataOnly(
   let workers = 0;
   try {
     const owner = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: {
         mode: "memory",
         workerURL: new URL("../browser/fs-worker.ts", import.meta.url),

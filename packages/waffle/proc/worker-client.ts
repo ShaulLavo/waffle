@@ -1,7 +1,10 @@
+import type { PipePublicationRegistryHandle } from "./pipes.js";
+import { allocateSharedControl } from "../memory/control.js";
 import {
   arrayAppend,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
+  isSharedArrayBuffer,
+  isInstance,
   Uint32ArrayConstructor,
   atomicsLoad,
   atomicsStore,
@@ -90,6 +93,35 @@ export interface WorkerProcessTransport {
   /** Host adapter context, such as an independently reserved filesystem identity. */
   data?: unknown;
 }
+/** Read only after awaited root adoption, or from a broker-produced child request. */
+export function workerProcessPipeRegistry(
+  transport: WorkerProcessTransport,
+): PipePublicationRegistryHandle {
+  const data = transport.data;
+  if (!data || typeof data !== "object" || !("pipeRegistry" in data))
+    throw new TypeError("Worker bootstrap requires the admitted root pipe registry");
+  const registry = data.pipeRegistry;
+  if (
+    !registry ||
+    typeof registry !== "object" ||
+    !("buffer" in registry) ||
+    !isSharedArrayBuffer(registry.buffer) ||
+    !("wake" in registry) ||
+    !isInstance(registry.wake, Int32ArrayConstructor) ||
+    !("processCapacity" in registry) ||
+    typeof registry.processCapacity !== "number" ||
+    !("cellsPerProcess" in registry) ||
+    typeof registry.cellsPerProcess !== "number"
+  )
+    throw new TypeError("Invalid admitted pipe registry");
+  return {
+    buffer: registry.buffer,
+    wake: registry.wake,
+    processCapacity: registry.processCapacity,
+    cellsPerProcess: registry.cellsPerProcess,
+  };
+}
+
 export type WorkerProcessMessage =
   | {
       type: "runtime-proc";
@@ -289,7 +321,7 @@ export class WorkerProcessClient {
     )
       return -ProcessErrno.AGAIN;
     const id = this.nextAccess++,
-      cells = new Int32ArrayConstructor(new SharedArrayBufferConstructor(8));
+      cells = new Int32ArrayConstructor(allocateSharedControl(8));
     mapSet((this.accesses ??= new MapConstructor()), id, cells);
     try {
       this.options.postMessage({

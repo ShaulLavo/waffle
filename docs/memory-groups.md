@@ -34,21 +34,25 @@ Admission refuses a group image that could grow the shared memory around its own
 
 ## Policy
 
-`createRuntime({ memoryGroups })` sets runtime policy. Every limit is configurable.
+`createRuntime({ sharedMemory, memoryGroups })` sets runtime policy. [Shared-memory reservations](shared-memory.md) describes the required platform measurement. Every limit is configurable.
 
-| Field         | Default | Meaning                                                                       |
-| ------------- | ------- | ----------------------------------------------------------------------------- |
-| `members`     | 16      | Admitted members per group, including the leader and pending reservations      |
-| `parallelism` | 1       | Reported to every member through `runtime_shm.parallelism()`                    |
-| `budgetBytes` | 2 GiB   | Committed group backing for the whole page, summed across groups                |
-| `maximumPages`| 65536   | Address-space maximum of one group (4 GiB). Declared maximum is not a charge    |
-| `regions`, `pins`, `watches` | 4096, 4096, 1024 | Bounded metadata per group                        |
-| `groups`      | 64      | Live groups per page                                                            |
-| `stackBytes`  | 1 MiB   | Private stack per PIE member image                                              |
+| Field                        | Default          | Meaning                                                                      |
+| ---------------------------- | ---------------- | ---------------------------------------------------------------------------- |
+| `members`                    | 16               | Admitted members per group, including the leader and pending reservations    |
+| `parallelism`                | 1                | Reported to every member through `runtime_shm.parallelism()`                 |
+| `budgetBytes`                | 2 GiB            | Committed group backing for the whole page, summed across groups             |
+| `maximumPages`               | 65536            | Address-space maximum of one group (4 GiB). Declared maximum is not a charge |
+| `regions`, `pins`, `watches` | 4096, 4096, 1024 | Bounded metadata per group                                                   |
+| `groups`                     | 64               | Live groups per page                                                         |
+| `stackBytes`                 | 1 MiB            | Private stack per PIE member image                                           |
 
 A launch beyond `members` fails with `EAGAIN` before any Worker exists and retains nothing. A launch that fails before its Worker is constructed returns its reservation exactly once.
 
-The budget charges what the owner grew: member data, stacks, grown heap, shared regions and region arenas, each once, never once per alias. Page 0 of every group stays reserved so address 0 is never valid. Freed chunks go to the group's free list, are zeroed on reuse, and stay charged until the group ends. A request that does not fit fails without growing: `group_grow` and `shm_create` return `-ENOMEM`. The filesystem's resident storage is accounted separately and is not part of this number.
+On an unbounded platform, the budget charges what the owner grew: member data, stacks, grown heap, shared regions and region arenas, each once, never once per alias. Page 0 of every group stays reserved so address 0 is never valid. Freed chunks go to the group's free list, are zeroed on reuse, and stay charged until the group ends. A request that does not fit fails without growing: `group_grow` and `shm_create` return `-ENOMEM`. The filesystem's resident storage is accounted separately and is not part of this number.
+
+On a bounded platform the group memory is fixed, with 16,384 initial and maximum pages by default. An explicit `maximumPages` overrides that default. The page reservation ledger charges the entire fixed backing before construction. `committedBytes` and the W3 budget count logical pages granted by the owner, not the full addressable fixed buffer. Logical growth clears the granted range without calling `memory.grow`. A stray write above that range does not trap on a fixed backing.
+
+An unexposed fixed backing can return to its exact-shape pool after every member physically stops. Before another group receives it, every addressable byte is cleared, including pages never logically granted. A buffer returned by `MemoryGroupHandle.buffer()` is exposed and is never recycled. That method throws after its group ends.
 
 ## Lifetime and physical stop
 
@@ -56,7 +60,7 @@ A member's memory, holds, transit pins, watches and slot return only after the b
 
 A member blocked in `futex_wait` is cancelled by that same hard stop. Group state lives with the page-side owner, never in a lock in guest memory, so it survives the stop.
 
-The group ends, and its backing is released, when no member is reserved, launched or retained.
+The group ends when no member is reserved, launched, or retained. Its page-held reservation remains charged until safe pool reuse or a local finalization receipt. An external root receives the memory object in its bootstrap request, so its backing is treated as exposed and is never recycled.
 
 A FUTEX watch is pending until the first `futex_wake` that selects it. The waker claims the hit atomically, so a later or concurrent one-count wake moves on to the next pending watch and never reports progress twice for one watch. A hit watch stays ready until `futex_unwatch`.
 
