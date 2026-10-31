@@ -72,7 +72,7 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("release workflow publishes only the runtime tarball and checksum", () => {
+test("release workflow stages only the runtime tarball and checksum as a draft", () => {
   const release = record(
     YAML.parse(
       readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
@@ -85,9 +85,11 @@ test("release workflow publishes only the runtime tarball and checksum", () => {
     .map(record)
     .find((step) => step.name === "Publish the GitHub release assets");
   expect(publish).toBeDefined();
-  expect(String(publish?.run)).toContain("gh release create");
-  expect(String(publish?.run)).toContain(".sha256");
-  expect(String(publish?.run)).not.toContain("npm publish");
+  const command = String(publish?.run).replace(/\\\r?\n\s*/g, " ");
+  expect(command).toMatch(/gh release create[^\n]*\s--draft(?:\s|$)/);
+  expect(command).toContain("--verify-tag");
+  expect(command).toContain(".sha256");
+  expect(command).not.toContain("npm publish");
 });
 
 test("browser selects runners, shared controls and guest fixtures", () => {
