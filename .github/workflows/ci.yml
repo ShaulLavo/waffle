@@ -35,7 +35,7 @@ jobs:
       gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
       awk: ${{ steps.paths.outputs.awk }}
-      procps-pure: ${{ steps.paths.outputs.procps-pure }}
+      procps: ${{ steps.paths.outputs.procps }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -163,26 +163,6 @@ jobs:
               - "tools/tsconfig.programs.json"
               - "packages/waffle/**"
               - "packages/gh/**"
-            awk:
-              - ".github/**"
-              - "package.json"
-              - "bun.lock"
-              - "tools/program-build-tools.ts"
-              - "tools/program-optimize.ts"
-              - "tools/program-derivation.ts"
-              - "tools/program-package.ts"
-              - "tools/program-notices.ts"
-              - "tools/family-acceptance.ts"
-              - "tools/tsconfig.programs.json"
-              - "packages/waffle/**"
-              - "packages/base/**"
-              - "packages/awk/**"
-            procps-pure:
-              - ".github/workflows/ci.yml"
-              - "package.json"
-              - "bun.lock"
-              - "packages/waffle/**"
-              - "packages/procps/**"
             jq:
               - ".github/**"
               - "package.json"
@@ -197,6 +177,26 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
               - "packages/jq/**"
+            awk:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
+              - "tools/program-package.ts"
+              - "tools/program-notices.ts"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/**"
+              - "packages/base/**"
+              - "packages/awk/**"
+            procps:
+              - ".github/workflows/ci.yml"
+              - "package.json"
+              - "bun.lock"
+              - "packages/waffle/**"
+              - "packages/procps/**"
             browser:
               - ".github/**"
               - "packages/waffle/Cargo.toml"
@@ -376,10 +376,12 @@ jobs:
           echo "SDK cache-hit=${{ steps.sdk.outputs.cache-hit }}"
           echo "libc cache-hit=${{ steps.libc-cache.outputs.cache-hit }}"
           echo "Wasmtime cache-hit=${{ steps.wasmtime.outputs.cache-hit }}"
-  procps-pure:
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps-pure == 'true') }}
+  procps:
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}
     runs-on: ubuntu-latest
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -389,13 +391,31 @@ jobs:
         with:
           node-version: 26.12.1
       - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache/restore@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types
       - run: echo "$GITHUB_WORKSPACE/packages/waffle/node_modules/.bin" >> "$GITHUB_PATH"
-      - run: bun run programs:procps:pure
+      - run: bun run prepare:package
+      - run: bun run programs:procps
+      - name: Lint procps
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts
+      - name: Check procps formatting
+        working-directory: packages/procps
+        run: ../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json
   diffutils:
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}

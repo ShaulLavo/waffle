@@ -16,7 +16,7 @@ if (text.includes("createRuntime") || text.includes("new Worker") || text.includ
   throw new Error("Pure command entry unexpectedly embeds a runtime or Wasm payload");
 const report = {
   kind: "pure-browser-entry",
-  runtimeAcceptance: "BLOCKED",
+  runtimeAcceptance: "Not measured here; run test:runtime and pack:check.",
   rawBytes: bytes.byteLength,
   gzipBytes: gzipSync(bytes, { level: 9 }).byteLength,
   brotliBytes: brotliCompressSync(bytes, {

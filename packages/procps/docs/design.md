@@ -1,6 +1,6 @@
 # Process-command design
 
-Status: Approved, implementation is limited to pure command plans. Waffle supports host commands, but this package does not implement their adapter.
+Status: Approved and implemented as a pure entry plus an optional host-command catalog.
 
 ## Caller and domain
 
@@ -14,12 +14,12 @@ Command names come from the executable basename, not argv[0]. Full command text 
 
 `defineProgramPackage` retains definition identity across `pick`. `ProgramCollection` installs canonical marker paths and aliases without loading payloads. Since Waffle commit `db1bcd95c06a8130fd85caa510754a7f14bf9b98`, `ProgramDefinition` and `PackageProgram` also accept a `command` definition with a lazy loader. The registry resolves this as a command, not a compiled module. Waffle owns its process context, stdio, cancellation, and physical completion.
 
-The pure package predates that runtime contract. It exports no `procps` catalog or host-command adapter and creates no stub Wasm or surrogate interpreter. Runtime support alone does not make these plans installable shell commands.
+The optional `waffle-procps/programs` entry exports `procps` and `procpsPrograms`. Each canonical definition carries a stable loader and `/bin` alias. The loader imports `command.ts`, which calls the unchanged pure planner. The default pure entry does not import the catalog. There is no Wasm, surrogate interpreter, separate runtime, or filesystem owner.
 
 ## Alternatives considered
 
 1. A real Wasm procps front end would need a new guest-readable process-table ABI and authorized signaling ABI. The current ABI does not expose the table. This adds transport and snapshot complexity that these commands do not need.
-2. A module-less trusted host command hides registration, lazy implementation loading, stdio, cancellation, and physical-stop accounting in Waffle. Waffle now supplies this contract. A procps adapter and package-level acceptance tests remain separate work.
+2. A module-less trusted host command hides registration, lazy implementation loading, stdio, cancellation, and physical-stop accounting in Waffle. Waffle supplies this contract. The optional adapter uses it directly.
 3. A launch hook with empty Wasm would fit the type but misrepresent executable identity and admission. It is rejected, as is borrowing an unrelated interpreter.
 
 The bounded implementation separates pure matching and output from runtime lifecycle integration. The public function hides option parsing and formatting. It deliberately leaves signal delivery to an authorized Waffle capability, rather than accepting a generic callback that could bypass control policy.
@@ -28,8 +28,16 @@ The bounded implementation separates pure matching and output from runtime lifec
 
 At the accepted source, `checkedSignal` accepts 1 through 64 except invalid 32 and 33, and unsupported stop signals 19 through 22. Signal zero is invalid. The older native fixture report predates this expansion. This package plans only 2, 9, 13, and 15.
 
-`supervisor.canSignal` permits self and descendants only. A normally spawned `pkill` is a sibling of shell-owned targets. Neither passing its parent's PID as authority nor calling raw `supervisor.kill` is an acceptable workaround. Waffle now supplies `DelegatedSignals` only when a command requests delegation and its spawning controller grants the installed package identity. This package neither requests nor uses that capability.
+`supervisor.canSignal` permits self and descendants only. A normally spawned `pkill` is a sibling of shell-owned targets. Neither passing its parent's PID as authority nor calling raw `supervisor.kill` is an acceptable workaround. Waffle now supplies `DelegatedSignals` only when a command requests delegation and its spawning controller grants the installed package identity. Only the `pkill` definition requests that capability. Its adapter uses only the capability supplied to its admitted context. A missing grant produces an explicit diagnostic and no send.
 
 ## Verification boundary
 
-Recorded native cases prove pure selection, formatting, and status behavior where fields exist. Pure plans do not prove registered execution, signal delivery, lazy admission, uninstall fences, or runtime disposal. The runtime controls reject incomplete Wasm definitions, accept an unloaded host-command registration, and retain ordinary sibling denial. They do not prove procps execution or delegated delivery. No native collector rerun is needed.
+Recorded native cases prove pure selection, formatting, and status behavior where fields exist. Pure plans do not prove registered execution, signal delivery, lazy admission, uninstall fences, or runtime disposal. The original runtime controls still reject incomplete Wasm definitions, accept an unloaded host-command registration, and retain ordinary sibling denial. New tests execute actual procps commands on owned runtime fixtures and exercise the extracted package. No native collector rerun is needed.
+
+## Adapter execution
+
+The adapter snapshots `context.processes` once, then derives only basename, argv text, PID, and original PPID. It removes argv[0] before parsing options and uses the admitted PID for self exclusion. It does not read host metadata or synthesize unavailable fields.
+
+Output writes are awaited in 4096-byte chunks. The adapter checks cancellation before snapshotting, each write and each signal send, and before returning success. It neither drains stdin nor catches I/O failures. Waffle owns broken-pipe and revoked-descriptor outcomes.
+
+Signal plans remain inert in the pure API. The adapter counts actual `sent` outcomes and reports distinct `missing`, `denied`, and `revoked` outcomes. It does not retry a stale plan or broaden scope. A controller grant cannot cross runtime roots or signal the root itself. Honest root-local snapshots normally prevent selecting such denied targets in the first place.
