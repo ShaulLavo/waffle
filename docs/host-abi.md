@@ -776,6 +776,9 @@ listener are not implemented.
 The options are `{ sockets: readonly Preview1SocketBinding[], connect?: NetConnect }`.
 Each binding is `{ fd, socket: { connect: { host, port } } }`. Targets use the existing `NetHost`
 connect rules. The fd must be a unique integer in `0..0x7fffffff`; ports are in `1..65535`.
+The selected executor's `hostCallFd` is reserved for its host-call trampoline. Bootstrap rejects
+socket bindings at that number with `ENOEXEC` before opening sockets or installing descriptors.
+The launcher still disposes its network helper on this startup failure.
 
 The function snapshots bindings before awaiting `runtime.network()`. Empty bindings resolve to
 `undefined` without activating networking or process services. Nonempty bindings create a helper
@@ -816,15 +819,15 @@ flags, filestat, polling and shutdown. Duplicate fds share flags, the handle and
 lifetime. Passing a socket to a `runtime_proc` child returns `NOTSUP`, errno 58, before descriptor
 export. Sockets may be rebound within the same process with `fd_reopen` or `dup`.
 
-| Import | Socket behavior |
-| --- | --- |
-| `sock_send(fd, iovs, count, flags, out_written)` | Flags must be zero, otherwise `NOTSUP`. Partial writes are valid. It waits for open and credit unless `FDFLAG_NONBLOCK` is set, which returns `AGAIN`. After write shutdown, writes return `PIPE`. A failed connect returns its mapped errno on the first send and `PIPE` on later sends. |
-| `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`. |
-| `sock_shutdown(fd, how)` | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes. |
-| `fd_read`, `fd_write` | Same descriptor I/O without socket flags. |
-| `poll_oneoff` | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
-| `fd_close` | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens. |
-| `sock_accept` | A connected socket returns `INVAL`; listener support is deferred. |
+| Import                                                   | Socket behavior                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sock_send(fd, iovs, count, flags, out_written)`         | Flags must be zero, otherwise `NOTSUP`. Partial writes are valid. It waits for open and credit unless `FDFLAG_NONBLOCK` is set, which returns `AGAIN`. After write shutdown, writes return `PIPE`. A failed connect returns its mapped errno on the first send and `PIPE` on later sends.                                           |
+| `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`.                                                                                               |
+| `sock_shutdown(fd, how)`                                 | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes.                                                                                                                                                                 |
+| `fd_read`, `fd_write`                                    | Same descriptor I/O without socket flags.                                                                                                                                                                                                                                                                                           |
+| `poll_oneoff`                                            | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
+| `fd_close`                                               | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens.                                                                                                                                                                                                                 |
+| `sock_accept`                                            | A connected socket returns `INVAL`; listener support is deferred.                                                                                                                                                                                                                                                                   |
 
 For every `sock_*` call, a valid non-socket fd returns `NOTSOCK`, errno 57; an absent fd returns
 `BADF`, errno 8. The adapter's `HOST_CALL_FD` special case in `sock_send` stays first and unchanged.

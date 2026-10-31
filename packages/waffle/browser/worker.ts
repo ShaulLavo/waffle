@@ -877,9 +877,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         }
       },
     };
-    const reservedFds = bindingTargets(req.runtimeProcess, req.network);
+    const hostCallFd = executor.hostCallFd;
+    const reservedFds = bindingTargets(req.runtimeProcess, req.network, hostCallFd);
     wasi = new Wasi({
-      hostCallFd: executor.hostCallFd,
+      hostCallFd,
       args: req.args,
       env,
       fs,
@@ -1154,14 +1155,19 @@ function captureNetworkPort(connection: Preview1NetworkConnection | undefined): 
 function bindingTargets(
   transport: WorkerProcessTransport | undefined,
   network?: Preview1NetworkConnection,
+  hostCallFd?: number,
 ): number[] {
   const fds: number[] = [];
   if (transport)
     for (let index = 0; index < transport.bindings.length; index++)
       arrayAppend(fds, transport.bindings[index]!.fd);
-  if (network)
-    for (let index = 0; index < network.sockets.length; index++)
-      arrayAppend(fds, network.sockets[index]!.fd);
+  if (!network) return fds;
+  for (let index = 0; index < network.sockets.length; index++) {
+    const fd = network.sockets[index]!.fd;
+    if (fd === hostCallFd)
+      throw new ExecutableFormatError("socket descriptor collides with executor.hostCallFd");
+    arrayAppend(fds, fd);
+  }
   return fds;
 }
 

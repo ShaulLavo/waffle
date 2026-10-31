@@ -27,7 +27,7 @@ import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "../browser/work
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 import { socketModule, scriptedSocket } from "./preview1-socket-support.js";
 
-for (const failure of [false, "post", "link"] as const)
+for (const failure of [false, "post", "link", "host-call"] as const)
   test(`broker-owned generic launch transfers only cloneable socket data, startup failure=${failure}`, async () => {
     const originalWorker = globalThis.Worker;
     const workers: NodeWorker[] = [];
@@ -37,11 +37,15 @@ for (const failure of [false, "post", "link"] as const)
     const output: Uint8Array[] = [];
     const networkOwner = await createRuntimeNetwork(() => {});
     const stream = scriptedSocket(false, true);
+    let connects = 0;
     const network = await createPreview1Network(
       { network: async () => networkOwner.network },
       {
         sockets: [{ fd: 3, socket: { connect: { host: "echo.example", port: 4321 } } }],
-        connect: async () => stream.stream,
+        connect: async () => {
+          connects++;
+          return stream.stream;
+        },
       },
     );
     if (!network) throw Error("socket launch missing");
@@ -66,7 +70,12 @@ for (const failure of [false, "post", "link"] as const)
       onerror: ((event: { preventDefault(): void; message: string; error: Error }) => void) | null =
         null;
       private readonly native = new NodeWorker(
-        new URL("./fixtures/generic-memory-node-worker.ts", import.meta.url),
+        new URL(
+          failure === "host-call"
+            ? "./fixtures/preview1-socket-worker.ts"
+            : "./fixtures/generic-memory-node-worker.ts",
+          import.meta.url,
+        ),
       );
       constructor() {
         workers.push(this.native);
@@ -79,7 +88,8 @@ for (const failure of [false, "post", "link"] as const)
       postMessage(request: RuntimeWorkerRequest, transfer: Transferable[]) {
         requests.push(request);
         if (failure === "post") throw Error("fixture postMessage failure");
-        this.native.postMessage(request, nodeWorkerTransfers(transfer));
+        const message = failure === "host-call" ? { request, hostCallFd: 3 } : request;
+        this.native.postMessage(message, nodeWorkerTransfers(transfer));
       }
       terminate() {
         return this.native.terminate();
@@ -157,10 +167,15 @@ for (const failure of [false, "post", "link"] as const)
       for (const message of notices) await broker.runtimeMessage(message, root.pid);
       await service.start(pid);
       expect(await service.waitForExit(root.pid, pid)).toMatchObject(
-        failure ? { kind: "start-failed", error: "EIO" } : { kind: "exited", code: 0 },
+        failure === "host-call"
+          ? { kind: "start-failed", error: "ENOEXEC" }
+          : failure
+            ? { kind: "start-failed", error: "EIO" }
+            : { kind: "exited", code: 0 },
       );
       expect(Object.keys(requests[0]!.network!).sort()).toEqual(["port", "ring", "sockets"]);
       expect(releases).toBe(1);
+      if (failure === "host-call") expect(connects).toBe(0);
       if (!failure) expect(Buffer.concat(output).toString()).toBe("waffle echo\n");
       if (!failure) expect(diagnostics).toEqual([]);
     } finally {

@@ -140,7 +140,8 @@ For adapters with their own startup hooks, see [Guest executor extensions](../ar
 
 A Preview 1 guest cannot call `connect`. Bind a socket at launch and give its fd to a program
 that uses `send`, `recv` and `shutdown`, or the equivalent WASI `sock_*` imports. This example
-binds fd 3. The root directory preopen moves to fd 4.
+binds fd 3. The root directory preopen moves to fd 4. When using a custom executor, do not bind
+its reserved `hostCallFd`; bootstrap rejects that collision before socket installation.
 
 ```ts
 import { createPreview1Network } from "waffle/browser/preview1-network";

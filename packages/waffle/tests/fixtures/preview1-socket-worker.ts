@@ -35,7 +35,7 @@ parentPort!.on("message", (message) => {
               return 0;
             },
           }
-        : preview1Executor,
+        : { ...preview1Executor, hostCallFd: message.hostCallFd },
       {
         crossOriginIsolated: true,
         postMessage(data: RuntimeWorkerMessage, transfer?: Transferable[]) {
