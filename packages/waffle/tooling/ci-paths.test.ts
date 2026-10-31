@@ -332,6 +332,9 @@ test("programs selects every consumed tool, workspace dependency, installer and 
     "tools/program-package.ts",
     "scripts/program-release.ts",
     "scripts/program-release.test.ts",
+    "scripts/program-release-fixtures.ts",
+    "scripts/program-rebind.ts",
+    "scripts/program-rebind.test.ts",
     "scripts/tsconfig.json",
     "tools/program-notices.ts",
     "packages/waffle/programs/index.ts",
@@ -349,7 +352,10 @@ test("programs selects every consumed tool, workspace dependency, installer and 
 
 test("programs normal CI runs the release closure test from the folded source checkpoint", () => {
   expect(
-    stepsFor("programs").some((step) => step.run === "bun test scripts/program-release.test.ts"),
+    stepsFor("programs").some(
+      (step) =>
+        step.run === "bun test scripts/program-release.test.ts scripts/program-rebind.test.ts",
+    ),
   ).toBe(true);
 });
 

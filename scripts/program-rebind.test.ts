@@ -1,17 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { assertOnePhysicalRuntime } from "./program-release.ts";
+import { tmpdir } from "node:os";
+import {
+  assertLockfile,
+  assertOnePhysicalRuntime,
+  buildRelease,
+  runtimeReleaseUrl,
+} from "./program-release.ts";
+import { preparedFixture, prepareRuntimeFixture } from "./program-release-fixtures.ts";
 import { buildRebind, type RebindOptions } from "./program-rebind.ts";
 
 const repository = resolve(import.meta.dirname, "..");
@@ -122,7 +121,7 @@ function sourcePackage(
     typeOnlyUndeclared: [],
     artifacts: files,
     guests: artifact
-      ? { descriptor: [], staticReference: ["dist/tool.wasm"] }
+      ? { descriptor: ["dist/tool.wasm"], staticReference: [] }
       : { descriptor: [], staticReference: [] },
     packageJson,
   };
@@ -139,7 +138,12 @@ function createFixture(
   mkdirSync(resolve(root, "tools"), { recursive: true });
   writeFileSync(
     resolve(root, "tools/program-package.ts"),
-    'await Bun.write("historical-marker", "used\\n");\n',
+    'import assert from "node:assert/strict";\nassert.notEqual(process.cwd(), import.meta.dirname + "/..");\n',
+  );
+  const acceptance = resolve(root, "tools/acceptance.ts");
+  writeFileSync(
+    acceptance,
+    'import assert from "node:assert/strict";\nimport {runtime} from "waffle";\nassert.equal(runtime, true);\nconsole.log("accepted local runtime bytes");\n',
   );
   writePackage(
     root,
@@ -234,6 +238,7 @@ function createFixture(
     repository: "ShaulLavo/waffle",
     runtime: { url: targetRuntimeUrl, sha256: sha256(runtimeArchive), tarball: runtimeArchive },
     historicalRoot: root,
+    acceptance,
     out,
     requireTag: false,
     fromAssets: assets,
@@ -283,9 +288,22 @@ afterEach(() => {
 
 describe("program peer rebind", () => {
   test("rebinds metadata, preserves payloads, and proves one runtime", async () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
-    const manifest = await buildRebind(fixture.options);
+    const refuseFetch = Object.assign(
+      () => {
+        throw new Error("Runtime network fetch is forbidden for the local-artifact fixture");
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const runtimeFetch = spyOn(globalThis, "fetch").mockImplementation(refuseFetch);
+    let manifest;
+    try {
+      manifest = await buildRebind(fixture.options);
+      expect(runtimeFetch).not.toHaveBeenCalled();
+    } finally {
+      runtimeFetch.mockRestore();
+    }
     expect(manifest.operation).toBe("peer-rebind");
     expect(manifest.version).toBe("0.0.14");
     expect(manifest.runtime.version).toBe("0.0.106");
@@ -295,7 +313,9 @@ describe("program peer rebind", () => {
     expect(manifest.packages.map((item) => item.version)).toEqual(["0.0.14", "0.0.14"]);
     expect(manifest.packages[0]?.changedFiles).toEqual(["package.json"]);
     expect(manifest.packages[0]?.original?.version).toBe("0.0.13");
-    expect(existsSync(resolve(fixture.root, "historical-marker"))).toBe(true);
+    expect(manifest.rebind?.historicalChecker.toolsTree).toBe(
+      git(fixture.root, ["rev-parse", "HEAD:tools"]),
+    );
     expect(readdirNames(fixture.out)).toEqual(["assets"]);
     const baseJson = JSON.parse(
       execFileSync(
@@ -307,10 +327,35 @@ describe("program peer rebind", () => {
     expect(baseJson.dependencies.waffle).toBe(targetRuntimeUrl);
     expect(baseJson.dependencies["waffle-child"]).toContain("programs-v0.0.14");
     expect(baseJson.version).toBe("0.0.14");
+    for (const item of manifest.packages) {
+      const original = resolve(fixture.assets, item.original!.filename);
+      const rebound = resolve(fixture.out, "assets", item.filename);
+      const originalFiles = execFileSync("tar", ["-tzf", original], { encoding: "utf8" }).split(
+        "\n",
+      );
+      expect(execFileSync("tar", ["-tzf", rebound], { encoding: "utf8" }).split("\n")).toEqual(
+        originalFiles,
+      );
+      for (const file of originalFiles.filter((name) => name && name !== "package/package.json")) {
+        expect(execFileSync("tar", ["-xzOf", rebound, file])).toEqual(
+          execFileSync("tar", ["-xzOf", original, file]),
+        );
+      }
+    }
+    expect(manifest.rebind?.runtimeInput).toMatchObject({
+      kind: "local-artifact",
+      provisional: true,
+    });
+    expect(manifest.installCheck.acceptance?.output).toBe("accepted local runtime bytes");
+    expect(manifest.rebind?.acceptance).toEqual({
+      script: "tools/acceptance.ts",
+      commit: manifest.sourceCommit,
+      sha256: sha256(resolve(fixture.root, "tools/acceptance.ts")),
+    });
   }, 60_000);
 
   test("refuses a wrong source manifest hash", async () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
     await expect(
       buildRebind({ ...fixture.options, fromManifestSha256: "0".repeat(64) }),
@@ -318,7 +363,7 @@ describe("program peer rebind", () => {
   });
 
   test("uses the supplied runtime archive and rejects wrong hash or package version", async () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
     const manifest = await buildRebind(fixture.options);
     expect(manifest.runtime.sha256).toBe(sha256(fixture.runtimeArchive));
@@ -352,8 +397,36 @@ describe("program peer rebind", () => {
     ).rejects.toThrow(/Runtime URL names 0.0.106, its package is 0.0.105/);
   }, 60_000);
 
+  test("runtime checksum and publication metadata never change program archive bytes", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture();
+    const candidate = await buildRebind(fixture.options);
+    const source = resolve(fixture.root, "runtime/index.js");
+    writeFileSync(
+      source,
+      'export const runtime = true;\nexport const workflowMarker = "actual draft bytes";\n',
+    );
+    const actualArchive = resolve(fixture.root, "runtime/actual.tgz");
+    pack(dirname(source), actualArchive);
+    const final = await buildRebind({
+      ...fixture.options,
+      out: resolve(fixture.root, "published-out"),
+      runtime: {
+        ...fixture.options.runtime,
+        tarball: actualArchive,
+        sha256: sha256(actualArchive),
+      },
+      runtimePublished: true,
+    });
+    expect(final.runtime.sha256).not.toBe(candidate.runtime.sha256);
+    expect(final.packages.map((item) => item.sha256)).toEqual(
+      candidate.packages.map((item) => item.sha256),
+    );
+    expect(final.rebind?.runtimeInput.provisional).toBe(false);
+  }, 60_000);
+
   test("refuses changed tracked bytes and unexplained files", async () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const tracked = createFixture();
     repackSourceArchive(tracked, "waffle-child", (root) =>
       writeFileSync(resolve(root, "index.js"), "changed\n"),
@@ -371,7 +444,7 @@ describe("program peer rebind", () => {
   }, 60_000);
 
   test("refuses a missing artifact and a failed identity repack", async () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const missing = createFixture();
     repackSourceArchive(missing, "waffle-child", (root) => rmSync(resolve(root, "dist/tool.wasm")));
     await expect(buildRebind(missing.options)).rejects.toThrow(/missing artifact dist\/tool.wasm/);
@@ -392,7 +465,7 @@ describe("program peer rebind", () => {
   }, 60_000);
 
   test("refuses an old URL, a dirty historical root, and a tag naming another commit", async () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const oldUrl = createFixture();
     repackSourceArchive(oldUrl, "waffle-base", (root) => {
       const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
@@ -426,8 +499,112 @@ describe("program peer rebind", () => {
     await expect(buildRebind(wrongTag.options)).rejects.toThrow(/names .* not historical/);
   }, 60_000);
 
+  test("keeps updater fields and historical source identity on a tagged rebind", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture();
+    git(fixture.root, ["tag", targetTag]);
+    const result = await buildRebind({ ...fixture.options, requireTag: true });
+    expect(result.schema).toBe("waffle-program-release/1");
+    expect(result.tagState).toBe("tagged");
+    expect(result.dirty).toBe(false);
+    const base = result.packages.find((item) => item.name === "waffle-base");
+    expect(base).toMatchObject({
+      version: "0.0.14",
+      sourceDirectory: "packages/base",
+      sourceTree: git(fixture.root, ["rev-parse", "HEAD:packages/base"]),
+      url: "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.14/waffle-base-0.0.14.tgz",
+    });
+    expect(result.sourceCommit).toBe(git(fixture.root, ["rev-parse", "HEAD"]));
+  }, 60_000);
+
+  test("rejects a historical HEAD that differs from the original source", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture();
+    git(fixture.root, [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@invalid",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "new head",
+    ]);
+    await expect(buildRebind(fixture.options)).rejects.toThrow(/Historical HEAD differs/);
+  });
+
+  test("shared lockfile check rejects nested duplicate waffle resolutions", () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    writeFileSync(
+      resolve(scratch, "bun.lock"),
+      JSON.stringify({
+        packages: {
+          waffle: ["waffle@" + targetRuntimeUrl],
+          "child/waffle": ["waffle@" + sourceRuntimeUrl],
+        },
+      }),
+    );
+    expect(() => assertLockfile(scratch, new Map([["waffle", targetRuntimeUrl]]))).toThrow(
+      /one waffle lock entry/,
+    );
+  });
+
+  test("normal prepared release fixtures can be rebound through the same install verification", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const runtime = await prepareRuntimeFixture(scratch);
+    const root = preparedFixture(scratch, "prepared-source");
+    const checker = resolve(root, "tools/program-package.ts");
+    mkdirSync(dirname(checker), { recursive: true });
+    writeFileSync(
+      checker,
+      'import assert from "node:assert/strict";\nassert.notEqual(process.cwd(), import.meta.dirname + "/..");\n',
+    );
+    commit(root, "historical fixture checker");
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, ["tag", fromTag]);
+    const oldUrl = runtimeReleaseUrl("ShaulLavo/waffle", runtime.version);
+    const fromOut = resolve(scratch, "normal-release");
+    const normal = await buildRelease({
+      root,
+      tag: fromTag,
+      version: "0.0.13",
+      families: ["base"],
+      out: fromOut,
+      runtime: { url: oldUrl, sha256: runtime.sha256, tarball: runtime.archive },
+    });
+    expect(normal.operation).toBe("release");
+    const nextRuntime = resolve(scratch, "next-runtime");
+    mkdirSync(nextRuntime);
+    execFileSync("tar", ["-xzf", runtime.archive, "-C", nextRuntime, "--strip-components=1"]);
+    const nextManifest = JSON.parse(readFileSync(resolve(nextRuntime, "package.json"), "utf8"));
+    nextManifest.version = "0.0.106";
+    writeFileSync(
+      resolve(nextRuntime, "package.json"),
+      JSON.stringify(nextManifest, null, 2) + "\n",
+    );
+    const nextArchive = resolve(scratch, "waffle-0.0.106.tgz");
+    pack(nextRuntime, nextArchive);
+    const result = await buildRebind({
+      root: repository,
+      historicalRoot: root,
+      repository: "ShaulLavo/waffle",
+      fromTag,
+      fromManifestSha256: sha256(resolve(fromOut, "assets/program-release.json")),
+      fromAssets: fromOut,
+      tag: targetTag,
+      out: resolve(scratch, "rebuilt-metadata"),
+      runtime: { url: targetRuntimeUrl, sha256: sha256(nextArchive), tarball: nextArchive },
+      requireTag: false,
+      commandTimeoutMs: 60_000,
+    });
+    expect(result.packages.map((item) => item.guests)).toEqual(
+      normal.packages.map((item) => item.guests),
+    );
+    expect(result.installCheck.runtimeRoots).toBe(1);
+  }, 180_000);
+
   test("shared runtime checker rejects two physical runtimes", () => {
-    scratch = mkdtempSync("/work/tmp/program-rebind-test-");
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const consumer = resolve(scratch, "consumer");
     mkdirSync(resolve(consumer, "node_modules/waffle"), { recursive: true });
     mkdirSync(resolve(consumer, "node_modules/child/node_modules/waffle"), { recursive: true });

@@ -89,6 +89,7 @@ bun scripts/program-rebind.ts \
   --tag programs-v0.0.14 --out /work/tmp/programs-v0.0.14 \
   --runtime-url https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.106/waffle-0.0.106.tgz \
   --runtime-sha256 <runtime-sha256> --runtime-tarball /work/tmp/waffle-0.0.106.tgz \
+  --runtime-source-commit <runtime-source-commit> \
   --historical-root /work/worktrees/waffle/checker-3050f69 \
   --acceptance /work/worktrees/waffle/checker-3050f69/tools/family-packed-app.ts
 ```
@@ -100,6 +101,12 @@ when supplied, so a private draft asset can be qualified without an unauthentica
 
 Rebind output keeps `program-release.json` and schema `waffle-program-release/1`, with
 `operation: "peer-rebind"`. Its `rebind` block records the original manifest, historical checker,
-tool commit, acceptance harness and per-package metadata changes. Normal releases write
+tool commit and acceptance harness. Each package records its metadata changes. Normal releases write
 `operation: "release"`; there is no separate rebind manifest. Current-main admission is not used
 for historical receipts that the current checker correctly refuses.
+
+A local runtime archive defaults to provisional candidate metadata. `--runtime-source-commit`
+records its supplied source identity. After the runtime publisher verifies the public bytes,
+`--runtime-published` marks that same input as published. The program tarballs do not embed the
+runtime checksum, so changing the runtime archive or its publication state leaves their hashes
+unchanged. Do not publish a manifest that promises a provisional runtime checksum.

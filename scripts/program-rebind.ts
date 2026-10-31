@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -12,12 +13,17 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
+import { CommandCleanupError } from "../packages/waffle/scripts/owned-command.ts";
 import {
   assertGuestsReached,
   assertTwin,
   assetFilename,
+  auditPackedImports,
+  versionFromTag,
+  type Control,
+  type ReleasedPackage,
   releaseAssetBase,
   replaceUrls,
   readRuntime,
@@ -38,29 +44,11 @@ const defaultRepository = "ShaulLavo/waffle";
 const defaultCommandTimeoutMs = 600_000;
 const localCommandTimeoutMs = 60_000;
 const dependencyFields = ["dependencies", "peerDependencies", "optionalDependencies"] as const;
-const runtimeVersionPattern = /\/releases\/download\/waffle-v(\d+\.\d+\.\d+)\/waffle-\1\.tgz$/;
 
 type Json = Record<string, unknown>;
-type DependencyField = (typeof dependencyFields)[number];
 
-type SourceArtifact = { path: string; bytes: number; sha256: string };
-type SourcePackage = {
-  name: string;
-  sourceDirectory: string;
-  sourceTree: string;
-  sourceVersion: string;
-  version: string;
-  filename: string;
-  url: string;
-  bytes: number;
-  sha256: string;
-  closureDependencies: Record<string, string>;
-  registryDependencies: Record<string, string>;
-  strippedFields: string[];
-  typeOnlyUndeclared: string[];
-  artifacts: SourceArtifact[];
-  guests: GuestReach;
-};
+type SourcePackage = ReleasedPackage;
+type SourceArtifact = SourcePackage["artifacts"][number];
 
 type RebindOptions = {
   readonly root: string;
@@ -70,6 +58,8 @@ type RebindOptions = {
   readonly repository: string;
   readonly runtime: RuntimeAsset;
   readonly historicalRoot: string;
+  readonly runtimeSourceCommit?: string;
+  readonly runtimePublished?: boolean;
   readonly acceptance?: string;
   readonly registry?: string;
   readonly out: string;
@@ -81,11 +71,8 @@ type RebindOptions = {
 
 type SourceBundle = {
   readonly manifestPath: string;
-  readonly manifestBytes: Uint8Array;
   readonly manifest: Json;
   readonly packages: SourcePackage[];
-  readonly sums: string;
-  readonly assetBase: string;
 };
 
 type ReboundPackage = ReleaseManifest["packages"][number] & {
@@ -142,6 +129,7 @@ function git(root: string, args: string[]): string {
   return execFileSync("git", ["-C", root].concat(args), {
     encoding: "utf8",
     timeout: localCommandTimeoutMs,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   }).trim();
 }
 
@@ -152,16 +140,18 @@ function gitStatus(root: string): string {
 function listTree(root: string, prefix = ""): string[] {
   return readdirSync(resolve(root, prefix), { withFileTypes: true }).flatMap((item) => {
     const path = prefix ? `${prefix}/${item.name}` : item.name;
-    return item.isDirectory() ? listTree(root, path) : [path];
+    if (item.isDirectory()) return listTree(root, path);
+    assert.ok(item.isFile(), `Only regular package files are accepted: ${path}`);
+    return [path];
   });
 }
 
 function extract(archive: string, destination: string): string {
   mkdirSync(destination, { recursive: true });
-  execFileSync("tar", ["-xzf", archive, "-C", destination], { timeout: localCommandTimeoutMs });
-  const packageRoot = resolve(destination, "package");
-  assert.ok(existsSync(packageRoot), `Archive has no package directory: ${archive}`);
-  return packageRoot;
+  execFileSync("tar", ["-xzf", archive, "-C", destination, "--strip-components=1"], {
+    timeout: localCommandTimeoutMs,
+  });
+  return destination;
 }
 
 function archivePath(base: string, filename: string): string {
@@ -183,7 +173,7 @@ async function readSourceAsset(
   base: string | undefined,
   filename: string,
   url: string,
-  control: { signal: AbortSignal | undefined; timeoutMs: number },
+  control: Control,
 ): Promise<{ path: string; bytes: Uint8Array }> {
   if (base) {
     const path = archivePath(base, filename);
@@ -247,31 +237,35 @@ function parseSourceManifest(value: Json, fromTag: string, repository: string): 
   assert.equal(value.schema, "waffle-program-release/1", "Source manifest schema differs");
   assert.equal(value.tag, fromTag, `Source manifest tag is not ${fromTag}`);
   const sourceVersion = stringValue(value.version, "Source manifest version");
+  assert.equal(versionFromTag(fromTag), sourceVersion, "Source tag version differs");
+  assert.equal(value.tagState, "tagged", "Source release must be tagged");
+  assert.equal(value.dirty, false, "Source release must be clean");
+  assert.match(stringValue(value.sourceCommit, "sourceCommit"), /^[a-f0-9]{40}$/);
   const assetBase = releaseAssetBase(repository, fromTag);
   assert.equal(value.assetBase, assetBase, "Source manifest asset base differs");
   const packageValues = value.packages;
   assert.ok(Array.isArray(packageValues), "Source manifest packages must be an array");
   const packages = packageValues.map(parsePackage);
   const order = stringArray(value.order, "Source manifest order");
+  assert.ok(packages.length, "Source release has no packages");
+  assert.equal(new Set(order).size, order.length, "Duplicate source package");
   assert.deepEqual(
     order,
     packages.map((item) => item.name),
     "Source manifest order differs",
   );
   for (const item of packages) {
+    assert.match(item.sourceDirectory, /^packages\/[a-z][a-z0-9-]*$/, "Unsafe source directory");
+    assert.match(item.name, /^(?:@[a-z0-9-]+\/)?[a-z0-9-]+$/, "Unsafe package name");
     assert.equal(item.version, sourceVersion, `${item.name} source version differs`);
     assert.equal(item.filename, assetFilename(item.name, sourceVersion));
     assert.equal(item.url, `${assetBase}/${item.filename}`);
   }
   const manifestPath = `${assetBase}/program-release.json`;
-  const normalized = { ...value, sourceVersion };
   return {
     manifestPath,
-    manifestBytes: new Uint8Array(),
-    manifest: normalized,
+    manifest: value,
     packages,
-    sums: "",
-    assetBase,
   };
 }
 
@@ -281,7 +275,7 @@ function expectedSums(packages: readonly SourcePackage[]): string {
 
 async function loadSourceBundle(
   options: RebindOptions,
-  control: { signal: AbortSignal | undefined; timeoutMs: number },
+  control: Control,
   stagingRoot: string,
 ): Promise<SourceBundle> {
   const sourceBase = releaseAssetBase(options.repository, options.fromTag);
@@ -324,13 +318,11 @@ async function loadSourceBundle(
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, asset.bytes);
     }
-    packages.push({ ...item, url: item.url });
+    packages.push(item);
   }
   return {
     ...source,
     manifestPath: `${sourceBase}/program-release.json`,
-    manifestBytes: manifestAsset.bytes,
-    sums,
     packages,
   };
 }
@@ -360,6 +352,18 @@ function assertSourceTree(root: string, source: SourceBundle): void {
       `${item.name} source tree differs`,
     );
   }
+}
+
+function assertHistoricalScript(root: string, path: string): void {
+  const file = relative(resolve(root), resolve(path));
+  assert.ok(
+    file && !file.startsWith(`..${sep}`) && !file.startsWith(sep),
+    "Historical script escapes its source root",
+  );
+  const original = execFileSync("git", ["-C", root, "show", `HEAD:${file}`], {
+    timeout: localCommandTimeoutMs,
+  });
+  assert.deepEqual(readFileSync(path), original, `Historical script identity differs: ${file}`);
 }
 
 function targetTagState(root: string, tag: string, sourceCommit: string, requireTag: boolean) {
@@ -401,7 +405,10 @@ function assertFileAccounting(
     if (tracked.has(sourcePath)) {
       assert.deepEqual(
         local,
-        readFileSync(resolve(historicalRoot, sourcePath)),
+        execFileSync("git", ["-C", historicalRoot, "show", `${sourceCommit}:${sourcePath}`], {
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: localCommandTimeoutMs,
+        }),
         `${item.name} changed tracked ${path}`,
       );
       trackedCount++;
@@ -415,12 +422,18 @@ function assertFileAccounting(
   }
   for (const artifact of artifacts.values()) {
     assert.ok(files.includes(artifact.path), `${item.name} is missing artifact ${artifact.path}`);
+    const bytes = readFileSync(resolve(packageRoot, artifact.path));
+    assert.equal(
+      bytes.length,
+      artifact.bytes,
+      `${item.name} artifact size differs: ${artifact.path}`,
+    );
+    assert.equal(
+      sha256(bytes),
+      artifact.sha256,
+      `${item.name} artifact hash differs: ${artifact.path}`,
+    );
   }
-  assert.equal(
-    trackedCount,
-    tracked.size - (tracked.has(`${item.sourceDirectory}/package.json`) ? 1 : 0),
-  );
-  assert.equal(artifactCount, artifacts.size);
   return { tracked: trackedCount, artifacts: artifactCount };
 }
 
@@ -428,7 +441,7 @@ async function identityRepack(
   packageRoot: string,
   item: SourcePackage,
   work: string,
-  control: { signal: AbortSignal | undefined; timeoutMs: number },
+  control: Control,
 ) {
   const destination = resolve(work, "identity", item.sourceDirectory, item.filename);
   mkdirSync(dirname(destination), { recursive: true });
@@ -445,15 +458,11 @@ async function identityRepack(
   );
 }
 
-async function historicalAdmission(
-  historicalRoot: string,
-  packageRoot: string,
-  control: { signal: AbortSignal | undefined; timeoutMs: number },
-) {
+async function historicalAdmission(historicalRoot: string, packageRoot: string, control: Control) {
   if (!existsSync(resolve(packageRoot, "package-artifacts.json"))) return;
   await runCommand(
     ["bun", resolve(historicalRoot, "tools/program-package.ts"), "check", packageRoot],
-    historicalRoot,
+    packageRoot,
     process.env,
     control,
   );
@@ -461,23 +470,35 @@ async function historicalAdmission(
 
 function dependencyEntries(manifest: Json): [string, string][] {
   return dependencyFields.flatMap((field) =>
-    Object.entries(dependencyRecord(manifest[field], `${String(manifest.name)} ${field}`)),
+    Object.entries(stringMap(manifest[field], `${String(manifest.name)} ${field}`)),
   );
 }
 
-function dependencyRecord(value: unknown, label: string): Record<string, string> {
-  return stringMap(value, label);
-}
-
-function rewritePublishedManifest(source: Json, version: string, urls: Map<string, string>): Json {
+function rewritePublishedManifest(
+  source: Json,
+  item: SourcePackage,
+  bundle: SourceBundle,
+  version: string,
+  urls: Map<string, string>,
+): Json {
+  assert.equal(source.name, item.name, "Original package name differs");
+  assert.equal(source.version, item.version, "Original package version differs");
+  const originalUrls = new Map(bundle.packages.map((entry) => [entry.name, entry.url]));
+  originalUrls.set(
+    runtimePackageName,
+    manifestRuntime(bundle.manifest.runtime, "source runtime").url,
+  );
   const manifest: Json = { ...source, version };
   for (const field of dependencyFields) {
-    const dependencies = dependencyRecord(source[field], `${String(source.name)} ${field}`);
+    const dependencies = stringMap(source[field], `${item.name} ${field}`);
     if (!Object.keys(dependencies).length) continue;
-    const rewritten: Record<string, string> = {};
-    for (const [name, spec] of Object.entries(dependencies))
-      rewritten[name] = urls.get(name) ?? spec;
-    manifest[field] = rewritten;
+    manifest[field] = Object.fromEntries(
+      Object.entries(dependencies).map(([name, spec]) => {
+        const expected = originalUrls.get(name) ?? item.registryDependencies[name];
+        assert.equal(spec, expected, `${item.name} original edge differs: ${field}.${name}`);
+        return [name, urls.get(name) ?? spec];
+      }),
+    );
   }
   return manifest;
 }
@@ -499,8 +520,8 @@ function manifestChanges(before: Json, after: Json): { path: string; from: strin
     });
   }
   for (const field of dependencyFields) {
-    const oldValues = dependencyRecord(before[field], `${String(before.name)} ${field}`);
-    const newValues = dependencyRecord(after[field], `${String(after.name)} ${field}`);
+    const oldValues = stringMap(before[field], `${String(before.name)} ${field}`);
+    const newValues = stringMap(after[field], `${String(after.name)} ${field}`);
     assert.deepEqual(
       Object.keys(newValues),
       Object.keys(oldValues),
@@ -516,14 +537,6 @@ function manifestChanges(before: Json, after: Json): { path: string; from: strin
       });
     }
   }
-  const allowed = new Set(
-    ["version"].concat(changes.filter((item) => item.path !== "version").map((item) => item.path)),
-  );
-  for (const [key, value] of Object.entries(before)) {
-    if (dependencyFields.includes(key as DependencyField) || key === "version") continue;
-    assert.deepEqual(value, after[key], `${String(before.name)} changed ${key}`);
-  }
-  assert.ok(changes.every((item) => allowed.has(item.path)));
   return changes;
 }
 
@@ -536,9 +549,10 @@ function assertOnlyPackageManifestChanged(
   const left = listTree(original).toSorted();
   const right = listTree(rebound).toSorted();
   assert.deepEqual(right, left, `${item.name} rebound file list differs`);
-  assert.deepEqual(
-    canonicalManifest(readFileSync(resolve(rebound, "package.json"), "utf8"), item.name),
-    expected,
+  assert.equal(
+    readFileSync(resolve(rebound, "package.json"), "utf8"),
+    `${JSON.stringify(expected, null, 2)}\n`,
+    `${item.name} packed metadata differs`,
   );
   for (const file of left.filter((path) => path !== "package.json")) {
     assert.deepEqual(
@@ -549,7 +563,31 @@ function assertOnlyPackageManifestChanged(
   }
 }
 
-function installedGuests(source: SourcePackage, receipt: InstallReceipt): GuestReach {
+function installedGuests(
+  source: SourcePackage,
+  receipt: InstallReceipt,
+  consumer: string,
+): GuestReach {
+  const packageRoot = resolve(consumer, "node_modules", source.name);
+  const manifest = canonicalManifest(
+    readFileSync(resolve(packageRoot, "package.json"), "utf8"),
+    source.name,
+  );
+  const audit = auditPackedImports(packageRoot, manifest);
+  assert.deepEqual(
+    audit.typeOnlyUndeclared,
+    source.typeOnlyUndeclared,
+    `${source.name} import audit changed`,
+  );
+  for (const artifact of source.artifacts) {
+    const bytes = readFileSync(resolve(packageRoot, artifact.path));
+    assert.equal(bytes.length, artifact.bytes);
+    assert.equal(
+      sha256(bytes),
+      artifact.sha256,
+      `${source.name} installed artifact differs: ${artifact.path}`,
+    );
+  }
   const expected = new Map(
     source.artifacts
       .filter((artifact) => artifact.path.endsWith(".wasm"))
@@ -559,7 +597,7 @@ function installedGuests(source: SourcePackage, receipt: InstallReceipt): GuestR
   const descriptors = receipt.wasm
     .filter((item) => item.path.startsWith(prefix))
     .map((item) => ({ file: item.path.slice(prefix.length), sha256: item.sha256 }));
-  return assertGuestsReached(source.name, expected, descriptors, source.guests.staticReference);
+  return assertGuestsReached(source.name, expected, descriptors, audit.staticAssets);
 }
 
 function topPackages(packages: readonly SourcePackage[]): string[] {
@@ -580,12 +618,6 @@ function manifestRuntime(value: unknown, label: string): RuntimeManifestAsset {
     bytes: numberValue(runtime.bytes, `${label}.bytes`),
     sha256: stringValue(runtime.sha256, `${label}.sha256`),
   };
-}
-
-function runtimeVersion(url: string): string {
-  const match = runtimeVersionPattern.exec(url);
-  assert.ok(match?.[1], `Runtime URL is not a release asset: ${url}`);
-  return match[1];
 }
 
 function toolState(root: string) {
@@ -626,8 +658,17 @@ function outputManifest(
       command: "bun tools/program-package.ts check",
     },
     acceptance: options.acceptance
-      ? { script: basename(options.acceptance), commit: sourceCommit }
+      ? {
+          script: relative(options.historicalRoot, options.acceptance),
+          commit: sourceCommit,
+          sha256: sha256(readFileSync(options.acceptance)),
+        }
       : undefined,
+    runtimeInput: {
+      kind: options.runtime.tarball ? "local-artifact" : "published-download",
+      provisional: Boolean(options.runtime.tarball) && !options.runtimePublished,
+      sourceCommit: options.runtimeSourceCommit,
+    },
   };
   const manifest: ReleaseManifest = {
     schema: "waffle-program-release/1",
@@ -650,7 +691,6 @@ function outputManifest(
     packages: rebound,
     installCheck,
   };
-  assert.equal(manifest.version, version, "Target tag version differs");
   return manifest;
 }
 
@@ -668,6 +708,157 @@ function assertOutputDirectory(out: string) {
   mkdirSync(out, { recursive: true });
 }
 
+interface RebindContext {
+  readonly options: RebindOptions;
+  readonly source: SourceBundle;
+  readonly sourceCommit: string;
+  readonly programVersion: string;
+  readonly urls: Map<string, string>;
+  readonly assets: string;
+  readonly work: string;
+  readonly control: Control;
+}
+
+async function stageReboundPackage(
+  context: RebindContext,
+  item: SourcePackage,
+): Promise<ReboundPackage> {
+  const { options, source, sourceCommit, programVersion, urls, assets, work, control } = context;
+  const original = resolve(work, "original", item.sourceDirectory);
+  const accounting = assertFileAccounting(options.historicalRoot, sourceCommit, item, original);
+  await historicalAdmission(options.historicalRoot, original, control);
+  await identityRepack(original, item, work, control);
+  const originalText = readFileSync(resolve(original, "package.json"), "utf8");
+  const sourceManifest = canonicalManifest(originalText, item.name);
+  const rewritten = rewritePublishedManifest(sourceManifest, item, source, programVersion, urls);
+  const rewrittenText = `${JSON.stringify(rewritten, null, 2)}\n`;
+  const changes = manifestChanges(sourceManifest, rewritten);
+  assert.ok(changes.length > 0, `${item.name} has no metadata edge to rebind`);
+  assert.ok(
+    !rewrittenText.includes(`programs-v${item.version}`),
+    `${item.name} kept its old program URL`,
+  );
+  const oldRuntime = manifestRuntime(source.manifest.runtime, "source runtime").url;
+  assert.ok(!rewrittenText.includes(oldRuntime), `${item.name} kept its old runtime URL`);
+  assert.ok(
+    !rewrittenText.includes(`"version": "${item.version}"`),
+    `${item.name} kept its old version`,
+  );
+  const staged = resolve(work, "rewritten", item.sourceDirectory);
+  mkdirSync(dirname(staged), { recursive: true });
+  cpSync(original, staged, { recursive: true });
+  writeFileSync(resolve(staged, "package.json"), rewrittenText);
+  const archive = resolve(assets, assetFilename(item.name, programVersion));
+  await runCommand(
+    ["bun", "pm", "pack", "--quiet", "--ignore-scripts", "--filename", archive],
+    staged,
+    process.env,
+    control,
+  );
+  const reboundRoot = extract(archive, resolve(work, "rebound", item.sourceDirectory));
+  assertOnlyPackageManifestChanged(original, reboundRoot, item, rewritten);
+  const bytes = readFileSync(archive);
+  const reboundPackage: ReboundPackage = {
+    name: item.name,
+    sourceDirectory: item.sourceDirectory,
+    sourceTree: item.sourceTree,
+    sourceVersion: item.sourceVersion,
+    version: programVersion,
+    filename: basename(archive),
+    url: urls.get(item.name)!,
+    bytes: bytes.length,
+    sha256: sha256(bytes),
+    closureDependencies: Object.fromEntries(
+      dependencyEntries(rewritten).filter(([name]) => urls.has(name)),
+    ),
+    registryDependencies: Object.fromEntries(
+      dependencyEntries(rewritten).filter(([name]) => !urls.has(name)),
+    ),
+    strippedFields: item.strippedFields,
+    typeOnlyUndeclared: item.typeOnlyUndeclared,
+    artifacts: item.artifacts,
+    guests: item.guests,
+    original: {
+      version: item.version,
+      filename: item.filename,
+      url: item.url,
+      bytes: item.bytes,
+      sha256: item.sha256,
+    },
+    changedFiles: ["package.json"],
+    manifestChanges: changes,
+    fileAccounting: accounting,
+  };
+  return reboundPackage;
+}
+
+async function verifyReboundClosure(
+  context: RebindContext,
+  rebound: ReboundPackage[],
+  runtime: Awaited<ReturnType<typeof readRuntime>>,
+): Promise<InstallReceipt> {
+  const { options, source, urls, assets, work, control } = context;
+  const requests: string[] = [];
+  const twinAssets = resolve(work, "twin-assets");
+  mkdirSync(twinAssets, { recursive: true });
+  const server = serve([twinAssets, assets, dirname(runtime.path)], requests);
+  try {
+    const origin = `http://127.0.0.1:${server.port}`;
+    const localRuntimeUrl = `${origin}/${basename(runtime.path)}`;
+    const localUrls = new Map<string, string>([[runtimePackageName, localRuntimeUrl]]);
+    for (const item of rebound) localUrls.set(item.name, `${origin}/${item.filename}`);
+    const twins: PackageArchive[] = [];
+    for (const item of rebound) {
+      const productionRoot = extract(
+        itemArchivePath(assets, item),
+        resolve(work, "twin-source", item.name),
+      );
+      const localRoot = resolve(work, "twins", item.name);
+      mkdirSync(dirname(localRoot), { recursive: true });
+      cpSync(productionRoot, localRoot, { recursive: true });
+      const text = readFileSync(resolve(localRoot, "package.json"), "utf8");
+      writeFileSync(resolve(localRoot, "package.json"), replaceUrls(text, urls, localUrls));
+      const archive = resolve(twinAssets, item.filename);
+      await runCommand(
+        ["bun", "pm", "pack", "--quiet", "--ignore-scripts", "--filename", archive],
+        localRoot,
+        process.env,
+        control,
+      );
+      const manifest = canonicalManifest(
+        readFileSync(resolve(localRoot, "package.json"), "utf8"),
+        item.name,
+      );
+      const production = {
+        name: item.name,
+        manifest: rewrittenManifestFor(item, assets),
+        archive: itemArchivePath(assets, item),
+      };
+      const twin = { name: item.name, manifest, archive };
+      assertTwin(production, twin, work, (value) => replaceUrls(value, localUrls, urls));
+      twins.push(twin);
+    }
+    const installCheck = await verifyInstall({
+      twins,
+      urls: localUrls,
+      top: topPackages(source.packages),
+      registry: options.registry,
+      work,
+      requests,
+      acceptance: options.acceptance,
+      runtimeVersion: runtime.version,
+      control,
+    });
+    for (const sourcePackage of source.packages) {
+      const actual = installedGuests(sourcePackage, installCheck, resolve(work, "consumer"));
+      assert.deepEqual(actual, sourcePackage.guests, `${sourcePackage.name} guest reach changed`);
+    }
+    return installCheck;
+  } finally {
+    server.stop(true);
+  }
+}
+
 async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
   const control = { signal: options.signal, timeoutMs: options.commandTimeoutMs };
   assertOutputDirectory(options.out);
@@ -676,17 +867,26 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
   try {
     const source = await loadSourceBundle(options, control, work);
     const sourceCommit = stringValue(source.manifest.sourceCommit, "Source manifest sourceCommit");
-    const programVersion = options.tag.slice("programs-v".length);
-    assert.match(programVersion, /^\d+\.\d+\.\d+$/, "Target tag version is invalid");
+    const programVersion = versionFromTag(options.tag);
+    assert.notEqual(options.tag, options.fromTag, "Rebind must have a new program tag");
     assertSourceTree(resolve(options.historicalRoot), source);
+    assertHistoricalScript(
+      options.historicalRoot,
+      resolve(options.historicalRoot, "tools/program-package.ts"),
+    );
+    if (options.acceptance) assertHistoricalScript(options.historicalRoot, options.acceptance);
     const tagState = targetTagState(
       options.historicalRoot,
       options.tag,
       sourceCommit,
       options.requireTag,
     );
+    assert.equal(
+      targetTagState(options.historicalRoot, options.fromTag, sourceCommit, true),
+      "tagged",
+      "Original release tag identity differs",
+    );
     const runtime = await readRuntime(options.runtime, options.repository, work, control);
-    assert.equal(runtime.version, runtimeVersion(options.runtime.url));
     const assetBase = releaseAssetBase(options.repository, options.tag);
     const urls = new Map<string, string>([[runtimePackageName, options.runtime.url]]);
     for (const item of source.packages)
@@ -699,155 +899,30 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
         options.fromAssets ?? resolve(work, "source-assets"),
         item.filename,
       );
-      const original = extract(sourceArchive, resolve(work, "original", item.sourceDirectory));
-      const accounting = assertFileAccounting(options.historicalRoot, sourceCommit, item, original);
-      await identityRepack(original, item, work, control);
-      await historicalAdmission(options.historicalRoot, original, control);
-      const originalText = readFileSync(resolve(original, "package.json"), "utf8");
-      const sourceManifest = canonicalManifest(originalText, item.name);
-      const rewritten = rewritePublishedManifest(sourceManifest, programVersion, urls);
-      const rewrittenText = `${JSON.stringify(rewritten, null, 2)}\n`;
-      const changes = manifestChanges(sourceManifest, rewritten);
-      assert.ok(changes.length > 0, `${item.name} has no metadata edge to rebind`);
-      assert.ok(
-        !rewrittenText.includes(`programs-v${item.version}`),
-        `${item.name} kept its old program URL`,
-      );
-      const oldRuntime = manifestRuntime(source.manifest.runtime, "source runtime").url;
-      assert.ok(!rewrittenText.includes(oldRuntime), `${item.name} kept its old runtime URL`);
-      assert.ok(
-        !rewrittenText.includes(`"version": "${item.version}"`),
-        `${item.name} kept its old version`,
-      );
-      const staged = resolve(work, "rewritten", item.sourceDirectory);
-      mkdirSync(dirname(staged), { recursive: true });
-      execFileSync("cp", ["-a", original, staged]);
-      writeFileSync(resolve(staged, "package.json"), rewrittenText);
-      const archive = resolve(assets, assetFilename(item.name, programVersion));
-      await runCommand(
-        ["bun", "pm", "pack", "--quiet", "--ignore-scripts", "--filename", archive],
-        staged,
-        process.env,
-        control,
-      );
-      const reboundRoot = extract(archive, resolve(work, "rebound", item.sourceDirectory));
-      assertOnlyPackageManifestChanged(original, reboundRoot, item, rewritten);
-      const bytes = readFileSync(archive);
-      const reboundPackage: ReboundPackage = {
-        name: item.name,
-        sourceDirectory: item.sourceDirectory,
-        sourceTree: item.sourceTree,
-        sourceVersion: item.sourceVersion,
-        version: programVersion,
-        filename: basename(archive),
-        url: urls.get(item.name)!,
-        bytes: bytes.length,
-        sha256: sha256(bytes),
-        closureDependencies: Object.fromEntries(
-          dependencyEntries(rewritten).filter(([name]) => urls.has(name)),
-        ),
-        registryDependencies: Object.fromEntries(
-          dependencyEntries(rewritten).filter(([name]) => !urls.has(name)),
-        ),
-        strippedFields: item.strippedFields,
-        typeOnlyUndeclared: item.typeOnlyUndeclared,
-        artifacts: item.artifacts,
-        guests: item.guests,
-        original: {
-          version: item.version,
-          filename: item.filename,
-          url: item.url,
-          bytes: item.bytes,
-          sha256: item.sha256,
-        },
-        changedFiles: ["package.json"],
-        manifestChanges: changes,
-        fileAccounting: accounting,
-      };
-      rebound.push(reboundPackage);
+      extract(sourceArchive, resolve(work, "original", item.sourceDirectory));
     }
-    const requests: string[] = [];
-    const twinAssets = resolve(work, "twin-assets");
-    mkdirSync(twinAssets, { recursive: true });
-    const server = serve([twinAssets, assets, dirname(runtime.path)], requests);
-    try {
-      const origin = `http://127.0.0.1:${server.port}`;
-      const localRuntimeUrl = `${origin}/${basename(runtime.path)}`;
-      const localUrls = new Map<string, string>([[runtimePackageName, localRuntimeUrl]]);
-      for (const item of rebound) localUrls.set(item.name, `${origin}/${item.filename}`);
-      const twins: PackageArchive[] = [];
-      for (const item of rebound) {
-        const productionRoot = extract(
-          itemArchivePath(assets, item),
-          resolve(work, "twin-source", item.name),
-        );
-        const localRoot = resolve(work, "twins", item.name);
-        mkdirSync(dirname(localRoot), { recursive: true });
-        execFileSync("cp", ["-a", productionRoot, localRoot]);
-        const text = readFileSync(resolve(localRoot, "package.json"), "utf8");
-        writeFileSync(
-          resolve(localRoot, "package.json"),
-          replaceUrls(text, new Map(urls), localUrls),
-        );
-        const archive = resolve(twinAssets, item.filename);
-        await runCommand(
-          ["bun", "pm", "pack", "--quiet", "--ignore-scripts", "--filename", archive],
-          localRoot,
-          process.env,
-          control,
-        );
-        const manifest = canonicalManifest(
-          readFileSync(resolve(localRoot, "package.json"), "utf8"),
-          item.name,
-        );
-        const production = {
-          name: item.name,
-          manifest: rewrittenManifestFor(item, assets),
-          archive: itemArchivePath(assets, item),
-        };
-        const twin = { name: item.name, manifest, archive };
-        assertTwin(production, twin, work, (value) => replaceUrls(value, localUrls, new Map(urls)));
-        twins.push(twin);
-      }
-      const installCheck = await verifyInstall({
-        twins,
-        urls: localUrls,
-        top: topPackages(source.packages),
-        registry: options.registry,
-        work,
-        requests,
-        acceptance: options.acceptance,
-        runtimeVersion: runtime.version,
-        control,
-      });
-      for (const sourcePackage of source.packages) {
-        const actual = installedGuests(sourcePackage, installCheck);
-        const expectedPaths = sourcePackage.guests.descriptor
-          .concat(sourcePackage.guests.staticReference)
-          .toSorted();
-        const actualPaths = actual.descriptor.concat(actual.staticReference).toSorted();
-        assert.deepEqual(actualPaths, expectedPaths, `${sourcePackage.name} guest reach changed`);
-      }
-      const tool = toolState(resolve(options.root));
-      const historicalToolsTree = git(options.historicalRoot, ["rev-parse", `HEAD:tools`]);
-      const manifest = outputManifest(
-        source,
-        options,
-        programVersion,
-        tagState,
-        runtime,
-        rebound,
-        installCheck,
-        historicalToolsTree,
-        tool,
-      );
-      writeOutput(assets, manifest);
-      return manifest;
-    } finally {
-      server.stop(true);
-    }
+    const context = { options, source, sourceCommit, programVersion, urls, assets, work, control };
+    for (const item of source.packages) rebound.push(await stageReboundPackage(context, item));
+    const installCheck = await verifyReboundClosure(context, rebound, runtime);
+    const tool = toolState(resolve(options.root));
+    const historicalToolsTree = git(options.historicalRoot, ["rev-parse", `HEAD:tools`]);
+    const manifest = outputManifest(
+      source,
+      options,
+      programVersion,
+      tagState,
+      runtime,
+      rebound,
+      installCheck,
+      historicalToolsTree,
+      tool,
+    );
+    writeOutput(assets, manifest);
+    return manifest;
   } catch (error) {
-    retained = error instanceof Error && error.message.includes("retained");
+    retained = error instanceof CommandCleanupError;
+    if (error instanceof CommandCleanupError)
+      throw new CommandCleanupError(`${error.message}; retained ${work}`);
     throw error;
   } finally {
     if (!retained) rmSync(work, { recursive: true, force: true });
@@ -881,6 +956,8 @@ function cliOptions(argv: string[]): RebindOptions {
       "runtime-url": { type: "string" },
       "runtime-sha256": { type: "string" },
       "runtime-tarball": { type: "string" },
+      "runtime-source-commit": { type: "string" },
+      "runtime-published": { type: "boolean", default: false },
       "historical-root": { type: "string" },
       acceptance: { type: "string" },
       registry: { type: "string" },
@@ -909,6 +986,8 @@ function cliOptions(argv: string[]): RebindOptions {
     repository: values.repository,
     runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: values["runtime-tarball"] },
     historicalRoot,
+    runtimeSourceCommit: values["runtime-source-commit"],
+    runtimePublished: values["runtime-published"],
     acceptance: values.acceptance,
     registry: values.registry,
     out,

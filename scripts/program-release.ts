@@ -65,7 +65,7 @@ export interface ReleaseOptions {
   readonly commandTimeoutMs?: number;
 }
 
-interface Control {
+export interface Control {
   readonly signal: AbortSignal | undefined;
   readonly timeoutMs: number;
 }
@@ -128,7 +128,12 @@ export interface RebindMetadata {
     readonly toolsTree: string;
     readonly command: string;
   };
-  readonly acceptance?: { script: string; commit: string };
+  readonly acceptance?: { script: string; commit: string; sha256: string };
+  readonly runtimeInput: {
+    kind: "local-artifact" | "published-download";
+    provisional: boolean;
+    sourceCommit?: string;
+  };
 }
 
 export interface RuntimeManifestAsset {
@@ -640,8 +645,8 @@ export function serve(directories: string[], requests: string[]) {
 export function assertLockfile(consumer: string, urls: Map<string, string>) {
   const lock = Bun.JSONC.parse(readFileSync(resolve(consumer, "bun.lock"), "utf8")) as Json;
   const packages = lock.packages as Record<string, unknown[]>;
-  const runtimeEntries = Object.keys(packages).filter(
-    (name) => name === runtimePackageName || name.startsWith(`${runtimePackageName}@`),
+  const runtimeEntries = Object.values(packages).filter(
+    (entry) => typeof entry[0] === "string" && entry[0].startsWith(`${runtimePackageName}@`),
   );
   assert.equal(
     runtimeEntries.length,
@@ -672,33 +677,27 @@ function declaredRegistryDependencies(manifest: Json): string[] {
   return values;
 }
 
-function runtimeVersionFromUrl(url: string): string {
-  return runtimeUrlVersion(url);
-}
-
 function packageArchive(item: StagedPackage): PackageArchive {
   return { name: item.entry.name, manifest: item.manifest, archive: item.archive };
 }
 
 function physicalRuntimeRoots(consumer: string): string[] {
-  const nodeModules = resolve(consumer, "node_modules");
-  if (!existsSync(nodeModules)) return [];
+  const pending = [resolve(consumer, "node_modules")];
   const roots = new Set<string>();
   const visited = new Set<string>();
-  const walk = (directory: string) => {
+  while (pending.length) {
+    const directory = pending.pop()!;
     const real = realpathSync(directory);
-    if (visited.has(real)) return;
+    if (visited.has(real)) continue;
     visited.add(real);
+    const manifestPath = resolve(directory, "package.json");
+    if (existsSync(manifestPath) && readJson(manifestPath).name === runtimePackageName)
+      roots.add(real);
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const child = resolve(directory, entry.name);
-      if (entry.name === runtimePackageName && existsSync(resolve(child, "package.json"))) {
-        roots.add(realpathSync(child));
-        continue;
-      }
-      if (entry.isDirectory()) walk(child);
+      if (statSync(child).isDirectory()) pending.push(child);
     }
-  };
-  walk(nodeModules);
+  }
   return Array.from(roots).toSorted();
 }
 
@@ -741,7 +740,7 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
     BUN_CONFIG_REGISTRY: registry ?? unreachableRegistry,
     NPM_CONFIG_REGISTRY: registry ?? unreachableRegistry,
   };
-  await runCommand(["bun", "install"], consumer, env, control);
+  await runCommand(["bun", "install", "--ignore-scripts"], consumer, env, control);
   assertLockfile(consumer, urls);
   const runtimeRoots = assertOnePhysicalRuntime(consumer, inputs.runtimeVersion);
   const specifiers = twins.flatMap((twin) =>
@@ -971,7 +970,7 @@ async function verifyClosure(
       work,
       requests,
       acceptance,
-      runtimeVersion: runtimeVersionFromUrl(options.runtime.url),
+      runtimeVersion: runtimeUrlVersion(options.runtime.url),
       control,
     };
     return await verifyInstall(inputs);
