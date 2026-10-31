@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   programOptimizationEnvironment,
   programOptimizationFlags,
@@ -24,6 +24,19 @@ export function transformationSourceIdentity() {
 }
 
 export function transformationProvenance() {
+  const packaged = new URL("./program-transformer.json", import.meta.url);
+  if (
+    existsSync(packaged) ||
+    new URL(".", import.meta.url).pathname.endsWith("/tooling/program/")
+  ) {
+    const provenance = record(JSON.parse(readFileSync(packaged, "utf8")));
+    assert.ok(typeof provenance.commit === "string");
+    assert.match(provenance.commit, /^[a-f0-9]{40}$/);
+    const sources = transformationSourceIdentity();
+    assert.equal(digest(provenance.buildToolsSha256), sources.buildToolsSha256);
+    assert.equal(digest(provenance.optimizerSourceSha256), sources.optimizerSourceSha256);
+    return { commit: provenance.commit, ...sources };
+  }
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: new URL("..", import.meta.url),
     encoding: "utf8",
