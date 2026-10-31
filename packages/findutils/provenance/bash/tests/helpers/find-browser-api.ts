@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime } from "waffle";
 import { createShell } from "../../src/shell.ts";
 import { installFind } from "../../src/utilities/find.ts";
@@ -30,10 +29,7 @@ async function run(runtime: ReturnType<typeof createRuntime>, script: string) {
 }
 
 export async function checkFind(script: string) {
-  const runtime = createRuntime({
-    sharedMemory: testSharedMemory,
-    filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
-  });
+  const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "/fs-worker.js" } });
   let loads = 0;
   const load = () => {
     loads++;

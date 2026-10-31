@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -35,7 +34,6 @@ async function disposeFixture(runtime: Runtime, stop: () => void) {
 async function fixture(context: TestContext, expanded = false) {
   installNodeWorkers();
   const runtime = api.createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("fs.mjs", nodeDirectory) },
   });
   let stop = () => {};
