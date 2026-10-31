@@ -4,16 +4,32 @@ import { normalizeOptions } from "./policy.js";
 import { createRelayHandler } from "./server.js";
 import { createNodeEgress } from "./node-egress.js";
 import type { RelayServerOptions } from "./protocol.js";
+import { createTcpRelay } from "./tcp-server.js";
+import type { TcpServerOptions } from "./tcp-policy.js";
+export type { TcpServerOptions, TcpDestination, TcpLimits, TcpLog } from "./tcp-policy.js";
+export { createNodeWebSocket } from "./node-websocket.js";
 
 export interface NodeRelayOptions extends RelayServerOptions {
   /** Operator-trusted TLS roots, replacing defaults when supplied. Verification cannot be disabled. */
   readonly ca?: ConnectionOptions["ca"];
+  readonly tcp?: TcpServerOptions;
 }
 
 /** Works with Node and Bun's node:http API. Does not listen until the operator calls listen(). */
 export function createNodeRelayServer(options: NodeRelayOptions) {
+  if (options.tcp) {
+    const secret =
+      typeof options.tcp.tokenSecret === "string"
+        ? new TextEncoder().encode(options.tcp.tokenSecret)
+        : options.tcp.tokenSecret;
+    const http = new TextEncoder().encode(options.credential);
+    if (secret.length === http.length && secret.every((byte, index) => byte === http[index]))
+      throw new TypeError("HTTP and TCP credentials must be distinct");
+  }
   const policy = normalizeOptions(options);
   const relay = createRelayHandler(policy, createNodeEgress(policy, options.ca));
+  const tcp = options.tcp && createTcpRelay(options.tcp, options.allowedOrigins);
+  const disabledUpgrades = new Set<import("node:stream").Duplex>();
   const server = createServer(
     {
       maxHeaderSize: policy.limits.maxHeaderBytes + policy.limits.maxMetadataBytes + 8192,
@@ -21,19 +37,47 @@ export function createNodeRelayServer(options: NodeRelayOptions) {
       headersTimeout: policy.limits.idleTimeoutMs,
     },
     (request, response) => {
-      void handle(relay.fetch, request, response);
+      void (async () => {
+        if (await tcp?.handle(request, response)) return;
+        await handle(relay.fetch, request, response);
+      })().catch(() => response.destroy());
     },
   );
-  server.maxConnections = policy.limits.maxConcurrent + 8;
+  server.maxConnections =
+    policy.limits.maxConcurrent + (options.tcp?.limits?.maxConnections ?? (tcp ? 64 : 0)) + 8;
+  server.on("upgrade", (request, socket, head) => {
+    if (tcp) tcp.upgrade(request, socket, head);
+    else {
+      disabledUpgrades.add(socket);
+      socket.on("error", () => {});
+      const timer = setTimeout(() => socket.destroy(), 5000);
+      timer.unref();
+      socket.once("close", () => {
+        clearTimeout(timer);
+        disabledUpgrades.delete(socket);
+      });
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
+  });
   let closing: Promise<void> | undefined;
   return Object.freeze({
     server,
     relay,
+    tcp,
+    revoke() {
+      relay.revoke();
+      tcp?.revoke();
+    },
     close() {
       if (closing) return closing;
       const completion = Promise.withResolvers<void>();
       closing = completion.promise;
-      void shutdown(relay, server).then(completion.resolve, completion.reject);
+      tcp?.revoke();
+      for (const socket of disabledUpgrades) socket.destroy();
+      void Promise.all([shutdown(relay, server), tcp?.close()]).then(
+        () => completion.resolve(),
+        completion.reject,
+      );
       return closing;
     },
   });

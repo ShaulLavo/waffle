@@ -1,8 +1,11 @@
 {
   "name": "waffle-relay",
   "version": "0.0.0",
-  "description": "Optional authenticated outbound HTTP relay for Waffle runtimes.",
+  "description": "Optional authenticated HTTP and TCP relay for Waffle runtimes.",
   "license": "MIT",
+  "bin": {
+    "waffle-relay": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "src",
@@ -33,21 +36,31 @@
       "bun": "./src/worker.ts",
       "browser": "./src/worker.ts",
       "default": "./src/worker.ts"
+    },
+    "./token": {
+      "types": "./src/token.ts",
+      "node": "./dist/token.js",
+      "bun": "./src/token.ts",
+      "default": "./src/token.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test ./tests",
     "build": "bun scripts/build.ts",
-    "test:native": "node tests/native-fixture.ts && bun tests/native-fixture.ts",
+    "test:native": "node tests/native-fixture.ts && bun tests/native-fixture.ts && node tests/tcp-native-fixture.ts && bun tests/tcp-native-fixture.ts",
     "prepack": "bun run build",
     "pack:check": "bun scripts/pack-check.ts",
     "size": "bun scripts/size.ts",
     "test:worker": "bun scripts/test-worker.ts"
   },
+  "dependencies": {
+    "ws": "8.22.1"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "@types/node": "26.6.3",
+    "@types/ws": "8.18.2",
     "typescript": "7.0.2",
     "waffle": "workspace:*"
   },
