@@ -6,21 +6,22 @@ Waffle is a library for a browser app, not a command-line shell. The page create
 
 ## Install
 
-Install `waffle` as an exact Git dependency and trust its build step:
+This tutorial uses a current Waffle source checkout. From that checkout's repository root, install dependencies and prepare the runtime package:
 
 ```sh
-bun add github:ShaulLavo/waffle#4b9b6c668a59bd5aa52f0b87c3d76090b03706c3 --trust
+bun install --frozen-lockfile --ignore-scripts
+bun run prepare:package
 ```
 
-You should see the package line and no "Blocked 1 postinstall" warning:
+Preparation needs the toolchain described in [Development](development.md#set-up). It writes the Node entry points under `packages/waffle/dist/`. Browser bundlers read TypeScript source.
 
-```text
-installed waffle@github:ShaulLavo/waffle#4b9b6c6
+From your app directory, add the prepared runtime package using its absolute path:
 
-1 package installed
+```sh
+bun add /absolute/path/to/waffle/packages/waffle
 ```
 
-The command writes the `waffle` dependency and `trustedDependencies` into `package.json`. The commit above is a real revision, not a moving branch. Change the pin when you adopt a newer Waffle revision. The `prepare` step that `--trust` allows writes the Node entry points under `dist/`. Browser bundlers read the TypeScript source and do not need them.
+Use `packages/waffle`, not the private monorepo root. Released applications use exact prepared runtime archive pins as described in [Development](development.md#release-the-runtime); this source tutorial does not change those pins.
 
 ## Write the page
 
