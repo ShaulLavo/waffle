@@ -371,6 +371,8 @@ export class WorkerProcessClient {
       setAdd(fds, binding.child);
       const source = this.options.descriptors.get(binding.parent);
       if (!source) throw new ProcessError(ProcessErrno.BADF, "missing inherited descriptor");
+      if (source.resource.kind === "socket")
+        throw new ProcessError(ProcessErrno.NOTSUP, "socket inheritance is unsupported");
       arrayAppend(sources, source);
     }
     return sources;

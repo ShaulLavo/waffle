@@ -44,7 +44,9 @@ export function guardedStream(
               key === "write" ||
               key === "tryRead" ||
               key === "tryWrite" ||
-              key === "readiness"
+              key === "readiness" ||
+              key === "recv" ||
+              key === "shutdown"
             ? (...args: unknown[]) => {
                 checkActive();
                 return reflectApply(value, stream, args);

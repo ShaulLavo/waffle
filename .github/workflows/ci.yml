@@ -313,6 +313,8 @@ jobs:
               - 'packages/waffle/package.json'
               - 'bun.lock'
               - 'packages/waffle/tests/wasi-libc.test.ts'
+              - 'packages/waffle/tests/preview1-socket-libc.test.ts'
+              - 'packages/waffle/tests/preview1-socket-support.ts'
               - 'packages/waffle/tests/fixtures/**'
               - 'packages/waffle/scripts/build-memory-group-fixture.ts'
   network-wasm:
@@ -944,13 +946,14 @@ jobs:
           TMPDIR: ${{ runner.temp }}
       - run: test -z "$(git ls-files packages/waffle/dist)"
   libc:
-    needs: changes
+    needs: [changes, network-wasm]
     outputs:
       memory-group-artifact-id: ${{ steps.memory-group-artifact.outputs.artifact-id }}
     # Also the single producer of the memory group fixture that the browser gate consumes.
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
     env:
+      WAFFLE_NETWORK_PREBUILT: "1"
       RUN_LIBC: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' }}
     steps:
       - uses: actions/checkout@v4
@@ -960,6 +963,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
       - uses: actions/cache@v4
         id: wasmtime
         with:
@@ -982,7 +996,7 @@ jobs:
         id: fixtures
         with:
           path: ${{ runner.temp }}/libc-fixtures
-          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
+          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/preview1-socket.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
       - uses: actions/cache@v4
         if: steps.fixtures.outputs.cache-hit != 'true'
         with:

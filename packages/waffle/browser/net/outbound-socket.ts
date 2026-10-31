@@ -114,6 +114,10 @@ export class OutboundSocket {
     this.wakeReader();
   }
 
+  writableNow(): boolean {
+    return this.state.kind === "open" && !this.writeEnded && this.queued < WINDOW;
+  }
+
   write(bytes: Uint8Array): number {
     const state = this.state;
     if (state.kind === "connecting" || state.kind === "opening") return AGAIN;

@@ -15,12 +15,13 @@ export interface Readiness {
   writable: boolean;
   hangup: boolean;
   nbytes?: number;
+  error?: number;
 }
 /** Pipe and terminal services supply I/O and level-triggered readiness, never guest pointers.
  * I/O returns a byte count or negative WASI errno. Preview1 adapters may block inside read/write.
  */
 export interface Stream {
-  kind: "pipe" | "terminal" | "device";
+  kind: "pipe" | "terminal" | "device" | "socket";
   device?: "null";
   /** Supported fdflags share open-description state across duplication and endpoint transfer. */
   fdflags?: number;
@@ -32,6 +33,8 @@ export interface Stream {
   readiness(): Readiness;
   /** Shared sequence incremented and notified after readiness changes. */
   readonly notification?: Int32Array;
+  recv?(chunks: readonly Uint8Array[], waitall: boolean): number;
+  shutdown?(how: number): number;
   close?(): void;
   /** A process gets independent capabilities; dup within one process keeps its description. */
   forProcess?(pid: number): Stream;
@@ -47,7 +50,7 @@ function describeResource(resource: Resource, release?: () => void): OpenDescrip
   return new OpenDescription(
     resource,
     release ??
-      (resource.kind === "pipe" || resource.kind === "terminal" || resource.kind === "device"
+      (resource.kind !== "file" && resource.kind !== "directory"
         ? () => resource.close?.()
         : undefined),
   );
@@ -136,6 +139,8 @@ export class DescriptorTable {
         return 3;
       case "directory":
         return 4;
+      case "socket":
+        return 5;
       default:
         return 0;
     }
