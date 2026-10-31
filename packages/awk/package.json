@@ -1,0 +1,48 @@
+{
+  "name": "waffle-awk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The One True Awk as an optional WASI program for Waffle runtimes.",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "licenses",
+    "patches",
+    "provenance",
+    "scripts",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "package-artifacts.json",
+    "sources.lock.json",
+    "tsconfig.json",
+    "build-recipe.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node scripts/build-awk.ts",
+    "build:native": "node scripts/build-awk.ts --native",
+    "test": "bun test tests/awk-wasi.test.ts",
+    "test:oracle": "node scripts/test-awk.ts",
+    "test:wasi": "bun test tests/awk-wasi.test.ts",
+    "test:source": "node --test scripts/awk-source.test.ts tests/command-deadline.test.ts",
+    "typecheck": "tsc -p .",
+    "pack": "node scripts/verify-package.ts && node ../../tools/program-package.ts pack",
+    "prepack": "node scripts/verify-package.ts && node ../../tools/program-package.ts check",
+    "prepare:package": "bun run build",
+    "test:wasm": "node scripts/test-wasm.ts",
+    "test:artifacts": "node scripts/verify-package.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  }
+}
