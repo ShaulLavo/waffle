@@ -25,7 +25,7 @@ export interface WorkerPipeDescriptorToken {
 export function isWorkerPipeDescriptorToken(token: unknown): token is WorkerPipeDescriptorToken {
   return typeof token === "object" && token !== null && "kind" in token && token.kind === "pipe";
 }
-export interface WorkerPipeCodecOptions {
+export interface WorkerPipeCodecOptions extends Pick<PipeOptions, "allocateShared"> {
   /** Filesystem and terminal resources remain owned by their own transfer adapters. */
   fallback?: WorkerDescriptorCodec;
   /** Controller imports register the shared pipe with their one responsive relay owner. */
@@ -55,18 +55,18 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
       if (token.endpoint.pid !== pid)
         throw new TypeError("pipe descriptor belongs to another process");
       options.onPipe?.(token.endpoint);
-      const endpoint = attachPipeEndpoint(token.endpoint);
+      const endpoint = attachPipeEndpoint(token.endpoint, options);
       return new OpenDescription(endpoint, () => endpoint.close());
     },
     discard(token): void {
-      if (isWorkerPipeDescriptorToken(token)) attachPipeEndpoint(token.endpoint).close();
+      if (isWorkerPipeDescriptorToken(token)) attachPipeEndpoint(token.endpoint, options).close();
       else if (options.fallback) options.fallback.discard(token);
       else throw new TypeError("unsupported worker descriptor token");
     },
   };
 }
 
-export interface WorkerPipeHostOptions {
+export interface WorkerPipeHostOptions extends Pick<PipeOptions, "allocateShared"> {
   transport: WorkerProcessTransport;
   postMessage(message: WorkerProcessMessage): void;
   /** Descendants attach the root service's registry; only the root creates a new one. */
@@ -96,12 +96,13 @@ export class WorkerPipeHost {
   codec(
     fallback: WorkerDescriptorCodec | undefined = this.options.fallback,
   ): WorkerDescriptorCodec {
-    return createWorkerPipeCodec({ fallback });
+    return createWorkerPipeCodec({ fallback, allocateShared: this.options.allocateShared });
   }
   createPipe(): readonly [PipeEndpoint, PipeEndpoint] {
     const controller = new PipeController({
       ...this.options.pipe,
       registry: this.registry,
+      allocateShared: this.options.allocateShared,
       relay: "manual",
     });
     let reader: PipeEndpoint | undefined, writer: PipeEndpoint | undefined;
@@ -132,7 +133,7 @@ export class WorkerPipeHost {
   }
 }
 
-export interface WorkerPipeBrokerOptions {
+export interface WorkerPipeBrokerOptions extends Pick<PipeOptions, "allocateShared"> {
   /** Production owns an automatic relay; manual mode supports an embedding's shared pump. */
   relay?: "auto" | "manual";
 }
@@ -153,6 +154,7 @@ export class WorkerPipeBroker {
     let controller: PipeController | undefined = undefined;
     controller = attachPipeController(handle, {
       relay: "manual",
+      allocateShared: this.options.allocateShared,
       onClosed: () => {
         if (controller) this.retire(handle.id, controller);
       },
@@ -165,6 +167,7 @@ export class WorkerPipeBroker {
   codec(fallback?: WorkerDescriptorCodec): WorkerDescriptorCodec {
     return createWorkerPipeCodec({
       fallback,
+      allocateShared: this.options.allocateShared,
       onPipe: (handle) => {
         this.attach(handle);
       },
