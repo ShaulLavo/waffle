@@ -2,6 +2,7 @@ import { Glob, YAML } from "bun";
 import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -82,11 +83,12 @@ const release = record(
     readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
   ),
 );
-const releaseSteps = record(record(release.jobs).release).steps;
-if (!Array.isArray(releaseSteps)) throw new Error("expected release steps");
+const releaseStepValues = record(record(release.jobs).release).steps;
+if (!Array.isArray(releaseStepValues)) throw new Error("expected release steps");
+const releaseSteps = releaseStepValues.map(record);
 
 function releaseStep(name: string): string {
-  const step = releaseSteps.map(record).find((entry) => entry.name === name);
+  const step = releaseSteps.find((entry) => entry.name === name);
   if (typeof step?.run !== "string") throw new Error(`missing release step: ${name}`);
   return step.run;
 }
@@ -161,7 +163,11 @@ test("release checksum step requires both archives and writes separate checksums
     for (const name of ["waffle", "waffle-relay"]) {
       const directory = join(root, "packages", name, "dist");
       const checksum = `${name}-1.2.3.tgz.sha256`;
-      expect(spawnSync("sha256sum", ["-c", checksum], { cwd: directory }).status).toBe(0);
+      const archive = `${name}-1.2.3.tgz`;
+      const digest = createHash("sha256")
+        .update(readFileSync(join(directory, archive)))
+        .digest("hex");
+      expect(readFileSync(join(directory, checksum), "utf8")).toBe(`${digest}  ${archive}\n`);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
