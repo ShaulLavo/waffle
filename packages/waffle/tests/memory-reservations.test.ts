@@ -2,6 +2,7 @@ import {
   createSharedControlAllocator,
   consumedControlBytes,
   CONTROL_GRANT_BYTES,
+  CONTROL_GRANT_STATE_BYTES,
 } from "../memory/control.js";
 import { expect, test } from "bun:test";
 import {
@@ -538,4 +539,78 @@ test("a native unbounded arena refusal preserves the historical fallback ladder 
   expect(attempts).toEqual([DESKTOP_ARENA_BYTES, BOUNDED_ARENA_BYTES]);
   expect(runtime.snapshot().effectiveBudgetBytes).toBeNull();
   expect(runtime.snapshot().contradictions).toEqual([]);
+});
+
+function runtimeWithContradictionCap(cap: number) {
+  const platform = bounded(cap + PAGE_BYTES);
+  let refuse = true;
+  const ledger = new SharedMemoryLedger(platform, {
+    ...allocations,
+    buffer(shape) {
+      if (refuse) throw new RangeError("counted contradiction");
+      return allocations.buffer(shape);
+    },
+  });
+  const first = ledger.openRuntime(platform);
+  const running = first.admit(plan(cap / PAGE_BYTES)).launched();
+  expect(() =>
+    first.buffer("filesystem-root", { kind: "fixed-buffer", length: bytes(PAGE_BYTES) }),
+  ).toThrow(SharedMemoryAdmissionError);
+  refuse = false;
+  running.stopped();
+  first.dispose();
+  return ledger.openRuntime(unlimited);
+}
+
+test("F7 a finite cap preserves bounded control admission and existing quota settlement after an unbounded declaration", () => {
+  const perRoot = CONTROL_GRANT_BYTES + CONTROL_GRANT_STATE_BYTES;
+  const cap = Math.ceil((2 * perRoot) / PAGE_BYTES) * PAGE_BYTES;
+  const capacity = Math.floor(cap / perRoot);
+  const runtime = runtimeWithContradictionCap(cap);
+  const root: ProcessPlan = { ...plan(0), controls: true };
+  const tickets = Array.from({ length: capacity }, () => runtime.admit(root));
+  expect(tickets.map((ticket) => ticket.control.kind)).toEqual(
+    Array.from({ length: capacity }, () => "bounded"),
+  );
+  expect(runtime.snapshot().reservedBytes).toBe(capacity * perRoot);
+  expect(runtime.check(root)).toMatchObject({
+    kind: "refused",
+    error: { refusal: { kind: "budget", budget: cap } },
+  });
+  expect(() => runtime.admit(root)).toThrow(SharedMemoryAdmissionError);
+  const first = tickets[0]!;
+  const running = first.launched();
+  const allocate = createSharedControlAllocator(first.control, (buffer) =>
+    running.controlAllocated(buffer),
+  );
+  allocate(32);
+  running.stopped();
+  for (const ticket of tickets) ticket.abort();
+  expect(runtime.snapshot()).toMatchObject({
+    effectiveBudgetBytes: cap,
+    debtBytes: 32,
+    reservedBytes: capacity * CONTROL_GRANT_STATE_BYTES + 32,
+  });
+  expect(runtime.snapshot().contradictions).toHaveLength(1);
+  const before = runtime.snapshot().reservedBytes;
+  const disabled = runtime.admit(plan(0));
+  expect(disabled.control.kind).toBe("unbounded");
+  expect(runtime.snapshot().reservedBytes).toBe(before);
+  disabled.abort();
+  runtime.dispose();
+});
+
+test("F7 a finite cap still refuses undeclared guests after an unbounded declaration", () => {
+  const runtime = runtimeWithContradictionCap(PAGE_BYTES);
+  const unknown: ProcessPlan = { ...plan(0), guest: { kind: "undeclared" } };
+  expect(runtime.check(unknown)).toMatchObject({
+    kind: "refused",
+    error: { refusal: { kind: "configuration", configuration: "undeclared-module-memory" } },
+  });
+  expect(() => runtime.admit(unknown)).toThrow(SharedMemoryAdmissionError);
+  runtime.dispose();
+  const uncapped = new SharedMemoryLedger(unlimited).openRuntime(unlimited);
+  expect(uncapped.check(unknown)).toEqual({ kind: "admitted" });
+  expect(uncapped.admit({ ...plan(0), controls: true }).control.kind).toBe("unbounded");
+  uncapped.dispose();
 });

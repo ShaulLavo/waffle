@@ -564,7 +564,7 @@ export class SharedMemoryLedger {
     if (holder) holder.state = "debt";
   }
   private validatePlan(sizing: ReservationSizing, plan: ProcessPlan): void {
-    if (plan.guest.kind === "undeclared" && this.platform.kind === "bounded")
+    if (plan.guest.kind === "undeclared" && this.effectiveBudget() !== null)
       throw new SharedMemoryAdmissionError({
         kind: "configuration",
         configuration: "undeclared-module-memory",
@@ -656,7 +656,7 @@ export class SharedMemoryLedger {
       : length;
   }
   private controlGrant(runtime: symbol, enabled: boolean) {
-    if (!enabled || this.platform.kind === "unbounded")
+    if (!enabled || this.effectiveBudget() === null)
       return {
         grant: { kind: "unbounded" as const },
         stopped() {},
