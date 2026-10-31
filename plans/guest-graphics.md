@@ -44,7 +44,7 @@ No exception to the TypeScript rule in `AGENTS.md` is needed.
 | In this repository                                                                                                               | In a separate repository (name to be chosen)                                                         |
 | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Page-side TypeScript: the display module and the GPU service                                                                     | `waffle-window`, `waffle-gpu-sys`, `waffle-wgpu`, and later `waffle-net` ([networking](#networking)) |
-| `runtime_window` and `runtime_gpu` in `docs/host-abi.md`                                                                         | The winit fork, in the same repository or next to it                                                 |
+| `runtime_window` and `runtime_gpu` in `docs/host-abi.md`                                                                         | The winit fork, as a branch based on `v0.30.13`                                                      |
 | The stream's opcode and record table as a data file that clients generate code from ([wire format](gpu-bridge.md#wire-format))   | Tests of those crates against a pinned Waffle                                                        |
 | Small C and Rust guest fixtures for Waffle's own tests (allowed today as "guest fixtures", see [guest threads](wasi-threads.md)) |                                                                                                      |
 
@@ -140,19 +140,20 @@ WebTransport planned) gives guests a route out. Horizon on Waffle then needs:
 
 ## Open questions for the owner
 
-1. Winit fork: its own fork repository, or inside the guest-crates repository? Either way not
-   vendored here: winit 0.30.13 is about 57,000 lines of upstream Rust for a patch of about 2,000.
-2. Name of the guest-crates repository.
+1. Name of the guest-crates repository: the Rust libraries that programs running on Waffle compile
+   in. Suggested: `waffle-rs`.
 
 ## Decided
 
-- **The stream stays usable by a C `webgpu.h` client** (owner, 2026-10-31). Opcodes and records
-  follow WebGPU, not wgpu, and are generated from `webgpu.yml` ([wire format](gpu-bridge.md#wire-format)).
+All by the owner on 2026-10-31.
 
-## Recommended, awaiting confirmation
-
+- **The stream stays usable by a C `webgpu.h` client.** Opcodes and records follow WebGPU, not
+  wgpu, and are generated from `webgpu.yml` ([wire format](gpu-bridge.md#wire-format)).
 - **Guest Rust crates live outside this repository.** Waffle owns the interface, its data table and
-  fixtures ([where the code lives](#where-the-code-lives)). Replaces the earlier proposal for an
-  ADR allowing Rust guest crates here.
-- **One GPU service per runtime, one isolated connection per process.** From prior art; bridge
-  slice G0 confirms it by measurement. See [prior art](gpu-bridge.md#prior-art).
+  fixtures ([where the code lives](#where-the-code-lives)). Replaces the earlier proposal for an ADR
+  allowing Rust guest crates here.
+- **The winit fork lives in the guest-crates repository**, next to `waffle-window`. Not vendored
+  here: winit 0.30.13 is about 57,000 lines of upstream Rust for a patch of about 2,000.
+- **One GPU service per runtime, one isolated connection per process**, from
+  [prior art](gpu-bridge.md#prior-art). Bridge slice G0 still measures it; a failed measurement
+  reopens this decision.

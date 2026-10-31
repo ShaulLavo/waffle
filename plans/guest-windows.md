@@ -195,10 +195,11 @@ message. `Window` is `Send + Sync`; every operation is a `command`.
 
 ### Where the fork lives
 
-Not in this repository. winit 0.30.13 is about 57,000 lines of upstream Rust (`src/`), and the
-Waffle patch is about 2,000. Keep it as a fork (for example a `waffle-0.30` branch) that depends on
-`waffle-window` by exact Git revision, either in its own fork repository or inside the guest-crates
-repository ([open question](guest-graphics.md#open-questions-for-the-owner)). Consumers pin both.
+In the guest-crates repository, next to `waffle-window`
+([decided](guest-graphics.md#decided)), not in this repository. winit 0.30.13 is about 57,000 lines
+of upstream Rust (`src/`), and the Waffle patch is about 2,000. Keep it as a fork branch based on
+the `v0.30.13` tag with the Waffle commits on top, so each winit release is a rebase. Consumers
+pin the repository by exact Git revision.
 
 Upstreaming is not planned: 0.30 is a maintenance branch and 0.31 changes the API. Revisit after
 the first consumer ships.
