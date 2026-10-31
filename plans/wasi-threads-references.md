@@ -1,6 +1,6 @@
 # Thread support: research, toolchains, and prior art
 
-Research date: 2026-10-31. Companion to the proposed
+Research date: 2026-10-31. Companion to the approved
 [implementation plan](wasi-threads.md). Facts about upstream projects are distinguished from
 Waffle recommendations and future qualification. No Waffle threaded release or application port
 is established by this document. Recheck producer versions and proposal status when implementing.
@@ -46,6 +46,16 @@ the process. Waffle implements that logical behavior while preserving its own ho
 before Worker termination. Sources:
 [ABI](https://github.com/WebAssembly/wasi-threads/blob/f8ea03cc0ffbde143415e945497de112f6f9fd53/wasi-threads.abi.md)
 and [execution/termination convention](https://github.com/WebAssembly/wasi-threads/blob/f8ea03cc0ffbde143415e945497de112f6f9fd53/README.md).
+
+Preserve that signed result across the host transport. In the inspected Microsoft revision,
+`thread-spawn` returns a TID or `-1`, but the generic service stores the result with `setUint16`
+and the host reads `Uint16Array` before returning it from the import. This source path narrows
+`-1` to `65535` and `65536` to zero. Borrow the ownership pattern, not this reply representation.
+Sources: [spawn result](https://github.com/microsoft/vscode-wasm/blob/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-wasi-core/src/common/process.ts#L258-L272),
+[reply encoding](https://github.com/microsoft/vscode-wasm/blob/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-wasi-core/src/common/service.ts#L84-L107),
+[reply decoding](https://github.com/microsoft/vscode-wasm/blob/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-wasi-core/src/common/host.ts#L111-L131),
+and [import wrapper](https://github.com/microsoft/vscode-wasm/blob/7585d3902cad4948f2f8852006d3714b2a9afb1f/wasm-wasi-core/src/common/host.ts#L596-L598).
+This is source analysis, not an executed upstream reproduction.
 
 ### Producer entry points to qualify
 
@@ -288,7 +298,8 @@ and [Apache-2.0 with LLVM exception](https://github.com/bytecodealliance/wasmtim
 ## Evidence boundaries
 
 The research used Waffle documentation/source, upstream specifications/source, and documented
-consumer failure cases. Proposed architecture and effort are our engineering recommendations.
+consumer failure cases. The approved architecture is an implementation direction; effort remains
+an engineering estimate.
 This planning change did not build threaded guest artifacts, implement Waffle threads, benchmark
 Worker overhead, establish an iPhone ceiling, or qualify the named applications. Those results are
 required by the implementation plan's gates and must not be inferred from successful source review.

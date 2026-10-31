@@ -1,6 +1,6 @@
 # Native guest threads in the browser
 
-Status: **Proposed implementation plan. This change delivers no runtime thread support.**
+Status: **Approved implementation plan. This change delivers no runtime thread support.**
 
 Prepared: 2026-10-31. Inspected Waffle baseline:
 [`5ffb379b14e129e6505b499d91aa743cd80b3d38`](https://github.com/ShaulLavo/waffle/commit/5ffb379b14e129e6505b499d91aa743cd80b3d38).
@@ -121,6 +121,31 @@ bootstrap; shared bindings/lifetimes; remaining process-owned namespaces; termin
 managed growth and views; producer qualification; browser/policy/docs. Do not combine descriptor
 ownership, a new allocator, and used-worker pooling into one review.
 
+### Required design records
+
+Each slice produces a checked-in decision record or fixture manifest before its dependent work
+starts. Assign its author and independent reviewer with that slice's source ownership. Record the
+choice, alternatives, evidence, and acceptance command; do not leave a correctness requirement as
+an implementation assumption.
+
+- S0 records exact Rust/C compiler, SDK, sysroot and CRT versions, build flags, imports/features,
+  memory requirements, artifact hashes, and the browser/device identities used by its proof.
+- S0 measures cold source preparation in its actual calling realm. Separate byte acquisition,
+  hashing, synchronous rewriting, engine compilation, and page scheduling gaps. The current
+  asynchronous loader still runs its JavaScript rewrite synchronously before compilation. Decide
+  from those results whether preparation stays there or needs a separate worker; asynchronous
+  compilation alone is not evidence that preparation leaves the page responsive. Keep the chosen
+  ownership, cache, cancellation and lazy-loading requirements intact.
+- S1 settles the shared descriptor record layout and state transitions, publication and close
+  linearization points, generation exhaustion, operation-pin release, and last-reference
+  reclamation. Deterministic interleaving tests must pass before workers use that protocol.
+- S3 defines the thread-policy API, units, refusal categories, and count rules for pending/live
+  threads, prewarmed/helper workers, backing charges and retained debt. Unmeasured trial values are
+  not release defaults.
+- S5 records the supported device/OS floor, measured profiles, release caps, responsiveness
+  thresholds, and remaining limitations. Select them from the baseline and repeated device runs
+  rather than treating the trial matrix as a supported envelope.
+
 ## Existing foundations and source map
 
 Read [concepts](../docs/concepts.md), [host ABI](../docs/host-abi.md),
@@ -229,6 +254,14 @@ The ABI's TIDs are positive and below `2^29`; zero is reserved. Use monotonic TI
 initially and fail cleanly on exhaustion; keep incarnation identity separate. The exact ABI and
 toolchain links are in [the appendix](wasi-threads-references.md#abi-and-toolchain).
 
+The spawn reply is a signed 32-bit value from owner to caller and through the Wasm import. Do not
+reuse an unsigned 16-bit WASI errno field: it would turn failure `-1` into positive `65535` and
+TID `65536` into zero. Keep transport failure, a negative ABI spawn result, and a positive TID
+distinct. Test `-1`, `65535`, `65536`, and `(1 << 29) - 1` through the real reply encoder/decoder
+and import wrapper, plus zero and exhausted allocation. Use controlled host-test identities for
+these boundary cases; no test needs tens of thousands of actual Workers. Real Rust/C spawn-failure
+qualification remains a separate gate.
+
 ### Join, return, and panic
 
 Guest libc/language runtime owns stacks, TLS, join values, detach state, and destructors. Waffle
@@ -332,6 +365,14 @@ and final resource destruction. Workers resolve shared binding records with gene
 operation lease or equivalent lifetime pin. Acquisition checks binding identity and rights;
 completion/failure releases the pin. Preserve sparse/high FD numbers without an array sized to the
 largest possible FD.
+
+Keep bounded descriptor-number reuse rather than replace it with a forever-increasing counter.
+The public number stays a nonnegative i32; the binding's generation and process incarnation are
+separate host-private identity. After close/renumber/reuse, a cached view or delayed completion
+must not resolve the new binding just because its FD number matches. Specify a generation
+exhaustion policy that cannot alias a live or retained operation, such as retiring that slot or
+refusing admission. Never wrap into an identity that can still be observed. Reuse and exhaustion
+must leave unrelated descriptors usable and respect the bounded control-storage policy.
 
 Closing invalidates the binding for later operations. Already admitted operations can retain the old
 resource until completion. Reusing an FD must not retarget a stale wrapper, and close must not wait
@@ -540,9 +581,11 @@ source control under the repository's fixture-production rules.
 | Rust/C lifecycle       | Standard spawn/join results, detach, nested spawn, destructor behavior, repeated commands; normal thread return leaves process resources usable.                                                |
 | Real parallel progress | Barrier/progress test requiring multiple live contexts and distinct TIDs; an explicit Rayon pool performs work on more than one thread.                                                         |
 | Spawn failure          | Constructor/load/instantiation/ready failure; pending slots counted; over-limit `Builder::spawn`/`pthread_create` return errors; convenience Rust spawn's panic behavior is separately tested.  |
+| Spawn reply encoding   | Signed i32 round trip through owner reply and guest import for negative failure, TIDs 65535/65536 and the largest allowed TID; zero/exhaustion never becomes successful spawn.                  |
 | Memory                 | Zero growth, native previous-page result, concurrent growth, denial/refund, unsigned/overflow cases, smaller compatible host maximum, view refresh and pointer checks after cross-agent growth. |
 | Accounting             | Shared backing counted once, no refund on guest free/thread return, precompiled ceiling reservation, bypass diagnostics, retained debt, no RSS claims.                                          |
 | Descriptors            | Cross-thread open/read/write/close/dup/renumber, sparse FDs, rights, shared flags/cursor, positioned I/O, close/reuse racing an in-flight operation, creator return preserves resources.        |
+| Descriptor reuse       | Bounded open/close churn; close/reopen and renumber with stale views or delayed replies; last-operation lifetime; generation exhaustion without aliasing or effects on unrelated FDs.           |
 | Streams                | Concurrent writer ordering/atomic-write guarantees, sibling read/write progress through backpressure, final-writer EOF with idle cached wrappers, nonblocking `EAGAIN`, no lane inflation.      |
 | Queries/watches/poll   | Cross-thread create/take/close, unique IDs, process quota, one consuming result, independent readiness registrations, publication between readiness scan and sleep.                             |
 | Process ABI            | Secondary-thread spawn with correct ancestry and FD snapshot, creator return preserves admitted child, two sibling waiters consume once, caller-fatal rules remain process-scoped.              |
