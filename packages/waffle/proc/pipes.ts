@@ -739,7 +739,8 @@ class PipeState {
     notify(this.wake);
   }
   readerAlive(ring: Ring): boolean {
-    return ring.owner > 0 && ring.references > 0 && !this.registry?.isRevoked(ring.owner);
+    const pid = ring.owner;
+    return pid > 0 && ring.references > 0 && !this.registry?.isRevoked(pid);
   }
   hasReaders(): boolean {
     return ringSome(this.readers, (ring) => this.readerAlive(ring));
@@ -870,7 +871,7 @@ class PipeState {
     if (selected < 0)
       throw new ProcessError(
         PipeErrno.NFILE,
-        `pipe ${mode} process limit reached: ${rings.length} slots are live, unread, busy or incarnation-exhausted`,
+        `pipe ${mode} process limit reached: ${rings.length} slots are ${mode === "read" ? "live, unread, busy" : "live, busy"} or incarnation-exhausted`,
       );
     const endpoint = new PipeEndpoint(this, pid, mode, selected, incarnation, lifetime, fdflags);
     try {
@@ -1202,7 +1203,8 @@ export class PipeEndpoint implements Stream {
 /** Supervisor control plane. Source and delivery rings are in a bounded shared directory, so
  * synchronous fd_read sees newly inherited writers without needing MessagePort dispatch.
  * Defaults reserve about 2.5 MiB per pipe, including bounded write-record metadata.
- * Atomic writes are <=4096 bytes (or capacity in tiny configured rings); no slot is reused.
+ * Atomic writes are <=4096 bytes (or capacity in tiny configured rings). Reuse advances a
+ * finite incarnation only after all synchronous mutations of the old incarnation leave.
  */
 export class PipeController {
   private readonly state: PipeState;
@@ -1352,7 +1354,13 @@ export class PipeController {
       const ring = this.state.readers[index]!;
       const incarnation = ring.incarnation;
       if (!ring.enter(incarnation)) continue;
-      const budget = this.claimDemand(ring);
+      let budget: number;
+      try {
+        budget = this.claimDemand(ring);
+      } catch (error) {
+        ring.leave();
+        throw error;
+      }
       if (!budget) {
         ring.leave();
         continue;

@@ -393,8 +393,9 @@ for (const phase of ["reclaiming", "reserving"] as const) {
         0,
         phase === "reclaiming" ? 0 : 256,
       );
-      expect(reader.readiness().nbytes).toBe(2);
+      const queued = reader.readiness().nbytes;
       readByte(reader, 10);
+      expect(queued).toBe(2);
     }
     A.compareExchange = ((array: Int32Array, index: number, old: number, next: number) => {
       const result = cas(array, index, old, next);
@@ -416,3 +417,84 @@ for (const phase of ["reclaiming", "reserving"] as const) {
     readByte(reader, 20);
   });
 }
+
+test("completed-before-started order survives a scan paused on a reused ring", () => {
+  const { pipe, reader, writer } = fixture(2, 16);
+  const later = pipe.retain(3, "write");
+  writer.close();
+  const next = pipe.retain(4, "write");
+  const state = words(next.handle()),
+    load = A.load;
+  let inserted = false;
+  A.load = ((array: BigInt64Array, index: number) => {
+    const value = load(array, index);
+    if (!inserted && sameWord(array, state.published)) {
+      inserted = true;
+      fence(next.handle(), 4, 1, 256);
+      expect(next.tryWrite([new Uint8Array([10])])).toBe(1);
+      expect(later.tryWrite([new Uint8Array([20])])).toBe(1);
+    }
+    return value;
+  }) as typeof A.load;
+  try {
+    expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  } finally {
+    A.load = load;
+  }
+  expect(inserted).toBe(true);
+  readByte(reader, 10);
+  readByte(reader, 20);
+});
+
+test("pid revocation holds its section through owner observation and mutation", () => {
+  const { pipe, writer } = fixture();
+  const state = words(writer.handle()),
+    load = A.load;
+  let paused = false;
+  A.load = ((array: Int32Array, index: number) => {
+    const value = load(array, index);
+    if (!paused && sameWord(array, state.owner) && Atomics.load(state.epoch, 0) === 1) {
+      paused = true;
+      writer.close();
+      fence(writer.handle(), 2, 0, 1);
+      expect(() => pipe.retain(3, "write")).toThrow("busy");
+    }
+    return value;
+  }) as typeof A.load;
+  try {
+    pipe.revoke(2);
+  } finally {
+    A.load = load;
+  }
+  expect(paused).toBe(true);
+  fence(writer.handle(), 2, -1, 0);
+  const next = pipe.retain(3, "write");
+  fence(next.handle(), 3, 1, 256);
+});
+
+test("the pre-reopen reservation window retains the existing fresh-slot EOF contract", () => {
+  const { pipe, reader, writer } = fixture(2);
+  const parent = pipe.retain(3, "write");
+  writer.close();
+  const state = words(writer.handle()),
+    cas = A.compareExchange;
+  let observed = false;
+  A.compareExchange = ((array: Int32Array, index: number, old: number, next: number) => {
+    const result = cas(array, index, old, next);
+    if (!observed && sameWord(array, state.owner) && next === -0x80000000) {
+      observed = true;
+      parent.close();
+      expect(reader.tryRead([new Uint8Array(1)])).toBe(0);
+      fence(writer.handle(), -0x80000000, 0, 0);
+    }
+    return result;
+  }) as typeof A.compareExchange;
+  try {
+    const next = pipe.retain(4, "write");
+    expect(next.tryWrite([byte])).toBe(1);
+    readByte(reader);
+  } finally {
+    A.compareExchange = cas;
+  }
+  expect(observed).toBe(true);
+});

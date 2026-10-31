@@ -47,7 +47,7 @@ The reservation snapshots argv, environment and working directory and retains th
 
 ## Why a kill takes two steps
 
-Killing a process first selects its outcome, for example `signaled` with 137 for `SIGKILL`, and revokes its descriptors. Terminating the worker comes later, after the filesystem confirms that nothing the guest started is still inside a critical section. The delay is deliberate. A worker killed while it holds a filesystem lock would leave that lock held forever, and every other guest would hang. The cost is that "the process is dead" and "the worker is gone" are two moments. Waffle never hands a killed process's buffers to another process.
+Killing a process first selects its outcome, for example `signaled` with 137 for `SIGKILL`, and revokes its descriptors. Terminating the worker comes later, after the filesystem confirms that nothing the guest started is still inside a critical section. The delay is deliberate. A worker killed while it holds a filesystem lock would leave that lock held forever, and every other guest would hang. The cost is that "the process is dead" and "the worker is gone" are two moments. Waffle reuses a pipe slot only after its counted operations finish. A killed Worker with an abandoned operation keeps that slot quarantined.
 
 ## Why guests block
 

@@ -21,6 +21,14 @@ function worker() {
   return new Worker(new URL("./fixtures/pipe-reuse-worker.ts", import.meta.url));
 }
 
+async function progress(gate: Int32Array, target: number): Promise<void> {
+  for (;;) {
+    const observed = Atomics.load(gate, 0);
+    if (observed >= target) return;
+    await Atomics.waitAsync(gate, 0, observed).value;
+  }
+}
+
 test("a pre-cloned blocked Bun Worker reads 3001 reused writer lifetimes", async () => {
   const pipe = new PipeController({ relay: "manual" });
   const reader = pipe.retain(1, "read"),
@@ -35,11 +43,7 @@ test("a pre-cloned blocked Bun Worker reads 3001 reused writer lifetimes", async
     for (let pid = 3; pid < 3004; pid++) {
       const writer = root.forProcess(pid);
       expect(writer.tryWrite([new Uint8Array([123])])).toBe(1);
-      while (Atomics.load(gate, 0) < pid - 2) {
-        const observed = Atomics.load(gate, 0);
-        if (observed >= pid - 2) break;
-        await Atomics.waitAsync(gate, 0, observed).value;
-      }
+      await progress(gate, pid - 2);
       writer.close();
     }
     pipe.revoke(1);

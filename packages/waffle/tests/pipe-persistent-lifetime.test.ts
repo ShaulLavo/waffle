@@ -74,12 +74,14 @@ test("one parent-held default pipe survives repeated inherited child writers thr
       context.exit(0);
       expect((await f.supervisor.waitForExit(f.root, pid)).kind).toBe("exited");
       expect(f.supervisor.wait(f.root, pid)?.status).toBe(0);
+      expect(f.supervisor.waitJob(f.root, context.job)?.status).toBe(0);
       expect(f.supervisor.get(pid)).toBeUndefined();
       expect(stale.tryWrite([byte])).toBe(-PipeErrno.BADF);
       expect(stale.readiness().hangup).toBe(true);
       expect(() => stale!.forProcess(99999)).toThrow();
       stale.close();
       expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
+      expect(Array.from(f.supervisor.table.jobValues())).toHaveLength(1);
     }
     expect(f.writer.tryWrite([byte])).toBe(1);
     expect(attachedReader.tryRead([new Uint8Array(1)])).toBe(1);
