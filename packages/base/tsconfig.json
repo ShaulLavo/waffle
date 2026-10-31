@@ -1,0 +1,8 @@
+{
+  "extends": "../../packages/waffle/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts"]
+}

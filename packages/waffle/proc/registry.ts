@@ -1,0 +1,506 @@
+import { objectFreeze } from "./intrinsics.ts";
+import { ExecutableFormatError } from "./start-failure.js";
+import { dirname, normalize } from "../core/path.js";
+import type { HostCommand, HostCommandDefinition } from "./command.js";
+
+/** Metadata admission is separate from bounded script-prefix reads; neither owns a filesystem. */
+export type ExecutableLookup = (
+  path: string,
+) =>
+  | { readonly path: string; readonly kind: "file" | "dir" | "symlink" | "socket" }
+  | undefined
+  | Promise<
+      { readonly path: string; readonly kind: "file" | "dir" | "symlink" | "socket" } | undefined
+    >;
+export type ExecutableRead = (
+  path: string,
+) => Uint8Array | undefined | Promise<Uint8Array | undefined>;
+
+const MAX_SHEBANG_DEPTH = 4;
+const MAX_SHEBANG_BYTES = 256;
+const MAX_SYMLINK_EXPANSIONS = 40;
+
+function rejectNonExecutableNode(file: {
+  readonly kind: "file" | "dir" | "symlink" | "socket";
+  readonly path: string;
+}): void {
+  if (file.kind === "dir") throw new ExecutableNotRunnable(file.path, true);
+  if (file.kind === "socket") throw new ExecutableNotRunnable(file.path, false);
+}
+
+function symlinkTarget(file: {
+  readonly kind: "file" | "dir" | "symlink" | "socket";
+}): string | undefined {
+  if (file.kind !== "symlink" || !("target" in file) || typeof file.target !== "string") return;
+  return file.target;
+}
+
+function symlinkExpansionBlocked(
+  path: string,
+  seen: ReadonlySet<string>,
+  expansions: number,
+): boolean {
+  return seen.has(path) || expansions >= MAX_SYMLINK_EXPANSIONS;
+}
+
+export interface Executable {
+  /** The loader compiles asynchronously (normally in a compiler worker). Never instantiate here. */
+  module: WebAssembly.Module | (() => WebAssembly.Module | Promise<WebAssembly.Module>);
+  /** Opaque guest adapter key, interpreted by the host's worker launcher, not the registry. */
+  adapter: string;
+  /** True only when admission injected interruption imports. Trusted cooperative modules omit it. */
+  readonly interruptible?: boolean;
+}
+export interface ScriptExecutable {
+  readonly adapter: string;
+  readonly script: { readonly interpreter: string; readonly prepare: () => Promise<void> };
+  readonly onLoad?: (
+    state: { kind: "preparing" } | { kind: "loaded" } | { kind: "error"; error: unknown },
+  ) => void;
+}
+export interface RegisteredCommand extends HostCommandDefinition {
+  readonly owner?: object;
+  readonly admission?: AbortSignal;
+  readonly marker?: Uint8Array;
+  /** A package hold released only after the callback and its admitted I/O physically settle. */
+  readonly retain?: () => () => void;
+}
+export interface CommandExecutable {
+  readonly command: RegisteredCommand;
+  readonly adapter?: never;
+  readonly module?: never;
+}
+type RegisteredModule = Readonly<Required<Executable>>;
+type RegisteredExecutable = RegisteredModule | CommandExecutable;
+interface AdmittedExecutable {
+  readonly entry: RegisteredExecutable;
+  readonly argv?: readonly string[];
+  readonly onLoad?: ScriptExecutable["onLoad"];
+}
+
+export interface ResolvedModule {
+  readonly kind: "module";
+  readonly module: WebAssembly.Module;
+  readonly adapter: string;
+  readonly interruptible: boolean;
+  readonly argv?: readonly string[];
+}
+export interface ResolvedCommand {
+  readonly kind: "command";
+  readonly run: HostCommand;
+  readonly definition: RegisteredCommand;
+  readonly argv?: readonly string[];
+  readonly module?: never;
+  readonly adapter?: never;
+  readonly interruptible?: never;
+}
+export type ResolvedExecutable = ResolvedModule | ResolvedCommand;
+export class ExecutableNotFound extends Error {
+  readonly code = "ENOENT";
+  constructor(name: string) {
+    super(`executable not found: ${name}`);
+    this.name = "ExecutableNotFound";
+  }
+}
+export class ExecutableNotRunnable extends Error {
+  constructor(
+    name: string,
+    directory: boolean,
+    readonly code: "EACCES" | "ENOTDIR" | "ELOOP" = "EACCES",
+  ) {
+    super(
+      code === "ENOTDIR"
+        ? `not a directory in executable path: ${name}`
+        : code === "ELOOP"
+          ? `too many interpreter levels: ${name}`
+          : directory
+            ? `cannot execute directory: ${name}`
+            : `file is not a registered executable: ${name}`,
+    );
+    this.name = "ExecutableNotRunnable";
+  }
+}
+/** Generic names -> compiled module + adapter, with one compilation per module source.
+ * Instances and used workers are deliberately not cached.
+ */
+export class ExecutableRegistry {
+  private readonly entries = new Map<string, RegisteredExecutable | ScriptExecutable>();
+  private readonly modules = new WeakMap<Executable["module"], Promise<WebAssembly.Module>>();
+  private readonly commands = new WeakMap<RegisteredCommand["load"], Promise<HostCommand>>();
+  /** A page runtime supplies its filesystem; standalone registries may use opaque names. */
+  constructor(
+    private readonly lookup?: ExecutableLookup,
+    private readonly read?: ExecutableRead,
+  ) {}
+  register(name: string, executable: Executable | ScriptExecutable | CommandExecutable): void {
+    if ("command" in executable) {
+      if (!name || typeof executable.command.load !== "function")
+        throw new TypeError("executable name and command loader are required");
+      this.entries.set(name, objectFreeze({ command: executable.command }));
+      return;
+    }
+    if (!name || !executable.adapter)
+      throw new TypeError("executable and adapter names are required");
+    if ("script" in executable) {
+      this.entries.set(name, objectFreeze({ ...executable }));
+      return;
+    }
+    this.entries.set(
+      name,
+      objectFreeze({ ...executable, interruptible: executable.interruptible ?? false }),
+    );
+  }
+  unregister(name: string): boolean {
+    return this.entries.delete(name);
+  }
+  has(name: string): boolean {
+    return this.entries.has(name);
+  }
+  /** Validate live metadata and registration without loading or compiling a module. */
+  async check(
+    name: string,
+    cwd = "/",
+    assertActive: () => void = () => {},
+  ): Promise<RegisteredExecutable> {
+    return (await this.admit(name, cwd, assertActive, undefined, "access")).entry;
+  }
+  async resolve(
+    name: string,
+    cwd = "/",
+    assertActive: () => void = () => {},
+    argv?: readonly string[],
+  ): Promise<ResolvedExecutable> {
+    const admitted = await this.admit(name, cwd, assertActive, argv, "execute");
+    const entry = admitted.entry;
+    assertActive();
+    if ("command" in entry) return this.resolveCommand(entry, admitted.argv, assertActive);
+    let pending = this.modules.get(entry.module);
+    if (!pending) {
+      let complete!: (module: WebAssembly.Module | PromiseLike<WebAssembly.Module>) => void;
+      let reject!: (error: unknown) => void;
+      pending = new Promise<WebAssembly.Module>((yes, no) => {
+        complete = yes;
+        reject = no;
+      });
+      // Publish before invoking a loader that can reenter. Invoke on this same stack,
+      // so cancellation cannot slip between the liveness check and starting new work.
+      this.modules.set(entry.module, pending);
+      try {
+        const loaded = typeof entry.module === "function" ? entry.module() : entry.module;
+        complete(
+          Promise.resolve(loaded).then((module) => {
+            if (!(module instanceof WebAssembly.Module))
+              throw new TypeError("executable loader did not return a compiled WebAssembly.Module");
+            return module;
+          }),
+        );
+      } catch (error) {
+        reject(error);
+      }
+    }
+    let module: WebAssembly.Module;
+    try {
+      module = await pending;
+    } catch (error) {
+      if (this.modules.get(entry.module) === pending) this.modules.delete(entry.module);
+      admitted.onLoad?.({ kind: "error", error });
+      if (error instanceof WebAssembly.CompileError)
+        throw new ExecutableFormatError(error.message, { cause: error });
+      throw error;
+    }
+    admitted.onLoad?.({ kind: "loaded" });
+    assertActive();
+    return {
+      kind: "module",
+      module,
+      adapter: entry.adapter,
+      interruptible: entry.interruptible,
+      ...(admitted.argv ? { argv: admitted.argv } : {}),
+    };
+  }
+
+  private async resolveCommand(
+    entry: CommandExecutable,
+    argv: readonly string[] | undefined,
+    assertActive: () => void,
+  ): Promise<ResolvedCommand> {
+    const definition = entry.command;
+    this.checkCommand(definition);
+    let pending = this.commands.get(definition.load);
+    if (!pending) {
+      const result = Promise.withResolvers<HostCommand>();
+      pending = result.promise;
+      this.commands.set(definition.load, pending);
+      try {
+        result.resolve(definition.load());
+      } catch (error) {
+        result.reject(error);
+      }
+    }
+    try {
+      const run = await pending;
+      if (typeof run !== "function") throw new TypeError("Command loader must return a function");
+      assertActive();
+      this.checkCommand(definition);
+      return { kind: "command", run, definition, ...(argv ? { argv } : {}) };
+    } catch (error) {
+      if (this.commands.get(definition.load) === pending) this.commands.delete(definition.load);
+      throw error;
+    }
+  }
+
+  private checkCommand(definition: RegisteredCommand): void {
+    if (definition.admission?.aborted) throw new Error("Program was uninstalled");
+  }
+
+  private async admit(
+    name: string,
+    cwd: string,
+    assertActive: () => void,
+    argv: readonly string[] | undefined,
+    mode: "access" | "execute",
+  ): Promise<AdmittedExecutable> {
+    const seen = new Set<string>();
+    return this.admitScript(name, cwd, assertActive, argv, mode, 0, seen, 0);
+  }
+
+  private async admitScript(
+    name: string,
+    cwd: string,
+    assertActive: () => void,
+    argv: readonly string[] | undefined,
+    mode: "access" | "execute",
+    depth: number,
+    seen: Set<string>,
+    symlinks: number,
+    scriptName = name,
+  ): Promise<AdmittedExecutable> {
+    assertActive();
+    if (!name) throw new ExecutableNotFound(name);
+    const absolute = name.startsWith("/") ? name : `${cwd}/${name}`;
+    // Predict the key only to snapshot its exact registration before yielding. The
+    // filesystem must still walk the original path; lexical cancellation is not admission.
+    const predicted = this.lookup ? normalize(absolute) : name;
+    const registered = this.entries.get(predicted);
+    if (!this.lookup)
+      return this.admitEntry(
+        registered,
+        name,
+        cwd,
+        assertActive,
+        argv,
+        mode,
+        depth,
+        seen,
+        symlinks,
+        scriptName,
+      );
+    let file;
+    try {
+      file = await this.lookup(absolute);
+    } catch (error) {
+      assertActive();
+      const errno =
+        error !== null && typeof error === "object" && "errno" in error ? error.errno : undefined;
+      if (errno === 44) throw new ExecutableNotFound(absolute);
+      if (errno === 54) throw new ExecutableNotRunnable(absolute, false, "ENOTDIR");
+      throw error;
+    }
+    assertActive();
+    if (!file) throw new ExecutableNotFound(absolute);
+    rejectNonExecutableNode(file);
+    const target = symlinkTarget(file);
+    if (target) {
+      if (symlinkExpansionBlocked(file.path, seen, symlinks))
+        throw new ExecutableNotRunnable(file.path, false, "ELOOP");
+      seen.add(file.path);
+      return this.admitScript(
+        target.startsWith("/") ? target : `${dirname(file.path)}/${target}`,
+        cwd,
+        assertActive,
+        argv,
+        mode,
+        depth,
+        seen,
+        symlinks + 1,
+        scriptName,
+      );
+    }
+    const resolved = file.path === predicted ? registered : this.entries.get(file.path);
+    const admitted =
+      resolved &&
+      !(
+        "command" in resolved &&
+        resolved.command.marker &&
+        !(await this.matchesMarker(absolute, resolved.command.marker))
+      );
+    assertActive();
+    if (admitted && resolved && file.kind === "file")
+      return this.admitEntry(
+        resolved,
+        file.path,
+        cwd,
+        assertActive,
+        argv,
+        mode,
+        depth,
+        seen,
+        symlinks,
+        scriptName,
+      );
+    if (!this.read) throw this.notRunnable(file.path, mode);
+    if (seen.has(file.path) || depth >= MAX_SHEBANG_DEPTH)
+      throw new ExecutableNotRunnable(file.path, false, "ELOOP");
+    seen.add(file.path);
+    const bytes = await this.read(absolute);
+    assertActive();
+    if (!bytes) throw new ExecutableNotFound(absolute);
+    const shebang = parseShebang(bytes);
+    if (!shebang) throw this.notRunnable(file.path, mode, true);
+    const nextArgv = argv
+      ? shebang.argument
+        ? [shebang.interpreter, shebang.argument, scriptName].concat(argv.slice(1))
+        : [shebang.interpreter, scriptName].concat(argv.slice(1))
+      : undefined;
+    return this.admitScript(
+      shebang.interpreter,
+      cwd,
+      assertActive,
+      nextArgv,
+      mode,
+      depth + 1,
+      seen,
+      symlinks,
+    );
+  }
+
+  private async admitEntry(
+    entry: RegisteredExecutable | ScriptExecutable | undefined,
+    path: string,
+    cwd: string,
+    assertActive: () => void,
+    argv: readonly string[] | undefined,
+    mode: "access" | "execute",
+    depth: number,
+    seen: Set<string>,
+    symlinks: number,
+    scriptName: string,
+  ): Promise<AdmittedExecutable> {
+    if (!entry) throw new ExecutableNotFound(path);
+    if ("script" in entry)
+      return this.admitRegisteredScript(
+        entry,
+        path,
+        cwd,
+        assertActive,
+        argv,
+        mode,
+        depth,
+        seen,
+        symlinks,
+        scriptName,
+      );
+    if ("command" in entry) this.checkCommand(entry.command);
+    return { entry, ...(argv ? { argv } : {}) };
+  }
+
+  private async admitRegisteredScript(
+    executable: ScriptExecutable,
+    path: string,
+    cwd: string,
+    assertActive: () => void,
+    argv: readonly string[] | undefined,
+    mode: "access" | "execute",
+    depth: number,
+    seen: Set<string>,
+    symlinks: number,
+    scriptName: string,
+  ): Promise<AdmittedExecutable> {
+    if (seen.has(path) || depth >= MAX_SHEBANG_DEPTH)
+      throw new ExecutableNotRunnable(path, false, "ELOOP");
+    seen.add(path);
+    const interpreter = executable.script.interpreter;
+    const next = argv ? [interpreter, scriptName].concat(argv.slice(1)) : undefined;
+    const admitted = await this.admitScript(
+      interpreter,
+      cwd,
+      assertActive,
+      next,
+      mode,
+      depth + 1,
+      seen,
+      symlinks,
+    );
+    if ("command" in admitted.entry)
+      throw new ExecutableFormatError("Registered script interpreters require a Wasm module");
+    const entry = objectFreeze({ ...admitted.entry, adapter: executable.adapter });
+    if (mode === "access") return { ...admitted, entry };
+    const onLoad = combineLoadObservers(executable.onLoad, admitted.onLoad);
+    try {
+      assertActive();
+      await executable.script.prepare();
+      assertActive();
+      return {
+        ...admitted,
+        entry,
+        onLoad,
+      };
+    } catch (error) {
+      onLoad?.({ kind: "error", error });
+      throw error;
+    }
+  }
+
+  private async matchesMarker(path: string, marker: Uint8Array): Promise<boolean> {
+    const bytes = await this.read?.(path);
+    return bytes?.length === marker.length && bytes.every((byte, index) => byte === marker[index]);
+  }
+
+  private notRunnable(path: string, mode: "access" | "execute", invalid = false): Error {
+    if (mode === "access") return new ExecutableNotRunnable(path, false);
+    return invalid
+      ? new ExecutableFormatError(`invalid executable: ${path}`)
+      : new ExecutableNotRunnable(path, false);
+  }
+}
+
+interface Shebang {
+  readonly interpreter: string;
+  readonly argument?: string;
+}
+
+function parseShebang(bytes: Uint8Array): Shebang | undefined {
+  if (bytes.length < 2 || bytes[0] !== 35 || bytes[1] !== 33) return;
+  const end = bytes.indexOf(10, 2);
+  if (end < 0 && bytes.length - 2 > MAX_SHEBANG_BYTES) return;
+  if (end >= 0 && end - 2 > MAX_SHEBANG_BYTES) return;
+  const lineEnd = end < 0 ? Math.min(bytes.length, MAX_SHEBANG_BYTES) : end;
+  let line: string;
+  try {
+    line = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(2, lineEnd));
+  } catch {
+    return;
+  }
+  const match = /^[ \t]*([^ \t]+)(?:[ \t]+([\s\S]*))?$/.exec(line.replace(/[ \t]+$/, ""));
+  if (!match) return;
+  const interpreter = match[1];
+  if (!interpreter) return;
+  return match[2] === undefined
+    ? { interpreter }
+    : { interpreter, argument: match[2] || undefined };
+}
+
+function combineLoadObservers(
+  first: ScriptExecutable["onLoad"],
+  second: ScriptExecutable["onLoad"],
+): ScriptExecutable["onLoad"] {
+  if (!first) return second;
+  if (!second) return first;
+  return (state) => {
+    try {
+      second(state);
+    } finally {
+      first(state);
+    }
+  };
+}

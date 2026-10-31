@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/uutils/findutils",
+  "revision": "505421d4e03586efeb7b9c55adf057599e192e0a",
+  "version": "0.11.0",
+  "upstreamPath": "src/xargs/mod.rs",
+  "localPath": "src/lib.rs",
+  "upstreamSha256": "8fa9777ff191bef065ffac7a5f862b7ffd0e0716105808ae6e0d8a9ae159dc7b",
+  "files": {
+    "src/lib.rs": "0ccdea89f274328797da82f18ee49afc44bb8f091a6a90a887fafe0858c8e4c4",
+    "LICENSE": "b2888851106d2281b01ff2b807b4950463725c39895dd064770c43d28d419a71",
+    "Cargo.toml": "1a4b190bf23930d5a19444b330e96fbfe9c81186d74819b34e455739288d818c",
+    "wasi.patch": "a58314750c5af17a2f3215d26432f5866e4277ecf71523581e939657eebaa47e"
+  },
+  "changes": [
+    "Copy only the upstream xargs module; omit unrelated find/locate dependencies.",
+    "Original WASI adapter executes explicit argv with the existing waffle-process-consumer; native execution uses upstream std::process for controlled tests only. Runtime cwd initializes libc, environment and inherited descriptors are preserved; stdin input supplies child EOF via an owned closed-writer pipe, while -a retains stdin.",
+    "GNU child outcome mapping distinguishes exits, signals and startup failures; shared consumer owns cancellation, caller-fatal jobs and physical-retirement wait. No process state machine or protocol is copied.",
+    "Preserve empty byte-delimited input items; upstream discarded consecutive delimiters. Readers and batching otherwise remain upstream, including their UTF-8 input contract.",
+    "Reject parallelism and replacement before input access. Default no-command echo is print-only; help states unsupported modes. The byte-delimited reader unit test now expects GNU-compatible empty items; historical Bash fixtures and oracle observations are unchanged."
+  ],
+  "license": {
+    "spdx": "MIT",
+    "path": "LICENSE",
+    "sha256": "b2888851106d2281b01ff2b807b4950463725c39895dd064770c43d28d419a71"
+  }
+}

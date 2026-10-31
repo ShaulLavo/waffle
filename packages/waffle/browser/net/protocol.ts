@@ -1,0 +1,128 @@
+// Shared definitions for the networking bridge between the bun worker (guest side, NetHost) and the
+// helper that does the real I/O (NetHelper: the page in the browser, a Bun worker in scripts/run.ts).
+//
+//   bun worker ──postMessage(NetRequest)──▶ helper      requests: fetch, close, ack, listen, write
+//   bun worker ◀──SharedArrayBuffer ring──── helper      events: head, data, end, error, conn
+//
+// The bun worker is blocked inside synchronous wasm calls, so it can never receive a message event
+// while it runs: everything flowing towards it goes through the ring (see ring.ts), and `poll` sleeps
+// on the ring with Atomics.wait. Sending works fine from a blocked thread, so requests use postMessage.
+
+import type { RuntimeNetworkLookupOptions } from "./address.js";
+
+/** Results of the bun_wasm host functions (docs/host-abi.md). */
+export const OK = 0;
+export const ERROR = -1;
+export const AGAIN = -2;
+export const BADF = -3;
+export const UNSUPPORTED = -4;
+
+/** Event kinds in the ring. */
+export const Kind = {
+  /** Fetch response head (JSON FetchHead). */
+  Head: 1,
+  /** Body bytes, connection bytes, or a fragment before a lookup head/error. */
+  Data: 2,
+  /** End of the body / peer closed its side. */
+  End: 3,
+  /** Failure (JSON NetError). For a fetch before its head: the fetch rejects. */
+  Error: 4,
+  /** New connection on a listener; the record's handle is the listener, payload JSON NewConn. */
+  Conn: 5,
+  /** Atomic file replacement from the editor: JSON {path,length}, zero or more byte chunks, end. */
+  FileStart: 6,
+  FileData: 7,
+  FileEnd: 8,
+  /** A file already changed in the shared filesystem: JSON {path}. Wake only; never replace bytes. */
+  FileChanged: 9,
+  /** The peer consumed bytes after the connection hit its write limit. */
+  Writable: 10,
+  /** Lookup result head (JSON RuntimeNetworkLookupResult[]). */
+  LookupHead: 11,
+} as const;
+export type Kind = (typeof Kind)[keyof typeof Kind];
+
+/** Fetch Data records are already content-decoded; Content-Encoding describes the wire body.
+ * Consumers must not decode again from the header. No bodyEncoding marker is emitted. */
+export interface FetchHead {
+  status: number;
+  statusText: string;
+  url: string;
+  redirected: boolean;
+  headers: [string, string][];
+}
+
+export interface NetError {
+  name: string;
+  message: string;
+  code?: string;
+  syscall?: string;
+  hostname?: string;
+}
+
+export interface PeerAddr {
+  address: string;
+  port: number;
+  family: "IPv4" | "IPv6";
+}
+
+/** Pathname socket address. `null` is an unnamed endpoint (the client side of a connection). */
+export interface UnixAddr {
+  family: "Unix";
+  path: string | null;
+}
+
+export type SocketAddr = PeerAddr | UnixAddr;
+
+export interface NewConn {
+  conn: number;
+  peer: SocketAddr;
+  local: SocketAddr;
+}
+
+/** unix-* replies use status OK or ERROR; on ERROR the value is a WASI errno. */
+export type TcpCommand =
+  | { type: "tcp-listen"; id: number; port: number; host: string }
+  | { type: "tcp-connect"; id: number; port: number; host: string }
+  | { type: "tcp-write"; id: number; data: Uint8Array }
+  | { type: "unix-listen"; id: number; path: string; unlinkOnClose: boolean }
+  | { type: "unix-connect"; id: number; path: string }
+  /** Acknowledged path-listener close: replies after the requested unlink settles. */
+  | { type: "unix-close"; id: number };
+
+export type TcpRequest = TcpCommand & { reply: SharedArrayBuffer };
+
+export type NetRequest =
+  | TcpRequest
+  | { type: "lookup"; id: number; hostname: string; options: RuntimeNetworkLookupOptions }
+  | { type: "tcp-read"; id: number; bytes: number }
+  | { type: "tcp-accept"; id: number; listener: number }
+  | { type: "shutdown"; id: number }
+  | {
+      type: "fetch";
+      id: number;
+      method: string;
+      url: string;
+      headers: [string, string][];
+      body: Uint8Array | null;
+      redirect: RequestRedirect;
+    }
+  /** The guest consumed `bytes` of a fetch body: the helper may send that much more. */
+  | { type: "ack"; id: number; bytes: number }
+  /** Cancel a lookup/fetch, stop a listener, or finish a connection. */
+  | { type: "close"; id: number }
+  | { type: "listen"; id: number; port: number; host: string }
+  /** Response bytes the guest wrote on a virtual connection. */
+  | { type: "write"; id: number; data: Uint8Array };
+
+/**
+ * Handles are unique per process. The guest side allocates fetch and listener handles from 1 up;
+ * the helper allocates connection handles from CONN_BASE up, so neither has to ask the other.
+ */
+export const CONN_BASE = 0x4000_0000;
+
+/** Most body bytes the helper sends ahead of what the guest has read, per fetch. */
+export const FETCH_WINDOW = 512 * 1024;
+
+/** Largest payload of one ring record; bigger chunks are split. */
+export const MAX_RECORD = 64 * 1024;

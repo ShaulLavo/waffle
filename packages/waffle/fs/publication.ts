@@ -1,0 +1,1800 @@
+import type { MemoryBudget } from "./memory-budget.js";
+import { MAX_SHARED_SEGMENTS, SHARED_SEGMENT_BYTES, PAGE } from "./shared-capacity.js";
+import { withPublicationMemory } from "./publication-memory-budget.js";
+import type { InodeMetadata } from "./workspace-types.js";
+import type { CheckpointPublication } from "./storage.js";
+import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
+import {
+  arrayAppend,
+  bigintToString,
+  Uint8ArrayConstructor,
+  DataViewConstructor,
+  dataViewGetUint32,
+  dataViewSetUint32,
+  typedArrayLength,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+  typedArrayByteLength,
+  typedArraySubarray,
+  reflectApply,
+  typedArraySet,
+} from "../proc/intrinsics.js";
+import type { FilesystemSection } from "./protocol.js";
+import { FilesystemError, type ResolvedPath, type SocketBinding } from "../core/filesystem.js";
+import type {
+  PublicationBuffers,
+  PublicationConnection,
+  PublicationDiagnostics,
+  PublicationLimits,
+  PublicationSession,
+} from "./publication-internal.js";
+
+export interface MutationId {
+  readonly session: number;
+  readonly sequence: number;
+}
+export interface PublicationCut {
+  readonly history: string;
+  readonly generation: number;
+}
+export interface FileKey {
+  readonly birthHistory: string;
+  readonly ino: number;
+}
+export type MutationIntent =
+  | {
+      readonly kind: "bindSocketPath";
+      readonly directory: number;
+      readonly path: string;
+      readonly lease: number;
+    }
+  | {
+      readonly kind: "bindSocket";
+      readonly parent: number;
+      readonly name: string;
+      readonly lease: number;
+    }
+  | {
+      readonly kind: "unbindSocket";
+      readonly binding: SocketBinding;
+      readonly name: string;
+      readonly lease: number;
+      readonly unlink: boolean;
+    }
+  | { readonly kind: "write"; readonly handle: number; readonly offset: number }
+  | { readonly kind: "append"; readonly handle: number }
+  | {
+      readonly kind: "resize";
+      readonly handle: number;
+      readonly size: number;
+      readonly truncate: boolean;
+    }
+  | { readonly kind: "setMode"; readonly handle: number; readonly mode: number }
+  | { readonly kind: "setMtime"; readonly handle: number; readonly mtime: number }
+  | { readonly kind: "preopen" | "mkdirp"; readonly path: string }
+  /** With ifContent, the mutation input holds the expected bytes. */
+  | { readonly kind: "remove"; readonly path: string; readonly ifContent: boolean }
+  | {
+      readonly kind: "writeFile";
+      readonly path: string;
+      readonly append: boolean;
+      readonly exclusive: boolean;
+    }
+  | { readonly kind: "move"; readonly from: string; readonly to: string }
+  | {
+      readonly kind: "create";
+      readonly path: ResolvedPath;
+      readonly nodeKind: "file" | "directory" | "socket";
+      readonly exclusive: boolean;
+    }
+  | { readonly kind: "symlink"; readonly path: ResolvedPath; readonly target: string }
+  | { readonly kind: "link" | "rename"; readonly from: ResolvedPath; readonly to: ResolvedPath }
+  | { readonly kind: "removePath"; readonly path: ResolvedPath; readonly directory: boolean };
+export type MutationResult =
+  | { readonly kind: "socket-path-binding"; readonly binding: SocketBinding; readonly name: string }
+  | { readonly kind: "socket-binding"; readonly binding: SocketBinding }
+  | { readonly kind: "void" }
+  | { readonly kind: "number"; readonly value: number }
+  | { readonly kind: "boolean"; readonly value: boolean }
+  | { readonly kind: "append"; readonly written: number; readonly offset: number }
+  | { readonly kind: "error"; readonly errno: number }
+  | { readonly kind: "create-error"; readonly errno: number };
+/** Every reference carries the resulting group revision, including removed namespace edges.
+ * The private key and numeric content version retain their separate history-local roles. */
+export interface PublicationFile extends FileKey, FileIdentity {}
+export type PublicationEffect<F extends FileKey = PublicationFile> =
+  | {
+      readonly kind: "bytes";
+      readonly file: F;
+      readonly offset: number;
+      readonly bytes: Uint8Array;
+      readonly size: number;
+      readonly version: number;
+    }
+  | {
+      readonly kind: "resize";
+      readonly file: F;
+      readonly size: number;
+      readonly version: number;
+    }
+  | {
+      readonly kind: "metadata";
+      readonly file: F;
+      readonly mode: number;
+      readonly mtime: number;
+    }
+  | {
+      readonly kind: "entry";
+      readonly parent: F;
+      readonly name: string;
+      readonly before: F | null;
+      readonly after: F | null;
+    }
+  | (InodeMetadata & {
+      readonly kind: "inode";
+      readonly file: F;
+      readonly mode: number;
+      readonly mtime: number;
+    });
+export interface PublicationReceipt {
+  readonly id: MutationId;
+  readonly cut: PublicationCut;
+  readonly result: MutationResult;
+  readonly durability: { readonly kind: "untracked" };
+}
+interface Publication {
+  readonly receipt: PublicationReceipt;
+  readonly changes: readonly PublicationEffect[];
+}
+export type ReceiptLookup =
+  | { readonly kind: "committed"; readonly receipt: PublicationReceipt }
+  | { readonly kind: "pending" }
+  | { readonly kind: "retired" }
+  | { readonly kind: "unknown" };
+export type ChangePage =
+  | {
+      readonly kind: "changes";
+      readonly publications: readonly Publication[];
+      readonly next: PublicationCut;
+    }
+  | { readonly kind: "gap"; readonly current: PublicationCut };
+export interface PublicationAdmission {
+  readonly slot: number;
+  readonly ticket: number;
+  readonly id: MutationId;
+}
+export type AdmissionResult =
+  | {
+      readonly kind: "admitted";
+      readonly admission: PublicationAdmission;
+      readonly input: Uint8Array;
+    }
+  | { readonly kind: "duplicate"; readonly receipt: PublicationReceipt };
+export interface PreparedPublication {
+  readonly admission: PublicationAdmission;
+  readonly receipt: PublicationReceipt;
+  readonly result: Uint8Array;
+  readonly effects: Uint8Array;
+  readonly changed: boolean;
+  readonly versions: readonly { slot: number; version: number }[];
+}
+export interface PublicationPin {
+  readonly id: number;
+  readonly cut: PublicationCut;
+  readonly file: FileKey;
+  readonly version: number;
+  readonly bytes: Uint8Array;
+}
+
+const CONTROL_WORDS = 11;
+const SESSION_WORDS = 4;
+const OP_WORDS = 9;
+const LOG_WORDS = 3;
+const PIN_WORDS = 3;
+const VERSION_SLOTS = 4096;
+const VERSION_WORDS = 3;
+const enum Control {
+  Stopped,
+  ArenaLock,
+  Serial,
+  GenerationLow,
+  GenerationHigh,
+  LogNext,
+  LogCount,
+  PinSerial,
+  OperationSerial,
+  ResidentGrant,
+  DirectExcluded,
+}
+const enum Session {
+  Serial,
+  Next,
+  Retired,
+  Open,
+}
+const enum Op {
+  State,
+  Session,
+  Sequence,
+  Arguments,
+  Input,
+  Result,
+  GenerationLow,
+  GenerationHigh,
+  Reserved,
+}
+const enum Status {
+  Free,
+  Pending,
+  Committing,
+  Committed,
+  Cancelling,
+}
+const MAX_COUNTER = 0x7ffffffe;
+const SESSION_RESERVATION = 65536;
+const STATUS_MASK = 7;
+const MAX_OPERATION = Math.floor(MAX_COUNTER / 8);
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const encode = TextEncoder.prototype.encode;
+const decode = TextDecoder.prototype.decode;
+const stringify = JSON.stringify;
+const parse = JSON.parse;
+function encodeText(value: string): Uint8Array {
+  return reflectApply(encode, encoder, [value]);
+}
+function decodeText(bytes: Uint8Array): string {
+  return reflectApply(decode, decoder, [bytes]);
+}
+
+function bounded(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_COUNTER)
+    throw new RangeError("publication limits must be positive bounded integers");
+  return value;
+}
+export function validatePublicationLimits(limits: PublicationLimits): PublicationLimits {
+  for (const value of Object.values(limits)) bounded(value);
+  if (
+    limits.operationsPerSession !== undefined &&
+    limits.operationsPerSession * limits.sessions > limits.operations
+  )
+    throw new RangeError("publication pool cannot reserve every session quota");
+  if (limits.effectBytes > Math.floor(limits.logBytes / limits.logRecords))
+    throw new RangeError("publication log record cannot hold the effect bound");
+  const allocation =
+    limits.operations *
+      (limits.inputBytes + limits.argumentBytes + limits.resultBytes + OP_WORDS * 4) +
+    limits.sessions * SESSION_WORDS * 4 +
+    limits.logRecords * LOG_WORDS * 4 +
+    limits.logBytes +
+    limits.pins * PIN_WORDS * 4 +
+    limits.pinBytes +
+    CONTROL_WORDS * 4;
+  if (!Number.isSafeInteger(allocation) || allocation > MAX_COUNTER)
+    throw new RangeError("publication arena is too large");
+  return Object.freeze({ ...limits });
+}
+interface PublicationBufferConstruction {
+  allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
+}
+export interface PublicationBufferOptions {
+  readonly checkpoint?: CheckpointPublication;
+  readonly backing?:
+    | { readonly kind: "budget"; readonly budget: MemoryBudget }
+    | { readonly kind: "construction"; readonly construction: PublicationBufferConstruction };
+}
+export function publicationBufferPlan(limits: PublicationLimits, observe = false) {
+  limits = validatePublicationLimits(limits);
+  const sizes = {
+    ...(observe
+      ? {
+          pageReaders: (MAX_SHARED_SEGMENTS * SHARED_SEGMENT_BYTES * 4) / PAGE,
+          readerLifetimes: limits.sessions * 8,
+        }
+      : {}),
+    control: CONTROL_WORDS * 4,
+    sessions: limits.sessions * SESSION_WORDS * 4,
+    operations: limits.operations * OP_WORDS * 4,
+    inputs: limits.operations * (limits.argumentBytes + limits.inputBytes),
+    results: limits.operations * limits.resultBytes,
+    log: limits.logRecords * LOG_WORDS * 4,
+    logData: limits.logBytes,
+    pins: limits.pins * PIN_WORDS * 4,
+    pinData: limits.pinBytes,
+    versions: VERSION_SLOTS * VERSION_WORDS * 4,
+  };
+  const values = Object.values(sizes);
+  const bytes = values.reduce((total, size) => total + size, 0);
+  if (
+    values.some((size) => !Number.isSafeInteger(size) || size < 1) ||
+    !Number.isSafeInteger(bytes) ||
+    bytes > MAX_COUNTER
+  )
+    throw new RangeError("publication arena is too large");
+  return { limits, sizes, bytes, allocations: values.length };
+}
+export function createPublicationBuffers(
+  limits: PublicationLimits,
+  observe = false,
+  options: PublicationBufferOptions = {},
+): PublicationBuffers {
+  const plan = publicationBufferPlan(limits, observe);
+  limits = plan.limits;
+  const saved =
+    options.checkpoint === undefined
+      ? undefined
+      : snapshotPublicationCheckpoint(options.checkpoint);
+  if (saved && !sameLimits(limits, saved.limits))
+    throw new FilesystemError(28, "checkpoint publication limits differ");
+  const sessionLimit = saved
+    ? Math.min(MAX_COUNTER, saved.sessionSerial + SESSION_RESERVATION)
+    : MAX_COUNTER;
+  if (sessionLimit === saved?.sessionSerial)
+    throw new FilesystemError(33, "publication session frontier exhausted");
+  const sizes = plan.sizes;
+  const history = saved?.cut.history ?? crypto.randomUUID();
+  const construct = (allocate: (bytes: number) => SharedArrayBuffer): PublicationBuffers => {
+    const buffers: PublicationBuffers = {
+      sessionLimit,
+      history,
+      ...(sizes.pageReaders !== undefined && sizes.readerLifetimes !== undefined
+        ? {
+            pageReaders: allocate(sizes.pageReaders),
+            readerLifetimes: allocate(sizes.readerLifetimes),
+          }
+        : {}),
+      limits: plan.limits,
+      control: allocate(sizes.control),
+      sessions: allocate(sizes.sessions),
+      operations: allocate(sizes.operations),
+      inputs: allocate(sizes.inputs),
+      results: allocate(sizes.results),
+      log: allocate(sizes.log),
+      logData: allocate(sizes.logData),
+      pins: allocate(sizes.pins),
+      pinData: allocate(sizes.pinData),
+      versions: allocate(sizes.versions),
+    };
+    if (saved) new PublicationDomain(buffers, 0x7fffffff, undefined, saved);
+    return Object.freeze(buffers);
+  };
+  const backing = options.backing;
+  if (backing?.kind === "budget")
+    return withPublicationMemory(
+      backing.budget,
+      { bytes: plan.bytes, allocations: plan.allocations, references: plan.allocations, leases: 0 },
+      construct,
+    );
+  return construct((bytes) =>
+    backing?.kind === "construction"
+      ? backing.construction.allocateShared(bytes)
+      : new SharedArrayBuffer(bytes),
+  );
+}
+function same(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
+}
+function words(value: number): readonly [number, number] {
+  return [value >>> 0, Math.floor(value / 0x100000000)];
+}
+function number(low: number, high: number): number {
+  return (low >>> 0) + high * 0x100000000;
+}
+function json(value: unknown, bound: number): Uint8Array {
+  const result = encodeText(stringify(value));
+  if (result.length > bound) throw new FilesystemError(6, "publication record bound exceeded");
+  return result;
+}
+function parseResult(bytes: Uint8Array): MutationResult {
+  const value: unknown = parse(decodeText(bytes));
+  if (!value || typeof value !== "object" || !("kind" in value)) throw new FilesystemError(29);
+  if (value.kind === "socket-path-binding" && "binding" in value && "name" in value)
+    return {
+      kind: "socket-path-binding",
+      binding: socketBinding(value.binding),
+      name: text(value.name),
+    };
+  if (value.kind === "socket-binding" && "binding" in value)
+    return { kind: "socket-binding", binding: socketBinding(value.binding) };
+  if (value.kind === "void") return { kind: "void" };
+  if (value.kind === "number" && "value" in value && typeof value.value === "number")
+    return { kind: "number", value: value.value };
+  if (value.kind === "boolean" && "value" in value && typeof value.value === "boolean")
+    return { kind: "boolean", value: value.value };
+  if (
+    (value.kind === "error" || value.kind === "create-error") &&
+    "errno" in value &&
+    typeof value.errno === "number"
+  )
+    return { kind: value.kind, errno: value.errno };
+  if (
+    value.kind === "append" &&
+    "written" in value &&
+    typeof value.written === "number" &&
+    "offset" in value &&
+    typeof value.offset === "number"
+  )
+    return { kind: "append", written: value.written, offset: value.offset };
+  throw new FilesystemError(29, "invalid publication result");
+}
+
+function checkpointObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new FilesystemError(29, "invalid publication checkpoint");
+  return Object.fromEntries(Object.entries(value));
+}
+function checkpointInteger(value: unknown, max = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max)
+    throw new FilesystemError(29, "invalid checkpoint counter");
+  return value;
+}
+function checkpointLimits(value: unknown): PublicationLimits {
+  const limits = checkpointObject(value);
+  return validatePublicationLimits({
+    sessions: checkpointInteger(limits.sessions),
+    operations: checkpointInteger(limits.operations),
+    ...(limits.operationsPerSession === undefined
+      ? {}
+      : { operationsPerSession: checkpointInteger(limits.operationsPerSession) }),
+    inputBytes: checkpointInteger(limits.inputBytes),
+    argumentBytes: checkpointInteger(limits.argumentBytes),
+    effectBytes: checkpointInteger(limits.effectBytes),
+    effects: checkpointInteger(limits.effects),
+    resultBytes: checkpointInteger(limits.resultBytes),
+    logRecords: checkpointInteger(limits.logRecords),
+    logBytes: checkpointInteger(limits.logBytes),
+    pins: checkpointInteger(limits.pins),
+    pinBytes: checkpointInteger(limits.pinBytes),
+  });
+}
+function sameLimits(left: PublicationLimits, right: PublicationLimits): boolean {
+  return (
+    Object.entries(left).every(([key, value]) => Reflect.get(right, key) === value) &&
+    Object.keys(left).length === Object.keys(right).length
+  );
+}
+function checkpointReceipt(
+  value: unknown,
+  cut: PublicationCut,
+  serial: number,
+  resultBytes: number,
+): PublicationReceipt {
+  const receipt = decodeReceipt(value);
+  checkpointInteger(receipt.id.session, serial);
+  checkpointInteger(receipt.id.sequence, MAX_COUNTER);
+  checkpointInteger(receipt.cut.generation, cut.generation);
+  if (!receipt.id.session || !receipt.id.sequence || receipt.cut.history !== cut.history)
+    throw new FilesystemError(29, "invalid checkpoint receipt identity");
+  json(receipt.result, resultBytes);
+  return receipt;
+}
+export function snapshotPublicationCheckpoint(value: unknown): CheckpointPublication {
+  const data = checkpointObject(value);
+  if (data.kind !== "settled-publication-v1")
+    throw new FilesystemError(29, "invalid publication checkpoint kind");
+  const limits = checkpointLimits(data.limits),
+    cut = publicationCut(data.cut);
+  if (!cut.history.length || cut.history.length > 256)
+    throw new FilesystemError(29, "invalid checkpoint history bound");
+  const sessionSerial = checkpointInteger(data.sessionSerial, MAX_COUNTER);
+  if (
+    !Array.isArray(data.receipts) ||
+    data.receipts.length > limits.operations ||
+    !Array.isArray(data.changes) ||
+    data.changes.length > limits.logRecords ||
+    !Array.isArray(data.contentVersions) ||
+    data.contentVersions.length > VERSION_SLOTS
+  )
+    throw new FilesystemError(29, "checkpoint publication bound exceeded");
+  const ids = new Set<string>();
+  const receipts = data.receipts.map((value: unknown) => {
+    const receipt = checkpointReceipt(value, cut, sessionSerial, limits.resultBytes);
+    const key = `${receipt.id.session}:${receipt.id.sequence}`;
+    if (ids.has(key)) throw new FilesystemError(29, "duplicate checkpoint receipt");
+    ids.add(key);
+    return receipt;
+  });
+  let generation = cut.generation - data.changes.length;
+  const changes = data.changes.map((value: unknown) => {
+    if (!(value instanceof Uint8ArrayConstructor) || typedArrayLength(value) > limits.effectBytes)
+      throw new FilesystemError(29, "invalid checkpoint change bytes");
+    const bytes = new Uint8ArrayConstructor(typedArrayLength(value));
+    typedArraySet(bytes, value);
+    const publication = decodeEffects(bytes);
+    const receipt = checkpointReceipt(publication.receipt, cut, sessionSerial, limits.resultBytes);
+    if (
+      receipt.cut.generation !== ++generation ||
+      publication.changes.length === 0 ||
+      publication.changes.length > limits.effects
+    )
+      throw new FilesystemError(29, "checkpoint changes are not a settled suffix");
+    for (const effect of publication.changes) {
+      if (effect.kind !== "bytes" && effect.kind !== "resize") continue;
+      checkpointInteger(effect.size);
+      checkpointInteger(effect.version, receipt.cut.generation);
+      if (effect.kind === "bytes")
+        checkpointInteger(effect.offset, effect.size - typedArrayLength(effect.bytes));
+    }
+    return bytes;
+  });
+  const inos = new Set<number>();
+  const contentVersions = data.contentVersions.map((value: unknown) => {
+    const entry = checkpointObject(value),
+      ino = checkpointInteger(entry.ino, MAX_COUNTER),
+      version = checkpointInteger(entry.version, cut.generation);
+    if (!ino || inos.has(ino)) throw new FilesystemError(29, "invalid checkpoint content identity");
+    inos.add(ino);
+    return { ino, version };
+  });
+  return {
+    kind: "settled-publication-v1",
+    cut,
+    sessionSerial,
+    limits,
+    receipts,
+    changes,
+    contentVersions,
+  };
+}
+
+/** Fixed arenas shared by the service and actual direct clients. The filesystem global lock
+ * protects prepare/commit/cut/log/pin calls. Admission uses a separate immediate arena CAS,
+ * never held across a filesystem lock or await. Private byte copies use captured intrinsics. */
+export class PublicationDomain {
+  private readonly control: Int32Array;
+  private residentActive = false;
+  private readonly sessions: Int32Array;
+  private readonly operations: Int32Array;
+  private readonly inputs: Uint8Array;
+  private readonly results: Uint8Array;
+  private readonly log: Int32Array;
+  private readonly logData: Uint8Array;
+  private readonly pins: Int32Array;
+  private readonly pinData: Uint8Array;
+  private readonly versions: Int32Array;
+  readonly limits: PublicationLimits;
+  constructor(
+    readonly buffers: PublicationBuffers,
+    private readonly owner = 0x7fffffff,
+    private readonly section?: Pick<FilesystemSection, "enter" | "exit">,
+    checkpoint?: CheckpointPublication,
+  ) {
+    this.limits = buffers.limits;
+    this.control = new Int32Array(buffers.control);
+    this.sessions = new Int32Array(buffers.sessions);
+    this.operations = new Int32Array(buffers.operations);
+    this.inputs = new Uint8Array(buffers.inputs);
+    this.results = new Uint8Array(buffers.results);
+    this.log = new Int32Array(buffers.log);
+    this.logData = new Uint8Array(buffers.logData);
+    this.pins = new Int32Array(buffers.pins);
+    this.pinData = new Uint8Array(buffers.pinData);
+    this.versions = new Int32Array(buffers.versions);
+    if (checkpoint) this.restore(checkpoint);
+  }
+  private restore(checkpoint: CheckpointPublication): void {
+    const [low, high] = words(checkpoint.cut.generation);
+    this.control[Control.GenerationLow] = low;
+    this.control[Control.GenerationHigh] = high;
+    this.control[Control.Serial] = checkpoint.sessionSerial;
+    checkpoint.receipts.forEach((receipt, slot) => {
+      const base = slot * OP_WORDS,
+        result = json(receipt.result, this.limits.resultBytes);
+      const [receiptLow, receiptHigh] = words(receipt.cut.generation);
+      this.operations[base + Op.State] = (slot + 1) * 8 + Status.Committed;
+      this.operations[base + Op.Session] = receipt.id.session;
+      this.operations[base + Op.Sequence] = receipt.id.sequence;
+      this.operations[base + Op.GenerationLow] = receiptLow;
+      this.operations[base + Op.GenerationHigh] = receiptHigh;
+      this.operations[base + Op.Result] = result.length;
+      this.operations[base + Op.Reserved] = 2;
+      typedArraySet(this.results, result, slot * this.limits.resultBytes);
+    });
+    this.control[Control.OperationSerial] = checkpoint.receipts.length;
+    for (const bytes of checkpoint.changes) {
+      const cut = decodeEffects(bytes).receipt.cut;
+      const [changeLow, changeHigh] = words(cut.generation);
+      this.appendLog(bytes, changeLow, changeHigh);
+    }
+    checkpoint.contentVersions.forEach((entry, slot) => {
+      const [versionLow, versionHigh] = words(entry.version);
+      this.versions[slot * VERSION_WORDS] = entry.ino;
+      this.versions[slot * VERSION_WORDS + 1] = versionLow;
+      this.versions[slot * VERSION_WORDS + 2] = versionHigh;
+    });
+  }
+  private checkpointFixedMetadataBytes(): number {
+    let bytes = 1024 + this.buffers.history.length * 2;
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (
+        (this.operations[base + Op.State]! & STATUS_MASK) !== Status.Committed ||
+        this.operations[base + Op.Reserved] === 1
+      )
+        continue;
+      bytes += 512 + this.operations[base + Op.Result]! * 2;
+    }
+    bytes += this.limits.logRecords * 64;
+    for (let slot = 0; slot < VERSION_SLOTS; slot++)
+      if (this.versions[slot * VERSION_WORDS]) bytes += 128;
+    return bytes;
+  }
+  private checkpointLogCount(remaining: number): number {
+    let count = 0;
+    for (; count < this.control[Control.LogCount]!; count++) {
+      const slot =
+        (this.control[Control.LogNext]! + this.limits.logRecords - 1 - count) %
+        this.limits.logRecords;
+      remaining -= this.log[slot * LOG_WORDS]! * 16;
+      if (remaining < 0) break;
+    }
+    return count;
+  }
+  /** Conservative units include capture, typed bytes, JSON arrays and adapter copies. */
+  checkpointMetadataBytes(maxMetadataBytes = Infinity): number {
+    let bytes = this.checkpointFixedMetadataBytes();
+    const count = this.checkpointLogCount(maxMetadataBytes - bytes);
+    for (let index = 0; index < count; index++) {
+      const slot =
+        (this.control[Control.LogNext]! + this.limits.logRecords - 1 - index) %
+        this.limits.logRecords;
+      bytes += this.log[slot * LOG_WORDS]! * 16;
+    }
+    return bytes;
+  }
+  /** Capture under the filesystem mutation lock, never across a native storage await. */
+  checkpoint(maxMetadataBytes = Infinity): CheckpointPublication {
+    const cut = this.cut();
+    const receipts: PublicationReceipt[] = [],
+      changes: Uint8Array[] = [];
+    const contentVersions: { ino: number; version: number }[] = [];
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (
+        (this.operations[base + Op.State]! & STATUS_MASK) !== Status.Committed ||
+        this.operations[base + Op.Reserved] === 1
+      )
+        continue;
+      receipts.push(this.receiptAt(slot));
+    }
+    receipts.sort(
+      (left, right) =>
+        left.cut.generation - right.cut.generation ||
+        left.id.session - right.id.session ||
+        left.id.sequence - right.id.sequence,
+    );
+    const count = this.checkpointLogCount(maxMetadataBytes - this.checkpointFixedMetadataBytes()),
+      stride = Math.floor(this.limits.logBytes / this.limits.logRecords);
+    const first =
+      (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
+    for (let index = 0; index < count; index++) {
+      const slot = (first + index) % this.limits.logRecords;
+      changes.push(this.logData.slice(slot * stride, slot * stride + this.log[slot * LOG_WORDS]!));
+    }
+    for (let slot = 0; slot < VERSION_SLOTS; slot++) {
+      const ino = this.versions[slot * VERSION_WORDS]!;
+      if (ino)
+        contentVersions.push({
+          ino,
+          version: number(
+            this.versions[slot * VERSION_WORDS + 1]!,
+            this.versions[slot * VERSION_WORDS + 2]!,
+          ),
+        });
+    }
+    return {
+      kind: "settled-publication-v1",
+      cut,
+      sessionSerial: this.buffers.sessionLimit,
+      limits: this.limits,
+      receipts,
+      changes,
+      contentVersions,
+    };
+  }
+  get stopped(): boolean {
+    return Atomics.load(this.control, Control.Stopped) !== 0;
+  }
+  assertLive(): void {
+    if (this.stopped) throw new FilesystemError(11);
+  }
+  /** Caller holds the filesystem global lock, including every prior direct operation. */
+  excludeDirect(): void {
+    this.assertLive();
+    Atomics.store(this.control, Control.DirectExcluded, 1);
+  }
+  activateResident(): void {
+    this.assertLive();
+    if (!Atomics.load(this.control, Control.DirectExcluded)) throw new FilesystemError(28);
+    this.residentActive = true;
+  }
+  assertAccess(): void {
+    if (!Atomics.load(this.control, Control.DirectExcluded)) return;
+    this.assertLive();
+    if (!this.residentActive) throw new FilesystemError(6);
+  }
+  /** A remote publication owns exclusion, never the filesystem lock, while away. */
+  assertCurrent(grant = 0): void {
+    this.assertLive();
+    const outstanding = Atomics.load(this.control, Control.ResidentGrant);
+    if (outstanding !== 0 && outstanding !== grant) throw new FilesystemError(6);
+  }
+  reserveResidentGrant(grant: number): void {
+    this.assertLive();
+    if (Atomics.compareExchange(this.control, Control.ResidentGrant, 0, grant) !== 0)
+      throw new FilesystemError(6);
+  }
+  releaseResidentGrant(grant: number): void {
+    if (Atomics.compareExchange(this.control, Control.ResidentGrant, grant, 0) !== grant)
+      throw new FilesystemError(29);
+  }
+  /** The authority reserved this operation's full input arena before issuing READY. */
+  finishResidentInput(admission: PublicationAdmission, input: Uint8Array): void {
+    const base = this.checkAdmission(admission);
+    if (input.length > this.operations[base + Op.Input]!) throw new FilesystemError(28);
+    typedArraySet(this.inputs, input, this.inputAt(admission.slot) + this.limits.argumentBytes);
+    this.operations[base + Op.Input] = input.length;
+  }
+  private admitted<T>(action: () => T): T {
+    this.section?.enter();
+    try {
+      return action();
+    } finally {
+      this.section?.exit();
+    }
+  }
+  private arena<T>(action: () => T): T {
+    return this.admitted(() => this.lockedArena(action));
+  }
+  private lockedArena<T>(action: () => T): T {
+    this.assertLive();
+    if (Atomics.compareExchange(this.control, Control.ArenaLock, 0, this.owner) !== 0)
+      throw new FilesystemError(6, "publication admission is contended");
+    try {
+      this.assertLive();
+      return action();
+    } finally {
+      Atomics.compareExchange(this.control, Control.ArenaLock, this.owner, 0);
+    }
+  }
+  /** Invoked by the filesystem authority only for its already proven-reaped owner. */
+  revokeOwner(owner: number): void {
+    if (!owner || owner === 0x7fffffff) return;
+    Atomics.compareExchange(this.control, Control.ArenaLock, owner, 0);
+  }
+  private session(session: PublicationSession): number {
+    this.assertLive();
+    const base = session.slot * SESSION_WORDS;
+    if (
+      this.sessions[base + Session.Serial] !== session.serial ||
+      Atomics.load(this.sessions, base + Session.Open) !== session.serial
+    )
+      throw new FilesystemError(11, "publication session is closed");
+    return base;
+  }
+  openSession(): PublicationSession {
+    return this.arena(() => {
+      const serial = this.control[Control.Serial]! + 1;
+      if (serial > this.buffers.sessionLimit) throw new FilesystemError(33);
+      const slot = this.findSession();
+      this.control[Control.Serial] = serial;
+      const base = slot * SESSION_WORDS;
+      this.clearSession(this.sessions[base + Session.Serial]!);
+      this.sessions[base + Session.Serial] = serial;
+      this.sessions[base + Session.Next] = 0;
+      this.sessions[base + Session.Retired] = 0;
+      Atomics.store(this.sessions, base + Session.Open, serial);
+      return { slot, serial };
+    });
+  }
+  private findSession(): number {
+    for (let slot = 0; slot < this.limits.sessions; slot++)
+      if (Atomics.load(this.sessions, slot * SESSION_WORDS + Session.Open) <= 0) return slot;
+    throw new FilesystemError(6, "publication session bound exceeded");
+  }
+  next(session: PublicationSession): MutationId {
+    return this.admitted(() => this.nextAdmitted(session));
+  }
+  private nextAdmitted(session: PublicationSession): MutationId {
+    this.session(session);
+    const sequence = Atomics.add(this.sessions, session.slot * SESSION_WORDS + Session.Next, 1) + 1;
+    if (sequence > MAX_COUNTER) {
+      this.stop();
+      throw new FilesystemError(33);
+    }
+    return { session: session.serial, sequence };
+  }
+  private operation(id: MutationId): number {
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (
+        this.operations[base + Op.State] &&
+        this.operations[base + Op.Session] === id.session &&
+        this.operations[base + Op.Sequence] === id.sequence
+      )
+        return slot;
+    }
+    return -1;
+  }
+  private inputAt(slot: number): number {
+    return slot * (this.limits.argumentBytes + this.limits.inputBytes);
+  }
+  private receiptAt(slot: number): PublicationReceipt {
+    const base = slot * OP_WORDS;
+    return {
+      id: {
+        session: this.operations[base + Op.Session]!,
+        sequence: this.operations[base + Op.Sequence]!,
+      },
+      cut: {
+        history: this.buffers.history,
+        generation: number(
+          this.operations[base + Op.GenerationLow]!,
+          this.operations[base + Op.GenerationHigh]!,
+        ),
+      },
+      result: parseResult(
+        this.results.slice(
+          slot * this.limits.resultBytes,
+          slot * this.limits.resultBytes + this.operations[base + Op.Result]!,
+        ),
+      ),
+      durability: { kind: "untracked" },
+    };
+  }
+  admit(
+    session: PublicationSession,
+    id: MutationId,
+    intent: MutationIntent,
+    input: Uint8Array,
+  ): AdmissionResult {
+    if (input.length > this.limits.inputBytes)
+      throw new FilesystemError(6, "publication input bound exceeded");
+    const argumentsBytes = json(intent, this.limits.argumentBytes);
+    return this.arena(() => this.admitLocked(session, id, argumentsBytes, input));
+  }
+  private admitLocked(
+    session: PublicationSession,
+    id: MutationId,
+    args: Uint8Array,
+    input: Uint8Array,
+  ): AdmissionResult {
+    const sessionBase = this.session(session);
+    if (
+      id.session !== session.serial ||
+      !Number.isInteger(id.sequence) ||
+      id.sequence <= 0 ||
+      id.sequence > this.sessions[sessionBase + Session.Next]!
+    )
+      throw new FilesystemError(28);
+    if (id.sequence <= this.sessions[sessionBase + Session.Retired]!)
+      throw new FilesystemError(11, "publication identity retired");
+    const previous = this.operation(id);
+    if (previous >= 0) return this.duplicate(previous, args, input);
+    const serial = this.control[Control.OperationSerial]! + 1;
+    if (serial > MAX_OPERATION) {
+      this.stop();
+      throw new FilesystemError(33);
+    }
+    const slot = this.available(session);
+    this.control[Control.OperationSerial] = serial;
+    const ticket = serial * 8;
+    const base = slot * OP_WORDS;
+    const at = this.inputAt(slot);
+    typedArraySet(this.inputs, args, at);
+    typedArraySet(this.inputs, input, at + this.limits.argumentBytes);
+    this.operations[base + Op.Session] = id.session;
+    this.operations[base + Op.Sequence] = id.sequence;
+    this.operations[base + Op.Arguments] = args.length;
+    this.operations[base + Op.Input] = input.length;
+    this.operations[base + Op.Reserved] = 0;
+    Atomics.store(this.operations, base + Op.State, ticket + Status.Pending);
+    return {
+      kind: "admitted",
+      admission: { slot, ticket, id },
+      input: this.inputs.slice(
+        at + this.limits.argumentBytes,
+        at + this.limits.argumentBytes + input.length,
+      ),
+    };
+  }
+  private duplicate(slot: number, args: Uint8Array, input: Uint8Array): AdmissionResult {
+    const base = slot * OP_WORDS,
+      at = this.inputAt(slot);
+    if (this.operations[base + Op.Reserved])
+      throw new FilesystemError(11, "publication identity retired");
+    if (
+      !same(this.inputs.subarray(at, at + this.operations[base + Op.Arguments]!), args) ||
+      !same(
+        this.inputs.subarray(
+          at + this.limits.argumentBytes,
+          at + this.limits.argumentBytes + this.operations[base + Op.Input]!,
+        ),
+        input,
+      )
+    )
+      throw new FilesystemError(28, "conflicting publication identity");
+    if ((this.operations[base + Op.State]! & STATUS_MASK) !== Status.Committed)
+      throw new FilesystemError(6, "publication identity is pending");
+    return { kind: "duplicate", receipt: this.receiptAt(slot) };
+  }
+  verify(
+    session: PublicationSession,
+    admission: PublicationAdmission,
+    intent: MutationIntent,
+    input: Uint8Array,
+  ): void {
+    this.admitted(() => {
+      this.session(session);
+      if (admission.id.session !== session.serial) throw new FilesystemError(11);
+      this.verifyAdmission(admission, intent, input);
+    });
+  }
+  verifyAdmission(
+    admission: PublicationAdmission,
+    intent: MutationIntent,
+    input: Uint8Array,
+  ): void {
+    const base = this.checkAdmission(admission),
+      at = this.inputAt(admission.slot);
+    if (
+      !same(
+        json(intent, this.limits.argumentBytes),
+        this.inputs.subarray(at, at + this.operations[base + Op.Arguments]!),
+      ) ||
+      !same(
+        input,
+        this.inputs.subarray(
+          at + this.limits.argumentBytes,
+          at + this.limits.argumentBytes + this.operations[base + Op.Input]!,
+        ),
+      )
+    )
+      throw new FilesystemError(28, "conflicting publication intent");
+  }
+  lookupAny(id: MutationId): ReceiptLookup {
+    this.assertLive();
+    const recovered = this.operation(id);
+    if (recovered >= 0 && this.operations[recovered * OP_WORDS + Op.Reserved] === 2)
+      return { kind: "committed", receipt: this.receiptAt(recovered) };
+    for (let slot = 0; slot < this.limits.sessions; slot++)
+      if (
+        this.sessions[slot * SESSION_WORDS + Session.Serial] === id.session &&
+        Atomics.load(this.sessions, slot * SESSION_WORDS + Session.Open) === id.session
+      )
+        return this.lookup({ slot, serial: id.session }, id);
+    return { kind: "unknown" };
+  }
+  private available(session: PublicationSession): number {
+    let oldest = -1,
+      empty = -1,
+      recovered = -1,
+      own = 0;
+    let sequence = MAX_COUNTER + 1;
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (!this.operations[base + Op.State]) {
+        empty = empty < 0 ? slot : empty;
+        continue;
+      }
+      if (this.operations[base + Op.Reserved] === 2) {
+        if (
+          recovered < 0 ||
+          this.operations[base + Op.State]! < this.operations[recovered * OP_WORDS + Op.State]!
+        )
+          recovered = slot;
+        continue;
+      }
+      if (this.operations[base + Op.Session] !== session.serial) continue;
+      own++;
+      if (this.operations[base + Op.Sequence]! >= sequence) continue;
+      sequence = this.operations[base + Op.Sequence]!;
+      oldest = slot;
+    }
+    if (empty >= 0 && own < (this.limits.operationsPerSession ?? this.limits.operations))
+      return empty;
+    if (recovered >= 0 && own < (this.limits.operationsPerSession ?? this.limits.operations)) {
+      this.clearOperation(recovered);
+      return recovered;
+    }
+    if (
+      oldest < 0 ||
+      (this.operations[oldest * OP_WORDS + Op.State]! & STATUS_MASK) !== Status.Committed
+    )
+      throw new FilesystemError(6, "publication operation bound exceeded");
+    this.sessions[session.slot * SESSION_WORDS + Session.Retired] = sequence;
+    this.clearOperation(oldest);
+    return oldest;
+  }
+  private clearOperation(slot: number): void {
+    const at = this.inputAt(slot);
+    this.inputs.fill(0, at, at + this.limits.argumentBytes + this.limits.inputBytes);
+    this.results.fill(0, slot * this.limits.resultBytes, (slot + 1) * this.limits.resultBytes);
+    this.operations.fill(0, slot * OP_WORDS, (slot + 1) * OP_WORDS);
+  }
+  cut(): PublicationCut {
+    this.assertLive();
+    return {
+      history: this.buffers.history,
+      generation: number(
+        this.control[Control.GenerationLow]!,
+        this.control[Control.GenerationHigh]!,
+      ),
+    };
+  }
+  private checkAdmission(admission: PublicationAdmission, state = Status.Pending): number {
+    this.assertLive();
+    if (
+      !Number.isInteger(admission.slot) ||
+      admission.slot < 0 ||
+      admission.slot >= this.limits.operations
+    )
+      throw new FilesystemError(28);
+    const base = admission.slot * OP_WORDS;
+    if (
+      this.operations[base + Op.State] !== admission.ticket + state ||
+      this.operations[base + Op.Session] !== admission.id.session ||
+      this.operations[base + Op.Sequence] !== admission.id.sequence
+    )
+      throw new FilesystemError(11);
+    return base;
+  }
+  private versionSlot(ino: number, create: boolean): number {
+    let free = -1;
+    for (let slot = 0; slot < VERSION_SLOTS; slot++) {
+      const current = this.versions[slot * VERSION_WORDS];
+      if (current === ino) return slot;
+      if (!current && free < 0) free = slot;
+    }
+    if (!create) return -1;
+    if (free < 0) throw new FilesystemError(6, "publication content identity bound exceeded");
+    this.versions[free * VERSION_WORDS] = ino;
+    return free;
+  }
+  contentVersion(ino: number): number {
+    this.assertLive();
+    const slot = this.versionSlot(ino, false);
+    return slot < 0
+      ? 0
+      : number(this.versions[slot * VERSION_WORDS + 1]!, this.versions[slot * VERSION_WORDS + 2]!);
+  }
+  nextContentVersion(ino: number): number {
+    const next = this.contentVersion(ino) + 1;
+    if (!Number.isSafeInteger(next)) {
+      this.stop();
+      throw new FilesystemError(33);
+    }
+    return next;
+  }
+  forgetContent(ino: number): void {
+    const slot = this.versionSlot(ino, false);
+    if (slot >= 0) this.versions.fill(0, slot * VERSION_WORDS, (slot + 1) * VERSION_WORDS);
+  }
+  private prepareVersions(
+    changes: readonly PublicationEffect[],
+  ): { slot: number; version: number }[] {
+    const versions: { slot: number; version: number }[] = [];
+    for (const change of changes) {
+      if (change.kind !== "bytes" && change.kind !== "resize") continue;
+      if (
+        change.file.birthHistory !== this.buffers.history ||
+        change.version !== this.nextContentVersion(change.file.ino)
+      )
+        throw new FilesystemError(29, "invalid content version");
+      const slot = this.versionSlot(change.file.ino, true);
+      if (!versions.some((entry) => entry.slot === slot))
+        versions.push({ slot, version: change.version });
+    }
+    return versions;
+  }
+  reserveResidentCapacity(
+    admission: PublicationAdmission,
+    result: MutationResult,
+    changes: readonly PublicationEffect[],
+  ): void {
+    this.prepareData(admission, result, changes);
+  }
+  private prepareData(
+    admission: PublicationAdmission,
+    result: MutationResult,
+    changes: readonly PublicationEffect[],
+  ): PreparedPublication {
+    this.checkAdmission(admission);
+    if (changes.length > this.limits.effects)
+      throw new FilesystemError(6, "publication effect count exceeded");
+    const cut = this.cut();
+    const generation = cut.generation + (changes.length ? 1 : 0);
+    if (!Number.isSafeInteger(generation)) {
+      this.stop();
+      throw new FilesystemError(33);
+    }
+    const receipt: PublicationReceipt = {
+      id: admission.id,
+      cut: { ...cut, generation },
+      result,
+      durability: { kind: "untracked" },
+    };
+    return {
+      admission,
+      receipt,
+      result: json(result, this.limits.resultBytes),
+      effects: encodeEffects(receipt, changes, this.limits.effectBytes),
+      changed: changes.length > 0,
+      versions: this.prepareVersions(changes),
+    };
+  }
+  prepare(
+    admission: PublicationAdmission,
+    result: MutationResult,
+    changes: readonly PublicationEffect[],
+  ): PreparedPublication {
+    const prepared = this.prepareData(admission, result, changes);
+    const base = this.checkAdmission(admission);
+    if (
+      Atomics.compareExchange(
+        this.operations,
+        base + Op.State,
+        admission.ticket + Status.Pending,
+        admission.ticket + Status.Committing,
+      ) !==
+      admission.ticket + Status.Pending
+    )
+      throw new FilesystemError(11);
+    return prepared;
+  }
+  /** All potentially failing work is in prepare. Invoke immediately after synchronous effects,
+   * before releasing the same filesystem global lock. Byte copies use captured intrinsics;
+   * result and effect encoding is already complete. */
+  commit(prepared: PreparedPublication): PublicationReceipt {
+    const base = this.checkAdmission(prepared.admission, Status.Committing);
+    const generation = prepared.receipt.cut.generation;
+    const current = this.cut().generation;
+    if (generation !== current + (prepared.changed ? 1 : 0)) {
+      this.stop();
+      throw new FilesystemError(29);
+    }
+    const [low, high] = words(generation);
+    for (const entry of prepared.versions) {
+      const [versionLow, versionHigh] = words(entry.version);
+      this.versions[entry.slot * VERSION_WORDS + 1] = versionLow;
+      this.versions[entry.slot * VERSION_WORDS + 2] = versionHigh;
+    }
+    typedArraySet(this.results, prepared.result, prepared.admission.slot * this.limits.resultBytes);
+    this.operations[base + Op.Result] = prepared.result.length;
+    this.operations[base + Op.GenerationLow] = low;
+    this.operations[base + Op.GenerationHigh] = high;
+    if (prepared.changed) this.appendLog(prepared.effects, low, high);
+    this.control[Control.GenerationLow] = low;
+    this.control[Control.GenerationHigh] = high;
+    Atomics.store(this.operations, base + Op.State, prepared.admission.ticket + Status.Committed);
+    return prepared.receipt;
+  }
+  private appendLog(effects: Uint8Array, low: number, high: number): void {
+    const slot = this.control[Control.LogNext]!;
+    const stride = Math.floor(this.limits.logBytes / this.limits.logRecords);
+    typedArraySet(this.logData, effects, slot * stride);
+    this.log[slot * LOG_WORDS] = effects.length;
+    this.log[slot * LOG_WORDS + 1] = low;
+    this.log[slot * LOG_WORDS + 2] = high;
+    this.control[Control.LogNext] = (slot + 1) % this.limits.logRecords;
+    this.control[Control.LogCount] = Math.min(
+      this.limits.logRecords,
+      this.control[Control.LogCount]! + 1,
+    );
+  }
+  cancel(session: PublicationSession, admission: PublicationAdmission): void {
+    try {
+      this.section?.enter();
+    } catch (error) {
+      if (error instanceof FilesystemError && error.errno === 11) return;
+      throw error;
+    }
+    try {
+      this.cancelAdmitted(session, admission);
+    } finally {
+      this.section?.exit();
+    }
+  }
+  private cancelAdmitted(session: PublicationSession, admission: PublicationAdmission): void {
+    const base = admission.slot * OP_WORDS;
+    if (
+      admission.id.session !== session.serial ||
+      this.operations[base + Op.Session] !== session.serial ||
+      this.operations[base + Op.Sequence] !== admission.id.sequence
+    )
+      return;
+    if (
+      Atomics.compareExchange(
+        this.operations,
+        base + Op.State,
+        admission.ticket + Status.Pending,
+        admission.ticket + Status.Cancelling,
+      ) !==
+      admission.ticket + Status.Pending
+    )
+      return;
+    const at = this.inputAt(admission.slot);
+    this.inputs.fill(0, at, at + this.limits.argumentBytes + this.limits.inputBytes);
+    this.operations[base + Op.Input] = 0;
+    this.operations[base + Op.Arguments] = 0;
+    this.operations[base + Op.Result] = 0;
+    this.operations[base + Op.Reserved] = 1;
+    Atomics.store(this.operations, base + Op.State, admission.ticket + Status.Committed);
+  }
+  lookup(session: PublicationSession, id: MutationId): ReceiptLookup {
+    return this.arena(() => {
+      const base = this.session(session);
+      if (id.session !== session.serial) return { kind: "unknown" };
+      if (id.sequence <= this.sessions[base + Session.Retired]!) return { kind: "retired" };
+      const slot = this.operation(id);
+      if (slot < 0) return { kind: "unknown" };
+      if (this.operations[slot * OP_WORDS + Op.Reserved]) return { kind: "retired" };
+      return (this.operations[slot * OP_WORDS + Op.State]! & STATUS_MASK) === Status.Committed
+        ? { kind: "committed", receipt: this.receiptAt(slot) }
+        : { kind: "pending" };
+    });
+  }
+  availability(): { current: PublicationCut; oldestAvailable: PublicationCut } {
+    const current = this.cut();
+    const count = this.control[Control.LogCount]!;
+    const first =
+      (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
+    const generation = count
+      ? number(this.log[first * LOG_WORDS + 1]!, this.log[first * LOG_WORDS + 2]!)
+      : current.generation + 1;
+    return { current, oldestAvailable: { history: current.history, generation } };
+  }
+  changes(after: PublicationCut, limitBytes: number): ChangePage {
+    bounded(limitBytes);
+    const { current, oldestAvailable } = this.availability();
+    if (
+      after.history !== current.history ||
+      after.generation < oldestAvailable.generation - 1 ||
+      after.generation > current.generation
+    )
+      return { kind: "gap", current };
+    const count = this.control[Control.LogCount]!;
+    const first =
+      (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
+    return this.readChanges(after, limitBytes, first, count);
+  }
+  private readChanges(
+    after: PublicationCut,
+    limit: number,
+    first: number,
+    count: number,
+  ): ChangePage {
+    const publications: Publication[] = [];
+    const stride = Math.floor(this.limits.logBytes / this.limits.logRecords);
+    let used = 0,
+      next = after;
+    for (let index = 0; index < count; index++) {
+      const slot = (first + index) % this.limits.logRecords;
+      const generation = number(this.log[slot * LOG_WORDS + 1]!, this.log[slot * LOG_WORDS + 2]!);
+      if (generation <= after.generation) continue;
+      const length = this.log[slot * LOG_WORDS]!;
+      if (used + length > limit) break;
+      const publication = decodeEffects(this.logData.slice(slot * stride, slot * stride + length));
+      publications.push(publication);
+      next = publication.receipt.cut;
+      used += length;
+    }
+    return { kind: "changes", publications, next };
+  }
+  /** Reap calls only after this exact identity has quiesced or physically stopped.
+   * The serial-tagged tombstone cannot revoke a newer occupant or acquire a living peer's arena. */
+  retireSession(session: PublicationSession): void {
+    Atomics.compareExchange(
+      this.sessions,
+      session.slot * SESSION_WORDS + Session.Open,
+      session.serial,
+      -session.serial,
+    );
+  }
+  closeSession(session: PublicationSession): void {
+    this.arena(() => {
+      if (this.sessions[session.slot * SESSION_WORDS + Session.Serial] !== session.serial) return;
+      this.retireSession(session);
+      this.clearSession(session.serial);
+    });
+  }
+  private clearSession(serial: number): void {
+    if (!serial) return;
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (this.operations[base + Op.Session] !== serial) continue;
+      if (
+        (this.operations[base + Op.State]! & STATUS_MASK) === Status.Committed &&
+        this.operations[base + Op.Reserved] !== 1
+      ) {
+        const at = this.inputAt(slot);
+        this.inputs.fill(0, at, at + this.limits.argumentBytes + this.limits.inputBytes);
+        this.operations[base + Op.Arguments] = 0;
+        this.operations[base + Op.Input] = 0;
+        this.operations[base + Op.Reserved] = 2;
+        continue;
+      }
+      this.clearOperation(slot);
+    }
+  }
+  pin(file: FileKey, version: number, bytes: Uint8Array): PublicationPin {
+    const cut = this.cut();
+    const stride = Math.floor(this.limits.pinBytes / this.limits.pins);
+    if (bytes.length > stride) throw new FilesystemError(6, "publication pin byte bound exceeded");
+    const slot = this.freePin();
+    const id = this.control[Control.PinSerial]! + 1;
+    if (id > MAX_COUNTER) {
+      this.stop();
+      throw new FilesystemError(33);
+    }
+    const owned = bytes.slice();
+    typedArraySet(this.pinData, owned, slot * stride);
+    this.pins[slot * PIN_WORDS] = id;
+    this.pins[slot * PIN_WORDS + 2] = bytes.length;
+    this.control[Control.PinSerial] = id;
+    return { id, cut, file: { ...file }, version, bytes: owned };
+  }
+  private freePin(): number {
+    for (let slot = 0; slot < this.limits.pins; slot++)
+      if (!this.pins[slot * PIN_WORDS]) return slot;
+    throw new FilesystemError(6, "publication pin count exceeded");
+  }
+  releasePin(id: number): void {
+    const stride = Math.floor(this.limits.pinBytes / this.limits.pins);
+    for (let slot = 0; slot < this.limits.pins; slot++) {
+      if (this.pins[slot * PIN_WORDS] !== id) continue;
+      this.pinData.fill(0, slot * stride, (slot + 1) * stride);
+      this.pins.fill(0, slot * PIN_WORDS, (slot + 1) * PIN_WORDS);
+      return;
+    }
+  }
+  stop(): void {
+    Atomics.store(this.control, Control.Stopped, 1);
+  }
+  /** Authority calls only after every real filesystem section has quiesced. */
+  releaseStopped(): void {
+    if (!this.stopped) throw new FilesystemError(28);
+    this.sessions.fill(0);
+    this.operations.fill(0);
+    this.inputs.fill(0);
+    this.results.fill(0);
+    this.pins.fill(0);
+    this.pinData.fill(0);
+    this.versions.fill(0);
+  }
+  diagnostics(): PublicationDiagnostics {
+    let sessions = 0,
+      pending = 0,
+      receipts = 0,
+      inputBytes = 0,
+      pins = 0,
+      pinBytes = 0;
+    for (let slot = 0; slot < this.limits.sessions; slot++)
+      if (Atomics.load(this.sessions, slot * SESSION_WORDS + Session.Open) > 0) sessions++;
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const state = this.operations[slot * OP_WORDS + Op.State]! & STATUS_MASK;
+      if (state === Status.Pending || state === Status.Committing) pending++;
+      if (state === Status.Committed && !this.operations[slot * OP_WORDS + Op.Reserved]) receipts++;
+      if (state) inputBytes += this.operations[slot * OP_WORDS + Op.Input]!;
+    }
+    for (let slot = 0; slot < this.limits.pins; slot++) {
+      if (!this.pins[slot * PIN_WORDS]) continue;
+      pins++;
+      pinBytes += this.pins[slot * PIN_WORDS + 2]!;
+    }
+    const allocatedBytes = Object.values(this.buffers).reduce<number>(
+      (sum, value) => sum + (value instanceof SharedArrayBuffer ? value.byteLength : 0),
+      0,
+    );
+    return {
+      stopped: this.stopped,
+      sessions,
+      pending,
+      receipts,
+      inputBytes,
+      pins,
+      pinBytes,
+      allocatedBytes,
+    };
+  }
+}
+
+export function mapPublicationFiles<F extends FileKey, G extends FileKey>(
+  effect: PublicationEffect<F>,
+  map: (file: F) => G,
+): PublicationEffect<G> {
+  if (effect.kind === "entry")
+    return {
+      ...effect,
+      parent: map(effect.parent),
+      before: effect.before && map(effect.before),
+      after: effect.after && map(effect.after),
+    };
+  return { ...effect, file: map(effect.file) };
+}
+function storedPublicationFile(file: PublicationFile) {
+  return { ...file, id: bigintToString(file.id, 16), version: bigintToString(file.version, 16) };
+}
+
+// Effects use one bounded JSON header and raw byte tails. Encoding finishes before the first
+// visible effect. The log stores owned copies; decoded byte ranges never alias shared storage.
+export function encodeEffects(
+  receipt: PublicationReceipt,
+  changes: readonly PublicationEffect[],
+  bound: number,
+): Uint8Array {
+  const tails: Uint8Array[] = [];
+  let length = 0;
+  const metadata: unknown[] = [];
+  for (let index = 0; index < changes.length; index++) {
+    const change = mapPublicationFiles(changes[index]!, storedPublicationFile);
+    if (change.kind !== "bytes") {
+      arrayAppend(metadata, change);
+      continue;
+    }
+    const at = length;
+    arrayAppend(tails, change.bytes);
+    length += typedArrayLength(change.bytes);
+    arrayAppend(metadata, { ...change, bytes: { at, length: typedArrayLength(change.bytes) } });
+  }
+  const header = json({ receipt, changes: metadata }, bound);
+  if (4 + typedArrayLength(header) + length > bound)
+    throw new FilesystemError(6, "publication effect bytes exceeded");
+  const bytes = new Uint8ArrayConstructor(4 + typedArrayLength(header) + length);
+  dataViewSetUint32(
+    new DataViewConstructor(typedArrayBuffer(bytes)),
+    0,
+    typedArrayLength(header),
+    true,
+  );
+  typedArraySet(bytes, header, 4);
+  let at = 4 + typedArrayLength(header);
+  for (let index = 0; index < tails.length; index++) {
+    const tail = tails[index]!;
+    typedArraySet(bytes, tail, at);
+    at += typedArrayLength(tail);
+  }
+  return bytes;
+}
+export function decodeEffects(bytes: Uint8Array): Publication {
+  const length = dataViewGetUint32(
+    new DataViewConstructor(
+      typedArrayBuffer(bytes),
+      typedArrayByteOffset(bytes),
+      typedArrayByteLength(bytes),
+    ),
+    0,
+    true,
+  );
+  // This is the private paired codec, not a guest RPC argument. Validate before narrowing.
+  const value: unknown = parse(decodeText(typedArraySubarray(bytes, 4, 4 + length)));
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("receipt" in value) ||
+    !("changes" in value) ||
+    !Array.isArray(value.changes)
+  )
+    throw new FilesystemError(29);
+  const receipt = decodeReceipt(value.receipt);
+  const changes: PublicationEffect[] = [];
+  for (let index = 0; index < value.changes.length; index++)
+    arrayAppend(changes, decodeEffect(value.changes[index], typedArraySubarray(bytes, 4 + length)));
+  return { receipt, changes };
+}
+function decodeReceipt(value: unknown): PublicationReceipt {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("id" in value) ||
+    !("cut" in value) ||
+    !("result" in value)
+  )
+    throw new FilesystemError(29);
+  const id = value.id,
+    cut = value.cut;
+  if (
+    !id ||
+    typeof id !== "object" ||
+    !("session" in id) ||
+    typeof id.session !== "number" ||
+    !("sequence" in id) ||
+    typeof id.sequence !== "number"
+  )
+    throw new FilesystemError(29);
+  if (
+    !cut ||
+    typeof cut !== "object" ||
+    !("history" in cut) ||
+    typeof cut.history !== "string" ||
+    !("generation" in cut) ||
+    typeof cut.generation !== "number"
+  )
+    throw new FilesystemError(29);
+  return {
+    id: { session: id.session, sequence: id.sequence },
+    cut: { history: cut.history, generation: cut.generation },
+    result: parseResult(encodeText(stringify(value.result))),
+    durability: { kind: "untracked" },
+  };
+}
+function fileKey(value: unknown): FileKey {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("birthHistory" in value) ||
+    typeof value.birthHistory !== "string" ||
+    !("ino" in value) ||
+    typeof value.ino !== "number"
+  )
+    throw new FilesystemError(29);
+  return { birthHistory: value.birthHistory, ino: value.ino };
+}
+function publicationFile(value: unknown): PublicationFile {
+  const key = fileKey(value);
+  try {
+    return { ...key, ...parseFileIdentity(value) };
+  } catch {
+    throw new FilesystemError(29, "invalid publication file identity");
+  }
+}
+function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
+  if (!value || typeof value !== "object" || !("kind" in value)) throw new FilesystemError(29);
+  if (
+    value.kind === "entry" &&
+    "parent" in value &&
+    "name" in value &&
+    typeof value.name === "string" &&
+    "before" in value &&
+    "after" in value
+  )
+    return {
+      kind: "entry",
+      parent: publicationFile(value.parent),
+      name: value.name,
+      before: value.before === null ? null : publicationFile(value.before),
+      after: value.after === null ? null : publicationFile(value.after),
+    };
+  if (!("file" in value)) throw new FilesystemError(29);
+  const file = publicationFile(value.file);
+  if (
+    (value.kind === "metadata" || value.kind === "inode") &&
+    "mode" in value &&
+    typeof value.mode === "number" &&
+    "mtime" in value &&
+    typeof value.mtime === "number"
+  ) {
+    if (value.kind === "metadata")
+      return { kind: "metadata", file, mode: value.mode, mtime: value.mtime };
+    return {
+      kind: "inode",
+      file,
+      mode: value.mode,
+      mtime: value.mtime,
+      ...decodeInodeMetadata(value),
+    };
+  }
+  return decodeContentEffect(value, file, tail);
+}
+function decodeInodeMetadata(value: object): InodeMetadata {
+  if (!("nodeKind" in value)) throw new FilesystemError(29);
+  const target = "target" in value ? value.target : undefined;
+  if (value.nodeKind === "file" || value.nodeKind === "directory" || value.nodeKind === "socket") {
+    if (target !== undefined) throw new FilesystemError(29);
+    return { nodeKind: value.nodeKind };
+  }
+  if (
+    value.nodeKind !== "symlink" ||
+    typeof target !== "string" ||
+    !target ||
+    target.includes("\0")
+  )
+    throw new FilesystemError(29);
+  return { nodeKind: "symlink", target };
+}
+function decodeContentEffect(
+  value: object & { readonly kind: unknown },
+  file: PublicationFile,
+  tail: Uint8Array,
+): PublicationEffect {
+  if (
+    !("size" in value) ||
+    typeof value.size !== "number" ||
+    !("version" in value) ||
+    typeof value.version !== "number"
+  )
+    throw new FilesystemError(29);
+  if (value.kind === "resize")
+    return { kind: "resize", file, size: value.size, version: value.version };
+  if (
+    value.kind !== "bytes" ||
+    !("offset" in value) ||
+    typeof value.offset !== "number" ||
+    !("bytes" in value)
+  )
+    throw new FilesystemError(29);
+  const range = value.bytes;
+  if (
+    !range ||
+    typeof range !== "object" ||
+    !("at" in range) ||
+    typeof range.at !== "number" ||
+    !("length" in range) ||
+    typeof range.length !== "number" ||
+    !Number.isSafeInteger(range.at) ||
+    !Number.isSafeInteger(range.length) ||
+    range.at < 0 ||
+    range.length < 0 ||
+    range.at + range.length > typedArrayLength(tail)
+  )
+    throw new FilesystemError(29);
+  return {
+    kind: "bytes",
+    file,
+    size: value.size,
+    version: value.version,
+    offset: value.offset,
+    bytes: copyEffectBytes(tail, range.at, range.length),
+  };
+}
+function copyEffectBytes(tail: Uint8Array, at: number, length: number): Uint8Array {
+  const bytes = new Uint8ArrayConstructor(length);
+  typedArraySet(bytes, typedArraySubarray(tail, at, at + length));
+  return bytes;
+}
+function integer(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new FilesystemError(28);
+  return value;
+}
+function text(value: unknown): string {
+  if (typeof value !== "string") throw new FilesystemError(28);
+  return value;
+}
+function path(value: unknown): ResolvedPath {
+  if (!value || typeof value !== "object" || !("name" in value)) throw new FilesystemError(28);
+  return {
+    parent: !("parent" in value) || value.parent === undefined ? undefined : integer(value.parent),
+    node: !("node" in value) || value.node === undefined ? undefined : integer(value.node),
+    name: text(value.name),
+    trailingSlash: "trailingSlash" in value && value.trailingSlash === true,
+    terminalDot: "terminalDot" in value && value.terminalDot === true,
+  };
+}
+/** Normalize the legacy string boundary once, before admission or asynchronous preparation. */
+export function mutationIntent(
+  operation: string,
+  args: readonly unknown[],
+): MutationIntent | undefined {
+  const [a, b, c] = args;
+  switch (operation) {
+    case "bindSocketPath":
+      return { kind: "bindSocketPath", directory: integer(a), path: text(b), lease: integer(c) };
+    case "bindSocket":
+      return { kind: "bindSocket", parent: integer(a), name: text(b), lease: integer(c) };
+    case "unbindSocket":
+      return {
+        kind: "unbindSocket",
+        binding: socketBinding(a),
+        name: text(b),
+        lease: integer(c),
+        unlink: args[3] === true,
+      };
+    case "write":
+      return { kind: "write", handle: integer(a), offset: integer(b) };
+    case "append":
+      return { kind: "append", handle: integer(a) };
+    case "resize":
+      return { kind: "resize", handle: integer(a), size: integer(b), truncate: c === true };
+    case "setMode":
+      return { kind: "setMode", handle: integer(a), mode: integer(b) };
+    case "setMtime":
+      return { kind: "setMtime", handle: integer(a), mtime: integer(b) };
+    case "preopen":
+    case "mkdirp":
+      return { kind: operation, path: text(a) };
+    case "remove":
+      if (b !== undefined && typeof b !== "boolean") throw new FilesystemError(28);
+      return { kind: "remove", path: text(a), ifContent: b === true };
+    case "writeFile":
+      return { kind: "writeFile", path: text(a), append: b === true, exclusive: c === true };
+    case "move":
+      return { kind: "move", from: text(a), to: text(b) };
+    case "create":
+      if (b !== "file" && b !== "directory" && b !== "socket") throw new FilesystemError(28);
+      return { kind: "create", path: path(a), nodeKind: b, exclusive: c !== false };
+    case "symlink":
+      return { kind: "symlink", path: path(a), target: text(b) };
+    case "link":
+    case "rename":
+      return { kind: operation, from: path(a), to: path(b) };
+    case "removePath":
+      return { kind: "removePath", path: path(a), directory: b === true };
+    default:
+      return undefined;
+  }
+}
+export function forkPublication(
+  connection: PublicationConnection,
+  owner = 0x7fffffff,
+  section?: Pick<FilesystemSection, "enter" | "exit">,
+): PublicationConnection {
+  const domain = new PublicationDomain(connection.buffers, owner, section);
+  return { buffers: connection.buffers, session: domain.openSession() };
+}
+
+export function publicationAdmission(value: unknown): PublicationAdmission {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("slot" in value) ||
+    !("ticket" in value) ||
+    !("id" in value)
+  )
+    throw new FilesystemError(28);
+  const id = value.id;
+  if (!id || typeof id !== "object" || !("session" in id) || !("sequence" in id))
+    throw new FilesystemError(28);
+  return {
+    slot: integer(value.slot),
+    ticket: integer(value.ticket),
+    id: { session: integer(id.session), sequence: integer(id.sequence) },
+  };
+}
+export function publicationCut(value: unknown): PublicationCut {
+  if (!value || typeof value !== "object" || !("history" in value) || !("generation" in value))
+    throw new FilesystemError(28);
+  return { history: text(value.history), generation: integer(value.generation) };
+}
+function socketBinding(value: unknown): SocketBinding {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("node" in value) ||
+    !("parent" in value) ||
+    !("ino" in value) ||
+    !("parentIno" in value)
+  )
+    throw new FilesystemError(28);
+  return {
+    node: integer(value.node),
+    parent: integer(value.parent),
+    ino: integer(value.ino),
+    parentIno: integer(value.parentIno),
+  };
+}
+export function mutationValue(
+  result: MutationResult,
+):
+  | number
+  | boolean
+  | SocketBinding
+  | { binding: SocketBinding; name: string }
+  | { written: number; offset: number }
+  | { error: number }
+  | undefined {
+  switch (result.kind) {
+    case "socket-path-binding":
+      return { binding: result.binding, name: result.name };
+    case "socket-binding":
+      return result.binding;
+    case "void":
+      return;
+    case "number":
+      return result.value;
+    case "boolean":
+      return result.value;
+    case "append":
+      return { written: result.written, offset: result.offset };
+    case "error":
+      throw new FilesystemError(result.errno);
+    case "create-error":
+      return { error: result.errno };
+    default: {
+      const exhaustive: never = result;
+      return exhaustive;
+    }
+  }
+}

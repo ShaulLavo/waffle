@@ -1,0 +1,9 @@
+{
+  "schema": "waffle-program-transfer/v1",
+  "family": "git",
+  "sourceCheckout": "/work/tmp/waffle-programs-git-20261027/packages/git",
+  "sourceCommit": "dc6c0f92573ace9620e02691e6c268144908ec74",
+  "sourcePaths": ["."],
+  "targetPaths": ["packages/git"],
+  "installerContract": "waffle filesystem and shebang admission; no WASM fallback or runtime worker"
+}

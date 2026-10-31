@@ -1,0 +1,84 @@
+{
+  "reason": "Move obsolete Bash installation/build guidance and the original JavaScript notice generator to byte-frozen history. Check current TypeScript sources separately. Existing transfer receipts remain unchanged.",
+  "entries": [
+    {
+      "transferredPath": "packages/coreutils/scripts/notices.mjs",
+      "livePath": "packages/coreutils/scripts/notices.ts",
+      "historicalPath": "packages/coreutils/provenance/history/scripts/notices.mjs.txt",
+      "historicalSha256": "a132db20914f3369723eb159d21efda9584b66a541ce76047f44d5186553944f",
+      "liveSha256": "b2fb48501bf441d0c2d3f22bb6deccf1d52b953f78596a02488d30b097475a2d"
+    },
+    {
+      "livePath": "packages/coreutils/docs/cut.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/cut.md",
+      "historicalSha256": "e1792cfb168d8b0a1d0dad6826da95ffb67f31d089e9012d980222c60e675334",
+      "liveSha256": "d161e5dcb1ce51511d9323dfe06a1a0f09b48926d3bac44d435d47ab0a8b6c94"
+    },
+    {
+      "livePath": "packages/coreutils/docs/tr.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/tr.md",
+      "historicalSha256": "d7c02e5b492c82a93b902f7efbcb60b5a167f0a781349ccb753f833917b8e101",
+      "liveSha256": "4e1cb67b5581682be845923b5bd2a814ff444d9183633c94f742c4ad634a5e2d"
+    },
+    {
+      "livePath": "packages/coreutils/docs/head.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/head.md",
+      "historicalSha256": "339ed43a6f0802a2d9df0db45f3ab31e603ba7f9168d57002c31b743802320c1",
+      "liveSha256": "201b31e64c9b8c4ee6b35f218c6acc0616cffd42ca0c3ea6153f3b32a4ef0f2c"
+    },
+    {
+      "livePath": "packages/coreutils/docs/tail.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/tail.md",
+      "historicalSha256": "339f6612cd15a0da50a0275b33698ae20a62a6c1dd47e6c2a3aaf43dfa85f135",
+      "liveSha256": "23ee30d6fe45998a2b80851ee92c4fe126af543dc5006cbe67ce7d73408c86bc"
+    },
+    {
+      "livePath": "packages/coreutils/docs/sort.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/sort.md",
+      "historicalSha256": "075fe135b1bafff883ec581c7443849aa932302c856165f8b28dae32ddfdfe34",
+      "liveSha256": "5705f07eebabfc70f80c1f7e270bbd38a1d9855eb95755d7010ef02c8fb33536"
+    },
+    {
+      "livePath": "packages/coreutils/docs/uniq.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/uniq.md",
+      "historicalSha256": "0a7d53b7885a3bc176e014f13bf65b50b9809b173300cd6931d1e8d09afd56e2",
+      "liveSha256": "a7a882bc354c7185227f0601689870ffdbea159fadb7518f238d7032b7c80d72"
+    },
+    {
+      "livePath": "packages/coreutils/docs/wc.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/wc.md",
+      "historicalSha256": "e89b0c1b27f795be5ab4315966817b2bc0da56564a6909a528240c76d8bb21b7",
+      "liveSha256": "37adfcce5a787946c2a635627004532c9e8130797598b0e8493b5fa9f0cf884a"
+    },
+    {
+      "livePath": "packages/coreutils/docs/ls.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/ls.md",
+      "historicalSha256": "a236611b911fbef23d3ff1a419fea570a4f528e852d0fa2a8627e112aaa74776",
+      "liveSha256": "43121be341d29affc94a400d8c99a5b50640a2842e95dd599e410e39a29ce220"
+    },
+    {
+      "livePath": "packages/coreutils/docs/clear.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/clear.md",
+      "historicalSha256": "61df7d94fccb97f9f8df55959ac8f6109e948ecde1bac4d3df700b5f73022aeb",
+      "liveSha256": "8870e72a79795d3827963b0bd7880717e079d285f86c0bc082dde6983c27f13a"
+    },
+    {
+      "livePath": "packages/coreutils/docs/file-operations.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/file-operations.md",
+      "historicalSha256": "657d826e7a3e79997b2b3c4809cdf34f4e17e6c933dcab62c0430683b803a2be",
+      "liveSha256": "9b8c2af198689f2d9c364dd357e0ffce001c6b0d79eddb5ec9e3a285b8950236"
+    },
+    {
+      "livePath": "packages/coreutils/docs/which.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/which.md",
+      "historicalSha256": "fb7d7a5748633403a6cb1270530cfdc89864df36c2f36a38e44a2e27697b1881",
+      "liveSha256": "a14c00202b6bba4d691384007547c6137502d00b17a3eb01ffd91b8c152c7089"
+    },
+    {
+      "livePath": "packages/coreutils/docs/env.md",
+      "historicalPath": "packages/coreutils/provenance/history/docs/env.md",
+      "historicalSha256": "418f5589a94a6398a188cfbe38b5d29b394b81d71c7b435a4729ce118f38a08d",
+      "liveSha256": "f54f2d488fd09067e6e67cd3890a963c44337109d531a6298e9799f4ea2b2bff"
+    }
+  ]
+}

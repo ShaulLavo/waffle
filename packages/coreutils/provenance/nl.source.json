@@ -1,0 +1,35 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "packages": {
+    "uu_nl": {
+      "version": "0.13.0",
+      "path": "src/uu/nl"
+    },
+    "uucore": {
+      "version": "0.13.0",
+      "path": "src/uucore"
+    }
+  },
+  "classification": "Unmodified pinned upstream nl with original cwd and bounded BRE argument adapter",
+  "upstreamFiles": {
+    "src/uu/nl/Cargo.toml": "91b2148befc0c3a8588ac332dc90dd5edf8398611d641bf4121868e2d9947a3a",
+    "src/uu/nl/src/nl.rs": "eef5bad325a5a70fb658086a03b7e4940a6df98e68dfccb6cff1892c9f19d440",
+    "src/uu/nl/src/helper.rs": "6dfc9184f8005692945d53dfbf4017c69395688eb6a986823c14fc8cc1674f88",
+    "src/uu/nl/locales/en-US.ftl": "680e90adf9c994be07bcc7517e02b4155d7f5ba143a4fffd2a03cc96e2cd6144",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "license": {
+    "spdx": "MIT",
+    "upstreamPath": "LICENSE",
+    "localPath": "provenance/LICENSE.uutils",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "changes": [
+    "No edits to upstream uu_nl, numbering, file traversal, input buffering or error handling.",
+    "Original nl entry initializes WASI cwd from PWD using the existing family helper.",
+    "Original nl_bre adapter reparses with upstream uu_app and normalizes common BRE styles into its byte-regex grammar; backreferences explicitly rejected. No claim of complete GNU BRE parity.",
+    "BRE adapter follows the existing original Waffle grep matcher at 19b3a67 in packages/grep/src/matcher.rs, retaining literal/operator and branch anchor rules with an nl-only typed parser. No Bash or native nl execution inside Waffle.",
+    "GNU nl is a test oracle only, never a runtime fallback. Diagnostics and help/version text remain uutils."
+  ]
+}

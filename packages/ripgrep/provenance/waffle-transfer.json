@@ -1,0 +1,18 @@
+{
+  "schema": "waffle-program-transfer/v1",
+  "family": "ripgrep",
+  "sourceCheckout": "/work/worktrees/waffle-programs-search-families-20261027/build-callers",
+  "sourceCommit": "bfefef18e4b8faad090dfea495e519fd074758ff",
+  "sourcePaths": [
+    "packages/sed",
+    "packages/ripgrep",
+    "programs-search-candidate",
+    "tools"
+  ],
+  "targetPaths": [
+    "packages/sed",
+    "packages/ripgrep",
+    "programs-search-candidate",
+    "tools"
+  ]
+}

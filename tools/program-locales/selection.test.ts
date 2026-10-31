@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import { test } from "bun:test";
+import { selectCatalogs } from "./selection.ts";
+
+test("echo selects only its English utility and both common catalogs", () => {
+  assert.deepEqual(selectCatalogs("echo", "0.13.0"), [
+    "uucore/en-US.ftl",
+    "uucore-errors/en-US.ftl",
+    "echo/en-US.ftl",
+  ]);
+});
+
+test("registry utilities select their own catalog, not neighboring cached utilities", () => {
+  assert.deepEqual(selectCatalogs("head", "0.12.0"), [
+    "uucore/en-US.ftl",
+    "uucore-errors/en-US.ftl",
+    "head/en-US.ftl",
+  ]);
+  assert.deepEqual(selectCatalogs("ls", "0.12.0"), ["uucore/en-US.ftl", "uucore-errors/en-US.ftl"]);
+});
+
+test("checksum utilities add shared checksum messages, except legacy sum", () => {
+  assert.deepEqual(selectCatalogs("sha256sum", "0.13.0"), [
+    "uucore/en-US.ftl",
+    "uucore-errors/en-US.ftl",
+    "sha256sum/en-US.ftl",
+    "checksum_common/en-US.ftl",
+  ]);
+  assert.deepEqual(selectCatalogs("sum", "0.13.0"), [
+    "uucore/en-US.ftl",
+    "uucore-errors/en-US.ftl",
+    "sum/en-US.ftl",
+  ]);
+});
+
+test("selection rejects unknown programs and dependency versions", () => {
+  assert.throws(() => selectCatalogs("multicall", "0.13.0"));
+  assert.throws(() => selectCatalogs("echo", "0.14.0"));
+});
+
+test("every shipped coreutils program has an explicit payload classification", async () => {
+  const { coreutilsNames } = await import("../../packages/coreutils/scripts/programs.ts");
+  const { usesProgramCatalogs } = await import("./selection.ts");
+  const notApplicable = ["clear", "cat", "mkdir", "seq", "tail", "which"];
+  assert.equal(new Set(coreutilsNames).size, coreutilsNames.length);
+  for (const name of coreutilsNames) {
+    assert.equal(usesProgramCatalogs(name), !notApplicable.includes(name), name);
+    selectCatalogs(name, "0.12.0");
+    selectCatalogs(name, "0.13.0");
+  }
+});

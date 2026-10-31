@@ -1,0 +1,309 @@
+# Waffle FAST / SAFE filesystem
+
+Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-20.
+
+## Evidence keys and reading rules
+
+- **DERIVED [O]** — approved product requirements recorded in `docs/vfs.md` and this plan from the owner's 2026-10-18 direction. Requirements are obligations, not claims that current code implements them.
+- **MEASURED [A]** — `/work/reports/waffle-vfs/rethink-20261018/A-evidence.md`: original-equivalent baseline and fixed-fixture campaigns, separately identified.
+- **SUSPECTED [B]** — `/work/reports/waffle-vfs/rethink-20261018/B-designs.md`: competing architecture hypotheses; the owner's decisions below resolve its open product questions.
+- **DERIVED [C]** — `/work/reports/waffle-vfs/rethink-20261018/C-tools-bench.md`: tool contract, workload revisions and decisive experiments.
+- **MEASURED [E0]** — `/work/reports/waffle-vfs/rethink-20261018/E0-floor-and-counters.md`: partial counters; storage API counters were zero and cannot support per-call conclusions.
+- **MEASURED [E0b]** — `/work/reports/waffle-vfs/rethink-20261018/E0b-counters-w2.md`: corrected nonzero storage counters and corrected memory/W3 probes.
+- **MEASURED [E12]** — `/work/reports/waffle-vfs/rethink-20261018/E1E2-substrates.md`; raw cells, manifests and teardown under `/work/reports/waffle-vfs/rethink-20261018/E1E2-evidence/`.
+- **MEASURED [E3]**: `/work/reports/waffle-vfs/rethink-20261018/E3-packed-log.md` and `E3-evidence/{summary,manifest,recovery}.json`. Completed packed-engine screen, including censored W2 cells and cleanup receipts.
+- **MEASURED [E4]**: `/work/reports/waffle-vfs/rethink-20261018/E4-guest-path.md` and `E4-evidence/{summary,gates,cleanup}.json`. Completed guest-path experiment with separately measured prototypes and profiling-disabled controls.
+- **MEASURED [E5]**: `/work/reports/waffle-vfs/rethink-20261018/E5-multitab.md` and `E5-evidence/manifest.json`. Transport, capability and close/crash screens, not a working multi-writer filesystem or frozen-owner proof.
+- **DERIVED [R1]**: `/work/reports/bash-web/hill-climb/r1-permissions/{report.md,source-anchors.txt,contract-evidence.json}`. Shell source and exact pinned-runtime evidence for missing authoritative permissions metadata. No new shell score measurement.
+- **DERIVED [S]** — repository source: `fs/{persistent,indexeddb,opfs,shared,vfs}.ts`, `browser/{shared-fs,fs-worker}.ts`, `runtime.ts`, and `tests/{indexeddb,opfs}-storage-browser.ts`. Resolve these against the execution commit, not the stale shared clone.
+
+**DERIVED [C, O]** — Every assertion/decision below carries a classification and evidence key. MEASURED describes observed cells only; DERIVED covers code facts and approved obligations; SUSPECTED is an experiment hypothesis, never a shipping guarantee. Evidence keys resolve to the paths above. Historical backend labels remain in frozen campaigns; they are not product names.
+
+## 1. Exactly two persistent outcomes
+
+| Classification / evidence | Product                                    | Required contract                                                                                                                                                                                                                                                                                                            |
+| ------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DERIVED [O]**           | **FAST: the fastest**                      | ACK may precede durability. Mutations after the last completed durable checkpoint may be lost; recovery is always a consistent committed filesystem. Bound pending data and apply backpressure when its budget is exhausted.                                                                                                 |
+| **DERIVED [O]**           | **SAFE: the fastest with safe guarantees** | Before success, every required data and metadata record is durably recoverable. A complete explicitly strict IndexedDB transaction is enough; a durable redo record is also enough. Final-page checkpointing may happen later. Batching/buffering/group commit are allowed; every acknowledged member waits for the barrier. |
+| **DERIVED [O, S]**        | `memory`                                   | Nonpersistent test/explicit volatile mode, not a third persistent product.                                                                                                                                                                                                                                                   |
+
+- **DERIVED [O]** — Both persistent modes target tab/worker death, browser crashes and OS crashes/power loss within the browser durable-storage contract. State limits: hardware failure, browser bugs, eviction and user deletion. FAST additionally permits its specified post-checkpoint loss; SAFE permits no loss of successful mutations within that contract.
+- **DERIVED [O, C]** — Each single filesystem operation is atomic, including all namespace effects of rename. Keep an internal staged multi-file transaction boundary with old-or-new publication. Defer public `transact()` until a caller exists; do not copy that public method from C §2 now.
+- **DERIVED [O]** — FAST checkpoint interval is a scheduling target, not a maximum loss guarantee. Expose pending bytes/oldest age/checkpoint latency. A Waffle-controlled reload pauses/orders incoming mutations, awaits flush, then reloads. Browser reload/tab close attempts to save memory-only changes best effort, never promises it.
+- **DERIVED [O]** — Browser-specific implementations are allowed wherever matched experiments show they win. Physical backend names, WAL presence and native handle modes are implementation details; `opfs-wal` and `opfs-safe` are not products.
+- **DERIVED [O, S]** — Public selection is `filesystem: { mode: "fast" | "safe" | "memory" }`; omitted means FAST. Inspect the actual descriptor for implementation, durability point, loss bound, multi-tab behavior, requirements, format identity and limitations. Backend overrides are internal/testing only.
+- **DERIVED [S]** — Current memory-first checkpoint engines implement FAST ACK semantics, not SAFE. Default stays IndexedDB in every browser to preserve workspace identity. SAFE is typed `UNSUPPORTED_VFS` until implemented, with no fallback. Current exclusive ownership and unenforced pending budget are explicitly reported gaps, not certification of the full target contract.
+
+## 2. What the evidence changes
+
+| Classification / evidence | Observation                                                                                                                                                                                          | Execution consequence                                                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **MEASURED [A §1]**       | Chromium W2 guest: IndexedDB 32.300 s vs old OPFS 119.499 s. Fixed WebKit W2 guest: 43.925 s vs 120.399 s. Firefox per-file OPFS W1/W2 exceeded the fixed 600 s seed budget.                         | Preserve these baseline/failure cells; do not choose current OPFS from API intuition.                                                   |
+| **MEASURED [E0b §§2–3]**  | Memory W2 Chromium host/guest 31,562/51,521 ms with 18,231 ms guest Atomics wait; Firefox 49,539/74,819 ms with 20,641 ms wait.                                                                      | Storage is not the only floor. Isolate guest/shared-memory work before claiming a transport fix or attributing all time to persistence. |
+| **MEASURED [E0b §§2,4]**  | Chromium W2 IDB host 395 transactions, 21,000 data puts, 394 journal puts, 4 metadata puts, 138,383,508 encoded bytes. OPFS: 21,517 handle creates/truncates, 19,417 writes, 517 flushes, 23 closes. | Batch physical records and hold handles; these aggregates are not one atomic transaction per package.                                   |
+| **MEASURED [E0b §5]**     | W3 OPFS aggregate payload writes were 21.0 × 128 MiB host (53 checkpoints), 13.7 × guest (40).                                                                                                       | Remove whole-payload rewrite amplification; the exact per-checkpoint quadratic curve was not measured.                                  |
+| **MEASURED [E0 §§1–3]**   | W4 memory floor about 1.5–1.6 s; IDB about 8.2–8.3 s, OPFS-labelled about 12.1–12.4 s. API counters were zero.                                                                                       | Keep phase evidence, not an invented native-call decomposition. Initial failing memory/W3 fixture is excluded; use corrected E0b.       |
+
+**MEASURED [E12 §§1–6]** — E1/E2 used 2 warmups + 5 measured repetitions, a 600 s cell budget, 74 complete cells and 2 Firefox per-file OPFS budget failures. E1 used 20,000 deterministic independent exact-length payloads (seed `0x51f15e`); packed IDB commits Blob packs ≤1 MiB plus binary index in the same strict transaction. Packed OPFS uses one held append handle with group flushes. E2 overwrites 2,000 records per repetition. These are raw-layout/barrier experiments, not a namespace engine or SAFE crash proof.
+
+| Classification / evidence   | Browser / machine                       | E1 best observed packed substrate | Files/s | Strict IDB k1 → packed IDB files/s |
+| --------------------------- | --------------------------------------- | --------------------------------- | ------: | ---------------------------------: |
+| **MEASURED [E12 Chromium]** | Chromium 156.0.8078.4, Linux upcloud-2  | Packed OPFS k1024                 |  34,971 |                       506 → 16,458 |
+| **MEASURED [E12 Firefox]**  | Firefox 157.0, same Linux host          | Packed IDB                        |  15,393 |                       496 → 15,393 |
+| **MEASURED [E12 WebKit]**   | Playwright WebKit 27.2, same Linux host | Packed OPFS k1024                 |  67,060 |                       298 → 17,226 |
+| **MEASURED [E12 Safari]**   | Real Safari 26.4, M1 Mac                | Packed OPFS k1024                 |  88,700 |                       938 → 35,052 |
+
+- **DERIVED [E12]** — Packing beats per-record strict IDB by about 31–58× when comparing packed IDB within each browser. Packed OPFS vs per-file OPFS ranges roughly 27–152× in its completed browser cells. Do not turn “30–100×” into a universal exact claim or compare Mac/cloud absolute rates as a hardware-independent result.
+- **MEASURED [E12 E2 tables]** — Lowest measured durable barrier medians, 256 B / 4096 B: Chromium .305/.285 ms; Firefox .960/.980 ms; WebKit .740/.700 ms; real Safari .020/.020 ms. Safari's .020 ms means browser-accepted barrier, not physical disk/power-cut proof. Relaxed IDB/no-flush references are not SAFE contenders.
+- **MEASURED [E12 Safari, cleanup]** — Safari load 3.26–22.59 was noisy: observed rank, not quiet confirmation. Linux WebKit is not Safari. Chromium's separate two-unsafe-handle capability probe is not a required topology or correctness proof.
+- **SUSPECTED [B, E12]** — Begin engine experiments with packed OPFS for Chromium/WebKit/Safari and packed IDB for Firefox, but permit adapter crossover. E1/E2 supersede early report B substrate bets; full-engine matched results decide promotion.
+
+### Completed experiments and delivery decision, 2026-10-20
+
+- **MEASURED [E3]**: 79 of 90 timing cells are eligible. All 11 incomplete cells are W2. Eight hit the per-workload boundary, while three exhausted the campaign deadline before completing repetitions. Preserve the distinction and all failed or superseded samples.
+- **MEASURED [E3]**: Chromium host W2 durable installation takes 103,710.5 ms with packed FAST versus 22,038.5 ms with current IndexedDB, about 4.71 times slower. W3 guest throughput is 46.68 versus 45.21 MiB/s, a near tie. W4 host bytes per WorkloadIO call fall from 109,424.7 to 2,181.0, while save p95 falls from 21.675 to 6.005 ms. These are experiment results, not universal performance claims or matched-SAFE comparisons.
+- **DERIVED [E3, O]**: Do not promote the packed prototype or change the default. Physical reclamation and compaction are absent. Aggregate memory and namespace-queue bounds are unproved. SAFE nonblocking writes return ENOTSUP, and takeover and startup cancellation are unfinished. Worker kill/reopen does not prove power-loss survival. The common packed engine remains a hypothesis.
+- **MEASURED [E4]**: Profiling-disabled guest W2 installation changes from 30.422 to 24.793 s in Chromium and 38.069 to 30.918 s in Firefox with shared stat. The instrumented variant serves all 33,000 stat calls directly and removes 28,500 service requests. Host timings drifted despite unchanged host paths. Do not present these cloud screens as a certified shipped speedup.
+- **DERIVED [E4, O]**: First ship the bounded shared-stat change using existing shared metadata and temporary capability retain. Prove slot lifetime, eviction, revocation, freshness and release on failure with production tests. Do not import the profiling protocol, spinning or quiet-port prototype with it. Their separately measured gains cannot be added.
+- **SUSPECTED [E4]**: The next guest-path leads are unconditional resource scans in `fs/persistent.ts:246`, capability trimming in `fs/service.ts:209`, and global invalidation in `fs/client.ts:739`, at retained E4 HEAD `5d069c6a0ce40c1aadf3e15ebb4dc49c91c3358a`. Measure these costs separately before changing invalidation or batching contracts.
+- **DERIVED [E3, E5, O]**: Use SharedWorker coordination with IndexedDB publication as the next bounded multi-tab prototype. Packed OPFS has not earned a dependency on tab-owned storage workers. This selects an experiment, not a production topology or permission to weaken FAST. Keep the dedicated-worker alternative for comparison if its memory-ACK path or later measured OPFS results justify it.
+
+## 3. Architecture to test, not assume
+
+- **SUSPECTED [B §§FAST, SAFE, multigrain; C §3; E12]** — Use one logical redo/commit engine, packed/chunked copy-on-write storage, and page-level shared-memory dirty tracking. FAST and SAFE share logical commit/publication/recovery; they differ in when ACK is allowed. Select physical adapters by experiment, not public mode name.
+- **DERIVED [O, B]** — Separate guest write granularity, dirty-page granularity, physical storage record size and atomic commit boundary. Capturing only service calls misses direct shared-memory writers. Capture stable dirty pages/versioned data coherently; never await persistence while holding a guest mutation critical section.
+- **SUSPECTED [B §§S1–S4]** — Stage namespace and payload references privately; publish one committed generation. Durable redo includes complete namespace/inode changes, payload records/references, generation, length/checksum, format/schema and commit identity. Reject incomplete tails, replay only complete committed groups, then checkpoint idempotently. Prove each adapter's publication/barrier ordering; a logical WAL alone does not equate browser barriers.
+- **DERIVED [O, B]** — SAFE waits for that durable recoverable commit (or an equivalent all-required-records strict transaction). FAST may publish/ACK earlier but retains a recoverable committed checkpoint, bounded dirty state and backpressure. Crash recovery cannot expose half a rename or mixed staged multi-file changes.
+- **SUSPECTED [B §§adaptive, caching]** — Pack small files; chunk large files; adapt from measured size/access/churn. Pin reader versions and storage references. Bound compaction, index and reclamation debt; retain old chunks until no reader/recovery root needs them. Benchmark compacted space and reopen time, not just foreground throughput.
+
+## 4. WorkspaceVfs beside WASI
+
+**DERIVED [C §2, O]** — Implement a backend-neutral tool projection beside WASI, through the same commit/publication boundary. The contract below is the tool requirement, not permission for a second filesystem, cache authority or public transaction API.
+
+| Classification / evidence | Surface                                                                                                | Acceptance rule                                                                                                                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DERIVED [C §2.1]**      | Stable `FileId` (`bigint`), `FileVersion`, `Generation`, `ChangeSeq`; snapshot with prefix/includeDirs | Stream/batch entries with id/path/kind/size/mtime/version. Return generation and watermark closing the enumeration/subscription race. No mandatory full-tree array.                                                                                                                     |
+| **DERIVED [C §§2.2–2.3]** | `read(idOrPath, range?, atVersion?, signal?)`, stat at generation                                      | Return id/version/generation/bytes. Range is `[offset, offset+length)`; short only at EOF. Tiny range must not allocate/hydrate whole file. Define version disappearance/lease behavior explicitly.                                                                                     |
+| **DERIVED [C §2.4]**      | `changes(after, signal)`                                                                               | Ordered complete batches, or explicit gap with oldest available and `resync: "snapshot"`. Include seq/transaction/generation/actor/kind/file id/paths/version/range/size. Guest, host, tool, other-tab and recovery writers all publish here. BroadcastChannel is a nudge, never truth. |
+| **DERIVED [C §§2.5–2.6]** | Live search, `validateIndex({ generation, watermark })`                                                | Bound producer/consumer queues, support cancellation, generation/watermark and stale-result retraction. Gap forces termination/resync. Validation returns valid/stale/gap with persisted format/schema identity.                                                                        |
+| **DERIVED [C §2, O]**     | Shared byte views and flush                                                                            | Pin/lease zero-copy views; copy when retained beyond lease. Future flush may return generation/watermark without inventing public transact. Preserve current `flush(path)` until the matching implementation/caller changes together.                                                   |
+
+Public namespace snapshot/change implementation is documented in
+[WorkspaceVfs snapshot and changes](../docs/workspace-vfs.md). It exposes the
+completed-cut handoff and bounded historical projection through the installed
+package and root runtime. This delivery does not complete the remaining §4 APIs
+or certify the full-plan workloads and durability guarantees.
+
+### Public read and lease implementation unit
+
+The public read unit adds current path/ID reads before snapshots, exact-version
+reads with owned full-file leases, and generation-qualified stat. Resident
+versions use page retention and operation-wide COW preflight. Cold versions use
+immutable adapter keys protected from GC. Missing history is explicit, never a
+newer version relabelled as old. The API, limits, and shutdown ownership are in
+[WorkspaceVfs](../docs/workspace-vfs.md).
+
+This unit does not accept SAFE, a combined runtime/index/cache budget,
+above-RAM endurance, live search, import/export, real Safari, or consumer release.
+Those requirements and all existing workload gates below remain open.
+
+## 5. Coherent multiple writers and coordinator lifecycle
+
+- **DERIVED [O, C §3.4, B §ordering]** — Several tabs/workers may write the same workspace with correct ordering/coherent reads. One commit coordinator is allowed; physical overlapping writes are not required. Coordinator topology is an experiment decision, not a product guarantee or mandatory unsafe-handle mode.
+- **SUSPECTED [B §ordering, C §3.4]** — A single sequencer orders namespace, inode identity, generation publication and GC. Request routing carries mutation identity and cancellation; every reader observes a coherent committed generation and every change consumer sees the same order.
+- **DERIVED [O, C §3.4]** — Specify and test coordinator owner freeze, close and death. Frozen owner must not allow split-brain publication; choose bounded unavailable/failover semantics with epoch/lease fencing. Close drains or rejects ordered requests; death elects one successor, recovers durable state, reports FAST's permitted loss and resynchronizes readers/change streams. Do not silently hang indefinitely or acknowledge writes from a stale coordinator.
+- **DERIVED [S, A §4]** — Existing wait/takeover tests verify exclusive ownership only. Preserve them as historical lifecycle coverage; they do not certify this multi-writer contract.
+
+### Next coordinator proof
+
+- **MEASURED [E5]**: SharedWorker round-trip medians range from 0.095 to 0.560 ms in the measured desktop engines. Chromium and Firefox lack synchronous OPFS handles in SharedWorker. Arbitrary independent tabs cannot share one SAB heap. These transport screens do not measure filesystem throughput.
+- **DERIVED [E5, O]**: A tab-local guest bridge stages requests and bytes. One authority orders all writers and admits coherent reads. A follower's cached metadata or missed BroadcastChannel notification cannot authorize a current read. Keep file identity, generation, history incarnation and durable watermark distinct.
+- **DERIVED [O, E5]**: FAST still permits memory acknowledgement and loss after its last durable checkpoint. A durable fence on every FAST mutation is not an approved product requirement. A checkpoint must reject a stale authority, but checkpoint fencing alone does not prove current cross-tab reads or stale-request handling.
+- **SUSPECTED [E5, O]**: Compare two explicit availability choices in the prototype. Transaction-fenced publication allows replacement of a suspected frozen authority, with relaxed FAST and strict SAFE barriers. Volatile FAST publication keeps its cheaper ACK but must refuse takeover until authority loss is established, returning bounded unavailability rather than trusting a heartbeat. Neither may acknowledge fresh requests from a known stale authority. Do not claim checkpoint-only fencing solves automatic takeover until mixed-writer and stale-resume tests prove the complete protocol.
+- **DERIVED [E5, O]**: Exercise four writer/tool pages, real guest and host operations, read-after-ACK, dropped final notifications, repeated operation identities, pending appends and renames, and stale-authority resumption. Recover SAFE receipts without duplicate mutation. FAST recovery either preserves history continuity or reports a reset/gap. The E5 freeze simulation did not freeze its owner; freeze certification, actual iOS suspension and last-client lifecycle remain open.
+
+## 6. A workspace may exceed RAM
+
+- **DERIVED [O, C §3, B §caching]** — Use one combined budget for runtime memory, resident file cache, dirty pages/ranges, pending persistence, metadata/indexes, reader pins and fff-web. Account shared allocations once, copies separately; no independent “safe” caches that exceed the aggregate.
+- **DERIVED [O, C §§2.2,3]** — Load lazily, evict clean unpinned pages, read partial large-file ranges without whole-file materialization. Do not evict uncommitted dirty state without making it recoverable. At budget exhaustion apply backpressure, bound queues/debt and report pressure; cancellation frees retained resources.
+- **SUSPECTED [B, C W9]** — A coordinator-owned budget ledger with leased pages/pins and bounded dirty admission can coexist with tool indexes. Validate above-RAM corpus, slow persistence, stalled readers/search and coordinator recovery before accepting the design.
+
+## 7. Formats, migration and export
+
+- **DERIVED [O, S]** — Every persisted format has an identity and version distinct from mode/implementation. Current identities are `waffle-indexeddb-chunks-v2` and `waffle-opfs-snapshots-v1`; reject unknown identities with typed `INVALID_VFS_FORMAT`, never an empty tree. Marked or validated unmarked IndexedDB v1 layouts migrate through staged chunks, retaining the v1 root until the complete v2 root is published. Downgrade to v1 is unsupported. OPFS validated unmarked layouts gain their marker without moving data.
+- **DERIVED [O, B §adaptive]** — Before introducing a packed format specify reopen, interruption-safe migration and export/import. Keep the old format authoritative until the new complete root is durably published; recovery selects one valid authoritative state. Export logical entries/bytes/metadata independently of physical packing, with bounded streaming and integrity validation. No automatic adapter switch hides a saved workspace.
+- **DERIVED [O, C §2.6]** — Persisted tool indexes carry filesystem format/schema, generation and change watermark. Recovery validates them or explicitly rebuilds; “files reopened” alone does not prove index freshness. Document downgrade behavior as unsupported, not version-skew negotiation code.
+
+## 8. Workloads and ratchet
+
+| Classification / evidence | Workload                       | Revised acceptance and measurements                                                                                                                                                                                                |
+| ------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DERIVED [C §4, A]**     | W1: 50k small + 32 large files | Keep original corpus. Separate fresh/first visit/seeded reopen; add streamed snapshot + tool-index build. Distinguish seed from measured workload; retain fixed-budget failures.                                                   |
+| **DERIVED [C §4, E0b]**   | W2: install/staging/rename     | Keep mixed install; add tiny patches, unaligned ranges, append/truncate/replacement and namespace changes. Count logical mutations/bytes vs physical records/bytes/transactions/handles and ACK/durable/checkpoint phases.         |
+| **DERIVED [C §4, E0b]**   | W3: 128 MiB                    | Sequential write/reopen read plus random 4 KiB/64 KiB/1 MiB ranges; cold/resident/pinned concurrent versions. Bound amplification and allocations; no whole-file hydration for small ranges.                                       |
+| **DERIVED [C §4]**        | W4: save/fsync/temp rename     | Separate memory ACK, durable commit and checkpoint; assert all rename namespace effects and internally staged multi-file old-or-new outcomes.                                                                                      |
+| **DERIVED [C §4, S]**     | W5: ownership/concurrency      | Keep historical exclusive wait/takeover separately. New real simultaneous tabs/readers/writers plus coordinator freeze/close/death, coherence and order. Do not relabel waiting as concurrency.                                    |
+| **DERIVED [C §4]**        | W6: fff index / live grep      | W1 tree + 1,000 edits, full/incremental index, query startup/tail latency, cancellation and memory. No stale result survives its reported watermark; gap/resync verified.                                                          |
+| **DERIVED [C §4]**        | W7: all-writer coherence       | Interleave host/guest/tool/other-tab/direct shared-memory mutations. Exactly-once ordered publication to change consumers, coherent reads and snapshot-to-stream handoff.                                                          |
+| **DERIVED [C §4]**        | W8: deterministic crash matrix | Fault at commit/checkpoint/rotation/compaction boundaries and each durable publication edge; retain crash schedules, recovered generation and invariant checks. SAFE successful ACKs survive; FAST loss stays within its contract. |
+| **DERIVED [C §4]**        | W9: endurance/pressure         | 30–60 min churn with readers/search, forced budget/compaction/reclamation thresholds, slow storage, above-RAM data and recovery. Bound debt/space/reopen/memory and verify cleanup.                                                |
+
+- **DERIVED [C §§5–7]** — Freeze source, seed, trace and semantics per campaign. Compare matched FAST to FAST, SAFE to SAFE, on the same host/browser; host/guest/tool are separate cells. Screen with 2 warmups + 5 measurements; promote with 9 paired measurements and distributions/tails, not a best run. Store raw counters, integrity results, failures and teardown with a manifest.
+- **DERIVED [C §§6–7, A]** — No retry of completed cells, pooling fixed/invalid fixtures, or replacing fixed-budget failures with invented numbers. Record invalidity and rerun only a new identified campaign. Separate real Safari from Playwright WebKit; label noise/hardware and avoid causal cross-host comparisons.
+- **DERIVED [C, E0, E0b]** — Counter sanity is a gate: nonzero expected API calls, plausible logical/physical byte totals, complete ACK/durable/checkpoint phases. A zero counter or skipped correctness check blocks attribution, not permission to infer the missing result.
+- **DERIVED [C, O]** — Ratchet each certified browser/mode/host workload cell against its last eligible full-engine baseline; retain correctness, memory, bytes, recovery and endurance as hard gates. A speed win cannot buy weaker ACK semantics or unbounded debt. Choose adapter only after complete eligibility; record inconclusive/noisy ranks rather than fabricate a winner.
+
+## 9. Ordered execution
+
+**DERIVED [O, E3, E4, E5; 2026-10-20]**: E3, E4 and E5 research is complete. No original experiment remains running. E3 is not accepted for promotion, E4 shared stat is selected for a bounded production change, and E5's protocol still needs a filesystem proof. Completed reports are listed in the evidence keys. Do not rerun the whole matrix to replace inconvenient results.
+
+**DERIVED [O, C §5]**: Land independently verifiable units. Production changes require independent exact-model review, required gates, merge, post-merge verification and actual-host cleanup. Research exit criteria remain below even when a source-compatible optimization or consumer delivery can land independently.
+
+| Classification / evidence  | Order / scope                                                           | Exit before moving on                                                                                                                                                                                                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **DERIVED [S, O]**         | 0. Contract and selection, merged in #37                                | Mode API, truthful descriptor, SAFE unsupported, typed worker errors, persisted identity/mismatch guards, existing corruption/schema coverage; prepared consumer notes only.                                                                                                                     |
+| **DERIVED [C §5, B, E12]** | 1. **E3 packed log / dirty pages**, screen complete, promotion rejected | Reject production promotion of E3 as measured. Before another promotion attempt, bound capture and namespace work, implement physical reclamation, finish nonblocking SAFE and ownership/cancellation, and repeat matched W2/W3/W4 screens plus recovery gates. No default or format change now. |
+| **DERIVED [C §5, E0b]**    | 2. **E4 guest path**, research complete, shared stat in delivery        | Extract shared stat without experimental instrumentation. Prove slot retention, freshness, revocation, eviction and existing storage/lifecycle contracts. Investigate resource scans and invalidation separately, with measured attribution before redesign.                                     |
+| **DERIVED [C §5, O]**      | 3. **E5 multi-tab**, transport screen complete, protocol proof next     | Prototype SharedWorker plus IndexedDB against the explicit memory-ACK availability alternative. W5/W7 must prove coherent reads/writers, stale resumption, ordered publication and freeze/close/death behavior before topology acceptance.                                                       |
+| **DERIVED [C §5, O]**      | 4. **E6 crash matrix**                                                  | W8 faults prove per-operation/staged atomicity and each mode's ACK/recovery contract; strict IDB and OPFS barriers independently validated. Browser-level tests do not claim physical power-cut proof.                                                                                           |
+| **DERIVED [C §5, B]**      | 5. **E7 endurance / recovery**                                          | W9 meets aggregate budget, above-RAM range access, pin/compaction/debt limits, quota/error behavior and bounded reopen; include interruption during migration/export.                                                                                                                            |
+| **DERIVED [C §5]**         | 6. **E8 tool path**                                                     | WorkspaceVfs snapshot/read/change/index/search runs W6/W7 through the same engine. Watermarks, gaps, resync, cancellation and fff-web combined pressure pass without public transact.                                                                                                            |
+| **DERIVED [O, C, E12]**    | 7. Production implementation and certification                          | Promote full-engine winners per browser with matched FAST/SAFE results; certified format/reopen/migration/export, typed failures and capability matrix. Keep old saved workspaces accessible; no silent switch. All W1–W9 gates and 9-pair promotions recorded.                                  |
+| **DERIVED [O, S]**         | 8. Consumer delivery                                                    | Update bun-wasm/bash-web exact pins and matching sources together; owned-only mode selector and diagnostics, borrowed runtime preserved, ordered reload/flush/HMR and real-browser lifecycle. Verify served product after merge.                                                                 |
+
+- **DERIVED [C §§6–7; AGENTS.md]** — Before each run read fleet availability, choose fitting host/queue, record pre-existing resources and install all-path teardown before setup. Preserve shared caches and frozen evidence. Cap cells at their declared budget; no unbounded campaign. Clean task profiles, binaries, processes, scratch and checkouts on the execution host; retain only small evidence/reproducers with an explicit cleanup owner.
+- **DERIVED [O; AGENTS.md]** — Work in exclusive `/work/worktrees/waffle/<lane>`, never build/test the shared clone. Patch bumps only. Ship through root/site frozen installs, prepare, quality, unit/size gates, three-engine storage/lifecycle matrices, independent `gpt-6.1-sol` review, green CI and merge/post-merge checks. No new issues and no consumer changes in the contract step.
+
+## 10. Bounded permissions prerequisite for shell consumers
+
+- **DERIVED [R1]**: bash-web already shares one test evaluator for `test` and `[[ ]]`. Its guest decodes standard Preview1 filestat without mode bits or effective access. Waffle pin `33ece68f9f484d99b8a57a675de71d847e248051` supplies kind, inode, size and mtime only. The program-registry executable-admission query is not pathname read/write permission. Successful open is not permission metadata.
+- **DERIVED [R1, O]**: P1 is accepted at Waffle `a7dddbf3255c1a344a4fb1d09a1c8779cb244629`, with exact-main CI `39518007989` successful. [The permissions contract](../docs/permissions.md) provides supported masks, authoritative mode bits and effective read/write/search-or-execute results through the worker and guest query. It distinguishes denied, missing and unsupported without changing Preview1 filestat. Numeric users, general Unix permissions and symlink semantics remain unsupported.
+- **DERIVED [R1, O]**: Shell R1 delivery is accepted at bash-web `50ab6a7`, consuming exact Waffle `fc58a532f0d7a617e631ea4b7580a190915d4ed6`. Shell main runs `39533414963` and `39533414851` passed all six jobs. No open-based inference, fake chmod, hardcoded permission answers, frozen exclusions or new skips were authorized. This current permissions delivery does not complete later certified-storage delivery.
+- **DERIVED [R1]**: Preserve `oils:builtin-bracket:280`, `bashkit-suite:test-operators:32` and `bashkit-suite:test-operators:40` as the historically blocked cases. They identified sticky-bit, effective read and effective write metadata respectively. Their original evidence remains unchanged; accepted permissions delivery is not a new compatibility score or a claim that unsupported sticky bits now work. bash-web's compatibility and diagnostic-snapshot/PR23 ownership remains outside this runtime batch.
+
+## 11. Retention and cleanup ownership
+
+- **DERIVED [E3, E4, E5; 2026-10-20]**: This runtime coordinator owns preservation of the completed experiment reports, raw failed/superseded samples, source commits and reproducer commands. These remain review inputs, not active test resources. Preserve them until the selected shared-stat change and the next storage protocol have passed review and the source/evidence archive replaces their consumers.
+- **MEASURED [E3]**: The completion receipt retains 3,558,983 source bytes in `/work/worktrees/waffle/vfs-e3`, 123,741,674 raw gate bytes and about 6.7 MB derived evidence. UpCloud-2 verified all 232 owned paths absent, no owned process or queued job, and 116 successful teardown receipts. No Mac workload was created.
+- **MEASURED [E4]**: The completion receipt retains 3.35 MiB source in `/work/worktrees/waffle/vfs-e4`, 60.29 MiB raw evidence and about 1.95 MiB analysis. UpCloud-4 and local cleanup passed with 31 dispatcher teardowns. The source is a current consumer input for shared-stat extraction.
+- **MEASURED [E5]**: Retention is about 3.62 MiB of evidence and 3.13 MiB of original dispatcher logs. Actual-host receipts cover both cloud runners, the Mac reservation and ports, and PC staging removal. No route or deployment was created.
+- **DERIVED [R1, O]**: Preserve the R1 permissions report and immutable source anchors until the bounded prerequisite and separately owned bash-web integration resolve the blocker, or the owner abandons it. The shell lane already removed its only task-created worktree. Preserve unrelated diagnostics and report material.
+- **DERIVED [O; AGENTS.md]**: Verify current clean Git status and worktree registration before source removal. Use `git worktree remove`, never prune shared build trees or caches. The completion sizes above are receipt-time values, not a claim that later allocation sizes cannot change. Every new run owns fresh all-path teardown and verifies it on its actual host.
+
+### Internal local publication unit, 2026-10-21
+
+Status: Merged as PR #44 at `cc14e0f4cb36bec655425596cd49dbd25704b35a`. The
+local publication unit adds opt-in publication to the existing root,
+not a new public storage mode. See [the internal contract](../.internal/storage-publication.md).
+
+The compiling baseline oracle failed with errno52 at `dcf989f`. The enabled
+unified host/WASI/direct oracle passes in the unfiltered 34-test local file at
+`2ef6d82`. The production browser runner at `2c46058` passes 15 grouped controls
+in Chromium, Firefox and WebKit. It uses separate workers, not independent tabs.
+Admission tests observe native worker closure before proven-dead reap.
+
+Original failed and invalid candidates remain under
+`/work/reports/waffle-finish-20261021/storage-publication-local/author/` and
+`/work/reports/waffle-finish-20261021/storage-publication-complete-r1/author/`.
+The repair acceptance and exact-head hosted checks are recorded in
+`storage-publication-repair-r1/PARENT-FIX-MAPPING.md` under the program reports.
+No consumer changes or S1/S2 acceptance follow from this unit.
+
+### Bounded independent-page resident grant pilot, 2026-10-21
+
+Status: Approved bounded implementation, not accepted S2. The exclusive
+`storage/cross-tab-grant-pilot` branch starts at `cc14e0f`. It keeps one actual
+production MemoryBackend and publication domain, with a private retained-file
+attachment and one outstanding operation grant. It does not add another proof
+filesystem, public selector, persistent format or consumer pin.
+
+The private authority, attachment and actual-bootstrap contracts are described
+in [the publication contract](../.internal/storage-publication.md). Exact immutable
+heads, original reds, focused controls, gate approvals and actual-host cleanup
+are owned by `/work/reports/waffle-finish-20261021/storage-cross-tab-grant-pilot/`.
+Independent review, required broad gates and program acceptance remain root-owned;
+a compiling or pushed candidate alone does not satisfy them.
+
+### Private workspace transport cleanup, 2026-10-21
+
+Status: Approved bounded implementation, awaiting independent review and final
+immutable gates. Namespace, metadata and retained-file operations use one actual
+MemoryBackend and history through private page bridges. This is not S1/S2, SAFE,
+public/default selection, persistence or consumer acceptance.
+
+The actual worker disposes its ordinary filesystem identity before joined resident
+stop. A separate cleanup-only reply port now joins the page bridge without
+restoring data access. Started codec adoption remains joined independently of
+parent revocation; a living accepted child keeps its own session. Failed or
+unconfirmed cleanup retains continuity and withholds exit acknowledgement.
+
+The compiling unchanged-production actual-bootstrap control at `cde451d6` observed
+exit acknowledgement with the owned page channel still open. The source and
+canonical red/repair gate ledger live under
+`/work/reports/waffle-finish-20261021/storage-workspace-cleanup-r2/`. The existing
+cross-tab runner retains its original groups and adds actual-bootstrap startup,
+pending reply, codec transfer, repeated stop and failed-cleanup controls. The
+report, not this plan, records which immutable candidates have passed. Parent owns
+independent review, required CI, merge and exact-main verification.
+
+The separate pre-connect repair unit starts from `3183527`. Its unchanged native
+Firefox control held actual connect before the production handler, revoked the
+child and released its reservation, then delivered the same event. No cleanup
+receiver existed and dedicated stop failed with errno6. The FS-private repair
+separates provenance from admission and retains a cancelled child's cleanup-only
+listener until actual dedicated stop. It adds no caller ordering workaround,
+authority channel, session or data admission. Root-approved API, exact-head gate
+results and cleanup live under
+`/work/reports/waffle-finish-20261021/storage-workspace-connect-repair-r3/`.
+This source is not final-head acceptance; independent review and the full immutable
+wave remain required before a PR can be review-ready.
+
+### Native owner freeze and timeout cleanup, 2026-10-23
+
+Status: Approved follow-up. The bounded tests-only proof at
+`86ca440a198b0c4bc1284421f95e26506a70fbe4` pauses the actual persistent
+IndexedDB authority execution context in native Chromium. Four independent pages
+and a real WASI guest observe short-pause same-history publication and a second
+pause crossing the real transport deadline. Timeout remains an unknown outcome,
+not evidence of owner death or permission to take over.
+
+The saved positive schedule completes 8 steps; the intentional no-pause control
+fails the pause oracle. Neither result qualifies OS/mobile suspension, stale-owner
+replacement, SAFE, durable receipt continuity, last-client shutdown or endurance.
+Exact source, commands and raw schedules live in
+`/work/reports/wave-20261022/waffle/owner-freeze/RESULT.md`.
+
+The resumed authority can read and flush, but original client cleanup remains
+unresolved. At that pin, `fs/publication-attachment.ts:268` permanently marks a
+transport timeout unconfirmed; `assertSettled` at lines 285-286 prevents the
+original bridge stop at lines 972-976. The guest reports `cleanup-error`, peer
+stop returns errno 6, and `browser/publication-authority.ts:278-281` refuses drain
+while original resident sessions remain. Native realm teardown contains those
+resources; it is not a successful protocol cleanup join.
+
+Implement request-identity, cancellation and terminal-outcome reconciliation for
+that original cleanup debt without inferring death from elapsed time. Initial
+write set is `fs/publication-attachment.ts`, `fs/publication-workspace.ts`,
+`browser/publication-authority.ts` and focused tests. Coordinate serial ownership
+with the reversible write-barrier lane. Preserve uncertainty when no authoritative
+outcome exists; do not add stale-version compatibility or a timeout-based takeover.
+
+### Follow-up: a metadata change on a cold file fails blocking reads, 2026-10-28
+
+Status: Approved follow-up. This is separate from the lock-contention EAGAIN fixed beside it. It
+was found with a unit fixture and was not observed in the browser `next build` failure.
+
+`setMtime` on a linked, non-resident file bumps the shared slot
+revision without loading bytes. The persistent backend's retained revision stays behind, so
+`selectReadBacking` (`packages/waffle/fs/persistent.ts:312-316`) throws errno 6, "cold revision is
+not retained", and a blocking `read` fails until the next checkpoint records the new revision.
+The 50 ms timer narrows the window but does not close it; the timer skips while a checkpoint is
+pending. Reproduce on main with a persisted 4-byte cold file and `intervalMs: 0`: `read` returns
+the bytes, `setMtime(handle, 123456)` succeeds, `read` fails with errno 6, `checkpoint(true)`, then
+`read` returns the bytes again. The probe is
+`/work/reports/wave-20261022/waffle/r2/fs-read-failed6-r630/utimes-cold-read-probe.test.ts`.
+
+The cold payload is still the durable bytes, so a metadata-only revision should not refuse it.
+Keep the explicit refusal for detached or unlinked files whose bytes changed (the existing
+`persistence.test.ts` case after a failed checkpoint). Do not retry errno 6 in general and do not
+hydrate stale payloads. Initial write set: `packages/waffle/fs/persistent.ts` and a focused test.

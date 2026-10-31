@@ -1,0 +1,38 @@
+{
+  "sharedBuildTools": {
+    "status": "wired",
+    "candidate": "74490abce8067d3d23b857d9774ba4f235f43a1d",
+    "source": "tools/program-build-tools.ts",
+    "relativeImport": "../../../tools/program-build-tools.ts",
+    "recipe": {
+      "root": "monorepo root",
+      "waffle": "packages/waffle",
+      "targetDirectory": ".build/coreutils",
+      "releaseDirectory": ".build/coreutils/wasm32-wasip1/release"
+    },
+    "usedExports": ["wasiBuildEnvironment", "wasiTarget", "verifyWasiGuest"],
+    "artifactReuse": "COREUTILS_ARTIFACTS; no Bash environment fallback",
+    "remaining": "Final monorepo composition supplies the singular root tools file and packages/waffle libc/scanner sources."
+  },
+  "installer": {
+    "pendingSources": ["tests/env-install.unit.ts", "tests/clear-browser.ts", "tests/test-programs.unit.ts", "scripts/test-coreutils-packaging.ts"],
+    "rule": "Wire actual family exports, /usr/bin canonical paths and declared /bin aliases after Waffle step 2; do not import Bash installers."
+  },
+  "browserHarness": {
+    "externalHelpers": ["tests/helpers/browser-test", "tests/helpers/readiness.ts", "tests/helpers/text-program-browser.ts", "scripts/serve.mjs", "scripts/node-worker-host.ts"],
+    "pendingRecipes": ["scripts/build-env-tests.ts", "scripts/build-file-utilities-tests.ts"],
+    "rule": "Keep shared harness and shell-runtime fixtures singular; family scripts/tests are source transfers until composition exists."
+  },
+  "ownShellSourceChecks": {
+    "rule": "Transferred test-own-shell-* scripts retain their frozen cases and oracles but still need the singular harness and family artifact caller wiring. No scoreboard, parser, runtime or worker source is transferred."
+  },
+  "notices": {
+    "familyGenerator": "scripts/notices.ts",
+    "output": "generated dist/THIRD_PARTY_NOTICES.txt; never checked in",
+    "consumer": "Existing browser aggregation remains outside the family."
+  },
+  "env": {
+    "productionSource": "95827ca4ef80e367bf0eef7b548b6a58683c8719",
+    "rule": "The frozen 9ef packaging assertions are transfer source only; final env integration remains with the sole env author."
+  }
+}

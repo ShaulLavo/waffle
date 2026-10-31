@@ -1,0 +1,5 @@
+{
+  "extends": "../../tools/tsconfig.programs.json",
+  "compilerOptions": { "noUncheckedIndexedAccess": true },
+  "include": ["src", "scripts", "tests"]
+}

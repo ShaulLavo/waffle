@@ -1,0 +1,11 @@
+# Attribution and bundled notices
+
+The Waffle gh package is an original TypeScript compatibility adapter. Its behavior and fixtures were developed against GitHub CLI 2.103.0 and its public documentation:
+
+- https://github.com/cli/cli/tree/v2.103.0
+- https://github.com/cli/go-gh/tree/v2.17.0
+- https://docs.github.com/en/rest
+
+No cli/cli or go-gh source code is copied or bundled. The bundled script has no third-party JavaScript runtime dependencies.
+
+The optional jq package supplies the real jaq evaluator as a separate installed program. Its Wasm and license notices are not part of this package.

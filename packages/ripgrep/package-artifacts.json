@@ -1,0 +1,7 @@
+{
+  "files": [
+    "dist/rg.wasm",
+    "dist/rg-program.json",
+    "dist/rg.NOTICES.txt"
+  ]
+}

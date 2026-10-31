@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "archive": "https://codeload.github.com/uutils/coreutils/tar.gz/07763857f6b9a547742a994b58aef0ccd036198b",
+  "archiveSha256": "062cee52c508b4d2ab59907a97f610460e8147583b2b2772d66d634db22398c5",
+  "crate": "src/uu/ls",
+  "entry": "uucore::bin!(uu_ls)",
+  "localChanges": "No upstream edits. The wrapper sets libc cwd from the shell's PWD before calling upstream main.",
+  "license": "MIT"
+}

@@ -1,428 +1,59 @@
 {
-  "name": "waffle",
-  "version": "0.0.21",
+  "name": "waffle-monorepo",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./index.ts",
-      "node": "./dist/index.js",
-      "bun": "./index.ts",
-      "browser": "./index.ts",
-      "default": "./index.ts"
-    },
-    "./runtime": {
-      "types": "./runtime.ts",
-      "node": "./dist/runtime.js",
-      "bun": "./runtime.ts",
-      "browser": "./runtime.ts",
-      "default": "./runtime.ts"
-    },
-    "./core": {
-      "types": "./core/index.ts",
-      "node": "./dist/core/index.js",
-      "bun": "./core/index.ts",
-      "browser": "./core/index.ts",
-      "default": "./core/index.ts"
-    },
-    "./core/index": {
-      "types": "./core/index.ts",
-      "node": "./dist/core/index.js",
-      "bun": "./core/index.ts",
-      "browser": "./core/index.ts",
-      "default": "./core/index.ts"
-    },
-    "./core/descriptors": {
-      "types": "./core/descriptors.ts",
-      "node": "./dist/core/descriptors.js",
-      "bun": "./core/descriptors.ts",
-      "browser": "./core/descriptors.ts",
-      "default": "./core/descriptors.ts"
-    },
-    "./core/filesystem": {
-      "types": "./core/filesystem.ts",
-      "node": "./dist/core/filesystem.js",
-      "bun": "./core/filesystem.ts",
-      "browser": "./core/filesystem.ts",
-      "default": "./core/filesystem.ts"
-    },
-    "./core/memory-views": {
-      "types": "./core/memory-views.js",
-      "node": "./dist/core/memory-views.js",
-      "bun": "./core/memory-views.js",
-      "browser": "./core/memory-views.js",
-      "default": "./core/memory-views.js"
-    },
-    "./core/open-file": {
-      "types": "./core/open-file.ts",
-      "node": "./dist/core/open-file.js",
-      "bun": "./core/open-file.ts",
-      "browser": "./core/open-file.ts",
-      "default": "./core/open-file.ts"
-    },
-    "./core/path": {
-      "types": "./core/path.ts",
-      "node": "./dist/core/path.js",
-      "bun": "./core/path.ts",
-      "browser": "./core/path.ts",
-      "default": "./core/path.ts"
-    },
-    "./core/wasi": {
-      "types": "./core/wasi.ts",
-      "node": "./dist/core/wasi.js",
-      "bun": "./core/wasi.ts",
-      "browser": "./core/wasi.ts",
-      "default": "./core/wasi.ts"
-    },
-    "./fs": {
-      "types": "./fs/index.ts",
-      "node": "./dist/fs/index.js",
-      "bun": "./fs/index.ts",
-      "browser": "./fs/index.ts",
-      "default": "./fs/index.ts"
-    },
-    "./fs/index": {
-      "types": "./fs/index.ts",
-      "node": "./dist/fs/index.js",
-      "bun": "./fs/index.ts",
-      "browser": "./fs/index.ts",
-      "default": "./fs/index.ts"
-    },
-    "./fs/backend": {
-      "types": "./fs/backend.ts",
-      "node": "./dist/fs/backend.js",
-      "bun": "./fs/backend.ts",
-      "browser": "./fs/backend.ts",
-      "default": "./fs/backend.ts"
-    },
-    "./fs/client": {
-      "types": "./fs/client.ts",
-      "node": "./dist/fs/client.js",
-      "bun": "./fs/client.ts",
-      "browser": "./fs/client.ts",
-      "default": "./fs/client.ts"
-    },
-    "./fs/indexeddb": {
-      "types": "./fs/indexeddb.ts",
-      "node": "./dist/fs/indexeddb.js",
-      "bun": "./fs/indexeddb.ts",
-      "browser": "./fs/indexeddb.ts",
-      "default": "./fs/indexeddb.ts"
-    },
-    "./fs/memory": {
-      "types": "./fs/memory.ts",
-      "node": "./dist/fs/memory.js",
-      "bun": "./fs/memory.ts",
-      "browser": "./fs/memory.ts",
-      "default": "./fs/memory.ts"
-    },
-    "./fs/opfs": {
-      "types": "./fs/opfs.ts",
-      "node": "./dist/fs/opfs.js",
-      "bun": "./fs/opfs.ts",
-      "browser": "./fs/opfs.ts",
-      "default": "./fs/opfs.ts"
-    },
-    "./fs/persistent": {
-      "types": "./fs/persistent.ts",
-      "node": "./dist/fs/persistent.js",
-      "bun": "./fs/persistent.ts",
-      "browser": "./fs/persistent.ts",
-      "default": "./fs/persistent.ts"
-    },
-    "./fs/protocol": {
-      "types": "./fs/protocol.ts",
-      "node": "./dist/fs/protocol.js",
-      "bun": "./fs/protocol.ts",
-      "browser": "./fs/protocol.ts",
-      "default": "./fs/protocol.ts"
-    },
-    "./fs/service": {
-      "types": "./fs/service.ts",
-      "node": "./dist/fs/service.js",
-      "bun": "./fs/service.ts",
-      "browser": "./fs/service.ts",
-      "default": "./fs/service.ts"
-    },
-    "./fs/shared": {
-      "types": "./fs/shared.ts",
-      "node": "./dist/fs/shared.js",
-      "bun": "./fs/shared.ts",
-      "browser": "./fs/shared.ts",
-      "default": "./fs/shared.ts"
-    },
-    "./fs/storage": {
-      "types": "./fs/storage.ts",
-      "node": "./dist/fs/storage.js",
-      "bun": "./fs/storage.ts",
-      "browser": "./fs/storage.ts",
-      "default": "./fs/storage.ts"
-    },
-    "./proc": {
-      "types": "./proc/index.ts",
-      "node": "./dist/proc/index.js",
-      "bun": "./proc/index.ts",
-      "browser": "./proc/index.ts",
-      "default": "./proc/index.ts"
-    },
-    "./proc/index": {
-      "types": "./proc/index.ts",
-      "node": "./dist/proc/index.js",
-      "bun": "./proc/index.ts",
-      "browser": "./proc/index.ts",
-      "default": "./proc/index.ts"
-    },
-    "./proc/abi": {
-      "types": "./proc/abi.ts",
-      "node": "./dist/proc/abi.js",
-      "bun": "./proc/abi.ts",
-      "browser": "./proc/abi.ts",
-      "default": "./proc/abi.ts"
-    },
-    "./proc/filesystem-codec": {
-      "types": "./proc/filesystem-codec.ts",
-      "node": "./dist/proc/filesystem-codec.js",
-      "bun": "./proc/filesystem-codec.ts",
-      "browser": "./proc/filesystem-codec.ts",
-      "default": "./proc/filesystem-codec.ts"
-    },
-    "./proc/identity": {
-      "types": "./proc/identity.ts",
-      "node": "./dist/proc/identity.js",
-      "bun": "./proc/identity.ts",
-      "browser": "./proc/identity.ts",
-      "default": "./proc/identity.ts"
-    },
-    "./proc/outcome": {
-      "types": "./proc/outcome.ts",
-      "node": "./dist/proc/outcome.js",
-      "bun": "./proc/outcome.ts",
-      "browser": "./proc/outcome.ts",
-      "default": "./proc/outcome.ts"
-    },
-    "./proc/pipes": {
-      "types": "./proc/pipes.ts",
-      "node": "./dist/proc/pipes.js",
-      "bun": "./proc/pipes.ts",
-      "browser": "./proc/pipes.ts",
-      "default": "./proc/pipes.ts"
-    },
-    "./proc/registry": {
-      "types": "./proc/registry.ts",
-      "node": "./dist/proc/registry.js",
-      "bun": "./proc/registry.ts",
-      "browser": "./proc/registry.ts",
-      "default": "./proc/registry.ts"
-    },
-    "./proc/signals": {
-      "types": "./proc/signals.ts",
-      "node": "./dist/proc/signals.js",
-      "bun": "./proc/signals.ts",
-      "browser": "./proc/signals.ts",
-      "default": "./proc/signals.ts"
-    },
-    "./proc/stub": {
-      "types": "./proc/stub.ts",
-      "node": "./dist/proc/stub.js",
-      "bun": "./proc/stub.ts",
-      "browser": "./proc/stub.ts",
-      "default": "./proc/stub.ts"
-    },
-    "./proc/supervisor": {
-      "types": "./proc/supervisor.ts",
-      "node": "./dist/proc/supervisor.js",
-      "bun": "./proc/supervisor.ts",
-      "browser": "./proc/supervisor.ts",
-      "default": "./proc/supervisor.ts"
-    },
-    "./proc/table": {
-      "types": "./proc/table.ts",
-      "node": "./dist/proc/table.js",
-      "bun": "./proc/table.ts",
-      "browser": "./proc/table.ts",
-      "default": "./proc/table.ts"
-    },
-    "./proc/types": {
-      "types": "./proc/types.ts",
-      "node": "./dist/proc/types.js",
-      "bun": "./proc/types.ts",
-      "browser": "./proc/types.ts",
-      "default": "./proc/types.ts"
-    },
-    "./proc/worker-broker": {
-      "types": "./proc/worker-broker.ts",
-      "node": "./dist/proc/worker-broker.js",
-      "bun": "./proc/worker-broker.ts",
-      "browser": "./proc/worker-broker.ts",
-      "default": "./proc/worker-broker.ts"
-    },
-    "./proc/worker-client": {
-      "types": "./proc/worker-client.ts",
-      "node": "./dist/proc/worker-client.js",
-      "bun": "./proc/worker-client.ts",
-      "browser": "./proc/worker-client.ts",
-      "default": "./proc/worker-client.ts"
-    },
-    "./proc/worker-pipes": {
-      "types": "./proc/worker-pipes.ts",
-      "node": "./dist/proc/worker-pipes.js",
-      "bun": "./proc/worker-pipes.ts",
-      "browser": "./proc/worker-pipes.ts",
-      "default": "./proc/worker-pipes.ts"
-    },
-    "./interrupt": {
-      "types": "./interrupt/index.ts",
-      "node": "./dist/interrupt/index.js",
-      "bun": "./interrupt/index.ts",
-      "browser": "./interrupt/index.ts",
-      "default": "./interrupt/index.ts"
-    },
-    "./interrupt/index": {
-      "types": "./interrupt/index.ts",
-      "node": "./dist/interrupt/index.js",
-      "bun": "./interrupt/index.ts",
-      "browser": "./interrupt/index.ts",
-      "default": "./interrupt/index.ts"
-    },
-    "./interrupt/check": {
-      "types": "./interrupt/check.ts",
-      "node": "./dist/interrupt/check.js",
-      "bun": "./interrupt/check.ts",
-      "browser": "./interrupt/check.ts",
-      "default": "./interrupt/check.ts"
-    },
-    "./interrupt/loader": {
-      "types": "./interrupt/loader.ts",
-      "node": "./dist/interrupt/loader.js",
-      "bun": "./interrupt/loader.ts",
-      "browser": "./interrupt/loader.ts",
-      "default": "./interrupt/loader.ts"
-    },
-    "./interrupt/rewriter": {
-      "types": "./interrupt/rewriter.ts",
-      "node": "./dist/interrupt/rewriter.js",
-      "bun": "./interrupt/rewriter.ts",
-      "browser": "./interrupt/rewriter.ts",
-      "default": "./interrupt/rewriter.ts"
-    },
-    "./memory": {
-      "types": "./memory/index.ts",
-      "node": "./dist/memory/index.js",
-      "bun": "./memory/index.ts",
-      "browser": "./memory/index.ts",
-      "default": "./memory/index.ts"
-    },
-    "./browser/fs-worker": {
-      "types": "./browser/fs-worker.ts",
-      "bun": "./browser/fs-worker.ts",
-      "browser": "./browser/fs-worker.ts",
-      "default": "./browser/fs-worker.ts"
-    },
-    "./browser/net/helper": {
-      "types": "./browser/net/helper.ts",
-      "node": "./dist/browser/net/helper.js",
-      "bun": "./browser/net/helper.ts",
-      "browser": "./browser/net/helper.ts",
-      "default": "./browser/net/helper.ts"
-    },
-    "./browser/net/host": {
-      "types": "./browser/net/host.ts",
-      "node": "./dist/browser/net/host.js",
-      "bun": "./browser/net/host.ts",
-      "browser": "./browser/net/host.ts",
-      "default": "./browser/net/host.ts"
-    },
-    "./browser/net/http1": {
-      "types": "./browser/net/http1.ts",
-      "node": "./dist/browser/net/http1.js",
-      "bun": "./browser/net/http1.ts",
-      "browser": "./browser/net/http1.ts",
-      "default": "./browser/net/http1.ts"
-    },
-    "./browser/net/protocol": {
-      "types": "./browser/net/protocol.ts",
-      "node": "./dist/browser/net/protocol.js",
-      "bun": "./browser/net/protocol.ts",
-      "browser": "./browser/net/protocol.ts",
-      "default": "./browser/net/protocol.ts"
-    },
-    "./browser/net/ring": {
-      "types": "./browser/net/ring.ts",
-      "node": "./dist/browser/net/ring.js",
-      "bun": "./browser/net/ring.ts",
-      "browser": "./browser/net/ring.ts",
-      "default": "./browser/net/ring.ts"
-    },
-    "./browser/preview-protocol": {
-      "types": "./browser/preview-protocol.ts",
-      "node": "./dist/browser/preview-protocol.js",
-      "bun": "./browser/preview-protocol.ts",
-      "browser": "./browser/preview-protocol.ts",
-      "default": "./browser/preview-protocol.ts"
-    },
-    "./browser/preview": {
-      "types": "./browser/preview.ts",
-      "node": "./dist/browser/preview.js",
-      "bun": "./browser/preview.ts",
-      "browser": "./browser/preview.ts",
-      "default": "./browser/preview.ts"
-    },
-    "./browser/preview1-worker": {
-      "types": "./browser/preview1-worker.ts",
-      "node": "./dist/browser/preview1-worker.js",
-      "bun": "./browser/preview1-worker.ts",
-      "browser": "./browser/preview1-worker.ts",
-      "default": "./browser/preview1-worker.ts"
-    },
-    "./browser/process-broker": {
-      "types": "./browser/process-broker.ts",
-      "node": "./dist/browser/process-broker.js",
-      "bun": "./browser/process-broker.ts",
-      "browser": "./browser/process-broker.ts",
-      "default": "./browser/process-broker.ts"
-    },
-    "./browser/runtime-terminals": {
-      "types": "./browser/runtime-terminals.ts",
-      "node": "./dist/browser/runtime-terminals.js",
-      "bun": "./browser/runtime-terminals.ts",
-      "browser": "./browser/runtime-terminals.ts",
-      "default": "./browser/runtime-terminals.ts"
-    },
-    "./browser/service-worker": {
-      "types": "./browser/service-worker.ts",
-      "node": "./dist/browser/service-worker.js",
-      "bun": "./browser/service-worker.ts",
-      "browser": "./browser/service-worker.ts",
-      "default": "./browser/service-worker.ts"
-    },
-    "./browser/shared-fs": {
-      "types": "./browser/shared-fs.ts",
-      "node": "./dist/browser/shared-fs.js",
-      "bun": "./browser/shared-fs.ts",
-      "browser": "./browser/shared-fs.ts",
-      "default": "./browser/shared-fs.ts"
-    },
-    "./browser/worker": {
-      "types": "./browser/worker.ts",
-      "node": "./dist/browser/worker.js",
-      "bun": "./browser/worker.ts",
-      "browser": "./browser/worker.ts",
-      "default": "./browser/worker.ts"
-    }
-  },
   "scripts": {
-    "build": "bun build.ts",
-    "prepare": "bun prepare.ts",
-    "test": "bun test ./tests",
-    "check": "tsc -p .",
-    "size": "bun tooling/runtime-size.ts"
+    "build": "bun run --cwd packages/waffle build",
+    "test": "bun run --cwd packages/waffle test",
+    "test:ci": "bun run --cwd packages/waffle test:ci",
+    "check": "bun run --cwd packages/waffle check",
+    "quality": "bun run --cwd packages/waffle quality && bun run --cwd site typecheck",
+    "size": "bun run --cwd packages/waffle size",
+    "build:network": "bun run --cwd packages/waffle build:network",
+    "size:network": "bun run --cwd packages/waffle size:network",
+    "test:network:rust": "bun run --cwd packages/waffle test:network:rust",
+    "pack": "bun run --cwd packages/waffle pack",
+    "test:libc": "bun run --cwd packages/waffle test:libc",
+    "test:browser": "bun run --cwd packages/waffle test:browser",
+    "check:nodenext": "bun run --cwd packages/waffle check:nodenext",
+    "check:dom-consumer": "bun run --cwd packages/waffle check:dom-consumer",
+    "check:tooling": "bun run --cwd packages/waffle check:tooling",
+    "lint": "bun run --cwd packages/waffle lint",
+    "format:check": "bun run --cwd packages/waffle format:check",
+    "unused": "bun run --cwd packages/waffle unused",
+    "duplicates": "bun run --cwd packages/waffle duplicates",
+    "pack:check": "bun run --cwd packages/waffle pack:check",
+    "prepare:package": "bun run --cwd packages/waffle prepare",
+    "programs:routes": "bun run --cwd packages/coreutils test:build-routes && bun run --cwd packages/grep test:build-route && bun run --cwd packages/findutils test:build-route && bun run --cwd packages/sed test:build-routes",
+    "programs:source": "bun run --cwd packages/findutils test:source && bun run --cwd packages/sed test:source && bun run --cwd packages/ripgrep test:source && bun run --cwd packages/tar test:source",
+    "programs:diffutils": "bun run --cwd packages/diffutils prepare:package && bun run --cwd packages/diffutils test:source && bun run --cwd packages/diffutils test && bun run --cwd packages/diffutils test:wasi && bun run --cwd packages/diffutils typecheck && bun run --cwd packages/diffutils pack",
+    "programs:awk": "bun run --cwd packages/awk prepare:package && bun run --cwd packages/awk test:source && bun run --cwd packages/awk test:oracle && bun run --cwd packages/awk test:wasm && bun run --cwd packages/awk test:wasi && bun run --cwd packages/awk typecheck && bun run --cwd packages/awk pack",
+    "programs:tar": "node packages/tar/scripts/build-tar.ts --prepare && cargo fetch --locked --manifest-path packages/tar/producer/Cargo.toml && node packages/tar/scripts/build-tar.ts --native && node packages/tar/scripts/build-tar.ts && node packages/tar/scripts/test-native.ts && TAR_CHECK_ARTIFACTS=1 node --test packages/tar/tests/source.test.ts && bun run --cwd packages/tar typecheck && node tools/program-package.ts pack packages/tar && TAR_PACKAGE_ARCHIVE=$PWD/packages/tar/.build/waffle-tar-0.0.0.tgz bun test packages/tar/tests/tar-wasi.test.ts",
+    "programs:jq": "bun run --cwd packages/jq prepare:package && bun run --cwd packages/jq test:source && bun run --cwd packages/jq test:oracle && bun run --cwd packages/jq test && bun run --cwd packages/jq test:wasi && bun run --cwd packages/jq typecheck && bun run --cwd packages/jq pack",
+    "programs:curl": "bun run --cwd packages/curl typecheck && bun run --cwd packages/curl test && bun run --cwd packages/curl build && bun run --cwd packages/curl prepack && bun run --cwd packages/curl pack",
+    "programs:procps:pure": "bun run --cwd packages/procps test:pure && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
+    "programs:tools": "bun test tools/program-locales/*.test.ts tools/program-name-section.test.ts tools/program-build-tools.test.ts tools/program-build-tools-verifier.test.ts tools/program-family-manifest.test.ts tools/family-acceptance.test.ts tools/program-package.test.ts tools/program-notices.test.ts packages/git/scripts/patch-git-source.test.ts packages/git/tests/program-strip.test.ts tools/program-optimize.test.ts tools/program-derivation.test.ts",
+    "programs:native": "cargo test --locked --offline -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date",
+    "programs:pack": "bun run --cwd packages/coreutils pack && bun run --cwd packages/grep pack && bun run --cwd packages/findutils pack && bun run --cwd packages/sed pack && bun run --cwd packages/ripgrep pack && bun run --cwd packages/base pack",
+    "programs:prepare": "bun run --cwd packages/git prepare:package && bun run --cwd packages/gh prepare:package",
+    "programs:check": "bun run programs:prepare && bun run --cwd packages/waffle tsc -p ../../tools/tsconfig.programs.json",
+    "programs:integration": "bun test tools/family-integration.test.ts packages/coreutils/tests/nl-wasi.test.ts packages/coreutils/tests/date-wasi.test.ts packages/coreutils/tests/checksums-wasi.test.ts",
+    "programs:browser": "bun tools/family-browser.ts",
+    "programs:packed": "bun tools/family-packed.ts",
+    "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack",
+    "programs:procps": "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands",
+    "relay:check": "bun run --cwd packages/waffle-relay build && bun run --cwd packages/waffle-relay typecheck && bun run --cwd packages/waffle-relay test && bun run --cwd packages/waffle-relay test:native && bun run --cwd packages/waffle-relay test:worker && bun run --cwd packages/waffle-relay pack:check"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.3",
-    "typescript": "^7.0.2",
-    "playwright": "^1.64.1"
-  },
-  "dependencies": {
-    "acorn": "^8.17.0"
+    "@waffle/python": "workspace:*",
+    "playwright": "^1.64.1",
+    "waffle": "workspace:*",
+    "waffle-base": "workspace:*",
+    "waffle-curl": "workspace:*",
+    "waffle-gh": "workspace:*",
+    "waffle-git": "workspace:*"
   }
 }

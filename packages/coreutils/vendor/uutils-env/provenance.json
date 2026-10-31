@@ -1,0 +1,33 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "path": "src/uu/env",
+  "upstreamFiles": {
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c",
+    "locales/en-US.ftl": "1e951c21651bf601fc1101f0d22674208999857bac8a865842ffd635e1cc07eb",
+    "locales/fr-FR.ftl": "ae23fe4b521996d9e662aa7e7e9c3384aeb6700ba272a3adadf67dea817c0cff",
+    "src/diagnostics.rs": "db358221261dd95e8f77b83327f6763b8df28523bfd03987ad9dfaabe3c55013",
+    "src/env.rs": "fc6a2c309165889137e53342ce721aced87280b5db6c375cbb9383ae2f9a2880",
+    "src/native_int_str.rs": "6698064ba4abf2e8603828c1508a592c1f8c013fec2f905bb78973e4f3c3efab",
+    "src/split_iterator.rs": "92e8f9d8cb9a66e2a576e0b79c6b9570a665c85cdab201cd36999c64e8db7ebb",
+    "src/string_expander.rs": "0b232ca38c0b51f90be8400a697325b649e0e151436416c9f24efb076e5bd3ab",
+    "src/string_parser.rs": "b0e58c1dccdf3e68627a7813463e3c599c863c4eb403158c317ed09fd62af19a",
+    "src/variable_parser.rs": "eccf830341f02bafc1f6abfd88d6cfe36028256b4f4f5ef32a4f6203b0940704"
+  },
+  "upstreamManifestSha256": "02d68cd6c9ea4380294e61fa7c67a5fbfb4ee45853eed63a65497db988099b46",
+  "files": {
+    "Cargo.toml": "dbda8acca8f99a30091b6317e46eec86ee2ef20752173989491a389a3517a731",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c",
+    "locales/en-US.ftl": "1e951c21651bf601fc1101f0d22674208999857bac8a865842ffd635e1cc07eb",
+    "locales/fr-FR.ftl": "ae23fe4b521996d9e662aa7e7e9c3384aeb6700ba272a3adadf67dea817c0cff",
+    "src/diagnostics.rs": "db358221261dd95e8f77b83327f6763b8df28523bfd03987ad9dfaabe3c55013",
+    "src/env.rs": "d920f985d20edc75e8cdb06b14cb32c5be3d6be83499be8c7703f495713ced39",
+    "src/native_int_str.rs": "6698064ba4abf2e8603828c1508a592c1f8c013fec2f905bb78973e4f3c3efab",
+    "src/split_iterator.rs": "92e8f9d8cb9a66e2a576e0b79c6b9570a665c85cdab201cd36999c64e8db7ebb",
+    "src/string_expander.rs": "0b232ca38c0b51f90be8400a697325b649e0e151436416c9f24efb076e5bd3ab",
+    "src/string_parser.rs": "b0e58c1dccdf3e68627a7813463e3c599c863c4eb403158c317ed09fd62af19a",
+    "src/variable_parser.rs": "eccf830341f02bafc1f6abfd88d6cfe36028256b4f4f5ef32a4f6203b0940704",
+    "src/wasi_support.rs": "6bbcc78455ec7e712a1ba3c56cc72b259e376501cdfb2d7d37da6acb2724f9b2",
+    "wasi.patch": "7d0da5749cb516b6cc37ad19ea6d5622177886b86de47e36050065d978cec703"
+  }
+}

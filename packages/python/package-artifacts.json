@@ -1,0 +1,11 @@
+{
+  "files": [
+    "assets/python.wasm",
+    "assets/python-stdlib.json",
+    "assets/python.NOTICES.txt",
+    "assets/python-licenses.json",
+    "assets/python-build.json",
+    "assets/python-program.json"
+  ],
+  "payloadManifest": "assets/python-stdlib.json"
+}

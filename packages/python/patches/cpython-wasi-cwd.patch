@@ -1,0 +1,30 @@
+--- a/Modules/main.c
++++ b/Modules/main.c
+@@ -16,6 +16,10 @@
+ 
+ /* Includes for exit_sigint() */
+ #include <stdio.h>                // perror()
++#ifdef __wasi__
++#  include <stdlib.h>              // getenv()
++#  include <unistd.h>              // chdir()
++#endif
+ #ifdef HAVE_SIGNAL_H
+ #  include <signal.h>             // SIGINT
+ #endif
+@@ -51,6 +55,16 @@
+         return status;
+     }
+ 
++#ifdef __wasi__
++    // Waffle supplies the process working directory as PWD. WASI libc starts
++    // at the root preopen, so establish the requested cwd before Python reads
++    // argv, computes sys.path, or runs user code.
++    const char *cwd = getenv("PWD");
++    if (cwd != NULL && cwd[0] != '\0' && chdir(cwd) != 0) {
++        return _PyStatus_ERR("Unable to set the WASI current directory from PWD");
++    }
++#endif
++
+     PyConfig config;
+     PyConfig_InitPythonConfig(&config);
+ 

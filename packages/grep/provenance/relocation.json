@@ -1,0 +1,108 @@
+{
+  "sourceRevision": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+  "supportRevision": "d9601fd622d86a8dcc2abc9231cb70b6a54c3af5",
+  "entries": [
+    {
+      "newPath": "packages/grep/Cargo.toml",
+      "oldPath": "shell/utilities/Cargo.toml",
+      "oldBlob": "c1aba970ca8b909d4517384b8d0e0179f32078ee",
+      "classification": "new-family-boundary",
+      "reason": "Retain only grep, regex, futures and the shared neutral support dependency."
+    },
+    {
+      "newPath": "packages/grep/src/lib.rs",
+      "oldPath": "shell/utilities/src/lib.rs",
+      "oldBlob": "3ca6eab40d6f44d510ab362d09fa6fec0c770e79",
+      "classification": "relocated-adapted",
+      "reason": "Retain one grep invocation and cooperative guest entry over neutral support; remove the utility registry and Bash in-process host."
+    },
+    {
+      "newPath": "packages/grep/src/matcher.rs",
+      "oldPath": "shell/utilities/src/grep.rs",
+      "oldBlob": "c140d52c332732368ad239e251eb3ad85fbb505c",
+      "classification": "relocated-adapted",
+      "reason": "Replace shell executor, I/O and path imports with shared support; extract nested blocks without changing matching or I/O order."
+    },
+    {
+      "newPath": "packages/grep/src/bin/grep.rs",
+      "oldPath": "shell/utilities/src/bin/grep.rs",
+      "oldBlob": "f3475235ab3a72c7ea07491f05289ef60d6f55b4",
+      "classification": "relocated-adapted",
+      "reason": "Rename the crate entry to waffle-grep."
+    },
+    {
+      "newPath": "packages/grep/tests/grep.rs",
+      "oldPath": "shell/utilities/tests/streaming.rs",
+      "oldBlob": "9219050f049798aea444e4d3a369cb5bec908cf4",
+      "classification": "relocated-adapted",
+      "reason": "Drive the same grep cases through neutral descriptors and memory files; leave shell parser and pipeline orchestration with Bash."
+    },
+    {
+      "newPath": "packages/grep/tests/fixtures/grep-usage-cases.json",
+      "oldPath": "tests/helpers/grep-usage-cases.json",
+      "oldBlob": "7dcea3f021ab256696d35472b1f37c5658409fb2",
+      "sha256": "95c18028d52a067a263e1a716568f8e1c5be3243f4c3da2120be9157a20d36a8",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/grep/provenance/grep.source.json",
+      "oldPath": "shell/utilities/grep.source.json",
+      "oldBlob": "a33fda102114c900cdf1e1f1edb0a242fc34c6ed",
+      "sha256": "f123cd1156b523e4f9239fd530814f89c053e6370ca8421a8883ea2a7281ef6a",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/grep/provenance/bashkit.source.json",
+      "oldPath": "sources.lock.json#shellAcceptanceUtilities",
+      "oldBlob": "e4f544be8b0a2527378b183212bb8f53ac38a067",
+      "classification": "extracted-provenance-record",
+      "reason": "Carry the grep-specific Bashkit revision, source hash and license without copying the shell source lock."
+    },
+    {
+      "newPath": "packages/grep/licenses/regex-MIT.txt",
+      "oldPath": "docs/licenses/regex-MIT.txt",
+      "oldBlob": "39d4bdb5acd313c1a92dbeaa1c379aaf0596a315",
+      "sha256": "6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb",
+      "classification": "copied-unchanged-license"
+    },
+    {
+      "newPath": "packages/grep/licenses/bashkit-MIT.txt",
+      "oldPath": "shell/parser/LICENSE",
+      "oldBlob": "40cd13e9de9c9f4b50117f86f668f20359668a12",
+      "sha256": "b3e3b2f3fd15c45106e08434a52c5ad9ca97f15a1cc9894ab5b01078124cf613",
+      "classification": "copied-unchanged-license",
+      "reason": "The original remains with Bash parser provenance; grep retains its own adapted-source license notice."
+    },
+    {
+      "newPath": "packages/grep/LICENSE",
+      "oldPath": "LICENSE",
+      "oldBlob": "d0775bc3ddd2c76be68a3b747042cf752a041699",
+      "classification": "copied-unchanged-license"
+    },
+    {
+      "newPath": "packages/grep/docs/grep.md",
+      "oldPath": "docs/grep.md",
+      "oldBlob": "cbb14616902f4958a976af4c34910fc5a23d2ad8",
+      "classification": "relocated-adapted",
+      "reason": "Preserve behavior and limits while removing Bash installer and historical test commands."
+    },
+    {
+      "newPath": "packages/grep/package.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-provisional-metadata"
+    },
+    {
+      "newPath": "packages/grep/programs.provisional.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-provisional-metadata"
+    },
+    {
+      "newPath": "packages/grep/README.md",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-provisional-metadata"
+    }
+  ]
+}

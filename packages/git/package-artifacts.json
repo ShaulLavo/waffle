@@ -1,0 +1,8 @@
+{
+  "files": [
+    "dist/git-cli.js",
+    "dist/git-command.js",
+    "dist/git-command.d.ts",
+    "dist/git.NOTICES.txt"
+  ]
+}

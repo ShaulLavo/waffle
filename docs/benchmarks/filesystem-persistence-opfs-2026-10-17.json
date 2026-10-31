@@ -1,0 +1,3160 @@
+{
+  "status": "All persistence/corpus gates passed; standalone WebKit ephemeral OPFS failures reproduced and fresh persistent-profile probe passed",
+  "date": "2026-10-17",
+  "method": "Single-sample real-browser OPFS durability and same-corpus raw comparator diagnostics; synthetic original spike3 geometry, 10,003 files / 92,687,646 bytes. No upstream package payload.",
+  "environment": {
+    "machine": "MacBookAir10,1",
+    "cpu": "Apple M1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "bun": "1.4.2",
+    "acPower": true,
+    "loadAverageMidrun": [
+      3.57421875,
+      3.5224609375,
+      3.296875
+    ],
+    "ownerBusy": false,
+    "hidIdleSecondsMidrun": 245.811029083,
+    "timingCaveat": "Noisy diagnostic timings: owner activity and nonzero host load observed. One sample per engine, no performance threshold or cross-machine comparison."
+  },
+  "source": {
+    "chromiumFirefox": {
+      "commit": "bb4c981c932c7cb7a0b9c999162237c8135f7a2a",
+      "files": {
+        "runtime/bun.lock": "29845f5b7d0f3916c97f367d2495d0263857d171a2397bddcd40033df74e0965",
+        "runtime/README.md": "7b1c4ae06832e436f1397a197086f5af8cd664a6eee81e5d186e54f1fb832c59",
+        "runtime/package.json": "67486307068898ccee99a4421b294fb7698ccec8953475b47d28d69b214e1c27",
+        "runtime/tsconfig.json": "9349f740b49044987c906dc8505ad89e28e0c8abb8f3f136944f5fcb51f4905f",
+        "runtime/proc/stub.ts": "a17e1937fad89eef24a1b72351c87ddc743bbf5e0ddfe8454f2df6f0c09d8a2f",
+        "runtime/proc/identity.ts": "616d2d9c5c9962455b090449c3228d800a83538432f0451f15272be55e4e9e7a",
+        "runtime/proc/table.ts": "e1364be00c89c03cb9b290e78969be17363fae8f4fc092c82cc394547a6da3dc",
+        "runtime/proc/types.ts": "c948828bafc088a8992ccc4ff8bf006c45c30da5b57363febb1782fb335b7eee",
+        "runtime/proc/outcome.ts": "7bfa3e29aab47b293cc58485b659aab1c52e9b6f57e16c0b1f4807f4d118a2c5",
+        "runtime/proc/registry.ts": "22bc2e682cdcedf973046efaad8373f5b4e938f9e2a82a47c65d53aeb172001e",
+        "runtime/proc/supervisor.ts": "212bb88c07c3900784b9dae21d8a08d1ca369b2fbb1701e80e58dc16c9703c12",
+        "runtime/proc/index.ts": "102255e66dda759e9adc51d534d18ad6c5a82e1059af1eeca6f2cb8b8f339b2b",
+        "runtime/proc/signals.ts": "89c9f0ad029a7716acc8c1893c02d82131f1a37087fa2a10c67234d323b57433",
+        "runtime/core/path.ts": "31f2d7f1b154821a0cc19b3d1477f4ed2587627bd5a49aeb64e298c522c00b48",
+        "runtime/core/memory-views.js": "5f28415351a3f6b5c86e83c41c27bcbafe452b5d9826c817ca1fb87f146653fb",
+        "runtime/core/descriptors.ts": "454e55542870956565e9d71e63e49a5dd1e67ad79057a47b58c555a5d791195f",
+        "runtime/core/wasi.ts": "235d3559debe6716b78484864def504da510c7d42e2f6372fbefede4ef1cf9d9",
+        "runtime/core/filesystem.ts": "52fb688a22b1dc6108eb377a62f9c3f4ad8f923881f524a3eb494e47c918c80a",
+        "runtime/core/index.ts": "50956e58f33c7ac2014bcc1f28afbb38d11cbbc1e9165c77062eaad9ee36285b",
+        "runtime/core/memory-views.d.ts": "36fefdeacac81bebe65edf70204ed947d70c79ba2f699a1beeef4e1f6f2892fd",
+        "runtime/tests/process-core.test.ts": "3f26aea01bc183f2e8bcbe40b1b2e587f8f35ee1c15260feaf57918391d2700d",
+        "runtime/tests/descriptors.test.js": "4dcb0eaaeaf93d3b4fccf0cca6d53b1cd5ab88ddfb482d65ee00ee25c913ad1b",
+        "runtime/tests/readiness.test.js": "20e16d7423ecb2295cbefed13bacbc3e4740b3e0eae6bbf3c2a6afd8782f6c10",
+        "runtime/tests/filesystem-io-fastpath.test.ts": "87e76d3db3247629cdf14c07def54cf2388f677cd760ef1dd542d2d429987e87",
+        "runtime/tests/filesystem-capacity.test.ts": "84acea4f20174b73154d725cf071c2c66ae77bef97e5545fb58a83cf3bc9d921",
+        "runtime/tests/wasi-exit.test.ts": "25caf7b49dec86b967be599e3c7bb0c21a2ebbaa4351860bf2b844833f16806b",
+        "runtime/tests/persistence.test.ts": "7b7f43848283901b859e27e643f55d204bfa9a74207a2f1c814276cea095792a",
+        "runtime/tests/imports.test.js": "ecebbeaab3d732a53153d99c3c7de11eb397efa78523c8c87d35d75f4a56bf11",
+        "runtime/tests/filesystem-large-file.test.ts": "c7609a451c0daa9605822a1f469ba4b579ab8f62dffb7ccf72d5fbe9db9d75a1",
+        "runtime/tests/storage-browser-runner.ts": "2082df398c7f759f290a2b40a65908b712474d6945105fd0c9746cff9a15d011",
+        "runtime/tests/filesystem-quiescence-rearm.test.ts": "4e3df64d98d1ebdbb9b00c13b1fe4fdf5e96ed167089f62b403898af6e540865",
+        "runtime/tests/filesystem-persistence-shared.test.ts": "b29727f4d0ac21b603187c2e58fb2f984313694a4c3b634a162b383c6cc13828",
+        "runtime/tests/filesystem-quiescence.test.ts": "dc3777be6000e4cb5cc5590cd11b449cbb7a911f724a509da03dae92db19e43a",
+        "runtime/tests/process-outcome.test.ts": "97e4d785050054fb536e2d0b5c1cddbae2cb2083bfb22b4c1112d409307047c8",
+        "runtime/tests/filesystem-refcount.test.ts": "16276057e55ec0e9bed18eecef05fc420726f51d511ec980272e5133057784a3",
+        "runtime/tests/storage-browser.ts": "365436a76a4d61175299aff51ebabb64693d2cda905405afd1eaa8dc170e220d",
+        "runtime/tests/storage.test.ts": "67cc38c1c5fe7ffc4556d57ad78461cacbf8c62eae902bfaa614398cb49263c9",
+        "runtime/tests/filesystem-atomic.test.ts": "15184c3f31ff6cd14ebe78af457287ab6bccd3c568516e8b72d500223410c751",
+        "runtime/tests/filesystem-review.test.ts": "36164022627a120b42e693fb76b41301785b9c6c6315782e2312bd94c12df646",
+        "runtime/tests/persistence-queue.test.ts": "ff70ab025cf1a173982fb2642381e16a3b2e6b81ca8c1b7ba4e0d4b1a68144cf",
+        "runtime/tests/opfs-storage-browser.ts": "7a69aff7544cf81555717f583bd75556d46c4a92ad7c8b3311c2a086e6766fb4",
+        "runtime/tests/filesystem-segment.test.ts": "8cf25b0f55759cb697f9cf4e23be9be8108164879b6c077127bbb5e304e6c66a",
+        "runtime/tests/filesystem-worker.test.ts": "a754974f9da72c57b9a060d8aaeafa2117bcdb5d2cafcbee8b5d44dc2600d6e9",
+        "runtime/tests/filesystem-shared.test.ts": "9d86dc27e07b3d941e86ec98755bc5ea18a27fa6bd1490f4aaefb41353a35f39",
+        "runtime/tests/host.test.js": "ae04c725213c7b5eccf8faddd6502b0dab6d71d4f911f6f4a85f49cc7ca843e1",
+        "runtime/tests/persistence-durability.test.ts": "5baa9cae38d78cb0630d5e9998a573342a00e1093f0fd1895993b9476e68a464",
+        "runtime/tests/fixtures/wasi-atomic-host.ts": "ce54e9e949e5519cf989dae70b3a07d43d2509c1cbdd83141a18cb8c6bc9f773",
+        "runtime/tests/fixtures/filesystem-atomic-guest.ts": "fce57417ca96f48c06f2d28f038246bcf552c42ae21e2843c09b69811702fa5b",
+        "runtime/tests/fixtures/filesystem-quiescence-guest.ts": "6b2e12ba12053503b2d3e5cd64e9b90e4bea14aa0fa4d95ace00ae9f28aa5aed",
+        "runtime/tests/fixtures/filesystem-refcount-guest.ts": "392ca28240afecfc20a545f3834d5b4cb2c2798c5842d93ef1da4a34c9a98ce8",
+        "runtime/tests/fixtures/filesystem-service.ts": "d6f680e7df1ea058c4804451bca6fbfba90a6f627fd24fbb66a2d8d3fb536ef5",
+        "runtime/tests/fixtures/filesystem-segment-guest.ts": "628cd75001bee555c28ff8f716a61d8f735dadb66e2ece3a1667f25d8998084a",
+        "runtime/tests/fixtures/filesystem-guest.ts": "cf7a93f3b823621e9ba88426b93af0fdde1b9da8730b571dcced8aa438798976",
+        "runtime/fs/indexeddb.ts": "54ca3ad290c3b0be06559240e6b074857fd6b6e204a8a0650fe5baed732b4bd0",
+        "runtime/fs/persistent.ts": "bdd564c273d32663c2bcadee36f049e3ab3fee31cd542519dce4baf74ad6eb1f",
+        "runtime/fs/storage.ts": "6b0734a3755218de22875d0b9f3c1b9f1693f3da5d39e663a635ed13518d6f6c",
+        "runtime/fs/opfs.ts": "cd21f7e9dc58a9bba216f672269752ae0583db102604edea75592de0c5fbb7bf",
+        "runtime/fs/shared.ts": "e2a66a89a78bd3b5e52094c6428f20c5eda848d8dde9d481555681f1be5c394f",
+        "runtime/fs/client.ts": "bbffada8207c0125e044a1be377bd26c73ff31ddbb78b601d811fa23a47412a2",
+        "runtime/fs/protocol.ts": "8fee1dd000b53e3de9360b133d0bcbb891a7a1ea7278a9eb7112fdae47083629",
+        "runtime/fs/memory.ts": "918f538deebf8e8fb0915e61a07e2418af5fc548a4ed1d90a9765ed4cecec8d2",
+        "runtime/fs/index.ts": "ce4d261b29c24e8e6d34330fc2362324474ab2129a4a3305550d54eb891560da",
+        "runtime/fs/backend.ts": "4d6d48fd652894fca75e3c10ceb4018160d0a836d577c7c9c1387046d7f8806d",
+        "runtime/fs/service.ts": "ac35524cc33cc34500688d034e883de9e18a85a4c039b88a66c2f1c476d03bbc",
+        "web/index.html": "953bc43a55e276f563e87b23208369a122e8fad2d302140685a623535319bad4",
+        "web/bunfig.toml": "d09eb18ffee6896a4b74523d80b1bcd642a6966974e20c30bac94027a31fc202",
+        "web/bun.lock": "821842a46ea08e9824c3a3f869a33f9c311c22e491838c35b925f6e7cf682386",
+        "web/_headers": "a8a32187f44898f1e5bc9c689700cbadb6d777252fef341dad68782e64951428",
+        "web/README.md": "9bdbf62d84e1c4d31bc740c43453f69fac78414adfbce4c03d5f48f0e9395fbf",
+        "web/preview-build.ts": "36b6bd5fddf266170427f45b01b180d8a3b2532ba49f3e12694446b8d4b0fc58",
+        "web/serve.ts": "f53cdff511b163e6f233a3c1a94bd85b6076ab7bfa6e0b27e630401acc403fa2",
+        "web/.gitignore": "a2409cab6567095750a1a50cbfb5c19cefdb84e10fb48a6cac3f92c4939dfea3",
+        "web/package.json": "0fa2519dc34e7c692241dcfc110af69c8dedaa244454d0a6e60cd49e6fa4124e",
+        "web/tsconfig.json": "8c95af7e1cef862d4ab8219c7e6e0ac725b92b9f8e3a36320f303313731e846e",
+        "web/build.ts": "44361b81751aca41e51b462fa209e859cca0867c2f05f22b029a1ac5b54166b5",
+        "web/tests/browser-subprocess.ts": "2994b36b5a632c3503f3ad5a93c02a1fdf4a04c543b412a337ab56afb53a84c6",
+        "web/tests/subprocess-zero-length.test.js": "6c3733a84dc8963bc9b450380e6075ea2c9abb8e500668e6077b868c9f0c087c",
+        "web/tests/browser-persistence.ts": "b62bb4e93d62b0a98421913325ea7c8e875572dc649492db727ea25e8b0129b3",
+        "web/tests/native-stream-state.test.ts": "73ad30ba12fe06cbb3864c13db488d1701f4b14d417c8f56d767071824b25c64",
+        "web/tests/memory-views.test.js": "ae7eef8fe72a47a07ed84c10ae57ede7d9b13624382f48335cbdc6e25e288439",
+        "web/tests/browser-filesystem.ts": "d8db0e0c57428aa2d2711cdc28ac73c0278c93cd61d2b80c9d3f1ac422aad8c0",
+        "web/tests/memory-wasi.test.js": "5f2b63ed12f45d9ea4fce64d35bcc5c2dd53111f7e63e0c5636db8c5da1c12b2",
+        "web/tests/process-bench-baseline.ts": "9ea6a15a6070a80715c9468e69f0f7b4506b6bad7e0744404b2e53980194f6ea",
+        "web/tests/pipe-stdin-race.test.ts": "d514bea138aec419c8f857459219b4c774517032a269864841b1fbd91aeecca8",
+        "web/tests/subprocess-signals.test.ts": "6884a387b5003064af8940095e034e29b36cf94f06591f959101f71dca085117",
+        "web/tests/ui-async.test.ts": "3e60d425d5d2b39b1afa2010e5827e643469dfe46af01d2a0fa720a8c3120c34",
+        "web/tests/runtime-package-build.test.ts": "d9d0b66deb00ed63be647389aac0fd7d8fbeb474e7641da30b8b1dc684e554b1",
+        "web/tests/browser-smoke-worker.ts": "686b657b60a5faa308df441fbeb939ad774dcb05d16dfd844cdd9c1cf5005028",
+        "web/tests/bench-memory.mjs": "8cc6f0a9a6550fc0e55b0985a0be15ed53816cb58698d0222a4e6314423eaba9",
+        "web/tests/bench-engines.mjs": "47e014a935f9dca9d0fba17919c1ec4fcd525aa1c0f38434bb436c0a7b2aa69c",
+        "web/tests/filesystem-bench-baseline.test.ts": "b3b93ec31e7fbbb1cfdfa95ec93b93b086776d9f172d14b497651a8b6868cc36",
+        "web/tests/browser-shell-stop.ts": "a300399cc6f3bcec72fb775819db11c36aff860a64cd5d728007a8efc547fb13",
+        "web/tests/crypto-provider-preload.mjs": "c73b322443061e2318bd7da11d47fa71565ee25e902c881a9cb9e995a6d8c799",
+        "web/tests/browser-install.mjs": "54d4f7a15923c29f0bdf334201dfba1f556c56844e1e22bb0803f73969f87d1b",
+        "web/tests/crypto-aes192-gap.mjs": "22b0ed37ac51a76ea757ff7f1860c0ef0712504d516df405f34109cf87e1c0b1",
+        "web/tests/browser-workers.ts": "38893e59318c376106d52622210f12246d5d3b0a19e89b926d0f3a47c2472b37",
+        "web/tests/memory-views-fallback.test.js": "9becabeda86709f6b220ff13b89d5fb6d17476955b439b376f7bdc64eed874ac",
+        "web/tests/persistence-browser-worker.ts": "37688015664e33de86a1fb4b2ec201307100146547530b654d75669f4db13ee6",
+        "web/tests/browser-splitting.mjs": "c8656fb23ae2ca2a52525854e7e200b2cf40f2c65ae53a6dc570cfbc15708e5d",
+        "web/tests/build-splitting.test.ts": "f420ea7ec0d0acee4e823b3082af09d39b7e22ccd752b54e33622f749e592924",
+        "web/tests/native-stream-state-probe.ts": "48253f93ebb74c05aa635e7ff1de5407dae14a081a47892ed2d4218d75578ac9",
+        "web/tests/playground.mjs": "9f4f7b687251eaa345597f0844430e8abb5c7f8507e047a3628486b3f83aad84",
+        "web/tests/browser-net.mjs": "c92336bcacdf910131b0acfa09da10948283e054d18392657c30bc40b2ce63c2",
+        "web/tests/compare-memory.mjs": "eaa6250b0d4a8a9600685f2ae8184488fa727ed4c7df77982c9ee3448b18321d",
+        "web/tests/crypto-hash-validation.test.js": "d068f365619ec380b4eace92e109fa6939de3a2b83292c518afaa4d2c2b70bc1",
+        "web/tests/process-fixtures.test.ts": "f1d64336fd3865ceec46cc5f6b19de69bc02d005f0f2848ecc471e022cf425b1",
+        "web/tests/subprocess-filesystem.test.ts": "e6ff5e4b4dad7675ed9c2eb92e998fa430b3d1f45365665c0ba1646d9e113e20",
+        "web/tests/subprocess-broker.test.ts": "72fa277f9b0b6fb49abed57da0ee2efc67b3583089ef3dbd988468ff93fe17e3",
+        "web/tests/process-signals.test.ts": "d1cf5a74dd4ad5d80560d3555bd08926f7cc02e992e2bac2be31ae4cc5113d27",
+        "web/tests/filesystem-bench-baseline.ts": "d79645f28602e3042520cc5d17de25b3b149b7f8c3438c073dd7e098fe896fff",
+        "web/tests/timeout.test.ts": "c074a2631fd282187a76544a6331f16403ae9c467765816bd71e5335066ded92",
+        "web/tests/subprocess.test.ts": "ad25ea9622adc5fb9a03eba16ca82bc1f96d9fd900bd04810ca06eba0b9835c6",
+        "web/tests/node-signals.test.ts": "3d88a483a7d236e1b06875865e2b7b410a42df162b6e5f0ea1dffddedaf97313",
+        "web/tests/runner-process.test.ts": "d38bddea902a2a48619d3dbf3e363fd9595df6d0493a44db35e2c04235eaf0ca",
+        "web/tests/crypto-lifetime-probe.mjs": "b8b764878c3dda5eeca39c470bcc3a09f3a85326b05e8c7f2f510a02074af952",
+        "web/tests/crypto-inputs-probe.mjs": "2b8f7841606a20cd390d670e115ac14cf541fa63083d2a12d4e957306e79c0ed",
+        "web/tests/crypto-key-adapter-probe.mjs": "d392e1058ea6e1355a16500a18a8ac007b1335717dfd62cdf1f7e5b1967ff078",
+        "web/tests/filesystem-browser-guest.ts": "1d19789d17b55160284d78ec8674b765cec3597347cd672fbcd93082e1851e54",
+        "web/tests/browser-memory.mjs": "c5c52f346f8a539d5f0e577937eb0a2467ce1f2601915fadb05288e16233c8e6",
+        "web/tests/browser-process.ts": "fbdc157ce672e4fec3a8a13b2bd0625775c62b869d3a40ab656ee1e37d44d9fb",
+        "web/tests/filesystem-bench-worker.ts": "25d06ad87125e99e5116d10c61723fdfcf15c4857923d396df1bc801ed9b3d82",
+        "web/tests/subprocess-admission.test.ts": "5bbc4f42e598b0f5342a8713828e193a2ccd0f1590e3b6196b1655fb07f62ef0",
+        "web/tests/crypto-no-provider.mjs": "8e6726e6f8a637fac78c89ea6fd0873e09e22f65d7dcded1cc02597591140b79",
+        "web/tests/browser-persistence-safari.ts": "475670f6a3dee933a0f6fc001482cbe8bcad761722c3ec591e07c98383e60e83",
+        "web/tests/browser-smoke.mjs": "293d105227f11fa7e0851b46d9fc72c8b1e5934c516c27f62db8393d225bd503",
+        "web/tests/node-spawn-registry.test.ts": "8d3a71a930d514d82c888f1eadf1e79fcd60020f591dbeb351bd912309a5442e",
+        "web/tests/crypto-lifetime.test.js": "ed1e37d9bf98c72fdb19bb6039c0e57bb52a980b0587b5ac48966febd80f09dc",
+        "web/tests/stop-shell.ts": "18c2f4ac0c48414e90913b42b52103307dbf8f6a0a49cf005b508b1e132df7c3",
+        "web/tests/crypto-kw-jwk-probe.mjs": "ea6d72dcd7818663fad7ecf6d49bb44667744ee7f3ee10940850720b03a93bc8",
+        "web/tests/filesystem-browser-main.ts": "6a2772d7b28981b56fb1ac5de7db3e7d824b6e03cb2ef21742062f315af70e0f",
+        "web/tests/net.test.ts": "f198ae1c98adb045ff773bcdd7edc1fee2518df6fd275c3836c725d5f2374079",
+        "web/tests/browser-stack.mjs": "af50492d5b40d99c97c9a8513b9a0903b4440ddbb939307c1f9bdd52a1fa0564",
+        "web/tests/browser-editor.ts": "e914970e1376e36304c6fde1ab6321fbc371d98098d3b02031c84412c4a66628",
+        "web/tests/first-visit.mjs": "894d52fd45659f6a2d9be183c9137e2f2dd24d4b866a6c89db116094e3772d5a",
+        "web/tests/crypto-inputs.test.js": "dde3ae0e3670d1583140bab4f08a709fb9c1aefa088e956827dca34cc5bb1a25",
+        "web/tests/foreground.ts": "06cb30fb44bf428f7cee7b83a917f420dc95bc7bac93666db6c4b1262447648e",
+        "web/tests/node-process.test.ts": "0c3ee34844cddc2c331d1716ca0b9a229e34b901ca35648a09122b39a1381ef3",
+        "web/tests/persistence-browser-main.ts": "b316917534a3404d4f9d105ce0c12ba0772a06bcfe0878fbc324a287ac25b4fe",
+        "web/tests/node-net-write.test.ts": "c33eb23f4835aafb3ba01e3e01dc5020dfa6b3aacbdc3f9c8274b3a578c08e94",
+        "web/tests/crypto-domexception.test.js": "c6f93683dd4a76a130b598b1143ac8de2f97a9f5b1890e4a16f7194b5b6fb40e",
+        "web/tests/pipe-readiness.test.js": "1070f6b5ecd0b12f2be2b71651fa73f7c8ac47c3b33b61c27ebf0981baf1ff6e",
+        "web/tests/subprocess-revocation.test.ts": "df83f23b79df6b07387ee5dcc533998a66536da21434ce0ba51387bae0a9c1b4",
+        "web/tests/node-root-signals.ts": "f66ae7266dde231ed93b270567a963d74fe66cff9a97a99e2b433473bafbb3dc",
+        "web/tests/process-benchmark.ts": "155b0d9e71875e9da5c11b524965fa9e63d90918c13012f0b7864ba76016b909",
+        "web/tests/browser-engine.mjs": "249c5ea903b8a451ee8dd874cfad4ff538c46b0aa3debda19fd08d658730d413",
+        "web/tests/browser-crypto.mjs": "2247db93b87d607476ef9b599cf0e1fc453a749fda7b1469d7d0677ed970ca0e",
+        "web/tests/filesystem-bench-main.ts": "e8830d3832cafc60f67ae9ceffd7a871464ad11609f8f4861f9f808f42e6e9ec",
+        "web/tests/worker-signals.test.ts": "6bba0bb14582ad801ee880b7a760340195219b9c60ddccddf686be98dddbddf2",
+        "web/tests/process-browser-main.ts": "c421a6ea78e1b7c1616f23047d2bbb774cd69277d8c989e6e8779edf6d65d214",
+        "web/tests/shared-fs-failure.test.ts": "14bee5e8885e8669b4c219a68c3d557715a7fe28ad094447a8c9830fb314dc08",
+        "web/tests/process-fixtures.ts": "5e3e2cb2950115298cdc8701ff523970242f25d251a51afa5eaaf68486936c83",
+        "web/tests/foreground.test.ts": "bc589828dda561873fb66c7d04fcd8fd734c7fc71ee9d7965899ea3f971bd0d1",
+        "web/tests/subprocess-optional-budget.test.js": "1074e36e773273f553d1fc1c6874c306c138198e1d9e53a02614fd3f5ee6108d",
+        "web/tests/subprocess-eof.test.js": "d80ccc65daae671db10bf2714f00651fa54ad7c5641d839b41b564f22891917b",
+        "web/tests/toolchain-env.test.ts": "b8d170135ce049842c3ce5dedac3a7f0255ec1ad1fab13a824791bfc2a6a3e7b",
+        "web/tests/crypto-key-adapter.test.js": "11f402c7e393292087c2996bf9fde8bb86e5fc3657356622c9f8fde8d5791ca8",
+        "web/tests/wasi.test.js": "1cde6f8a8110c855fdeacf87638dd4aa245dfaa1d90eca72b273d950b050aca5",
+        "web/tests/engine-signal-idle.test.ts": "f08f541e62c84ba4a073857b4dc7846886a4469b4d793e0a5308a0dd18b95862",
+        "web/tests/bench-filesystem.ts": "3c3df1a97d29298f4533a41ca4e5eed8a32be0a580e11ae15ac5cfc3aa22e521",
+        "web/tests/filesystem-browser-failure.ts": "281c0ac69bb67bc78f85186e824276a0c7d83d8ee91d1ddd147d881cdabe28ae",
+        "web/tests/crypto-kw-jwk.test.js": "1d4d80a87449a1730df9a242d84922f46f522b4f70649403e77c254c1fd95283",
+        "web/tests/process-baseline-source.test.ts": "cfcb59f82d9ae985cc124e65bb67a67a0dee3bdd0237131c191c1b5fe47a1f57",
+        "web/tests/subprocess-process.test.ts": "c4bdbfbb924921602a29bf628b072519fdf03d46e6a7b292d51b2cacccadce3d",
+        "web/tests/core-node.test.js": "c8fe486dca971b39bb456bc82139db89add9e5bab646b2f0bcf5944b7673c0f0",
+        "web/tests/spawn-normalization.test.ts": "12a98c308daced7a41dc6399c351297af98d4f6baeeccfb9fc106d2ecbf9c1f1",
+        "web/tests/subprocess-worker-channels.test.ts": "dd79a34400d8e159300fcf188e55489c4b6b0f8029bc4fb72290f405d70882ab",
+        "web/tests/websocket.test.js": "118684076268b18c84f65ba960e3ef028383ca9d88357833b09b619b08c043cd",
+        "web/tests/subprocess.mjs": "10ed8d822ae8937088d14d74364188e98e2a0b82b4879f16bdd3b3f2e82a5084",
+        "web/tests/process-baseline-source.ts": "5d153a8d0602fbb4273e4c436270eb629f36d74b538a3e16b99483c62bfd5b10",
+        "web/tests/phone-ui.mjs": "39b794a34a8624b34702aa2c631b9ab69b0f3dbf910d3fb83a7ee890d1e7c1fb",
+        "web/tests/fixtures/persistence-corpus.json": "7e29a828bafea3336421cf47845d56102a3c2ac5b8d0f5383cd144214df15c63",
+        "web/scripts/node-stdio.ts": "95d41faa574afb31f1b88a7b9fa1b810360872fe313cf9eb75dfbd7660a0cd60",
+        "web/scripts/node-process.ts": "a631efdb15fa4bd6f17f18f84cbec9265df3cb3220749f43d14cc09921cfbe37",
+        "web/scripts/node-spawn.ts": "2f0643a0d764c98c9341488fea45259f42b3b64baeb52c5807b121f7217c9f33",
+        "web/scripts/live-check.mjs": "4797ff6ce4ece7a48ffb69d9f48bdffac1baf530da11d6bf49ae6463cffdbebf",
+        "web/scripts/net-helper.ts": "042ec486d37e0033a1425d990fcbcfccb8538df91fdfb4fbf3c181daf9dd8311",
+        "web/scripts/node-host.mjs": "1995dfe10005741fb0258ca3508edcbeeb89844c1fa34416a44397c4f37de40c",
+        "web/scripts/node-signals.ts": "0144baad45d8bc5ecc24c76e91550774f145ead82e36f724506526ce4f809adc",
+        "web/scripts/node-install-net.mjs": "0e5cf0bf676fc174ccf1c543c2506184ec18c5f4b5f29ee6c35c3eb1391b74b1",
+        "web/scripts/node-net.mjs": "6384fdb46bd6bdbe9a94430e3b9e9fb799a058a1bf4769c43ed5f6dd9959477e",
+        "web/scripts/run.ts": "0f0e2c790ea08d1cd9d66ba7293baf688dcc2115a0e357bf8873433ef63ac42d",
+        "web/src/main.ts": "7bb0dedff294c8d780a9fd537f8750d6093bf03c69db90ca09b28f379a1690b3",
+        "web/src/native-stream-state.ts": "57eaa056c25caf6cb30e4f97471b94556667e605b126ae9dda2b81ec3211c756",
+        "web/src/subprocess-broker.ts": "9f60848b6fa9bb474a1a93d8861f434191f5897b9f9cfe7c5fa1d80e90218384",
+        "web/src/shared-fs.ts": "0106279bbbd0ca0ce5715b3eeb3826aa07dee3a8f00229086579db4bbbe11896",
+        "web/src/preview-websocket-client.ts": "baf048e44c6fb2cb2d7351aaf8a34d800c718487a7c6775be5341a495b1b5e90",
+        "web/src/sw.ts": "b5992c3b136014e39ffd76fa89148527da19d2d8b74806ef710a7a711c7add11",
+        "web/src/examples.ts": "b1e4e0c0d7cf88fda0902cf97981bb63c259b3718fd83f0e31e83317fd5eccd9",
+        "web/src/startup-cache.ts": "13dfa83365b572ee874334d9473569182d08233545cfa962e01bdd9cc0de3b69",
+        "web/src/fs.ts": "2a649fd18c88e6553b7fadd6e3bacdb5d2733e86cfb21772a4040bd72f04ff9d",
+        "web/src/worker-pipes.ts": "79902db417105c376beedf9f7a7f78d0a9889595761933684052956810686c5d",
+        "web/src/env.d.ts": "35d26ea66c86da9701e4f4b467913481ffeae910761cea34c775c5dacb7f8eaa",
+        "web/src/engine-host.d.ts": "ba2d11d69e245ae5ba938f8daeab3921439d13d423552d07830d8f3047cf8255",
+        "web/src/engine-host.js": "576399b67f0cd6a66a0d96a6d4b2e6fc74cfd6e70bc8825b206e11f299594796",
+        "web/src/crypto-inputs.js": "2a17c171608d95846d478e24d7a6b18e86c98dfc485e34858e3133d916166050",
+        "web/src/terminal-links.ts": "c99037774408d924182856459a39f8372907bf1817ccf0fcf7e471bda6a38b95",
+        "web/src/terminal-copy.ts": "0bdaf654905b3c99ebd29c6f75b98d067cdccd9919471171ecf29bab262d741f",
+        "web/src/shell.ts": "c39bb53c539f0900756ff8c89426dff46f05e0877ee417e3e027ca0de1dbf80c",
+        "web/src/fs-worker.ts": "32135878d1200c71391ebc095093d8318bc9b776a5ad71d25eb3fa3745fcec5c",
+        "web/src/subprocess.ts": "00624687a4cad2d1f70972ed01bb1d641cf081aa1a3583826119127b1d03424a",
+        "web/src/style.css": "b6bc7467604165d9a47fdd8ab0c4ccecd606fdaf5fe4b3612ab24eeb6af510ec",
+        "web/src/preview-protocol.ts": "f070df7eb52710d2de0d95e2ea55057df3bda2ebe6e8bdc51bf09fd549be7734",
+        "web/src/crypto-host.js": "2f4575e4064ddabbe4cf4ed3c6a28f5c646590a7e27989cfaab1249b10c1ef4c",
+        "web/src/buffer-transfer.ts": "8a65ed717e04c83b76e8ab4b069c2f25130daa53a6c353e1efd9f9fef5566fe2",
+        "web/src/startup.ts": "87305ecf10b1e78835fddd73c3c75c802847d2b25812e3d75e3da85f670b56a1",
+        "web/src/runner.ts": "05e7c20e1e2c765a64d278c101ac95586bc2a36ae2a4a4628a8f50e9ed4ce8a9",
+        "web/src/preview-websocket.d.ts": "46a09fa53efa7421722ff184031750e333b39e184f53cd3756f51c4a4a8f7f8a",
+        "web/src/worker.ts": "c420fd37942bb849293b5fd4b7e9be07c95efd4a3d6554c7f9592e863399e108",
+        "web/src/preview.ts": "0f22d45cd96135c054d59c984f39ad74156a8884653fad2cb5526f7ff1465748",
+        "web/src/net/ring.ts": "a55377343222b3e55dd86201bee5736d8ff6028af40e55927fdcf5e37bd4818f",
+        "web/src/net/trampoline.ts": "6e2b9abcb31b0f0ac9d7a702985b94ae17bd7eb171b244fc40001d75e6f65473",
+        "web/src/net/install-cache.ts": "4a314da2ed93e5f51784c606847a878ed88b0c9e013d755c528355c28a6d5c4d",
+        "web/src/net/helper.ts": "fc7cd896cab5ba7b769cf19936951b5a5303e9dfe4f448b9491cb27f2ba92bd3",
+        "web/src/net/http1.ts": "92597b3424ea70065c88cabf6bb47006bee1ce6e2d1493178505a8fdd0edc459",
+        "web/src/net/protocol.ts": "82e3c8f1e49811f2c99c2cc5415b36fd95cd198bbfac06deb8f4e195e5968435",
+        "web/src/net/host.ts": "dda718650cda54498b92fe9dafcd26eb091b17444d249954baaafcd35b1489f6",
+        "scripts/port-check.sh": "745a1273973537253e7e67199acb1d76576336e3f0a549b917c01ab46d0afc96",
+        "scripts/runtime-size.test.ts": "bbf10b95830a249793d1ea9e2fc97c8f7818d39d37be58ef32893f01df0be7ad",
+        "scripts/real-runtime-rust-check.sh": "6743868055798aa07cfdc2ad0c1151d22ecc231cc75b2982445b2eb8a731dcad",
+        "scripts/test-dev-cache.mjs": "7169c864ade0730078842f145383159136e080d6881630bdc9cf090f3e3c8213",
+        "scripts/test-hmr-server.mjs": "52422a68ecad220d45e027a68104e262a447e99b45cbe275a79873095a1ece61",
+        "scripts/test-net-ws.sh": "61f0b01c66d22a47f095065b8fcd64942c1135aeee1f7c1862719213aa074dab",
+        "scripts/publish-web.sh": "2071e19a618beebd1986f72364a2d9f939e50f68989e7dbb46ad147daee71c82",
+        "scripts/transpile-runtime.ts": "eacb870a0d59533e0e8b95a136d9931a044917f0c96dd7da26984ea4bfa4a0de",
+        "scripts/generate-crypto-vectors.mjs": "187e67c686b49bad7c132f56ff29f576f6200e501906d2198f734bd91f483ca6",
+        "scripts/bun-suite.sh": "1c84ac38470971e4a750555beb11679317972854692d452b3b7d0df1358a4085",
+        "scripts/bun-jsc-inventory.py": "602641b8d0b63b5efed7cec0307402e474d4185208153432e60dd2d097f9deb8",
+        "scripts/crypto-review-vectors.mjs": "67f33c73f88ce26d10634afa28de3cd0de75b0aa4e6117071c5f42a00c609db1",
+        "scripts/build-jsc.sh": "95b75fe6f1ea5243e331a8a6a3cf89c4383e9f32581d31897494421a01ffc5a8",
+        "scripts/test-html-server.mjs": "2021aa3b5a3ae2d9592d1cfe4363d367bd2c5579dfa153bb5dafe56a12645a6a",
+        "scripts/test-native-stream-interop.mjs": "24df780bd1319ee026ebbf896df04d3c82d11c0ace91814dea0390ded5a821a9",
+        "scripts/runtime-types.test.ts": "c3a580a52d38c05c23a6dc1587d1c2dbd405ee037e2f62518b892b0752dbca55",
+        "scripts/bench-jsc.sh": "b3869116891e2f6e30b27f217d76ace6e818524077da5dd99017afd5acb6bef4",
+        "scripts/check-crypto-review.sh": "5e6e385b5a34cb07de8f61b25c34bf2593a47a0563196c582c13cdc6286159ec",
+        "scripts/app-matrix.sh": "e7012a9f03369f4f57df58cb554256840c496e37243a6b2cf9c976b7ec788a61",
+        "scripts/generate-bun-builtins.sh": "68e71a9862886c8320f38df37658b367523151e20af0376317d11682a1be3559",
+        "scripts/test-websocket.mjs": "2bcfcc2ded7d1730183bff9f688a73bb58f6c888133c95ff9119bf51d93db547",
+        "scripts/check-runtime.sh": "943977e781758fa11b8d15f8f07cdc92ca9d456b2dd9f74339aca4a81ae45c17",
+        "scripts/vendor-node-streams.mjs": "2368f681ff2010b37b1f1c1c92af6063b544bfd8826f07ee56cf0b95a1342989",
+        "scripts/bun-builtins.json": "f96ae480c782e2c32caf868ec0791c2d16b4077f3cb1f3e76c5a7c6be677e27f",
+        "scripts/runtime-size.ts": "ad26c11aaebce3dd9af6b3b088e8e4a19111d180541cceeb895a51bf657c9ee0",
+        "scripts/test-web.sh": "aaf9c54ed7775c0f5109d66d18d20d4c96c04fcc43e61c704786467fc1e84b44",
+        "scripts/runtime-js.test.ts": "f0dc4d5f64a3ac487e1be607d4ac9e440e72e83b1acf742d31b48f9884afbbbc",
+        "scripts/build-bun-jsc.sh": "ad1858b59ca4bda4181b47b2f899c76e10f4ddfee5e11020c8a3b2b4c2e5ff08",
+        "scripts/test-build.sh": "87f86c53ae60deb5be7b0b115ab5c4dd994cad18f69c533f13da407967016869",
+        "scripts/build-bun-browser.sh": "71620ded9428703412f08bb6e92c6ad686f854f018774e974d0c996be955b2c7",
+        "scripts/export-patches.sh": "9408074de22522e2c74a54de1566d3f7000f23782a2423a947515bf390074469",
+        "scripts/run-with-timeout.mts": "9751e5e10d87f4b4ca925dbc2f8d5158888fb22a24c817357830452782b6f3b1",
+        "scripts/build.sh": "980c2117a7939b559797a7440a7fe5509eb4534e8d0ce08557e78e1f7f463193",
+        "scripts/stream-polyfill-node-hooks.mjs": "6997ab31e7eb8edcf95733b52358b76465df899d38eafc53e4ec0e8d40ffc5ca",
+        "scripts/generate-bake.sh": "789ead1cc16d4892f2a76ef7d39ac5604dd59277543a3b1bf61c33c00daad1f3",
+        "scripts/measure-worker-threads.sh": "16c0bc77f642c0a1cc40ea77352d8afa416a0fadb60de8f98efd43386b56de79",
+        "scripts/worker-selectors.test.ts": "70b240957fd65a7db70ce118ce1d4f3e2d9634e217a06b67047aacbaecfa0fc9",
+        "scripts/test-host-profile.sh": "e1cce38b4a788864bfc7723908b09f345ba361908685aa8215fe587cf86d751e",
+        "scripts/worker-outcome.test.ts": "6318668523aaf56827422e5196179b6e1c1ed8df282f016111c671164e715d83",
+        "scripts/measure-stack.py": "099965cd31565eac199247fe77a65c5b4586b0931d7478e9ad85a00bf52f7297",
+        "scripts/test-bun-builtins.sh": "7c3f1f9546cc4bd5890263773881cba6d29b58c8a47e3031e70a953468fd1795",
+        "scripts/generate-ws.sh": "108af82adb99b131de79ead7ddc183206c3bf88e50e2d5b68e69cb855d580c63",
+        "scripts/generate-bun-console.mjs": "ecd98aa20a35dbf78acf63b552b86790b1c721d0ec3e462d0661579a23b2970c",
+        "scripts/bun-suite.py": "168c85750d91e23ef9e193d6098559080bfe3546d620077116dd3a9483fbbe6b",
+        "scripts/runtime-emission.test.ts": "5f886c318a6a88ef61fe75adbed662fed2e9f12b7c2e1ba4f8da71cedb139a55",
+        "scripts/test-bun-suite-node.py": "dd932a60d8307b307cfc00e36bee70ead0d10e096eb1c9d2cc12d0b0bc284b59",
+        "scripts/sync-crypto.sh": "850b312ce3bdd4a4d8e57546584d1e22895775fe8ed9cd0ece956234bd8c24aa",
+        "scripts/sync-bun.sh": "b2e4ca48a61fa594a9f14314a796bb87c334184fea541e6543094eda257a0bf9",
+        "scripts/measure-bun-builtins.py": "bf7f96d29e81803ba75dad7f58b80c762bcc8e9c3fb4ac927567fbd9bfdb2909",
+        "scripts/test-jsc.sh": "fd6b6d21bf3c3497f44e6da293c464eb36685856ca8ee7f22406c0309cef36f5",
+        "scripts/wasify.py": "a548c6bed7383d32f0bb51f527f0fe487bb277571310287bfdca68c6ef8296b1",
+        "scripts/test-transpiler-example.sh": "acba5c86f21836c23f9651bd28320af886ec7cc4f40f1993f865855d22c6e301",
+        "scripts/test-bun-jsc-backend.sh": "e07f885f6b7e95c1ab09956f7971a9dca247a0f671ea67b6792111b93ee7bd9a",
+        "scripts/bench-module-preparation.mjs": "fb784851ea37a9de608c6a06690947dfe334eafa23fb4160c429a6149973e306",
+        "scripts/generate-node-key-vectors.mjs": "ac8f6c643eaef20b27d44638196632a6d16a85971438ec8d95932d0c3395a703",
+        "scripts/worker-codec.test.ts": "a68b932063381d810340f904f742ece1f69429699d2d31ffb3895b947690a085",
+        "scripts/test-bun-suite-report.py": "adc9c158be291bcb04fdda17b42621db8397e2996bf5bf9bc034d552453066bd",
+        "scripts/test-bun-suite.py": "1c96497a9807847e77bb6dae01e141188137978465ecd5ef10a18f3987b9bdc5",
+        "scripts/measure-worker-execution.sh": "c600647ba019828d1872976d09ab9108b2b0efe1a92b4804882eef2235f0e17c",
+        "scripts/bun-suite-report.py": "c372ad29ffa3fd01fddbf91fff00beb2a4a18367f22422065fc1ad89cf964f10",
+        "scripts/browser-build.ts": "015535634ee2aafc68679353b8ddb8c36193f68a01d0113990c70736a1ef3908",
+        "scripts/test.sh": "acf19ef72f5cfb26f082ff17f77599a5d204dbbbaf9d56f07552344b95bb0cf1",
+        "scripts/bun-builtins-node.py": "a0441a36d2cdd8d05eed862ed45c02228bb6ae5f038c4e45505031569f4637c9",
+        "scripts/real-runtime-network-tls.sh": "b5498ae888c9b446f4a979e431ea9cf362bd52ee2b939c4930d6e464380fb493",
+        "scripts/vendor-streams.py": "0cdf0ec33ded74bd1fa68640e0709fd86b7d6ed499a6e398b433a4e540d924b0",
+        "scripts/generate-bun-builtins.mjs": "98afd2e809d3a0bdefd36bf848663c2f146a4106a4050f7e9b31c7c51b1abeb4",
+        "scripts/vendor-temporal.py": "f6c44311844e1e060e4d8d67df9d1767102811cb94068827bf85a070107e1af2",
+        "scripts/app-matrix/checks.mjs": "a80a7526246bcd312b02fd0f088ee37c1b9fe857d63603512929d0c3c5fdb377",
+        "scripts/app-matrix/run.mjs": "40c5c19666b07c30fa3df893e653bc49453e57a68e4fdbfc4a718df4a093e8bd",
+        "scripts/app-matrix/browser.mjs": "62b8c7443601711c6907dc5f6bfc40763053df7444e2bd1985add740345b0d0c",
+        "scripts/app-matrix/decoded-response.ts": "c9d2c0800bea190dab90e4c730360aed42f5a2819899111a3954264f696085d2",
+        "scripts/app-matrix/isolation.test.mjs": "e3960b5d5d85378b0d67c1014d4a59e31e48efe258b085f720086c5f15d27de3",
+        "scripts/app-matrix/registry.test.mjs": "be204fbf230a794b01d7873d770b9f3e845909a507dc43468cd5b755e2b4d280",
+        "scripts/app-matrix/reclassify.mjs": "fe25fea5981db52abc13b5c78f0d4448f729f47ade1f7294284a308d67c27f4c",
+        "scripts/app-matrix/apps.mjs": "0483b996f4f1365c14ab4543197ad7ab72f5c7efe5b426ac76e444b805ae6006",
+        "scripts/app-matrix/review.test.mjs": "20ed1dfe1576aca2933ac7d8446e4a51903979d5d9b2d3366072655ced7f6468",
+        "scripts/app-matrix/registry.mjs": "a86d1e9aa07e95223f567742e02508032586892f1ab93935bb45c8c86c5ec5a8",
+        "scripts/app-matrix/isolate.mjs": "74dd9ec3da769b0baee1db0af280bef8d02712807e55c71f79b48548d4453ff6",
+        "scripts/app-matrix/classify.mjs": "6cd7ac9e52425175185820b561289b30f0ccc7d9cb1899a9cec17c64c04ed45b",
+        "scripts/app-matrix/decoded-response.test.ts": "fe3c46237cf724e9c9b27ee17a6d4658f710bbe54fd21b6d24bb63bc35d93590",
+        "scripts/app-matrix/review-evidence/vite-react-quickjs-playground.log": "d0e63104f0afa11c87b07659d14b636c363cb1c205e8b6d980f2f00bf773e171",
+        "scripts/app-matrix/review-evidence/prisma-quickjs-install.log": "d00d76f2e3423577f62be5d4339d390ff8c7d3eff829bc13f3fbd85c54a3df1b",
+        "scripts/app-matrix/review-evidence/next-quickjs-dev.log": "963afc5224a46b7f1dd8525e1407326a6bba151397545e741eaa1c61fdba1019",
+        "scripts/bench/error-construction.js": "bf811d770f8ae004c055cddf2c57d5800e489a2cadbc6f428aa74ae393859bf1"
+      }
+    },
+    "safariRuntimeUnitsAndStandaloneContexts": {
+      "commit": "3be456bf252aeed698ba79f84e0721f1e9486bcd",
+      "files": {
+        "runtime/bun.lock": "29845f5b7d0f3916c97f367d2495d0263857d171a2397bddcd40033df74e0965",
+        "runtime/README.md": "704c7f5504a1e7a5c5241a3f18b99811af2ccdcf441965ab90015e3a30edb6a1",
+        "runtime/package.json": "3b8beb1e23426933046858381f634b1168f9c0fdd0b49c49621cab9e66601dff",
+        "runtime/tsconfig.json": "9349f740b49044987c906dc8505ad89e28e0c8abb8f3f136944f5fcb51f4905f",
+        "runtime/proc/stub.ts": "a17e1937fad89eef24a1b72351c87ddc743bbf5e0ddfe8454f2df6f0c09d8a2f",
+        "runtime/proc/identity.ts": "616d2d9c5c9962455b090449c3228d800a83538432f0451f15272be55e4e9e7a",
+        "runtime/proc/worker-client.ts": "ed1c2e4f5e5d5df876e99f7ea5ac8b05aa54705200cc036dc667807c1483f446",
+        "runtime/proc/table.ts": "32bc9f62c1381dfd3d7ffb8ab0cba536222f497fcb70364c7c6b48c93b657798",
+        "runtime/proc/abi.ts": "808c1d49263ffe363b8f5e407ce3a97aa3c3584dfe158ba781c99a866b59418e",
+        "runtime/proc/worker-pipes.ts": "8220eb857a20cd4d067e50eada6e66a5245bd401d9949f5337ce0acb3673f8a9",
+        "runtime/proc/pipes.ts": "951b6e8f84980045b5928d202c51775db29eb8d388b8baa91a588a8d96617ff4",
+        "runtime/proc/types.ts": "c948828bafc088a8992ccc4ff8bf006c45c30da5b57363febb1782fb335b7eee",
+        "runtime/proc/filesystem-codec.ts": "5a221e0e07b61c970b5e5b2d29c37a1559effc4bfb0e0696189de0819379d7c8",
+        "runtime/proc/outcome.ts": "7bfa3e29aab47b293cc58485b659aab1c52e9b6f57e16c0b1f4807f4d118a2c5",
+        "runtime/proc/worker-broker.ts": "0fc6a9a6b746ff8650fc826f0c16992daa43539dab5b2a8fa8a5fc6682ce0363",
+        "runtime/proc/registry.ts": "22bc2e682cdcedf973046efaad8373f5b4e938f9e2a82a47c65d53aeb172001e",
+        "runtime/proc/supervisor.ts": "55a15ef965b25e6b2ed7bf234932dc59b721081cc9d940090ff0b909ea6caa3d",
+        "runtime/proc/index.ts": "2221571fa430afb8dadb2d871b7b1d112e2ad31e03533693e3d00243a22ca430",
+        "runtime/proc/signals.ts": "89c9f0ad029a7716acc8c1893c02d82131f1a37087fa2a10c67234d323b57433",
+        "runtime/core/path.ts": "31f2d7f1b154821a0cc19b3d1477f4ed2587627bd5a49aeb64e298c522c00b48",
+        "runtime/core/open-file.ts": "a879ccb6bb86d99f16c0669ae865875638a1267494ffb84ed4a29846979d8cc9",
+        "runtime/core/memory-views.js": "5f28415351a3f6b5c86e83c41c27bcbafe452b5d9826c817ca1fb87f146653fb",
+        "runtime/core/descriptors.ts": "a724682580fe5e3dee8c9896970803ab29aafc623b1b5bdf03778301a9a72e6f",
+        "runtime/core/wasi.ts": "177d0b73286fb754030083a586cdf8a5314454f3c2c9501ac698ff6a5a96b192",
+        "runtime/core/filesystem.ts": "52fb688a22b1dc6108eb377a62f9c3f4ad8f923881f524a3eb494e47c918c80a",
+        "runtime/core/index.ts": "bd749216a5eaa770937596d9630b90d06b85492f649f5a3e4bd028a145e96b89",
+        "runtime/core/memory-views.d.ts": "36fefdeacac81bebe65edf70204ed947d70c79ba2f699a1beeef4e1f6f2892fd",
+        "runtime/tests/process-core.test.ts": "49dcde9ef008a84a217915323b2696018ef0274590b3a0e0f6d9952e23248ead",
+        "runtime/tests/descriptors.test.js": "4dcb0eaaeaf93d3b4fccf0cca6d53b1cd5ab88ddfb482d65ee00ee25c913ad1b",
+        "runtime/tests/filesystem-codec.test.ts": "d3d7d2944bdc7e92442aa2154f958af733ffb0d87157162856a48d06db376da1",
+        "runtime/tests/process-abi.test.ts": "2ee7065f3e1e5a3705235e15b60d38d99a4c6ef4434dbc083c0f2149d76d76f9",
+        "runtime/tests/process-entry.test.ts": "329b8ae207be2c4c202998dbc2e2121c1a6621317f101357b0090723212928e8",
+        "runtime/tests/readiness.test.js": "20e16d7423ecb2295cbefed13bacbc3e4740b3e0eae6bbf3c2a6afd8782f6c10",
+        "runtime/tests/filesystem-transfer.test.ts": "9fd35cd4082f228557fd7a3c4e5bed5b61abfa03e908a2e62f2df0cd1ad319cc",
+        "runtime/tests/pipes.test.ts": "b06d9efab08eb25866fbe1ef88934cfe6a94611dff9a96f448d2289dbc9cb30f",
+        "runtime/tests/filesystem-io-fastpath.test.ts": "87e76d3db3247629cdf14c07def54cf2388f677cd760ef1dd542d2d429987e87",
+        "runtime/tests/filesystem-capacity.test.ts": "84acea4f20174b73154d725cf071c2c66ae77bef97e5545fb58a83cf3bc9d921",
+        "runtime/tests/wasi-exit.test.ts": "25caf7b49dec86b967be599e3c7bb0c21a2ebbaa4351860bf2b844833f16806b",
+        "runtime/tests/persistence.test.ts": "7b7f43848283901b859e27e643f55d204bfa9a74207a2f1c814276cea095792a",
+        "runtime/tests/imports.test.js": "ecebbeaab3d732a53153d99c3c7de11eb397efa78523c8c87d35d75f4a56bf11",
+        "runtime/tests/filesystem-large-file.test.ts": "c7609a451c0daa9605822a1f469ba4b579ab8f62dffb7ccf72d5fbe9db9d75a1",
+        "runtime/tests/readiness-stream.test.ts": "12ce0d9e08e5f0203eb498730feef0e98df3451a7d1035cd4c6dad12b23433f7",
+        "runtime/tests/storage-browser-runner.ts": "2082df398c7f759f290a2b40a65908b712474d6945105fd0c9746cff9a15d011",
+        "runtime/tests/filesystem-quiescence-rearm.test.ts": "4e3df64d98d1ebdbb9b00c13b1fe4fdf5e96ed167089f62b403898af6e540865",
+        "runtime/tests/filesystem-persistence-shared.test.ts": "b29727f4d0ac21b603187c2e58fb2f984313694a4c3b634a162b383c6cc13828",
+        "runtime/tests/filesystem-nonblocking.test.ts": "fbe102f047680aa53f042bbaa52f4dd2c7a20f5de3678fdc088cac41ebafbd5d",
+        "runtime/tests/filesystem-quiescence.test.ts": "dc3777be6000e4cb5cc5590cd11b449cbb7a911f724a509da03dae92db19e43a",
+        "runtime/tests/process-outcome.test.ts": "97e4d785050054fb536e2d0b5c1cddbae2cb2083bfb22b4c1112d409307047c8",
+        "runtime/tests/filesystem-refcount.test.ts": "26801501f420399a5ee3c52e51f86cdb0de933307ea7dec3cda0adfcce4848f8",
+        "runtime/tests/storage-browser.ts": "365436a76a4d61175299aff51ebabb64693d2cda905405afd1eaa8dc170e220d",
+        "runtime/tests/worker-pipes.test.ts": "ca9e2976557f7ad413b8a668ecacbcdc6403df259cafa59f084a697bbad06b59",
+        "runtime/tests/storage.test.ts": "67cc38c1c5fe7ffc4556d57ad78461cacbf8c62eae902bfaa614398cb49263c9",
+        "runtime/tests/filesystem-atomic.test.ts": "15184c3f31ff6cd14ebe78af457287ab6bccd3c568516e8b72d500223410c751",
+        "runtime/tests/filesystem-review.test.ts": "36164022627a120b42e693fb76b41301785b9c6c6315782e2312bd94c12df646",
+        "runtime/tests/persistence-queue.test.ts": "ff70ab025cf1a173982fb2642381e16a3b2e6b81ca8c1b7ba4e0d4b1a68144cf",
+        "runtime/tests/opfs-storage-browser.ts": "11d8c197e6d53463a0eec92714cb2c5250ee7451a6afc83cf36d3ffe7e42bec9",
+        "runtime/tests/filesystem-segment.test.ts": "8cf25b0f55759cb697f9cf4e23be9be8108164879b6c077127bbb5e304e6c66a",
+        "runtime/tests/filesystem-worker.test.ts": "a754974f9da72c57b9a060d8aaeafa2117bcdb5d2cafcbee8b5d44dc2600d6e9",
+        "runtime/tests/filesystem-shared.test.ts": "9d86dc27e07b3d941e86ec98755bc5ea18a27fa6bd1490f4aaefb41353a35f39",
+        "runtime/tests/process-worker-ownership.test.ts": "e8487a4dc9f2650c29ca5398bb9c2ecaaf96e06e2979553a97c802444ddad1d7",
+        "runtime/tests/host.test.js": "ae04c725213c7b5eccf8faddd6502b0dab6d71d4f911f6f4a85f49cc7ca843e1",
+        "runtime/tests/persistence-durability.test.ts": "4d6a40d8585ff1b23d12968a45c6c93547a78bdbae2f199807d859280abae044",
+        "runtime/fs/indexeddb.ts": "54ca3ad290c3b0be06559240e6b074857fd6b6e204a8a0650fe5baed732b4bd0",
+        "runtime/fs/persistent.ts": "49310f17ea5f2743011f099bb261ebdf28bcce2d1e51dceadfebf084c2bca1b8",
+        "runtime/fs/storage.ts": "cc8bae3e4dba032600e9e7c806b7bc65ce6950d14bafbd8fe88184890dd15672",
+        "runtime/fs/opfs.ts": "cd21f7e9dc58a9bba216f672269752ae0583db102604edea75592de0c5fbb7bf",
+        "runtime/fs/shared.ts": "cd6f208dfd24192a2e2cffb93a44235ce4cf074a6ff6fb2b576cff66d6e5d6bc",
+        "runtime/fs/client.ts": "9150324b9528def98cbaba2a40795588ba476549f8ba99478f6abc876ccfbe5e",
+        "runtime/fs/protocol.ts": "b5f1d98ca53e66ce65f12e56bf203b4e8a274db434255bb80462aad7f276d629",
+        "runtime/fs/memory.ts": "918f538deebf8e8fb0915e61a07e2418af5fc548a4ed1d90a9765ed4cecec8d2",
+        "runtime/fs/index.ts": "c5efa9b2c2d996e2ed24404a19fab5ea6e3713b8cfb90bb1e4e18fb629f66b4e",
+        "runtime/fs/backend.ts": "4d6d48fd652894fca75e3c10ceb4018160d0a836d577c7c9c1387046d7f8806d",
+        "runtime/fs/service.ts": "df451f32275ec4d3cb80ec97d049930331d2aab2f941e1b2c29ea7d305938a59",
+        "runtime/tests/fixtures/filesystem-proc-guest.ts": "b9cfb6cef0cf604bc6a06c87e47dbd2054e1b9072db71cf0bc22a96e8a0325a7",
+        "runtime/tests/fixtures/process-abi-poll-guest.ts": "5e019b5d75e94d3e0949c0fa6bb287f5fc4a675474a92791642bc4ed7f12aeb2",
+        "runtime/tests/fixtures/wasi-atomic-host.ts": "ce54e9e949e5519cf989dae70b3a07d43d2509c1cbdd83141a18cb8c6bc9f773",
+        "runtime/tests/fixtures/filesystem-atomic-guest.ts": "fce57417ca96f48c06f2d28f038246bcf552c42ae21e2843c09b69811702fa5b",
+        "runtime/tests/fixtures/filesystem-quiescence-guest.ts": "6b2e12ba12053503b2d3e5cd64e9b90e4bea14aa0fa4d95ace00ae9f28aa5aed",
+        "runtime/tests/fixtures/wasi-poll-guest.ts": "eb3cfb0037ea1f95d25980d77fb9486d019eb7f7a9e32a0c166bb37330daacc3",
+        "runtime/tests/fixtures/filesystem-refcount-guest.ts": "392ca28240afecfc20a545f3834d5b4cb2c2798c5842d93ef1da4a34c9a98ce8",
+        "runtime/tests/fixtures/process-abi-guest.ts": "b58d452e160af4f750ccac50b6f7b9df65fa73d3125a270602c0327c4c622d21",
+        "runtime/tests/fixtures/filesystem-service.ts": "d6f680e7df1ea058c4804451bca6fbfba90a6f627fd24fbb66a2d8d3fb536ef5",
+        "runtime/tests/fixtures/filesystem-offset-guest.ts": "c07ca31d3977826d5a6bd8943c63cdf872c7519d9cc242b23e7d797204f595d7",
+        "runtime/tests/fixtures/worker-pipe-transfer-guest.ts": "107a9395c857cac62c5eeaf0d2a1970b3c54143a63e7b70ac9c459dee0e7829f",
+        "runtime/tests/fixtures/filesystem-segment-guest.ts": "628cd75001bee555c28ff8f716a61d8f735dadb66e2ece3a1667f25d8998084a",
+        "runtime/tests/fixtures/filesystem-guest.ts": "cf7a93f3b823621e9ba88426b93af0fdde1b9da8730b571dcced8aa438798976",
+        "web/index.html": "953bc43a55e276f563e87b23208369a122e8fad2d302140685a623535319bad4",
+        "web/bunfig.toml": "d09eb18ffee6896a4b74523d80b1bcd642a6966974e20c30bac94027a31fc202",
+        "web/bun.lock": "821842a46ea08e9824c3a3f869a33f9c311c22e491838c35b925f6e7cf682386",
+        "web/_headers": "a8a32187f44898f1e5bc9c689700cbadb6d777252fef341dad68782e64951428",
+        "web/README.md": "9bdbf62d84e1c4d31bc740c43453f69fac78414adfbce4c03d5f48f0e9395fbf",
+        "web/preview-build.ts": "36b6bd5fddf266170427f45b01b180d8a3b2532ba49f3e12694446b8d4b0fc58",
+        "web/serve.ts": "f53cdff511b163e6f233a3c1a94bd85b6076ab7bfa6e0b27e630401acc403fa2",
+        "web/.gitignore": "a2409cab6567095750a1a50cbfb5c19cefdb84e10fb48a6cac3f92c4939dfea3",
+        "web/package.json": "16c3f0ab57dc69d45f33b08985e4e20704844b249be97638bdbab3744f621c4b",
+        "web/tsconfig.json": "8c95af7e1cef862d4ab8219c7e6e0ac725b92b9f8e3a36320f303313731e846e",
+        "web/build.ts": "44361b81751aca41e51b462fa209e859cca0867c2f05f22b029a1ac5b54166b5",
+        "web/tests/browser-subprocess.ts": "2994b36b5a632c3503f3ad5a93c02a1fdf4a04c543b412a337ab56afb53a84c6",
+        "web/tests/subprocess-zero-length.test.js": "6c3733a84dc8963bc9b450380e6075ea2c9abb8e500668e6077b868c9f0c087c",
+        "web/tests/browser-persistence.ts": "b62bb4e93d62b0a98421913325ea7c8e875572dc649492db727ea25e8b0129b3",
+        "web/tests/native-stream-state.test.ts": "73ad30ba12fe06cbb3864c13db488d1701f4b14d417c8f56d767071824b25c64",
+        "web/tests/memory-views.test.js": "ae7eef8fe72a47a07ed84c10ae57ede7d9b13624382f48335cbdc6e25e288439",
+        "web/tests/browser-filesystem.ts": "d8db0e0c57428aa2d2711cdc28ac73c0278c93cd61d2b80c9d3f1ac422aad8c0",
+        "web/tests/memory-wasi.test.js": "5f2b63ed12f45d9ea4fce64d35bcc5c2dd53111f7e63e0c5636db8c5da1c12b2",
+        "web/tests/process-bench-baseline.ts": "9ea6a15a6070a80715c9468e69f0f7b4506b6bad7e0744404b2e53980194f6ea",
+        "web/tests/pipe-stdin-race.test.ts": "d514bea138aec419c8f857459219b4c774517032a269864841b1fbd91aeecca8",
+        "web/tests/subprocess-signals.test.ts": "6884a387b5003064af8940095e034e29b36cf94f06591f959101f71dca085117",
+        "web/tests/ui-async.test.ts": "3e60d425d5d2b39b1afa2010e5827e643469dfe46af01d2a0fa720a8c3120c34",
+        "web/tests/runtime-package-build.test.ts": "d9d0b66deb00ed63be647389aac0fd7d8fbeb474e7641da30b8b1dc684e554b1",
+        "web/tests/browser-smoke-worker.ts": "686b657b60a5faa308df441fbeb939ad774dcb05d16dfd844cdd9c1cf5005028",
+        "web/tests/browser-runtime-proc.ts": "a2b81c2249b888112fc8bb61adf05f1f1ac01c27b7847ac3bd02c2b7767a9deb",
+        "web/tests/runtime-proc-fixtures.test.ts": "a84fe36302983cd5e232e4a5eb6030c0fd21c9333a8ea83b7fc6ceeb49c3d3b1",
+        "web/tests/bench-memory.mjs": "8cc6f0a9a6550fc0e55b0985a0be15ed53816cb58698d0222a4e6314423eaba9",
+        "web/tests/bench-engines.mjs": "47e014a935f9dca9d0fba17919c1ec4fcd525aa1c0f38434bb436c0a7b2aa69c",
+        "web/tests/filesystem-bench-baseline.test.ts": "b3b93ec31e7fbbb1cfdfa95ec93b93b086776d9f172d14b497651a8b6868cc36",
+        "web/tests/browser-shell-stop.ts": "a300399cc6f3bcec72fb775819db11c36aff860a64cd5d728007a8efc547fb13",
+        "web/tests/crypto-provider-preload.mjs": "c73b322443061e2318bd7da11d47fa71565ee25e902c881a9cb9e995a6d8c799",
+        "web/tests/browser-install.mjs": "54d4f7a15923c29f0bdf334201dfba1f556c56844e1e22bb0803f73969f87d1b",
+        "web/tests/crypto-aes192-gap.mjs": "22b0ed37ac51a76ea757ff7f1860c0ef0712504d516df405f34109cf87e1c0b1",
+        "web/tests/browser-workers.ts": "38893e59318c376106d52622210f12246d5d3b0a19e89b926d0f3a47c2472b37",
+        "web/tests/memory-views-fallback.test.js": "9becabeda86709f6b220ff13b89d5fb6d17476955b439b376f7bdc64eed874ac",
+        "web/tests/persistence-browser-worker.ts": "93336ac67e195f76507e089f11f7c4480e7d21475eebe1cf50e3de2792b4cc54",
+        "web/tests/browser-splitting.mjs": "c8656fb23ae2ca2a52525854e7e200b2cf40f2c65ae53a6dc570cfbc15708e5d",
+        "web/tests/runtime-worker-ownership.test.ts": "cdbb0eb21e3148cf5590f9d271e3f2f99744a6b7643753f17bae0040fef42df5",
+        "web/tests/build-splitting.test.ts": "f420ea7ec0d0acee4e823b3082af09d39b7e22ccd752b54e33622f749e592924",
+        "web/tests/native-stream-state-probe.ts": "48253f93ebb74c05aa635e7ff1de5407dae14a081a47892ed2d4218d75578ac9",
+        "web/tests/playground.mjs": "9f4f7b687251eaa345597f0844430e8abb5c7f8507e047a3628486b3f83aad84",
+        "web/tests/browser-net.mjs": "c92336bcacdf910131b0acfa09da10948283e054d18392657c30bc40b2ce63c2",
+        "web/tests/compare-memory.mjs": "eaa6250b0d4a8a9600685f2ae8184488fa727ed4c7df77982c9ee3448b18321d",
+        "web/tests/crypto-hash-validation.test.js": "d068f365619ec380b4eace92e109fa6939de3a2b83292c518afaa4d2c2b70bc1",
+        "web/tests/process-fixtures.test.ts": "f1d64336fd3865ceec46cc5f6b19de69bc02d005f0f2848ecc471e022cf425b1",
+        "web/tests/subprocess-filesystem.test.ts": "e6ff5e4b4dad7675ed9c2eb92e998fa430b3d1f45365665c0ba1646d9e113e20",
+        "web/tests/runtime-proc-browser-main.ts": "0a4603b0cb236c27ca9cc9c38d4e1358c703f36c23417c4a43b1a936da851a45",
+        "web/tests/subprocess-broker.test.ts": "72fa277f9b0b6fb49abed57da0ee2efc67b3583089ef3dbd988468ff93fe17e3",
+        "web/tests/process-signals.test.ts": "d1cf5a74dd4ad5d80560d3555bd08926f7cc02e992e2bac2be31ae4cc5113d27",
+        "web/tests/filesystem-bench-baseline.ts": "d79645f28602e3042520cc5d17de25b3b149b7f8c3438c073dd7e098fe896fff",
+        "web/tests/timeout.test.ts": "c074a2631fd282187a76544a6331f16403ae9c467765816bd71e5335066ded92",
+        "web/tests/subprocess.test.ts": "ad25ea9622adc5fb9a03eba16ca82bc1f96d9fd900bd04810ca06eba0b9835c6",
+        "web/tests/node-signals.test.ts": "3d88a483a7d236e1b06875865e2b7b410a42df162b6e5f0ea1dffddedaf97313",
+        "web/tests/runner-process.test.ts": "d38bddea902a2a48619d3dbf3e363fd9595df6d0493a44db35e2c04235eaf0ca",
+        "web/tests/crypto-lifetime-probe.mjs": "b8b764878c3dda5eeca39c470bcc3a09f3a85326b05e8c7f2f510a02074af952",
+        "web/tests/crypto-inputs-probe.mjs": "2b8f7841606a20cd390d670e115ac14cf541fa63083d2a12d4e957306e79c0ed",
+        "web/tests/crypto-key-adapter-probe.mjs": "d392e1058ea6e1355a16500a18a8ac007b1335717dfd62cdf1f7e5b1967ff078",
+        "web/tests/filesystem-browser-guest.ts": "1d19789d17b55160284d78ec8674b765cec3597347cd672fbcd93082e1851e54",
+        "web/tests/browser-memory.mjs": "c5c52f346f8a539d5f0e577937eb0a2467ce1f2601915fadb05288e16233c8e6",
+        "web/tests/browser-process.ts": "fbdc157ce672e4fec3a8a13b2bd0625775c62b869d3a40ab656ee1e37d44d9fb",
+        "web/tests/filesystem-bench-worker.ts": "25d06ad87125e99e5116d10c61723fdfcf15c4857923d396df1bc801ed9b3d82",
+        "web/tests/subprocess-admission.test.ts": "5bbc4f42e598b0f5342a8713828e193a2ccd0f1590e3b6196b1655fb07f62ef0",
+        "web/tests/crypto-no-provider.mjs": "8e6726e6f8a637fac78c89ea6fd0873e09e22f65d7dcded1cc02597591140b79",
+        "web/tests/browser-persistence-safari.ts": "30f39645dc1165e23f6e0595ab2add80aabe37e0a312e6dd115b681ced6b8ecf",
+        "web/tests/browser-smoke.mjs": "293d105227f11fa7e0851b46d9fc72c8b1e5934c516c27f62db8393d225bd503",
+        "web/tests/node-spawn-registry.test.ts": "8d3a71a930d514d82c888f1eadf1e79fcd60020f591dbeb351bd912309a5442e",
+        "web/tests/crypto-lifetime.test.js": "ed1e37d9bf98c72fdb19bb6039c0e57bb52a980b0587b5ac48966febd80f09dc",
+        "web/tests/stop-shell.ts": "18c2f4ac0c48414e90913b42b52103307dbf8f6a0a49cf005b508b1e132df7c3",
+        "web/tests/crypto-kw-jwk-probe.mjs": "ea6d72dcd7818663fad7ecf6d49bb44667744ee7f3ee10940850720b03a93bc8",
+        "web/tests/filesystem-browser-main.ts": "6a2772d7b28981b56fb1ac5de7db3e7d824b6e03cb2ef21742062f315af70e0f",
+        "web/tests/net.test.ts": "f198ae1c98adb045ff773bcdd7edc1fee2518df6fd275c3836c725d5f2374079",
+        "web/tests/browser-stack.mjs": "af50492d5b40d99c97c9a8513b9a0903b4440ddbb939307c1f9bdd52a1fa0564",
+        "web/tests/browser-editor.ts": "e914970e1376e36304c6fde1ab6321fbc371d98098d3b02031c84412c4a66628",
+        "web/tests/first-visit.mjs": "894d52fd45659f6a2d9be183c9137e2f2dd24d4b866a6c89db116094e3772d5a",
+        "web/tests/crypto-inputs.test.js": "dde3ae0e3670d1583140bab4f08a709fb9c1aefa088e956827dca34cc5bb1a25",
+        "web/tests/foreground.ts": "06cb30fb44bf428f7cee7b83a917f420dc95bc7bac93666db6c4b1262447648e",
+        "web/tests/node-process.test.ts": "0c3ee34844cddc2c331d1716ca0b9a229e34b901ca35648a09122b39a1381ef3",
+        "web/tests/persistence-browser-main.ts": "b316917534a3404d4f9d105ce0c12ba0772a06bcfe0878fbc324a287ac25b4fe",
+        "web/tests/node-net-write.test.ts": "c33eb23f4835aafb3ba01e3e01dc5020dfa6b3aacbdc3f9c8274b3a578c08e94",
+        "web/tests/crypto-domexception.test.js": "c6f93683dd4a76a130b598b1143ac8de2f97a9f5b1890e4a16f7194b5b6fb40e",
+        "web/tests/pipe-readiness.test.js": "1070f6b5ecd0b12f2be2b71651fa73f7c8ac47c3b33b61c27ebf0981baf1ff6e",
+        "web/tests/runtime-proc-review.test.ts": "53bd870375368709e22d11cb90de4020efbc1505adf9de59eb47c52aa9dc3c57",
+        "web/tests/subprocess-revocation.test.ts": "df83f23b79df6b07387ee5dcc533998a66536da21434ce0ba51387bae0a9c1b4",
+        "web/tests/runtime-terminals.test.ts": "2c6f27b3400f48696d09ae2f9b0b603bcd02fe9053301dc3587642cc00ebaae0",
+        "web/tests/node-root-signals.ts": "f66ae7266dde231ed93b270567a963d74fe66cff9a97a99e2b433473bafbb3dc",
+        "web/tests/process-benchmark.ts": "155b0d9e71875e9da5c11b524965fa9e63d90918c13012f0b7864ba76016b909",
+        "web/tests/browser-engine.mjs": "249c5ea903b8a451ee8dd874cfad4ff538c46b0aa3debda19fd08d658730d413",
+        "web/tests/runtime-worker-descriptors.test.ts": "323760a69a922e09763ebe261db50341f00dbc367d6cff7c827cf141c289b115",
+        "web/tests/browser-crypto.mjs": "2247db93b87d607476ef9b599cf0e1fc453a749fda7b1469d7d0677ed970ca0e",
+        "web/tests/filesystem-bench-main.ts": "e8830d3832cafc60f67ae9ceffd7a871464ad11609f8f4861f9f808f42e6e9ec",
+        "web/tests/worker-signals.test.ts": "6bba0bb14582ad801ee880b7a760340195219b9c60ddccddf686be98dddbddf2",
+        "web/tests/process-browser-main.ts": "c421a6ea78e1b7c1616f23047d2bbb774cd69277d8c989e6e8779edf6d65d214",
+        "web/tests/shared-fs-failure.test.ts": "9ecdeb4cf4dfbc807d3ccbdbb9b9538a9554f87bda529a1231d23816166ef2fb",
+        "web/tests/process-fixtures.ts": "5e3e2cb2950115298cdc8701ff523970242f25d251a51afa5eaaf68486936c83",
+        "web/tests/foreground.test.ts": "bc589828dda561873fb66c7d04fcd8fd734c7fc71ee9d7965899ea3f971bd0d1",
+        "web/tests/subprocess-optional-budget.test.js": "1074e36e773273f553d1fc1c6874c306c138198e1d9e53a02614fd3f5ee6108d",
+        "web/tests/subprocess-eof.test.js": "d80ccc65daae671db10bf2714f00651fa54ad7c5641d839b41b564f22891917b",
+        "web/tests/toolchain-env.test.ts": "b8d170135ce049842c3ce5dedac3a7f0255ec1ad1fab13a824791bfc2a6a3e7b",
+        "web/tests/crypto-key-adapter.test.js": "11f402c7e393292087c2996bf9fde8bb86e5fc3657356622c9f8fde8d5791ca8",
+        "web/tests/wasi.test.js": "1cde6f8a8110c855fdeacf87638dd4aa245dfaa1d90eca72b273d950b050aca5",
+        "web/tests/engine-signal-idle.test.ts": "f08f541e62c84ba4a073857b4dc7846886a4469b4d793e0a5308a0dd18b95862",
+        "web/tests/bench-filesystem.ts": "3c3df1a97d29298f4533a41ca4e5eed8a32be0a580e11ae15ac5cfc3aa22e521",
+        "web/tests/filesystem-browser-failure.ts": "281c0ac69bb67bc78f85186e824276a0c7d83d8ee91d1ddd147d881cdabe28ae",
+        "web/tests/runtime-proc-fixtures.ts": "473d8c084f48816dd68b25a2ad87350ea46ae7aaea01286fb7b92b56aba1869e",
+        "web/tests/crypto-kw-jwk.test.js": "1d4d80a87449a1730df9a242d84922f46f522b4f70649403e77c254c1fd95283",
+        "web/tests/process-baseline-source.test.ts": "cfcb59f82d9ae985cc124e65bb67a67a0dee3bdd0237131c191c1b5fe47a1f57",
+        "web/tests/subprocess-process.test.ts": "c4bdbfbb924921602a29bf628b072519fdf03d46e6a7b292d51b2cacccadce3d",
+        "web/tests/core-node.test.js": "c8fe486dca971b39bb456bc82139db89add9e5bab646b2f0bcf5944b7673c0f0",
+        "web/tests/spawn-normalization.test.ts": "12a98c308daced7a41dc6399c351297af98d4f6baeeccfb9fc106d2ecbf9c1f1",
+        "web/tests/subprocess-worker-channels.test.ts": "dd79a34400d8e159300fcf188e55489c4b6b0f8029bc4fb72290f405d70882ab",
+        "web/tests/websocket.test.js": "118684076268b18c84f65ba960e3ef028383ca9d88357833b09b619b08c043cd",
+        "web/tests/subprocess.mjs": "10ed8d822ae8937088d14d74364188e98e2a0b82b4879f16bdd3b3f2e82a5084",
+        "web/tests/process-baseline-source.ts": "5d153a8d0602fbb4273e4c436270eb629f36d74b538a3e16b99483c62bfd5b10",
+        "web/tests/phone-ui.mjs": "39b794a34a8624b34702aa2c631b9ab69b0f3dbf910d3fb83a7ee890d1e7c1fb",
+        "web/tests/runtime-runner-abi.test.ts": "31ab1158c053fbc66aa5ef2595f6d5c61ad90052d1298ad557dfda2fe6a62dbc",
+        "web/scripts/node-stdio.ts": "95d41faa574afb31f1b88a7b9fa1b810360872fe313cf9eb75dfbd7660a0cd60",
+        "web/scripts/node-process.ts": "a631efdb15fa4bd6f17f18f84cbec9265df3cb3220749f43d14cc09921cfbe37",
+        "web/scripts/node-spawn.ts": "2f0643a0d764c98c9341488fea45259f42b3b64baeb52c5807b121f7217c9f33",
+        "web/scripts/live-check.mjs": "4797ff6ce4ece7a48ffb69d9f48bdffac1baf530da11d6bf49ae6463cffdbebf",
+        "web/scripts/net-helper.ts": "042ec486d37e0033a1425d990fcbcfccb8538df91fdfb4fbf3c181daf9dd8311",
+        "web/scripts/node-host.mjs": "1995dfe10005741fb0258ca3508edcbeeb89844c1fa34416a44397c4f37de40c",
+        "web/scripts/node-signals.ts": "0144baad45d8bc5ecc24c76e91550774f145ead82e36f724506526ce4f809adc",
+        "web/scripts/node-install-net.mjs": "0e5cf0bf676fc174ccf1c543c2506184ec18c5f4b5f29ee6c35c3eb1391b74b1",
+        "web/scripts/node-net.mjs": "6384fdb46bd6bdbe9a94430e3b9e9fb799a058a1bf4769c43ed5f6dd9959477e",
+        "web/scripts/run.ts": "0f0e2c790ea08d1cd9d66ba7293baf688dcc2115a0e357bf8873433ef63ac42d",
+        "web/src/main.ts": "7bb0dedff294c8d780a9fd537f8750d6093bf03c69db90ca09b28f379a1690b3",
+        "web/src/native-stream-state.ts": "57eaa056c25caf6cb30e4f97471b94556667e605b126ae9dda2b81ec3211c756",
+        "web/src/subprocess-broker.ts": "a4577566bf9239a39f67741fc5922ec4f4e6ba0002c14bb7b3a33982d0bf5991",
+        "web/src/shared-fs.ts": "35320ace4d0d65fc46a351507ed33208e228875fff5a7ac26ca491d7762a2865",
+        "web/src/preview-websocket-client.ts": "baf048e44c6fb2cb2d7351aaf8a34d800c718487a7c6775be5341a495b1b5e90",
+        "web/src/sw.ts": "b5992c3b136014e39ffd76fa89148527da19d2d8b74806ef710a7a711c7add11",
+        "web/src/examples.ts": "b1e4e0c0d7cf88fda0902cf97981bb63c259b3718fd83f0e31e83317fd5eccd9",
+        "web/src/startup-cache.ts": "13dfa83365b572ee874334d9473569182d08233545cfa962e01bdd9cc0de3b69",
+        "web/src/fs.ts": "2a649fd18c88e6553b7fadd6e3bacdb5d2733e86cfb21772a4040bd72f04ff9d",
+        "web/src/worker-pipes.ts": "79902db417105c376beedf9f7a7f78d0a9889595761933684052956810686c5d",
+        "web/src/env.d.ts": "35d26ea66c86da9701e4f4b467913481ffeae910761cea34c775c5dacb7f8eaa",
+        "web/src/engine-host.d.ts": "ba2d11d69e245ae5ba938f8daeab3921439d13d423552d07830d8f3047cf8255",
+        "web/src/engine-host.js": "576399b67f0cd6a66a0d96a6d4b2e6fc74cfd6e70bc8825b206e11f299594796",
+        "web/src/crypto-inputs.js": "2a17c171608d95846d478e24d7a6b18e86c98dfc485e34858e3133d916166050",
+        "web/src/terminal-links.ts": "c99037774408d924182856459a39f8372907bf1817ccf0fcf7e471bda6a38b95",
+        "web/src/terminal-copy.ts": "0bdaf654905b3c99ebd29c6f75b98d067cdccd9919471171ecf29bab262d741f",
+        "web/src/shell.ts": "c39bb53c539f0900756ff8c89426dff46f05e0877ee417e3e027ca0de1dbf80c",
+        "web/src/fs-worker.ts": "32135878d1200c71391ebc095093d8318bc9b776a5ad71d25eb3fa3745fcec5c",
+        "web/src/subprocess.ts": "1568972dac0d8f24b3a14849a0c9eba30103c46518a60f5c34bfbe9747c9fe0c",
+        "web/src/style.css": "b6bc7467604165d9a47fdd8ab0c4ccecd606fdaf5fe4b3612ab24eeb6af510ec",
+        "web/src/preview-protocol.ts": "f070df7eb52710d2de0d95e2ea55057df3bda2ebe6e8bdc51bf09fd549be7734",
+        "web/src/crypto-host.js": "2f4575e4064ddabbe4cf4ed3c6a28f5c646590a7e27989cfaab1249b10c1ef4c",
+        "web/src/buffer-transfer.ts": "8a65ed717e04c83b76e8ab4b069c2f25130daa53a6c353e1efd9f9fef5566fe2",
+        "web/src/runtime-terminals.ts": "f6ee2c53f9189dff4456977ae322353033c31011b96ece779353593b803e1801",
+        "web/src/startup.ts": "87305ecf10b1e78835fddd73c3c75c802847d2b25812e3d75e3da85f670b56a1",
+        "web/src/runner.ts": "8b029489c91489f02642816e64246510251bf2fb156aab44faa0d9a5f098d65b",
+        "web/src/preview-websocket.d.ts": "46a09fa53efa7421722ff184031750e333b39e184f53cd3756f51c4a4a8f7f8a",
+        "web/src/worker.ts": "5cfeb918628b3ea698642b965b8ae0ea92fbc926cb8c01b9fb5e929db951241c",
+        "web/src/preview.ts": "0f22d45cd96135c054d59c984f39ad74156a8884653fad2cb5526f7ff1465748",
+        "web/src/net/ring.ts": "a55377343222b3e55dd86201bee5736d8ff6028af40e55927fdcf5e37bd4818f",
+        "web/src/net/trampoline.ts": "6e2b9abcb31b0f0ac9d7a702985b94ae17bd7eb171b244fc40001d75e6f65473",
+        "web/src/net/install-cache.ts": "4a314da2ed93e5f51784c606847a878ed88b0c9e013d755c528355c28a6d5c4d",
+        "web/src/net/helper.ts": "fc7cd896cab5ba7b769cf19936951b5a5303e9dfe4f448b9491cb27f2ba92bd3",
+        "web/src/net/http1.ts": "92597b3424ea70065c88cabf6bb47006bee1ce6e2d1493178505a8fdd0edc459",
+        "web/src/net/protocol.ts": "82e3c8f1e49811f2c99c2cc5415b36fd95cd198bbfac06deb8f4e195e5968435",
+        "web/src/net/host.ts": "dda718650cda54498b92fe9dafcd26eb091b17444d249954baaafcd35b1489f6",
+        "web/tests/fixtures/persistence-corpus.json": "7e29a828bafea3336421cf47845d56102a3c2ac5b8d0f5383cd144214df15c63",
+        "scripts/port-check.sh": "745a1273973537253e7e67199acb1d76576336e3f0a549b917c01ab46d0afc96",
+        "scripts/runtime-size.test.ts": "0abf22566f462d5398da2154796ae8a4399b73cdef75a66f65155f08bd760d77",
+        "scripts/real-runtime-rust-check.sh": "6743868055798aa07cfdc2ad0c1151d22ecc231cc75b2982445b2eb8a731dcad",
+        "scripts/test-dev-cache.mjs": "7169c864ade0730078842f145383159136e080d6881630bdc9cf090f3e3c8213",
+        "scripts/test-hmr-server.mjs": "52422a68ecad220d45e027a68104e262a447e99b45cbe275a79873095a1ece61",
+        "scripts/test-net-ws.sh": "61f0b01c66d22a47f095065b8fcd64942c1135aeee1f7c1862719213aa074dab",
+        "scripts/publish-web.sh": "2071e19a618beebd1986f72364a2d9f939e50f68989e7dbb46ad147daee71c82",
+        "scripts/transpile-runtime.ts": "eacb870a0d59533e0e8b95a136d9931a044917f0c96dd7da26984ea4bfa4a0de",
+        "scripts/generate-crypto-vectors.mjs": "187e67c686b49bad7c132f56ff29f576f6200e501906d2198f734bd91f483ca6",
+        "scripts/bun-suite.sh": "1c84ac38470971e4a750555beb11679317972854692d452b3b7d0df1358a4085",
+        "scripts/bun-jsc-inventory.py": "602641b8d0b63b5efed7cec0307402e474d4185208153432e60dd2d097f9deb8",
+        "scripts/crypto-review-vectors.mjs": "67f33c73f88ce26d10634afa28de3cd0de75b0aa4e6117071c5f42a00c609db1",
+        "scripts/build-jsc.sh": "95b75fe6f1ea5243e331a8a6a3cf89c4383e9f32581d31897494421a01ffc5a8",
+        "scripts/test-html-server.mjs": "2021aa3b5a3ae2d9592d1cfe4363d367bd2c5579dfa153bb5dafe56a12645a6a",
+        "scripts/test-native-stream-interop.mjs": "24df780bd1319ee026ebbf896df04d3c82d11c0ace91814dea0390ded5a821a9",
+        "scripts/runtime-types.test.ts": "c3a580a52d38c05c23a6dc1587d1c2dbd405ee037e2f62518b892b0752dbca55",
+        "scripts/bench-jsc.sh": "b3869116891e2f6e30b27f217d76ace6e818524077da5dd99017afd5acb6bef4",
+        "scripts/check-crypto-review.sh": "5e6e385b5a34cb07de8f61b25c34bf2593a47a0563196c582c13cdc6286159ec",
+        "scripts/app-matrix.sh": "e7012a9f03369f4f57df58cb554256840c496e37243a6b2cf9c976b7ec788a61",
+        "scripts/generate-bun-builtins.sh": "68e71a9862886c8320f38df37658b367523151e20af0376317d11682a1be3559",
+        "scripts/test-websocket.mjs": "2bcfcc2ded7d1730183bff9f688a73bb58f6c888133c95ff9119bf51d93db547",
+        "scripts/check-runtime.sh": "943977e781758fa11b8d15f8f07cdc92ca9d456b2dd9f74339aca4a81ae45c17",
+        "scripts/vendor-node-streams.mjs": "2368f681ff2010b37b1f1c1c92af6063b544bfd8826f07ee56cf0b95a1342989",
+        "scripts/bun-builtins.json": "f96ae480c782e2c32caf868ec0791c2d16b4077f3cb1f3e76c5a7c6be677e27f",
+        "scripts/runtime-size.ts": "f137ec337acb76f377010d0582c0c593b242325571010d9ec193369bd922fe94",
+        "scripts/test-web.sh": "48e5aa1f256c13eda11628c8467e990a2e614c12cbf43d9aad45977f95501b48",
+        "scripts/runtime-js.test.ts": "f0dc4d5f64a3ac487e1be607d4ac9e440e72e83b1acf742d31b48f9884afbbbc",
+        "scripts/build-bun-jsc.sh": "ad1858b59ca4bda4181b47b2f899c76e10f4ddfee5e11020c8a3b2b4c2e5ff08",
+        "scripts/test-build.sh": "87f86c53ae60deb5be7b0b115ab5c4dd994cad18f69c533f13da407967016869",
+        "scripts/build-bun-browser.sh": "71620ded9428703412f08bb6e92c6ad686f854f018774e974d0c996be955b2c7",
+        "scripts/export-patches.sh": "9408074de22522e2c74a54de1566d3f7000f23782a2423a947515bf390074469",
+        "scripts/run-with-timeout.mts": "9751e5e10d87f4b4ca925dbc2f8d5158888fb22a24c817357830452782b6f3b1",
+        "scripts/build.sh": "980c2117a7939b559797a7440a7fe5509eb4534e8d0ce08557e78e1f7f463193",
+        "scripts/stream-polyfill-node-hooks.mjs": "6997ab31e7eb8edcf95733b52358b76465df899d38eafc53e4ec0e8d40ffc5ca",
+        "scripts/generate-bake.sh": "789ead1cc16d4892f2a76ef7d39ac5604dd59277543a3b1bf61c33c00daad1f3",
+        "scripts/measure-worker-threads.sh": "16c0bc77f642c0a1cc40ea77352d8afa416a0fadb60de8f98efd43386b56de79",
+        "scripts/worker-selectors.test.ts": "70b240957fd65a7db70ce118ce1d4f3e2d9634e217a06b67047aacbaecfa0fc9",
+        "scripts/test-host-profile.sh": "e1cce38b4a788864bfc7723908b09f345ba361908685aa8215fe587cf86d751e",
+        "scripts/worker-outcome.test.ts": "6318668523aaf56827422e5196179b6e1c1ed8df282f016111c671164e715d83",
+        "scripts/measure-stack.py": "099965cd31565eac199247fe77a65c5b4586b0931d7478e9ad85a00bf52f7297",
+        "scripts/test-bun-builtins.sh": "7c3f1f9546cc4bd5890263773881cba6d29b58c8a47e3031e70a953468fd1795",
+        "scripts/generate-ws.sh": "108af82adb99b131de79ead7ddc183206c3bf88e50e2d5b68e69cb855d580c63",
+        "scripts/generate-bun-console.mjs": "ecd98aa20a35dbf78acf63b552b86790b1c721d0ec3e462d0661579a23b2970c",
+        "scripts/bun-suite.py": "168c85750d91e23ef9e193d6098559080bfe3546d620077116dd3a9483fbbe6b",
+        "scripts/runtime-emission.test.ts": "5f886c318a6a88ef61fe75adbed662fed2e9f12b7c2e1ba4f8da71cedb139a55",
+        "scripts/test-bun-suite-node.py": "dd932a60d8307b307cfc00e36bee70ead0d10e096eb1c9d2cc12d0b0bc284b59",
+        "scripts/sync-crypto.sh": "850b312ce3bdd4a4d8e57546584d1e22895775fe8ed9cd0ece956234bd8c24aa",
+        "scripts/sync-bun.sh": "b2e4ca48a61fa594a9f14314a796bb87c334184fea541e6543094eda257a0bf9",
+        "scripts/measure-bun-builtins.py": "bf7f96d29e81803ba75dad7f58b80c762bcc8e9c3fb4ac927567fbd9bfdb2909",
+        "scripts/test-jsc.sh": "fd6b6d21bf3c3497f44e6da293c464eb36685856ca8ee7f22406c0309cef36f5",
+        "scripts/wasify.py": "a548c6bed7383d32f0bb51f527f0fe487bb277571310287bfdca68c6ef8296b1",
+        "scripts/test-transpiler-example.sh": "acba5c86f21836c23f9651bd28320af886ec7cc4f40f1993f865855d22c6e301",
+        "scripts/test-bun-jsc-backend.sh": "e07f885f6b7e95c1ab09956f7971a9dca247a0f671ea67b6792111b93ee7bd9a",
+        "scripts/bench-module-preparation.mjs": "fb784851ea37a9de608c6a06690947dfe334eafa23fb4160c429a6149973e306",
+        "scripts/generate-node-key-vectors.mjs": "ac8f6c643eaef20b27d44638196632a6d16a85971438ec8d95932d0c3395a703",
+        "scripts/worker-codec.test.ts": "a68b932063381d810340f904f742ece1f69429699d2d31ffb3895b947690a085",
+        "scripts/test-bun-suite-report.py": "adc9c158be291bcb04fdda17b42621db8397e2996bf5bf9bc034d552453066bd",
+        "scripts/test-bun-suite.py": "1c96497a9807847e77bb6dae01e141188137978465ecd5ef10a18f3987b9bdc5",
+        "scripts/measure-worker-execution.sh": "c600647ba019828d1872976d09ab9108b2b0efe1a92b4804882eef2235f0e17c",
+        "scripts/bun-suite-report.py": "c372ad29ffa3fd01fddbf91fff00beb2a4a18367f22422065fc1ad89cf964f10",
+        "scripts/browser-build.ts": "015535634ee2aafc68679353b8ddb8c36193f68a01d0113990c70736a1ef3908",
+        "scripts/test.sh": "acf19ef72f5cfb26f082ff17f77599a5d204dbbbaf9d56f07552344b95bb0cf1",
+        "scripts/bun-builtins-node.py": "a0441a36d2cdd8d05eed862ed45c02228bb6ae5f038c4e45505031569f4637c9",
+        "scripts/real-runtime-network-tls.sh": "b5498ae888c9b446f4a979e431ea9cf362bd52ee2b939c4930d6e464380fb493",
+        "scripts/vendor-streams.py": "0cdf0ec33ded74bd1fa68640e0709fd86b7d6ed499a6e398b433a4e540d924b0",
+        "scripts/generate-bun-builtins.mjs": "98afd2e809d3a0bdefd36bf848663c2f146a4106a4050f7e9b31c7c51b1abeb4",
+        "scripts/vendor-temporal.py": "f6c44311844e1e060e4d8d67df9d1767102811cb94068827bf85a070107e1af2",
+        "scripts/app-matrix/checks.mjs": "a80a7526246bcd312b02fd0f088ee37c1b9fe857d63603512929d0c3c5fdb377",
+        "scripts/app-matrix/run.mjs": "40c5c19666b07c30fa3df893e653bc49453e57a68e4fdbfc4a718df4a093e8bd",
+        "scripts/app-matrix/browser.mjs": "62b8c7443601711c6907dc5f6bfc40763053df7444e2bd1985add740345b0d0c",
+        "scripts/app-matrix/decoded-response.ts": "c9d2c0800bea190dab90e4c730360aed42f5a2819899111a3954264f696085d2",
+        "scripts/app-matrix/isolation.test.mjs": "e3960b5d5d85378b0d67c1014d4a59e31e48efe258b085f720086c5f15d27de3",
+        "scripts/app-matrix/registry.test.mjs": "be204fbf230a794b01d7873d770b9f3e845909a507dc43468cd5b755e2b4d280",
+        "scripts/app-matrix/reclassify.mjs": "fe25fea5981db52abc13b5c78f0d4448f729f47ade1f7294284a308d67c27f4c",
+        "scripts/app-matrix/apps.mjs": "0483b996f4f1365c14ab4543197ad7ab72f5c7efe5b426ac76e444b805ae6006",
+        "scripts/app-matrix/review.test.mjs": "20ed1dfe1576aca2933ac7d8446e4a51903979d5d9b2d3366072655ced7f6468",
+        "scripts/app-matrix/registry.mjs": "a86d1e9aa07e95223f567742e02508032586892f1ab93935bb45c8c86c5ec5a8",
+        "scripts/app-matrix/isolate.mjs": "74dd9ec3da769b0baee1db0af280bef8d02712807e55c71f79b48548d4453ff6",
+        "scripts/app-matrix/classify.mjs": "6cd7ac9e52425175185820b561289b30f0ccc7d9cb1899a9cec17c64c04ed45b",
+        "scripts/app-matrix/decoded-response.test.ts": "fe3c46237cf724e9c9b27ee17a6d4658f710bbe54fd21b6d24bb63bc35d93590",
+        "scripts/bench/error-construction.js": "bf811d770f8ae004c055cddf2c57d5800e489a2cadbc6f428aa74ae393859bf1",
+        "scripts/app-matrix/review-evidence/vite-react-quickjs-playground.log": "d0e63104f0afa11c87b07659d14b636c363cb1c205e8b6d980f2f00bf773e171",
+        "scripts/app-matrix/review-evidence/prisma-quickjs-install.log": "d00d76f2e3423577f62be5d4339d390ff8c7d3eff829bc13f3fbd85c54a3df1b",
+        "scripts/app-matrix/review-evidence/next-quickjs-dev.log": "963afc5224a46b7f1dd8525e1407326a6bba151397545e741eaa1c61fdba1019"
+      }
+    },
+    "identicalOpfsSha256": "cd21f7e9dc58a9bba216f672269752ae0583db102604edea75592de0c5fbb7bf",
+    "note": "Chromium/Firefox and Safari compiled different committed fixture revisions; only production OPFS byte identity is asserted."
+  },
+  "measurementNotes": [
+    "persistMs uses per-256-file background backend.checkpoint(); native payload fsync count is asserted zero.",
+    "One explicit backend.flush(file path) is measured separately and asserts exactly one native payload fsync.",
+    "Backend close performs workspace-wide payload fsync outside persistMs, before reload and before raw comparator.",
+    "Raw comparator writes the same file/directory graph and byte contents with 32 native create/write/close workers, one final minimal path/size manifest snapshot and no payload fsync; the adapter emits 40 checkpoints plus an initial empty baseline.",
+    "Native async call duration sums overlap under concurrency and cannot be added as critical-path time. Untimed snapshot checksumming, tree validation, cloning and truncate costs are not individually attributed.",
+    "Adapter nativeTimings accumulates from backend open through the separately measured one-file flush; persistBatches contains only storage.persist spans. Raw comparator counters are reset before its isolated measurement."
+  ],
+  "playwright": {
+    "method": "Headless real-browser selected-storage durability, page termination, exclusive-writer and lazy-data gates. Original spike 3 corpus geometry: 10,000 package-sized files plus three 8 MiB files; synthetic deterministic contents, no upstream code/content. One corpus sample per engine, timings diagnostic not performance thresholds. Browser profiles, workers, server and build scratch owned by this process.",
+    "platform": "darwin",
+    "arch": "arm64",
+    "storage": "opfs",
+    "browsers": [
+      {
+        "browser": "chromium",
+        "version": "156.0.8078.4",
+        "reload": true,
+        "checks": [
+          "durable-page-reload-bytes-inode-mtime-rename-unlink",
+          "second-tab-writer-refused-then-open-after-owner-close",
+          "page-close-partial-native-payload-and-snapshot-writes-old-or-new",
+          "10003-files-persist-index-only-reload-first-payload-full-read"
+        ],
+        "storageTests": [
+          "empty, atomic save, reload, payload copies",
+          "single writer lifetime and close",
+          "immutable keys, missing payloads, monotonic generations, and flush errors",
+          "runtime payload pins survive collection but expire without a new pin",
+          "incremental removals and directory validation",
+          "more than 253 payload reads use a genuinely bounded sync-handle cache",
+          "transient sync-access creation failures retry before opening a real handle",
+          "sync-access retries are bounded, map errors, and can recover on a later read",
+          "payload quota maps to ENOSPC and the same failed write can be retried after reopen",
+          "torn snapshot quota retains the previous generation and supports recovery writes",
+          "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation",
+          "interrupted first checkpoint recovers the empty baseline and can retry the same key",
+          "unknown crash payloads are swept once after publication, never during lazy load",
+          "pending garbage cannot delete a payload re-adopted by a later checkpoint",
+          "initial empty-baseline quota maps to ENOSPC and can be retried",
+          "all corrupt OPFS snapshots reject instead of resetting existing storage"
+        ],
+        "interrupted": [
+          {
+            "boundary": "payload",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221194457
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221194456
+              }
+            ]
+          },
+          {
+            "boundary": "snapshot",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221194738
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221194737
+              }
+            ]
+          }
+        ],
+        "corpus": {
+          "files": 10003,
+          "bytes": 92687646,
+          "persistMs": 7510.554999828339,
+          "persistMethod": "background close-only checkpoint; payload fsync excluded",
+          "persistPayloadFlushes": 0,
+          "persistSnapshotFlushes": 41,
+          "finalCheckpointMs": 66.9350004196167,
+          "checkpointMs": 5840.3749985694885,
+          "durableFile": {
+            "path": "/node_modules/pkg000/lib/d0/f01.js",
+            "bytes": 8209,
+            "flushMs": 0.7650003433227539,
+            "nativePayloadFlushes": 1,
+            "nativeSnapshotFlushes": 1,
+            "method": "explicit backend.flush(file path), measured separately after checkpoints"
+          },
+          "payloadPrepareMs": 62.855000019073486,
+          "commits": 40,
+          "persistBatches": [
+            {
+              "generation": 1,
+              "payloads": 256,
+              "bytes": 1727030,
+              "upserts": 290,
+              "ms": 131.00500011444092
+            },
+            {
+              "generation": 2,
+              "payloads": 256,
+              "bytes": 1683970,
+              "upserts": 291,
+              "ms": 134.36500024795532
+            },
+            {
+              "generation": 3,
+              "payloads": 256,
+              "bytes": 1645409,
+              "upserts": 288,
+              "ms": 136.75999975204468
+            },
+            {
+              "generation": 4,
+              "payloads": 256,
+              "bytes": 1772304,
+              "upserts": 291,
+              "ms": 136.9099998474121
+            },
+            {
+              "generation": 5,
+              "payloads": 256,
+              "bytes": 1701013,
+              "upserts": 288,
+              "ms": 135.1050000190735
+            },
+            {
+              "generation": 6,
+              "payloads": 256,
+              "bytes": 1659215,
+              "upserts": 290,
+              "ms": 138.3600001335144
+            },
+            {
+              "generation": 7,
+              "payloads": 256,
+              "bytes": 1763710,
+              "upserts": 289,
+              "ms": 130.97499990463257
+            },
+            {
+              "generation": 8,
+              "payloads": 256,
+              "bytes": 1719757,
+              "upserts": 289,
+              "ms": 137.8600001335144
+            },
+            {
+              "generation": 9,
+              "payloads": 256,
+              "bytes": 1763766,
+              "upserts": 291,
+              "ms": 138.93499994277954
+            },
+            {
+              "generation": 10,
+              "payloads": 256,
+              "bytes": 1814506,
+              "upserts": 288,
+              "ms": 141.86499977111816
+            },
+            {
+              "generation": 11,
+              "payloads": 256,
+              "bytes": 1772208,
+              "upserts": 290,
+              "ms": 137.80000019073486
+            },
+            {
+              "generation": 12,
+              "payloads": 256,
+              "bytes": 1644993,
+              "upserts": 289,
+              "ms": 141.61499977111816
+            },
+            {
+              "generation": 13,
+              "payloads": 256,
+              "bytes": 1725388,
+              "upserts": 290,
+              "ms": 140.71000003814697
+            },
+            {
+              "generation": 14,
+              "payloads": 256,
+              "bytes": 1679206,
+              "upserts": 289,
+              "ms": 137.80499982833862
+            },
+            {
+              "generation": 15,
+              "payloads": 256,
+              "bytes": 1766489,
+              "upserts": 290,
+              "ms": 140.3949999809265
+            },
+            {
+              "generation": 16,
+              "payloads": 256,
+              "bytes": 1726532,
+              "upserts": 288,
+              "ms": 175.36500024795532
+            },
+            {
+              "generation": 17,
+              "payloads": 256,
+              "bytes": 1682049,
+              "upserts": 290,
+              "ms": 141.11500024795532
+            },
+            {
+              "generation": 18,
+              "payloads": 256,
+              "bytes": 1707884,
+              "upserts": 290,
+              "ms": 143.0750002861023
+            },
+            {
+              "generation": 19,
+              "payloads": 256,
+              "bytes": 1764676,
+              "upserts": 289,
+              "ms": 141.1699995994568
+            },
+            {
+              "generation": 20,
+              "payloads": 256,
+              "bytes": 1721506,
+              "upserts": 290,
+              "ms": 143.95499992370605
+            },
+            {
+              "generation": 21,
+              "payloads": 256,
+              "bytes": 1842044,
+              "upserts": 288,
+              "ms": 141.3550000190735
+            },
+            {
+              "generation": 22,
+              "payloads": 256,
+              "bytes": 1794311,
+              "upserts": 291,
+              "ms": 182.98999977111816
+            },
+            {
+              "generation": 23,
+              "payloads": 256,
+              "bytes": 1650021,
+              "upserts": 288,
+              "ms": 142.8899998664856
+            },
+            {
+              "generation": 24,
+              "payloads": 256,
+              "bytes": 1748464,
+              "upserts": 291,
+              "ms": 138.21000003814697
+            },
+            {
+              "generation": 25,
+              "payloads": 256,
+              "bytes": 1696890,
+              "upserts": 288,
+              "ms": 154.7300000190735
+            },
+            {
+              "generation": 26,
+              "payloads": 256,
+              "bytes": 1687109,
+              "upserts": 289,
+              "ms": 144.63500022888184
+            },
+            {
+              "generation": 27,
+              "payloads": 256,
+              "bytes": 1763603,
+              "upserts": 291,
+              "ms": 147.78999996185303
+            },
+            {
+              "generation": 28,
+              "payloads": 256,
+              "bytes": 1725307,
+              "upserts": 288,
+              "ms": 148.47499990463257
+            },
+            {
+              "generation": 29,
+              "payloads": 256,
+              "bytes": 1692356,
+              "upserts": 291,
+              "ms": 151.40000009536743
+            },
+            {
+              "generation": 30,
+              "payloads": 256,
+              "bytes": 1775405,
+              "upserts": 288,
+              "ms": 154.49000024795532
+            },
+            {
+              "generation": 31,
+              "payloads": 256,
+              "bytes": 1747074,
+              "upserts": 290,
+              "ms": 147.44500017166138
+            },
+            {
+              "generation": 32,
+              "payloads": 256,
+              "bytes": 1811468,
+              "upserts": 289,
+              "ms": 179.63000011444092
+            },
+            {
+              "generation": 33,
+              "payloads": 256,
+              "bytes": 1842288,
+              "upserts": 289,
+              "ms": 160.9650001525879
+            },
+            {
+              "generation": 34,
+              "payloads": 256,
+              "bytes": 1668295,
+              "upserts": 291,
+              "ms": 155.05499982833862
+            },
+            {
+              "generation": 35,
+              "payloads": 256,
+              "bytes": 1667916,
+              "upserts": 288,
+              "ms": 147.55999994277954
+            },
+            {
+              "generation": 36,
+              "payloads": 256,
+              "bytes": 1736117,
+              "upserts": 290,
+              "ms": 157.94499969482422
+            },
+            {
+              "generation": 37,
+              "payloads": 256,
+              "bytes": 1693657,
+              "upserts": 289,
+              "ms": 155.2150001525879
+            },
+            {
+              "generation": 38,
+              "payloads": 256,
+              "bytes": 1664210,
+              "upserts": 290,
+              "ms": 156.18499994277954
+            },
+            {
+              "generation": 39,
+              "payloads": 256,
+              "bytes": 1739391,
+              "upserts": 289,
+              "ms": 157.36499977111816
+            },
+            {
+              "generation": 40,
+              "payloads": 19,
+              "bytes": 25300109,
+              "upserts": 23,
+              "ms": 63.739999771118164
+            }
+          ],
+          "nativeTimings": {
+            "metadata.getFileHandle.create": {
+              "calls": 41,
+              "ms": 8.98499870300293
+            },
+            "snapshot.openSync": {
+              "calls": 42,
+              "ms": 2.6249990463256836
+            },
+            "snapshot.write": {
+              "calls": 41,
+              "ms": 37.16499948501587
+            },
+            "snapshot.flush": {
+              "calls": 42,
+              "ms": 0.08999872207641602
+            },
+            "snapshot.close": {
+              "calls": 42,
+              "ms": 2.385000228881836
+            },
+            "data.getFileHandle.create": {
+              "calls": 10003,
+              "ms": 79773.08999538422
+            },
+            "payload.openSync": {
+              "calls": 10004,
+              "ms": 76685.36500358582
+            },
+            "payload.close": {
+              "calls": 10003,
+              "ms": 559.7849764823914
+            },
+            "payload.write": {
+              "calls": 9987,
+              "ms": 2068.350024700165
+            },
+            "metadata.removeEntry": {
+              "calls": 39,
+              "ms": 7.685000896453857
+            },
+            "data.getFileHandle.lookup": {
+              "calls": 1,
+              "ms": 0.1549997329711914
+            },
+            "payload.flush": {
+              "calls": 1,
+              "ms": 0.005000114440917969
+            },
+            "metadata.getFileHandle.lookup": {
+              "calls": 1,
+              "ms": 0.125
+            }
+          },
+          "nativeTimingMethod": "native method wall duration sums; parallel async waits overlap and are not additive critical-path time",
+          "batchFiles": 256,
+          "sourceArtifactSha256": "c2df4f49a4e7d27772209e6df7f92ad323a6c1d0b682b28cd153aaf5c79ee2c8",
+          "reads": 0,
+          "readBytes": 0,
+          "nativePayloadRequests": 0,
+          "activeHandles": 1,
+          "peakHandles": 2,
+          "openedHandles": 10046,
+          "resources": {
+            "bytes": 89473344,
+            "poolBytes": 83886080,
+            "metadataBytes": 5587264,
+            "usedBytes": 77463552,
+            "freeBytes": 6422528,
+            "maxBytes": 1073741824,
+            "files": 787
+          }
+        },
+        "indexReload": {
+          "ms": 47.54499959945679,
+          "reads": 0,
+          "readBytes": 0,
+          "nativePayloadRequests": 0,
+          "activeHandles": 0,
+          "peakHandles": 0,
+          "openedHandles": 0
+        },
+        "metadataOnly": {
+          "ms": 1457.840000152588,
+          "files": 10003,
+          "reads": 0,
+          "readBytes": 0,
+          "nativePayloadRequests": 0,
+          "activeHandles": 0,
+          "peakHandles": 0,
+          "openedHandles": 0,
+          "resources": {
+            "bytes": 22364480,
+            "poolBytes": 16777216,
+            "metadataBytes": 5587264,
+            "usedBytes": 0,
+            "freeBytes": 16777216,
+            "maxBytes": 1073741824,
+            "files": 778
+          }
+        },
+        "firstData": {
+          "ms": 1.8999996185302734,
+          "path": "/node_modules/pkg000/lib/d0/f01.js",
+          "bytes": 8209,
+          "reads": 1,
+          "readBytes": 8209,
+          "nativePayloadRequests": 1,
+          "activeHandles": 1,
+          "peakHandles": 1,
+          "openedHandles": 1
+        },
+        "cacheChurn": {
+          "distinctFiles": 1200,
+          "additionalReads": 1197,
+          "additionalOpenedHandles": 1197,
+          "revisitedFirst": true,
+          "reads": 1198,
+          "readBytes": 8033798,
+          "nativePayloadRequests": 1198,
+          "activeHandles": 64,
+          "peakHandles": 64,
+          "openedHandles": 1198,
+          "resources": {
+            "bytes": 72696128,
+            "poolBytes": 67108864,
+            "metadataBytes": 5587264,
+            "usedBytes": 63700992,
+            "freeBytes": 3407872,
+            "maxBytes": 1073741824,
+            "files": 954
+          }
+        },
+        "fullRead": {
+          "ms": 7431.310000419617,
+          "bytes": 92687646,
+          "files": 10003,
+          "bad": 0,
+          "fullByteValidation": true,
+          "reads": 11185,
+          "readBytes": 100721444,
+          "nativePayloadRequests": 11185,
+          "activeHandles": 64,
+          "peakHandles": 64,
+          "openedHandles": 11185,
+          "resources": {
+            "bytes": 89473344,
+            "poolBytes": 83886080,
+            "metadataBytes": 5587264,
+            "usedBytes": 72024064,
+            "freeBytes": 11862016,
+            "maxBytes": 1073741824,
+            "files": 706
+          }
+        },
+        "rawCorpus": {
+          "files": 10003,
+          "bytes": 92687646,
+          "persistMs": 3837.244999885559,
+          "payloadPhaseMs": 3822.779999732971,
+          "snapshotMs": 14.474999904632568,
+          "snapshotBytes": 801030,
+          "directories": 1202,
+          "payloadPrepareMs": 67.78003883361816,
+          "concurrency": 32,
+          "snapshots": 1,
+          "payloadFlushes": 0,
+          "snapshotFlushes": 1,
+          "peakHandles": 1,
+          "openedHandles": 10004,
+          "sourceArtifactSha256": "c2df4f49a4e7d27772209e6df7f92ad323a6c1d0b682b28cd153aaf5c79ee2c8",
+          "nativeTimings": {
+            "data.getFileHandle.create": {
+              "calls": 10003,
+              "ms": 60857.615032196045
+            },
+            "payload.openSync": {
+              "calls": 10003,
+              "ms": 56340.704973220825
+            },
+            "payload.close": {
+              "calls": 10003,
+              "ms": 561.4599647521973
+            },
+            "payload.write": {
+              "calls": 9987,
+              "ms": 2773.4300293922424
+            },
+            "bun-wasm-raw-64123567-e086-4f22-b201-2f7257448c80.getFileHandle.create": {
+              "calls": 1,
+              "ms": 2.6549997329711914
+            },
+            "snapshot.openSync": {
+              "calls": 1,
+              "ms": 0.19999980926513672
+            },
+            "snapshot.write": {
+              "calls": 1,
+              "ms": 1.5199999809265137
+            },
+            "snapshot.flush": {
+              "calls": 1,
+              "ms": 0.004999637603759766
+            },
+            "snapshot.close": {
+              "calls": 1,
+              "ms": 0.07999992370605469
+            }
+          },
+          "method": "same 10,003-file graph and deterministic bytes; 32 native create/write/close workers, one final path/size/directory snapshot+flush; no adapter/runtime/checksum/GC; no payload fsync",
+          "cleanup": {
+            "workspaceDeleted": true,
+            "activeHandles": 0
+          }
+        },
+        "cleanup": {
+          "contextClosed": true,
+          "databaseNames": [
+            "bunwasm-step3c-opfs-chromium-04d9aee6-e8aa-473b-b468-6d1a518e7662",
+            "bunwasm-step3c-opfs-chromium-04d9aee6-e8aa-473b-b468-6d1a518e7662-interrupt-0",
+            "bunwasm-step3c-opfs-chromium-04d9aee6-e8aa-473b-b468-6d1a518e7662-interrupt-1",
+            "bunwasm-step3c-opfs-chromium-04d9aee6-e8aa-473b-b468-6d1a518e7662-corpus"
+          ]
+        }
+      },
+      {
+        "browser": "firefox",
+        "version": "157.0",
+        "reload": true,
+        "checks": [
+          "durable-page-reload-bytes-inode-mtime-rename-unlink",
+          "second-tab-writer-refused-then-open-after-owner-close",
+          "page-close-partial-native-payload-and-snapshot-writes-old-or-new",
+          "10003-files-persist-index-only-reload-first-payload-full-read"
+        ],
+        "storageTests": [
+          "empty, atomic save, reload, payload copies",
+          "single writer lifetime and close",
+          "immutable keys, missing payloads, monotonic generations, and flush errors",
+          "runtime payload pins survive collection but expire without a new pin",
+          "incremental removals and directory validation",
+          "more than 253 payload reads use a genuinely bounded sync-handle cache",
+          "transient sync-access creation failures retry before opening a real handle",
+          "sync-access retries are bounded, map errors, and can recover on a later read",
+          "payload quota maps to ENOSPC and the same failed write can be retried after reopen",
+          "torn snapshot quota retains the previous generation and supports recovery writes",
+          "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation",
+          "interrupted first checkpoint recovers the empty baseline and can retry the same key",
+          "unknown crash payloads are swept once after publication, never during lazy load",
+          "pending garbage cannot delete a payload re-adopted by a later checkpoint",
+          "initial empty-baseline quota maps to ENOSPC and can be retried",
+          "all corrupt OPFS snapshots reject instead of resetting existing storage"
+        ],
+        "interrupted": [
+          {
+            "boundary": "payload",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221227399
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221227398
+              }
+            ]
+          },
+          {
+            "boundary": "snapshot",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221227969
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221227969
+              }
+            ]
+          }
+        ],
+        "corpus": {
+          "files": 10003,
+          "bytes": 92687646,
+          "persistMs": 36008.14,
+          "persistMethod": "background close-only checkpoint; payload fsync excluded",
+          "persistPayloadFlushes": 0,
+          "persistSnapshotFlushes": 41,
+          "finalCheckpointMs": 140.08000000000175,
+          "checkpointMs": 35378.64,
+          "durableFile": {
+            "path": "/node_modules/pkg000/lib/d0/f01.js",
+            "bytes": 8209,
+            "flushMs": 4.120000000002619,
+            "nativePayloadFlushes": 1,
+            "nativeSnapshotFlushes": 1,
+            "method": "explicit backend.flush(file path), measured separately after checkpoints"
+          },
+          "payloadPrepareMs": 150.2200000000716,
+          "commits": 40,
+          "persistBatches": [
+            {
+              "generation": 1,
+              "payloads": 256,
+              "bytes": 1727030,
+              "upserts": 290,
+              "ms": 737.6
+            },
+            {
+              "generation": 2,
+              "payloads": 256,
+              "bytes": 1683970,
+              "upserts": 291,
+              "ms": 768.5
+            },
+            {
+              "generation": 3,
+              "payloads": 256,
+              "bytes": 1645409,
+              "upserts": 288,
+              "ms": 898.96
+            },
+            {
+              "generation": 4,
+              "payloads": 256,
+              "bytes": 1772304,
+              "upserts": 291,
+              "ms": 790.3600000000001
+            },
+            {
+              "generation": 5,
+              "payloads": 256,
+              "bytes": 1701013,
+              "upserts": 288,
+              "ms": 777.02
+            },
+            {
+              "generation": 6,
+              "payloads": 256,
+              "bytes": 1659215,
+              "upserts": 290,
+              "ms": 777.7600000000002
+            },
+            {
+              "generation": 7,
+              "payloads": 256,
+              "bytes": 1763710,
+              "upserts": 289,
+              "ms": 827.1999999999998
+            },
+            {
+              "generation": 8,
+              "payloads": 256,
+              "bytes": 1719757,
+              "upserts": 289,
+              "ms": 773.5
+            },
+            {
+              "generation": 9,
+              "payloads": 256,
+              "bytes": 1763766,
+              "upserts": 291,
+              "ms": 780.6199999999999
+            },
+            {
+              "generation": 10,
+              "payloads": 256,
+              "bytes": 1814506,
+              "upserts": 288,
+              "ms": 830.9400000000005
+            },
+            {
+              "generation": 11,
+              "payloads": 256,
+              "bytes": 1772208,
+              "upserts": 290,
+              "ms": 785.7600000000002
+            },
+            {
+              "generation": 12,
+              "payloads": 256,
+              "bytes": 1644993,
+              "upserts": 289,
+              "ms": 833.8799999999992
+            },
+            {
+              "generation": 13,
+              "payloads": 256,
+              "bytes": 1725388,
+              "upserts": 290,
+              "ms": 823.5600000000013
+            },
+            {
+              "generation": 14,
+              "payloads": 256,
+              "bytes": 1679206,
+              "upserts": 289,
+              "ms": 804.039999999999
+            },
+            {
+              "generation": 15,
+              "payloads": 256,
+              "bytes": 1766489,
+              "upserts": 290,
+              "ms": 799.1000000000004
+            },
+            {
+              "generation": 16,
+              "payloads": 256,
+              "bytes": 1726532,
+              "upserts": 288,
+              "ms": 869.4200000000001
+            },
+            {
+              "generation": 17,
+              "payloads": 256,
+              "bytes": 1682049,
+              "upserts": 290,
+              "ms": 896.880000000001
+            },
+            {
+              "generation": 18,
+              "payloads": 256,
+              "bytes": 1707884,
+              "upserts": 290,
+              "ms": 832.6599999999999
+            },
+            {
+              "generation": 19,
+              "payloads": 256,
+              "bytes": 1764676,
+              "upserts": 289,
+              "ms": 874.0599999999995
+            },
+            {
+              "generation": 20,
+              "payloads": 256,
+              "bytes": 1721506,
+              "upserts": 290,
+              "ms": 858.9200000000001
+            },
+            {
+              "generation": 21,
+              "payloads": 256,
+              "bytes": 1842044,
+              "upserts": 288,
+              "ms": 829
+            },
+            {
+              "generation": 22,
+              "payloads": 256,
+              "bytes": 1794311,
+              "upserts": 291,
+              "ms": 832.8400000000001
+            },
+            {
+              "generation": 23,
+              "payloads": 256,
+              "bytes": 1650021,
+              "upserts": 288,
+              "ms": 989.8600000000006
+            },
+            {
+              "generation": 24,
+              "payloads": 256,
+              "bytes": 1748464,
+              "upserts": 291,
+              "ms": 900.5999999999985
+            },
+            {
+              "generation": 25,
+              "payloads": 256,
+              "bytes": 1696890,
+              "upserts": 288,
+              "ms": 929.2000000000007
+            },
+            {
+              "generation": 26,
+              "payloads": 256,
+              "bytes": 1687109,
+              "upserts": 289,
+              "ms": 953.5599999999977
+            },
+            {
+              "generation": 27,
+              "payloads": 256,
+              "bytes": 1763603,
+              "upserts": 291,
+              "ms": 957.1599999999999
+            },
+            {
+              "generation": 28,
+              "payloads": 256,
+              "bytes": 1725307,
+              "upserts": 288,
+              "ms": 927
+            },
+            {
+              "generation": 29,
+              "payloads": 256,
+              "bytes": 1692356,
+              "upserts": 291,
+              "ms": 992
+            },
+            {
+              "generation": 30,
+              "payloads": 256,
+              "bytes": 1775405,
+              "upserts": 288,
+              "ms": 1109.8999999999978
+            },
+            {
+              "generation": 31,
+              "payloads": 256,
+              "bytes": 1747074,
+              "upserts": 290,
+              "ms": 965.9799999999996
+            },
+            {
+              "generation": 32,
+              "payloads": 256,
+              "bytes": 1811468,
+              "upserts": 289,
+              "ms": 1099.2599999999984
+            },
+            {
+              "generation": 33,
+              "payloads": 256,
+              "bytes": 1842288,
+              "upserts": 289,
+              "ms": 1052.6800000000003
+            },
+            {
+              "generation": 34,
+              "payloads": 256,
+              "bytes": 1668295,
+              "upserts": 291,
+              "ms": 1029.3999999999978
+            },
+            {
+              "generation": 35,
+              "payloads": 256,
+              "bytes": 1667916,
+              "upserts": 288,
+              "ms": 1050.119999999999
+            },
+            {
+              "generation": 36,
+              "payloads": 256,
+              "bytes": 1736117,
+              "upserts": 290,
+              "ms": 994.0200000000004
+            },
+            {
+              "generation": 37,
+              "payloads": 256,
+              "bytes": 1693657,
+              "upserts": 289,
+              "ms": 1030.579999999998
+            },
+            {
+              "generation": 38,
+              "payloads": 256,
+              "bytes": 1664210,
+              "upserts": 290,
+              "ms": 1023.9599999999991
+            },
+            {
+              "generation": 39,
+              "payloads": 256,
+              "bytes": 1739391,
+              "upserts": 289,
+              "ms": 1178.3400000000038
+            },
+            {
+              "generation": 40,
+              "payloads": 19,
+              "bytes": 25300109,
+              "upserts": 23,
+              "ms": 135.5
+            }
+          ],
+          "nativeTimings": {
+            "metadata.getFileHandle.create": {
+              "calls": 41,
+              "ms": 39.759999999987755
+            },
+            "snapshot.openSync": {
+              "calls": 42,
+              "ms": 58.36000000001521
+            },
+            "snapshot.write": {
+              "calls": 41,
+              "ms": 7.999999999985526
+            },
+            "snapshot.flush": {
+              "calls": 42,
+              "ms": 11.780000000003
+            },
+            "snapshot.close": {
+              "calls": 42,
+              "ms": 36.819999999984226
+            },
+            "data.getFileHandle.create": {
+              "calls": 10003,
+              "ms": 9567.940000000122
+            },
+            "payload.openSync": {
+              "calls": 10004,
+              "ms": 14359.959999999875
+            },
+            "payload.close": {
+              "calls": 10003,
+              "ms": 8401.179999999902
+            },
+            "payload.write": {
+              "calls": 9987,
+              "ms": 574.1000000000622
+            },
+            "metadata.removeEntry": {
+              "calls": 39,
+              "ms": 298.8399999999997
+            },
+            "data.getFileHandle.lookup": {
+              "calls": 1,
+              "ms": 0.2599999999947613
+            },
+            "payload.flush": {
+              "calls": 1,
+              "ms": 0.059999999997671694
+            },
+            "metadata.getFileHandle.lookup": {
+              "calls": 1,
+              "ms": 1.1200000000026193
+            }
+          },
+          "nativeTimingMethod": "native method wall duration sums; parallel async waits overlap and are not additive critical-path time",
+          "batchFiles": 256,
+          "sourceArtifactSha256": "c2df4f49a4e7d27772209e6df7f92ad323a6c1d0b682b28cd153aaf5c79ee2c8",
+          "reads": 0,
+          "readBytes": 0,
+          "nativePayloadRequests": 0,
+          "activeHandles": 1,
+          "peakHandles": 2,
+          "openedHandles": 10046,
+          "resources": {
+            "bytes": 89473344,
+            "poolBytes": 83886080,
+            "metadataBytes": 5587264,
+            "usedBytes": 77463552,
+            "freeBytes": 6422528,
+            "maxBytes": 1073741824,
+            "files": 787
+          }
+        },
+        "indexReload": {
+          "ms": 65.96000000000001,
+          "reads": 0,
+          "readBytes": 0,
+          "nativePayloadRequests": 0,
+          "activeHandles": 0,
+          "peakHandles": 0,
+          "openedHandles": 0
+        },
+        "metadataOnly": {
+          "ms": 385.29999999999995,
+          "files": 10003,
+          "reads": 0,
+          "readBytes": 0,
+          "nativePayloadRequests": 0,
+          "activeHandles": 0,
+          "peakHandles": 0,
+          "openedHandles": 0,
+          "resources": {
+            "bytes": 22364480,
+            "poolBytes": 16777216,
+            "metadataBytes": 5587264,
+            "usedBytes": 0,
+            "freeBytes": 16777216,
+            "maxBytes": 1073741824,
+            "files": 778
+          }
+        },
+        "firstData": {
+          "ms": 2.8000000000000114,
+          "path": "/node_modules/pkg000/lib/d0/f01.js",
+          "bytes": 8209,
+          "reads": 1,
+          "readBytes": 8209,
+          "nativePayloadRequests": 1,
+          "activeHandles": 1,
+          "peakHandles": 1,
+          "openedHandles": 1
+        },
+        "cacheChurn": {
+          "distinctFiles": 1200,
+          "additionalReads": 1197,
+          "additionalOpenedHandles": 1197,
+          "revisitedFirst": true,
+          "reads": 1198,
+          "readBytes": 8033798,
+          "nativePayloadRequests": 1198,
+          "activeHandles": 64,
+          "peakHandles": 64,
+          "openedHandles": 1198,
+          "resources": {
+            "bytes": 72696128,
+            "poolBytes": 67108864,
+            "metadataBytes": 5587264,
+            "usedBytes": 63700992,
+            "freeBytes": 3407872,
+            "maxBytes": 1073741824,
+            "files": 954
+          }
+        },
+        "fullRead": {
+          "ms": 22248.879999999997,
+          "bytes": 92687646,
+          "files": 10003,
+          "bad": 0,
+          "fullByteValidation": true,
+          "reads": 11185,
+          "readBytes": 100721444,
+          "nativePayloadRequests": 11185,
+          "activeHandles": 64,
+          "peakHandles": 64,
+          "openedHandles": 11185,
+          "resources": {
+            "bytes": 89473344,
+            "poolBytes": 83886080,
+            "metadataBytes": 5587264,
+            "usedBytes": 72024064,
+            "freeBytes": 11862016,
+            "maxBytes": 1073741824,
+            "files": 706
+          }
+        },
+        "rawCorpus": {
+          "files": 10003,
+          "bytes": 92687646,
+          "persistMs": 37359.700000000004,
+          "payloadPhaseMs": 37344.560000000005,
+          "snapshotMs": 15.160000000003492,
+          "snapshotBytes": 801030,
+          "directories": 1202,
+          "payloadPrepareMs": 220.2399999998088,
+          "concurrency": 32,
+          "snapshots": 1,
+          "payloadFlushes": 0,
+          "snapshotFlushes": 1,
+          "peakHandles": 1,
+          "openedHandles": 10004,
+          "sourceArtifactSha256": "c2df4f49a4e7d27772209e6df7f92ad323a6c1d0b682b28cd153aaf5c79ee2c8",
+          "nativeTimings": {
+            "data.getFileHandle.create": {
+              "calls": 10003,
+              "ms": 388816.55999999976
+            },
+            "payload.openSync": {
+              "calls": 10003,
+              "ms": 780779.2400000026
+            },
+            "payload.close": {
+              "calls": 10003,
+              "ms": 22233.000000000742
+            },
+            "payload.write": {
+              "calls": 9987,
+              "ms": 1550.9399999992602
+            },
+            "bun-wasm-raw-37f5e886-a708-4c01-a6cc-eb917261692e.getFileHandle.create": {
+              "calls": 1,
+              "ms": 2.4199999999982538
+            },
+            "snapshot.openSync": {
+              "calls": 1,
+              "ms": 2.2600000000093132
+            },
+            "snapshot.write": {
+              "calls": 1,
+              "ms": 0.3200000000069849
+            },
+            "snapshot.flush": {
+              "calls": 1,
+              "ms": 0.33999999999650754
+            },
+            "snapshot.close": {
+              "calls": 1,
+              "ms": 0.8600000000005821
+            }
+          },
+          "method": "same 10,003-file graph and deterministic bytes; 32 native create/write/close workers, one final path/size/directory snapshot+flush; no adapter/runtime/checksum/GC; no payload fsync",
+          "cleanup": {
+            "workspaceDeleted": true,
+            "activeHandles": 0
+          }
+        },
+        "cleanup": {
+          "contextClosed": true,
+          "databaseNames": [
+            "bunwasm-step3c-opfs-firefox-1256a6aa-8941-41c3-895b-ef73256892a2",
+            "bunwasm-step3c-opfs-firefox-1256a6aa-8941-41c3-895b-ef73256892a2-interrupt-0",
+            "bunwasm-step3c-opfs-firefox-1256a6aa-8941-41c3-895b-ef73256892a2-interrupt-1",
+            "bunwasm-step3c-opfs-firefox-1256a6aa-8941-41c3-895b-ef73256892a2-corpus"
+          ]
+        }
+      }
+    ]
+  },
+  "safari": {
+    "browser": "Safari",
+    "platform": "darwin",
+    "arch": "arm64",
+    "storage": "opfs",
+    "method": "Existing Safari WebDriver permission, task-owned automation session and driver. Same bundled storage/corpus worker as the three-engine gate. Storage contracts, page reload and exclusive writer, partial native payload/snapshot write termination, bounded handle cache, native payload-read counters and all-byte corpus validation. Fresh automation context; no normal owner profiles.",
+    "version": "26.4",
+    "storageTests": [
+      "empty, atomic save, reload, payload copies",
+      "single writer lifetime and close",
+      "immutable keys, missing payloads, monotonic generations, and flush errors",
+      "runtime payload pins survive collection but expire without a new pin",
+      "incremental removals and directory validation",
+      "more than 253 payload reads use a genuinely bounded sync-handle cache",
+      "transient sync-access creation failures retry before opening a real handle",
+      "sync-access retries are bounded, map errors, and can recover on a later read",
+      "payload quota maps to ENOSPC and the same failed write can be retried after reopen",
+      "torn snapshot quota retains the previous generation and supports recovery writes",
+      "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation",
+      "interrupted first checkpoint recovers the empty baseline and can retry the same key",
+      "unknown crash payloads are swept once after publication, never during lazy load",
+      "pending garbage cannot delete a payload re-adopted by a later checkpoint",
+      "initial empty-baseline quota maps to ENOSPC and can be retried",
+      "selective fsync preserves its file and namespace when an unrelated unsynced payload is lost",
+      "all corrupt OPFS snapshots reject instead of resetting existing storage"
+    ],
+    "reload": true,
+    "writerGate": true,
+    "interrupted": [
+      {
+        "boundary": "payload",
+        "size": 1048576,
+        "metadata": [
+          {
+            "path": "/old-only",
+            "ino": 3,
+            "kind": "file",
+            "mtime": 1792221567226
+          },
+          {
+            "path": "/victim",
+            "ino": 2,
+            "kind": "file",
+            "mtime": 1792221567225
+          }
+        ],
+        "state": "old",
+        "files": [
+          "/old-only",
+          "/victim"
+        ]
+      },
+      {
+        "boundary": "snapshot",
+        "size": 1048576,
+        "metadata": [
+          {
+            "path": "/old-only",
+            "ino": 3,
+            "kind": "file",
+            "mtime": 1792221567566
+          },
+          {
+            "path": "/victim",
+            "ino": 2,
+            "kind": "file",
+            "mtime": 1792221567565
+          }
+        ],
+        "state": "old",
+        "files": [
+          "/old-only",
+          "/victim"
+        ]
+      }
+    ],
+    "corpus": {
+      "nativePayloadRequests": 0,
+      "bytes": 92687646,
+      "persistSnapshotFlushes": 41,
+      "persistMs": 3930.54,
+      "files": 10003,
+      "durableFile": {
+        "path": "/node_modules/pkg000/lib/d0/f01.js",
+        "bytes": 8209,
+        "flushMs": 1.6399999999998727,
+        "method": "explicit backend.flush(file path), measured separately after checkpoints",
+        "nativePayloadFlushes": 1,
+        "nativeSnapshotFlushes": 1
+      },
+      "commits": 40,
+      "persistBatches": [
+        {
+          "generation": 1,
+          "bytes": 1727030,
+          "ms": 82.52000000000001,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 2,
+          "bytes": 1683970,
+          "ms": 78.34,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 3,
+          "bytes": 1645409,
+          "ms": 75.86000000000004,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 4,
+          "bytes": 1772304,
+          "ms": 77.38,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 5,
+          "bytes": 1701013,
+          "ms": 73.05999999999995,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 6,
+          "bytes": 1659215,
+          "ms": 75.83999999999997,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 7,
+          "bytes": 1763710,
+          "ms": 82.5,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 8,
+          "bytes": 1719757,
+          "ms": 71.75999999999988,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 9,
+          "bytes": 1763766,
+          "ms": 78.98000000000002,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 10,
+          "bytes": 1814506,
+          "ms": 80.54000000000008,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 11,
+          "bytes": 1772208,
+          "ms": 80.38,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 12,
+          "bytes": 1644993,
+          "ms": 80.74000000000001,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 13,
+          "bytes": 1725388,
+          "ms": 82.90000000000032,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 14,
+          "bytes": 1679206,
+          "ms": 93.82000000000016,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 15,
+          "bytes": 1766489,
+          "ms": 93.22000000000003,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 16,
+          "bytes": 1726532,
+          "ms": 79.31999999999971,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 17,
+          "bytes": 1682049,
+          "ms": 83.39999999999986,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 18,
+          "bytes": 1707884,
+          "ms": 99.87999999999988,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 19,
+          "bytes": 1764676,
+          "ms": 78.70000000000027,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 20,
+          "bytes": 1721506,
+          "ms": 79.18000000000006,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 21,
+          "bytes": 1842044,
+          "ms": 83.25999999999976,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 22,
+          "bytes": 1794311,
+          "ms": 81.91999999999962,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 23,
+          "bytes": 1650021,
+          "ms": 79.79999999999973,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 24,
+          "bytes": 1748464,
+          "ms": 81.68000000000029,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 25,
+          "bytes": 1696890,
+          "ms": 83.69999999999982,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 26,
+          "bytes": 1687109,
+          "ms": 83.83999999999969,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 27,
+          "bytes": 1763603,
+          "ms": 85.49999999999955,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 28,
+          "bytes": 1725307,
+          "ms": 124.17999999999984,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 29,
+          "bytes": 1692356,
+          "ms": 83.53999999999996,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 30,
+          "bytes": 1775405,
+          "ms": 89.05999999999995,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 31,
+          "bytes": 1747074,
+          "ms": 84.22000000000025,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 32,
+          "bytes": 1811468,
+          "ms": 84.60000000000036,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 33,
+          "bytes": 1842288,
+          "ms": 82.84000000000015,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 34,
+          "bytes": 1668295,
+          "ms": 86.65999999999985,
+          "payloads": 256,
+          "upserts": 291
+        },
+        {
+          "generation": 35,
+          "bytes": 1667916,
+          "ms": 87.2800000000002,
+          "payloads": 256,
+          "upserts": 288
+        },
+        {
+          "generation": 36,
+          "bytes": 1736117,
+          "ms": 90.16000000000031,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 37,
+          "bytes": 1693657,
+          "ms": 91.9399999999996,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 38,
+          "bytes": 1664210,
+          "ms": 85.69999999999982,
+          "payloads": 256,
+          "upserts": 290
+        },
+        {
+          "generation": 39,
+          "bytes": 1739391,
+          "ms": 86.27999999999975,
+          "payloads": 256,
+          "upserts": 289
+        },
+        {
+          "generation": 40,
+          "bytes": 25300109,
+          "ms": 37.440000000000055,
+          "payloads": 19,
+          "upserts": 23
+        }
+      ],
+      "persistMethod": "background close-only checkpoint; payload fsync excluded",
+      "sourceArtifactSha256": "c2df4f49a4e7d27772209e6df7f92ad323a6c1d0b682b28cd153aaf5c79ee2c8",
+      "reads": 0,
+      "nativeTimings": {
+        "metadata.removeEntry": {
+          "calls": 39,
+          "ms": 8.539999999998713
+        },
+        "payload.close": {
+          "calls": 10003,
+          "ms": 620.9799999999858
+        },
+        "snapshot.close": {
+          "calls": 42,
+          "ms": 2.2400000000023113
+        },
+        "data.getFileHandle.create": {
+          "calls": 10003,
+          "ms": 18748.68000000009
+        },
+        "payload.openSync": {
+          "calls": 10004,
+          "ms": 33143.08000000021
+        },
+        "snapshot.flush": {
+          "calls": 42,
+          "ms": 18.179999999998707
+        },
+        "metadata.getFileHandle.create": {
+          "calls": 41,
+          "ms": 9.179999999999012
+        },
+        "payload.write": {
+          "calls": 9987,
+          "ms": 111.85999999997347
+        },
+        "payload.flush": {
+          "calls": 1,
+          "ms": 0
+        },
+        "data.getFileHandle.lookup": {
+          "calls": 1,
+          "ms": 0.44000000000005457
+        },
+        "snapshot.openSync": {
+          "calls": 42,
+          "ms": 5.999999999999922
+        },
+        "snapshot.write": {
+          "calls": 41,
+          "ms": 5.260000000003124
+        },
+        "metadata.getFileHandle.lookup": {
+          "calls": 1,
+          "ms": 0.14000000000032742
+        }
+      },
+      "payloadPrepareMs": 59.97999999999644,
+      "readBytes": 0,
+      "peakHandles": 31,
+      "resources": {
+        "metadataBytes": 5587264,
+        "maxBytes": 1073741824,
+        "bytes": 89473344,
+        "usedBytes": 77463552,
+        "poolBytes": 83886080,
+        "files": 787,
+        "freeBytes": 6422528
+      },
+      "openedHandles": 10046,
+      "checkpointMs": 3366.680000000001,
+      "finalCheckpointMs": 41.5,
+      "nativeTimingMethod": "native method wall duration sums; parallel async waits overlap and are not additive critical-path time",
+      "batchFiles": 256,
+      "activeHandles": 1,
+      "persistPayloadFlushes": 0
+    },
+    "indexReload": {
+      "nativePayloadRequests": 0,
+      "readBytes": 0,
+      "openedHandles": 0,
+      "ms": 54.96000000000001,
+      "peakHandles": 0,
+      "reads": 0,
+      "activeHandles": 0
+    },
+    "metadataOnly": {
+      "nativePayloadRequests": 0,
+      "readBytes": 0,
+      "openedHandles": 0,
+      "ms": 427.0000000000001,
+      "peakHandles": 0,
+      "resources": {
+        "metadataBytes": 5587264,
+        "maxBytes": 1073741824,
+        "bytes": 22364480,
+        "usedBytes": 0,
+        "poolBytes": 16777216,
+        "files": 778,
+        "freeBytes": 16777216
+      },
+      "reads": 0,
+      "files": 10003,
+      "activeHandles": 0
+    },
+    "firstData": {
+      "nativePayloadRequests": 1,
+      "readBytes": 8209,
+      "openedHandles": 1,
+      "ms": 1.8999999999999773,
+      "peakHandles": 1,
+      "bytes": 8209,
+      "path": "/node_modules/pkg000/lib/d0/f01.js",
+      "reads": 1,
+      "activeHandles": 1
+    },
+    "cacheChurn": {
+      "nativePayloadRequests": 1198,
+      "additionalOpenedHandles": 1197,
+      "revisitedFirst": true,
+      "readBytes": 8033798,
+      "openedHandles": 1198,
+      "distinctFiles": 1200,
+      "additionalReads": 1197,
+      "peakHandles": 64,
+      "reads": 1198,
+      "resources": {
+        "metadataBytes": 5587264,
+        "maxBytes": 1073741824,
+        "bytes": 72696128,
+        "usedBytes": 63700992,
+        "poolBytes": 67108864,
+        "files": 954,
+        "freeBytes": 3407872
+      },
+      "activeHandles": 64
+    },
+    "fullRead": {
+      "bytes": 92687646,
+      "nativePayloadRequests": 11185,
+      "openedHandles": 11185,
+      "fullByteValidation": true,
+      "files": 10003,
+      "readBytes": 100721444,
+      "reads": 11185,
+      "resources": {
+        "metadataBytes": 5587264,
+        "maxBytes": 1073741824,
+        "bytes": 89473344,
+        "usedBytes": 72024064,
+        "poolBytes": 83886080,
+        "files": 706,
+        "freeBytes": 11862016
+      },
+      "bad": 0,
+      "activeHandles": 64,
+      "ms": 3427.12,
+      "peakHandles": 64
+    },
+    "rawCorpus": {
+      "payloadPrepareMs": 80.01999999998407,
+      "sourceArtifactSha256": "c2df4f49a4e7d27772209e6df7f92ad323a6c1d0b682b28cd153aaf5c79ee2c8",
+      "snapshotMs": 13.479999999999563,
+      "bytes": 92687646,
+      "openedHandles": 10004,
+      "persistMs": 2700.2000000000007,
+      "concurrency": 32,
+      "snapshots": 1,
+      "files": 10003,
+      "snapshotFlushes": 1,
+      "directories": 1202,
+      "cleanup": {
+        "workspaceDeleted": true,
+        "activeHandles": 0
+      },
+      "payloadPhaseMs": 2686.720000000001,
+      "peakHandles": 31,
+      "nativeTimings": {
+        "data.getFileHandle.create": {
+          "calls": 10003,
+          "ms": 33243.119999999486
+        },
+        "snapshot.openSync": {
+          "calls": 1,
+          "ms": 0.18000000000029104
+        },
+        "payload.write": {
+          "calls": 9987,
+          "ms": 1933.2199999998447
+        },
+        "snapshot.close": {
+          "calls": 1,
+          "ms": 0.13999999999941792
+        },
+        "payload.openSync": {
+          "calls": 10003,
+          "ms": 18464.159999999643
+        },
+        "snapshot.flush": {
+          "calls": 1,
+          "ms": 0.32000000000152795
+        },
+        "bun-wasm-raw-213bc489-041b-4866-9320-a3d180d70de7.getFileHandle.create": {
+          "calls": 1,
+          "ms": 0.42000000000007276
+        },
+        "payload.close": {
+          "calls": 10003,
+          "ms": 482.5800000000663
+        },
+        "snapshot.write": {
+          "calls": 1,
+          "ms": 0.23999999999978172
+        }
+      },
+      "snapshotBytes": 801030,
+      "payloadFlushes": 0,
+      "method": "same 10,003-file graph and deterministic bytes; 32 native create/write/close workers, one final path/size/directory snapshot+flush; no adapter/runtime/checksum/GC; no payload fsync"
+    },
+    "ok": true,
+    "cleanup": {
+      "driverStopped": true,
+      "listenerClosed": true,
+      "buildScratchRemoved": true,
+      "databaseDeleted": true
+    }
+  },
+  "indexeddbSmoke": {
+    "method": "Headless real-browser selected-storage durability, page termination, exclusive-writer and lazy-data gates. Original spike 3 corpus geometry: 10,000 package-sized files plus three 8 MiB files; synthetic deterministic contents, no upstream code/content. One corpus sample per engine, timings diagnostic not performance thresholds. Browser profiles, workers, server and build scratch owned by this process.",
+    "platform": "darwin",
+    "arch": "arm64",
+    "storage": "indexeddb",
+    "browsers": [
+      {
+        "browser": "chromium",
+        "version": "156.0.8078.4",
+        "reload": true,
+        "checks": [
+          "durable-page-reload-bytes-inode-mtime-rename-unlink",
+          "second-tab-writer-refused-then-open-after-owner-close",
+          "page-close-midcommit-old-or-new-never-empty"
+        ],
+        "storageTests": [
+          "empty, atomic save, reload, payload copies",
+          "single writer lifetime and close",
+          "immutable keys, missing payloads, monotonic generations, and flush errors",
+          "runtime payload pins survive collection but expire without a new pin",
+          "incremental removals and directory validation",
+          "incremental journal without full metadata rewrites",
+          "corrupt journal recovers previous generation, never an empty tree",
+          "generation reuse cannot resurrect abandoned journal successors",
+          "IndexedDB pin validation does not hydrate cold payloads",
+          "both corrupt base snapshots reject instead of erasing existing storage",
+          "compaction keeps both snapshots and collects only unreachable old data",
+          "missing latest snapshot payload recovers older valid copy",
+          "strict write transactions abort payload and metadata together"
+        ],
+        "interrupted": [
+          {
+            "boundary": "transaction",
+            "state": "new",
+            "files": [
+              "/new-only",
+              "/renamed"
+            ],
+            "size": 8388608,
+            "metadata": [
+              {
+                "path": "/new-only",
+                "kind": "file",
+                "ino": 4,
+                "mtime": 1792221586525
+              },
+              {
+                "path": "/renamed",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221586525
+              }
+            ]
+          },
+          {
+            "boundary": "transaction",
+            "state": "new",
+            "files": [
+              "/new-only",
+              "/renamed"
+            ],
+            "size": 8388608,
+            "metadata": [
+              {
+                "path": "/new-only",
+                "kind": "file",
+                "ino": 4,
+                "mtime": 1792221586848
+              },
+              {
+                "path": "/renamed",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221586848
+              }
+            ]
+          },
+          {
+            "boundary": "transaction",
+            "state": "new",
+            "files": [
+              "/new-only",
+              "/renamed"
+            ],
+            "size": 8388608,
+            "metadata": [
+              {
+                "path": "/new-only",
+                "kind": "file",
+                "ino": 4,
+                "mtime": 1792221587152
+              },
+              {
+                "path": "/renamed",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221587151
+              }
+            ]
+          }
+        ],
+        "cleanup": {
+          "contextClosed": true,
+          "databaseNames": [
+            "bunwasm-step3c-indexeddb-chromium-e1d084c5-58de-421f-8961-86378767dd5a",
+            "bunwasm-step3c-indexeddb-chromium-e1d084c5-58de-421f-8961-86378767dd5a-interrupt-0",
+            "bunwasm-step3c-indexeddb-chromium-e1d084c5-58de-421f-8961-86378767dd5a-interrupt-1",
+            "bunwasm-step3c-indexeddb-chromium-e1d084c5-58de-421f-8961-86378767dd5a-interrupt-2"
+          ]
+        }
+      },
+      {
+        "browser": "firefox",
+        "version": "157.0",
+        "reload": true,
+        "checks": [
+          "durable-page-reload-bytes-inode-mtime-rename-unlink",
+          "second-tab-writer-refused-then-open-after-owner-close",
+          "page-close-midcommit-old-or-new-never-empty"
+        ],
+        "storageTests": [
+          "empty, atomic save, reload, payload copies",
+          "single writer lifetime and close",
+          "immutable keys, missing payloads, monotonic generations, and flush errors",
+          "runtime payload pins survive collection but expire without a new pin",
+          "incremental removals and directory validation",
+          "incremental journal without full metadata rewrites",
+          "corrupt journal recovers previous generation, never an empty tree",
+          "generation reuse cannot resurrect abandoned journal successors",
+          "IndexedDB pin validation does not hydrate cold payloads",
+          "both corrupt base snapshots reject instead of erasing existing storage",
+          "compaction keeps both snapshots and collects only unreachable old data",
+          "missing latest snapshot payload recovers older valid copy",
+          "strict write transactions abort payload and metadata together"
+        ],
+        "interrupted": [
+          {
+            "boundary": "transaction",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221590102
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221590102
+              }
+            ]
+          },
+          {
+            "boundary": "transaction",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221590671
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221590670
+              }
+            ]
+          },
+          {
+            "boundary": "transaction",
+            "state": "old",
+            "files": [
+              "/old-only",
+              "/victim"
+            ],
+            "size": 1048576,
+            "metadata": [
+              {
+                "path": "/old-only",
+                "kind": "file",
+                "ino": 3,
+                "mtime": 1792221591217
+              },
+              {
+                "path": "/victim",
+                "kind": "file",
+                "ino": 2,
+                "mtime": 1792221591216
+              }
+            ]
+          }
+        ],
+        "cleanup": {
+          "contextClosed": true,
+          "databaseNames": [
+            "bunwasm-step3c-indexeddb-firefox-f66aaf1d-e09f-4bd4-9d89-169c80170344",
+            "bunwasm-step3c-indexeddb-firefox-f66aaf1d-e09f-4bd4-9d89-169c80170344-interrupt-0",
+            "bunwasm-step3c-indexeddb-firefox-f66aaf1d-e09f-4bd4-9d89-169c80170344-interrupt-1",
+            "bunwasm-step3c-indexeddb-firefox-f66aaf1d-e09f-4bd4-9d89-169c80170344-interrupt-2"
+          ]
+        }
+      }
+    ]
+  },
+  "runtimeUnits": {
+    "sourceCommit": "3be456bf252aeed698ba79f84e0721f1e9486bcd",
+    "command": "bun test tests (runtime/)",
+    "passed": 501,
+    "failed": 0,
+    "files": 32,
+    "expectCalls": 18951,
+    "durationMs": 4800
+  },
+  "typechecks": {
+    "sourceCommit": "3be456bf252aeed698ba79f84e0721f1e9486bcd",
+    "runtime": "passed",
+    "web": "passed",
+    "explicitPersistenceHarness": "passed",
+    "earlierFailure": "bb4c981c explicit harness typecheck exposed native iterator asyncDispose typing; fixed before successful 3be456bf check."
+  },
+  "freshContextStorage": {
+    "sourceCommit": "3be456bf252aeed698ba79f84e0721f1e9486bcd",
+    "command": "bun runtime/tests/storage-browser-runner.ts chromium firefox webkit",
+    "freshContextPerCase": true,
+    "expectedCasesPerEngine": {
+      "indexeddb": 13,
+      "opfs": 17
+    },
+    "engines": [
+      {
+        "browser": "chromium",
+        "version": "156.0.8078.4",
+        "indexeddbPassed": 13,
+        "opfsPassed": 17,
+        "passed": [
+          {
+            "backend": "indexeddb",
+            "label": "empty, atomic save, reload, payload copies"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "single writer lifetime and close"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "immutable keys, missing payloads, monotonic generations, and flush errors"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "runtime payload pins survive collection but expire without a new pin"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "incremental removals and directory validation"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "incremental journal without full metadata rewrites"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "corrupt journal recovers previous generation, never an empty tree"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "generation reuse cannot resurrect abandoned journal successors"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "IndexedDB pin validation does not hydrate cold payloads"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "both corrupt base snapshots reject instead of erasing existing storage"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "compaction keeps both snapshots and collects only unreachable old data"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "missing latest snapshot payload recovers older valid copy"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "strict write transactions abort payload and metadata together"
+          },
+          {
+            "backend": "opfs",
+            "label": "empty, atomic save, reload, payload copies"
+          },
+          {
+            "backend": "opfs",
+            "label": "single writer lifetime and close"
+          },
+          {
+            "backend": "opfs",
+            "label": "immutable keys, missing payloads, monotonic generations, and flush errors"
+          },
+          {
+            "backend": "opfs",
+            "label": "runtime payload pins survive collection but expire without a new pin"
+          },
+          {
+            "backend": "opfs",
+            "label": "incremental removals and directory validation"
+          },
+          {
+            "backend": "opfs",
+            "label": "more than 253 payload reads use a genuinely bounded sync-handle cache"
+          },
+          {
+            "backend": "opfs",
+            "label": "transient sync-access creation failures retry before opening a real handle"
+          },
+          {
+            "backend": "opfs",
+            "label": "sync-access retries are bounded, map errors, and can recover on a later read"
+          },
+          {
+            "backend": "opfs",
+            "label": "payload quota maps to ENOSPC and the same failed write can be retried after reopen"
+          },
+          {
+            "backend": "opfs",
+            "label": "torn snapshot quota retains the previous generation and supports recovery writes"
+          },
+          {
+            "backend": "opfs",
+            "label": "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation"
+          },
+          {
+            "backend": "opfs",
+            "label": "interrupted first checkpoint recovers the empty baseline and can retry the same key"
+          },
+          {
+            "backend": "opfs",
+            "label": "unknown crash payloads are swept once after publication, never during lazy load"
+          },
+          {
+            "backend": "opfs",
+            "label": "pending garbage cannot delete a payload re-adopted by a later checkpoint"
+          },
+          {
+            "backend": "opfs",
+            "label": "initial empty-baseline quota maps to ENOSPC and can be retried"
+          },
+          {
+            "backend": "opfs",
+            "label": "selective fsync preserves its file and namespace when an unrelated unsynced payload is lost"
+          },
+          {
+            "backend": "opfs",
+            "label": "all corrupt OPFS snapshots reject instead of resetting existing storage"
+          }
+        ],
+        "failed": []
+      },
+      {
+        "browser": "firefox",
+        "version": "157.0",
+        "indexeddbPassed": 13,
+        "opfsPassed": 17,
+        "passed": [
+          {
+            "backend": "indexeddb",
+            "label": "empty, atomic save, reload, payload copies"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "single writer lifetime and close"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "immutable keys, missing payloads, monotonic generations, and flush errors"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "runtime payload pins survive collection but expire without a new pin"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "incremental removals and directory validation"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "incremental journal without full metadata rewrites"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "corrupt journal recovers previous generation, never an empty tree"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "generation reuse cannot resurrect abandoned journal successors"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "IndexedDB pin validation does not hydrate cold payloads"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "both corrupt base snapshots reject instead of erasing existing storage"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "compaction keeps both snapshots and collects only unreachable old data"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "missing latest snapshot payload recovers older valid copy"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "strict write transactions abort payload and metadata together"
+          },
+          {
+            "backend": "opfs",
+            "label": "empty, atomic save, reload, payload copies"
+          },
+          {
+            "backend": "opfs",
+            "label": "single writer lifetime and close"
+          },
+          {
+            "backend": "opfs",
+            "label": "immutable keys, missing payloads, monotonic generations, and flush errors"
+          },
+          {
+            "backend": "opfs",
+            "label": "runtime payload pins survive collection but expire without a new pin"
+          },
+          {
+            "backend": "opfs",
+            "label": "incremental removals and directory validation"
+          },
+          {
+            "backend": "opfs",
+            "label": "more than 253 payload reads use a genuinely bounded sync-handle cache"
+          },
+          {
+            "backend": "opfs",
+            "label": "transient sync-access creation failures retry before opening a real handle"
+          },
+          {
+            "backend": "opfs",
+            "label": "sync-access retries are bounded, map errors, and can recover on a later read"
+          },
+          {
+            "backend": "opfs",
+            "label": "payload quota maps to ENOSPC and the same failed write can be retried after reopen"
+          },
+          {
+            "backend": "opfs",
+            "label": "torn snapshot quota retains the previous generation and supports recovery writes"
+          },
+          {
+            "backend": "opfs",
+            "label": "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation"
+          },
+          {
+            "backend": "opfs",
+            "label": "interrupted first checkpoint recovers the empty baseline and can retry the same key"
+          },
+          {
+            "backend": "opfs",
+            "label": "unknown crash payloads are swept once after publication, never during lazy load"
+          },
+          {
+            "backend": "opfs",
+            "label": "pending garbage cannot delete a payload re-adopted by a later checkpoint"
+          },
+          {
+            "backend": "opfs",
+            "label": "initial empty-baseline quota maps to ENOSPC and can be retried"
+          },
+          {
+            "backend": "opfs",
+            "label": "selective fsync preserves its file and namespace when an unrelated unsynced payload is lost"
+          },
+          {
+            "backend": "opfs",
+            "label": "all corrupt OPFS snapshots reject instead of resetting existing storage"
+          }
+        ],
+        "failed": []
+      },
+      {
+        "browser": "webkit",
+        "version": "27.2",
+        "indexeddbPassed": 13,
+        "opfsPassed": 0,
+        "passed": [
+          {
+            "backend": "indexeddb",
+            "label": "empty, atomic save, reload, payload copies"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "single writer lifetime and close"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "immutable keys, missing payloads, monotonic generations, and flush errors"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "runtime payload pins survive collection but expire without a new pin"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "incremental removals and directory validation"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "incremental journal without full metadata rewrites"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "corrupt journal recovers previous generation, never an empty tree"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "generation reuse cannot resurrect abandoned journal successors"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "IndexedDB pin validation does not hydrate cold payloads"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "both corrupt base snapshots reject instead of erasing existing storage"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "compaction keeps both snapshots and collects only unreachable old data"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "missing latest snapshot payload recovers older valid copy"
+          },
+          {
+            "backend": "indexeddb",
+            "label": "strict write transactions abort payload and metadata together"
+          }
+        ],
+        "failed": [
+          {
+            "backend": "opfs",
+            "label": "empty, atomic save, reload, payload copies"
+          },
+          {
+            "backend": "opfs",
+            "label": "single writer lifetime and close"
+          },
+          {
+            "backend": "opfs",
+            "label": "immutable keys, missing payloads, monotonic generations, and flush errors"
+          },
+          {
+            "backend": "opfs",
+            "label": "runtime payload pins survive collection but expire without a new pin"
+          },
+          {
+            "backend": "opfs",
+            "label": "incremental removals and directory validation"
+          },
+          {
+            "backend": "opfs",
+            "label": "more than 253 payload reads use a genuinely bounded sync-handle cache"
+          },
+          {
+            "backend": "opfs",
+            "label": "transient sync-access creation failures retry before opening a real handle"
+          },
+          {
+            "backend": "opfs",
+            "label": "sync-access retries are bounded, map errors, and can recover on a later read"
+          },
+          {
+            "backend": "opfs",
+            "label": "payload quota maps to ENOSPC and the same failed write can be retried after reopen"
+          },
+          {
+            "backend": "opfs",
+            "label": "torn snapshot quota retains the previous generation and supports recovery writes"
+          },
+          {
+            "backend": "opfs",
+            "label": "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation"
+          },
+          {
+            "backend": "opfs",
+            "label": "interrupted first checkpoint recovers the empty baseline and can retry the same key"
+          },
+          {
+            "backend": "opfs",
+            "label": "unknown crash payloads are swept once after publication, never during lazy load"
+          },
+          {
+            "backend": "opfs",
+            "label": "pending garbage cannot delete a payload re-adopted by a later checkpoint"
+          },
+          {
+            "backend": "opfs",
+            "label": "initial empty-baseline quota maps to ENOSPC and can be retried"
+          },
+          {
+            "backend": "opfs",
+            "label": "selective fsync preserves its file and namespace when an unrelated unsynced payload is lost"
+          },
+          {
+            "backend": "opfs",
+            "label": "all corrupt OPFS snapshots reject instead of resetting existing storage"
+          }
+        ]
+      }
+    ],
+    "logSha256": "82b2a8afeb42f31b38cc9c20fe54843831bc9bbba75f869907a554ace250c8bd",
+    "failureDiagnostic": "Playwright WebKit all OPFS cases fail at delete->open->translate; original runner serializes stack without message. Real Safari OPFS suite and corpus passed. Runner-origin isolation and diagnostics under investigation.",
+    "diagnosticTrial": {
+      "sourceCommit": "17fdf4da789fe368d5786e66e03603e6ab8d7d2c",
+      "command": "STORAGE_TEST_FILTER='empty, atomic' bun runtime/tests/storage-browser-runner.ts webkit",
+      "headersChanged": false,
+      "output": "bun install v1.4.2 (744846f84)\n\n+ @types/bun@1.4.3\n+ typescript@7.0.2\n\n7 packages installed [13.00ms]\nbun install v1.4.2 (744846f84)\n\n+ @types/bun@1.4.3\n+ playwright@1.64.1\n+ typescript@7.0.2\n+ @bun-wasm/runtime@../runtime\n+ @codemirror/lang-javascript@6.2.5\n+ @codemirror/state@6.7.6\n+ @codemirror/theme-one-dark@6.1.3\n+ @codemirror/view@6.43.14\n+ @xterm/addon-fit@0.11.0\n+ @xterm/xterm@6.0.0\n+ codemirror@6.0.2\n\n31 packages installed [71.00ms]\n  PASS webkit indexeddb: empty, atomic save, reload, payload copies\n  FAIL webkit opfs: empty, atomic save, reload, payload copies\nError: evaluate: Error: Error: OPFS open: UnknownError: The operation failed for an unknown transient reason (e.g. out of memory).\ntranslate@http://127.0.0.1:54841/tests.js:640:33\nopen@http://127.0.0.1:54841/tests.js:754:22\nasync delete@http://127.0.0.1:54841/tests.js:701:41\nasync run@http://127.0.0.1:54841/tests.js:1704:33\n@http://127.0.0.1:54841/worker.js:14:23\nWorker environment: {\"secureContext\":true,\"crossOriginIsolated\":false,\"getDirectory\":\"function\",\"syncAccess\":\"function\"}\nwebkit 27.2: 1 IndexedDB and 0 OPFS storage tests passed\nDIAGNOSTIC_EXIT=1\n125 |       }\n126 |       if (selected === 0) throw new Error(`No storage cases match ${JSON.stringify(process.env.STORAGE_TEST_FILTER)}`);\n127 |       console.log(`${name} ${browser.version()}: ${passed.indexeddb.length} IndexedDB and ${passed.opfs.length} OPFS storage tests passed`);\n128 |     } finally { await browser.close(); browser = undefined; launch = undefined; }\n129 |   }\n130 |   if (failures.length) throw new AggregateError(failures.map(message => new Error(message)), `${failures.length} storage browser test(s) failed`);\n                ^\nerror: webkit opfs: empty, atomic save, reload, payload copies\nError: evaluate: Error: Error: OPFS open: UnknownError: The operation failed for an unknown transient reason (e.g. out of memory).\ntranslate@http://127.0.0.1:54841/tests.js:640:33\nopen@http://127.0.0.1:54841/tests.js:754:22\nasync delete@http://127.0.0.1:54841/tests.js:701:41\nasync run@http://127.0.0.1:54841/tests.js:1704:33\n@http://127.0.0.1:54841/worker.js:14:23\nWorker environment: {\"secureContext\":true,\"crossOriginIsolated\":false,\"getDirectory\":\"function\",\"syncAccess\":\"function\"}\n      at map (1:11)\n      at /Users/shaul/tmp/bun-wasm-step3c-webkitdiag-17fdf4da/runtime/tests/storage-browser-runner.ts:130:58\n\nBun v1.4.2 (macOS arm64)\n105M\t/Users/shaul/tmp/bun-wasm-step3c-webkitdiag-17fdf4da\nDIAGNOSTIC_CLEANUP_COMPLETE\n",
+      "remoteControllerExit": 0,
+      "cleanup": "completed"
+    },
+    "isolatedDiagnosticTrial": {
+      "sourceCommit": "9c9a7ca87fb450a6ef6e36de09e69a3c66c9cdd1",
+      "command": "cd runtime && STORAGE_TEST_FILTER='empty, atomic' bun tests/storage-browser-runner.ts webkit",
+      "headersChanged": true,
+      "output": "{\n  \"machine\": \"Shauls-MacBook-Air-2.local\",\n  \"platform\": \"Darwin\",\n  \"architecture\": \"arm64\",\n  \"owner_busy\": false,\n  \"owner_reason\": null,\n  \"owner_marker\": null,\n  \"agent_mac_lock\": {\n    \"exists\": false,\n    \"path\": \"/Users/shaul/tmp/.agent-mac-lock\"\n  },\n  \"cpu_count\": 8,\n  \"load_average\": [\n    4.02783203125,\n    4.47705078125,\n    3.9296875\n  ],\n  \"home_disk_free_bytes\": 162571739136,\n  \"note\": \"No explicit reservation does not prove the machine is idle.\",\n  \"mac\": {\n    \"ac_power\": true,\n    \"power_detail\": \"Now drawing from 'AC Power'\\n -InternalBattery-0 (id=22478947)\\t100%; charged; 0:00 remaining present: true\",\n    \"hid_idle_seconds\": 255.162993625\n  }\n}\nbun install v1.4.2 (744846f84)\n\n+ @types/bun@1.4.3\n+ typescript@7.0.2\n\n7 packages installed [15.00ms]\nbun install v1.4.2 (744846f84)\n\n+ @types/bun@1.4.3\n+ playwright@1.64.1\n+ typescript@7.0.2\n+ @bun-wasm/runtime@../runtime\n+ @codemirror/lang-javascript@6.2.5\n+ @codemirror/state@6.7.6\n+ @codemirror/theme-one-dark@6.1.3\n+ @codemirror/view@6.43.14\n+ @xterm/addon-fit@0.11.0\n+ @xterm/xterm@6.0.0\n+ codemirror@6.0.2\n\n31 packages installed [73.00ms]\n  PASS webkit indexeddb: empty, atomic save, reload, payload copies\nwebkit 27.2: 1 IndexedDB and 0 OPFS storage tests passed\n  FAIL webkit opfs: empty, atomic save, reload, payload copies\nError: evaluate: Error: Error: OPFS open: UnknownError: The operation failed for an unknown transient reason (e.g. out of memory).\ntranslate@http://127.0.0.1:60297/tests.js:640:33\nopen@http://127.0.0.1:60297/tests.js:754:22\nasync delete@http://127.0.0.1:60297/tests.js:701:41\nasync run@http://127.0.0.1:60297/tests.js:1704:33\n@http://127.0.0.1:60297/worker.js:14:23\nWorker environment: {\"secureContext\":true,\"crossOriginIsolated\":true,\"getDirectory\":\"function\",\"syncAccess\":\"function\"}\nDIAGNOSTIC_EXIT=1\n130 |       }\n131 |       if (selected === 0) throw new Error(`No storage cases match ${JSON.stringify(process.env.STORAGE_TEST_FILTER)}`);\n132 |       console.log(`${name} ${browser.version()}: ${passed.indexeddb.length} IndexedDB and ${passed.opfs.length} OPFS storage tests passed`);\n133 |     } finally { await browser.close(); browser = undefined; launch = undefined; }\n134 |   }\n135 |   if (failures.length) throw new AggregateError(failures.map(message => new Error(message)), `${failures.length} storage browser test(s) failed`);\n                ^\nerror: webkit opfs: empty, atomic save, reload, payload copies\nError: evaluate: Error: Error: OPFS open: UnknownError: The operation failed for an unknown transient reason (e.g. out of memory).\ntranslate@http://127.0.0.1:60297/tests.js:640:33\nopen@http://127.0.0.1:60297/tests.js:754:22\nasync delete@http://127.0.0.1:60297/tests.js:701:41\nasync run@http://127.0.0.1:60297/tests.js:1704:33\n@http://127.0.0.1:60297/worker.js:14:23\nWorker environment: {\"secureContext\":true,\"crossOriginIsolated\":true,\"getDirectory\":\"function\",\"syncAccess\":\"function\"}\n      at map (1:11)\n      at /Users/shaul/tmp/bun-wasm-step3c-webkitdiag-9c9a7ca/runtime/tests/storage-browser-runner.ts:135:58\n\nBun v1.4.2 (macOS arm64)\n105M\t/Users/shaul/tmp/bun-wasm-step3c-webkitdiag-9c9a7ca\nDIAGNOSTIC_CLEANUP_COMPLETE\n",
+      "remoteControllerExit": 0,
+      "cleanup": "completed"
+    },
+    "persistentProfileDiagnostic": {
+      "sourceCommit": "7a96a1a949bf62881bb27ab050965bfb08737b5c",
+      "command": "cd runtime && STORAGE_WEBKIT_OPFS_PERSISTENT=1 STORAGE_TEST_FILTER='empty, atomic' bun tests/storage-browser-runner.ts webkit",
+      "output": "bun install v1.4.2 (744846f84)\n\n+ @types/bun@1.4.3\n+ typescript@7.0.2\n\n7 packages installed [34.00ms]\nbun install v1.4.2 (744846f84)\n\n+ @types/bun@1.4.3\n+ playwright@1.64.1\n+ typescript@7.0.2\n+ @bun-wasm/runtime@../runtime\n+ @codemirror/lang-javascript@6.2.5\n+ @codemirror/state@6.7.6\n+ @codemirror/theme-one-dark@6.1.3\n+ @codemirror/view@6.43.14\n+ @xterm/addon-fit@0.11.0\n+ @xterm/xterm@6.0.0\n+ codemirror@6.0.2\n\n31 packages installed [83.00ms]\n  PASS webkit indexeddb: empty, atomic save, reload, payload copies\n  PASS webkit opfs [fresh persistent profile]: empty, atomic save, reload, payload copies\nwebkit 27.2: 1 IndexedDB and 1 OPFS storage tests passed\n{\"stage\": \"probe\", \"exitCode\": 0, \"elapsedSeconds\": 2.174}",
+      "passed": true,
+      "interpretation": "Fresh task-owned persistent WebKit profile passes the OPFS case that fails in ephemeral contexts with and without cross-origin isolation. IndexedDB ephemeral control passes. No further diagnostic trials.",
+      "scopedCleanup": {
+        "probeStageComplete": true,
+        "taskTmpEntries": [],
+        "probeTaskProcesses": [],
+        "reservationRetained": true
+      },
+      "finalVerification": "Full storage matrix and strict whole-web proof will be recorded in the PR after the final committed candidate is tested; this diagnostic is one case only."
+    }
+  },
+  "cleanup": {
+    "browserContextsClosed": true,
+    "safariDriverStopped": true,
+    "safariDatabasesDeleted": true,
+    "macTaskScratchRemoved": true,
+    "macTaskLockReleased": true,
+    "macTaskPayloadRemovedMiB": 250
+  }
+}

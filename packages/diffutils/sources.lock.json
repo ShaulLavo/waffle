@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "name": "GNU diffutils",
+    "version": "3.12",
+    "repository": "https://git.savannah.gnu.org/git/diffutils.git",
+    "archive": "https://ftp.gnu.org/gnu/diffutils/diffutils-3.12.tar.xz",
+    "archiveSha256": "7c8b7f9fc8609141fdea9cece85249d308624391ff61dedaf528fcb337727dfd",
+    "license": "GPL-3.0-or-later"
+  },
+  "localAdaptation": "Original Waffle build, packaging, and verification recipes. patches/gnu-wasi.patch disables unsupported process, signal, timezone, and locale recovery APIs without replacing the diff or cmp algorithms. Configure disables NLS and uses byte-order directory sorting on WASI."
+}

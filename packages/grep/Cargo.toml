@@ -1,0 +1,25 @@
+[package]
+name = "waffle-grep"
+version = "0.0.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Needs Waffle's runtime_proc.inherited_fd launch descriptor list; no Bash namespace.
+cooperative-wasi = ["waffle-program-support/cooperative-wasi"]
+
+[dependencies]
+waffle-program-support = { path = "../program-support" }
+futures.workspace = true
+regex = { version = "1.12.2", default-features = false, features = ["std", "perf", "unicode"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[bin]]
+name = "grep"
+path = "src/bin/grep.rs"
+required-features = ["cooperative-wasi"]

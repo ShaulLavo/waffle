@@ -1,0 +1,34 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "packages": {
+    "uu_touch": {
+      "version": "0.13.0",
+      "path": "src/uu/touch"
+    },
+    "uu_rm": {
+      "version": "0.13.0",
+      "path": "src/uu/rm"
+    },
+    "uu_cp": {
+      "version": "0.13.0",
+      "path": "src/uu/cp"
+    },
+    "uu_mv": {
+      "version": "0.13.0",
+      "path": "src/uu/mv"
+    }
+  },
+  "sharedPackage": {
+    "package": "uucore",
+    "dependencyAlias": "uucore_files",
+    "version": "0.13.0",
+    "path": "src/uucore"
+  },
+  "changes": "No upstream source changes. Each local bin initializes WASI cwd from PWD, then calls uucore::bin!.",
+  "license": {
+    "spdx": "MIT",
+    "path": "LICENSE",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  }
+}

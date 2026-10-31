@@ -1,0 +1,426 @@
+{
+  "schemaVersion": 1,
+  "ghVersion": "2.103.0",
+  "apiOrigin": "https://api.github.com",
+  "argumentConvention": "argv includes the gh executable; paths are relative to apiOrigin unless absolute",
+  "environmentConvention": "Each case starts with GH_TOKEN, GITHUB_TOKEN, enterprise tokens, GH_REPO, and GH_HOST unset, then applies env",
+  "matcherConvention": {
+    "empty": "zero bytes",
+    "text": "exact UTF-8 bytes",
+    "json": "parse stdout and compare JSON values, ignoring whitespace and object key order",
+    "jsonArray": "parse stdout as an array and apply minItems and maxItems when present",
+    "contains": "stdout or stderr contains value",
+    "any": "no output assertion; consult the linked actual observation"
+  },
+  "provenanceConvention": {
+    "actual-oracle": "observed from local gh 2.103.0; oracle files contain exact streams and exits",
+    "inferred-from-source": "expected behavior derived from the cited public gh source, not observed by the collector",
+    "inferred-from-help": "expected behavior derived from local gh help, not observed by the collector"
+  },
+  "cases": [
+    {
+      "id": "auth-env-precedence",
+      "argv": ["gh", "api", "repos/cli/cli", "--jq", ".full_name"],
+      "execution": "fixture-only",
+      "env": {"GH_TOKEN": "primary-fixture-token", "GITHUB_TOKEN": "secondary-fixture-token"},
+      "transport": {"method": "GET", "path": "/repos/cli/cli", "headers": {"Authorization": "token primary-fixture-token"}},
+      "fixtureResponses": [{"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"full_name": "cli/cli"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "cli/cli\n"}, "stderr": {"kind": "empty"}, "outputOmits": ["primary-fixture-token", "secondary-fixture-token"]},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/go-gh/blob/v2.17.0/pkg/auth/auth.go#L63-L99"}
+    },
+    {
+      "id": "auth-stored-fallback",
+      "argv": ["gh", "api", "repos/cli/cli", "--jq", ".full_name"],
+      "execution": "fixture-only",
+      "env": {"GH_CONFIG_DIR": "fixture-config"},
+      "fixtureFiles": {"fixture-config/hosts.yml": "github.com:\n    oauth_token: stored-fixture-token\n    user: fixture-user\n"},
+      "transport": {"method": "GET", "path": "/repos/cli/cli", "headers": {"Authorization": "token stored-fixture-token"}},
+      "fixtureResponses": [{"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"full_name": "cli/cli"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "cli/cli\n"}, "stderr": {"kind": "empty"}, "outputOmits": ["stored-fixture-token"]},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/go-gh/blob/v2.17.0/pkg/auth/auth.go#L86-L99"}
+    },
+    {
+      "id": "auth-login-with-token",
+      "argv": ["gh", "auth", "login", "--with-token"],
+      "execution": "fixture-only",
+      "stdin": "fixture-login-token\n",
+      "env": {"GH_CONFIG_DIR": "fixture-config"},
+      "transportSequence": [
+        {"method": "GET", "path": "/", "headers": {"Authorization": "token fixture-login-token"}},
+        {"method": "POST", "path": "/graphql", "headers": {"Authorization": "token fixture-login-token"}, "body": {"query": "query UserCurrent{viewer{login}}"}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"X-OAuth-Scopes": "gist, read:org, repo"}, "body": {}},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"data": {"viewer": {"login": "fixture-user"}}}}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "empty"}, "stderr": {"kind": "empty"}, "files": {"fixture-config/hosts.yml": {"yamlContains": {"github.com": {"oauth_token": "fixture-login-token", "user": "fixture-user"}}}}, "outputOmits": ["fixture-login-token"]},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/auth/login/login.go#L149-L155"}
+    },
+    {
+      "id": "auth-login-env-guard",
+      "argv": ["gh", "auth", "login", "--with-token"],
+      "execution": "fixture-only",
+      "stdin": "fixture-login-token\n",
+      "env": {"GH_TOKEN": "environment-fixture-token", "GH_CONFIG_DIR": "fixture-config"},
+      "transportSequence": [],
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "text", "value": "The value of the GH_TOKEN environment variable is being used for authentication.\nTo have GitHub CLI store credentials instead, first clear the value from the environment.\n"}, "fileAbsent": "fixture-config/hosts.yml", "outputOmits": ["fixture-login-token", "environment-fixture-token"]},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/auth/login/login.go#L222-L225"}
+    },
+    {
+      "id": "missing-auth",
+      "argv": ["gh", "api", "repos/cli/cli"],
+      "execution": "oracle-offline",
+      "expect": {"exit": 4, "stdout": {"kind": "empty"}, "stderr": {"kind": "text", "value": "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "missing-auth"}
+    },
+    {
+      "id": "jq-requires-json",
+      "argv": ["gh", "pr", "view", "1", "--jq", ".number"],
+      "execution": "oracle-offline",
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "text", "value": "cannot use `--jq` without specifying `--json`\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "jq-requires-json"}
+    },
+    {
+      "id": "invalid-limit",
+      "argv": ["gh", "pr", "list", "--limit", "0"],
+      "execution": "oracle-offline",
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "contains", "value": "invalid value for --limit: 0\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "invalid-limit"}
+    },
+    {
+      "id": "repo-view-rejects-repo-flag",
+      "argv": ["gh", "repo", "view", "cli/cli", "-R", "cli/cli"],
+      "execution": "oracle-offline",
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "contains", "value": "unknown shorthand flag: 'R' in -R\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "repo-view-rejects-repo-flag"}
+    },
+    {
+      "id": "api-rejects-json-flag",
+      "argv": ["gh", "api", "repos/cli/cli", "--json", "number"],
+      "execution": "oracle-offline",
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "contains", "value": "unknown flag: --json\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "api-rejects-json-flag"}
+    },
+    {
+      "id": "repo-discovery-env",
+      "argv": ["gh", "api", "repos/{owner}/{repo}", "--jq", ".full_name"],
+      "execution": "oracle-online",
+      "env": {"GH_REPO": "cli/cli"},
+      "transport": {"method": "GET", "path": "/repos/cli/cli"},
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "cli/cli\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "repo-discovery-env"}
+    },
+    {
+      "id": "repo-discovery-branch-placeholder-rejects-gh-repo",
+      "argv": ["gh", "api", "repos/{owner}/{repo}/branches/{branch}"],
+      "execution": "fixture-only",
+      "env": {"GH_REPO": "cli/cli"},
+      "transportSequence": [],
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "contains", "value": "unable to determine an appropriate value for the 'branch' placeholder"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/api/api.go#L578-L615"}
+    },
+    {
+      "id": "repo-view-json",
+      "argv": ["gh", "repo", "view", "ShaulLavo/waffle", "--json", "nameWithOwner,url"],
+      "execution": "oracle-online",
+      "transport": {"method": "POST", "path": "/graphql", "operation": "RepositoryInfo", "variables": {"owner": "ShaulLavo", "name": "waffle"}},
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"nameWithOwner": "ShaulLavo/waffle", "url": "https://github.com/ShaulLavo/waffle"}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "repo-view-json"}
+    },
+    {
+      "id": "repo-view-rest-equivalent",
+      "argv": ["gh", "repo", "view", "octo/example", "--json", "name,nameWithOwner,owner,defaultBranchRef,url"],
+      "execution": "fixture-only",
+      "transport": {"method": "GET", "path": "/repos/octo/example"},
+      "fixtureResponses": [{"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"name": "example", "full_name": "octo/example", "owner": {"login": "octo"}, "default_branch": "main", "html_url": "https://github.com/octo/example"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"name": "example", "nameWithOwner": "octo/example", "owner": {"login": "octo"}, "defaultBranchRef": {"name": "main"}, "url": "https://github.com/octo/example"}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/repo/view/view.go#L78-L163"}
+    },
+    {
+      "id": "repo-view-plain-branch-readme",
+      "argv": ["gh", "repo", "view", "octo/example", "--branch", "topic"],
+      "execution": "fixture-only",
+      "transportSequence": [
+        {"method": "GET", "path": "/repos/octo/example"},
+        {"method": "GET", "path": "/repos/octo/example/readme", "query": {"ref": "topic"}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"name": "example", "full_name": "octo/example", "owner": {"login": "octo"}, "description": "Fixture repository"}},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"name": "README.md", "content": "SGVsbG8gZnJvbSBmaXh0dXJlCg==", "html_url": "https://github.com/octo/example/blob/topic/README.md"}}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "name:\tocto/example\ndescription:\tFixture repository\n--\nHello from fixture\n\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/repo/view/http.go#L26-L72"}
+    },
+    {
+      "id": "pr-view-json",
+      "argv": ["gh", "pr", "view", "231", "-R", "ShaulLavo/waffle", "--json", "number,title,state"],
+      "execution": "oracle-online",
+      "transport": {"method": "POST", "path": "/graphql", "operation": "PullRequestByNumber", "variables": {"owner": "ShaulLavo", "repo": "waffle", "pr_number": 231}},
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"number": 231, "title": "Optimize verified program releases for size", "state": "OPEN"}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "pr-view-json"}
+    },
+    {
+      "id": "pr-view-jq",
+      "argv": ["gh", "pr", "view", "231", "-R", "ShaulLavo/waffle", "--json", "number,title", "--jq", ".title"],
+      "execution": "oracle-online",
+      "transport": {"method": "POST", "path": "/graphql", "operation": "PullRequestByNumber"},
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "Optimize verified program releases for size\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "pr-view-jq"}
+    },
+    {
+      "id": "pr-view-rest-equivalent",
+      "argv": ["gh", "pr", "view", "7", "-R", "octo/example", "--json", "number,title,state,body,author,headRefName,baseRefName,isDraft,url"],
+      "execution": "fixture-only",
+      "transport": {"method": "GET", "path": "/repos/octo/example/pulls/7"},
+      "fixtureResponses": [{"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"number": 7, "title": "Fixture PR", "state": "closed", "merged_at": "2026-01-02T00:00:00Z", "body": "Body", "user": {"login": "octo"}, "head": {"ref": "topic", "sha": "111"}, "base": {"ref": "main", "sha": "222"}, "draft": false, "html_url": "https://github.com/octo/example/pull/7"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"number": 7, "title": "Fixture PR", "state": "MERGED", "body": "Body", "author": {"login": "octo"}, "headRefName": "topic", "baseRefName": "main", "isDraft": false, "url": "https://github.com/octo/example/pull/7"}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/pr/shared/finder.go#L363-L383"}
+    },
+    {
+      "id": "pr-list-filter",
+      "argv": ["gh", "pr", "list", "-R", "ShaulLavo/waffle", "--state", "all", "--limit", "2", "--json", "number,state,title"],
+      "execution": "oracle-online",
+      "transport": {"method": "POST", "path": "/graphql", "operation": "PullRequestList"},
+      "expect": {"exit": 0, "stdout": {"kind": "jsonArray", "minItems": 0, "maxItems": 2}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "pr-list-filter"}
+    },
+    {
+      "id": "pr-list-rest-pagination-and-merged-filter",
+      "argv": ["gh", "pr", "list", "--repo", "octo/example", "--state", "merged", "--head", "topic", "--limit", "2", "--json", "number,state,headRefName"],
+      "execution": "fixture-only",
+      "transportSequence": [
+        {"method": "GET", "path": "/repos/octo/example/pulls", "query": {"state": "closed", "head": "octo:topic", "per_page": 2}},
+        {"method": "GET", "path": "/repos/octo/example/pulls", "query": {"state": "closed", "head": "octo:topic", "per_page": 2, "page": 2}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"Content-Type": "application/json", "Link": "<https://api.github.com/repos/octo/example/pulls?state=closed&head=octo:topic&per_page=2&page=2>; rel=\"next\""}, "body": [{"number": 9, "state": "closed", "merged_at": null, "head": {"ref": "topic"}}, {"number": 8, "state": "closed", "merged_at": "2026-01-02T00:00:00Z", "head": {"ref": "topic"}}]},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": [{"number": 7, "state": "closed", "merged_at": "2026-01-01T00:00:00Z", "head": {"ref": "topic"}}]}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": [{"number": 8, "state": "MERGED", "headRefName": "topic"}, {"number": 7, "state": "MERGED", "headRefName": "topic"}]}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/pr/list/list.go#L115-L126"}
+    },
+    {
+      "id": "pr-create-body",
+      "argv": ["gh", "pr", "create", "-R", "octo/example", "--base", "main", "--head", "topic", "--title", "Fixture title", "--body", "Fixture body"],
+      "execution": "fixture-only",
+      "transport": {"method": "POST", "path": "/repos/octo/example/pulls", "body": {"title": "Fixture title", "body": "Fixture body", "draft": false, "base": "main", "head": "topic", "maintainer_can_modify": true}},
+      "fixtureResponses": [{"status": 201, "headers": {"Content-Type": "application/json"}, "body": {"number": 10, "html_url": "https://github.com/octo/example/pull/10"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "https://github.com/octo/example/pull/10\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/api/queries_pr.go#L490-L524", "transportSource": "https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request"}
+    },
+    {
+      "id": "issue-create-body-file-stdin",
+      "argv": ["gh", "issue", "create", "-R", "octo/example", "--title", "Fixture issue", "--body-file", "-"],
+      "execution": "fixture-only",
+      "stdin": "line one\nline two\n",
+      "transport": {"method": "POST", "path": "/repos/octo/example/issues", "body": {"title": "Fixture issue", "body": "line one\nline two\n"}},
+      "fixtureResponses": [{"status": 201, "headers": {"Content-Type": "application/json"}, "body": {"number": 11, "html_url": "https://github.com/octo/example/issues/11"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "https://github.com/octo/example/issues/11\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/issue/create/create.go#L137-L145", "transportSource": "https://docs.github.com/en/rest/issues/issues#create-an-issue"}
+    },
+    {
+      "id": "issue-create-body-file-path",
+      "argv": ["gh", "issue", "create", "-R", "octo/example", "--title", "Path body", "--body-file", "fixture/body.md"],
+      "execution": "fixture-only",
+      "fixtureFiles": {"fixture/body.md": "from a file\nwith trailing newline\n"},
+      "transport": {"method": "POST", "path": "/repos/octo/example/issues", "body": {"title": "Path body", "body": "from a file\nwith trailing newline\n"}},
+      "fixtureResponses": [{"status": 201, "headers": {"Content-Type": "application/json"}, "body": {"number": 15, "html_url": "https://github.com/octo/example/issues/15"}}],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "https://github.com/octo/example/issues/15\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/issue/create/create.go#L137-L145", "transportSource": "https://docs.github.com/en/rest/issues/issues#create-an-issue"}
+    },
+    {
+      "id": "issue-view-json",
+      "argv": ["gh", "issue", "view", "1", "-R", "cli/cli", "--json", "number,state,title"],
+      "execution": "oracle-online",
+      "transport": {"method": "POST", "path": "/graphql", "operation": "IssueByNumber"},
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"number": 1, "state": "MERGED", "title": "interactive pr list"}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "issue-view-json"}
+    },
+    {
+      "id": "issue-list-state",
+      "argv": ["gh", "issue", "list", "-R", "cli/cli", "--state", "closed", "--limit", "2", "--json", "number,state,title"],
+      "execution": "oracle-online",
+      "transport": {"method": "POST", "path": "/graphql", "operation": "IssueList"},
+      "expect": {"exit": 0, "stdout": {"kind": "jsonArray", "minItems": 0, "maxItems": 2}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "issue-list-state"}
+    },
+    {
+      "id": "issue-list-rest-excludes-pull-requests",
+      "argv": ["gh", "issue", "list", "-R", "octo/example", "--state", "open", "-L", "2", "--json", "number,state,title"],
+      "execution": "fixture-only",
+      "transport": {"method": "GET", "path": "/repos/octo/example/issues", "query": {"state": "open", "per_page": 2}},
+      "fixtureResponses": [{"status": 200, "headers": {"Content-Type": "application/json"}, "body": [{"number": 12, "state": "open", "title": "Real issue"}, {"number": 13, "state": "open", "title": "PR in issue endpoint", "pull_request": {"url": "https://api.github.com/repos/octo/example/pulls/13"}}]}],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": [{"number": 12, "state": "OPEN", "title": "Real issue"}]}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-help", "source": "oracle-offline.json#help:issue list --help"}
+    },
+    {
+      "id": "run-list-filter",
+      "argv": ["gh", "run", "list", "-R", "ShaulLavo/waffle", "--branch", "main", "--limit", "2", "--json", "databaseId,status,conclusion"],
+      "execution": "oracle-online",
+      "transport": {"method": "GET", "path": "/repos/ShaulLavo/waffle/actions/runs", "query": {"branch": "main", "exclude_pull_requests": "true", "per_page": 2}},
+      "expect": {"exit": 0, "stdout": {"kind": "jsonArray", "minItems": 0, "maxItems": 2}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "run-list-filter"}
+    },
+    {
+      "id": "run-list-status-and-limit-fixture",
+      "argv": ["gh", "run", "list", "-R", "octo/example", "--status", "failure", "--branch", "main", "--limit", "1", "--json", "databaseId,status,conclusion,headBranch"],
+      "execution": "fixture-only",
+      "transportSequence": [
+        {"method": "GET", "path": "/repos/octo/example/actions/runs", "query": {"status": "failure", "branch": "main", "exclude_pull_requests": "true", "per_page": 1}},
+        {"method": "GET", "path": "/repos/octo/example/actions/workflows", "query": {"page": 1, "per_page": 100}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"total_count": 1, "workflow_runs": [{"id": 101, "status": "completed", "conclusion": "failure", "head_branch": "main", "workflow_id": 301}]}},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"total_count": 1, "workflows": [{"id": 301, "name": "CI"}]}}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": [{"databaseId": 101, "status": "completed", "conclusion": "failure", "headBranch": "main"}]}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/run/shared/shared.go#L368-L430"}
+    },
+    {
+      "id": "run-view-json-exit-status",
+      "argv": ["gh", "run", "view", "41036415169", "-R", "ShaulLavo/waffle", "--json", "databaseId,status,conclusion", "--exit-status"],
+      "execution": "oracle-online",
+      "transport": {"method": "GET", "path": "/repos/ShaulLavo/waffle/actions/runs/41036415169", "query": {"exclude_pull_requests": "true"}},
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"databaseId": 41036415169, "status": "completed", "conclusion": "failure"}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "run-view-json-exit-status"}
+    },
+    {
+      "id": "run-view-plain-failed-exit-status",
+      "argv": ["gh", "run", "view", "41036415169", "-R", "ShaulLavo/waffle", "--exit-status"],
+      "execution": "oracle-online",
+      "transport": {"method": "GET", "path": "/repos/ShaulLavo/waffle/actions/runs/41036415169", "query": {"exclude_pull_requests": "true"}},
+      "expect": {"exit": 1, "stdout": {"kind": "any"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "run-view-plain-exit-status"}
+    },
+    {
+      "id": "run-view-jobs-rest-fixture",
+      "argv": ["gh", "run", "view", "101", "-R", "octo/example", "--attempt", "2", "--json", "databaseId,jobs"],
+      "execution": "fixture-only",
+      "transportSequence": [
+        {"method": "GET", "path": "/repos/octo/example/actions/runs/101/attempts/2", "query": {"exclude_pull_requests": "true"}},
+        {"method": "GET", "path": "/repos/octo/example/actions/workflows/301"},
+        {"method": "GET", "path": "/repos/octo/example/actions/runs/101/attempts/2/jobs", "query": {"per_page": 100}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"id": 101, "status": "completed", "conclusion": "success", "workflow_id": 301, "jobs_url": "https://api.github.com/repos/octo/example/actions/runs/101/jobs"}},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"id": 301, "name": "CI"}},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"total_count": 1, "jobs": [{"id": 201, "name": "test", "status": "completed", "conclusion": "success", "started_at": "2026-01-01T00:00:00Z", "completed_at": "2026-01-01T00:01:00Z", "html_url": "https://github.com/octo/example/actions/runs/101/job/201", "steps": []}]}}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"databaseId": 101, "jobs": [{"databaseId": 201, "name": "test", "status": "completed", "conclusion": "success", "startedAt": "2026-01-01T00:00:00Z", "completedAt": "2026-01-01T00:01:00Z", "url": "https://github.com/octo/example/actions/runs/101/job/201", "steps": []}]}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/run/shared/shared.go#L487-L506"}
+    },
+    {
+      "id": "api-view-jq",
+      "argv": ["gh", "api", "repos/cli/cli", "--jq", ".full_name"],
+      "execution": "oracle-online",
+      "transport": {"method": "GET", "path": "/repos/cli/cli"},
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "cli/cli\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "api-view-jq"}
+    },
+    {
+      "id": "api-get-fields",
+      "argv": ["gh", "api", "-X", "GET", "repos/cli/cli/issues", "-f", "state=closed", "-f", "per_page=1", "--jq", "length"],
+      "execution": "oracle-online",
+      "transport": {"method": "GET", "path": "/repos/cli/cli/issues", "query": {"state": "closed", "per_page": 1}},
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "1\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "api-get-fields"}
+    },
+    {
+      "id": "api-raw-fields-default-post",
+      "argv": ["gh", "api", "repos/octo/example/issues", "-f", "title=Fixture", "-F", "draft=false", "-F", "priority=3"],
+      "execution": "fixture-only",
+      "transport": {"method": "POST", "path": "/repos/octo/example/issues", "body": {"title": "Fixture", "draft": false, "priority": 3}},
+      "fixtureResponses": [{"status": 201, "headers": {"Content-Type": "application/json"}, "body": {"number": 14}}],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"number": 14}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-help", "source": "oracle-offline.json#help:api --help"}
+    },
+    {
+      "id": "api-typed-nested-fields",
+      "argv": ["gh", "api", "repos/octo/example/issues", "-F", "issue[title]=Fixture", "-F", "issue[labels][]=one", "-F", "issue[labels][]=two", "-F", "issue[meta][active]=true", "-F", "issue[meta][count]=2", "-F", "issue[meta][empty]=null"],
+      "execution": "fixture-only",
+      "transport": {"method": "POST", "path": "/repos/octo/example/issues", "body": {"issue": {"title": "Fixture", "labels": ["one", "two"], "meta": {"active": true, "count": 2, "empty": null}}}},
+      "fixtureResponses": [{"status": 201, "headers": {"Content-Type": "application/json"}, "body": {"ok": true}}],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": {"ok": true}}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-help", "source": "oracle-offline.json#help:api --help"}
+    },
+    {
+      "id": "api-paginate-array-merge",
+      "argv": ["gh", "api", "repos/octo/example/issues", "--paginate"],
+      "execution": "fixture-only",
+      "transportSequence": [
+        {"method": "GET", "path": "/repos/octo/example/issues", "query": {"per_page": 100}},
+        {"method": "GET", "path": "/repos/octo/example/issues", "query": {"per_page": 100, "page": 2}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"Content-Type": "application/json", "Link": "<https://api.github.com/repos/octo/example/issues?per_page=100&page=2>; rel=\"next\""}, "body": [{"id": 1}]},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": [{"id": 2}]}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": [{"id": 1}, {"id": 2}]}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/api/pagination.go#L112-L149"}
+    },
+    {
+      "id": "api-paginate-slurp",
+      "argv": ["gh", "api", "repos/octo/example/issues", "--paginate", "--slurp"],
+      "execution": "fixture-only",
+      "transportSequence": [
+        {"method": "GET", "path": "/repos/octo/example/issues", "query": {"per_page": 100}},
+        {"method": "GET", "path": "/repos/octo/example/issues", "query": {"per_page": 100, "page": 2}}
+      ],
+      "fixtureResponses": [
+        {"status": 200, "headers": {"Content-Type": "application/json", "Link": "<https://api.github.com/repos/octo/example/issues?per_page=100&page=2>; rel=\"next\""}, "body": [{"id": 1}]},
+        {"status": 200, "headers": {"Content-Type": "application/json"}, "body": [{"id": 2}]}
+      ],
+      "expect": {"exit": 0, "stdout": {"kind": "json", "value": [[{"id": 1}], [{"id": 2}]]}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-help", "source": "oracle-offline.json#help:api --help"}
+    },
+    {
+      "id": "slurp-requires-paginate",
+      "argv": ["gh", "api", "repos/cli/cli", "--slurp"],
+      "execution": "oracle-offline",
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "contains", "value": "`--paginate` required when passing `--slurp`\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "slurp-requires-paginate"}
+    },
+    {
+      "id": "invalid-jq",
+      "argv": ["gh", "api", "repos/cli/cli", "--jq", ".["],
+      "execution": "oracle-offline",
+      "expect": {"exit": 1, "stdout": {"kind": "empty"}, "stderr": {"kind": "text", "value": "failed to parse jq expression (line 1, column 3)\n    .[\n      ^  unexpected EOF\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-offline.json", "observation": "invalid-jq"}
+    },
+    {
+      "id": "api-error-404",
+      "argv": ["gh", "api", "repos/cli/cli/gh-contract-endpoint-that-does-not-exist"],
+      "execution": "oracle-online",
+      "transport": {"method": "GET", "path": "/repos/cli/cli/gh-contract-endpoint-that-does-not-exist"},
+      "expect": {"exit": 1, "stdout": {"kind": "contains", "value": "\"message\": \"Not Found\""}, "stderr": {"kind": "text", "value": "gh: Not Found (HTTP 404)\n"}},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "api-error-404"}
+    },
+    {
+      "id": "api-204-silent",
+      "argv": ["gh", "api", "-X", "DELETE", "repos/octo/example/issues/comments/1", "--silent"],
+      "execution": "fixture-only",
+      "transport": {"method": "DELETE", "path": "/repos/octo/example/issues/comments/1"},
+      "fixtureResponses": [{"status": 204, "headers": {}, "body": null}],
+      "expect": {"exit": 0, "stdout": {"kind": "empty"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-source", "source": "https://github.com/cli/cli/blob/v2.103.0/pkg/cmd/api/api.go#L477-L565"}
+    },
+    {
+      "id": "jq-complex-short-flag",
+      "argv": ["gh", "pr", "list", "-R", "octo/example", "--state", "open", "--limit", "3", "--json", "number,title,state", "-q", "map(select(.state == \"OPEN\" and .number > 1)) | sort_by(.number) | map(.title) | join(\"\\n\")"],
+      "execution": "fixture-only",
+      "transport": {"method": "GET", "path": "/repos/octo/example/pulls", "query": {"state": "open", "per_page": 3}},
+      "fixtureResponses": [{"status": 200, "headers": {"Content-Type": "application/json"}, "body": [{"number": 3, "state": "open", "title": "third"}, {"number": 1, "state": "open", "title": "first"}, {"number": 2, "state": "open", "title": "second"}]}],
+      "expect": {"exit": 0, "stdout": {"kind": "text", "value": "second\nthird\n"}, "stderr": {"kind": "empty"}},
+      "provenance": {"kind": "inferred-from-help", "source": "oracle-offline.json#help:formatting"}
+    },
+    {
+      "id": "fake-token-redaction",
+      "argv": ["gh", "api", "repos/cli/cli"],
+      "execution": "oracle-online",
+      "env": {"GH_TOKEN": "GH_CONTRACT_FAKE_TOKEN_NEVER_VALID"},
+      "transport": {"method": "GET", "path": "/repos/cli/cli"},
+      "expect": {"exit": 1, "stdout": {"kind": "contains", "value": "Bad credentials"}, "stderr": {"kind": "text", "value": "gh: Bad credentials (HTTP 401)\n"}, "outputOmits": ["GH_CONTRACT_FAKE_TOKEN_NEVER_VALID"]},
+      "provenance": {"kind": "actual-oracle", "artifact": "oracle-online.json", "observation": "fake-token-redaction"}
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "schema": "waffle-program-build-recipe/v1",
+  "status": "caller wired; final monorepo layout and guest qualification pending",
+  "sourceCommit": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+  "sharedTools": "../../../tools/program-build-tools.ts",
+  "sharedToolsCommit": "74490abce8067d3d23b857d9774ba4f235f43a1d",
+  "copiedHelpers": false,
+  "familyRecipe": {
+    "root": "monorepo root",
+    "waffle": "packages/waffle",
+    "targetDirectory": ".build/findutils",
+    "releaseDirectory": ".build/findutils/wasm32-wasip1/release"
+  },
+  "wasiSdk": "34.0",
+  "wasiLibc": "2e6fb9d8ee0c",
+  "maxMemoryBytes": 268435456,
+  "toolRecipe": "scripts/build-findutils.ts",
+  "sourceVerification": [
+    "scripts/test-find-source.ts",
+    "scripts/test-xargs-source.ts"
+  ],
+  "generatedOutputs": [
+    "find.wasm",
+    "xargs.wasm"
+  ],
+  "note": "Active recipe uses the singular shared helper; no installer, public package or produced guest is claimed.",
+  "upstream": "uutils/findutils",
+  "revision": "505421d4e03586efeb7b9c55adf057599e192e0a",
+  "archiveSha256": "6b2426289c34e78256c2e3de7ac9486d08227faf11b46ea004cf3cd1ae52a545",
+  "patches": {
+    "find": {
+      "path": "vendor/uutils-find/wasi.patch",
+      "sha256": "3f0604e0519aab89912455986984c84bf5e0e9ba381098e8343ea50b197d79b4"
+    },
+    "xargs": {
+      "path": "vendor/uutils-xargs/wasi.patch",
+      "sha256": "a58314750c5af17a2f3215d26432f5866e4277ecf71523581e939657eebaa47e"
+    }
+  },
+  "nativeQualification": "Bounded native find and xargs contract tests only; no WASI artifact or browser qualification is claimed."
+}

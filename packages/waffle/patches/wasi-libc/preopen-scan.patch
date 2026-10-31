@@ -1,0 +1,24 @@
+diff --git a/libc-bottom-half/sources/preopens.c b/libc-bottom-half/sources/preopens.c
+--- a/libc-bottom-half/sources/preopens.c
++++ b/libc-bottom-half/sources/preopens.c
+@@ -326,8 +326,18 @@
+   for (__wasi_fd_t fd = 3; fd != 0; ++fd) {
+     __wasi_prestat_t prestat;
+     __wasi_errno_t ret = __wasi_fd_prestat_get(fd, &prestat);
+-    if (ret == __WASI_ERRNO_BADF)
+-      break;
++    if (ret == __WASI_ERRNO_BADF) {
++      // An inherited descriptor can occupy a slot without being a preopen.
++      // Probe it separately: BADF means the scan reached the first empty slot,
++      // while success means there is another open descriptor to skip.
++      __wasi_fdstat_t fdstat;
++      ret = __wasi_fd_fdstat_get(fd, &fdstat);
++      if (ret == __WASI_ERRNO_BADF)
++        break;
++      if (ret != __WASI_ERRNO_SUCCESS)
++        goto oserr;
++      continue;
++    }
+     if (ret != __WASI_ERRNO_SUCCESS)
+       goto oserr;
+     switch (prestat.tag) {

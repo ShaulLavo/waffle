@@ -1,0 +1,12 @@
+{
+  "status": "provisional-source-data-not-an-install-manifest",
+  "pathContract": "Activate canonical path and alias only with Waffle step 2; the alias names this one program source.",
+  "programs": {
+    "grep": {
+      "path": "/usr/bin/grep",
+      "aliases": ["/bin/grep"],
+      "execution": "cooperative",
+      "feature": "cooperative-wasi"
+    }
+  }
+}

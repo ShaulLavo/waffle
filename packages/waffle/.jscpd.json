@@ -1,0 +1,13 @@
+{
+  "path": ["."],
+  "pattern": "**/*.{ts,js,astro,sh,c}",
+  "ignore": ["**/node_modules/**", "**/dist/**", "**/.astro/**", "**/.wrangler/**"],
+  "minTokens": 100,
+  "minLines": 10,
+  "mode": "mild",
+  "reporters": ["console"],
+  "baseline": ".jscpd-baseline.json",
+  "failOnNewClones": 0,
+  "failOnEmpty": true,
+  "similarity": 0.8
+}

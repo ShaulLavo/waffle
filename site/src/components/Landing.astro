@@ -1,0 +1,401 @@
+---
+import { Code } from "astro:components";
+
+const GITHUB = "https://github.com/ShaulLavo/waffle";
+const DOCS = `${GITHUB}/blob/main/docs`;
+const PACKAGES = `${GITHUB}/tree/main/packages`;
+const BASH_WEB = "https://github.com/ShaulLavo/bash-web";
+const BUN_DEMO = "https://bun.sprockt.dev/";
+const START = `${DOCS}/getting-started.md`;
+
+const snippet = `import { createRuntime } from "waffle";
+
+const runtime = createRuntime({
+  filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
+});
+const files = runtime.filesystem;
+try {
+  await files.writeFile("/hello.txt", "hello from Waffle");
+  const bytes = await files.readFile("/hello.txt");
+  console.log(new TextDecoder().decode(bytes));
+} finally {
+  await runtime.dispose();
+}`;
+
+// Shiki theme in the landing palette. Every token colour passes 4.5:1 on white.
+const codeTheme = {
+  name: "waffle",
+  type: "light" as const,
+  colors: { "editor.background": "#FFFFFF", "editor.foreground": "#171B33" },
+  settings: [
+    { settings: { foreground: "#171B33", background: "#FFFFFF" } },
+    { scope: ["comment"], settings: { foreground: "#6B7090", fontStyle: "italic" } },
+    {
+      scope: ["keyword", "storage", "storage.type", "keyword.control", "keyword.operator.new"],
+      settings: { foreground: "#2350C7" },
+    },
+    { scope: ["string", "string.quoted"], settings: { foreground: "#0E7552" } },
+    {
+      scope: ["entity.name.function", "support.function", "meta.function-call entity.name.function"],
+      settings: { foreground: "#A9520E" },
+    },
+    { scope: ["entity.name.type", "support.class", "support.type"], settings: { foreground: "#7A3BBF" } },
+    { scope: ["constant.numeric", "constant.language"], settings: { foreground: "#B8322A" } },
+    { scope: ["punctuation", "meta.brace", "keyword.operator"], settings: { foreground: "#5B6080" } },
+    {
+      scope: ["variable", "variable.other", "meta.object-literal.key", "support.variable"],
+      settings: { foreground: "#171B33" },
+    },
+  ],
+};
+
+const packages = [
+  { name: "coreutils", note: "ls, cat, cp, sort, wc, tr and more", path: "coreutils" },
+  { name: "findutils", note: "find and xargs", path: "findutils" },
+  { name: "grep", note: "Search lines by pattern", path: "grep" },
+  { name: "ripgrep", note: "ripgrep 15.2, recursive search", path: "ripgrep" },
+  { name: "sed", note: "Stream editor, from uutils", path: "sed" },
+  { name: "jq", note: "JSON queries, built from jaq", path: "jq" },
+  { name: "git", note: "init, commit, diff, merge, stash", path: "git" },
+  { name: "python", note: "CPython 3.15 and its standard library", path: "python" },
+];
+
+const docs = [
+  {
+    heading: "Start here",
+    links: [
+      { title: "Getting started", note: "Build and serve your first Waffle page.", href: START, start: true },
+      { title: "Concepts", note: "Ownership rules and the life of a spawn.", href: `${DOCS}/concepts.md` },
+      { title: "Architecture", note: "How the services fit together.", href: `${DOCS}/architecture.md` },
+    ],
+  },
+  {
+    heading: "Guides",
+    links: [
+      { title: "Run a WASI program", note: "Register, spawn and wait.", href: `${DOCS}/guides/run-a-wasi-program.md` },
+      { title: "Persist the filesystem", note: "Keep files between page loads.", href: `${DOCS}/guides/persist-the-filesystem.md` },
+      { title: "Install program packages", note: "Add coreutils, grep, sed and more.", href: `${DOCS}/guides/install-program-packages.md` },
+    ],
+  },
+  {
+    heading: "Reference",
+    links: [
+      { title: "Host ABI", note: "Everything a guest can call.", href: `${DOCS}/host-abi.md` },
+      { title: "Networking", note: "Loopback TCP and previews.", href: `${DOCS}/network.md` },
+      { title: "Troubleshooting", note: "When a page does not start.", href: `${DOCS}/troubleshooting.md` },
+    ],
+  },
+];
+---
+
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="logo" href="#top" aria-label="Waffle, back to top">waffle</a>
+    <nav class="nav__links" aria-label="Main">
+      <a class="nav__link nav__link--wide" href="#how">How it works</a>
+      <a class="nav__link nav__link--wide" href="#programs">Programs</a>
+      <a class="nav__link nav__link--wide" href="#docs">Docs</a>
+      <a class="nav__link" href={GITHUB}>
+        <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+          ></path>
+        </svg>
+        GitHub
+      </a>
+    </nav>
+    <a class="btn btn--primary btn--small" href={START}>Get started</a>
+  </div>
+</header>
+
+<main>
+  <section class="story" id="top" data-story aria-label="What Waffle is, in four steps">
+    <div class="stage" data-stage>
+      <div class="stage__sky"></div>
+      <div class="stage__blueprint" data-blueprint></div>
+      <canvas
+        class="stage__scene"
+        data-scene
+        role="img"
+        aria-label="A blueprint grid of programs folds up into a 3D waffle. Each program sits in its own pocket, and little vans carry data along the ridges between them."
+      ></canvas>
+      <p class="stage__nogl">
+        The 3D waffle needs WebGL, which this browser has turned off. The rest of the page works.
+      </p>
+      <div class="svh-probe" data-svh aria-hidden="true"></div>
+    </div>
+
+    <div class="wrap steps">
+      <div class="step step--hero">
+        <div class="hero" data-hero-copy>
+          <p class="eyebrow eyebrow--light"><span class="dot"></span>WebAssembly runtime for the browser</p>
+          <h1 class="display">Whole programs, running <em>together,</em> in a browser tab.</h1>
+          <p class="lead">
+            Waffle gives WebAssembly programs what an operating system would: a shared filesystem,
+            processes with pipes and signals, and a loopback network, all inside the page.
+          </p>
+          <div class="actions">
+            <a class="btn btn--primary" href={START}>
+              Get started
+              <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                <path
+                  d="M3 9h11M10 4l5 5-5 5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"></path>
+              </svg>
+            </a>
+            <a class="btn btn--ghost" href={BUN_DEMO}>Try Bun in a tab</a>
+          </div>
+          <p class="cue" aria-hidden="true"><span class="cue__mouse"></span>Scroll to fold the waffle</p>
+        </div>
+      </div>
+
+      <div class="deck" data-deck>
+        <div class="deck__gap"></div>
+        <article class="card" data-progress="0.06">
+          <p class="eyebrow">01 · Programs</p>
+          <h2>Every square is a program.</h2>
+          <p>
+            Each one runs in its own worker with its own memory. It gets a pid, an exit code and
+            signals, like a process on Linux.
+          </p>
+          <ul class="legend">
+            <li><span class="swatch swatch--real"></span>Gold squares run on Waffle today.</li>
+          </ul>
+        </article>
+        <div class="deck__gap"></div>
+        <article class="card" data-progress="0.24">
+          <p class="eyebrow">02 · Shared</p>
+          <h2>The lines are what they share.</h2>
+          <p>
+            One filesystem that the page and every program see. Pipes that feed one program's output
+            into another's input. Loopback TCP, so a dev server in one square can serve a preview in
+            the next.
+          </p>
+        </article>
+        <div class="deck__gap"></div>
+        <article class="card" data-progress="0.5">
+          <p class="eyebrow">03 · Pockets</p>
+          <h2>Fold it up and you get a waffle.</h2>
+          <p>
+            Walls keep each program in its own pocket, and the ridges carry the traffic. A system call
+            waits on shared memory until the page answers, so blocking WASI code runs unchanged.
+          </p>
+        </article>
+        <div class="deck__gap"></div>
+        <article class="card" data-progress="0.92">
+          <p class="eyebrow">The whole waffle</p>
+          <h2>It all fits in one tab.</h2>
+          <ul class="legend">
+            <li>
+              <span class="swatch swatch--real"></span>
+              <span>Gold tags run on Waffle today: Bash Web, Bun, Python and the program packages.</span>
+            </li>
+            <li>
+              <span class="swatch"></span>
+              <span>White tags show the kind of work it is built for.</span>
+            </li>
+          </ul>
+          <a class="link" href="#programs">See what runs today</a>
+        </article>
+        <div class="deck__tail"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section--paper" id="programs" data-tint="#f4f6fc">
+    <div class="wrap">
+      <header class="section-head">
+        <p class="eyebrow">Running on Waffle today</p>
+        <h2 class="title">Real programs, already in the pockets.</h2>
+        <p class="lead">
+          Our shell and our browser build of Bun run on Waffle. The repository also ships program
+          packages that you install into a runtime.
+        </p>
+      </header>
+
+      <div class="features">
+        <article class="feature">
+          <div class="term term--bash" aria-hidden="true">
+            <div class="term__dots"><span></span><span></span><span></span></div>
+            <div>$ echo "hi from a tab" | tr a-z A-Z</div>
+            <div class="term__out">HI FROM A TAB</div>
+            <div>$ <span class="term__cursor"></span></div>
+          </div>
+          <div class="feature__body">
+            <div class="feature__title">
+              <h3>Bash Web</h3>
+              <span class="tag tag--real">runs on Waffle</span>
+            </div>
+            <p>Our shell. A bash prompt that lives in a browser tab, with real pipes between programs.</p>
+            <a class="btn btn--dark" href={BASH_WEB}>Bash Web on GitHub</a>
+          </div>
+        </article>
+
+        <article class="feature">
+          <div class="term term--bun" aria-hidden="true">
+            <div class="term__dots"><span></span><span></span><span></span></div>
+            <div>$ bun run index.ts</div>
+            <div class="term__out">Hello via Bun!</div>
+            <div>$ <span class="term__cursor"></span></div>
+          </div>
+          <div class="feature__body">
+            <div class="feature__title">
+              <h3>Bun, in the browser</h3>
+              <span class="tag tag--real">runs on Waffle</span>
+            </div>
+            <p>Our browser build of Bun. Open the sandbox and run TypeScript without leaving the tab.</p>
+            <a class="btn btn--dark" href={BUN_DEMO}>Open the Bun sandbox</a>
+          </div>
+        </article>
+      </div>
+
+      <div class="packages">
+        <div class="packages__head">
+          <h3>Program packages</h3>
+          <p>WASI builds of everyday tools, plus git and Python. Each one installs into a runtime.</p>
+          <a class="link" href={`${DOCS}/guides/install-program-packages.md`}>How to install them</a>
+        </div>
+        <ul class="package-grid">
+          {
+            packages.map((item) => (
+              <li>
+                <a class="package" href={`${PACKAGES}/${item.path}`}>
+                  <span class="package__name">{item.name}</span>
+                  <span class="package__note">{item.note}</span>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section--blueprint on-dark" id="how" data-tint="#2350c7">
+    <div class="wrap how">
+      <div class="how__copy">
+        <p class="eyebrow eyebrow--light">How it works</p>
+        <h2 class="title">One runtime per page.</h2>
+        <p class="lead">
+          The page creates a single runtime. Programs borrow its filesystem, processes, pipes and
+          network instead of each bringing their own.
+        </p>
+        <ol class="how__list">
+          <li>
+            <strong>Shared files.</strong> A filesystem worker owns the file tree in shared memory, and
+            every process reads and writes it directly.
+          </li>
+          <li>
+            <strong>Real processes.</strong> Each program runs in its own worker. A supervisor on the
+            page tracks pids, jobs and signals, and only loads on the first spawn.
+          </li>
+          <li>
+            <strong>Blocking calls.</strong> Pipes and sockets are ring buffers in shared memory. A
+            program waits in <code>Atomics.wait</code> while the page serves its call.
+          </li>
+        </ol>
+      </div>
+      <figure class="code">
+        <figcaption class="code__bar">app.ts</figcaption>
+        <Code code={snippet} lang="ts" theme={codeTheme} />
+        <div class="code__out"><span>console</span>hello from Waffle</div>
+      </figure>
+    </div>
+    <div class="wrap">
+      <dl class="stats">
+        <div class="stat"><dt>core runtime, gzipped</dt><dd>~10 KB</dd></div>
+        <div class="stat"><dt>processes at once, by default</dt><dd>1,024</dd></div>
+        <div class="stat"><dt>resident file pool</dt><dd>1.5 GiB</dd></div>
+        <div class="stat"><dt>browser engines tested in CI</dt><dd>3</dd></div>
+      </dl>
+      <p class="note">
+        The runtime needs <code>SharedArrayBuffer</code>, so serve the page cross-origin isolated
+        with COOP and COEP headers. <a href={START}>Getting started</a> shows a server that sets them.
+      </p>
+    </div>
+  </section>
+
+  <section class="section section--white" id="docs" data-tint="#ffffff">
+    <div class="wrap">
+      <header class="section-head section-head--split">
+        <div>
+          <p class="eyebrow">Documentation</p>
+          <h2 class="title">Read the blueprints.</h2>
+        </div>
+        <p class="lead">Start with Getting started. It builds a page, serves it and runs the example above.</p>
+      </header>
+
+      <div class="docs">
+        {
+          docs.map((group) => (
+            <div>
+              <h3>{group.heading}</h3>
+              <ul class="doc-list">
+                {group.links.map((item) => (
+                  <li>
+                    <a class:list={["doc", { "doc--start": item.start }]} href={item.href}>
+                      <span class="doc__title">{item.title}</span>
+                      <span class="doc__note">{item.note}</span>
+                      <svg class="doc__arrow" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+                        <path
+                          d="M3 9h11M10 4l5 5-5 5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.4"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </div>
+
+      <aside class="status" aria-label="Project status">
+        <span class="tag">pre-1.0</span>
+        <p>
+          <strong>Waffle is experimental.</strong> It is not on npm, and revisions promise no
+          compatibility with each other. CI runs the browser suites in Chromium, Firefox and WebKit
+          on Linux. Nothing is verified on iOS or Android yet.
+        </p>
+        <a class="link" href={`${DOCS}/status.md`}>Status and limits</a>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<footer class="footer" data-tint="#86ccff #e9f6ff">
+  <div class="wrap">
+    <div class="footer__cta">
+      <p class="footer__line">Start with one runtime and one program.</p>
+      <div class="actions">
+        <a class="btn btn--primary" href={START}>Get started</a>
+        <a class="btn" href={GITHUB}>View on GitHub</a>
+      </div>
+    </div>
+    <p class="wordmark" aria-hidden="true">waffle</p>
+    <div class="footer__meta">
+      <nav aria-label="Footer">
+        <a href={START}>Docs</a>
+        <a href={GITHUB}>GitHub</a>
+        <a href={BASH_WEB}>Bash Web</a>
+        <a href={BUN_DEMO}>Bun sandbox</a>
+        <a href="/assets/FONTS-LICENSE.txt">Font licenses</a>
+      </nav>
+      <span>© 2026 Waffle · MIT license</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  import { initializeLanding } from "../scripts/landing";
+  initializeLanding();
+</script>

@@ -1,0 +1,216 @@
+import { expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+test("Node resolves every documented Node package entry to prepared JavaScript", () => {
+  const root = resolve(import.meta.dir, "..");
+  const metadata = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
+    name: string;
+    exports: Record<string, Record<string, string>>;
+  };
+  const entries = Object.entries(metadata.exports);
+  const nodeEntries = entries.filter(([, target]) => typeof target.node === "string");
+  const browserOnly = entries.filter(([, target]) => target.node === undefined).map(([key]) => key);
+  expect(browserOnly).toEqual([
+    "./browser/fs-worker",
+    "./testing/interrupt-browser-runner-control",
+    "./testing/storage-browser",
+    "./testing/opfs-storage-browser",
+    "./search/search-worker",
+    "./search/shard-worker",
+  ]);
+  for (const key of browserOnly) {
+    for (const target of Object.values(metadata.exports[key]!)) {
+      if (target.startsWith("./")) expect(existsSync(resolve(root, target))).toBe(true);
+    }
+  }
+  const specifiers = nodeEntries.map(([key]) =>
+    key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`,
+  );
+  const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" }),
+  ).not.toThrow();
+  const browserScript = `for (const specifier of ${JSON.stringify(browserOnly.map((key) => (key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`)))}) { try { await import(specifier); throw new Error(\`Node unexpectedly resolved ${"$"}{specifier}\`); } catch (error) { if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; } }`;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", browserScript], {
+      cwd: root,
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});
+
+test("Node hosts can use the bounded diagnostic drain through its public entry", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { DIAGNOSTIC_STALL_TIMEOUT_MS, drainDiagnostic } from "waffle/browser/diagnostic";
+    assert.equal(DIAGNOSTIC_STALL_TIMEOUT_MS, 5000);
+    const chunks = [];
+    const bytes = new TextEncoder().encode("node diagnostic λ");
+    assert.equal(drainDiagnostic(bytes, part => { const chunk = part.slice(0, 2); chunks.push(chunk); return chunk.length; }), undefined);
+    assert.deepEqual(chunks.reduce((all, chunk) => all.concat(Array.from(chunk)), []), Array.from(bytes));
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});
+
+test("Node adapters can read and write tagged process controls through the public helper entry", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { controlLoad, controlStore } from "waffle/proc/control";
+    import { createWorkerProcessTransport, workerProcessState } from "waffle/proc/worker-client";
+    const state = workerProcessState(createWorkerProcessTransport());
+    controlStore(state.signals.requestedSignal, 0, 15);
+    assert.equal(controlLoad(state.signals.requestedSignal), 15);
+    const standalone = new Int32Array(new SharedArrayBuffer(4));
+    controlStore(standalone, 0, 9);
+    assert.equal(controlLoad(standalone), 9);
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});
+
+test("Node hosts normalize startup failures through the public process entry", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { startFailure, ExecutableFormatError, ProcessError, ProcessErrno } from "waffle/proc";
+    for (const [error, name, code] of [
+      [new ExecutableFormatError("bad executable"), "ENOEXEC", 8],
+      [new RangeError("allocation failed"), "ENOMEM", 12],
+      [new ProcessError(ProcessErrno.AGAIN, "busy"), "EAGAIN", 11],
+      [Object.assign(new Error("missing"), { code: "ENOENT" }), "ENOENT", 2],
+      [new Error("host failed"), "EIO", 5],
+    ]) assert.deepEqual(startFailure(error), { kind: "start-failed", code, error: name, status: null });
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});
+
+test("Node process hosts expose fd_kind against their current descriptor bindings", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { DescriptorTable } from "waffle/core";
+    import { ProcessABI } from "waffle/proc";
+    const descriptors = new DescriptorTable();
+    const unused = () => { throw new Error("fd_kind must only consult the descriptor table"); };
+    const inaccessible = new Proxy({}, { get: unused });
+    const abi = new ProcessABI({
+      memory: unused, descriptors, fs: inaccessible, pid: 1,
+      service: inaccessible, signals: inaccessible, wait: unused,
+    });
+    try {
+      for (const [expected, kind] of ["other", "pipe", "terminal", "file", "directory"].entries()) {
+        const fd = descriptors.open({ kind }, 0n, 0n);
+        assert.equal(abi.imports.fd_kind(fd), expected);
+        const dup = abi.imports.dup(fd);
+        descriptors.close(fd);
+        assert.equal(abi.imports.fd_kind(fd), -8);
+        assert.equal(abi.imports.fd_kind(dup), expected);
+      }
+      assert.equal(abi.imports.fd_kind(0x7fffffff), -8);
+      assert.equal(abi.imports.fd_kind(-1), -8);
+    } finally { descriptors.dispose(); }
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});
+
+for (const [command, entry] of [
+  [process.execPath, new URL("../browser/net/module.ts", import.meta.url).href],
+  ["node", "waffle/network"],
+] as const) {
+  test(`${command} standalone network import has no asset I/O and instances have independent ownership`, () => {
+    const script = `
+      import assert from "node:assert/strict";
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      let reads = 0, fetches = 0, compiled = 0, instances = 0;
+      const read = fs.readFile;
+      fs.readFile = (...args) => { if (String(args[0]).endsWith("network.wasm")) reads++; return read(...args); };
+      syncBuiltinESMExports();
+      ${command === "node" ? "" : 'const { mock } = await import("bun:test"); mock.module("node:fs/promises", () => ({ ...fs }));'}
+      globalThis.fetch = () => { fetches++; throw Error("unexpected fetch"); };
+      const compile = WebAssembly.compile;
+      const Instance = WebAssembly.Instance;
+      WebAssembly.compile = (...args) => { compiled++; return compile(...args); };
+      WebAssembly.Instance = class extends Instance { constructor(...args) { super(...args); instances++; } };
+      const { loadNetworkModule } = await import(${JSON.stringify(entry)});
+      assert.deepEqual([reads, fetches, compiled, instances], [0, 0, 0, 0]);
+      const loaded = await loadNetworkModule();
+      const first = loaded.create(), second = loaded.create();
+      try {
+        assert.deepEqual([reads, fetches, compiled, instances], [1, 0, 1, 2]);
+        assert.equal(first.call("net_listen", 40, 23456), 23456);
+        assert.equal(second.call("net_listen", 40, 23456), 23456);
+        first.dispose(); first.dispose();
+        assert.throws(() => first.call("net_listen", 40, 23457), /disposed/);
+        assert.equal(second.call("net_listen", 40, 23457), 23457);
+      } finally { first.dispose(); second.dispose(); }
+    `;
+    expect(() =>
+      execFileSync(command, ["--input-type=module", "--eval", script], {
+        cwd: resolve(import.meta.dir, ".."),
+        stdio: "pipe",
+        timeout: 10000,
+      }),
+    ).not.toThrow();
+  });
+}
+
+test("installed root and filesystem entries share the public workspace stream contract", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import * as root from "waffle";
+    import * as fs from "waffle/fs";
+    import { MemFS } from "waffle/fs/memory";
+    assert.equal(root.openWorkspaceRead, fs.openWorkspaceRead);
+    assert.equal(root.WorkspaceReadContractError, fs.WorkspaceReadContractError);
+    const seed = new MemFS();
+    seed.writeFile("/file", new Uint8Array([65, 66, 67]));
+    const backend = new fs.MemoryBackend(seed);
+    const pair = fs.createFilesystemConnection(undefined, { workspace: true });
+    const service = new fs.FilesystemService(backend);
+    service.connect(pair.server);
+    const client = new fs.FilesystemClient(pair.client);
+    const workspace = fs.createWorkspaceVfs(client);
+    try {
+      const opened = await root.openWorkspaceRead(workspace, "/file");
+      assert.equal(opened.kind, "ok");
+      const step = await opened.value.next();
+      assert.equal(step.kind, "chunk");
+      assert.deepEqual(Array.from(step.bytes), [65, 66, 67]);
+      assert.deepEqual(await opened.value.next(), { kind: "end" });
+      await opened.value.close();
+    } finally {
+      await workspace.close();
+      client.dispose();
+      await service.drainForOwner();
+      service.dispose();
+      pair.client.port.close();
+      pair.server.port.close();
+    }
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});

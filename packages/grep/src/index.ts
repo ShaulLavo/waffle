@@ -1,0 +1,38 @@
+import type { SearchWorkers, SearchWorkerRequest } from "waffle/search";
+import { defineProgramPackage, type ProgramCatalog } from "waffle/programs/catalog";
+import type { ProgramLaunch } from "waffle/programs";
+
+export const grep = defineProgramPackage({
+  name: "grep",
+  programs: [
+    {
+      path: "/usr/bin/grep",
+      aliases: ["/bin/grep"],
+      wasm: new URL("../dist/grep.wasm", import.meta.url),
+    },
+  ],
+});
+
+export function fastGrep(workers: SearchWorkers): ProgramCatalog {
+  const launch: ProgramLaunch = async (context, service, fallback) => {
+    if ((context.request.env.PWD || "/") !== context.request.cwd) return fallback(context, service);
+    const { planGrep } = await import("./plan.ts");
+    const admitted = planGrep(context.request.argv.slice(1), context.request.env);
+    if (admitted.kind === "fallback") return fallback(context, service);
+    return service.launchWorker<SearchWorkerRequest>(context, {
+      workerUrl: workers.search,
+      request: {
+        module: context.module,
+        args: context.request.argv,
+        env: context.request.env,
+        interruptible: context.interruptible,
+        plan: admitted.plan,
+        search: { shardWorker: workers.shard, shards: null, diagnostics: false },
+      },
+    });
+  };
+  return defineProgramPackage({
+    ...grep,
+    programs: grep.programs.map((program) => ({ ...program, launch })),
+  });
+}

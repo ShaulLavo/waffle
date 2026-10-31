@@ -1,0 +1,58 @@
+---
+import Landing from "../components/Landing.astro";
+import bricolageUrl from "../assets/bricolage-grotesque.woff2?url";
+import fredokaUrl from "../assets/fredoka.woff2?url";
+import martianMonoUrl from "../assets/martian-mono.woff2?url";
+import "../styles/site.css";
+
+const title = "Waffle: whole programs, running together, in a browser tab";
+const description =
+  "Waffle is a WebAssembly runtime that gives programs a shared filesystem, processes, pipes and a loopback network inside one browser tab.";
+const fontFaces = `
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("${bricolageUrl}") format('woff2');
+}
+@font-face {
+  font-family: 'Fredoka';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("${fredokaUrl}") format('woff2');
+}
+@font-face {
+  font-family: 'Martian Mono';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("${martianMonoUrl}") format('woff2');
+}
+`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#2350C7" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://waffle.shaulavo.dev/" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta name="twitter:card" content="summary" />
+    <link rel="preload" href={bricolageUrl} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={fredokaUrl} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={martianMonoUrl} as="font" type="font/woff2" crossorigin />
+    <style is:inline set:html={fontFaces}></style>
+  </head>
+  <body>
+    <Landing />
+  </body>
+</html>

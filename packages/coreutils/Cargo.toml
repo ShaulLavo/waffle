@@ -1,0 +1,72 @@
+[package]
+name = "waffle-coreutils"
+version = "0.0.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Needs Waffle's runtime_proc.inherited_fd launch descriptor list; no Bash namespace.
+cooperative-wasi = ["waffle-program-support/cooperative-wasi"]
+
+[dependencies]
+waffle-program-support = { path = "../program-support" }
+futures.workspace = true
+uu_env = { path = "vendor/uutils-env" }
+uu_ls = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uu_head = "=0.12.0"
+uu_sort = "=0.12.0"
+uu_uniq = "=0.12.0"
+clap = { version = "=4.6.7", features = ["wrap_help", "cargo", "color"] }
+uu_nl = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = "=0.12.0"
+rustix = { version = "1.1.5", features = ["std"] }
+uu_touch = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uu_rm = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uu_cp = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uu_mv = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore_files = { package = "uucore", git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[bin]]
+name = "cat"
+path = "src/bin/cat.rs"
+required-features = ["cooperative-wasi"]
+
+[[bin]]
+name = "mkdir"
+path = "src/bin/mkdir.rs"
+required-features = ["cooperative-wasi"]
+
+[[bin]]
+name = "seq"
+path = "src/bin/seq.rs"
+required-features = ["cooperative-wasi"]
+
+[[bin]]
+name = "tail"
+path = "src/bin/tail.rs"
+required-features = ["cooperative-wasi"]
+
+[[bin]]
+name = "which"
+path = "src/bin/which.rs"
+
+[package.metadata.cargo-machete]
+ignored = [
+  "rustix",
+  "uu_env",
+  "uu_head",
+  "uu_ls",
+  "uu_sort",
+  "uu_uniq",
+  "uu_nl",
+  "uu_touch",
+  "uu_rm",
+  "uu_cp",
+  "uu_mv",
+]

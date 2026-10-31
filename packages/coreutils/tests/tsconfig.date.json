@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tools/tsconfig.programs.json",
+  "include": [
+    "date-wasi.test.ts",
+    "../scripts/build-date.ts",
+    "../scripts/date-oracle.ts",
+    "../scripts/date-source.test.ts",
+    "../fixtures/date-cases.ts"
+  ]
+}

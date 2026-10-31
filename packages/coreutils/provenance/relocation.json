@@ -1,0 +1,1167 @@
+{
+  "sourceRevision": "9ef027d7b8544be7d2d84ee59beea8adf0b33cd8",
+  "entries": [
+    {
+      "newPath": "packages/coreutils/Cargo.toml",
+      "oldPath": "shell/utilities/Cargo.toml",
+      "oldBlob": "c1aba970ca8b909d4517384b8d0e0179f32078ee",
+      "classification": "relocated-adapted",
+      "sourceSha256": "7844e2c6e4b32e0cdd0173ce3fc2854542f79893a11adfb820bfc31d7d45291e",
+      "transferredSha256": "39aea9442ea6630978754671d3d6075f6de9fbe8e611191ca0cad6daa5495601",
+      "adaptation": "Removed grep/find dependencies and retained coreutils bins"
+    },
+    {
+      "newPath": "packages/coreutils/package.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/programs.provisional.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/README.md",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/LICENSE",
+      "oldPath": "LICENSE",
+      "oldBlob": "d0775bc3ddd2c76be68a3b747042cf752a041699",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/acceptance.rs",
+      "oldPath": "shell/utilities/src/acceptance.rs",
+      "oldBlob": "04428f5959d4f24ea790684a609353471ac6b5d4",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/lib.rs",
+      "oldPath": "shell/utilities/src/lib.rs",
+      "oldBlob": "3ca6eab40d6f44d510ab362d09fa6fec0c770e79",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/sort_uniq_cwd.rs",
+      "oldPath": "shell/utilities/src/sort_uniq_cwd.rs",
+      "oldBlob": "3e728aae02466061512551eea18562a2c33da3e4",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/tail.rs",
+      "oldPath": "shell/utilities/src/tail.rs",
+      "oldBlob": "fe5b6eb44da5487fa7c211a595bd07eee60f7bb8",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/which_query.rs",
+      "oldPath": "shell/utilities/src/which_query.rs",
+      "oldBlob": "04449fefe09ed69edb678d41f6e032c7acea7a23",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/which.rs",
+      "oldPath": "shell/utilities/src/which.rs",
+      "oldBlob": "ad59700cef31e625490f8f8d56d765cb8e3fb4f8",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/cat.rs",
+      "oldPath": "shell/utilities/src/bin/cat.rs",
+      "oldBlob": "577edae3140dc3680046a8d292bf7ed2ea9c8f95",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/cp.rs",
+      "oldPath": "shell/utilities/src/bin/cp.rs",
+      "oldBlob": "01f7fd9727098013184ca399bb6e70ad6eebcee3",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/env.rs",
+      "oldPath": "shell/utilities/src/bin/env.rs",
+      "oldBlob": "4654a68222cef323ede709208e13a11d33ed58b6",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/head.rs",
+      "oldPath": "shell/utilities/src/bin/head.rs",
+      "oldBlob": "87e4ce3ae72652e8566e5bb7833213543b48153b",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/ls.rs",
+      "oldPath": "shell/utilities/src/bin/ls.rs",
+      "oldBlob": "6cd54c5cad47708e4f6b620208021c807c4f53bc",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/mkdir.rs",
+      "oldPath": "shell/utilities/src/bin/mkdir.rs",
+      "oldBlob": "2d1b50c5353727731bc1e70e09cbf15c499be8ae",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/mv.rs",
+      "oldPath": "shell/utilities/src/bin/mv.rs",
+      "oldBlob": "c9ee895c1e51e6bf5d8690ff4d30558b351745d3",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/rm.rs",
+      "oldPath": "shell/utilities/src/bin/rm.rs",
+      "oldBlob": "92278c63f9e56cc4b465953cb3adb15eaddb8343",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/seq.rs",
+      "oldPath": "shell/utilities/src/bin/seq.rs",
+      "oldBlob": "d2b1dc557bd1bb4e3a3f33357e8ac55802482c90",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/sort.rs",
+      "oldPath": "shell/utilities/src/bin/sort.rs",
+      "oldBlob": "e57785141e9d29f27d0f5eb88833d8d97b00386f",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/tail.rs",
+      "oldPath": "shell/utilities/src/bin/tail.rs",
+      "oldBlob": "d9f7d71fb0610ee0e86b04d71b603bae20ef6a52",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/touch.rs",
+      "oldPath": "shell/utilities/src/bin/touch.rs",
+      "oldBlob": "f0137c0e6ccf611755f4fbc218a3440ad0c5f3c0",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/uniq.rs",
+      "oldPath": "shell/utilities/src/bin/uniq.rs",
+      "oldBlob": "0bd05d2daa36643572391a993a2b055ae518f425",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/which.rs",
+      "oldPath": "shell/utilities/src/bin/which.rs",
+      "oldBlob": "71d7b67572bc01417118a2bf186a50cc31caaebe",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/src/bin/file_operations/mod.rs",
+      "oldPath": "shell/utilities/src/bin/file_operations/mod.rs",
+      "oldBlob": "31e495c63793d876b9920e14b2bc37ce8f7041fa",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/cut/Cargo.toml",
+      "oldPath": "shell/cut/Cargo.toml",
+      "oldBlob": "5f73a573869d4f40a93a4d90dcd2c8e8178afe32",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/crates/cut/src/main.rs",
+      "oldPath": "shell/cut/src/main.rs",
+      "oldBlob": "e34e6f7039a2962e65af8814d83612f4b1d30b1e",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/tr/Cargo.toml",
+      "oldPath": "shell/tr/Cargo.toml",
+      "oldBlob": "0c8a971eb9c929cef2a8c2f8093faccbbb29b531",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/crates/tr/src/main.rs",
+      "oldPath": "shell/tr/src/main.rs",
+      "oldBlob": "7365a22addbc0042abf963551af1c5cbb567399a",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/Cargo.toml",
+      "oldPath": "shell/wc/Cargo.toml",
+      "oldBlob": "83f4941922683e128fa15ac67f9667d4d8645f72",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/LICENSE.uutils-coreutils",
+      "oldPath": "shell/wc/LICENSE.uutils-coreutils",
+      "oldBlob": "21bd44404e32a494415122c935801b01d7330685",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/src/bin/wc.rs",
+      "oldPath": "shell/wc/src/bin/wc.rs",
+      "oldBlob": "774eb7b76600d75f31ffa325c856e289dc176a83",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/Cargo.toml",
+      "oldPath": "shell/wc/vendor/bytecount/Cargo.toml",
+      "oldBlob": "7bb6513546c778a8e37f841c88f88005f7e5eda8",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/Cargo.toml.orig",
+      "oldPath": "shell/wc/vendor/bytecount/Cargo.toml.orig",
+      "oldBlob": "64c732890310924aaa34b24960bca3087ea97fec",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/LICENSE.Apache2",
+      "oldPath": "shell/wc/vendor/bytecount/LICENSE.Apache2",
+      "oldBlob": "8dada3edaf50dbc082c9a125058f25def75e625a",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/LICENSE.MIT",
+      "oldPath": "shell/wc/vendor/bytecount/LICENSE.MIT",
+      "oldBlob": "e0f734e455762454894dd70d8a77bc63660f59e8",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/integer_simd.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/integer_simd.rs",
+      "oldBlob": "060419462bdbc29c4a825a00d0e906411f9da1c6",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/lib.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/lib.rs",
+      "oldBlob": "dd8808c15930ea6bc2ce31d8057e7120d80d5a4a",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/naive.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/naive.rs",
+      "oldBlob": "e3f6cf6c682a96b1402a38725093230c069ab878",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/simd/aarch64.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/simd/aarch64.rs",
+      "oldBlob": "774c9202f50ab75040cfb1f41b29d800dc02f025",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/simd/generic.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/simd/generic.rs",
+      "oldBlob": "cc2dd6957afdd5f0f2c5939736b3134cfbddfe91",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/simd/mod.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/simd/mod.rs",
+      "oldBlob": "d752c997893f547c536ba1a762a708f45b992e2a",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/simd/wasm.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/simd/wasm.rs",
+      "oldBlob": "9495c470ef235545666deee46bd30abedd92d2a3",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/simd/x86_avx2.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/simd/x86_avx2.rs",
+      "oldBlob": "ea191e278634b089162f1dec0da6e5b4207ae740",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/wc/vendor/bytecount/src/simd/x86_sse2.rs",
+      "oldPath": "shell/wc/vendor/bytecount/src/simd/x86_sse2.rs",
+      "oldBlob": "59c7d8d1e9a0d35efbf67732ea783be758483146",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/clear/Cargo.toml",
+      "oldPath": "shell/clear/Cargo.toml",
+      "oldBlob": "ca8064714f172887007f7d5c777af445422c427b",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/crates/clear/LICENSE",
+      "oldPath": "shell/clear/LICENSE",
+      "oldBlob": "d0775bc3ddd2c76be68a3b747042cf752a041699",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/crates/clear/src/main.rs",
+      "oldPath": "shell/clear/src/main.rs",
+      "oldBlob": "b9558e2a778692a1b4463479a41b85908c920177",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/Cargo.toml",
+      "oldPath": "third-party/uutils-env/Cargo.toml",
+      "oldBlob": "19fc1a99f46926391ef97595d70dbf879f6223bb",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/LICENSE",
+      "oldPath": "third-party/uutils-env/LICENSE",
+      "oldBlob": "21bd44404e32a494415122c935801b01d7330685",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/provenance.json",
+      "oldPath": "third-party/uutils-env/provenance.json",
+      "oldBlob": "43b8640f29dac65613e0201660e04e0d8f9dc9e4",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/wasi.patch",
+      "oldPath": "third-party/uutils-env/wasi.patch",
+      "oldBlob": "3ee21ee92b0c6d3fc87a69d741af1f85d05e2b00",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/locales/en-US.ftl",
+      "oldPath": "third-party/uutils-env/locales/en-US.ftl",
+      "oldBlob": "60f9261816eb6497263b92ed07bc556611be60d8",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/locales/fr-FR.ftl",
+      "oldPath": "third-party/uutils-env/locales/fr-FR.ftl",
+      "oldBlob": "997456baca3e34f9473c13447928710030d4c4ed",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/diagnostics.rs",
+      "oldPath": "third-party/uutils-env/src/diagnostics.rs",
+      "oldBlob": "a94a079ae2adf60c42dff41074bf402cca428aba",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/env.rs",
+      "oldPath": "third-party/uutils-env/src/env.rs",
+      "oldBlob": "b8580917ceb6e600280e90e8979c6428c91fe45e",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/native_int_str.rs",
+      "oldPath": "third-party/uutils-env/src/native_int_str.rs",
+      "oldBlob": "2f289f3a8747e49357ded0fbeb7077931c20c74b",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/split_iterator.rs",
+      "oldPath": "third-party/uutils-env/src/split_iterator.rs",
+      "oldBlob": "ec2b1d9d28340e220b86df5e85e28794d75d6b46",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/string_expander.rs",
+      "oldPath": "third-party/uutils-env/src/string_expander.rs",
+      "oldBlob": "d3a5172f4fc9470a8ac6e018a3b9ad338efd8be5",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/string_parser.rs",
+      "oldPath": "third-party/uutils-env/src/string_parser.rs",
+      "oldBlob": "30b4870e2e8ceee9f848d55a491a41aba791a38d",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/variable_parser.rs",
+      "oldPath": "third-party/uutils-env/src/variable_parser.rs",
+      "oldBlob": "025dc2491b98f67932a1e5d32c7126c1c6b2c00b",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/vendor/uutils-env/src/wasi_support.rs",
+      "oldPath": "third-party/uutils-env/src/wasi_support.rs",
+      "oldBlob": "f9f4d6f5675fc2c0622ae301578d8c1b6ee50057",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/tests/env.rs",
+      "oldPath": "shell/utilities/tests/env.rs",
+      "oldBlob": "03c7f9fcd1dc0c3de543c17a3856d2386ba0b9a7",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/head.rs",
+      "oldPath": "shell/utilities/tests/head.rs",
+      "oldBlob": "72d071651a4d8fe46c6025922fe4621e62188c38",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/sort_uniq.rs",
+      "oldPath": "shell/utilities/tests/sort_uniq.rs",
+      "oldBlob": "4096cceac00ef3ff543ff4c574c906c60f083248",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/tests/which.rs",
+      "oldPath": "shell/utilities/tests/which.rs",
+      "oldBlob": "2c1587f683a0b89eacd0d01c288c88130fa49df2",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/tests/cooperative.rs",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/tests/process.rs",
+      "oldPath": "shell/utilities/tests/process.rs",
+      "oldBlob": "5ce01a6f6c565d9844457dbb3dbfc03a366cdab9",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/env.source.json",
+      "oldPath": "shell/utilities/env.source.json",
+      "oldBlob": "da5c493df727491cf25d37e4699c0ea358f956ac",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/file-operations.source.json",
+      "oldPath": "shell/utilities/file-operations.source.json",
+      "oldBlob": "21534b1eae37e17506e3ed75ffe6faee7e56b408",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/ls-upstream.json",
+      "oldPath": "shell/utilities/ls-upstream.json",
+      "oldBlob": "50c269ff2ebc95693e8fd1b144b3dceb417dc59f",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/LICENSE.uutils",
+      "oldPath": "shell/utilities/LICENSE.uutils",
+      "oldBlob": "21bd44404e32a494415122c935801b01d7330685",
+      "classification": "relocated-unchanged",
+      "sourceSha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c",
+      "transferredSha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c",
+      "additionalSources": [
+        {
+          "oldPath": "docs/licenses/uutils-coreutils-MIT.txt",
+          "oldBlob": "21bd44404e32a494415122c935801b01d7330685",
+          "sourceSha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+        }
+      ]
+    },
+    {
+      "newPath": "packages/coreutils/provenance/source.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/fixtures/sort-uniq.json",
+      "oldPath": "scripts/owned-fixtures/sort-uniq.json",
+      "oldBlob": "122421ae77e5e7a28d3db9887c61cbac867e57c7",
+      "classification": "relocated-unchanged",
+      "sourceSha256": "3f9f34ae5616cbf5a01a6260ed29306a02cade8c187b4f813484cf9f976ac3fa",
+      "transferredSha256": "3f9f34ae5616cbf5a01a6260ed29306a02cade8c187b4f813484cf9f976ac3fa"
+    },
+    {
+      "newPath": "packages/program-support/Cargo.toml",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/program-support/package.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/program-support/README.md",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/program-support/LICENSE",
+      "oldPath": "LICENSE",
+      "oldBlob": "d0775bc3ddd2c76be68a3b747042cf752a041699",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/program-support/src/executor.rs",
+      "oldPath": "shell/engine/src/executor.rs",
+      "oldBlob": "613cd0b957d471f31154c6671cfda7e714666716",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/program-support/src/io.rs",
+      "oldPath": "shell/engine/src/io.rs",
+      "oldBlob": "23f31157377c0a824cbad908a647d51de9b723cb",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/program-support/src/lib.rs",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/program-support/src/path.rs",
+      "oldPath": "shell/engine/src/state.rs",
+      "oldBlob": "9d86b37390dd8fc6880539ff3d9f154d4001b805",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/program-support/src/runtime.rs",
+      "oldPath": "shell/engine/src/runtime.rs",
+      "oldBlob": "4e37e7f59295ebb07d9aba2ebeb17af57fb5613b",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/program-support/src/runtime/wasi.rs",
+      "oldPath": "shell/engine/src/runtime/wasi.rs",
+      "oldBlob": "b341fc883c08d57b1636f27d0f262cff3a201164",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/process-consumer/Cargo.toml",
+      "oldPath": "shell/wasi-process/Cargo.toml",
+      "oldBlob": "aaedf477b16ac0f877f4031d237b289676d5f5c3",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/process-consumer/LICENSE",
+      "oldPath": "LICENSE",
+      "oldBlob": "d0775bc3ddd2c76be68a3b747042cf752a041699",
+      "classification": "relocated-unchanged",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/process-consumer/README.md",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/process-consumer/package.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/process-consumer/src/lib.rs",
+      "oldPath": "shell/wasi-process/src/lib.rs",
+      "oldBlob": "165eb384b740c31f41659854e5042f52a6714a16",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/process-consumer/src/wasi.rs",
+      "oldPath": "shell/wasi-process/src/wasi.rs",
+      "oldBlob": "41a7b6584b2590a584255f4147da5e0bb59567c8",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/process-consumer/tests/codec.rs",
+      "oldPath": "shell/wasi-process/tests/codec.rs",
+      "oldBlob": "3d5b42affb48bb96dfc48cdef0b7abefa9e73a33",
+      "classification": "relocated-adapted",
+      "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
+    },
+    {
+      "newPath": "packages/coreutils/docs/cut.md",
+      "oldPath": "docs/cut.md",
+      "oldBlob": "bb2774d966beae31eb0ae73be77bf77224582787",
+      "sourceSha256": "e1792cfb168d8b0a1d0dad6826da95ffb67f31d089e9012d980222c60e675334",
+      "transferredSha256": "e1792cfb168d8b0a1d0dad6826da95ffb67f31d089e9012d980222c60e675334",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/env.md",
+      "oldPath": "docs/env.md",
+      "oldBlob": "509fca573fba760f25938a0d6a6efb774101f300",
+      "sourceSha256": "418f5589a94a6398a188cfbe38b5d29b394b81d71c7b435a4729ce118f38a08d",
+      "transferredSha256": "418f5589a94a6398a188cfbe38b5d29b394b81d71c7b435a4729ce118f38a08d",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/file-operations.md",
+      "oldPath": "docs/file-operations.md",
+      "oldBlob": "1d42b7a5420eb95fd15811c0fa262856245234c3",
+      "sourceSha256": "657d826e7a3e79997b2b3c4809cdf34f4e17e6c933dcab62c0430683b803a2be",
+      "transferredSha256": "657d826e7a3e79997b2b3c4809cdf34f4e17e6c933dcab62c0430683b803a2be",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/head.md",
+      "oldPath": "docs/head.md",
+      "oldBlob": "9388ee088c9d2ec643d7fc7d9dc63bb3d3d9e5a0",
+      "sourceSha256": "339ed43a6f0802a2d9df0db45f3ab31e603ba7f9168d57002c31b743802320c1",
+      "transferredSha256": "339ed43a6f0802a2d9df0db45f3ab31e603ba7f9168d57002c31b743802320c1",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/ls.md",
+      "oldPath": "docs/ls.md",
+      "oldBlob": "823d0ac363716c02c966222d0da3e33b78fd5eb5",
+      "sourceSha256": "a236611b911fbef23d3ff1a419fea570a4f528e852d0fa2a8627e112aaa74776",
+      "transferredSha256": "a236611b911fbef23d3ff1a419fea570a4f528e852d0fa2a8627e112aaa74776",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/sort-uniq-source.json",
+      "oldPath": "docs/sort-uniq-source.json",
+      "oldBlob": "838dd53fe719ee9087c9224f4182896dbd28d077",
+      "sourceSha256": "f40c1bcceed94a8f9a421dc580af468b5c91dc67b064f114af9c2a089c6130ac",
+      "transferredSha256": "f40c1bcceed94a8f9a421dc580af468b5c91dc67b064f114af9c2a089c6130ac",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/sort.md",
+      "oldPath": "docs/sort.md",
+      "oldBlob": "f1668783d36dd90fc8d8e6d94b6f5bbc9202b816",
+      "sourceSha256": "075fe135b1bafff883ec581c7443849aa932302c856165f8b28dae32ddfdfe34",
+      "transferredSha256": "075fe135b1bafff883ec581c7443849aa932302c856165f8b28dae32ddfdfe34",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/tail.md",
+      "oldPath": "docs/tail.md",
+      "oldBlob": "a8af8323f4b1c379c8d7b59a9bd0c6289c25db1e",
+      "sourceSha256": "339f6612cd15a0da50a0275b33698ae20a62a6c1dd47e6c2a3aaf43dfa85f135",
+      "transferredSha256": "339f6612cd15a0da50a0275b33698ae20a62a6c1dd47e6c2a3aaf43dfa85f135",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/tr.md",
+      "oldPath": "docs/tr.md",
+      "oldBlob": "c43ac34c2c2f360e1b757197f06f45739037d3eb",
+      "sourceSha256": "d7c02e5b492c82a93b902f7efbcb60b5a167f0a781349ccb753f833917b8e101",
+      "transferredSha256": "d7c02e5b492c82a93b902f7efbcb60b5a167f0a781349ccb753f833917b8e101",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/uniq.md",
+      "oldPath": "docs/uniq.md",
+      "oldBlob": "855089f3a47d6a23b0772b289e7e321595f4d3b8",
+      "sourceSha256": "0a7d53b7885a3bc176e014f13bf65b50b9809b173300cd6931d1e8d09afd56e2",
+      "transferredSha256": "0a7d53b7885a3bc176e014f13bf65b50b9809b173300cd6931d1e8d09afd56e2",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/wc.md",
+      "oldPath": "docs/wc.md",
+      "oldBlob": "4e5956cf6e462b4db27dfd8b61c045e8ee97163b",
+      "sourceSha256": "e89b0c1b27f795be5ab4315966817b2bc0da56564a6909a528240c76d8bb21b7",
+      "transferredSha256": "e89b0c1b27f795be5ab4315966817b2bc0da56564a6909a528240c76d8bb21b7",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/which.md",
+      "oldPath": "docs/which.md",
+      "oldBlob": "f813cc6566013eba6c07908510fc350e430908dc",
+      "sourceSha256": "fb7d7a5748633403a6cb1270530cfdc89864df36c2f36a38e44a2e27697b1881",
+      "transferredSha256": "fb7d7a5748633403a6cb1270530cfdc89864df36c2f36a38e44a2e27697b1881",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-ls.ts",
+      "oldPath": "scripts/build-ls.ts",
+      "oldBlob": "e00ed5b7f220704aabd130cb5bc59914cdf682f9",
+      "sourceSha256": "2738d8b4d3c1c5cda2a8f2632d39cf9084c050961152b70d51f14385dc1e4c06",
+      "transferredSha256": "18501055aa26c1325208cbfd8e7b9849112366215a9db4fe70577cf7d171a74a",
+      "adaptation": "crate-and-manifest-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-wc.ts",
+      "oldPath": "scripts/build-wc.ts",
+      "oldBlob": "ff6780886ca62dadaf237da77a2bf0b930fc863f",
+      "sourceSha256": "58f36e6420afc33ed3b71b77d8218e0259257fe75b84be1ed5947389a91dab1b",
+      "transferredSha256": "f95527a72fe3daef5dcb8ed46a32cbe85c4901d8f134ddf9087e196dba60cb34",
+      "adaptation": "crate-and-manifest-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-env-tests.ts",
+      "oldPath": "scripts/build-env-tests.ts",
+      "oldBlob": "4105cfb5843519f07e1bc9cadc4cdd2ebfd75396",
+      "sourceSha256": "a7695f2f60fc1cbaf60a42d08fe81a5f77f978f1457ec721006e9cb9b6c6b945",
+      "transferredSha256": "313c534fecfc039dccb72bde2fcfe2c65ae7f7289bbfa967948b33c2479d79d5",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-file-utilities-tests.ts",
+      "oldPath": "scripts/build-file-utilities-tests.ts",
+      "oldBlob": "eaca3c06f061bc73d7cec2aea263e8876cee1c06",
+      "sourceSha256": "831fdb16570959f7ebee0022cf2242589d5ada4e387fbec2ad3d53780e2fd422",
+      "transferredSha256": "5d9b5522cdbf397dd43ad8fdeb58b4a1b71af1997b4c481bc89367cc0850873e",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/file-utilities-observations.ts",
+      "oldPath": "scripts/file-utilities-observations.ts",
+      "oldBlob": "7df7746c6a3769d79a5d23e011e89ada46ec9f80",
+      "sourceSha256": "2f5151f29873e0e7d8041f15b54c50ef7e72bf4625236c4128ec95aaf61266b0",
+      "transferredSha256": "00a316a6156cab084647de1d94cc652bba87ea592bff06fb4cd46c8d70e16308",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/file-utilities-recording.ts",
+      "oldPath": "scripts/file-utilities-recording.ts",
+      "oldBlob": "efe311bab848f0ff1633af6d4a0850ad03501581",
+      "sourceSha256": "817525c3cd67e4fbb691187208dbef265c32c4739853fddb558d23b2abba3c21",
+      "transferredSha256": "817525c3cd67e4fbb691187208dbef265c32c4739853fddb558d23b2abba3c21",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/record-cut-tr.ts",
+      "oldPath": "scripts/record-cut-tr.ts",
+      "oldBlob": "d9dc7f0a2e7359e3c8f34fd8b926f9ae625d0f65",
+      "sourceSha256": "1d50385a0b24bd0e20264ebfedf5983572272307acf89af257eee9b9585dbc95",
+      "transferredSha256": "25791ad767ec063fe9b9f39a8851f11d269c8d52484ae23670cac7ec624fe931",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/record-file-utilities.ts",
+      "oldPath": "scripts/record-file-utilities.ts",
+      "oldBlob": "c4f428b370d68bb07fe200ab2ad8763706577a04",
+      "sourceSha256": "7c7c141024a8600e65666d266f5d580dbe29454bf3453b2a1d28bcbf75dd32b0",
+      "transferredSha256": "b3fa49b76e7596416aa605b5588d8d429ca2c5980de3e1b3728b0a76ef41efc5",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/sort-uniq-cases.ts",
+      "oldPath": "scripts/sort-uniq-cases.ts",
+      "oldBlob": "59038c0e7e8628219fede5476acef6336476b8e6",
+      "sourceSha256": "e3a8ac2382c3d9686b2259f0c1de9fa5c55fd9f38075bb3458fff80eacc69922",
+      "transferredSha256": "e3a8ac2382c3d9686b2259f0c1de9fa5c55fd9f38075bb3458fff80eacc69922",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/sort-uniq-observations.ts",
+      "oldPath": "scripts/sort-uniq-observations.ts",
+      "oldBlob": "9685923bc0def382cbac338abdb08403fbad014a",
+      "sourceSha256": "4771b49d7f0fa5324a4e514e43ad24c54ec0e0db8c3046adf53502f926073bb1",
+      "transferredSha256": "676ce07dc66e3fd400c33f947de3d4e9ae2de1397cb37307fe09206a02a89f80",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/fixtures/cut-tr.json",
+      "oldPath": "scripts/owned-fixtures/cut-tr.json",
+      "oldBlob": "aa218b4b646feab4115f50ab88fe37fb9a8e1fac",
+      "sourceSha256": "570bc21ba9b602cff273a164b6077521da0418d81703a2c74a404e1de3da4129",
+      "transferredSha256": "570bc21ba9b602cff273a164b6077521da0418d81703a2c74a404e1de3da4129",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/fixtures/file-utilities.json",
+      "oldPath": "scripts/owned-fixtures/file-utilities.json",
+      "oldBlob": "f951c12a4825f42e0a28566624fcfebf5c6ccd23",
+      "sourceSha256": "7b64ee02c7430f2c1534dabd6d424abec48d1efec1329216b6a04904cde32ead",
+      "transferredSha256": "7b64ee02c7430f2c1534dabd6d424abec48d1efec1329216b6a04904cde32ead",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/fixtures/head-gnu.json",
+      "oldPath": "scripts/owned-fixtures/head-gnu.json",
+      "oldBlob": "c9e58050594d1bcb115acabf2904d36ae42eda4e",
+      "sourceSha256": "cc089aff2e5b9c756c60f730873ece7817fcae372a5c233aaae525a8d4fb40f6",
+      "transferredSha256": "cc089aff2e5b9c756c60f730873ece7817fcae372a5c233aaae525a8d4fb40f6",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-cut.ts",
+      "oldPath": "scripts/test-own-shell-cut.ts",
+      "oldBlob": "4a0bb437158eb67fce2aac6701b9b689399848a6",
+      "sourceSha256": "4738ed140dda8aad986a10284e421d4c9310cecac52ff006d5da113bab903483",
+      "transferredSha256": "a76a9e366301abceea7eeb2f59f651924a15eb70b469bc83dbc7068e07a59aa2",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-env.ts",
+      "oldPath": "scripts/test-own-shell-env.ts",
+      "oldBlob": "25253735f2868e42fd9b8293f1e73c0d5e43a960",
+      "sourceSha256": "ba52f77fade8f7537140b55c34d0be5195a40ebce8c41f342971ccd9f821295e",
+      "transferredSha256": "ba52f77fade8f7537140b55c34d0be5195a40ebce8c41f342971ccd9f821295e",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-file-utilities-observations.ts",
+      "oldPath": "scripts/test-own-shell-file-utilities-observations.ts",
+      "oldBlob": "b40af31a8bd36225de085ffbb274567881b15425",
+      "sourceSha256": "5e63aa6c846853c93d747fb9fb44c3774173117947d33957d449ec96e6b9938e",
+      "transferredSha256": "74a46b8a65636a6ab6e28a6b1364055900e03f163702dd81eba70d4f05bb5df0",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-file-utilities.ts",
+      "oldPath": "scripts/test-own-shell-file-utilities.ts",
+      "oldBlob": "3364fa8f2f70d788da7cc0d88124e5f6764dbb7f",
+      "sourceSha256": "7adac4b94e028bff80a9195182fa7f528233803b5ed0b0ca45a53a9f83c9bbf8",
+      "transferredSha256": "d1ebfbf582740dc935320e876a8f5401973b291e6a19fb3682661a51677ffd3d",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-head-oracle.ts",
+      "oldPath": "scripts/test-own-shell-head-oracle.ts",
+      "oldBlob": "03b775c1f9107864c1d120bd96949ebcd9e40b95",
+      "sourceSha256": "a03908d29e71ff9d00e79d74541420199ef7c8d89db70984e176d4feb60342da",
+      "transferredSha256": "391609a4d341aa975b361719fccff5af70d6964c6c983ff1245e974620714a37",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-head.ts",
+      "oldPath": "scripts/test-own-shell-head.ts",
+      "oldBlob": "d076b7a98897fb8f0deedf30830ab76fc6a35ec4",
+      "sourceSha256": "b618171bf9c4a50db4299d9bf7e167ae758f5436ebfaa321dbe2f03e3bc2dab4",
+      "transferredSha256": "2eaec85bc679ea7ce64ab833c2da045ffef78369c695d829b8355349bf7b66e9",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-ls.ts",
+      "oldPath": "scripts/test-own-shell-ls.ts",
+      "oldBlob": "3f41ad946baec8ff1d03fef5e3d9f0592beb7ef4",
+      "sourceSha256": "6ebe436122016b417b9b447e4292269d209becdc6bb5112d15b80cc34b8a53bb",
+      "transferredSha256": "695127f1d786e080c0da7a812cbc36814d1e5e1b67674fc6334433f0c568b463",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-sort-uniq.ts",
+      "oldPath": "scripts/test-own-shell-sort-uniq.ts",
+      "oldBlob": "46511d0f49f7a1bdd8003f7fab09cba88dc9b693",
+      "sourceSha256": "db02e7197c4cecfd2214865a3f19b28ae7eee26ce6bc42d43b73567e79e0a167",
+      "transferredSha256": "db02e7197c4cecfd2214865a3f19b28ae7eee26ce6bc42d43b73567e79e0a167",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-tr.ts",
+      "oldPath": "scripts/test-own-shell-tr.ts",
+      "oldBlob": "efcd49213570cee5213e3b4f943f42fe38a6961a",
+      "sourceSha256": "2cffdec6158c69ee357cda2f6785f37fadb2ebac8c4217d7513111f72024d8b8",
+      "transferredSha256": "0c3b54f1ce379ed87faf47c356663babc164bf9fb2a89c30d1ac92949c13357a",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-wc.ts",
+      "oldPath": "scripts/test-own-shell-wc.ts",
+      "oldBlob": "b802156b019113d00353162edfb3c7cedbea7ec8",
+      "sourceSha256": "5692158d5a362e119fc7152a673dc4a4641d6ae38c88d18f57ebc5ddcc9e952f",
+      "transferredSha256": "781ca9ce370c66aa0282dab079730ef9af1dafa98df672aa261ee261528ce837",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-own-shell-which.ts",
+      "oldPath": "scripts/test-own-shell-which.ts",
+      "oldBlob": "8b24aea0583809971318acff8a23dbcad1e155ae",
+      "sourceSha256": "8d52d5fc95ff1da3f28d40ca55de0908fa4ffb982a3f46c3f1fd104d371b728c",
+      "transferredSha256": "8d52d5fc95ff1da3f28d40ca55de0908fa4ffb982a3f46c3f1fd104d371b728c",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/cut-tr-recording.unit.ts",
+      "oldPath": "tests/cut-tr-recording.unit.ts",
+      "oldBlob": "18e46c540a7b5dc792dd2526a84499e8b22e0cd9",
+      "sourceSha256": "dde40fe68368e69ec19bd4bb7695cd803e36fa626156c93f3fd8b4ced5037c2f",
+      "transferredSha256": "59e71b8e7cc9e3b719858d7639046bcf0a68d41201ea03a4df6a18f050c418dd",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/tests/cut.spec.ts",
+      "oldPath": "tests/cut.spec.ts",
+      "oldBlob": "f43523fa89a56fb3c1d67aec8bb389b1ee47b6a2",
+      "sourceSha256": "4bc664dda7f709f56a46b2ef4bdc4410f2de948fd858c0e0ac5245fa7241fae5",
+      "transferredSha256": "4bc664dda7f709f56a46b2ef4bdc4410f2de948fd858c0e0ac5245fa7241fae5",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/env-install.unit.ts",
+      "oldPath": "tests/env-install.unit.ts",
+      "oldBlob": "9f8457576c0e29074e7a759cc1fd03f940cafec2",
+      "sourceSha256": "d5f5c5ad2eb03d331725299e3a3a3d5161e3f6f9591c2ed96d851ca6fdfabff2",
+      "transferredSha256": "d5f5c5ad2eb03d331725299e3a3a3d5161e3f6f9591c2ed96d851ca6fdfabff2",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/env.browser.ts",
+      "oldPath": "tests/env.browser.ts",
+      "oldBlob": "c3659b3a9fdfe8da92370e906f1f073828b1afb4",
+      "sourceSha256": "32350e0287112829bfa3743f5d3e414fb9db5febc39ebfff2d64a5c8376c1954",
+      "transferredSha256": "32350e0287112829bfa3743f5d3e414fb9db5febc39ebfff2d64a5c8376c1954",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/file-utilities.spec.ts",
+      "oldPath": "tests/file-utilities.spec.ts",
+      "oldBlob": "08f3fc76a5337978d466f8d6bd6f58818ecbad11",
+      "sourceSha256": "c1cae204c3b7ec1be64b299179018a2bd225f8b3b33d58568c0ca245fe0aaa8c",
+      "transferredSha256": "c1cae204c3b7ec1be64b299179018a2bd225f8b3b33d58568c0ca245fe0aaa8c",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/ls.spec.ts",
+      "oldPath": "tests/ls.spec.ts",
+      "oldBlob": "674c476cff1f0f7dc5f22768b8b7ca56bbf4f2f2",
+      "sourceSha256": "807aed6d9d1cb669ed2dae2f0ed02887cc4b9acd44dbcef3b66a8705883652fe",
+      "transferredSha256": "807aed6d9d1cb669ed2dae2f0ed02887cc4b9acd44dbcef3b66a8705883652fe",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/sort-uniq.spec.ts",
+      "oldPath": "tests/sort-uniq.spec.ts",
+      "oldBlob": "680a07fabc6e8aedc013f5b322f5cad032193bb1",
+      "sourceSha256": "9f237a8fd0a9f72561420ed02534b7f2f6a42ca66c5143b28435284be2147f30",
+      "transferredSha256": "9f237a8fd0a9f72561420ed02534b7f2f6a42ca66c5143b28435284be2147f30",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/test-programs.unit.ts",
+      "oldPath": "tests/test-programs.unit.ts",
+      "oldBlob": "dcaed320aae253d4b4ee989a439892da047a91f2",
+      "sourceSha256": "a8656c0aaa12a2758f9732a6c735d21ced4e70366560aa20e62a7a3121cb260e",
+      "transferredSha256": "a8656c0aaa12a2758f9732a6c735d21ced4e70366560aa20e62a7a3121cb260e",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/tr.spec.ts",
+      "oldPath": "tests/tr.spec.ts",
+      "oldBlob": "a97150d4dc1052fc91b6b39f5896820b73cab4bc",
+      "sourceSha256": "35e98d15b3059a0ba0957a30c847cf0405b2cfc9edf695f44addb388b2c47a64",
+      "transferredSha256": "35e98d15b3059a0ba0957a30c847cf0405b2cfc9edf695f44addb388b2c47a64",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/cut-tr-cases.ts",
+      "oldPath": "tests/helpers/cut-tr-cases.ts",
+      "oldBlob": "a07ae9edca3c1f3aef336045bfb3faf3dabefb4e",
+      "sourceSha256": "ccbdad7db2669b37df83ab6f35e3883ce51586d0a33e73a143c305892aab3f1d",
+      "transferredSha256": "ccbdad7db2669b37df83ab6f35e3883ce51586d0a33e73a143c305892aab3f1d",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/cut-tr-recording.ts",
+      "oldPath": "tests/helpers/cut-tr-recording.ts",
+      "oldBlob": "0b42f7ffb1ccb8788df1bddffac53ace6050f95a",
+      "sourceSha256": "30ccd93e9e70e655439d9a523cf8f166a1c40244c59634bd82aed4768d0c6ece",
+      "transferredSha256": "1439b09f6754358290b46be0c92d18fdc516e2071583a6a0393007da00304aac",
+      "adaptation": "fixture-path-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/env-browser.ts",
+      "oldPath": "tests/helpers/env-browser.ts",
+      "oldBlob": "b2fefbd2a3cb6e8d24d5c29b4f9dc3555668affd",
+      "sourceSha256": "7a5259a281eea26d76e174aab7ab25c83ba7e6403562a63b73a696ee5416af30",
+      "transferredSha256": "7a5259a281eea26d76e174aab7ab25c83ba7e6403562a63b73a696ee5416af30",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/file-utilities-api.ts",
+      "oldPath": "tests/helpers/file-utilities-api.ts",
+      "oldBlob": "33e68dc2ee15695b5ca54f06cae136892f9cd401",
+      "sourceSha256": "246ab62136e9d1b2ff60fea0a42bc4ea35d5d92ec1725821fa27c1f7f9219cc1",
+      "transferredSha256": "246ab62136e9d1b2ff60fea0a42bc4ea35d5d92ec1725821fa27c1f7f9219cc1",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/file-utilities-browser.ts",
+      "oldPath": "tests/helpers/file-utilities-browser.ts",
+      "oldBlob": "680803e8fc91b546828b8fd3fe7cb833bb1633bc",
+      "sourceSha256": "08d35eef8f17b30c99e26c13b8ed37af13f9ff8fb6e79221928bc79f48a5a595",
+      "transferredSha256": "08d35eef8f17b30c99e26c13b8ed37af13f9ff8fb6e79221928bc79f48a5a595",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/file-utility-cases.ts",
+      "oldPath": "tests/helpers/file-utility-cases.ts",
+      "oldBlob": "158ed0f28e448f5095e11fde25fa6f290fae7d57",
+      "sourceSha256": "b9a73cded3eb6f21976f0b166333dcc8b67fc00f2aecdf58ea056ad99e71b461",
+      "transferredSha256": "b9a73cded3eb6f21976f0b166333dcc8b67fc00f2aecdf58ea056ad99e71b461",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/file-utility-filesystem.ts",
+      "oldPath": "tests/helpers/file-utility-filesystem.ts",
+      "oldBlob": "5e6a4272ca47abfa88364ffdcca3b74036dacabf",
+      "sourceSha256": "0347eedfd6f19a67671c817d70f19d23010102500bc39eefe4590cf02a84522e",
+      "transferredSha256": "0347eedfd6f19a67671c817d70f19d23010102500bc39eefe4590cf02a84522e",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/test-programs.ts",
+      "oldPath": "tests/helpers/test-programs.ts",
+      "oldBlob": "608eba480700d44b8379205cf0ba05edb52a5607",
+      "sourceSha256": "254186fdbb583db2afb190c71241f9132856d41e1f05577eb0281a08369dc19f",
+      "transferredSha256": "254186fdbb583db2afb190c71241f9132856d41e1f05577eb0281a08369dc19f",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/tests/helpers/tr-cases.ts",
+      "oldPath": "tests/helpers/tr-cases.ts",
+      "oldBlob": "e98c8c9213b8f9a977cfaf82fbc2100c8d234dad",
+      "sourceSha256": "fac0075e974f84e9b90fbd86a360d5d5134412318a0c966cc666789def8602e9",
+      "transferredSha256": "fac0075e974f84e9b90fbd86a360d5d5134412318a0c966cc666789def8602e9",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-clear.ts",
+      "oldPath": "scripts/build-clear.ts",
+      "oldBlob": "fbb32560b4aa533b08b8ab05060b8da597e7fb1f",
+      "sourceSha256": "08bac3285cb8e3a60e2070d76f1ccdf110389c6c793e2a6dbb95fad8079147b8",
+      "transferredSha256": "012b61df2aad9dcdc8e200e425d581dad8a0c4e70f6c7880f072c078417d4271",
+      "adaptation": "crate-and-manifest-relocation",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-clear.ts",
+      "oldPath": "scripts/test-clear.ts",
+      "oldBlob": "27121212f306abc855ed81021921a3740140cb35",
+      "sourceSha256": "552de7f3d7b51fedb6a436b22e9049e0bac23a13899aac84ae379184fca07d53",
+      "transferredSha256": "fdce6aeae0f2a516dce92d4d706297403155a3fe7a152791a15d9a60b7aa1a76",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-clear-browser.ts",
+      "oldPath": "scripts/test-clear-browser.ts",
+      "oldBlob": "66b9f527c810ffe4b7aed595c408642dba3128b9",
+      "sourceSha256": "1ce40691edaea8b706e5b85b8e28e595b736561e596f2f7f046687e08f5e3ee7",
+      "transferredSha256": "17e31e711fa62d511c1135ecf3c7e4473e45c28b2719b3f6d7994c32d8f11089",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/tests/clear-browser.ts",
+      "oldPath": "tests/clear-browser.ts",
+      "oldBlob": "dd0cd331ea95542337595813ddd29ede7b16bb04",
+      "sourceSha256": "ac76bed841122eeab2d72e6c1e087bd80a20705896f025a4faa58e4b06bd5d31",
+      "transferredSha256": "ac76bed841122eeab2d72e6c1e087bd80a20705896f025a4faa58e4b06bd5d31",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/docs/clear.md",
+      "oldPath": "docs/clear.md",
+      "oldBlob": "7c314224b88234d2f16cc0eb61aa516eadd4e9bb",
+      "sourceSha256": "61df7d94fccb97f9f8df55959ac8f6109e948ecde1bac4d3df700b5f73022aeb",
+      "transferredSha256": "61df7d94fccb97f9f8df55959ac8f6109e948ecde1bac4d3df700b5f73022aeb",
+      "classification": "relocated-unchanged"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-coreutils-packaging.ts",
+      "oldPath": "scripts/test-utility-packaging.ts",
+      "oldBlob": "6a85e8e64567a594bc4ab35dc02e8c2feb1e5518",
+      "sourceSha256": "378c788381ca9c6ee2cf8bbaffd2272a1960f538e7db04c406e4dd28d90dd3fd",
+      "transferredSha256": "dee1e8e2913c37c634f6dd300d7a9d815e3a2a625a3dd0d5e3eb5b0ac4b075f2",
+      "adaptation": "Removed other-family cases; retained generic and coreutils cases",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/sources.lock.json",
+      "oldPath": "sources.lock.json",
+      "oldBlob": "e4f544be8b0a2527378b183212bb8f53ac38a067",
+      "sourceSha256": "8a0071a9ec8f21250d3d41b79351e730689bfbfb52352070669d27753e11eb90",
+      "transferredSha256": "bd326783f26184c574a75f5d67a6a1a50c5618aac33ea1d3513a2e21747999e6",
+      "adaptation": "Retained only shellCutTrQualification",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/notices.mjs",
+      "oldPath": "scripts/notices.mjs",
+      "oldBlob": "4d8f7859632709ad346e855d09ee315c7ae527bb",
+      "sourceSha256": "4e036dd958bf7988800c5055d6f3f0563900ee89e49ec18f91460ceb2c8d3974",
+      "transferredSha256": "d5ebe228c70dfb10de2e343a040723e24d670866ad06673d92f187178a4851f3",
+      "adaptation": "Coreutils dependency closure, receipts and license generation only",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/artifacts.ts",
+      "oldPath": "scripts/utility-artifacts.ts",
+      "oldBlob": "2a66fe8cf01a231cde9b7b0c45d11a2c98c4fa05",
+      "sourceSha256": "e6db67c0e0748ad4ebed9b7759300c4b641ce8a7df3c73537c7c0faba51ce9f0",
+      "transferredSha256": "93e5e5aabb1e882bc322d772f408d45bb0b67fb70093fe00a9884e60a2b4e24f",
+      "adaptation": "Eighteen coreutils names and original receipt algorithm",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build.ts",
+      "oldPath": "scripts/build-utilities.ts",
+      "oldBlob": "5558fa51bba18f2472dbe89d01a887f2972156a8",
+      "sourceSha256": "ff99635706c69d032faecf170542abf9eb55de10081afb19429b813eb4217d6f",
+      "transferredSha256": "3256a669d6b2166a32a9569c2f0a0c6d88ef92af2844caa0210201cc2eda323a",
+      "adaptation": "Removed sed/xargs and applied existing crate renames",
+      "classification": "relocated-adapted"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/verify-transfer.mjs",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/maintained-transfer.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/integration-transfer.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/provenance/caller-wiring.json",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-config.ts",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/build-family.ts",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/programs.ts",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    },
+    {
+      "newPath": "packages/coreutils/scripts/test-build-routes.ts",
+      "oldPath": null,
+      "oldBlob": null,
+      "classification": "new-boundary"
+    }
+  ]
+}

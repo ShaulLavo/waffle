@@ -1,0 +1,99 @@
+{
+  "base": "aff7671630a99f6f642335965ba11c934a560ae9",
+  "runtimeMain": "d44553dd8b9c55541c1dce4008bb5395a63a536c",
+  "guestPatch": "coreutils-0e44eeb.patch",
+  "reason": "Use the landed runtime_proc inherited descriptor and access contracts; align which build features. Historical handoff receipts remain unchanged.",
+  "entries": [
+    {
+      "path": "packages/coreutils/Cargo.toml",
+      "beforeSha256": "39aea9442ea6630978754671d3d6075f6de9fbe8e611191ca0cad6daa5495601",
+      "afterSha256": "bb51b90f9cd8a20584f6193ceb323eb8f1bc8dfa961e204106a2a472977f9f92"
+    },
+    {
+      "path": "packages/coreutils/README.md",
+      "beforeSha256": "c721972f2976a2c7e5658394922275586efeedb0f93708755c015bb2fdb303d1",
+      "afterSha256": "eff9e545fe1b41196fc77b992a9c68ba05a2678faeeac47b7d0c7a028a73a7be"
+    },
+    {
+      "path": "packages/coreutils/programs.provisional.json",
+      "beforeSha256": "610e80ecd2df42252b08dca9fff4b6776267c898e294e8e7923f675e5bd984fd",
+      "afterSha256": "49c7e99a5e896ad68299de7c8fb23722d91ce1499d1a693f7737cbcf446a9e49"
+    },
+    {
+      "path": "packages/coreutils/provenance/relocation.json",
+      "beforeSha256": "24aa39133e937b2f119c0046b12791bd9ea559e7fd6d02f93f336fa5943b78c5",
+      "afterSha256": "e4d65ff8a915f251d24a5c038ce563ffdc0ba87731adcf3b04fadb9e0ed3d06d"
+    },
+    {
+      "path": "packages/coreutils/scripts/build.ts",
+      "beforeSha256": "3256a669d6b2166a32a9569c2f0a0c6d88ef92af2844caa0210201cc2eda323a",
+      "afterSha256": "be8ffd429c8182be499a2019157ac3209a23887387ef3ef477826893e1af3498"
+    },
+    {
+      "path": "packages/coreutils/scripts/notices.mjs",
+      "beforeSha256": "d5ebe228c70dfb10de2e343a040723e24d670866ad06673d92f187178a4851f3",
+      "afterSha256": "a132db20914f3369723eb159d21efda9584b66a541ce76047f44d5186553944f"
+    },
+    {
+      "path": "packages/coreutils/scripts/test-build-routes.ts",
+      "beforeSha256": "6762012c169c258d2217db860a86e7fbf6fcf690e42f08214580e7ff855cb0f8",
+      "afterSha256": "366c0878d61cc50ad51a1698dfd4542cd352e2695b2768539ba10cff831f2b3d"
+    },
+    {
+      "path": "packages/coreutils/src/lib.rs",
+      "beforeSha256": "99e89e58fc1c8388ec94d9668914908f48a639591fb3f7b011f081b5ef3b3e96",
+      "afterSha256": "88f6edaf7e1f887d1bbae009d1cafd94f86dcda13656280478724a5866176cda"
+    },
+    {
+      "path": "packages/coreutils/src/which_query.rs",
+      "beforeSha256": "5ddfcc2ed9d87bf354b9ad7a25bf1a8740cee8c51c809c03c14e0b32ffd4f149",
+      "afterSha256": "6e6247c232edf6285b2bc3abf5a3014a4743f83905358b56c915f8d732e53e07"
+    },
+    {
+      "path": "packages/coreutils/vendor/uutils-env/src/wasi_support.rs",
+      "beforeSha256": "b9d06ac1dd7d3eb3cb782812ecddaffbee4dd0e4a52323f588742f8f5f682ca0",
+      "afterSha256": "944021b20909b3e7b96df6d9d7f65388270c439d03ff76301acde00ab20b554b"
+    },
+    {
+      "path": "packages/grep/Cargo.toml",
+      "beforeSha256": "38a34f1f08ac300ad0e8acb201b038d6640d0057a95d0d7fe98965f5fa14ed18",
+      "afterSha256": "57c92d4cfb9f74cccab242c62b9f25a04fc8a4f8b28c1aef9ad4ff8e1fcff7cc"
+    },
+    {
+      "path": "packages/grep/src/lib.rs",
+      "beforeSha256": "289ecb45b51f17b9edea0dcda7b9420df48e374d76fc8b743ce437b4baa35135",
+      "afterSha256": "92b6744f6869cb959c983bf5fd38d2019ddadb08f3d171e50fbfe203ecb794c8"
+    },
+    {
+      "path": "packages/process-consumer/README.md",
+      "beforeSha256": "3f723d134521d6023d786297f6047c7ea86fd9b1ef94ef21a26d81b6499609a5",
+      "afterSha256": "487bee672df082d1b25289a43d4a08b4336f2024cb1b3dae6d9dd9ea7018a27f"
+    },
+    {
+      "path": "packages/process-consumer/src/lib.rs",
+      "beforeSha256": "66ff5f65e366e9a2b0aea363b321e1c25cea78b2365ca531b821e3aa0d6668a7",
+      "afterSha256": "4785bf74d0134a4a71176acd94be7f363e6e4dec0b396864b89d91447285d4b3"
+    },
+    {
+      "path": "packages/process-consumer/src/wasi.rs",
+      "beforeSha256": "bfcd99cee575f80bd0b0f1c3e2fae22352ea1d1fe86efe7d808c71450b71f001",
+      "afterSha256": "7c53aee6312d39bf9bbda584e20854ba9616985030682396d4e35dbcd6262dad"
+    },
+    {
+      "path": "packages/program-support/Cargo.toml",
+      "beforeSha256": "ee60ed9947362cac07929dfdb097c8a1e99568c1987e7c49c427f5fcb74e3a84",
+      "afterSha256": "63a59e906a4d50caca14e24345a887b2542bf3e5c8beefa87abdb6df946e745e"
+    },
+    {
+      "path": "packages/program-support/README.md",
+      "beforeSha256": "4c4dca0f99a9811f3cd905044d3f304e72ebaea9ae10805ea7c80b0e841a4536",
+      "afterSha256": "87d15d2d951ba6b58006bb14f9a8c14fc227655159dd6804a3a50c5c00bfe9f8"
+    },
+    {
+      "path": "packages/program-support/src/runtime/wasi.rs",
+      "beforeSha256": "2f77f23820b99a222d859ed7ebe75f993a077bd4fccc05e1cb50e7d4bf2cac07",
+      "afterSha256": "4f069c14b33764ca6bb1c803cd0ab64ce42329a0d6512ced0a86e4178e8c3260"
+    }
+  ],
+  "guestPatchSha256": "6b7c3f79b35456f63a8f20afe386bb85b6cd96d705523b2181c90a49bd197737"
+}
