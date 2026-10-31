@@ -5,7 +5,7 @@ import { ProcessSupervisor } from "../../waffle/proc/supervisor.ts";
 import { checkedSignal } from "../../waffle/proc/types.ts";
 import { processRows } from "../src/index.ts";
 
-// These controls distinguish runtime support from this package's unimplemented command adapter.
+// These controls distinguish incomplete Wasm definitions from the supported command contract.
 test("real Runtime rejects incomplete Wasm definitions but accepts unloaded host commands", async () => {
   const runtime = createRuntime({
     filesystem: {
