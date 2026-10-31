@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, writeFile, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
@@ -8,7 +9,7 @@ test("the documented browser build emits the requested measurement worker", asyn
   const docs = await Bun.file(join(root, "docs/getting-started.md")).text();
   const build = /bun build (.+) --outdir \.\/public --target browser --splitting/.exec(docs);
   if (!build?.[1]) throw new Error("missing documented build");
-  const scratch = await mkdtemp("/work/tmp/waffle-probe-package-");
+  const scratch = await mkdtemp(join(tmpdir(), "waffle-probe-package-"));
   const previousWorker = globalThis.Worker;
   let requested = "";
   try {

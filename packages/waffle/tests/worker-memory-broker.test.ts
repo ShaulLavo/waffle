@@ -409,7 +409,7 @@ test("actual supervisor returns ENOMEM before allocating a child arena, group, o
   }
 });
 
-test("group adapter memory is refused before group, arena or Worker allocation", async () => {
+async function groupAdapterFixture(maximumPages: number) {
   const linked = await prepareLinkPlan({
     core: {
       id: "core",
@@ -431,8 +431,13 @@ test("group adapter memory is refused before group, arena or Worker allocation",
   const f = await fixture(false, Promise.resolve(), undefined, reservations, {
     module: linked.entryModule,
     memoryGroup: "new",
-    memories: [{ kind: "private", maximumPages: pages(65_536), origin: "defined" }],
+    memories: [{ kind: "private", maximumPages: pages(maximumPages), origin: "defined" }],
   });
+  return { f, reservations };
+}
+
+test("group adapter memory is refused before group, arena or Worker allocation", async () => {
+  const { f, reservations } = await groupAdapterFixture(65_536);
   try {
     expect(f.workers).toHaveLength(0);
     expect(await f.supervisor.waitForExit(f.root.pid, f.pid)).toMatchObject({
@@ -449,29 +454,7 @@ test("group adapter memory is refused before group, arena or Worker allocation",
 });
 
 test("a small group adapter memory is charged without charging the shared import twice", async () => {
-  const linked = await prepareLinkPlan({
-    core: {
-      id: "core",
-      source: pieCore([0x10, 0]),
-      cooperative: true,
-      checkpoint: { module: "env", name: "check" },
-      initializeMemory: [],
-      initialize: [],
-    },
-    libraries: [],
-    reserve: "reserve",
-  });
-  const platform = declareSharedMemoryPlatform({
-    kind: "bounded",
-    budgetBytes: bytes(256 * 1024 ** 2),
-    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
-  });
-  const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
-  const f = await fixture(false, Promise.resolve(), undefined, reservations, {
-    module: linked.entryModule,
-    memoryGroup: "new",
-    memories: [{ kind: "private", maximumPages: pages(8), origin: "defined" }],
-  });
+  const { f, reservations } = await groupAdapterFixture(8);
   try {
     expect(f.workers.filter((worker) => worker.request)).toHaveLength(1);
     expect(
