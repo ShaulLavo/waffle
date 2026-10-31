@@ -803,17 +803,14 @@ for (const operation of ["bind", "admit"] as const)
       const child = f.spawn(),
         group = must(f.authority.createGroup({ initialMode: "cooked" }));
       const plan = must(f.authority.planMember({ group, parent: f.editorMember.member }));
-      if (operation !== "select") must(f.authority.transfer({ from: f.editorLease, to: group }));
-      if (operation === "select") must(f.authority.admitExisting({ group, pid: child.pid }));
+      must(f.authority.transfer({ from: f.editorLease, to: group }));
       f.fault(() => {
         claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 0 });
       });
       const result =
         operation === "bind"
           ? f.authority.bindMember({ planned: plan.member, pid: child.pid })
-          : operation === "admit"
-            ? f.authority.admitExisting({ group, pid: child.pid })
-            : f.authority.transfer({ from: f.editorLease, to: group });
+          : f.authority.admitExisting({ group, pid: child.pid });
       expect(result.kind === "error" ? result.code : "OK").toBe("CLOSED");
       expect(f.display.snapshot()).toEqual({ kind: "error", code: "CLOSED" });
     } finally {
