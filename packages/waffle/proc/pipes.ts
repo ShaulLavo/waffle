@@ -143,8 +143,8 @@ function registryOwner(pid: number): bigint {
  * Canonical cells have append-only global indices in a growable SAB. Their full cursor
  * payload has no incarnation tag, so retained raw views must NEVER alias another cursor.
  * No guest holds a lock. This requires modern growable SharedArrayBuffer support.
- * Bounds: 1024 simultaneous enrolled processes by default; 16777216 lifetime cells
- * (256 MiB maximum committed cell storage), about 4194304 simple pipes at four cells/pipe.
+ * Bounds: 1024 simultaneous enrolled processes by default; 1048576 lifetime cells
+ * (16 MiB maximum committed cell storage). Explicit maxCells supports up to 16777216 cells.
  * Cell exhaustion is ENFILE, not unsafe reuse or unbounded allocation. Initial storage is
  * ~2 MiB. Collecting owners does not reclaim the intentionally permanent cursor arena.
  */
@@ -177,7 +177,7 @@ export class PipePublicationRegistry {
     this.cellBase = 16 + processCapacity * 8;
     this.maxCells = attached
       ? (sharedArrayBufferMaxByteLength(attached.buffer) - this.cellBase) / 16
-      : (options.maxCells ?? 1 << 24);
+      : (options.maxCells ?? 1 << 20);
     if (!Number.isInteger(this.maxCells) || this.maxCells <= 0 || this.maxCells > 1 << 24)
       throw new RangeError("invalid pipe registry cell limit");
     const initialCells = Math.min(processCapacity * cellsPerProcess, this.maxCells);

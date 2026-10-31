@@ -1,3 +1,4 @@
+import type { MemoryBackendSharedRoot } from "../fs/backend.js";
 import type { MemoryBudget } from "../fs/memory-budget.js";
 import { MemoryBackend, PersistentBackend, IndexedDBStorage, OpfsStorage } from "../fs/index.js";
 import type { StorageBackend } from "../fs/storage.js";
@@ -10,6 +11,7 @@ export interface FilesystemBackendOptions {
   readonly name?: string;
   readonly implementation?: "indexeddb" | "opfs-memory" | "memory";
   readonly startupRoot?: MemoryBudget;
+  readonly connect?: MemoryBackendSharedRoot;
 }
 export interface FilesystemBackendLifecycle {
   readonly retainOpeningDebt?: (debt: Promise<void>) => void;
@@ -27,7 +29,7 @@ export async function openFilesystemBackend(
   const { descriptor, whenBusy } = resolveVfs(options, options.implementation);
   requireVfsCapabilities(descriptor.implementation);
   if (descriptor.implementation === "memory")
-    return new MemoryBackend(undefined, undefined, options.startupRoot);
+    return new MemoryBackend(undefined, undefined, options.startupRoot, undefined, options.connect);
   let backend: PersistentBackend | undefined = undefined;
   let ownershipLost = false;
   const storage =
@@ -43,7 +45,10 @@ export async function openFilesystemBackend(
           },
         });
   lifecycle.retainStorage(storage);
-  backend = await PersistentBackend.open(storage, { startupRoot: options.startupRoot });
+  backend = await PersistentBackend.open(storage, {
+    startupRoot: options.startupRoot,
+    sharedRoot: options.connect,
+  });
   if (ownershipLost) {
     backend.dispose();
     throw new Error("Filesystem ownership was lost during recovery");

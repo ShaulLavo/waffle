@@ -1959,7 +1959,8 @@ export function installFilesystemWorker(
     onStartupStage?: RuntimeStartupObserver,
     signal?: AbortSignal,
     onWaiting?: () => void,
-  ) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
+  ) => FilesystemBackend | Promise<FilesystemBackend> = (options) =>
+    new MemoryBackend(undefined, undefined, undefined, undefined, options.connect),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;
