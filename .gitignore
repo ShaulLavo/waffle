@@ -17,3 +17,6 @@ packages/waffle/browser/net/network.sha256
 
 # Family build staging; published entries use dist assets
 packages/*/public/programs/
+
+# Exact canonical program-tool sources staged by package preparation
+packages/waffle/tooling/program/
