@@ -62,11 +62,11 @@ test("broker refuses before filesystem connection or Worker construction", async
   } satisfies ProcessContext;
   try {
     await broker.adoptRuntimeRoot(root);
-    expect(() => broker.launchWorker(context, {
+    await expect(broker.launchWorker(context, {
       workerUrl: "https://example.test/guest.js",
       request: { module: emptyModule, args: [], env: {} },
       reservation: { memory: "private", maximumPages: pages(1) },
-    })).toThrow(/ENOMEM|budget/i);
+    })).rejects.toMatchObject({ errno: 48, code: "ENOMEM" });
     expect(workers).toBe(0);
     expect(connections).toBe(0);
     expect(ledger.snapshot().reservedBytes).toBe(0);

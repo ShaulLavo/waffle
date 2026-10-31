@@ -15,7 +15,7 @@ import { WorkerPipeBroker } from "../proc/worker-pipes";
 import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes";
 import { createRuntimeTerminalCodec } from "./runtime-terminals";
 import type { RuntimeWorkerRequest } from "./worker";
-import type { GuestReservation, LaunchedAdmission, SharedMemoryLedger } from "../memory";
+import { SharedMemoryAdmissionError, type GuestReservation, type LaunchedAdmission, type SharedMemoryLedger } from "../memory";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
@@ -317,17 +317,17 @@ export class BrowserProcessBroker {
     if (!record || record.members.size || record.pendingMembers || this.states().some(state => state.job === job)) return;
     this.supervisor?.reapJob(record.ownerPid, job);
   }
-  launchWorker<T extends RuntimeWorkerRequest>(context: ProcessContext, options: WorkerLaunchOptions<T>): ProcessHandle {
+  async launchWorker<T extends RuntimeWorkerRequest>(context: ProcessContext, options: WorkerLaunchOptions<T>): Promise<ProcessHandle> {
     if (this.suspended) throw new Error("Process broker is disposed");
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
+    if (options.reservation.memory !== "none") {
+      throw new SharedMemoryAdmissionError({ kind: "configuration", configuration: "guest-memory-handoff-unavailable" });
+    }
     const filesystem = this.filesystem(transport);
-    const admission = this.options.sharedMemory?.admit({
-      pid: context.pid,
-      executable: context.request.executable,
-      guest: options.reservation,
-      connections: 0,
-    });
+    const admission = this.options.sharedMemory
+      ? await this.options.sharedMemory.admit({ pid: context.pid, executable: context.request.executable, guest: options.reservation, connections: 0 })
+      : undefined;
     let request: RuntimeWorkerRequest;
     let worker: Worker;
     try {

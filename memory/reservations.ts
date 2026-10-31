@@ -103,6 +103,11 @@ interface HolderRecord {
   readonly value?: SharedArrayBuffer | WebAssembly.Memory;
 }
 
+interface TicketRecord {
+  readonly record: HolderRecord;
+  readonly reused: boolean;
+}
+
 export interface SharedMemorySnapshot {
   readonly platform: SharedMemoryPlatform | { readonly kind: "measuring" };
   readonly budgetBytes: number | null;
@@ -127,7 +132,8 @@ export type SharedMemoryRefusal =
       readonly budget: ReservedBytes;
       readonly awaitingRelease: ReservedBytes;
     }
-  | { readonly kind: "configuration"; readonly configuration: "growable-shared-memory-with-many-agents" }
+  | { readonly kind: "configuration"; readonly configuration: "growable-shared-memory-with-many-agents" | "guest-memory-handoff-unavailable" }
+  | { readonly kind: "measurement"; readonly cause: Error }
   | { readonly kind: "platform"; readonly shape: ReservationShape; readonly cause: RangeError };
 
 export class SharedMemoryAdmissionError extends Error {
@@ -140,7 +146,11 @@ export class SharedMemoryAdmissionError extends Error {
 }
 
 function describeRefusal(refusal: SharedMemoryRefusal): string {
-  if (refusal.kind === "configuration") return "Growable shared memory with many agents is not supported on this bounded platform";
+  if (refusal.kind === "configuration") {
+    if (refusal.configuration === "guest-memory-handoff-unavailable") return "This worker path cannot hand off a declared guest memory reservation";
+    return "Growable shared memory with many agents is not supported on this bounded platform";
+  }
+  if (refusal.kind === "measurement") return `Shared memory measurement failed before admission: ${refusal.cause.message}`;
   if (refusal.kind === "platform") return `Shared memory platform refused ${refusal.shape.kind}: ${refusal.cause.message}`;
   return `Shared memory budget refused ${refusal.requested} bytes: ${refusal.available} available of ${refusal.budget}; ${refusal.awaitingRelease} awaiting release`;
 }
@@ -148,6 +158,7 @@ function describeRefusal(refusal: SharedMemoryRefusal): string {
 export interface ReservationAllocator {
   createBuffer(shape: ReservationShape): SharedArrayBuffer;
   createMemory(shape: Extract<ReservationShape, { readonly kind: "shared-memory" | "private-memory" }>): WebAssembly.Memory;
+  resetMemory?(memory: WebAssembly.Memory, shape: Extract<ReservationShape, { readonly kind: "shared-memory" }>): void;
 }
 
 const defaultAllocator: ReservationAllocator = {
@@ -177,6 +188,7 @@ export interface ProcessPlan {
 export interface PreLaunchAdmission {
   readonly arena: SharedArrayBuffer | undefined;
   readonly groupMemory: WebAssembly.Memory | undefined;
+  readonly memory: WebAssembly.Memory | undefined;
   abort(): void;
   launched(): LaunchedAdmission;
 }
@@ -196,7 +208,7 @@ export interface SharedMemoryLedger {
   groupMemory(maximumPages?: WasmPages): GroupMemoryPlan;
   pipeRegistryCells(): number;
   check(reservation: GuestReservation): { readonly kind: "admitted" } | { readonly kind: "refused"; readonly error: SharedMemoryAdmissionError };
-  admit(plan: ProcessPlan): PreLaunchAdmission;
+  admit(plan: ProcessPlan): Promise<PreLaunchAdmission>;
   measured(): Promise<SharedMemoryPlatform>;
   disposeRuntime(runtime: RuntimeToken): void;
   collectRuntime(runtime: RuntimeToken): void;
@@ -215,6 +227,15 @@ function shapeBytes(shape: ReservationShape): number {
     case "fixed-buffer": return shape.length;
     case "shared-memory": return (shape.growth === "fixed" ? shape.pages : shape.maximumPages) * PAGE_BYTES;
     case "private-memory": return shape.maximumPages * PAGE_BYTES;
+  }
+}
+
+function shapeKey(shape: ReservationShape): string {
+  switch (shape.kind) {
+    case "growable-buffer": return `growable-buffer:${shape.maximum}`;
+    case "fixed-buffer": return `fixed-buffer:${shape.length}`;
+    case "shared-memory": return shape.growth === "fixed" ? `shared-memory:fixed:${shape.pages}` : `shared-memory:growable:${shape.maximumPages}`;
+    case "private-memory": return `private-memory:${shape.maximumPages}`;
   }
 }
 
@@ -260,7 +281,7 @@ class Ledger implements SharedMemoryLedger {
   private nextHolder = 1;
   private readonly holders = new Map<number, HolderRecord>();
   private readonly idleArenas = new Map<number, HolderRecord[]>();
-  private readonly idleGroups = new Map<number, HolderRecord[]>();
+  private readonly idleGroups = new Map<string, HolderRecord[]>();
   private readonly allocator: ReservationAllocator;
   private readonly measure: () => Promise<SharedMemoryPlatform>;
   private remeasure?: Promise<SharedMemoryPlatform>;
@@ -281,12 +302,13 @@ class Ledger implements SharedMemoryLedger {
     return record.value;
   }
 
-  reserveMemory(label: "memory-group", shape: Extract<ReservationShape, { readonly kind: "shared-memory" | "private-memory" }>, runtime?: RuntimeToken): WebAssembly.Memory {
+  reserveMemory(label: "memory-group", shape: Extract<ReservationShape, { readonly kind: "shared-memory" }>, runtime?: RuntimeToken): WebAssembly.Memory {
     if (!runtime) {
-      const reusable = this.idleGroups.get(shapeBytes(shape))?.pop();
+      const reusable = this.idleGroups.get(shapeKey(shape))?.pop();
       if (reusable) {
         reusable.state = { kind: "live" };
         if (!(reusable.value instanceof WebAssembly.Memory)) throw new TypeError("group pool contains a non-memory value");
+        this.resetMemory(reusable.value, shape);
         return reusable.value;
       }
     }
@@ -304,9 +326,9 @@ class Ledger implements SharedMemoryLedger {
       return;
     }
     record.state = { kind: "idle" };
-    const list = this.idleGroups.get(record.declaredBytes) ?? [];
+    const list = this.idleGroups.get(shapeKey(record.shape)) ?? [];
     list.push(record);
-    this.idleGroups.set(record.declaredBytes, list);
+    this.idleGroups.set(shapeKey(record.shape), list);
   }
 
   arena(runtime: RuntimeToken): SharedArrayBuffer {
@@ -347,37 +369,44 @@ class Ledger implements SharedMemoryLedger {
   }
 
   check(reservation: GuestReservation): { readonly kind: "admitted" } | { readonly kind: "refused"; readonly error: SharedMemoryAdmissionError } {
+    if (this.platform.kind === "measuring") return { kind: "refused", error: new SharedMemoryAdmissionError({ kind: "measurement", cause: new Error("measurement is still pending") }) };
     const error = this.refusalFor(reservation, 0);
     return error ? { kind: "refused", error } : { kind: "admitted" };
   }
 
-  admit(plan: ProcessPlan): PreLaunchAdmission {
-    if (this.platform.kind === "measuring") void this.measured().catch(() => {});
+  async admit(plan: ProcessPlan): Promise<PreLaunchAdmission> {
+    try {
+      await this.measured();
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      throw new SharedMemoryAdmissionError({ kind: "measurement", cause });
+    }
     const group = this.groupMemory();
     const refusal = this.refusalFor(plan.guest, plan.connections * this.arenaBytes(), group);
     if (refusal) throw refusal;
-    const records: HolderRecord[] = [];
+    const records: TicketRecord[] = [];
     let arena: SharedArrayBuffer | undefined;
     let groupMemory: WebAssembly.Memory | undefined;
+    let guestMemory: WebAssembly.Memory | undefined;
     try {
       const guestShape = plan.guest.memory === "group" ? undefined : shapeForGuest(plan.guest, group);
       if (guestShape) {
         const scope = { kind: "worker" as const, pid: plan.pid, incarnation: Symbol(`waffle.worker.${plan.pid}`) };
         const value = this.allocateShape("guest-memory", guestShape, scope);
-        records.push(value.record);
+        records.push({ record: value.record, reused: false });
+        if (value.value instanceof WebAssembly.Memory) guestMemory = value.value;
       }
       if (plan.connections > 0) {
-        arena = this.arena(this.runtimeToken());
-        const arenaRecord = this.findValue(arena);
-        if (arenaRecord) records.push(arenaRecord);
+        const acquiredArena = this.acquireArena();
+        arena = acquiredArena.value;
+        records.push({ record: acquiredArena.record, reused: acquiredArena.reused });
       }
       if (plan.guest.memory === "group" && plan.guest.join === "new") {
         const shape = shapeForGuest(plan.guest, group);
-        if (shape && (shape.kind === "shared-memory" || shape.kind === "private-memory")) {
-          groupMemory = this.reserveMemory("memory-group", shape);
-          const groupRecord = this.findValue(groupMemory);
-          if (!groupRecord) throw new TypeError("group reservation was not recorded");
-          records.push(groupRecord);
+        if (shape?.kind === "shared-memory") {
+          const acquiredGroup = this.acquireGroupMemory(shape);
+          groupMemory = acquiredGroup.value;
+          records.push({ record: acquiredGroup.record, reused: acquiredGroup.reused });
         }
       }
     } catch (error) {
@@ -388,7 +417,7 @@ class Ledger implements SharedMemoryLedger {
       this.scheduleRemeasure();
       throw new SharedMemoryAdmissionError({ kind: "platform", shape, cause });
     }
-    return this.ticket(records, arena, groupMemory);
+    return this.ticket(records, arena, groupMemory, guestMemory);
   }
 
   measured(): Promise<SharedMemoryPlatform> {
@@ -464,8 +493,44 @@ class Ledger implements SharedMemoryLedger {
 
   private reusableMemoryBytes(reservation: GuestReservation, shape: ReservationShape): number {
     if (reservation.memory !== "group" || reservation.join !== "new") return countsKind(this.platform.kind === "measuring" ? undefined : this.platform, shapeKind(shape)) ? shapeBytes(shape) : 0;
-    const reusable = this.idleGroups.get(shapeBytes(shape))?.length ?? 0;
+    const reusable = this.idleGroups.get(shapeKey(shape))?.length ?? 0;
     return reusable ? 0 : countsKind(this.platform.kind === "measuring" ? undefined : this.platform, shapeKind(shape)) ? shapeBytes(shape) : 0;
+  }
+
+  private acquireArena(): { readonly record: HolderRecord; readonly reused: boolean; readonly value: SharedArrayBuffer } {
+    const pool = this.idleArenas.get(this.arenaBytes());
+    const reusable = pool?.pop();
+    if (reusable) {
+      reusable.state = { kind: "live" };
+      if (!(reusable.value instanceof SharedArrayBuffer)) throw new TypeError("arena pool contains a non-buffer value");
+      return { record: reusable, reused: true, value: reusable.value };
+    }
+    const shape: ReservationShape = { kind: "growable-buffer", maximum: bytes(this.arenaBytes()) };
+    const record = this.reserveValue("request-arena", shape, { kind: "pooled", pool: "request-arena" }, () => this.allocator.createBuffer(shape));
+    if (!(record.value instanceof SharedArrayBuffer)) throw new TypeError("arena allocator returned an invalid value");
+    return { record, reused: false, value: record.value };
+  }
+
+  private acquireGroupMemory(shape: Extract<ReservationShape, { readonly kind: "shared-memory" }>): { readonly record: HolderRecord; readonly reused: boolean; readonly value: WebAssembly.Memory } {
+    const pool = this.idleGroups.get(shapeKey(shape));
+    const reusable = pool?.pop();
+    if (reusable) {
+      reusable.state = { kind: "live" };
+      if (!(reusable.value instanceof WebAssembly.Memory)) throw new TypeError("group pool contains a non-memory value");
+      this.resetMemory(reusable.value, shape);
+      return { record: reusable, reused: true, value: reusable.value };
+    }
+    const record = this.reserveValue("memory-group", shape, { kind: "pooled", pool: "group-memory" }, () => this.allocator.createMemory(shape));
+    if (!(record.value instanceof WebAssembly.Memory)) throw new TypeError("group allocator returned an invalid value");
+    return { record, reused: false, value: record.value };
+  }
+
+  private resetMemory(memory: WebAssembly.Memory, shape: Extract<ReservationShape, { readonly kind: "shared-memory" }>): void {
+    if (this.allocator.resetMemory) {
+      this.allocator.resetMemory(memory, shape);
+      return;
+    }
+    new Uint8Array(memory.buffer).fill(0);
   }
 
   private reserveValue(label: HolderLabel, shape: ReservationShape, scope: HolderScope, create: () => SharedArrayBuffer | WebAssembly.Memory): HolderRecord {
@@ -491,25 +556,28 @@ class Ledger implements SharedMemoryLedger {
     if (requested > available) throw new SharedMemoryAdmissionError({ kind: "budget", requested: bytes(requested), available: bytes(available), budget: this.platform.budgetBytes, awaitingRelease: bytes(awaitingRelease || this.sumState("awaiting-collection")) });
   }
 
-  private ticket(records: readonly HolderRecord[], arena: SharedArrayBuffer | undefined, groupMemory: WebAssembly.Memory | undefined): PreLaunchAdmission {
+  private ticket(records: readonly TicketRecord[], arena: SharedArrayBuffer | undefined, groupMemory: WebAssembly.Memory | undefined, guestMemory: WebAssembly.Memory | undefined): PreLaunchAdmission {
     let phase: "admitted" | "launched" | "aborted" | "stopped" | "failed" = "admitted";
     const release = (error?: unknown) => {
       if (phase === "aborted" || phase === "stopped" || phase === "failed") return;
       if (error) {
-        for (const record of records) record.state = { kind: "debt", error };
+        for (const item of records) item.record.state = { kind: "debt", error };
         phase = "failed";
         return;
       }
-      for (const record of records) this.holders.delete(record.id);
+      for (const item of records) {
+        if (item.reused) this.idle(item.record);
+        else this.holders.delete(item.record.id);
+      }
       phase = "aborted";
     };
     const launched: LaunchedAdmission = {
       stopped: () => {
         if (phase !== "launched") return;
-        for (const record of records) {
-          if (record.label === "request-arena" && record.value instanceof SharedArrayBuffer) this.releaseArena(record.value);
-          else if (record.label === "memory-group" && record.value instanceof WebAssembly.Memory) this.releaseGroupMemory(record.value);
-          else this.holders.delete(record.id);
+        for (const item of records) {
+          if (item.record.label === "request-arena" && item.record.value instanceof SharedArrayBuffer) this.releaseArena(item.record.value);
+          else if (item.record.label === "memory-group" && item.record.value instanceof WebAssembly.Memory) this.releaseGroupMemory(item.record.value);
+          else this.holders.delete(item.record.id);
         }
         phase = "stopped";
       },
@@ -518,6 +586,7 @@ class Ledger implements SharedMemoryLedger {
     return {
       arena,
       groupMemory,
+      memory: guestMemory,
       abort: () => release(),
       launched: () => {
         if (phase !== "admitted") return launched;
@@ -527,8 +596,27 @@ class Ledger implements SharedMemoryLedger {
     };
   }
 
-  private rollback(records: readonly HolderRecord[]): void {
-    for (const record of records) this.holders.delete(record.id);
+  private idle(record: HolderRecord): void {
+    record.state = { kind: "idle" };
+    if (record.label === "request-arena" && record.value instanceof SharedArrayBuffer) {
+      const list = this.idleArenas.get(record.declaredBytes) ?? [];
+      list.push(record);
+      this.idleArenas.set(record.declaredBytes, list);
+      return;
+    }
+    if (record.label === "memory-group" && record.value instanceof WebAssembly.Memory) {
+      const key = shapeKey(record.shape);
+      const list = this.idleGroups.get(key) ?? [];
+      list.push(record);
+      this.idleGroups.set(key, list);
+    }
+  }
+
+  private rollback(records: readonly TicketRecord[]): void {
+    for (const item of records) {
+      if (item.reused) this.idle(item.record);
+      else this.holders.delete(item.record.id);
+    }
   }
 
   private findValue(value: SharedArrayBuffer | WebAssembly.Memory): HolderRecord | undefined {
@@ -550,7 +638,8 @@ class Ledger implements SharedMemoryLedger {
 
   private scheduleRemeasure(): void {
     if (this.platform.kind !== "bounded" || this.remeasure) return;
-    this.remeasure = this.measure().then(platform => { this.platform = platform; this.remeasure = undefined; return platform; }, () => { this.remeasure = undefined; return this.platform.kind === "bounded" ? this.platform : { kind: "unbounded", probedBytes: bytes(PROBE_CEILING_BYTES) }; });
+    const bounded = this.platform;
+    this.remeasure = this.measure().then(platform => { this.platform = platform; this.remeasure = undefined; return platform; }, () => { this.remeasure = undefined; return bounded; });
   }
 }
 
