@@ -818,6 +818,7 @@ class PipeState {
     return result;
   }
   switchToRelay(): void {
+    if (this.relay) return;
     atomicsOr(this.selection, 0, RELAY_SELECTION);
     // Revoke the old direct consumer's lease BEFORE publishing relay mode. A delayed direct
     // read cannot advance a ring's cursor after the supervisor takes over consumption.
@@ -856,7 +857,7 @@ class PipeState {
       selected = slot;
       break;
     }
-    if (selected < 0 && mode === "write") {
+    if (selected < 0) {
       for (let probe = 0; probe < rings.length; probe++) {
         const slot = (pid + probe) % rings.length;
         const reclaimed = this.reclaim(rings[slot]!, pid, mode);
@@ -930,7 +931,13 @@ class PipeState {
     if (!ring.closed || (ring.references > 0 && !this.registry?.isRevoked(owner))) return undefined;
     // Writers append after old committed records. The consumer keeps its cursor and pin;
     // counted sections exclude old producers even when committed bytes remain.
-    if (mode === "read" && ring.available !== 0) return undefined;
+    if (
+      mode === "read" &&
+      (ring.available !== 0 ||
+        recordCounter(atomicsLoad(ring.consumed, 0)) !==
+          recordCounter(atomicsLoad(ring.published, 0)))
+    )
+      return undefined;
     if (atomicsCompareExchange(ring.pid, 0, owner, RECLAIMING) !== owner) return undefined;
     if (!ring.advance(incarnation)) {
       atomicsStore(ring.pid, 0, owner);
@@ -940,7 +947,9 @@ class PipeState {
       atomicsStore(ring.refs, 0, 0);
       atomicsStore(ring.demand, 0, 0);
       ring.reopen(pid, "published");
+      if (mode === "read") ring.reopen(pid, "consumed");
       atomicsStore(ring.pid, 0, -pid);
+      if (mode === "read") this.switchToRelay();
       this.occupy(ring, pid, mode);
       return incarnation + 1;
     } catch (error) {
@@ -1107,13 +1116,7 @@ export class PipeEndpoint implements Stream {
   tryRead(chunks: readonly Uint8Array[]): number {
     if (this.mode !== "read" || !this.live) return -PipeErrno.BADF;
     if (!length(chunks)) return 0;
-    if (this.state.relay) {
-      const result = this.ring.read(chunks);
-      if (result > 0) this.state.signal();
-      else if (result === -PipeErrno.AGAIN && this.ring.request(length(chunks)))
-        this.state.signal();
-      return result;
-    }
+    if (this.state.relay) return this.readDelivery(chunks);
     const source = this.state.source(false);
     if (source) {
       const result = this.state.consume(source, chunks, false);
@@ -1124,6 +1127,20 @@ export class PipeEndpoint implements Stream {
     }
     if (this.state.relay) return this.tryRead(chunks);
     return this.state.eof() && this.state.queued() === 0 ? 0 : -PipeErrno.AGAIN;
+  }
+
+  private readDelivery(chunks: readonly Uint8Array[]): number {
+    if (!this.ring.enter(this.incarnation)) return -PipeErrno.BADF;
+    try {
+      if (!this.live) return -PipeErrno.BADF;
+      const result = this.ring.read(chunks);
+      if (result > 0) this.state.signal();
+      else if (result === -PipeErrno.AGAIN && this.ring.request(length(chunks)))
+        this.state.signal();
+      return result;
+    } finally {
+      this.ring.leave();
+    }
   }
 
   read(chunks: readonly Uint8Array[]): number {
@@ -1196,7 +1213,7 @@ export class PipeController {
   private pending?: Uint8Array;
   private pendingAt = 0;
   private pendingTicket = 0n;
-  private delivery?: Ring;
+  private delivery?: { ring: Ring; incarnation: number };
   private readonly onClosed?: () => void;
   private reportedClosed = false;
   constructor(options: PipeOptions = {}, attached?: PipeEndpointHandle) {
@@ -1264,117 +1281,152 @@ export class PipeController {
     if (this.stopped || !this.state.relay || this.state.disposed) return;
     this.claimRelay();
     for (let step = 0; step < 64; step++) {
-      if (this.delivery) {
-        const ring = this.delivery;
-        if (!ring.available) this.delivery = undefined;
-        else {
-          const alive = this.state.readerAlive(ring);
-          const otherDemand = ringSome(
-            this.state.readers,
-            (candidate) =>
-              candidate !== ring &&
-              this.state.readerAlive(candidate) &&
-              atomicsLoad(candidate.demand, 0) > 0,
-          );
-          if (alive && !otherDemand) break;
-          if (!alive) {
-            ring.freezeWriter();
-            ring.freezeReader();
-          }
-          const head = ring.head();
-          if (!head) {
-            this.delivery = undefined;
-            continue;
-          }
-          const copy = new Uint8ArrayConstructor(Math.min(head.remaining, 65536));
-          const count = ring.read([copy], true);
-          if (count <= 0) continue;
-          const tail = this.pending
-            ? typedArraySubarray(this.pending, this.pendingAt)
-            : new Uint8ArrayConstructor();
-          const recovered = new Uint8ArrayConstructor(count + typedArrayLength(tail));
-          typedArraySet(recovered, typedArraySubarray(copy, 0, count));
-          typedArraySet(recovered, tail, count);
-          this.pending = recovered;
-          this.pendingAt = 0;
-          this.pendingTicket = head.ticket;
-          atomicsStore(this.state.control, 4, typedArrayLength(recovered));
-          if (!ring.available) this.delivery = undefined;
-          this.state.signal();
-          // A live reader can abandon an EAGAIN request. Reclaiming with the SAME consumed
-          // CAS safely reroutes its unread bytes, rather than waiting for it to close or die.
-          continue;
-        }
-      }
-      let destination: Ring | undefined;
-      let budget = 0;
-      for (let visited = 0; visited < this.state.readers.length; visited++) {
-        const index = (this.readerCursor + visited) % this.state.readers.length,
-          ring = this.state.readers[index]!;
-        const demand = atomicsLoad(ring.demand, 0);
-        if (
-          !this.state.readerAlive(ring) ||
-          ring.closed ||
-          ring.available ||
-          demand <= 0 ||
-          demand & INFLIGHT
-        )
-          continue;
-        if (atomicsCompareExchange(ring.demand, 0, demand, demand | INFLIGHT) !== demand) continue;
-        destination = ring;
-        budget = demand;
-        this.readerCursor = (index + 1) % this.state.readers.length;
-        break;
-      }
+      if (this.delivery && !this.recoverDelivery(this.delivery)) break;
+      const destination = this.selectDelivery();
       if (!destination) break;
-      if (!this.pending) {
-        const source = this.state.source(true);
-        if (!source) {
-          atomicsStore(destination.demand, 0, budget);
-          break;
-        }
-        const chunk = new Uint8ArrayConstructor(Math.min(source.record.remaining, budget, 65536));
-        const count = this.state.consume(source, [chunk], true);
-        if (count <= 0) {
-          atomicsStore(destination.demand, 0, budget);
-          break;
-        }
-        this.pending = typedArraySubarray(chunk, 0, count);
-        this.pendingAt = 0;
-        this.pendingTicket = source.record.ticket;
-        atomicsStore(this.state.control, 4, count);
-        this.state.signal();
+      try {
+        if (!this.deliver(destination)) break;
+      } finally {
+        destination.ring.leave();
       }
-      const piece = typedArraySubarray(
-        this.pending,
-        this.pendingAt,
-        this.pendingAt + Math.min(budget, 65536),
-      );
-      const delivered = destination.write(
-        [piece],
-        () => this.state.readerAlive(destination!),
-        this.pendingTicket,
-        destination.incarnation,
-        false,
-      );
-      // INFLIGHT prevents a guest racing publication from accidentally posting ghost demand.
-      atomicsStore(destination.demand, 0, 0);
-      if (delivered > 0) {
-        this.pendingAt += delivered;
-        atomicsStore(this.state.control, 4, typedArrayLength(this.pending) - this.pendingAt);
-        if (this.pendingAt === typedArrayLength(this.pending)) this.pending = undefined;
-        this.delivery = destination;
-        this.state.signal();
-      } else if (delivered === -PipeErrno.AGAIN) break;
     }
     if (!this.pending && this.state.eof() && this.state.relayAvailable() === 0) {
-      let changed = false;
-      ringForEach(this.state.readers, (ring) => {
-        if (ring.owner <= 0 || ring.closed) return;
-        ring.freezeWriter();
-        changed = true;
-      });
-      if (changed) this.state.signal();
+      ringForEach(this.state.readers, (ring) => this.endDelivery(ring));
+    }
+  }
+  private recoverDelivery(delivery: { ring: Ring; incarnation: number }): boolean {
+    const ring = delivery.ring;
+    if (!ring.enter(delivery.incarnation)) {
+      this.delivery = undefined;
+      return true;
+    }
+    try {
+      return this.recoverEntered(ring);
+    } finally {
+      ring.leave();
+    }
+  }
+  private recoverEntered(ring: Ring): boolean {
+    if (!ring.available) {
+      this.delivery = undefined;
+      return true;
+    }
+    const alive = this.state.readerAlive(ring);
+    const otherDemand = ringSome(
+      this.state.readers,
+      (candidate) =>
+        candidate !== ring &&
+        this.state.readerAlive(candidate) &&
+        atomicsLoad(candidate.demand, 0) > 0,
+    );
+    if (alive && !otherDemand) return false;
+    if (!alive) {
+      ring.freezeWriter();
+      ring.freezeReader();
+    }
+    const head = ring.head();
+    if (!head) {
+      this.delivery = undefined;
+      return true;
+    }
+    const copy = new Uint8ArrayConstructor(Math.min(head.remaining, 65536));
+    const count = ring.read([copy], true);
+    if (count <= 0) return true;
+    const tail = this.pending
+      ? typedArraySubarray(this.pending, this.pendingAt)
+      : new Uint8ArrayConstructor();
+    const recovered = new Uint8ArrayConstructor(count + typedArrayLength(tail));
+    typedArraySet(recovered, typedArraySubarray(copy, 0, count));
+    typedArraySet(recovered, tail, count);
+    this.pending = recovered;
+    this.pendingAt = 0;
+    this.pendingTicket = head.ticket;
+    atomicsStore(this.state.control, 4, typedArrayLength(recovered));
+    if (!ring.available) this.delivery = undefined;
+    this.state.signal();
+    return true;
+  }
+  private selectDelivery(): { ring: Ring; incarnation: number; budget: number } | undefined {
+    for (let visited = 0; visited < this.state.readers.length; visited++) {
+      const index = (this.readerCursor + visited) % this.state.readers.length;
+      const ring = this.state.readers[index]!;
+      const incarnation = ring.incarnation;
+      if (!ring.enter(incarnation)) continue;
+      const budget = this.claimDemand(ring);
+      if (!budget) {
+        ring.leave();
+        continue;
+      }
+      this.readerCursor = (index + 1) % this.state.readers.length;
+      return { ring, incarnation, budget };
+    }
+    return undefined;
+  }
+  private claimDemand(ring: Ring): number {
+    const demand = atomicsLoad(ring.demand, 0);
+    if (
+      !this.state.readerAlive(ring) ||
+      ring.closed ||
+      ring.available ||
+      demand <= 0 ||
+      demand & INFLIGHT
+    )
+      return 0;
+    return atomicsCompareExchange(ring.demand, 0, demand, demand | INFLIGHT) === demand
+      ? demand
+      : 0;
+  }
+  private stageDelivery(budget: number): boolean {
+    if (this.pending) return true;
+    const source = this.state.source(true);
+    if (!source) return false;
+    const chunk = new Uint8ArrayConstructor(Math.min(source.record.remaining, budget, 65536));
+    const count = this.state.consume(source, [chunk], true);
+    if (count <= 0) return false;
+    this.pending = typedArraySubarray(chunk, 0, count);
+    this.pendingAt = 0;
+    this.pendingTicket = source.record.ticket;
+    atomicsStore(this.state.control, 4, count);
+    this.state.signal();
+    return true;
+  }
+  private deliver(destination: { ring: Ring; incarnation: number; budget: number }): boolean {
+    const ring = destination.ring;
+    if (!this.stageDelivery(destination.budget)) {
+      atomicsStore(ring.demand, 0, destination.budget);
+      return false;
+    }
+    const pending = this.pending!;
+    const piece = typedArraySubarray(
+      pending,
+      this.pendingAt,
+      this.pendingAt + Math.min(destination.budget, 65536),
+    );
+    const delivered = ring.write(
+      [piece],
+      () => this.state.readerAlive(ring),
+      this.pendingTicket,
+      destination.incarnation,
+      false,
+    );
+    // The outer section also fences demand and delivery bookkeeping after Ring.write leaves.
+    atomicsStore(ring.demand, 0, 0);
+    if (delivered <= 0) return delivered !== -PipeErrno.AGAIN;
+    this.pendingAt += delivered;
+    atomicsStore(this.state.control, 4, typedArrayLength(pending) - this.pendingAt);
+    if (this.pendingAt === typedArrayLength(pending)) this.pending = undefined;
+    this.delivery = { ring, incarnation: destination.incarnation };
+    this.state.signal();
+    return true;
+  }
+  private endDelivery(ring: Ring): void {
+    ring.enterCurrent();
+    try {
+      if (ring.owner <= 0 || ring.closed) return;
+      ring.freezeWriter();
+      this.state.signal();
+    } finally {
+      ring.leave();
     }
   }
 
