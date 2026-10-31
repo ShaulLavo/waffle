@@ -1,6 +1,9 @@
 import { Glob, YAML } from "bun";
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -74,24 +77,95 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("release workflow stages only the runtime tarball and checksum as a draft", () => {
-  const release = record(
-    YAML.parse(
-      readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
-    ),
-  );
+const release = record(
+  YAML.parse(
+    readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+  ),
+);
+const releaseSteps = record(record(release.jobs).release).steps;
+if (!Array.isArray(releaseSteps)) throw new Error("expected release steps");
+
+function releaseStep(name: string): string {
+  const step = releaseSteps.map(record).find((entry) => entry.name === name);
+  if (typeof step?.run !== "string") throw new Error(`missing release step: ${name}`);
+  return step.run;
+}
+
+test("release workflow stages both archives and checksums as one draft", () => {
   expect(record(release.permissions).contents).toBe("write");
-  const steps = record(record(release.jobs).release).steps;
-  if (!Array.isArray(steps)) throw new Error("expected release steps");
-  const publish = steps
-    .map(record)
-    .find((step) => step.name === "Publish the GitHub release assets");
-  expect(publish).toBeDefined();
-  const command = String(publish?.run).replace(/\\\r?\n\s*/g, " ");
+  expect(releaseStep("Pack the prepared runtime package")).toBe(
+    "bun run --cwd packages/waffle pack",
+  );
+  expect(releaseStep("Pack the prepared relay package")).toBe(
+    "bun pm pack --cwd packages/waffle-relay --destination dist",
+  );
+  const command = releaseStep("Publish the GitHub release assets").replace(/\\\r?\n\s*/g, " ");
   expect(command).toMatch(/gh release create[^\n]*\s--draft(?:\s|$)/);
   expect(command).toContain("--verify-tag");
-  expect(command).toContain(".sha256");
+  for (const asset of ["runtime", "relay"]) {
+    expect(command).toContain(`\${{ steps.archives.outputs.${asset} }}`);
+    expect(command).toContain(`\${{ steps.archives.outputs.${asset} }}.sha256`);
+  }
   expect(command).not.toContain("npm publish");
+});
+
+test("release guard accepts only a matching tag and package versions", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "waffle-release-guard-"));
+  const manifest = (name: string, version: string) => {
+    const directory = join(root, "packages", name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ version }));
+  };
+  const run = (tag: string) =>
+    spawnSync(
+      "bash",
+      ["-eo", "pipefail", "-c", releaseStep("Verify the release tag and package version")],
+      {
+        cwd: root,
+        env: { ...process.env, RELEASE_TAG: tag },
+      },
+    ).status;
+  try {
+    manifest("waffle", "0.0.108");
+    manifest("waffle-relay", "0.0.108");
+    expect(run("waffle-v0.0.108")).toBe(0);
+    expect(run("waffle-v0.0.109")).not.toBe(0);
+    manifest("waffle-relay", "0.0.0");
+    expect(run("waffle-v0.0.108")).not.toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release checksum step requires both archives and writes separate checksums", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "waffle-release-assets-"));
+  const output = join(root, "output");
+  const run = () =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", releaseStep("Write the archive checksums")], {
+      cwd: root,
+      env: { ...process.env, GITHUB_OUTPUT: output },
+    }).status;
+  try {
+    for (const name of ["waffle", "waffle-relay"]) {
+      const directory = join(root, "packages", name, "dist");
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(root, "packages", name, "package.json"),
+        JSON.stringify({ version: "1.2.3" }),
+      );
+    }
+    writeFileSync(join(root, "packages/waffle/dist/waffle-1.2.3.tgz"), "runtime");
+    expect(run()).not.toBe(0);
+    writeFileSync(join(root, "packages/waffle-relay/dist/waffle-relay-1.2.3.tgz"), "relay");
+    expect(run()).toBe(0);
+    for (const name of ["waffle", "waffle-relay"]) {
+      const directory = join(root, "packages", name, "dist");
+      const checksum = `${name}-1.2.3.tgz.sha256`;
+      expect(spawnSync("sha256sum", ["-c", checksum], { cwd: directory }).status).toBe(0);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("browser selects runners, shared controls and guest fixtures", () => {
