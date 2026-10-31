@@ -1,0 +1,63 @@
+{
+  "classification": "Original isolated upstream entry, build, capability controls, and bounded native oracle. No implementation copied or modified.",
+  "acceptedWaffleMain": "25d1a324ac1af44301e080b4d7c3275db09b13a4",
+  "upstream": {
+    "repository": "https://github.com/uutils/coreutils",
+    "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+    "packages": ["uu_df 0.13.0", "uucore 0.13.0"],
+    "license": "MIT",
+    "paths": [
+      {
+        "path": "src/uu/df/Cargo.toml",
+        "sha256": "acec9d93bc37f18d5a3aabfd490ef8c427362ef0ebfa59ee1f83ff1b4dcfdc8e"
+      },
+      {
+        "path": "src/uu/df/src/df.rs",
+        "sha256": "d4a4c6e4f3192a0d113f2722e41a91163522ee38b4070e26ec6505159ecc4346"
+      },
+      {
+        "path": "src/uu/df/src/platform/mod.rs",
+        "sha256": "1ec200c09bdb11e49a85c0e8fc3dba26df4dfe008773c138f267c23c52a62537"
+      },
+      {
+        "path": "src/uu/df/src/platform/unix.rs",
+        "sha256": "e20d6999494cde0129e55da1f397db702e0263a600fb194689ca589d4d188e35"
+      },
+      {
+        "path": "src/uucore/src/lib/features/fsext/mod.rs",
+        "sha256": "5936f42cd85e0a68ecaf8630ae643d368d95e6bc4440032fff293ee9c14cb809"
+      }
+    ]
+  },
+  "entry": "../crates/df/src/main.rs",
+  "manifest": "../crates/df/Cargo.toml",
+  "lock": "../crates/df/Cargo.lock",
+  "build": "../scripts/build-df.ts",
+  "capacityControl": "../scripts/df-capacity-control.ts",
+  "oracle": {
+    "runner": "../scripts/df-oracle.ts",
+    "fixtures": "../fixtures/df-cases.ts",
+    "nativeVersion": "df (uutils coreutils) 0.13.0",
+    "gnuVersion": "df (GNU coreutils) 9.12",
+    "gnuExecutableSha256": "5f184ff8141c04e3b0492a3a94c68ab1a178756cd17465b452bbce256061e81e",
+    "safeOutputField": "file",
+    "caseCount": 16
+  },
+  "status": {
+    "guest": "blocked, not cataloged or packaged",
+    "upstreamWasi": "platform facade has no WASI backend; five E0425 errors",
+    "libcWasi": "real statvfs and fstatvfs return -1 and ENOSYS 52",
+    "waffle": "no authoritative capacity, usage, or mount query"
+  },
+  "notClaimed": [
+    "filesystem capacity",
+    "guest block size",
+    "inode capacity",
+    "mount enumeration or identity",
+    "numeric scaling parity",
+    "guest runtime execution",
+    "lazy loading and removal",
+    "archive qualification"
+  ],
+  "sharedInputs": "Existing tools/program-build-tools.ts and tools/program-optimize.ts; no edits to shared producers, workspace, catalog, locale policy, workflow, or root metadata."
+}
