@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createRuntime, type Runtime } from "../../waffle/runtime.ts";
 import { defineProgramPackage } from "../../waffle/programs/catalog.ts";
@@ -22,7 +21,6 @@ afterEach(async () => {
 
 function create() {
   runtime = createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

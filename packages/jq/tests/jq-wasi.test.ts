@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { createRuntime } from "waffle";
@@ -72,7 +71,6 @@ test("optional jq catalog loads lazily and runs through the prepared runtime", a
   assert.equal(jq.pick("jq").programs.length, 1);
   assert.throws(() => jq.pick("not-jq"), /Unknown program/);
   const runtime = createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

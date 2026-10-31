@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { createRuntime } from "waffle";
@@ -74,7 +73,6 @@ async function proveDiffutils(session: FamilyAcceptanceSession) {
 test("optional GNU diffutils catalog loads lazily and runs through Waffle", async () => {
   assert.ok(basePackages.every((pkg) => pkg.name !== diffutils.name));
   const runtime = createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

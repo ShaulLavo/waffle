@@ -3,7 +3,10 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-const reference = "9b66e3aa2462771f65ca263745a23c80e2c8fea3";
+import {
+  DESKTOP_REFERENCE_COMMIT as reference,
+  requireDesktopReference,
+} from "../tooling/prepare-desktop-reference.js";
 
 function capture(root: string, fallback: string) {
   const result = spawnSync(
@@ -22,8 +25,11 @@ for (const mode of ["normal", "fallback"])
   test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match public main, ${mode}`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "waffle-parity-reference-"));
     try {
+      const repository =
+        process.env.WAFFLE_PARITY_REFERENCE_GIT ?? resolve(import.meta.dir, "../../..");
+      requireDesktopReference(repository);
       const archive = execFileSync("git", ["archive", reference, "packages/waffle"], {
-        cwd: resolve(import.meta.dir, "../../.."),
+        cwd: repository,
         maxBuffer: 32 * 1024 * 1024,
       });
       execFileSync("tar", ["-x", "-C", scratch], { input: archive });

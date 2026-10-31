@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -33,7 +32,6 @@ async function fixture(context: TestContext) {
   const admitted = Promise.withResolvers<number>();
   const admissions: string[] = [];
   const runtime = api.createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: { workerURL: new URL("fs.mjs", nodeDirectory), mode: "memory" },
     onProcessAdmission(event) {
       admissions.push(event.stage);

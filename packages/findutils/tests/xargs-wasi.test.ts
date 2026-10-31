@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -228,7 +227,6 @@ const cases: readonly FamilyAcceptanceCase[] = [
 test("actual xargs WASI executes through the singular generic runtime and retires children", async () => {
   const scratch = mkdtempSync(resolve(root, ".build/xargs-process-"));
   const runtime = createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

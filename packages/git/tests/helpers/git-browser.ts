@@ -1,4 +1,3 @@
-import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { installGit } from "../../src/git";
 import { gitFilesystem } from "../../src/git-filesystem";
@@ -40,7 +39,6 @@ function reviewRepository(dir: string, env: Record<string, string>): GitReviewRe
 const api = {
   async setup() {
     runtime = createRuntime({
-      sharedMemory: testSharedMemory,
       filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
       onProcessAdmission() {
         admissions++;

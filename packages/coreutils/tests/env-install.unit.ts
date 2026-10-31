@@ -1,7 +1,3 @@
-import {
-  testSharedMemory,
-  testReservations,
-} from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createRuntime } from "waffle";
@@ -31,14 +27,13 @@ test("env alias admission uses the caller's real Waffle filesystem and registry"
   workers.installNodeWorkers();
   let registry: ExecutableRegistry | undefined;
   runtime = createRuntime({
-    sharedMemory: testSharedMemory,
     filesystem: {
       workerURL: new URL("../dist/fs-worker.js", import.meta.url),
       mode: "memory",
     },
     processHost(options) {
       registry = options.registry;
-      return new BrowserProcessBroker({ reservations: testReservations(), ...options });
+      return new BrowserProcessBroker(options);
     },
   });
   await runtime.filesystem.mkdirp("/usr/bin");

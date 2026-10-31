@@ -930,6 +930,8 @@ jobs:
         with:
           node-version: 26.12.1
       - run: bun run relay:check
+      - name: Prepare pinned desktop allocation reference
+        run: bun packages/waffle/tooling/prepare-desktop-reference.ts
       - run: bun run test && bun run test:ci
       - run: bun run size && bun run size:network
       - run: bun run pack
