@@ -1,0 +1,8 @@
+{
+  "extends": "../../tools/tsconfig.programs.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+}
