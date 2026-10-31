@@ -46,6 +46,8 @@ export interface PipeOptions {
   registry?: PipePublicationRegistry;
   /** Supervisor lifecycle callback after every reference/reservation is gone. */
   onClosed?(): void;
+  /** Realm-local accounting hook. Never placed in cloneable endpoint handles. */
+  allocateShared?: (length: number) => SharedArrayBuffer;
 }
 export interface PipePublicationRegistryHandle {
   buffer: SharedArrayBuffer;
@@ -128,6 +130,10 @@ function distance(written: bigint, read: bigint): number {
 }
 function validLimit(value: number): boolean {
   return Number.isInteger(value) && value > 0 && value <= 65536;
+}
+
+function allocatePipeBuffer(length: number): SharedArrayBuffer {
+  return new SharedArrayBufferConstructor(length);
 }
 
 const OWNER_REVOKED = 1n << 31n;
@@ -665,6 +671,7 @@ class PipeState {
       PipeEndpointHandle,
       "id" | "buffer" | "capacity" | "maxWriters" | "maxReaders" | "wake" | "registry"
     >,
+    private readonly allocateShared: (length: number) => SharedArrayBuffer = allocatePipeBuffer,
   ) {
     this.buffer = handle.buffer;
     this.id = handle.id;
@@ -827,7 +834,7 @@ class PipeState {
     atomicsStore(this.control, 0, 1);
     this.signal();
   }
-  retain(pid: number, mode: PipeMode, fdflags = new SharedArrayBufferConstructor(4)): PipeEndpoint {
+  retain(pid: number, mode: PipeMode, fdflags?: SharedArrayBuffer): PipeEndpoint {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff || this.closed)
       throw new Error("invalid pipe process");
     if (
@@ -837,7 +844,8 @@ class PipeState {
     )
       throw new Error("pipe process is revoked");
     // Allocate before acquiring a ring reference, so failed allocation owns no endpoint.
-    const lifetime = new SharedArrayBufferConstructor(4);
+    const flags = fdflags ?? this.allocateShared(4);
+    const lifetime = this.allocateShared(4);
     const rings = mode === "write" ? this.writers : this.readers;
     // Deterministic probing makes simultaneous reservation of the SAME pid contend on the
     // same slot. Negative owner is an unpublished reservation, never a live writer/reader.
@@ -873,7 +881,7 @@ class PipeState {
         PipeErrno.NFILE,
         `pipe ${mode} process limit reached: ${rings.length} slots are ${mode === "read" ? "live, unread, busy" : "live, busy"} or incarnation-exhausted`,
       );
-    const endpoint = new PipeEndpoint(this, pid, mode, selected, incarnation, lifetime, fdflags);
+    const endpoint = new PipeEndpoint(this, pid, mode, selected, incarnation, lifetime, flags);
     try {
       // Both sides publish identity before checking the other side. Concurrent first reader
       // and writer reservations cannot both miss registering the direct consumer's lease.
@@ -1220,7 +1228,7 @@ export class PipeController {
   private reportedClosed = false;
   constructor(options: PipeOptions = {}, attached?: PipeEndpointHandle) {
     this.onClosed = options.onClosed;
-    if (attached) this.state = new PipeState(attached);
+    if (attached) this.state = new PipeState(attached, options.allocateShared);
     else {
       const capacity = options.capacity ?? 65536;
       const maxWriters = options.maxWriters ?? 16,
@@ -1237,20 +1245,25 @@ export class PipeController {
       const wake =
         options.registry?.wake ??
         options.wake ??
-        (defaultWake ??= new Int32ArrayConstructor(new SharedArrayBufferConstructor(4)));
+        (options.allocateShared
+          ? new Int32ArrayConstructor(options.allocateShared(4))
+          : (defaultWake ??= new Int32ArrayConstructor(new SharedArrayBufferConstructor(4))));
       if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
         throw new TypeError("pipe wake must be one shared int32");
-      this.state = new PipeState({
-        id: cryptoRandomUUID(),
-        buffer: new SharedArrayBufferConstructor(
-          HEADER + (maxWriters + maxReaders) * stride(capacity),
-        ),
-        capacity,
-        maxWriters,
-        maxReaders,
-        wake,
-        registry: options.registry?.handle(),
-      });
+      this.state = new PipeState(
+        {
+          id: cryptoRandomUUID(),
+          buffer: (options.allocateShared ?? allocatePipeBuffer)(
+            HEADER + (maxWriters + maxReaders) * stride(capacity),
+          ),
+          capacity,
+          maxWriters,
+          maxReaders,
+          wake,
+          registry: options.registry?.handle(),
+        },
+        options.allocateShared,
+      );
     }
     if (options.relay !== "manual") this.startRelay();
   }
@@ -1493,8 +1506,11 @@ export class PipeController {
   }
 }
 
-export function attachPipeEndpoint(handle: PipeEndpointHandle): PipeEndpoint {
-  const state = new PipeState(handle);
+export function attachPipeEndpoint(
+  handle: PipeEndpointHandle,
+  options: Pick<PipeOptions, "allocateShared"> = {},
+): PipeEndpoint {
+  const state = new PipeState(handle, options.allocateShared);
   const limit = handle.mode === "write" ? state.maxWriters : state.maxReaders;
   if (!Number.isInteger(handle.slot) || handle.slot < 0 || handle.slot >= limit)
     throw new RangeError("invalid pipe slot");
@@ -1516,7 +1532,7 @@ export function attachPipeEndpoint(handle: PipeEndpointHandle): PipeEndpoint {
 }
 export function attachPipeController(
   handle: PipeEndpointHandle,
-  options: Pick<PipeOptions, "relay" | "onClosed"> = {},
+  options: Pick<PipeOptions, "relay" | "onClosed" | "allocateShared"> = {},
 ): PipeController {
   return new PipeController(options, handle);
 }
