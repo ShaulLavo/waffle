@@ -120,9 +120,9 @@ impl Executor {
     }
     /// Nonblocking host turn, bounded even if tasks continually yield to themselves.
     pub fn drive(&self, max_polls: usize) -> Drive {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "stack-observation"))]
         let marker = 0u8;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "stack-observation"))]
         observation::measure_driver(&marker);
         assert!(
             !self.0.driving.replace(true),
@@ -235,16 +235,16 @@ struct EventState {
 }
 /// Edge-triggered local notification with one removable registration per wait.
 #[derive(Clone, Default)]
-pub(crate) struct Event(Rc<RefCell<EventState>>);
+pub struct Event(Rc<RefCell<EventState>>);
 impl Event {
-    pub(crate) fn listen(&self) -> EventWait {
+    pub fn listen(&self) -> EventWait {
         EventWait {
             event: self.clone(),
             epoch: self.0.borrow().epoch,
             id: None,
         }
     }
-    pub(crate) fn notify(&self) {
+    pub fn notify(&self) {
         let waiters = {
             let mut state = self.0.borrow_mut();
             state.epoch = state.epoch.wrapping_add(1);
@@ -259,7 +259,8 @@ impl Event {
         self.0.borrow().waiters.len()
     }
 }
-pub(crate) struct EventWait {
+/// One removable event registration. Dropping it unregisters its waker.
+pub struct EventWait {
     event: Event,
     epoch: u64,
     id: Option<u64>,
@@ -336,8 +337,7 @@ impl Cancel {
     }
     /// A reader-local abort must not cancel its caller. Parent interruption
     /// still reaches parked operations and descendants that outlive the reader.
-    #[cfg(test)]
-    pub(crate) fn child(&self) -> Self {
+    pub fn child(&self) -> Self {
         Self {
             parent: Some(Rc::new(self.clone())),
             ..Self::default()
@@ -348,8 +348,8 @@ impl Cancel {
             self.event.notify();
         }
     }
-    #[cfg(test)]
-    pub(crate) fn without_probe(&self) -> Self {
+    /// Share cancellation state while suppressing host probes through all parents.
+    pub fn without_probe(&self) -> Self {
         Self {
             shared: self.shared.clone(),
             event: self.event.clone(),
@@ -654,29 +654,27 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod observation {
+#[cfg(any(test, feature = "stack-observation"))]
+/// Development-only stack measurements. Absent unless testing this crate or
+/// explicitly enabling `stack-observation` in a downstream dev-dependency.
+pub mod observation {
     use std::cell::Cell;
-    #[cfg(test)]
     #[derive(Clone, Copy, Default, Debug)]
-    pub(crate) struct StackObservation {
+    pub struct StackObservation {
         driver: usize,
-        pub(crate) poll_bytes: usize,
-        pub(crate) drop_bytes: usize,
-        pub(crate) calls: usize,
+        pub poll_bytes: usize,
+        pub drop_bytes: usize,
+        pub calls: usize,
     }
-    #[cfg(test)]
     thread_local! { static STACK_OBSERVATION: Cell<StackObservation> = Cell::new(StackObservation::default()); }
-    #[cfg(test)]
-    pub(crate) fn measure_driver(marker: &u8) {
+    pub fn measure_driver(marker: &u8) {
         STACK_OBSERVATION.with(|slot| {
             let mut sample = slot.get();
             sample.driver = marker as *const u8 as usize;
             slot.set(sample);
         });
     }
-    #[cfg(test)]
-    pub(crate) fn measure_poll(marker: &u8) {
+    pub fn measure_poll(marker: &u8) {
         STACK_OBSERVATION.with(|slot| {
             let mut sample = slot.get();
             if sample.driver != 0 {
@@ -687,8 +685,7 @@ pub(crate) mod observation {
             slot.set(sample);
         });
     }
-    #[cfg(test)]
-    pub(crate) fn measure_drop(marker: &u8) {
+    pub fn measure_drop(marker: &u8) {
         STACK_OBSERVATION.with(|slot| {
             let mut sample = slot.get();
             if sample.driver != 0 {
@@ -699,20 +696,17 @@ pub(crate) mod observation {
             slot.set(sample);
         });
     }
-    #[cfg(test)]
-    pub(crate) fn measure_calls(calls: usize) {
+    pub fn measure_calls(calls: usize) {
         STACK_OBSERVATION.with(|slot| {
             let mut sample = slot.get();
             sample.calls = sample.calls.max(calls);
             slot.set(sample);
         });
     }
-    #[cfg(test)]
-    pub(crate) fn reset_stack_observation() {
+    pub fn reset_stack_observation() {
         STACK_OBSERVATION.with(|slot| slot.set(StackObservation::default()));
     }
-    #[cfg(test)]
-    pub(crate) fn stack_observation() -> StackObservation {
+    pub fn stack_observation() -> StackObservation {
         STACK_OBSERVATION.with(Cell::get)
     }
 }
