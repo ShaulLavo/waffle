@@ -9,6 +9,12 @@ export function installSharedControlAllocator(
     if (realmAllocator === allocate) realmAllocator = previous;
   };
 }
-export function allocateSharedControl(length: number): SharedArrayBuffer {
-  return realmAllocator ? realmAllocator(length) : new SharedArrayBuffer(length);
+function standaloneControl(length: number): SharedArrayBuffer {
+  return new SharedArrayBuffer(length);
+}
+export function allocateSharedControl(
+  length: number,
+  standalone: (length: number) => SharedArrayBuffer = standaloneControl,
+): SharedArrayBuffer {
+  return realmAllocator ? realmAllocator(length) : standalone(length);
 }

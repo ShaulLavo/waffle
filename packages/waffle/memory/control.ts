@@ -1,3 +1,4 @@
+import { allocateSharedControl as allocateInRealm } from "./allocator.ts";
 import { ProcessError, ProcessErrno } from "../proc/errors.ts";
 import {
   BigInt64ArrayConstructor,
@@ -63,7 +64,13 @@ export function consumedControlBytes(grant: SharedControlGrant): number {
     : 0;
 }
 
-export { allocateSharedControl, installSharedControlAllocator } from "./allocator.ts";
+export { installSharedControlAllocator } from "./allocator.ts";
+function allocateStandalone(length: number): SharedArrayBuffer {
+  return new SharedArrayBufferConstructor(length);
+}
+export function allocateSharedControl(length: number): SharedArrayBuffer {
+  return allocateInRealm(length, allocateStandalone);
+}
 
 const HostMemory = WebAssembly.Memory;
 /** The real two-page host-program WASI scratch memory shares the bounded control quota. */

@@ -13,6 +13,7 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
   const nodeEntries = entries.filter(([, target]) => typeof target.node === "string");
   const browserOnly = entries.filter(([, target]) => target.node === undefined).map(([key]) => key);
   expect(browserOnly).toEqual([
+    "./memory/probe-worker",
     "./browser/fs-worker",
     "./testing/interrupt-browser-runner-control",
     "./testing/storage-browser",
