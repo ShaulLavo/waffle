@@ -31,13 +31,17 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 const sha = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 let caches = 0;
 
-/** Receipted stand-ins: they print the pinned versions but compute no checksums. */
+/**
+ * Receipted stand-ins: they print the pinned versions but compute no checksums. Like the real
+ * utilities they read all of stdin, so a fixture case fails on its observation, not on EPIPE.
+ */
 function fakeCache(version = "9.12") {
   const root = resolve(scratch, `cache-${caches++}`);
   mkdirSync(root);
   const binaries: Record<string, { version: string; sha256: string }> = {};
   for (const name of checksumNames) {
-    const script = `#!/bin/sh\necho '${name} (GNU coreutils) ${version}'\n`;
+    const banner = `echo '${name} (GNU coreutils) ${version}'`;
+    const script = `#!/bin/sh\nif [ "$1" = --version ]; then ${banner}; exit 0; fi\nexec cat >/dev/null\n`;
     writeFileSync(resolve(root, name), script);
     chmodSync(resolve(root, name), 0o755);
     binaries[name] = { version: `${name} (GNU coreutils) 9.12`, sha256: sha(script) };
@@ -102,7 +106,11 @@ test("a receipted cache is selected, but only reproduced observations qualify it
   const oracle = selectChecksumOracle({ GNU_CHECKSUM_ORACLE_ROOT: root });
   assert.equal(oracle.kind, "source-cache");
   assert.deepEqual(oracle.utilities, verified.utilities);
-  assert.throws(() => verifyFixture(readFixture(), oracle), /reads stdin/);
+  // The first recorded case must fail as an observation mismatch, never as a start failure.
+  assert.throws(() => verifyFixture(readFixture(), oracle), {
+    message: /^b2sum reads stdin(\n|$)/,
+    operator: "deepStrictEqual",
+  });
 });
 
 const refusals: ReadonlyArray<readonly [string, (root: string) => void, RegExp]> = [
