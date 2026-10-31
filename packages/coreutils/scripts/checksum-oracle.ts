@@ -13,6 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { resolve } from "node:path";
+import { verifyNativeChecksums } from "./build-native-checksum-oracle.ts";
 import { checksumNames, type ChecksumName } from "./programs.ts";
 
 const packageRoot = resolve(import.meta.dirname, "..");
@@ -145,8 +146,10 @@ function caseDefinitions(): CaseInput[] {
   ]);
 }
 
-function oraclePath(name: ChecksumName) {
-  return resolve("/usr/bin", name);
+/** One verified native GNU 9.12 provider for every native observation in a process. */
+export interface ChecksumOracle {
+  readonly kind: "source-cache" | "recording-host";
+  readonly utilities: Readonly<Record<ChecksumName, OracleIdentity>>;
 }
 
 function nativeVersion(path: string): string {
@@ -159,10 +162,10 @@ function nativeVersion(path: string): string {
   return version.trim();
 }
 
-function utilityIdentities(): Record<string, OracleIdentity> {
-  return Object.fromEntries(
+function utilityIdentities(): Record<ChecksumName, OracleIdentity> {
+  const identities = Object.fromEntries(
     checksumNames.map((name) => {
-      const path = oraclePath(name);
+      const path = resolve("/usr/bin", name);
       const version = nativeVersion(path);
       assert.equal(version, `${name} (GNU coreutils) 9.12`);
       return [
@@ -171,6 +174,50 @@ function utilityIdentities(): Record<string, OracleIdentity> {
       ];
     }),
   );
+  return identities as Record<ChecksumName, OracleIdentity>;
+}
+
+/**
+ * The recorded /usr/bin identities are the recording host's provenance. A source-built cache
+ * keeps its own receipts and qualifies only by reproducing every recorded observation.
+ */
+function assertRecorded(fixture: ChecksumFixture, oracle: ChecksumOracle) {
+  if (oracle.kind === "recording-host") {
+    assert.deepEqual(fixture.utilities, oracle.utilities, "Recording host GNU binaries changed");
+    return;
+  }
+  for (const name of checksumNames) {
+    assert.equal(oracle.utilities[name].version, fixture.utilities[name]?.version, name);
+  }
+}
+
+export function selectChecksumOracle(
+  env: NodeJS.ProcessEnv = process.env,
+  fixture = readFixture(),
+): ChecksumOracle {
+  const root = env.GNU_CHECKSUM_ORACLE_ROOT;
+  const mode = env.GNU_CHECKSUM_ORACLE;
+  let oracle: ChecksumOracle;
+  if (root !== undefined) {
+    assert.ok(root && mode === undefined, "Select exactly one native GNU checksum oracle");
+    oracle = { kind: "source-cache", utilities: verifyNativeChecksums(resolve(root)).utilities };
+  } else {
+    assert.equal(
+      mode,
+      "recording-host",
+      "Set GNU_CHECKSUM_ORACLE_ROOT to a verified source-built cache, or GNU_CHECKSUM_ORACLE=recording-host",
+    );
+    oracle = { kind: "recording-host", utilities: utilityIdentities() };
+  }
+  assertRecorded(fixture, oracle);
+  return oracle;
+}
+
+let selected: ChecksumOracle | undefined;
+
+export function checksumOracle() {
+  selected ??= selectChecksumOracle();
+  return selected;
 }
 
 function writeFiles(root: string, files: readonly ChecksumFile[]) {
@@ -196,9 +243,9 @@ function observe(result: ReturnType<typeof spawnSync>): Observation {
   };
 }
 
-function runNative(root: string, definition: CaseInput): ChecksumCase {
+function runNative(root: string, definition: CaseInput, oracle: ChecksumOracle): ChecksumCase {
   writeFiles(root, definition.files);
-  const result = spawnSync(oraclePath(definition.utility), definition.args.slice(1), {
+  const result = spawnSync(oracle.utilities[definition.utility].path, definition.args.slice(1), {
     cwd: root,
     env: oracleEnvironment,
     input: Buffer.from(definition.inputBase64, "base64"),
@@ -207,7 +254,7 @@ function runNative(root: string, definition: CaseInput): ChecksumCase {
   return { ...definition, ...observe(result) };
 }
 
-function streamingOracle(root: string): Observation {
+function streamingOracle(root: string, oracle: ChecksumOracle): Observation {
   const path = resolve(root, "streaming-input");
   const writer = openSync(path, "w");
   try {
@@ -220,7 +267,7 @@ function streamingOracle(root: string): Observation {
   const reader = openSync(path, "r");
   try {
     return observe(
-      spawnSync(oraclePath("sha256sum"), [], {
+      spawnSync(oracle.utilities.sha256sum.path, [], {
         cwd: root,
         env: oracleEnvironment,
         stdio: [reader, "pipe", "pipe"],
@@ -246,13 +293,14 @@ function withOracleRoot<T>(run: (root: string) => T) {
 export function recordFixture() {
   assert(!existsSync(fixturePath), `Refusing to overwrite owned fixture: ${fixturePath}`);
   const utilities = utilityIdentities();
+  const host: ChecksumOracle = { kind: "recording-host", utilities };
   const fixture: ChecksumFixture = withOracleRoot((root) => ({
     schema: 1,
     upstreamRevision,
     environment: oracleEnvironment,
     utilities,
-    cases: caseDefinitions().map((definition) => runNative(root, definition)),
-    stream: streamingOracle(root),
+    cases: caseDefinitions().map((definition) => runNative(root, definition, host)),
+    stream: streamingOracle(root, host),
   }));
   writeFileSync(fixturePath, JSON.stringify(fixture, null, 2) + "\n");
   return fixture;
@@ -316,13 +364,13 @@ export function readFixture(): ChecksumFixture {
   };
 }
 
-export function verifyFixture(fixture = readFixture()) {
-  assert.deepEqual(fixture.utilities, utilityIdentities());
+export function verifyFixture(fixture = readFixture(), oracle = checksumOracle()) {
+  assertRecorded(fixture, oracle);
   withOracleRoot((root) => {
     for (const definition of fixture.cases) {
-      assert.deepEqual(runNative(root, definition), definition, definition.name);
+      assert.deepEqual(runNative(root, definition, oracle), definition, definition.name);
     }
-    assert.deepEqual(streamingOracle(root), fixture.stream);
+    assert.deepEqual(streamingOracle(root, oracle), fixture.stream);
   });
   return fixture;
 }

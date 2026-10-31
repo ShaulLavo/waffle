@@ -6,6 +6,7 @@ import type {
   FamilyAcceptanceSession,
   LaunchRequest,
 } from "../../../../tools/family-acceptance.ts";
+import { checksumOracle } from "../../scripts/checksum-oracle.ts";
 import { checksumNames, type ChecksumName } from "../../scripts/programs.ts";
 
 const environment = { PATH: "/usr/bin:/bin", HOME: "/tmp/spec", LC_ALL: "C", TZ: "UTC" };
@@ -40,7 +41,8 @@ function pwd(root: string, invocation: Invocation): Record<string, string> {
 }
 
 function native(root: string, invocation: Invocation) {
-  const command = `/usr/bin/${invocation.utility}`;
+  // The process's single verified provider, shared with the fixture check: never ambient /usr/bin.
+  const command = checksumOracle().utilities[invocation.utility].path;
   const env = { ...environment, ...pwd(root, invocation) };
   const options = { cwd: root, env, input: invocation.input ?? "", timeout: 5000 };
   const result =
@@ -155,6 +157,7 @@ async function roundtrips(session: FamilyAcceptanceSession, root: string) {
 }
 
 export async function checksumRegressions(session: FamilyAcceptanceSession) {
+  const oracle = checksumOracle();
   const parent = resolve(import.meta.dirname, "../../../../.build");
   mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(resolve(parent, "checksum-regressions-"));
@@ -171,7 +174,7 @@ export async function checksumRegressions(session: FamilyAcceptanceSession) {
     for (const invocation of cases) await compare(session, root, invocation);
     const count = await roundtrips(session, root);
     console.log(
-      `Passed ${cases.length + count} checksum selected-I/O and escaped-record regression observations`,
+      `Passed ${cases.length + count} checksum selected-I/O and escaped-record regression observations against the ${oracle.kind} GNU oracle`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
