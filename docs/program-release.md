@@ -74,3 +74,39 @@ Python retains its original producer receipt and payload byte-for-byte. Its sepa
 `python-program.json` binds the producer receipt and original interpreter identity to
 the optimization, name stripping and final interpreter. It does not claim a new
 producer or retroactively apply new C compiler flags to an accepted archive.
+
+## Peer rebind
+
+A published family closure can move to a new Waffle runtime without rebuilding its guests. Use the
+explicit rebind tool with the immutable source assets and the runtime archive supplied by the
+runtime release lane:
+
+```sh
+bun scripts/program-rebind.ts \
+  --from-tag programs-v0.0.13 \
+  --from-manifest-sha256 <source-manifest-sha256> \
+  --from-assets /work/tmp/programs-v0.0.13 \
+  --tag programs-v0.0.14 --out /work/tmp/programs-v0.0.14 \
+  --runtime-url https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.106/waffle-0.0.106.tgz \
+  --runtime-sha256 <runtime-sha256> --runtime-tarball /work/tmp/waffle-0.0.106.tgz \
+  --runtime-source-commit <runtime-source-commit> \
+  --historical-root /work/worktrees/waffle/checker-3050f69 \
+  --acceptance /work/worktrees/waffle/checker-3050f69/tools/family-packed-app.ts
+```
+
+The tool admits the original tarballs with the checker from their source commit, proves identity
+repacking, and rewrites only `package.json`. Guest binaries, notices, descriptors, receipts,
+source trees and artifact bytes remain unchanged. The runtime tarball is read from the local file
+when supplied, so a private draft asset can be qualified without an unauthenticated fetch.
+
+Rebind output keeps `program-release.json` and schema `waffle-program-release/1`, with
+`operation: "peer-rebind"`. Its `rebind` block records the original manifest, historical checker,
+tool commit and acceptance harness. Each package records its metadata changes. Normal releases write
+`operation: "release"`; there is no separate rebind manifest. Current-main admission is not used
+for historical receipts that the current checker correctly refuses.
+
+A local runtime archive defaults to provisional candidate metadata. `--runtime-source-commit`
+records its supplied source identity. After the runtime publisher verifies the public bytes,
+`--runtime-published` marks that same input as published. The program tarballs do not embed the
+runtime checksum, so changing the runtime archive or its publication state leaves their hashes
+unchanged. Do not publish a manifest that promises a provisional runtime checksum.
