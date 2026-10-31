@@ -6,6 +6,7 @@ import { Worker } from "node:worker_threads";
 import type { PipeEndpointHandle } from "../proc/pipes.js";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
 import { Wasi } from "../core/wasi.js";
+import { createNullDevice } from "../core/devices.js";
 import { shareFileResource } from "../core/open-file.js";
 import { createFilesystemIdentity, reapFilesystem } from "../fs/protocol.js";
 import { MemFS } from "../fs/memory.js";
@@ -440,6 +441,83 @@ test("poll uses exact 16-byte subscription/event layouts with opaque u64 userdat
   expect(f.bytes()[560]).toBe(0xaa);
 });
 
+test("zero-time read observation preserves files, null and both pipe directions", () => {
+  const f = fixture();
+  const root = f.fs.preopen("/");
+  const resolved = f.fs.resolve(root, "read-ready");
+  if (typeof resolved === "number") throw new Error("resolve failed");
+  const handle = f.fs.create(resolved, "file");
+  if (typeof handle !== "number") throw new Error("create failed");
+  f.fs.retain(handle);
+  expect(f.fs.write(handle, [encoder.encode("abc")], 0)).toBe(3);
+  const file = { kind: "file" as const, handle, offset: 1, append: false };
+  const owner = f.descriptors.open(file, ALL, ALL, () => f.fs.release(handle));
+  const writeOnly = f.descriptors.dup(owner);
+  f.descriptors.get(writeOnly)!.rightsBase &= ~(1n << 1n);
+  const nullFd = f.descriptors.open(createNullDevice(), ALL & ~(1n << 1n), ALL);
+  const observe = (fd: number, expected: number) => {
+    const entry = f.descriptors.get(fd)!;
+    const references = entry.description.references;
+    f.sub(0, 0, fd, 0n);
+    expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(expected);
+    expect(entry.description.references).toBe(references);
+  };
+  observe(owner, 1);
+  observe(writeOnly, 1);
+  observe(nullFd, 1);
+  expect(file.offset).toBe(1);
+  expect(f.abi.imports.read!(writeOnly, 4096, 1)).toBe(-76);
+  expect(f.abi.imports.read!(nullFd, 4096, 1)).toBe(-76);
+  expect(f.abi.imports.read!(owner, 4096, 2)).toBe(2);
+  expect(decoder.decode(f.bytes().subarray(4096, 4098))).toBe("bc");
+  observe(owner, 1);
+  expect(file.offset).toBe(3);
+
+  const [reader, writer] = f.pipe();
+  observe(reader, 0);
+  observe(writer, 0);
+  f.put("x");
+  expect(f.abi.imports.write!(writer, 2048, 1)).toBe(1);
+  observe(reader, 1);
+  observe(writer, 0);
+  expect(f.abi.imports.read!(writer, 4096, 1)).toBe(-76);
+  expect(f.abi.imports.read!(reader, 4096, 1)).toBe(1);
+  expect(f.bytes()[4096]).toBe(120);
+  observe(reader, 0);
+  f.descriptors.close(writer);
+  observe(reader, 1);
+  expect(f.abi.imports.read!(reader, 4096, 1)).toBe(0);
+
+  const [lastReader, brokenWriter] = f.pipe();
+  f.descriptors.close(lastReader);
+  observe(brokenWriter, 1);
+  expect(f.view().getUint32(524, true)).toBe(1);
+  expect(f.abi.imports.read!(brokenWriter, 4096, 1)).toBe(-76);
+  f.sub(0, 0, 0x7fffffff, 0n);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(-8);
+  expect(f.waits()).toBe(0);
+});
+
+test("zero-time poll never waits and pending signals leave ready data untouched", () => {
+  const f = fixture();
+  const [reader, writer] = f.pipe();
+  f.sub(0, 0, reader, 0n);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  expect(f.abi.imports.poll!(256, 0, 0, 512)).toBe(0);
+  f.put("x");
+  expect(f.abi.imports.write!(writer, 2048, 1)).toBe(1);
+  expect(f.abi.imports.signal!(Signal.SIGINT, 2)).toBe(0);
+  f.supervisor.kill(f.pid, Signal.SIGINT);
+  f.bytes().fill(0xaa, 512, 528);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  expect(Array.from(f.bytes().subarray(512, 528))).toEqual(Array(16).fill(0xaa));
+  expect(f.abi.imports.interrupted!()).toBe(Signal.SIGINT);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+  expect(f.abi.imports.read!(reader, 4096, 1)).toBe(1);
+  expect(f.bytes()[4096]).toBe(120);
+  expect(f.waits()).toBe(0);
+});
+
 test("poll waits for readiness, hangup, child exit or interrupt, not read/write/wait", () => {
   let tick = 0,
     action: () => void = () => {};
@@ -648,6 +726,10 @@ test("cold file I/O uses nonblocking hooks and commits only the successful retry
   expect(f.abi.imports.write!(fd, 2048, 5)).toBe(-6);
   expect(resource.offset).toBe(3);
   expect(commits).toBe(0);
+  f.sub(0, 0, fd);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+  expect(resource.offset).toBe(3);
+  expect(commits).toBe(0);
   f.sub(0, 1, fd);
   f.sub(1, 3, 8);
   expect(f.abi.imports.poll!(256, 2, 100, 512)).toBe(2);
@@ -681,6 +763,9 @@ test("shared file-offset contention returns EAGAIN until poll can observe the lo
   expect(f.abi.imports.read!(fd, 4096, 1)).toBe(-6);
   expect(resource.offset).toBe(0);
   f.sub(0, 0, fd);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+  expect(controlLoad(cells, 0)).toBe(otherOwner);
+  expect(resource.offset).toBe(0);
   expect(f.abi.imports.poll!(256, 1, 100, 512)).toBe(1);
   expect(controlLoad(cells, 0)).toBe(0);
 });

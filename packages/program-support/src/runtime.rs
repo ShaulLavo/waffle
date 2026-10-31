@@ -235,7 +235,9 @@ impl Runtime {
         }
     }
 
-    /// Poll only between executor turns, never inside a guest task.
+    /// Dispatch registered waiters only between executor turns, never inside a
+    /// guest task. `Endpoint::read_ready` instead uses a single zero-time ABI
+    /// observation that neither registers nor dispatches waiters.
     pub fn poll(&self, timeout: i32) -> Result<usize, i32> {
         let subscriptions: Vec<_> = self
             .0
@@ -338,6 +340,31 @@ impl Drop for RuntimeEndpoint {
 impl HostEndpoint for RuntimeEndpoint {
     fn runtime_fd(&self) -> Option<u32> {
         Some(self.fd)
+    }
+
+    fn read_ready(&self) -> Result<bool, IoError> {
+        // This is the only waiter-free runtime observation. Runtime::poll is
+        // reserved for the between-turn dispatcher and may remove other
+        // waiters; this single zero-time subscription never does so.
+        let subscriptions = [Subscription {
+            kind: 0,
+            id: self.fd,
+            userdata: 0,
+        }];
+        let mut events = [PollEvent::default()];
+        let count = self
+            .runtime
+            .0
+            .abi
+            .poll(&subscriptions, 0, &mut events)
+            .map_err(io_error)?;
+        match count {
+            0 => Ok(false),
+            1 if events[0].kind == 0 && events[0].userdata == 0 && events[0].flags & !1 == 0 => {
+                Ok(true)
+            }
+            _ => Err(IoError::Runtime(28)),
+        }
     }
 
     fn descriptor_kind(&self) -> Result<DescriptorKind, IoError> {
@@ -499,6 +526,29 @@ impl crate::io::Directory for RuntimeDirectory {
         .boxed_local()
     }
 }
+/// Convert a cooperative deadline to the existing millisecond runtime poll
+/// timeout. Positive sub-millisecond remainders round up so a live deadline
+/// never becomes an accidental zero-time scan.
+pub fn poll_timeout(
+    runnable: bool,
+    next_deadline: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> i32 {
+    if runnable {
+        return 0;
+    }
+    let Some(deadline) = next_deadline else {
+        return -1;
+    };
+    if deadline <= now {
+        return 0;
+    }
+    let remaining = deadline.duration_since(now);
+    let milliseconds = remaining.as_millis();
+    let rounded = milliseconds + u128::from(!remaining.subsec_nanos().is_multiple_of(1_000_000));
+    rounded.min(i32::MAX as u128) as i32
+}
+
 impl FileSystem for Runtime {
     fn open_dir<'a>(
         &'a self,
@@ -631,6 +681,247 @@ mod tests {
         assert_eq!(
             find_root_preopen(usize::MAX, |_| panic!("must not scan overflow")),
             Err(28)
+        );
+    }
+}
+#[cfg(test)]
+mod timer_readiness_tests {
+    use super::*;
+    use std::{
+        cell::RefCell,
+        future::Future,
+        pin::Pin,
+        rc::Rc,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll, Wake},
+        time::{Duration, Instant},
+    };
+
+    struct PollCall {
+        subscriptions: Vec<Subscription>,
+        timeout: i32,
+    }
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct FakeAbi {
+        calls: RefCell<Vec<PollCall>>,
+        result: RefCell<Result<usize, i32>>,
+        event: Cell<PollEvent>,
+    }
+
+    impl FakeAbi {
+        fn new(result: Result<usize, i32>, event: PollEvent) -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                result: RefCell::new(result),
+                event: Cell::new(event),
+            }
+        }
+    }
+
+    impl Abi for FakeAbi {
+        fn inherited_fds(&self) -> Vec<u32> {
+            Vec::new()
+        }
+
+        fn pipe(&self) -> Result<(u32, u32), i32> {
+            Ok((1, 2))
+        }
+
+        fn fd_kind(&self, _: u32) -> Result<DescriptorKind, i32> {
+            Ok(DescriptorKind::Pipe)
+        }
+
+        fn dup(&self, fd: u32) -> Result<u32, i32> {
+            Ok(fd)
+        }
+
+        fn close(&self, _: u32) {}
+
+        fn mkdir(&self, _: &str, _: bool) -> Result<(), i32> {
+            Ok(())
+        }
+
+        fn stat(&self, _: &str, _: bool) -> Result<FileMetadata, i32> {
+            Err(58)
+        }
+
+        fn open(&self, _: &str, _: &OpenOptions) -> Result<u32, i32> {
+            Ok(3)
+        }
+
+        fn read(&self, _: u32, _: &mut [u8]) -> Result<usize, i32> {
+            Ok(0)
+        }
+
+        fn write(&self, _: u32, input: &[u8]) -> Result<usize, i32> {
+            Ok(input.len())
+        }
+
+        fn poll(
+            &self,
+            subscriptions: &[Subscription],
+            timeout: i32,
+            output: &mut [PollEvent],
+        ) -> Result<usize, i32> {
+            self.calls.borrow_mut().push(PollCall {
+                subscriptions: subscriptions.to_vec(),
+                timeout,
+            });
+            if *self.result.borrow() == Ok(1) {
+                output[0] = self.event.get();
+            }
+            *self.result.borrow()
+        }
+
+        fn interrupted(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn runtime_endpoint_read_ready_is_single_zero_time_observation() {
+        let abi = Rc::new(FakeAbi::new(
+            Ok(1),
+            PollEvent {
+                userdata: 0,
+                kind: 0,
+                flags: 0,
+            },
+        ));
+        let runtime = Runtime::new(abi.clone());
+        let endpoint = runtime.endpoint(17);
+        let mut waiter = runtime.ready(4, 99);
+        let mut read_waiter = runtime.ready(0, 17);
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        assert_eq!(
+            Pin::new(&mut waiter).poll(&mut Context::from_waker(&waker)),
+            Poll::Pending
+        );
+        assert!(
+            Pin::new(&mut read_waiter)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert_eq!(runtime.waiter_count(), 2);
+        assert_eq!(endpoint.read_ready(), Ok(true));
+        assert_eq!(runtime.waiter_count(), 2);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+        assert!(
+            Pin::new(&mut waiter)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert!(
+            Pin::new(&mut read_waiter)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        let calls = abi.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].timeout, 0);
+        assert_eq!(
+            calls[0].subscriptions,
+            vec![Subscription {
+                kind: 0,
+                id: 17,
+                userdata: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn runtime_endpoint_read_ready_accepts_no_event_and_rejects_malformed_events() {
+        let no_event = Rc::new(FakeAbi::new(Ok(0), PollEvent::default()));
+        assert_eq!(Runtime::new(no_event).endpoint(17).read_ready(), Ok(false));
+        let hangup = Rc::new(FakeAbi::new(
+            Ok(1),
+            PollEvent {
+                userdata: 0,
+                kind: 0,
+                flags: 1,
+            },
+        ));
+        assert_eq!(Runtime::new(hangup).endpoint(17).read_ready(), Ok(true));
+
+        for event in [
+            PollEvent {
+                userdata: 0,
+                kind: 1,
+                flags: 0,
+            },
+            PollEvent {
+                userdata: 1,
+                kind: 0,
+                flags: 0,
+            },
+            PollEvent {
+                userdata: 0,
+                kind: 0,
+                flags: 2,
+            },
+        ] {
+            let abi = Rc::new(FakeAbi::new(Ok(1), event));
+            assert_eq!(
+                Runtime::new(abi).endpoint(17).read_ready(),
+                Err(IoError::Runtime(28))
+            );
+        }
+
+        let too_many = Rc::new(FakeAbi::new(Ok(2), PollEvent::default()));
+        assert_eq!(
+            Runtime::new(too_many).endpoint(17).read_ready(),
+            Err(IoError::Runtime(28))
+        );
+        let failed = Rc::new(FakeAbi::new(Err(76), PollEvent::default()));
+        assert_eq!(
+            Runtime::new(failed).endpoint(17).read_ready(),
+            Err(IoError::BadDescriptor)
+        );
+    }
+
+    #[test]
+    fn poll_timeout_rounds_clamps_and_prioritizes_runnable() {
+        let now = Instant::now();
+        assert_eq!(poll_timeout(true, Some(now), now), 0);
+        assert_eq!(poll_timeout(true, None, now), 0);
+        assert_eq!(poll_timeout(false, None, now), -1);
+        assert_eq!(poll_timeout(false, Some(now), now), 0);
+        assert_eq!(
+            poll_timeout(false, Some(now - Duration::from_secs(1)), now),
+            0
+        );
+        assert_eq!(
+            poll_timeout(false, Some(now + Duration::from_micros(1)), now),
+            1
+        );
+        assert_eq!(
+            poll_timeout(false, Some(now + Duration::from_nanos(1)), now),
+            1
+        );
+        assert_eq!(
+            poll_timeout(false, Some(now + Duration::from_millis(1)), now),
+            1
+        );
+        assert_eq!(
+            poll_timeout(
+                false,
+                Some(now + Duration::from_millis(i32::MAX as u64 + 1)),
+                now,
+            ),
+            i32::MAX
         );
     }
 }
