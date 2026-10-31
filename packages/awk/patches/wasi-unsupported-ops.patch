@@ -1,0 +1,141 @@
+--- a/main.c
++++ b/main.c
+@@ -30,7 +30,11 @@
+ #include <locale.h>
+ #include <stdlib.h>
+ #include <string.h>
++#ifndef __wasi__
+ #include <signal.h>
++#else
++#include <unistd.h>
++#endif
+ #include "awk.h"
+ 
+ extern	char	**environ;
+@@ -55,6 +59,7 @@
+ 
+ size_t	awk_mb_cur_max = 1;
+ 
++#ifndef __wasi__
+ static noreturn void fpecatch(int n
+ #ifdef SA_SIGINFO
+ 	, siginfo_t *si, void *uc
+@@ -101,6 +106,8 @@
+ #endif
+ 	    );
+ }
++
++#endif
+ 
+ /* Can this work with recursive calls?  I don't think so.
+ void segvcatch(int n)
+@@ -140,12 +147,18 @@
+ 	setlocale(LC_NUMERIC, "C"); /* for parsing cmdline & prog */
+ 	awk_mb_cur_max = MB_CUR_MAX;
+ 	cmdname = argv[0];
++#ifdef __wasi__
++	const char *pwd = getenv("PWD");
++	if (pwd != NULL && chdir(pwd) != 0)
++		FATAL("cannot change directory to %s", pwd);
++#endif
+ 	if (argc == 1) {
+ 		fprintf(stderr,
+ 		  "usage: %s [-F fs | --csv] [-v var=value] [-f progfile | 'prog'] [file ...]\n",
+ 		  cmdname);
+ 		exit(1);
+ 	}
++#ifndef __wasi__
+ #ifdef SA_SIGINFO
+ 	{
+ 		struct sigaction sa;
+@@ -156,6 +169,7 @@
+ 	}
+ #else
+ 	(void)signal(SIGFPE, fpecatch);
++#endif
+ #endif
+ 	/*signal(SIGSEGV, segvcatch); experiment */
+ 
+--- a/run.c
++++ b/run.c
+@@ -36,7 +36,9 @@
+ #include <time.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#ifndef __wasi__
+ #include <sys/wait.h>
++#endif
+ #include "awk.h"
+ #include "awkgram.tab.h"
+ 
+@@ -2106,6 +2108,9 @@
+ 		}
+ 		break;
+ 	case FSYSTEM:
++#ifdef __wasi__
++		FATAL("system is unavailable on the Waffle WASI guest");
++#else
+ 		fflush(stdout);		/* in case something is buffered already */
+ 		estatus = status = system(getsval(x));
+ 		if (status != -1) {
+@@ -2122,6 +2127,7 @@
+ 		}
+ 		/* else estatus was set to -1 */
+ 		u = estatus;
++#endif
+ 		break;
+ 	case FRAND:
+ 		/* random() returns numbers in [0..2^31-1]
+@@ -2301,9 +2307,17 @@
+ 		fp = fopen(s, "a");
+ 		m = GT;	/* so can mix > and >> */
+ 	} else if (a == '|') {	/* output pipe */
++#ifdef __wasi__
++		FATAL("command pipes are unavailable on the Waffle WASI guest");
++#else
+ 		fp = popen(s, "w");
++#endif
+ 	} else if (a == LE) {	/* input pipe */
++#ifdef __wasi__
++		FATAL("command pipes are unavailable on the Waffle WASI guest");
++#else
+ 		fp = popen(s, "r");
++#endif
+ 	} else if (a == LT) {	/* getline <file */
+ 		fp = strcmp(s, "-") == 0 ? stdin : fopen(s, "r");	/* "-" is stdin */
+ 	} else	/* can't happen */
+@@ -2314,8 +2328,10 @@
+ 		files[i].mode = m;
+ 		if (pnewflag)
+ 			*pnewflag = true;
++#ifndef __wasi__
+ 		if (fp != stdin && fp != stdout && fp != stderr)
+ 			(void) fcntl(fileno(fp), F_SETFD, FD_CLOEXEC);
++#endif
+ 	}
+ 	return fp;
+ }
+@@ -2355,7 +2371,11 @@
+ 		    files[i].fp == stderr)
+ 			stat = freopen("/dev/null", "r+", files[i].fp) == NULL;
+ 		else if (files[i].mode == '|' || files[i].mode == LE)
++#ifdef __wasi__
++			FATAL("command pipes are unavailable on the Waffle WASI guest");
++#else
+ 			stat = pclose(files[i].fp) == -1;
++#endif
+ 		else
+ 			stat = fclose(files[i].fp) == EOF;
+ 		if (stat)
+@@ -2392,7 +2412,11 @@
+ 		    files[i].fp == stderr)
+ 			continue;
+ 		if (files[i].mode == '|' || files[i].mode == LE)
++#ifdef __wasi__
++			FATAL("command pipes are unavailable on the Waffle WASI guest");
++#else
+ 			stat = pclose(files[i].fp) == -1;
++#endif
+ 		else
+ 			stat = fclose(files[i].fp) == EOF;
+ 		if (stat)

@@ -1,0 +1,10 @@
+{
+  "files": [
+    "dist/awk.wasm",
+    "dist/awk-program.json",
+    "dist/awk.wasm.gz",
+    "dist/awk.wasm.br",
+    "dist/awk.sizes.json",
+    "dist/THIRD_PARTY_NOTICES.txt"
+  ]
+}
