@@ -12,7 +12,7 @@ import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
 import { PipePublicationRegistry } from "../proc/pipes.js";
-import { createWorkerProcessTransport } from "../proc/worker-client.js";
+import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
 
 const controlQuota = 64 * 1024 ** 2;
 const registryBytes = 16_785_424;
@@ -83,9 +83,9 @@ test("registry budget refusal leaves an external root unpublished and its bootst
     expect(f.broker.transportFor(f.root.pid) === undefined).toBe(true);
     expect(f.root.data === originalData).toBe(true);
     expect(
-      f.reservations.snapshot().holders.filter((holder) =>
-        ["guest-memory", "guest-control"].includes(holder.label),
-      ),
+      f.reservations
+        .snapshot()
+        .holders.filter((holder) => ["guest-memory", "guest-control"].includes(holder.label)),
     ).toEqual([]);
     const supervisor = await f.broker.ready();
     expect(supervisor.get(f.root.pid)).toBeUndefined();
@@ -135,9 +135,7 @@ test("group reply refusal aborts the unlaunched member while retaining its poole
   const f = fixture(budget);
   try {
     await f.broker.adoptRuntimeRoot(f.root, { memory: [], stop() {} });
-    expect(() => f.broker.admitRootMemoryGroup(f.root.pid)).toThrow(
-      SharedMemoryAdmissionError,
-    );
+    expect(() => f.broker.admitRootMemoryGroup(f.root.pid)).toThrow(SharedMemoryAdmissionError);
     expect(f.broker.memoryGroups()).toEqual([]);
     const snapshot = f.reservations.snapshot();
     expect(snapshot.reservedBytes).toBe(budget);
@@ -156,13 +154,11 @@ test("group reply refusal aborts the unlaunched member while retaining its poole
   }
 });
 
-
-test("a full attached registry is preserved when a new root cannot register", async () => {
-  const f = fixture(256 * 1024 ** 2);
+function attachRegistry(f: ReturnType<typeof fixture>, capacity: number) {
   const registry = new PipePublicationRegistry({
-    processCapacity: 1,
+    processCapacity: capacity,
     cellsPerProcess: 1,
-    maxCells: 1,
+    maxCells: capacity,
     allocate: (initial, maximum) =>
       f.reservations.buffer("pipe-registry", {
         kind: "growable-buffer",
@@ -171,8 +167,14 @@ test("a full attached registry is preserved when a new root cannot register", as
       }),
   });
   registry.registerProcess(2);
-  const originalData = { filesystem: createFilesystemIdentity(), pipeRegistry: registry.handle() };
-  f.root.data = originalData;
+  const data = { filesystem: createFilesystemIdentity(), pipeRegistry: registry.handle() };
+  f.root.data = data;
+  return { registry, data };
+}
+
+test("a full attached registry is preserved when a new root cannot register", async () => {
+  const f = fixture(256 * 1024 ** 2);
+  const { registry, data: originalData } = attachRegistry(f, 1);
   try {
     await expect(f.broker.adoptRuntimeRoot(f.root, { memory: [] })).rejects.toThrow(
       "pipe process registry is full",
@@ -185,6 +187,28 @@ test("a full attached registry is preserved when a new root cannot register", as
     expect(supervisor.get(f.root.pid)).toBeUndefined();
     expect(f.errors).toEqual([]);
   } finally {
+    await f.dispose();
+  }
+});
+
+test("supervisor refusal preserves an existing process without publishing a new root transport", async () => {
+  const f = fixture(256 * 1024 ** 2);
+  const supervisor = await f.broker.ready();
+  const state = workerProcessState(f.root);
+  supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+  const existing = supervisor.get(f.root.pid);
+  const { registry, data: originalData } = attachRegistry(f, 2);
+  try {
+    await expect(f.broker.adoptRuntimeRoot(f.root, { memory: [] })).rejects.toThrow();
+    expect(f.broker.transportFor(f.root.pid) === undefined).toBe(true);
+    expect(f.root.data === originalData).toBe(true);
+    expect(supervisor.get(f.root.pid) === existing).toBe(true);
+    expect(registry.processCount).toBe(1);
+    expect(registry.isRevoked(2)).toBe(false);
+    expect(registry.isRevoked(f.root.pid)).toBe(true);
+    expect(f.errors).toEqual([]);
+  } finally {
+    supervisor.dispose();
     await f.dispose();
   }
 });

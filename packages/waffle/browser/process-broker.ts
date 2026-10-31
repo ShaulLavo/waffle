@@ -800,18 +800,15 @@ export class BrowserProcessBroker {
       interrupt: word(root.interrupt),
       requestedSignal: word(root.requestedSignal),
     };
+    const packages = controller.signalDelegation?.packages;
+    const policy = packages
+      ? { controller, packages: new Set(packages.map((pkg) => packageIdentity(pkg))) }
+      : undefined;
+    if (this.controllers.has(pid)) throw new Error(`Process ${pid} already has a controller`);
+    this.supervisor?.createRoot(reserved);
     this.registerController(pid, controller);
     this.reservedRoots.set(pid, reserved);
-    const packages = controller.signalDelegation?.packages;
-    if (packages)
-      this.signalPolicies.set(pid, {
-        controller,
-        packages: new Set(packages.map((pkg) => packageIdentity(pkg))),
-      });
-    if (this.supervisor) {
-      this.supervisor.createRoot(reserved);
-      this.supervisor.registerRevocation(pid, () => this.revokeController(pid));
-    }
+    if (policy) this.signalPolicies.set(pid, policy);
     return pid;
   }
   /** Keep an accepted external spawn's ancestry until its asynchronous admission finishes. */
@@ -926,6 +923,10 @@ export class BrowserProcessBroker {
     const state = workerProcessState(transport);
     if (this.controllers.has(state.pid))
       throw new Error(`Process ${state.pid} already has a controller`);
+    if (state.parentPid !== 0) throw new TypeError("root process has a parent");
+    const existing = this.transport.get(state.pid);
+    if (existing && workerProcessDirectoryId(existing) !== workerProcessDirectoryId(transport))
+      throw new TypeError("process identity is already registered");
     if (transport.identity !== this.options.identities.buffer)
       throw new TypeError("root must borrow the runtime identity allocator");
     this.filesystem(transport);
@@ -949,6 +950,9 @@ export class BrowserProcessBroker {
       connection: false,
       controls: true,
     });
+    const previousData = transport.data;
+    let changedData = false;
+    let registeredRegistry: PipePublicationRegistry | undefined;
     try {
       const output = rootOutput(options);
       // Capture fallible embedding getters before publishing this root.
@@ -975,17 +979,23 @@ export class BrowserProcessBroker {
               }),
           });
       const bootstrap = { ...data, pipeRegistry: registry.handle() };
+      const registered = !registry.isRevoked(state.pid);
       registry.registerProcess(state.pid);
+      if (!registered) registeredRegistry = registry;
+      transport.data = bootstrap;
+      changedData = true;
+      this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
       this.transport.adoptRoot(transport);
       this.roots.set(state.pid, transport);
+      this.acquireController(state.pid);
       this.outputs.set(state.pid, output);
       this.registries.set(state.pid, registry);
-      transport.data = bootstrap;
-      this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
       if (descendant) this.descendantHooks.set(state.pid, descendant);
       this.rootTickets.set(state.pid, ticket.launched());
       this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
+      if (changedData) transport.data = previousData;
+      registeredRegistry?.collectProcess(state.pid);
       ticket.abort();
       throw error;
     }
