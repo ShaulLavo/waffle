@@ -127,6 +127,15 @@ close(conn) -> 0
     Releases every id and device of the connection. Drop of the last client object calls it.
 ```
 
+If [#286](https://github.com/ShaulLavo/waffle/issues/286) adopts WIT for
+[`runtime_window`](guest-windows.md#guest-abi-runtime_window), these five functions become methods
+of a WIT `connection` resource with the same semantics: `append` takes `list<u8>`, `completions`
+returns a list of typed completion variants, and `payload` returns `list<u8>`. The command records
+stay a binary stream either way: one canonical-ABI call per WebGPU call would cost thousands of
+wasm-to-JS crossings per frame
+([interface definition](guest-graphics.md#interface-definition-wit-now-standards-later)). The
+records keep `wasi:webgpu` semantics so an adapter can lower that interface into the stream later.
+
 The commands themselves are data, not imports, so adding a WebGPU call adds an opcode and needs no
 new import or link change. Opcode additions do not bump `waffleHostInterface`; a changed record
 layout or removed opcode does ([compatibility](../docs/host-abi.md#compatibility)).

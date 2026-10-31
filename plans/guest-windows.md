@@ -29,17 +29,17 @@ multiple browser windows (`window.open`), native menus, system tray, drag-out, a
 
 ## Recommended decisions
 
-| Area            | Decision                                                                                                                                                            | Reason / cost                                                                                                                                        |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Page capability | `await runtime.display()`, lazy like `runtime.network()`. `display.createSurface(canvas, options)` returns a page-owned `Surface`.                                  | Pages without guests that draw pay nothing. One owner per canvas.                                                                                    |
-| Grant           | A spawn option carries surface grants. The broker binds them in `spawnData()` as a runtime-reserved key, like `filesystem` and `pipeRegistry`.                      | Grants travel the existing admission path and are revoked with the process outcome. Children do not inherit unless the parent passes them on.        |
-| Guest ABI       | New `runtime_window` import namespace. Blocking event read, nonblocking commands, negative WASI errno results, little-endian records.                               | Same conventions as `runtime_shm`. The namespace links whenever the page created a display; a process without grants sees zero surfaces.             |
-| Input transport | One shared-memory ring per surface, single producer (the page's main thread), single consumer (the guest's event-loop thread).                                      | The main thread never blocks. The guest blocks in `Atomics.wait` on the ring's wake word, which keeps Preview 1 semantics.                           |
-| Overflow        | Coalesce pointer motion, wheel and resize. Never drop key, button or focus records; on backlog overflow publish one `input-reset` record instead.                   | A dropped key-up sticks a key forever. A reset lets the guest release every held key and button.                                                     |
-| winit           | Fork winit 0.30.13 with `platform_impl/waffle`, based on the orbital backend. Consumers apply it through `[patch.crates-io]`.                                       | Orbital's `run` is a blocking loop (1,593 lines in total), which matches a guest that blocks. The web backend (6,556 lines) depends on JS callbacks. |
-| Rust layering   | The fork stays thin. ABI wrappers live in `waffle-window`, which the fork depends on.                                                                               | Apps without winit can use `waffle-window` directly, and the fork stays a small rebase per winit release.                                            |
-| Window handle   | `RawWindowHandle::Web(WebWindowHandle { id })`, where `id` is the surface id. `RawDisplayHandle::Web`.                                                              | raw-window-handle 0.6 defines a `u32` web id. The wgpu backend reads it in `create_surface`. No JS object pointer exists in a WASI guest.            |
-| Gestures        | Operations that browsers gate on a user gesture (pointer lock, fullscreen, keyboard lock) are **armed** by the guest and completed by the page on the next gesture. | A guest call never runs inside a DOM event handler, so it cannot satisfy the gesture rule directly.                                                  |
+| Area            | Decision                                                                                                                                                                                                               | Reason / cost                                                                                                                                                 |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Page capability | `await runtime.display()`, lazy like `runtime.network()`. `display.createSurface(canvas, options)` returns a page-owned `Surface`.                                                                                     | Pages without guests that draw pay nothing. One owner per canvas.                                                                                             |
+| Grant           | A spawn option carries surface grants. The broker binds them in `spawnData()` as a runtime-reserved key, like `filesystem` and `pipeRegistry`.                                                                         | Grants travel the existing admission path and are revoked with the process outcome. Children do not inherit unless the parent passes them on.                 |
+| Guest ABI       | `runtime_window`, defined in WIT if [#286](https://github.com/ShaulLavo/waffle/issues/286) adopts it (this plan is its candidate), otherwise the handwritten imports below. Blocking event read, nonblocking commands. | The handwritten form follows `runtime_shm` conventions. The interface links whenever the page created a display; a process without grants sees zero surfaces. |
+| Input transport | One shared-memory ring per surface, single producer (the page's main thread), single consumer (the guest's event-loop thread).                                                                                         | The main thread never blocks. The guest blocks in `Atomics.wait` on the ring's wake word, which keeps Preview 1 semantics.                                    |
+| Overflow        | Coalesce pointer motion, wheel and resize. Never drop key, button or focus records; on backlog overflow publish one `input-reset` record instead.                                                                      | A dropped key-up sticks a key forever. A reset lets the guest release every held key and button.                                                              |
+| winit           | Fork winit 0.30.13 with `platform_impl/waffle`, based on the orbital backend. Consumers apply it through `[patch.crates-io]`.                                                                                          | Orbital's `run` is a blocking loop (1,593 lines in total), which matches a guest that blocks. The web backend (6,556 lines) depends on JS callbacks.          |
+| Rust layering   | The fork stays thin. ABI wrappers live in `waffle-window`, which the fork depends on.                                                                                                                                  | Apps without winit can use `waffle-window` directly, and the fork stays a small rebase per winit release.                                                     |
+| Window handle   | `RawWindowHandle::Web(WebWindowHandle { id })`, where `id` is the surface id. `RawDisplayHandle::Web`.                                                                                                                 | raw-window-handle 0.6 defines a `u32` web id. The wgpu backend reads it in `create_surface`. No JS object pointer exists in a WASI guest.                     |
+| Gestures        | Operations that browsers gate on a user gesture (pointer lock, fullscreen, keyboard lock) are **armed** by the guest and completed by the page on the next gesture.                                                    | A guest call never runs inside a DOM event handler, so it cannot satisfy the gesture rule directly.                                                           |
 
 ## Page API (TypeScript)
 
@@ -65,6 +65,43 @@ surface.dispose(); // revokes any grant, removes listeners, releases the ring
   the network do not load it. It gets its own gzip budget in `tooling/runtime-size.ts`.
 
 ## Guest ABI: `runtime_window`
+
+This plan is the candidate for the [#286](https://github.com/ShaulLavo/waffle/issues/286) WIT
+experiment ([interface definition](guest-graphics.md#interface-definition-wit-now-standards-later)).
+The WIT version has the same semantics as the handwritten imports below; they are the fallback if
+#286 rejects WIT and the reference either way. Compare it with `wasi-gfx:surface` before choosing
+names, and use the standard shape where it fits. Sketch:
+
+```wit
+package waffle:display@0.1.0;
+
+interface surface {
+  record info { width: u32, height: u32, scale-milli: u32, focused: bool, visible: bool,
+                fullscreen: bool, pointer-locked: bool }
+  variant event { resize(info), focus(bool), visibility(bool), key(key-event),
+                  modifiers(u32), pointer-move(position), pointer-delta(delta), button(button-event),
+                  wheel(wheel-event), pointer-enter, pointer-leave, pointer-lock(lock-result),
+                  ime(ime-event), frame, dropped-file(string), close-requested, input-reset }
+  variant command { set-title(string), set-cursor-icon(string), set-cursor-visible(bool),
+                    cursor-grab(grab-mode), fullscreen(bool), keyboard-lock(bool),
+                    ime-allowed(bool), ime-cursor-area(rect), request-redraw, clipboard-write(string) }
+
+  resource surface {
+    info: func() -> info;
+    /// Blocks until at least one event, the deadline, or a wake. Negative waits forever.
+    read-events: func(max: u32, timeout-ns: s64) -> result<list<event>, error-code>;
+    command: func(c: command) -> result<_, error-code>;
+    wake: func();
+    clipboard-text: func() -> option<string>;
+  }
+
+  granted: func() -> list<surface>;
+}
+```
+
+(Record types such as `key-event` are elided; they carry the fields in [records](#records).)
+
+The handwritten form:
 
 All addresses are guest addresses. Results are `0` or a byte count on success, or a negative WASI
 errno: `-EBADF` (`-8`) for an unknown or revoked surface, `-EINVAL` (`-28`) for a bad span or
@@ -155,9 +192,10 @@ tick and read with a `gamepads_read` import. winit has no gamepad API; consumers
 
 ## Rust side
 
-### `waffle-window` (Waffle-owned crate)
+### `waffle-window`
 
-Safe wrappers over `runtime_window`: `Surface`, typed `Event` decoding, `Command` encoding,
+Bindings generated by wit-bindgen from the WIT above if #286 adopts it, or handwritten imports
+otherwise, plus a thin safe layer: `Surface`, typed `Event` decoding, `Command` encoding,
 `wake()`, and the clipboard slot. It has no winit dependency and works for apps that do not use
 winit. It lives in the guest-crates repository
 ([where the code lives](guest-graphics.md#where-the-code-lives)) and builds for `wasm32-wasip1` and
@@ -206,16 +244,16 @@ the first consumer ships.
 
 ## Delivery slices and effort
 
-| Slice                   | Rough effort | Deliverable and exit gate                                                                                                                                                               |
-| ----------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| W0. Ring and records    | 3–4 days     | `runtime.display()`, `createSurface`, the input ring, record encoding, coalescing and `input-reset`. Unit tests drive synthetic DOM events through the ring and read them in a worker.  |
-| W1. Grants and ABI      | 3–5 days     | Spawn option, `spawnData()` binding, revocation on every outcome, `runtime_window` imports. A Preview 1 C fixture prints its events; a kill at each admission stage leaves no listener. |
-| W2. `waffle-window`     | 2–3 days     | Rust crate with decoding and commands; a Rust fixture echoes keys and resizes on `wasm32-wasip1`.                                                                                       |
-| W3. winit fork          | 5–8 days     | `platform_impl/waffle`; winit's own `window` example runs in Chromium, Firefox and WebKit with keyboard, mouse, resize, focus and `ControlFlow::{Poll,Wait,WaitUntil}`.                 |
-| W4. Gesture operations  | 3–5 days     | Pointer lock, fullscreen, keyboard lock, clipboard paste, IME textarea. Manual browser checklist plus Playwright where the engine can simulate the gesture.                             |
-| W5. Threads and release | 3–5 days     | With [guest threads](wasi-threads.md): `wake` from another thread, `Window` used from workers. Public docs, size budget, status page.                                                   |
+| Slice                     | Rough effort | Deliverable and exit gate                                                                                                                                                                                                                                                                   |
+| ------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W0. Ring and records      | 3–4 days     | `runtime.display()`, `createSurface`, the input ring, record encoding, coalescing and `input-reset`. Unit tests drive synthetic DOM events through the ring and read them in a worker.                                                                                                      |
+| W1. Grants and ABI (#286) | 4–7 days     | Spawn option, `spawnData()` binding, revocation on every outcome, `runtime_window` in WIT through the #286 adapter and as handwritten imports, measured against each other for #286's decision. A Preview 1 C fixture prints its events; a kill at each admission stage leaves no listener. |
+| W2. `waffle-window`       | 2–3 days     | Rust crate with decoding and commands; a Rust fixture echoes keys and resizes on `wasm32-wasip1`.                                                                                                                                                                                           |
+| W3. winit fork            | 5–8 days     | `platform_impl/waffle`; winit's own `window` example runs in Chromium, Firefox and WebKit with keyboard, mouse, resize, focus and `ControlFlow::{Poll,Wait,WaitUntil}`.                                                                                                                     |
+| W4. Gesture operations    | 3–5 days     | Pointer lock, fullscreen, keyboard lock, clipboard paste, IME textarea. Manual browser checklist plus Playwright where the engine can simulate the gesture.                                                                                                                                 |
+| W5. Threads and release   | 3–5 days     | With [guest threads](wasi-threads.md): `wake` from another thread, `Window` used from workers. Public docs, size budget, status page.                                                                                                                                                       |
 
-W0–W4 total **16–25 engineer-days**. W5 waits for thread support S4. W0–W4 do not depend on threads
+W0–W4 total **17–27 engineer-days**, including the #286 comparison. W5 waits for thread support S4. W0–W4 do not depend on threads
 or on the GPU bridge: a test program can read input and report it on stdout.
 
 ## Acceptance
