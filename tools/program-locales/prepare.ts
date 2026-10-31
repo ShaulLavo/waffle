@@ -192,6 +192,21 @@ function atomicWrite(path: string, text: string) {
   renameSync(temporary, path);
 }
 
+export function programLocaleImplementation() {
+  return [
+    "prepare.ts",
+    "selection.ts",
+    "patch.ts",
+    "rustc-wrapper.ts",
+    "generate.rs",
+    "sources.json",
+    "build.ts",
+  ].map((path) => ({
+    path: `tools/program-locales/${path}`,
+    sha256: sha256(readFileSync(resolve(import.meta.dirname, path))),
+  }));
+}
+
 export function prepareProgramLocales(options: {
   readonly root: string;
   readonly program: string;
@@ -237,18 +252,7 @@ export function prepareProgramLocales(options: {
       };
     });
   assert.ok(selections.length > 0, "No applicable uucore dependency");
-  const implementation = [
-    "prepare.ts",
-    "selection.ts",
-    "patch.ts",
-    "rustc-wrapper.ts",
-    "generate.rs",
-    "sources.json",
-    "build.ts",
-  ].map((path) => ({
-    path: `tools/program-locales/${path}`,
-    sha256: sha256(readFileSync(resolve(import.meta.dirname, path))),
-  }));
+  const implementation = programLocaleImplementation();
   const receipt = {
     program,
     policy: "utility-and-common-English-only",

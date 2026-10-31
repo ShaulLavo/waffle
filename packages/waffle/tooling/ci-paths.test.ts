@@ -986,6 +986,21 @@ test("checksums caches the pinned toolchain, Cargo inputs and actual build outpu
   expect(record(cache?.with)["restore-keys"]).toBe(
     "${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-",
   );
+  const discardIndex = steps.findIndex(
+    (step) => step.name === "Discard a generated source restored from a different checksum recipe",
+  );
+  expect(discardIndex).toBeGreaterThanOrEqual(0);
+  const discard = steps[discardIndex];
+  expect(discard?.if).toBe("steps.checksum-cache.outputs.cache-hit != 'true'");
+  expect(discard?.run).toBe("rm -rf packages/coreutils/.sources/checksums");
+  expect(discardIndex).toBeLessThan(
+    steps.findIndex((step) => step.run === "bun run --cwd packages/coreutils build:checksums"),
+  );
+  const retained = steps.find(
+    (step) => step.name === "Retain the exact checksum-only producer closure",
+  );
+  expect(retained?.uses).toBe("actions/upload-artifact@v4");
+  expect(record(retained?.with).path).toBe(".build/checksum-artifact");
 });
 
 test("checksums selects its compiler, locale, libc, runtime and leaf inputs without unrelated guests", () => {
