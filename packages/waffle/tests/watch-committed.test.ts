@@ -96,11 +96,11 @@ test("worker cleanup waits for close before reaping and shares the same completi
 
 for (const stage of ["startup", "delivery"])
   test(`worker ${stage} errors remain observable without orphan rejections`, async () => {
-    const path =
+    const url =
       stage === "startup"
-        ? "./fixtures/watch-startup-error-worker.ts"
-        : "./fixtures/watch-delivery-error-worker.ts";
-    const worker = new Worker(new URL(path, import.meta.url).href);
+        ? new URL("./fixtures/watch-startup-error-worker.ts", import.meta.url)
+        : new URL("./fixtures/watch-delivery-error-worker.ts", import.meta.url);
+    const worker = new Worker(url.href);
     const stopped = workerStopped(worker);
     const failed = new Promise<never>((_, reject) => {
       worker.onerror = (event) => reject(event.error ?? new Error(event.message));
