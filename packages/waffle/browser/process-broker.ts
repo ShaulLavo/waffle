@@ -922,8 +922,10 @@ export class BrowserProcessBroker {
     options: RuntimeRootOptions,
   ): Promise<void> {
     if (this.suspended) throw new Error("Process broker is disposed");
-    if (this.suspended) throw new Error("Process broker is disposed");
     const cwd = checkedProcessCwd(transport.cwd);
+    const state = workerProcessState(transport);
+    if (this.controllers.has(state.pid))
+      throw new Error(`Process ${state.pid} already has a controller`);
     if (transport.identity !== this.options.identities.buffer)
       throw new TypeError("root must borrow the runtime identity allocator");
     this.filesystem(transport);
@@ -948,10 +950,19 @@ export class BrowserProcessBroker {
       controls: true,
     });
     try {
-      const state = workerProcessState(transport);
-      this.transport.adoptRoot(transport);
-      this.roots.set(state.pid, transport);
-      this.outputs.set(state.pid, rootOutput(options));
+      const output = rootOutput(options);
+      // Capture fallible embedding getters before publishing this root.
+      const prepare = options.prepareDescendant;
+      const descendant = prepare
+        ? {
+            prepare: Object.freeze({
+              terminal: prepare.terminal,
+              run: prepare.run,
+              settled: prepare.settled,
+            }),
+            directory: workerProcessDirectoryId(transport),
+          }
+        : undefined;
       const registry = data.pipeRegistry
         ? attachPipePublicationRegistry(data.pipeRegistry)
         : new PipePublicationRegistry({
@@ -963,21 +974,15 @@ export class BrowserProcessBroker {
                 maximum: bytes(maximum),
               }),
           });
+      const bootstrap = { ...data, pipeRegistry: registry.handle() };
       registry.registerProcess(state.pid);
+      this.transport.adoptRoot(transport);
+      this.roots.set(state.pid, transport);
+      this.outputs.set(state.pid, output);
       this.registries.set(state.pid, registry);
-      transport.data = { ...data, pipeRegistry: registry.handle() };
-      // Capture once: later option mutation cannot redirect or remove descendant preparation.
-      const prepare = options.prepareDescendant;
+      transport.data = bootstrap;
       this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
-      if (prepare)
-        this.descendantHooks.set(state.pid, {
-          prepare: Object.freeze({
-            terminal: prepare.terminal,
-            run: prepare.run,
-            settled: prepare.settled,
-          }),
-          directory: workerProcessDirectoryId(transport),
-        });
+      if (descendant) this.descendantHooks.set(state.pid, descendant);
       this.rootTickets.set(state.pid, ticket.launched());
       this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
@@ -1729,24 +1734,25 @@ export class BrowserProcessBroker {
       connection: false,
       controls: false,
     });
-    let lease: MemberLease;
+    let lease: MemberLease | undefined;
     try {
-      lease = this.admitGroupMember(pid, transport, join, ticket.group);
+      const admitted = (lease = this.admitGroupMember(pid, transport, join, ticket.group));
+      // Finish bootstrap preparation before committing ownership of the external member.
+      admitted.group.buffer();
+      const { request, transfer } = admitted.launch();
       ticket.launched();
+      (this.rootGroups ??= new Map()).set(pid, admitted);
+      return Object.freeze({
+        group: admitted.group,
+        request,
+        transfer: Object.freeze(transfer),
+        stopped: () => this.settleRootGroup(pid, admitted),
+      });
     } catch (error) {
+      lease?.abort();
       ticket.abort();
       throw error;
     }
-    const { request, transfer } = lease.launch();
-    // The external root receives the Memory itself through its bootstrap request.
-    lease.group.buffer();
-    (this.rootGroups ??= new Map()).set(pid, lease);
-    return Object.freeze({
-      group: lease.group,
-      request,
-      transfer: Object.freeze(transfer),
-      stopped: () => this.settleRootGroup(pid, lease),
-    });
   }
   /** A settled root lease must not keep its group's backing reachable; debt stays tracked. */
   private settleRootGroup(pid: number, lease: MemberLease): void {

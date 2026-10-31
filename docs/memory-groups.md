@@ -34,7 +34,7 @@ Admission refuses a group image that could grow the shared memory around its own
 
 ## Policy
 
-`createRuntime({ sharedMemory, memoryGroups })` sets runtime policy. [Shared-memory reservations](shared-memory.md) describes the required platform measurement. Every limit is configurable.
+`createRuntime({ sharedMemory, memoryGroups })` sets runtime policy. [Shared-memory reservations](shared-memory.md) describes the built-in profiles and optional application override. Every limit is configurable.
 
 | Field                        | Default          | Meaning                                                                      |
 | ---------------------------- | ---------------- | ---------------------------------------------------------------------------- |
