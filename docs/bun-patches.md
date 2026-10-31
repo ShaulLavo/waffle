@@ -294,7 +294,13 @@ See [English program catalogs](program-locales.md) for coverage and build identi
 ## Program artifact finalization
 
 `tools/program-build-tools.ts` originated in bash-web `9ef027d7`, from
-`scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. Its original byte reader
+`scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. The supported
+`waffle/program-build-tools` export packages these canonical sources with their
+optimizer and derivation dependencies. Package preparation copies exact source
+bytes and emits Node modules; generated copies are not edited. Packaged derivations
+bind the original source hashes and Waffle build commit rather than a consumer's
+Git checkout. The libc builder and scanner patch still come only from the explicit
+`recipe.waffle` directory. Its original byte reader
 now rejects integers outside the Wasm u32 range. Waffle's original `stripWasmNames`
 removes only complete custom sections whose name is exactly `name`, retaining every
 other encoded byte. The original `stageProgram`, `program-optimize.ts` and

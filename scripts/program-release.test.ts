@@ -1,4 +1,6 @@
 import { stageProgram } from "../tools/program-build-tools.ts";
+import { transformationProvenance } from "../tools/program-derivation.ts";
+import { programToolSources } from "../packages/waffle/tooling/program-tools-package.ts";
 import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
@@ -115,6 +117,14 @@ async function prepareRuntimeFixture() {
     recursive: true,
     filter: (path) => !/\/(node_modules|dist|\.build|target|\.sources)$/.test(path),
   });
+  const tools = resolve(root, "tooling/program");
+  mkdirSync(tools, { recursive: true });
+  for (const file of programToolSources)
+    cpSync(resolve(repository, "tools", file), resolve(tools, file));
+  writeFileSync(
+    resolve(tools, "program-transformer.json"),
+    JSON.stringify(transformationProvenance()) + "\n",
+  );
   // This suite executes package metadata, not networking. Keep its network fixture explicit.
   writeFileSync(
     resolve(root, "browser/net/network.wasm"),

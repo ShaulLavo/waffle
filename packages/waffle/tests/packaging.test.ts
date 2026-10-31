@@ -129,7 +129,11 @@ test("cached network artifact survives dist cleanup without calling Cargo", asyn
     const bytes = await seedNetwork(root);
     await mkdir(join(root, "dist"));
     await writeFile(join(root, "dist/stale"), "must disappear");
-    await buildNodeModules(root, (path) => buildNetwork(path, forbidNetworkBuild));
+    await buildNodeModules(
+      root,
+      (path) => buildNetwork(path, forbidNetworkBuild),
+      () => {},
+    );
     expect(existsSync(join(root, "dist/stale"))).toBe(false);
     expect(existsSync(join(root, "dist/browser/net/module.js"))).toBe(true);
     expect(
