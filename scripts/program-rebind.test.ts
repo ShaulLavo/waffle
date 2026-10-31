@@ -551,7 +551,7 @@ describe("program peer rebind", () => {
 
   test("normal prepared release fixtures can be rebound through the same install verification", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
-    const runtime = await prepareRuntimeFixture(scratch);
+    const runtime = await prepareRuntimeFixture(scratch, "0.0.106");
     const root = preparedFixture(scratch, "prepared-source");
     const checker = resolve(root, "tools/program-package.ts");
     mkdirSync(dirname(checker), { recursive: true });
@@ -577,12 +577,13 @@ describe("program peer rebind", () => {
     mkdirSync(nextRuntime);
     execFileSync("tar", ["-xzf", runtime.archive, "-C", nextRuntime, "--strip-components=1"]);
     const nextManifest = JSON.parse(readFileSync(resolve(nextRuntime, "package.json"), "utf8"));
-    nextManifest.version = "0.0.106";
+    const nextVersion = "0.0.107";
+    nextManifest.version = nextVersion;
     writeFileSync(
       resolve(nextRuntime, "package.json"),
       JSON.stringify(nextManifest, null, 2) + "\n",
     );
-    const nextArchive = resolve(scratch, "waffle-0.0.106.tgz");
+    const nextArchive = resolve(scratch, `waffle-${nextVersion}.tgz`);
     pack(nextRuntime, nextArchive);
     const result = await buildRebind({
       root: repository,
@@ -593,7 +594,11 @@ describe("program peer rebind", () => {
       fromAssets: fromOut,
       tag: targetTag,
       out: resolve(scratch, "rebuilt-metadata"),
-      runtime: { url: targetRuntimeUrl, sha256: sha256(nextArchive), tarball: nextArchive },
+      runtime: {
+        url: runtimeReleaseUrl("ShaulLavo/waffle", nextVersion),
+        sha256: sha256(nextArchive),
+        tarball: nextArchive,
+      },
       requireTag: false,
       commandTimeoutMs: 60_000,
     });
@@ -601,6 +606,7 @@ describe("program peer rebind", () => {
       normal.packages.map((item) => item.guests),
     );
     expect(result.installCheck.runtimeRoots).toBe(1);
+    expect(result.runtime.version).toBe(nextVersion);
   }, 180_000);
 
   test("shared runtime checker rejects two physical runtimes", () => {

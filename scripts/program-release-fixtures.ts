@@ -62,12 +62,16 @@ function writeArtifacts(packageRoot: string) {
   }
 }
 
-export async function prepareRuntimeFixture(scratch: string) {
+export async function prepareRuntimeFixture(scratch: string, version = String(runtimeVersion)) {
   const root = resolve(scratch, "runtime-source");
   cpSync(resolve(repository, "packages/waffle"), root, {
     recursive: true,
     filter: (path) => !/\/(node_modules|dist|\.build|target|\.sources)$/.test(path),
   });
+  const packagePath = resolve(root, "package.json");
+  const packageManifest = JSON.parse(readFileSync(packagePath, "utf8"));
+  packageManifest.version = version;
+  writeFileSync(packagePath, JSON.stringify(packageManifest, null, 2) + "\n");
   const tools = resolve(root, "tooling/program");
   mkdirSync(tools, { recursive: true });
   for (const file of programToolSources)
@@ -89,7 +93,7 @@ export async function prepareRuntimeFixture(scratch: string) {
     env: { ...process.env, WAFFLE_NETWORK_PREBUILT: "1" },
     stdio: "pipe",
   });
-  const archive = resolve(destination, `waffle-${runtimeVersion}.tgz`);
+  const archive = resolve(destination, `waffle-${version}.tgz`);
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
-  return { archive, sha256: digest, version: String(runtimeVersion) };
+  return { archive, sha256: digest, version };
 }
