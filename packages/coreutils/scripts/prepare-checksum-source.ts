@@ -13,7 +13,10 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import type { OwnedLocaleSource } from "../../../tools/program-locales/prepare.ts";
+import {
+  ownedLocaleSourceIdentity,
+  type OwnedLocaleSource,
+} from "../../../tools/program-locales/prepare.ts";
 
 export const checksumRevision = "07763857f6b9a547742a994b58aef0ccd036198b";
 const root = resolve(import.meta.dirname, "..");
@@ -43,28 +46,10 @@ function upstreamSource() {
   return source;
 }
 
-function files(root: string): string[] {
-  return readdirSync(root, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => resolve(entry.parentPath, entry.name).slice(root.length + 1))
-    .filter((name) => name !== "waffle-source.json")
-    .sort();
-}
-
-function identity(directory: string) {
-  return Object.fromEntries(
-    files(directory).map((name) => [
-      name,
-      createHash("sha256")
-        .update(readFileSync(resolve(directory, name)))
-        .digest("hex"),
-    ]),
-  );
-}
-
 function inputs() {
   return [
     import.meta.filename,
+    resolve(root, "../../tools/program-locales/prepare.ts"),
     patch,
     resolve(crate, "src/stdio.rs"),
     resolve(crate, "src/record_tests.rs"),
@@ -110,7 +95,11 @@ export function prepareChecksumSource(): OwnedLocaleSource {
     );
     assert.deepEqual(
       receipt,
-      { revision: checksumRevision, inputs: expectedInputs, files: identity(checksumSource) },
+      {
+        revision: checksumRevision,
+        inputs: expectedInputs,
+        files: ownedLocaleSourceIdentity(checksumSource),
+      },
       "Patched checksum source changed; remove the owned generated source before preparing again",
     );
     return sealed();
@@ -122,7 +111,7 @@ export function prepareChecksumSource(): OwnedLocaleSource {
     const receipt = {
       revision: checksumRevision,
       inputs: expectedInputs,
-      files: identity(temporary),
+      files: ownedLocaleSourceIdentity(temporary),
     };
     writeFileSync(
       resolve(temporary, "waffle-source.json"),
