@@ -25,6 +25,7 @@ jobs:
       browser: ${{ steps.paths.outputs.browser }}
       network: ${{ steps.paths.outputs.network }}
       coreutils: ${{ steps.paths.outputs.coreutils }}
+      checksums: ${{ steps.paths.outputs.checksums }}
       sed: ${{ steps.paths.outputs.sed }}
       findutils: ${{ steps.paths.outputs.findutils }}
       grep: ${{ steps.paths.outputs.grep }}
@@ -86,6 +87,51 @@ jobs:
               - "tools/tsconfig.programs.json"
               - "packages/grep/tests/fixtures/grep-usage-cases.json"
               - "packages/ripgrep/tests/helpers/rg-fixtures.ts"
+            checksums:
+              - ".github/workflows/ci.yml"
+              - ".github/actions/program-optimizer/action.yml"
+              - "package.json"
+              - "bun.lock"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
+              - "tools/program-locales/**"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/runtime.ts"
+              - "packages/waffle/index.ts"
+              - "packages/waffle/core/**"
+              - "packages/waffle/fs/**"
+              - "packages/waffle/proc/**"
+              - "packages/waffle/interrupt/**"
+              - "packages/waffle/group/**"
+              - "packages/waffle/link/**"
+              - "packages/waffle/programs/**"
+              - "packages/waffle/browser/*.ts"
+              - "packages/waffle/package.json"
+              - "packages/waffle/scripts/build-wasi-libc.sh"
+              - "packages/waffle/patches/wasi-libc/**"
+              - "packages/coreutils/package.json"
+              - "packages/coreutils/src/index.ts"
+              - "packages/coreutils/crates/checksums/**"
+              - "packages/coreutils/scripts/build-checksums.ts"
+              - "packages/coreutils/scripts/build-config.ts"
+              - "packages/coreutils/scripts/build-family.ts"
+              - "packages/coreutils/scripts/checksum-artifact.ts"
+              - "packages/coreutils/scripts/checksum-oracle.ts"
+              - "packages/coreutils/scripts/build-native-checksum-oracle.ts"
+              - "packages/coreutils/scripts/build-native-date-oracle.ts"
+              - "packages/coreutils/scripts/gnu-date-source.json"
+              - "packages/coreutils/scripts/checksum-*.test.ts"
+              - "packages/coreutils/scripts/prepare-checksum-source.ts"
+              - "packages/coreutils/scripts/programs.ts"
+              - "packages/coreutils/tests/checksums-wasi.test.ts"
+              - "packages/coreutils/tests/helpers/checksum-regressions.ts"
+              - "packages/coreutils/fixtures/checksums.json"
+              - "packages/coreutils/provenance/checksums.source.json"
             sed:
               - "tools/program-locales/**"
               - ".github/**"
@@ -1014,6 +1060,130 @@ jobs:
     needs: [changes, network-wasm, findutils-xargs]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true') }}
     uses: ./.github/workflows/coreutils-echo.yml
+  coreutils-checksums:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+      WASI_LIBC_JOBS: "2"
+      GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache@v4
+        id: bun-cache
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - uses: actions/cache@v4
+        id: sdk
+        with:
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - name: Install pinned wasi-sdk 34
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 --silent --show-error \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
+            -o wasi-sdk.tar.gz
+          printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 wasi-sdk.tar.gz | sha256sum --check --status
+          tar -xzf wasi-sdk.tar.gz
+          rm wasi-sdk.tar.gz
+      - uses: actions/cache@v4
+        id: checksum-cache
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/coreutils-checksums
+            .build/program-locales
+            .build/wasi-libc
+            packages/coreutils/.sources
+          key: ${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-${{ hashFiles('bun.lock', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/coreutils/crates/checksums/Cargo.toml', 'packages/coreutils/crates/checksums/Cargo.lock', 'packages/coreutils/crates/checksums/**/*.rs', 'packages/coreutils/crates/checksums/patches/**', 'packages/coreutils/scripts/build-checksums.ts', 'packages/coreutils/scripts/build-config.ts', 'packages/coreutils/scripts/build-family.ts', 'packages/coreutils/scripts/checksum-artifact.ts', 'packages/coreutils/scripts/prepare-checksum-source.ts', 'packages/coreutils/scripts/programs.ts', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-
+      - name: Discard a generated source restored from a different checksum recipe
+        if: steps.checksum-cache.outputs.cache-hit != 'true'
+        run: rm -rf packages/coreutils/.sources/checksums
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip1
+      - name: Fetch locked Cargo sources before checksum source preparation
+        run: cargo fetch --locked
+      - uses: ./.github/actions/program-optimizer
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare:package
+      - name: Identify the pinned GNU checksum source and native toolchain
+        id: checksum-oracle-identity
+        run: |
+          set -euo pipefail
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "key=$(node packages/coreutils/scripts/build-native-checksum-oracle.ts --identity)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: checksum-native-oracle
+        with:
+          path: .build/gnu-checksum-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-gnu-checksum-native-v1-${{ steps.checksum-oracle-identity.outputs.image }}-${{ steps.checksum-oracle-identity.outputs.key }}
+      - name: Build the nine native GNU oracle programs on cache miss
+        if: steps.checksum-native-oracle.outputs.cache-hit != 'true'
+        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts
+        env:
+          GNU_CHECKSUM_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Verify the pinned GNU 9.12 checksum oracle
+        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only
+      - name: Build the nine checksum guests once through the existing leaf route
+        run: bun run --cwd packages/coreutils build:checksums
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Read back the exact admitted checksum guests
+        run: node packages/coreutils/scripts/checksum-artifact.ts "$GITHUB_WORKSPACE/.build/checksum-artifact"
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+      - name: Run checksum runtime acceptance against the admitted bytes
+        run: bun run --cwd packages/coreutils test:checksums:wasi
+        env:
+          CHECKSUM_ARTIFACTS: ${{ github.workspace }}/.build/checksum-artifact
+      - name: Retain the exact checksum-only producer closure
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksum-producer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .build/checksum-artifact
+            .build/gnu-checksum-native-oracle/metadata.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report checksum dependency cache hits
+        if: always()
+        run: |
+          echo "network=${{ steps.network-artifact.outputs.cache-hit }}"
+          echo "Bun=${{ steps.bun-cache.outputs.cache-hit }}"
+          echo "SDK=${{ steps.sdk.outputs.cache-hit }}"
+          echo "Cargo/sysroot/locale=${{ steps.checksum-cache.outputs.cache-hit }}"
+          echo "GNU oracle=${{ steps.checksum-native-oracle.outputs.cache-hit }}"
   programs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true') }}

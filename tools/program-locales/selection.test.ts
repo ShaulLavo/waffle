@@ -19,6 +19,20 @@ test("registry utilities select their own catalog, not neighboring cached utilit
   assert.deepEqual(selectCatalogs("ls", "0.12.0"), ["uucore/en-US.ftl", "uucore-errors/en-US.ftl"]);
 });
 
+test("checksum utilities add shared checksum messages, except legacy sum", () => {
+  assert.deepEqual(selectCatalogs("sha256sum", "0.13.0"), [
+    "uucore/en-US.ftl",
+    "uucore-errors/en-US.ftl",
+    "sha256sum/en-US.ftl",
+    "checksum_common/en-US.ftl",
+  ]);
+  assert.deepEqual(selectCatalogs("sum", "0.13.0"), [
+    "uucore/en-US.ftl",
+    "uucore-errors/en-US.ftl",
+    "sum/en-US.ftl",
+  ]);
+});
+
 test("selection rejects unknown programs and dependency versions", () => {
   assert.throws(() => selectCatalogs("multicall", "0.13.0"));
   assert.throws(() => selectCatalogs("echo", "0.14.0"));
@@ -28,7 +42,7 @@ test("every shipped coreutils program has an explicit payload classification", a
   const { coreutilsNames } = await import("../../packages/coreutils/scripts/programs.ts");
   const { usesProgramCatalogs } = await import("./selection.ts");
   const notApplicable = ["clear", "cat", "mkdir", "seq", "tail", "which"];
-  assert.equal(coreutilsNames.length, 21);
+  assert.equal(new Set(coreutilsNames).size, coreutilsNames.length);
   for (const name of coreutilsNames) {
     assert.equal(usesProgramCatalogs(name), !notApplicable.includes(name), name);
     selectCatalogs(name, "0.12.0");

@@ -113,29 +113,40 @@ test("artifact receipts preserve names, source identity, verification and stagin
       if (!usesProgramCatalogs(name)) continue;
       const sha256 = createHash("sha256").update(name).digest("hex");
       const version = ["head", "sort", "uniq"].includes(name) ? "0.12.0" : "0.13.0";
+      const keys = selectCatalogs(name, version);
+      const source = keys.map((key) => `"${key}" => Some(""),\n`).join("");
+      const generated = createHash("sha256").update(source).digest("hex");
       writeFileSync(
         resolve(release, `${name}.wasm.locales.json`),
         JSON.stringify({
           program: name,
           originalGuest: { sha256 },
-          generated: [{ version, keys: selectCatalogs(name, version), sha256 }],
+          generated: [{ version, keys, sha256: generated, source }],
         }),
       );
     }
     const checks: { path: string; options: WasiGuestVerification }[] = [];
     writeCoreutilsArtifacts(workspaceRoot, release, output, verifier(checks));
-    assert.equal(checks.length, 21);
+    assert.equal(checks.length, coreutilsNames.length);
     const lines = readFileSync(resolve(output, "source-sha256.txt"), "utf8").split("\n");
-    assert.equal(lines.length, 23);
+    const files = coreutilsNames.flatMap((name) =>
+      usesProgramCatalogs(name) ? [`${name}.wasm`, `${name}.wasm.locales.json`] : [`${name}.wasm`],
+    );
+    assert.equal(lines.length, files.length + 2);
     assert.match(lines[0], /^source [a-f0-9]{40}$/);
     assert.deepEqual(
       lines.slice(1, -1).map((line) => line.split("  ")[1]),
-      coreutilsNames.map((name) => `${name}.wasm`),
+      files,
     );
     stageCoreutilsArtifacts(workspaceRoot, output, staged, verifier(checks));
     for (const name of coreutilsNames) {
       assert.equal(readFileSync(resolve(staged, `${name}.wasm`), "utf8"), name);
     }
+    const proof = resolve(output, "sha256sum.wasm.locales.json");
+    const original = readFileSync(proof, "utf8");
+    writeFileSync(proof, original.replace("}", ',"relabeled":true}'));
+    assert.throws(() => stageCoreutilsArtifacts(workspaceRoot, output, staged, verifier(checks)));
+    writeFileSync(proof, original);
     writeFileSync(resolve(output, "cat.wasm"), "changed");
     assert.throws(() => stageCoreutilsArtifacts(workspaceRoot, output, staged, verifier(checks)));
   } finally {
