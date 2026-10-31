@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
-export const hostInterfaceField = "waffleHostInterface" as const;
-export const wafflePackageName = "waffle" as const;
+const hostInterfaceField = "waffleHostInterface" as const;
+const wafflePackageName = "waffle" as const;
 
 export type HostInterface = number & {
   readonly __brand: "WaffleHostInterface";
@@ -48,15 +48,19 @@ export function assertExactHostInterface(
 }
 
 export function isWaffleFamilyManifest(manifest: PackageManifest): boolean {
-  return ["dependencies", "peerDependencies", "optionalDependencies"].some((field) => {
-    const dependencies = manifest[field];
-    return (
-      dependencies !== null &&
-      typeof dependencies === "object" &&
-      !Array.isArray(dependencies) &&
-      Object.hasOwn(dependencies, wafflePackageName)
-    );
-  });
+  if (Object.hasOwn(manifest, hostInterfaceField) && manifest.name !== wafflePackageName)
+    return true;
+  return ["dependencies", "peerDependencies", "optionalDependencies", "devDependencies"].some(
+    (field) => {
+      const dependencies = manifest[field];
+      return (
+        dependencies !== null &&
+        typeof dependencies === "object" &&
+        !Array.isArray(dependencies) &&
+        Object.hasOwn(dependencies, wafflePackageName)
+      );
+    },
+  );
 }
 
 export function assertWaffleFamilyManifest(

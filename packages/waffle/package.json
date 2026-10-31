@@ -592,7 +592,7 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check:tooling": "tsc -p tsconfig.tooling.json",
-    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts",
+    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts && bun ../../tools/waffle-family-metadata.ts",
     "unused": "knip --no-progress",
     "duplicates": "jscpd --fail-on-new-clones 0",
     "quality": "bun run check:source && bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",

@@ -736,7 +736,7 @@ Shared hosts also carry pathname stream sockets through `listenPath` and `connec
 
 ## Compatibility
 
-Waffle does not promise compatibility with an older runtime package or a stale consumer. Consumers pin one exact Git commit and use the matching exports and lockfile.
+Consumers pin the exact runtime build in their dependency and lockfile. Host compatibility is a separate package-metadata check, not a comparison of package versions or build identities.
 
 Installable Waffle packages also carry a positive safe integer named `waffleHostInterface`.
 The runtime provides the integer, and every family requires one. A family can run only when
@@ -753,9 +753,16 @@ authority, revocation, and lifetime rules.
 Package versions, source commits, URLs, archive hashes, transformer inputs, producer receipts,
 and artifact hashes remain integrity evidence. They do not substitute for
 `waffleHostInterface`. A runtime implementation can change without an interface bump when the
-observable contract stays compatible. Bump the integer when an old family cannot safely run on
+observable contract stays compatible. Increase the integer monotonically when an old family cannot safely run on
 the new contract. A family changes its required integer only when it starts using a newer
-contract.
+contract. A new export that preserves existing calls does not require a bump. A removed export,
+changed signature, or incompatible result, error, readiness, authority, or lifetime rule does.
+
+The family peer `waffle: "*"` controls package-manager placement only. It does not assert any
+compatibility range. Source workspaces keep `devDependencies.waffle = "workspace:*"`; published
+families have only the wildcard peer and never a Waffle dependency or optional dependency.
+Release and consumer tools enforce integer equality and one physical runtime independently of
+that wildcard.
 
 ## Inode permission query
 

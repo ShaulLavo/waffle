@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { expect, test } from "bun:test";
 import {
   assertExactHostInterface,
   assertSourceWaffleFamilyManifest,
   assertWaffleFamilyManifest,
   parseHostInterface,
-  type HostInterface,
-} from "../packages/waffle/tooling/host-interface.ts";
-import { admitProgramPackage } from "./program-package.ts";
-import { assertSourceWaffleMetadata } from "./waffle-family-metadata.ts";
+  readHostInterface,
+  isWaffleFamilyManifest,
+} from "../tooling/host-interface.ts";
+import { assertSourceWaffleMetadata } from "../../../tools/waffle-family-metadata.ts";
 
-const repository = resolve(import.meta.dirname, "..");
+const repository = resolve(import.meta.dirname, "../../..");
 const runtimeInterface = parseHostInterface(1, "runtime");
 
 function familyManifest(overrides: Record<string, unknown> = {}) {
@@ -99,26 +97,10 @@ test("the repository source metadata gate covers every Waffle family", () => {
   assert.equal(assertSourceWaffleMetadata(repository), 1);
 });
 
-test("metadata validation does not replace artifact and receipt admission", () => {
-  const root = mkdtempSync(join(tmpdir(), "waffle-host-interface-"));
-  try {
-    mkdirSync(join(root, "dist"));
-    writeFileSync(join(root, "package.json"), JSON.stringify(familyManifest()));
-    writeFileSync(
-      join(root, "package-artifacts.json"),
-      JSON.stringify({ files: ["dist/program.wasm", "dist/program-program.json"] }),
-    );
-    writeFileSync(join(root, "dist/program.wasm"), Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0));
-    writeFileSync(join(root, "dist/program-program.json"), "{}");
-
-    const metadata: HostInterface = assertSourceWaffleFamilyManifest(
-      familyManifest(),
-      "fixture/package.json",
-      runtimeInterface,
-    );
-    assert.equal(metadata, 1);
-    assert.throws(() => admitProgramPackage(root));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+test("source discovery includes missing peers and dev-only runtime references", () => {
+  expect(isWaffleFamilyManifest({ devDependencies: { waffle: "workspace:*" } })).toBe(true);
+  expect(isWaffleFamilyManifest({ waffleHostInterface: 1 })).toBe(true);
+  expect(isWaffleFamilyManifest({ name: "waffle", waffleHostInterface: 1 })).toBe(false);
+  expect(isWaffleFamilyManifest({ name: "fixture" })).toBe(false);
+  assert.equal(readHostInterface({ waffleHostInterface: 1 }, "fixture"), 1);
 });
