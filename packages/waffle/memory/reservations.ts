@@ -877,6 +877,8 @@ async function runProbeWorker(workerURL?: string | URL): Promise<ProbeResult> {
       worker.postMessage({ ceilingBytes: PROBE_CEILING_BYTES });
     });
   } finally {
+    worker.onmessage = null;
+    worker.onerror = null;
     await worker.terminate();
   }
 }
