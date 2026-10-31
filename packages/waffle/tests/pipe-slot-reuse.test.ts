@@ -372,3 +372,47 @@ test("reused writers preserve atomic writes, backpressure and independent descri
   expect(next.readiness().writable).toBe(true);
   fence(next.handle(), 3, 2, 256);
 });
+
+for (const phase of ["reclaiming", "reserving"] as const) {
+  test(`append reuse exposes committed records while the slot is ${phase}`, () => {
+    const { pipe, reader, writer } = fixture(2, 16);
+    const parent = pipe.retain(3, "write");
+    expect(writer.tryWrite([new Uint8Array([10])])).toBe(1);
+    writer.close();
+    expect(parent.tryWrite([new Uint8Array([20])])).toBe(1);
+    const state = words(writer.handle()),
+      cas = A.compareExchange,
+      store = A.store;
+    let observed = false;
+    function observe() {
+      if (observed) return;
+      observed = true;
+      fence(
+        writer.handle(),
+        phase === "reclaiming" ? -0x80000000 : -4,
+        0,
+        phase === "reclaiming" ? 0 : 256,
+      );
+      expect(reader.readiness().nbytes).toBe(2);
+      readByte(reader, 10);
+    }
+    A.compareExchange = ((array: Int32Array, index: number, old: number, next: number) => {
+      const result = cas(array, index, old, next);
+      if (phase === "reclaiming" && sameWord(array, state.owner) && next === -0x80000000) observe();
+      return result;
+    }) as typeof A.compareExchange;
+    A.store = ((array: Int32Array, index: number, value: number) => {
+      const result = store(array, index, value);
+      if (phase === "reserving" && sameWord(array, state.owner) && value === -4) observe();
+      return result;
+    }) as typeof A.store;
+    try {
+      pipe.retain(4, "write");
+    } finally {
+      A.compareExchange = cas;
+      A.store = store;
+    }
+    expect(observed).toBe(true);
+    readByte(reader, 20);
+  });
+}

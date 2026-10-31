@@ -762,14 +762,14 @@ class PipeState {
     return ringReduce(
       this.writers,
       0,
-      (total, ring) => total + (ring.owner > 0 ? ring.available : 0),
+      (total, ring) => total + (ring.owner !== 0 ? ring.available : 0),
     );
   }
   relayAvailable(): number {
     return (
       this.queued() +
       Math.max(0, atomicsLoad(this.control, 4)) +
-      ringReduce(this.readers, 0, (total, ring) => total + (ring.owner > 0 ? ring.available : 0))
+      ringReduce(this.readers, 0, (total, ring) => total + (ring.owner !== 0 ? ring.available : 0))
     );
   }
   nextTicket(): bigint {
@@ -797,7 +797,7 @@ class PipeState {
     let chosen: { ring: Ring; record: PipeRecord; pin: bigint } | undefined;
     for (let index = 0; index < this.writers.length; index++) {
       const ring = this.writers[index]!;
-      if (ring.owner <= 0) continue;
+      if (ring.owner === 0) continue;
       const record = ring.head();
       if (!record || BigInt.asIntN(64, record.ticket - ceiling) > 0n) continue;
       if (chosen && BigInt.asIntN(64, record.ticket - chosen.record.ticket) >= 0n) continue;
