@@ -8,8 +8,9 @@ the listener wildcard. `peerAddr()` reports the other virtual endpoint.
 Supported binds are `127.0.0.1`, `0.0.0.0`, `::1`, and `::`. IPv6 loopback and
 unspecified addresses also accept expanded notation and report canonical text.
 `localhost` selects IPv4 loopback. An empty bind retains the existing IPv4-any
-default. Other hosts return `UNSUPPORTED` with `ENOTSUP`; no interface, DNS lookup,
-or external TCP listener is created.
+default. Non-loopback binds always return `UNSUPPORTED` with `ENOTSUP`. No operating-system
+interface or external TCP listener is created. Numeric loopback aliases, IPv6 brackets and
+expanded notation always stay inside the virtual namespace, even with a connector configured.
 
 An IPv4 bind accepts IPv4 connections. `::1` accepts IPv6 connections. `::` accepts
 both families. Its accepted IPv4 sockets report IPv6 mapped loopback addresses,
@@ -31,3 +32,18 @@ allocating a connection or falling through to the external fetch transport.
 The internal `tcp-connect` request carries the destination host. Connection ring
 records carry both `local` and `peer` addresses. Hosts and helpers must use the
 same protocol. Fetch still uses the injected transport for external requests.
+
+
+## Outbound connections
+
+A shared host can connect to other hosts only when its page-owned helper has a `NetConnect`
+capability. Without one, connect retains `UNSUPPORTED` and the existing `ENOTSUP` message.
+Standalone hosts cannot use an outbound connector.
+
+The request preserves the guest's unresolved hostname or IP literal. While connecting,
+`peerAddr` and `localAddr` fail with `ENOTCONN`. After `Open`, `peerAddr` reports the
+connector's actual remote address and port. `localAddr` reports `0.0.0.0:0` for IPv4 or
+`[::]:0` for IPv6. It never exposes the connector's physical local endpoint.
+
+Name lookup remains localhost-only. Non-localhost `lookup` calls still return `ENOTSUP`;
+only the connector resolves outbound names. See [Networking](network.md#outbound-connectors).

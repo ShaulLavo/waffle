@@ -63,8 +63,8 @@ Memory groups support cooperative shared-memory guests. Production thread schedu
 | Processes             | 1,024 simultaneously enrolled by default.                                                          | `proc/pipes.ts`, `proc/worker-client.ts` |
 | Pipes                 | 64 KiB capacity, 16 writers and 16 readers by default. Lifetime cells exhausted: `ENFILE`.         | [Architecture](architecture.md)          |
 | Signals               | Linux numbers 1 to 31 and 34 to 64. Stop signals 19 to 22 return `ENOTSUP`. No stopped state.      | [Architecture](architecture.md)          |
-| Browser network       | Virtual loopback only: `127.0.0.1`, `0.0.0.0`, `::1`, `::`. Port 0 picks from 49152 to 65535.      | [Networking](network.md)                 |
-| TCP buffering         | 1 MiB unread per direction. HTTP fetch bodies use a 512 KiB window.                                | [Networking](network.md)                 |
+| Browser network       | Virtual loopback by default; an explicit page-owned `NetConnect` can provide non-loopback TCP. Port 0 picks from 49152 to 65535. | [Networking](network.md) |
+| TCP buffering         | 1 MiB unread inbound and unsettled outbound bytes per connector direction. HTTP fetch bodies use a 512 KiB window. | [Networking](network.md) |
 | Permissions           | One virtual principal. Files `0600`, directories `0700`. No owners, groups or symlinks.            | [Permissions](permissions.md)            |
 | Host identity         | `runtime.hostIdentity` is `null` unless the embedder passes `uid`, `euid` and `hostname`.          | [Process identity](process-context.md)   |
 

@@ -1,4 +1,10 @@
 export { createRuntime } from "./runtime.js";
+export type {
+  NetConnect,
+  NetConnectErrorCode,
+  NetOutboundStream,
+  NetOutboundTarget,
+} from "./browser/net/outbound.js";
 export { RuntimeNetworkLookupError } from "./runtime.js";
 export type {
   Runtime,

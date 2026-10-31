@@ -1,4 +1,10 @@
-import { NetHelper, NetNamespace, type NetFetch, type NetHelperHooks } from "./helper.js";
+import {
+  NetHelper,
+  NetNamespace,
+  type NetConnect,
+  type NetFetch,
+  type NetHelperHooks,
+} from "./helper.js";
 import { CAPACITY } from "./ring.js";
 import type { FileHandle } from "../../core/filesystem.js";
 import type { FilesystemIdentity } from "../../fs/protocol.js";
@@ -32,6 +38,7 @@ export interface RuntimeNetwork {
   createHelper(options: {
     readonly ring: SharedArrayBuffer;
     readonly fetch: NetFetch;
+    readonly connect?: NetConnect;
     readonly hooks?: NetHelperHooks;
     /** Without a scope, every pathname socket call fails with ENOTCAPABLE. */
     readonly pathScope?: RuntimeNetworkPathScope;
@@ -46,12 +53,15 @@ export type AttachSocketScope = (
 function snapshot(options: Parameters<RuntimeNetwork["createHelper"]>[0]) {
   const ring = options.ring;
   const fetch = options.fetch;
+  const connect = options.connect;
   const hooks = options.hooks;
   const listening = hooks?.listening;
   const stopped = hooks?.stopped;
   if (!(ring instanceof SharedArrayBuffer) || ring.byteLength < CAPACITY + 32)
     throw new TypeError("Networking requires a Waffle ring");
   if (typeof fetch !== "function") throw new TypeError("Network fetch policy is required");
+  if (connect !== undefined && typeof connect !== "function")
+    throw new TypeError("Network connect policy must be a function");
   if (listening !== undefined && typeof listening !== "function")
     throw new TypeError("Network listening hook must be a function");
   if (stopped !== undefined && typeof stopped !== "function")
@@ -59,6 +69,7 @@ function snapshot(options: Parameters<RuntimeNetwork["createHelper"]>[0]) {
   return {
     ring,
     fetch,
+    connect,
     hooks: { listening, stopped },
     pathScope: snapshotScope(options.pathScope),
   };
@@ -181,6 +192,7 @@ export async function createRuntimeNetwork(assertLive: () => void, attach?: Atta
         assertLive,
         (hostname, options) => network.lookup(hostname, options),
         helperPaths(cleanup, captured.pathScope, attach),
+        captured.connect,
       );
       const capability = project(helper, assertLive, () => helpers.delete(helper));
       helpers.set(helper, capability);

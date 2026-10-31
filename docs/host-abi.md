@@ -745,6 +745,24 @@ The network helper performs injected `fetch` operations and writes responses to 
 
 Shared hosts also carry pathname stream sockets through `listenPath` and `connectPath`. Their wire requests are `unix-listen`, `unix-connect` and the acknowledged `unix-close`, answered in the same 12-byte reply cell with a WASI errno on failure. Socket nodes report Preview1 filetype 6 (`SOCKET_STREAM`). See [Unix-domain stream sockets](unix-sockets.md).
 
+### Outbound connector
+
+`RuntimeNetwork.createHelper` accepts an optional page-owned `connect?: NetConnect`. The connector
+is called only for non-loopback `tcp-connect` requests and receives `{ host, port }` without a DNS
+lookup in Waffle. It returns a `NetOutboundStream` with `readable`, `writable` and the actual remote
+`PeerAddr`. Waffle does not import relay or carrier modules.
+
+A configured non-loopback connect returns a handle immediately with `TCP_PENDING = 1` and local port
+zero. The ring later carries `Kind.Open` with `{ local, peer }`, or `Kind.Error` with the mapped
+`NetConnectError` code. While connecting, `read` and `write` return `AGAIN`, readiness is false,
+and address calls return `ENOTCONN`. A shutdown is remembered until open. Close aborts a pending
+connector; helper disposal cancels every connector stream.
+
+The helper limits unread inbound bytes and unsettled outbound writes to 1 MiB per direction. A
+`tcp-read` acknowledgement releases inbound credit; `Kind.Writable` releases a blocked writer.
+Target EOF is `Kind.End` and does not prevent guest writes. Shutdown closes only the local write
+side, while full close closes the write side gracefully and cancels reads.
+
 ## Compatibility
 
 Consumers pin the exact runtime build in their dependency and lockfile. Host compatibility is a separate package-metadata check, not a comparison of package versions or build identities.
@@ -904,7 +922,7 @@ spawned processes. The service, bounds and overflow rules are in
 
 ## Internal network module
 
-The Rust socket module is not a guest import namespace. Guest network calls, numeric results, ring records, addresses, and JSON errors are unchanged. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.
+The Rust socket module is not a guest import namespace. Its virtual loopback commands and address rules are unchanged by the outbound connector. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.
 
 ## Internal filesystem walk operations
 
