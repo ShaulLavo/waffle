@@ -263,19 +263,24 @@ export class SharedMemoryLedger {
   private readonly holders = new Map<number, Holder>();
   private readonly values = new WeakMap<object, Holder>();
   private readonly headrooms = new WeakMap<Headroom, Holder>();
-  private readonly finalizer = new FinalizationRegistry<number>((id) => {
-    const holder = this.holders.get(id);
-    if (!holder) return;
-    holder.receipts--;
-    if (holder.receipts === 0 && holder.state !== "debt") this.holders.delete(id);
-  });
+  private readonly finalizer: { register(target: object, id: number): void };
   private pending?: Promise<void>;
   private measurementError: string | null = null;
   constructor(
     private platform: SharedMemoryPlatform,
     private readonly allocations = allocator,
     private readonly remeasure = () => measureSharedMemory({ remeasure: true }),
-  ) {}
+    finalizer: (receive: (id: number) => void) => { register(target: object, id: number): void } = (
+      receive,
+    ) => new FinalizationRegistry(receive),
+  ) {
+    this.finalizer = finalizer((id) => {
+      const holder = this.holders.get(id);
+      if (!holder) return;
+      holder.receipts--;
+      if (holder.receipts === 0 && holder.state !== "debt") this.holders.delete(id);
+    });
+  }
 
   openRuntime(platform: SharedMemoryPlatform): RuntimeReservations {
     validatePlatform(platform);
@@ -714,11 +719,25 @@ export class SharedMemoryLedger {
   private scheduleRemeasure(): void {
     if (this.platform.kind !== "bounded" || this.pending) return;
     const previous = this.platform;
+    // The probe sees remaining capacity, not page-owned backing already constructed.
+    // Do not add unconstructed headroom or speculative guest declarations to that receipt.
+    let constructed = 0;
+    for (const holder of this.holders.values()) {
+      if (holder.value?.deref() || holder.memory?.deref()) constructed += holder.chargedBytes;
+    }
     this.pending = Promise.resolve()
       .then(this.remeasure)
       .then(
         (platform) => {
-          this.platform = platform.kind === "bounded" ? platform : previous;
+          this.platform =
+            platform.kind === "bounded"
+              ? {
+                  ...platform,
+                  budgetBytes: bytes(
+                    Math.min(previous.budgetBytes, platform.budgetBytes + constructed),
+                  ),
+                }
+              : previous;
           this.measurementError = null;
         },
         (error: unknown) => {

@@ -348,3 +348,39 @@ test("shared imports and absent maxima are parsed, and memory64 fails closed", (
     parseModuleMemory(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 0])),
   ).toThrow(SharedMemoryAdmissionError);
 });
+
+test("finalization is a reachability receipt and cannot erase failed-stop debt", () => {
+  const registered: { target: WeakRef<object>; id: number }[] = [];
+  let collect: (id: number) => void = () => {};
+  const platform = bounded(PAGE_BYTES * 2);
+  const ledger = new SharedMemoryLedger(
+    platform,
+    allocations,
+    async () => platform,
+    (receive) => {
+      collect = receive;
+      return {
+        register(target, id) {
+          registered.push({ target: new WeakRef(target), id });
+        },
+      };
+    },
+  );
+  const first = ledger.openRuntime(platform);
+  const buffer = first.buffer("filesystem-root", {
+    kind: "fixed-buffer",
+    length: bytes(PAGE_BYTES),
+  });
+  first.dispose();
+  const second = ledger.openRuntime(platform);
+  expect(second.snapshot().awaitingReleaseBytes).toBe(PAGE_BYTES);
+  expect(() => second.admit(plan(2))).toThrow(SharedMemoryAdmissionError);
+  expect(registered[0]?.target.deref()).toBe(buffer);
+  collect(registered[0]!.id);
+  expect(second.snapshot().awaitingReleaseBytes).toBe(0);
+  const failed = second.admit(plan(1)).launched();
+  failed.failed([new Error("native stop failed")]);
+  second.dispose();
+  for (const receipt of registered) collect(receipt.id);
+  expect(second.snapshot().debtBytes).toBe(PAGE_BYTES);
+});

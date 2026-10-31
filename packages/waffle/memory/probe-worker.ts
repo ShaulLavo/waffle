@@ -1,7 +1,12 @@
 import { PAGE_BYTES, PROBE_CEILING_BYTES, type ProbeResult } from "./reservations.js";
 function growable(maxByteLength: number): SharedArrayBuffer {
   const value: unknown = Reflect.construct(SharedArrayBuffer, [0, { maxByteLength }]);
-  if (!(value instanceof SharedArrayBuffer)) throw new TypeError("invalid probe buffer");
+  if (
+    !(value instanceof SharedArrayBuffer) ||
+    Reflect.get(value, "maxByteLength") !== maxByteLength ||
+    Reflect.get(value, "growable") !== true
+  )
+    throw new TypeError("Growable shared-buffer measurement is unavailable");
   return value;
 }
 function counted(create: () => object, retained: object[]): boolean {

@@ -1718,6 +1718,8 @@ export class BrowserProcessBroker {
       throw error;
     }
     const { request, transfer } = lease.launch();
+    // The external root receives the Memory itself through its bootstrap request.
+    lease.group.buffer();
     (this.rootGroups ??= new Map()).set(pid, lease);
     return Object.freeze({
       group: lease.group,
