@@ -514,7 +514,7 @@ test("trusted declarations are chosen without probing and remain explicitly decl
   try {
     const platform = bounded();
     const runtime = new SharedMemoryLedger(platform).openRuntime(platform);
-    expect(runtime.snapshot().platform.source).toBe("declared");
+    expect(runtime.snapshot().platform.source).toBe("application");
     expect(runtime.snapshot().budgetBytes).toBe(6 * 1024 ** 3);
     expect(runtime.snapshot().effectiveBudgetBytes).toBe(6 * 1024 ** 3);
     expect(runtime.snapshot().contradictions).toEqual([]);

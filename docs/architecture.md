@@ -423,11 +423,10 @@ a responsive controller starts the automatic relay.
 Pass `onProcessAdmission` to `createRuntime` to observe child admission without console logging:
 
 ```ts
-import { createRuntime, measureSharedMemory, type ProcessAdmissionEvent } from "waffle";
+import { createRuntime, type ProcessAdmissionEvent } from "waffle";
 
 const admissions: ProcessAdmissionEvent[] = [];
 const runtime = createRuntime({
-  sharedMemory: await measureSharedMemory(),
   onProcessAdmission(event) {
     if (admissions.length === 256) admissions.shift();
     admissions.push(event);

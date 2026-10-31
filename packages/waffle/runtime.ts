@@ -1,3 +1,4 @@
+import { sharedMemoryProfile } from "./memory/profile.js";
 import { installSharedControlAllocator } from "./memory/control.js";
 import {
   bytes,
@@ -143,7 +144,7 @@ export type ProgramDefinition = {
     }
 );
 export interface RuntimeOptions {
-  readonly sharedMemory: SharedMemoryPlatform;
+  readonly sharedMemory?: SharedMemoryPlatform;
   readonly programs?: ProgramsOptions;
   /** Explicit runtime host identity. Omission leaves host identity unsupported. */
   hostIdentity?: RuntimeHostIdentity;
@@ -387,7 +388,7 @@ function sourceTime(): number | undefined {
   }
 }
 
-export function createRuntime(options: RuntimeOptions): Runtime {
+export function createRuntime(options: RuntimeOptions = {}): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
   const token = {};
   owners[ownerKey] = token;
@@ -396,7 +397,8 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   let restoreControlAllocator: () => void;
   try {
     hostIdentity = snapshotHostIdentity(options?.hostIdentity);
-    reservations = pageSharedMemoryLedger(options?.sharedMemory).openRuntime(options.sharedMemory);
+    const platform = options.sharedMemory ?? sharedMemoryProfile();
+    reservations = pageSharedMemoryLedger(platform).openRuntime(platform);
     restoreControlAllocator = installSharedControlAllocator((length) =>
       reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
     );

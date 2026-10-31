@@ -8,10 +8,9 @@ const BASH_WEB = "https://github.com/ShaulLavo/bash-web";
 const BUN_DEMO = "https://bun.sprockt.dev/";
 const START = `${DOCS}/getting-started.md`;
 
-const snippet = `import { createRuntime, measureSharedMemory } from "waffle";
+const snippet = `import { createRuntime } from "waffle";
 
 const runtime = createRuntime({
-  sharedMemory: await measureSharedMemory(),
   filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
 });
 const files = runtime.filesystem;

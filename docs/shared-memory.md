@@ -1,25 +1,57 @@
 # Shared-memory reservations
 
-`createRuntime` requires a platform before it allocates filesystem state. Production callers either classify once per page or explicitly declare trusted capacity before probing.
+`createRuntime()` selects a synchronous built-in memory profile. Startup does not probe, allocate a test pool, create a measurement Worker, or await classification. The ordinary filesystem Worker is unchanged and process services remain lazy.
 
 ```ts
-import { createRuntime, measureSharedMemory } from "waffle";
+import { createRuntime } from "waffle";
 
-const sharedMemory = await measureSharedMemory({
-  workerURL: new URL("./probe-worker.js", import.meta.url),
+const runtime = createRuntime();
+```
+
+## Built-in profiles
+
+| Policy | Desktop | iOS and iPadOS WebKit |
+| --- | --- | --- |
+| Profile | `desktop` | `apple-mobile-webkit` |
+| Budget | Uncapped | 3 GiB |
+| Assumed pool and margin | Not applicable | 4 GiB minus 1 GiB |
+| Counted maxima | All recorded, no admission limit | Fixed shared buffers and shared Wasm memory; not private Wasm maxima |
+| Request arena | 2,147,479,552 bytes with the existing 64 MiB fallback | 64 MiB, no fallback |
+| Default group | Growable, 65,536 pages | Fixed, 16,384 pages |
+| Worker controls | Unbounded | Existing 64 MiB lifetime quota |
+
+The mobile values are policy assumptions, not runtime measurements or per-device guarantees. Private guest maxima remain fully visible in `declaredBytes` but are not charged by this profile. Their current physical size and browser allocations are outside this reservation ledger and must fit within the margin. A group, grant state, pooled arenas, other controls and retained debt add charges beyond the nominal arena and quota pair. The policy does not guarantee a process count or a Nuxt install peak.
+
+`sharedMemoryProfile(environment?)`, exported from `waffle`, is a pure selector when given `{ userAgent, maxTouchPoints }`. Without an argument it reads the current navigator only when called; an absent navigator selects desktop. The rule first requires `AppleWebKit/`. An iPhone, iPad or iPod token selects mobile with `match: "ios-user-agent"`. A Macintosh token with more than one touch point selects mobile with `match: "ipados-desktop-user-agent"`. Other inputs select desktop, including Mac Safari without touch, Android and unknown custom WebViews. No other detection heuristic runs.
+
+## Application override and provenance
+
+An application with better knowledge passes an issued override instead of the default:
+
+```ts
+import { bytes, createRuntime, declareSharedMemoryPlatform } from "waffle";
+
+const sharedMemory = declareSharedMemoryPlatform({
+  kind: "bounded",
+  budgetBytes: bytes(3_221_225_472),
+  counts: { fixedBuffer: true, sharedMemory: true, privateMemory: false },
 });
 const runtime = createRuntime({ sharedMemory });
 ```
 
-The browser build includes a `probe-worker.ts` entry that imports `waffle/memory/probe-worker`, emitted beside the app as `probe-worker.js`. Include it in the build and pass its emitted URL. [Getting started](getting-started.md#build) shows all three entries. Bundling the app alone does not emit the probe asset.
+An explicit override skips environment reads entirely. The application asserts the capacity; Waffle does not measure its truth. The factory requires a positive safe-integer budget and all three boolean counted kinds, and throws `TypeError` on invalid input. It copies allowlisted fields and freezes the outer object and nested counts. Only issued objects are accepted: a literal, spread copy or JSON recreation rejects before backing or Worker construction.
 
-Measurement classifies the platform, not usable post-probe capacity. The worker first tries a 16 GiB growable shared buffer, halving only before the first success, down to 256 MiB. It then keeps that chunk size until the next refusal or the 16 GiB ceiling. There is no fill phase or counted-kind sub-probe. Reaching the ceiling resolves an unbounded platform. A below-ceiling refusal rejects with `SharedMemoryMeasurementError`, whose `observation` is either `bounded` with scalar `heldBytes` and `chunkBytes`, or `unavailable` if even the smallest chunk refused. Those bytes describe the observation, never a startup budget.
+Snapshots identify a built-in choice by `source: "profile"` and its `profile`. Mobile profiles also expose the match, assumed pool and margin. Overrides use `source: "application"`. Neither source is a measurement. Importing source or prepared entries reads no environment and constructs no shared backing, Wasm memory or Worker. The internal `memory/index.ts` is not a public package subpath.
 
-The promise is memoized per page, including rejection. Handlers are cleared and the worker is terminated before settlement, but termination is not a physical-release receipt. No runtime remeasurement runs after an allocation failure.
+## Research and limits
 
-## Bounded platforms need a trusted declaration
+This is original Waffle selection code informed by these sources, not copied upstream implementation:
 
-An embedder that has trusted bounded capacity calls `declareSharedMemoryPlatform({ kind: "bounded", budgetBytes, counts })` **instead of** measurement, before any probe runs. The declaration is the embedder's assertion, not capacity verified by Waffle. Waffle supplies no budget, platform selector, retry, or fallback from rejection to a declaration. Declared platforms retain `source: "declared"`; measured unbounded platforms retain `source: "measured"`. A measurement rejection must stop startup unless the embedder has selected a separate trusted policy before probing.
+- [YurtOS/yurt-playground PR 272](https://github.com/YurtOS/yurt-playground/pull/272), merge `305658a9`, reports roughly 4 GiB shared-Wasm reservation totals on actual iPad, iPhone and Chrome for iOS, versus roughly 30 GiB on macOS. These are observations, not a WebKit constant. Its probe waits 1.5 seconds after termination, calls immediate iOS reclamation unmeasured, and lists full-branch device verification as pending.
+- [Automattic/kandelo PR 1410](https://github.com/Automattic/kandelo/pull/1410), merge `1cf3e9ac`, supports a constrained process policy and the Macintosh-with-touch iPadOS signal. Its roughly 6 GiB iOS observation is from a Simulator, not a phone guarantee. Its revised reclamation claims are not Waffle release evidence.
+- [WebKit at `c40e5ac6`](https://github.com/WebKit/WebKit/commit/c40e5ac64afe59b027548e190fc490f12ddf5ea4), particularly `WasmMemory.cpp`, `ArrayBuffer.cpp` and `BufferMemoryHandle`, supports maximum reservation for shared Wasm and growable buffers, versus current-size mapping for bounds-checked private memory. This is trunk source, not proof of the installed iOS 26.5 build. Separate RAM-dependent physical accounting still exists, and `Worker.terminate()` returns no physical-release receipt.
+
+An unrecognized mobile WebView can receive the desktop profile; its application must override it. A low-capacity device, private-memory growth or browser demand beyond the margin can still fail. Optional refinement is not implemented and startup never waits for it.
 
 ## What is charged
 

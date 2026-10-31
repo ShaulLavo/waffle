@@ -16,7 +16,7 @@ import {
   SharedMemoryAdmissionError,
 } from "../index.js";
 
-test("runtime rejects an absent platform before filesystem/worker construction", () => {
+test("runtime rejects a forged platform before filesystem/worker construction", () => {
   const previous = globalThis.Worker;
   let workers = 0;
   class ObservedWorker {
@@ -28,7 +28,11 @@ test("runtime rejects an absent platform before filesystem/worker construction",
   globalThis.Worker = ObservedWorker as unknown as typeof Worker;
   try {
     // Deliberate external-boundary misuse, never an old-shape compatibility overload.
-    expect(() => Reflect.apply(createRuntime, undefined, [{}])).toThrow(/Measure|declare/);
+    expect(() =>
+      Reflect.apply(createRuntime, undefined, [
+        { sharedMemory: { kind: "unbounded", source: "application" } },
+      ]),
+    ).toThrow(TypeError);
     expect(workers).toBe(0);
   } finally {
     globalThis.Worker = previous;

@@ -8,8 +8,6 @@ const boundaries: Readonly<Record<string, string>> = {
     "Import-inert realm router; live runtimes install their captured, charged allocator. The lazy native fallback is only for standalone core embeddings.",
   "memory/control.ts":
     "Captured guest control allocator claims a finite grant before construction.",
-  "memory/probe-worker.ts":
-    "Disposable measurement worker, terminated before runtime construction.",
   "proc/intrinsics/host.ts":
     "Captured native primitive; runtime callers must supply an allocation authority.",
   "proc/pipes.ts":

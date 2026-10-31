@@ -3,14 +3,13 @@
 Choose the programs your page installs. Unlisted programs are absent. Waffle never searches a remote catalog or creates an interpreter to satisfy a missing command.
 
 ```ts
-import { createRuntime, measureSharedMemory } from "waffle";
+import { createRuntime } from "waffle";
 import { coreutils } from "waffle-coreutils";
 import { ripgrep } from "waffle-ripgrep";
 import { sed } from "waffle-sed";
 import { findutils } from "waffle-findutils";
 
 const runtime = createRuntime({
-  sharedMemory: await measureSharedMemory(),
   programs: { preload: [coreutils.pick("ls", "cat", "echo")], onDemand: [ripgrep, sed, findutils] },
 });
 await runtime.programs.ready;

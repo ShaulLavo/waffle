@@ -7,54 +7,21 @@ import {
 import { ProcessError, ProcessErrno } from "../proc/errors.js";
 import type { MemoryDeclaration } from "./declarations.js";
 
-const reservedBytesBrand: unique symbol = Symbol("waffle.reserved-bytes");
-const wasmPagesBrand: unique symbol = Symbol("waffle.wasm-pages");
-export type ReservedBytes = number & { readonly [reservedBytesBrand]: true };
-export type WasmPages = number & { readonly [wasmPagesBrand]: true };
+import {
+  bytes,
+  pages,
+  validatePlatform,
+  type ReservedBytes,
+  type WasmPages,
+  type SharedMemoryPlatform,
+} from "./platform.js";
+export { bytes, pages, declareSharedMemoryPlatform } from "./platform.js";
+export type { ReservedBytes, WasmPages, CountedKinds, SharedMemoryPlatform } from "./platform.js";
 export const PAGE_BYTES = 65_536;
 export const DESKTOP_ARENA_BYTES = 2_147_479_552;
 export const BOUNDED_ARENA_BYTES = 67_108_864;
 export const DESKTOP_GROUP_MAXIMUM_PAGES = 65_536;
 export const BOUNDED_GROUP_MAXIMUM_PAGES = 16_384;
-export const PROBE_CEILING_BYTES = 16 * 1024 ** 3;
-export const PROBE_SAFETY_MARGIN_BYTES = 256 * 1024 ** 2;
-
-function integer(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0)
-    throw new RangeError(`${name} must be a non-negative safe integer`);
-  return value;
-}
-export function bytes(value: number): ReservedBytes {
-  return integer(value, "bytes") as ReservedBytes;
-}
-export function pages(value: number): WasmPages {
-  if (value > 65_536) throw new RangeError("pages exceed wasm32 memory");
-  return integer(value, "pages") as WasmPages;
-}
-export interface CountedKinds {
-  readonly fixedBuffer: boolean;
-  readonly sharedMemory: boolean;
-  readonly privateMemory: boolean;
-}
-type PlatformInput =
-  | { readonly kind: "unbounded" }
-  | {
-      readonly kind: "bounded";
-      readonly budgetBytes: ReservedBytes;
-      readonly counts: CountedKinds;
-    };
-export type SharedMemoryPlatform =
-  | {
-      readonly kind: "unbounded";
-      readonly source: "measured" | "declared";
-      readonly probedBytes: ReservedBytes;
-    }
-  | {
-      readonly kind: "bounded";
-      readonly source: "measured" | "declared";
-      readonly budgetBytes: ReservedBytes;
-      readonly counts: CountedKinds;
-    };
 export type BufferShape =
   | { readonly kind: "fixed-buffer"; readonly length: ReservedBytes }
   | { readonly kind: "growable-buffer"; readonly initial: number; readonly maximum: ReservedBytes };
@@ -256,6 +223,11 @@ function chargeBytes(
     shape.kind === "fixed-buffer" ? platform.counts.fixedBuffer : platform.counts.sharedMemory;
   return counts ? shapeBytes(shape) : 0;
 }
+function declaredGuestBytes(guest: Extract<ProcessGuestPlan, { kind: "declared" }>): number {
+  let total = 0;
+  for (const memory of guest.memories) total += memory.maximumPages * PAGE_BYTES;
+  return total;
+}
 function guestBytes(platform: SharedMemoryPlatform, guest: ProcessGuestPlan): number {
   if (guest.kind !== "declared") return 0;
   let total = 0;
@@ -285,6 +257,7 @@ export class SharedMemoryLedger {
       receive,
     ) => new FinalizationRegistry(receive),
   ) {
+    validatePlatform(platform);
     this.finalizer = finalizer((id) => {
       const holder = this.holders.get(id);
       if (!holder) return;
@@ -588,7 +561,7 @@ export class SharedMemoryLedger {
             runtime,
             "guest-memory",
             { kind: "guest", memories: plan.guest.memories },
-            amount,
+            declaredGuestBytes(plan.guest),
             amount,
             "worker",
           )
@@ -749,134 +722,9 @@ export class SharedMemoryLedger {
     );
   }
 }
-function validatePlatform(platform: SharedMemoryPlatform): void {
-  if (!platform || (platform.source !== "declared" && platform.source !== "measured"))
-    throw new TypeError("Measure or explicitly declare shared memory before creating a runtime");
-  if (platform.kind === "unbounded") {
-    bytes(platform.probedBytes);
-    return;
-  }
-  bytes(platform.budgetBytes);
-  if (
-    typeof platform.counts.fixedBuffer !== "boolean" ||
-    typeof platform.counts.sharedMemory !== "boolean" ||
-    typeof platform.counts.privateMemory !== "boolean"
-  )
-    throw new TypeError("Invalid shared-memory counted kinds");
-}
-export function declareSharedMemoryPlatform(input: PlatformInput): SharedMemoryPlatform {
-  const platform: SharedMemoryPlatform =
-    input.kind === "unbounded"
-      ? { kind: "unbounded", source: "declared", probedBytes: bytes(PROBE_CEILING_BYTES) }
-      : { ...input, source: "declared", counts: Object.freeze({ ...input.counts }) };
-  validatePlatform(platform);
-  return Object.freeze(platform);
-}
 const pageLedgerKey = Symbol.for("waffle.shared-memory.ledger");
 const host = globalThis as typeof globalThis & { [pageLedgerKey]?: SharedMemoryLedger };
 export function pageSharedMemoryLedger(platform: SharedMemoryPlatform): SharedMemoryLedger {
   validatePlatform(platform);
   return (host[pageLedgerKey] ??= new SharedMemoryLedger(platform));
-}
-export interface ProbeResult {
-  readonly reachedBytes: number;
-  readonly chunkBytes: number;
-  readonly ceilingReached: boolean;
-}
-export type SharedMemoryObservation =
-  | {
-      readonly kind: "bounded";
-      readonly heldBytes: ReservedBytes;
-      readonly chunkBytes: ReservedBytes;
-    }
-  | { readonly kind: "unavailable" };
-export class SharedMemoryMeasurementError extends Error {
-  constructor(readonly observation: SharedMemoryObservation) {
-    super(
-      observation.kind === "unavailable"
-        ? "Shared memory classification could not reserve a probe chunk"
-        : `Shared memory classification held ${observation.heldBytes} bytes in ${observation.chunkBytes}-byte chunks; bounded capacity requires a trusted declaration before probing`,
-    );
-    this.name = "SharedMemoryMeasurementError";
-  }
-}
-export interface SharedMemoryMeasureOptions {
-  readonly workerURL?: string | URL;
-}
-let measurement: Promise<SharedMemoryPlatform> | undefined;
-/** Classify once per page. A bounded observation is never usable post-probe capacity. */
-export function measureSharedMemory(
-  options: SharedMemoryMeasureOptions = {},
-): Promise<SharedMemoryPlatform> {
-  return (measurement ??= runProbeWorker(options.workerURL).then((result): SharedMemoryPlatform => {
-    if (result.ceilingReached)
-      return { kind: "unbounded", source: "measured", probedBytes: bytes(result.reachedBytes) };
-    throw new SharedMemoryMeasurementError(
-      result.reachedBytes === 0
-        ? { kind: "unavailable" }
-        : {
-            kind: "bounded",
-            heldBytes: bytes(result.reachedBytes),
-            chunkBytes: bytes(result.chunkBytes),
-          },
-    );
-  }));
-}
-function parseProbeResult(value: unknown): ProbeResult {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    !("reachedBytes" in value) ||
-    !("chunkBytes" in value) ||
-    !("ceilingReached" in value)
-  )
-    throw new TypeError("Invalid shared-memory measurement");
-  const { reachedBytes, chunkBytes, ceilingReached } = value;
-  if (
-    typeof reachedBytes !== "number" ||
-    !Number.isSafeInteger(reachedBytes) ||
-    reachedBytes < 0 ||
-    typeof chunkBytes !== "number" ||
-    !Number.isSafeInteger(chunkBytes) ||
-    chunkBytes < 0 ||
-    typeof ceilingReached !== "boolean"
-  )
-    throw new TypeError("Invalid shared-memory probe capacity");
-  if (reachedBytes === 0 && chunkBytes === 0 && !ceilingReached)
-    return { reachedBytes, chunkBytes, ceilingReached };
-  const halvingSteps = Math.log2(PROBE_CEILING_BYTES / chunkBytes);
-  if (
-    chunkBytes < 256 * 1024 ** 2 ||
-    !Number.isInteger(halvingSteps) ||
-    halvingSteps < 0 ||
-    reachedBytes === 0 ||
-    reachedBytes > PROBE_CEILING_BYTES ||
-    reachedBytes % chunkBytes !== 0 ||
-    ceilingReached !== (reachedBytes === PROBE_CEILING_BYTES)
-  )
-    throw new TypeError("Invalid shared-memory probe capacity");
-  return { reachedBytes, chunkBytes, ceilingReached };
-}
-async function runProbeWorker(workerURL?: string | URL): Promise<ProbeResult> {
-  if (typeof Worker !== "function") throw new Error("Shared memory measurement requires Worker");
-  const worker = new Worker(workerURL ?? new URL("./probe-worker.js", import.meta.url), {
-    type: "module",
-  });
-  try {
-    return await new Promise<ProbeResult>((resolve, reject) => {
-      worker.onmessage = (event) => {
-        try {
-          resolve(parseProbeResult(event.data));
-        } catch (error) {
-          reject(error);
-        }
-      };
-      worker.onerror = (event) => reject(new Error(event.message || "Shared memory probe failed"));
-      worker.postMessage({ ceilingBytes: PROBE_CEILING_BYTES });
-    });
-  } finally {
-    worker.onmessage = null;
-    worker.onerror = null;
-    await worker.terminate();
-  }
 }

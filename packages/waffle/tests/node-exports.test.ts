@@ -13,7 +13,6 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
   const nodeEntries = entries.filter(([, target]) => typeof target.node === "string");
   const browserOnly = entries.filter(([, target]) => target.node === undefined).map(([key]) => key);
   expect(browserOnly).toEqual([
-    "./memory/probe-worker",
     "./browser/fs-worker",
     "./testing/interrupt-browser-runner-control",
     "./testing/storage-browser",
@@ -29,7 +28,16 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
   const specifiers = nodeEntries.map(([key]) =>
     key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`,
   );
-  const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
+  const script = `
+    import assert from "node:assert/strict";
+    let allocations=0;
+    Object.defineProperty(globalThis,"navigator",{configurable:true,get(){throw Error("Node import read navigator")}});
+    globalThis.Worker=new Proxy(function(){},{construct(){allocations++;throw Error("Node import created Worker")}});
+    globalThis.SharedArrayBuffer=new Proxy(SharedArrayBuffer,{construct(){allocations++;throw Error("Node import created shared backing")}});
+    WebAssembly.Memory=new Proxy(WebAssembly.Memory,{construct(){allocations++;throw Error("Node import created memory")}});
+    for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);
+    assert.equal(allocations,0);
+  `;
   expect(() =>
     execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" }),
   ).not.toThrow();

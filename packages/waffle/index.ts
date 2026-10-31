@@ -110,9 +110,8 @@ export {
   bytes,
   pages,
   declareSharedMemoryPlatform,
-  measureSharedMemory,
+  sharedMemoryProfile,
   SharedMemoryAdmissionError,
-  SharedMemoryMeasurementError,
   declareModuleMemory,
   createSharedControlAllocator,
 } from "./memory/index.js";
@@ -122,11 +121,10 @@ export type {
   WasmPages,
   CountedKinds,
   SharedMemoryPlatform,
+  SharedMemoryEnvironment,
   SharedMemorySnapshot,
   SharedMemoryRefusal,
   MemoryDeclaration,
   ProcessPlan,
   ProcessGuestPlan,
-  SharedMemoryMeasureOptions,
-  SharedMemoryObservation,
 } from "./memory/index.js";
