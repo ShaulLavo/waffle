@@ -1,5 +1,4 @@
 import { Worker } from "node:worker_threads";
-import wabt from "wabt";
 import { FilesystemService } from "../fs/service.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
@@ -9,6 +8,7 @@ import type { NetConnect, NetOutboundStream } from "../browser/net/outbound.js";
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 
 export async function socketModule(name = "preview1-socket-imports.wat") {
+  const { default: wabt } = await import("wabt");
   const compiler = await wabt();
   const source = await Bun.file(new URL(`./fixtures/${name}`, import.meta.url)).text();
   const parsed = compiler.parseWat(name, source);
