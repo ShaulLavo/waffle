@@ -7,3 +7,8 @@ Live plans: `001-vfs-family.md` (approved, in progress) and `browser-runtime.md`
 Approved work: [Native guest threads](wasi-threads.md), with
 [toolchain research and prior-art references](wasi-threads-references.md). This is an implementation
 plan for execution; thread support is not yet delivered.
+
+Proposed, not approved: [Guest graphics](guest-graphics.md), an overview of three plans that let a
+WASI guest open a window and draw with WebGPU: [windows, input and a winit backend](guest-windows.md),
+the [WebGPU bridge](gpu-bridge.md) and a [wgpu backend](wgpu-backend.md). It also proposes ADR 006
+for Rust guest crates and records what Horizon, the first consumer, needs.
