@@ -596,7 +596,7 @@ Pipe publication owners are enrolled before descriptor export under the spawn
 admission fence. Owner collection freezes old cursors and releases owner metadata;
 a delayed Worker cannot reenroll a collected identity. Cursor cells themselves
 are not reused: retained endpoint views have no cursor-incarnation field, and the
-separate cursor arena remains bounded at 16,777,216 cells (256 MiB).
+separate cursor arena defaults to 1,048,576 cells (16 MiB), with an explicit maximum up to 16,777,216 cells. Slot reuse never recycles these cells.
 
 ## Runtime-authored error diagnostics
 

@@ -137,3 +137,25 @@ Next step, before choosing any fix: in the failing full-suite order, record the 
 and counter at `ready`, after the peer write, and when `watch.next()` starts waiting. That shows
 whether the commit is published before the reader waits and whether it is ever lost. Raising the
 timeout is not a fix.
+
+
+## Recovering quarantined pipe slots
+
+Status: Approved follow-up. Owner: process-lifecycle track. The pipe-reuse change deliberately
+quarantines a ring if a Worker dies while its incarnation word has active sections. The default
+pipe has 16 writer and 16 reader slots; each abandoned section can permanently cost one slot.
+The default writer exhaustion diagnostic is exactly `pipe write process limit reached: 16 slots
+are live, busy or incarnation-exhausted`. Reader exhaustion additionally names unread slots.
+No timeout or logical revoke may clear an active count.
+
+Reproduce with `bun test packages/waffle/tests/pipe-reuse-worker.test.ts --test-name-pattern
+'physically paused Bun Worker death'`. A real Bun Worker pauses in its publication CAS, the
+host revokes and terminates it without releasing the gate, and the raw epoch remains at one
+active section. The other slot continues to reclaim. The test owns Worker termination and
+controller disposal in `finally`; no native-stop redesign is included in this change.
+
+Recovery needs a trusted, exact native-stop acknowledgement associated with that slot's
+incarnation, plus proof that no admitted native copy can still finish. Browser `terminate()`
+and registry collection do not provide that proof. Add delayed-copy, stale acknowledgement,
+replaced incarnation and physical-death controls before clearing any abandoned count. Keep
+finite quarantine if no platform-independent proof is available.
