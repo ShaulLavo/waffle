@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { createRuntime, type ProcessService, type RuntimeSupervisor } from "../runtime.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import {
@@ -85,6 +86,7 @@ async function harness() {
     }
   };
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
     memoryGroups: { members: 4, budgetBytes: 256 * 1024 * 1024, stackBytes: 64 * 1024 },
   });
@@ -148,7 +150,7 @@ async function harness() {
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   };
   await runtime.filesystem.writeFile("/member", source);
-  await service.adoptRuntimeRoot(root);
+  await service.adoptRuntimeRoot(root, { memory: [] });
   const supervisor: RuntimeSupervisor = await service.ready();
   await runtime.filesystem.mkdirp("/tmp");
   const launch = async (role: string, cwd = "/"): Promise<number> => {
@@ -224,7 +226,7 @@ async function harness() {
       // Unsettled group debt must keep the one-runtime page guard.
       let guard = "released";
       try {
-        await createRuntime().dispose();
+        await createRuntime({ sharedMemory: testSharedMemory }).dispose();
       } catch (error) {
         guard = String(error instanceof Error ? error.message : error);
       }

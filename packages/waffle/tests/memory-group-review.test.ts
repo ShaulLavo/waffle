@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createGroupMember } from "../group/member.js";
 import { GroupOp, PAGE_BYTES } from "../group/protocol.js";
@@ -249,6 +250,7 @@ test("a settled external root no longer retains its group lease", async () => {
   const table = new ProcessTable(identities);
   const registry = new ExecutableRegistry();
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -262,7 +264,7 @@ test("a settled external root no longer retains its group lease", async () => {
       identity: identities.buffer,
     });
     root.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const first = broker.admitRootMemoryGroup(root.pid);
     first.request.port.close();
     first.stopped();

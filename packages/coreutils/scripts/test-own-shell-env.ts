@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { installNodeWorkers, liveNodeWorkers, stopNodeWorkers } from "./node-worker-host.ts";
@@ -181,6 +182,7 @@ test("env unsupported command modes reject before process imports or input", () 
 async function installedFixture(context: TestContext, cwd = "/tmp/spec") {
   installNodeWorkers();
   const runtime = api.createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: new URL("fs.mjs", nodeDirectory), mode: "memory" },
   });
   const stops: (() => void)[] = [];

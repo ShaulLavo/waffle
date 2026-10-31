@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { spyOn, test } from "bun:test";
 import { createRuntime } from "waffle";
@@ -151,6 +152,7 @@ async function proveStopFence(session: FamilyAcceptanceSession): Promise<void> {
 test("optional awk registration does not fetch and removal preserves caller files", async () => {
   const fetching = spyOn(globalThis, "fetch");
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),
@@ -195,6 +197,7 @@ test("real optional awk shares one lazy payload, borrows its runtime, and retire
   assert.throws(() => awk.pick("not-awk"), /Unknown program/);
   const fetching = spyOn(globalThis, "fetch");
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

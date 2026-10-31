@@ -310,6 +310,7 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
   transport.data = { filesystem: runtime.filesystem.createIdentity() };
   const output: Output = { stdout: [], stderr: [] };
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (fd, payload) => recordOutput(output, fd, payload),
   });
   const notices: WorkerProcessMessage[] = [];

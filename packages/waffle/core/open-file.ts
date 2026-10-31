@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import type { Resource } from "./descriptors.js";
 import { FilesystemError } from "./filesystem.js";
 import { FilesystemSection, isRevoked } from "../fs/section.js";
@@ -20,7 +21,7 @@ export function shareFileResource(
 ): SharedArrayBuffer {
   const existing = offsets.get(resource);
   if (existing) return existing.buffer;
-  const shared = buffer ?? new SharedArrayBuffer(16);
+  const shared = buffer ?? allocateSharedControl(16);
   const cells = new Int32Array(shared);
   // Atomics has no Float64 operation. Share the number's bits, not a signed integer
   // conversion: existing JS offsets above 2^63 must not wrap into negative positions.

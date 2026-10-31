@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createRuntimeNetwork } from "../browser/net/runtime.js";
 import { createRing } from "../browser/net/ring.js";
@@ -144,6 +145,7 @@ test("a repeated listener handle cannot lose the first lease", async () => {
 
 test("real FS repeated listener handle leaves no stale socket after helper disposal", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });
   const identity = runtime.filesystem.createIdentity();
@@ -246,7 +248,7 @@ test("runtime disposal racing a first path request's scope attach leaves nothing
     },
   };
   for (const disposeHelperFirst of [true, false]) {
-    const runtime = createRuntime(options);
+    const runtime = createRuntime({ sharedMemory: testSharedMemory, ...options });
     await runtime.filesystem.mkdirp("/run");
     const identity = runtime.filesystem.createIdentity();
     const client = new FilesystemClient(runtime.filesystem.connect(identity));
@@ -276,7 +278,7 @@ test("runtime disposal racing a first path request's scope attach leaves nothing
     expect(Array.from(cells)).toEqual([1, -1, 11]);
   }
   // The page guard was released: no retained scope, pin or cleanup debt kept the runtime.
-  await createRuntime(options).dispose();
+  await createRuntime({ sharedMemory: testSharedMemory, ...options }).dispose();
 });
 
 test("TCP requests cannot take a handle owned by a pending or live path resource", async () => {

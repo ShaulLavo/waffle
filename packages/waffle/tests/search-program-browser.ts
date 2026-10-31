@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import {
   createRuntime,
   type GuestLauncher,
@@ -169,7 +170,10 @@ export async function searchProgramBrowserCases() {
       super.terminate();
     }
   };
-  const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
+  const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
+    filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
+  });
   const observations: Observation[] = [];
   function verifyTransport(message: {
     readonly runtimeProcess: unknown;

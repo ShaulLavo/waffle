@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -148,6 +149,7 @@ test("real upstream tar loads once on demand for both aliases and runs file/pipe
   );
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(trackedFetch);
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

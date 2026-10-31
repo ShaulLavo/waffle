@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { installBunAdapters } from "bun-wasm";
 import { installGit } from "waffle-git";
@@ -171,6 +172,7 @@ async function program(runtime: Runtime) {
 
 Reflect.set(globalThis, "gitSix", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("./fs-worker.js", location.href) },
   });
   const started = performance.now();

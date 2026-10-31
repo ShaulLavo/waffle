@@ -1,3 +1,10 @@
+import { installSharedControlAllocator } from "./memory/control.js";
+import {
+  bytes,
+  pageSharedMemoryLedger,
+  type SharedMemoryPlatform,
+  type RuntimeReservations,
+} from "./memory/reservations.js";
 import {
   ProgramCollection,
   type ProgramsOptions,
@@ -136,6 +143,7 @@ export type ProgramDefinition = {
     }
 );
 export interface RuntimeOptions {
+  readonly sharedMemory: SharedMemoryPlatform;
   readonly programs?: ProgramsOptions;
   /** Explicit runtime host identity. Omission leaves host identity unsupported. */
   hostIdentity?: RuntimeHostIdentity;
@@ -153,6 +161,7 @@ export interface RuntimeOptions {
   memoryGroups?: MemoryGroupPolicyOptions;
 }
 export interface Runtime {
+  readonly sharedMemory: Pick<RuntimeReservations, "snapshot" | "check">;
   readonly programs: RuntimePrograms;
   readonly hostIdentity: RuntimeHostIdentity | null;
   readonly filesystem: RuntimeFilesystem;
@@ -224,6 +233,8 @@ const processCapabilities = {
   memoryGroups: "method",
   admitRootMemoryGroup: "method",
   takeWorker: "method",
+  rootControlGrant: "method",
+  rootControlAllocated: "method",
   isIdleWorker: "method",
   kill: "async",
   killJob: "async",
@@ -375,11 +386,17 @@ function sourceTime(): number | undefined {
   }
 }
 
-export function createRuntime(options: RuntimeOptions = {}): Runtime {
+export function createRuntime(options: RuntimeOptions): Runtime {
+  const reservations = pageSharedMemoryLedger(options?.sharedMemory).openRuntime(
+    options.sharedMemory,
+  );
   const hostIdentity = snapshotHostIdentity(options.hostIdentity);
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
   const token = {};
   owners[ownerKey] = token;
+  const restoreControlAllocator = installSharedControlAllocator((length) =>
+    reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
+  );
   let filesystem: SharedFilesystem;
   let identities: ProcessIdentityAllocator;
   let registry: ExecutableRegistry | undefined;
@@ -387,8 +404,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     if (typeof SharedArrayBuffer !== "function")
       throw new Error("Page runtime requires SharedArrayBuffer and cross-origin isolation");
     identities = new ProcessIdentityAllocator();
-    filesystem = new SharedFilesystem(options.filesystem, options.onStartupStage);
+    filesystem = new SharedFilesystem(options.filesystem, options.onStartupStage, reservations);
   } catch (error) {
+    reservations.dispose();
+    restoreControlAllocator();
     if (owners[ownerKey] === token) delete owners[ownerKey];
     throw error;
   }
@@ -526,6 +545,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     }
   };
   const runtime: Runtime = {
+    sharedMemory: Object.freeze({
+      snapshot: () => reservations.snapshot(),
+      check: (plan) => reservations.check(plan),
+    }),
     hostIdentity,
     get programs() {
       return programCollection.view;
@@ -684,9 +707,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         ]);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {
+          reservations,
           hostIdentity,
           filesystem: {
-            connect: (identity) => filesystem.connect(identity),
+            connect: (identity, headroom) => filesystem.connect(identity, headroom),
             revoke: (identity) => filesystem.revoke(identity),
             reap: (identity) => filesystem.reap(identity),
             quiesce: (identity) => filesystem.quiesce(identity),
@@ -822,6 +846,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());
         if (failures.length !== failuresBeforeFilesystemClose) throwFailures();
+        reservations.dispose();
+        restoreControlAllocator();
         adapters.clear();
         for (const name of programs.keys()) registry?.unregister(name);
         programs.clear();

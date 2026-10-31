@@ -141,6 +141,7 @@ export async function createProgramTestRoot(runtime: Runtime) {
   transport.data = { filesystem: runtime.filesystem.createIdentity(), pipeRegistry };
   const output = { stdout: [] as Uint8Array[], stderr: [] as Uint8Array[] };
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (fd, data) => (fd === 2 ? output.stderr : output.stdout).push(data.slice()),
   });
   const supervisor = await service.ready();

@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import { strict as assert } from "node:assert";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -11,6 +12,7 @@ const entry = createRequire(consumer).resolve("waffle-procps/programs");
 assert.equal(entry, join(dirname(consumer), "package", "src", "catalog.ts"));
 const { procps }: typeof import("../src/catalog.ts") = await import(entry);
 const runtime = createRuntime({
+  sharedMemory: testSharedMemory,
   filesystem: {
     mode: "memory",
     workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

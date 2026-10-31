@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import {
   createRuntime,
   type Runtime,
@@ -399,6 +400,7 @@ async function fetchAddressCases(server: Guest, client: Guest): Promise<void> {
 /** Executed in a real browser by network-browser-runner.ts. */
 export async function networkBrowserCases(): Promise<string[]> {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: "/network-fs.js", mode: "memory" },
     processHost() {
       throw Error("Networking activated processes");

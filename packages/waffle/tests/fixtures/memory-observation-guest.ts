@@ -1,3 +1,9 @@
+import { declareModuleMemory } from "../../memory/declarations.js";
+function declaredMemoryModule(source: Uint8Array<ArrayBuffer>): WebAssembly.Module {
+  const module = new WebAssembly.Module(source);
+  declareModuleMemory(module, source);
+  return module;
+}
 function uleb(value: number): number[] {
   const bytes: number[] = [];
   do {
@@ -20,7 +26,7 @@ export function memoryObservationGuest(): WebAssembly.Module {
   const view = new DataView(data.buffer);
   view.setUint32(16, 1, true);
   view.setBigUint64(24, 200_000_000n, true);
-  return new WebAssembly.Module(
+  return declaredMemoryModule(
     Uint8Array.from(
       [0, 97, 115, 109, 1, 0, 0, 0].concat(
         section(1, [2, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 0, 0]),
@@ -37,7 +43,7 @@ export function memoryObservationGuest(): WebAssembly.Module {
 
 /** The engine allocates defined memory before a trapping start; only imported memory is observable. */
 export function failingMemoryObservationGuest(imported: boolean): WebAssembly.Module {
-  return new WebAssembly.Module(
+  return declaredMemoryModule(
     Uint8Array.from(
       [0, 97, 115, 109, 1, 0, 0, 0].concat(
         section(1, [1, 0x60, 0, 0]),
@@ -55,7 +61,7 @@ export function failingMemoryObservationGuest(imported: boolean): WebAssembly.Mo
 /** The command traps unless its hook-supplied, named host import returns 42. */
 export function namedMemoryImportGuest(): WebAssembly.Module {
   const body = [0, 0x10, 0, 0x41, 42, 0x47, 0x04, 0x40, 0, 0x0b, 0x0b];
-  return new WebAssembly.Module(
+  return declaredMemoryModule(
     Uint8Array.from(
       [0, 97, 115, 109, 1, 0, 0, 0].concat(
         section(1, [2, 0x60, 0, 1, 0x7f, 0x60, 0, 0]),
@@ -70,7 +76,7 @@ export function namedMemoryImportGuest(): WebAssembly.Module {
 }
 
 export function sampledHostImportsGuest(): WebAssembly.Module {
-  return new WebAssembly.Module(
+  return declaredMemoryModule(
     Uint8Array.from(
       [0, 97, 115, 109, 1, 0, 0, 0].concat(
         section(1, [1, 0x60, 0, 1, 0x7f]),

@@ -1,3 +1,5 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -192,6 +194,7 @@ async function rootLifecycleFixture() {
     }),
   );
   const runtime = createRuntime({
+    sharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../packages/waffle/browser/fs-worker.ts", import.meta.url),

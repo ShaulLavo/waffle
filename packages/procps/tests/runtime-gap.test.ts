@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createRuntime } from "../../waffle/runtime.ts";
 import { ExecutableRegistry } from "../../waffle/proc/registry.ts";
@@ -8,6 +9,7 @@ import { processRows } from "../src/index.ts";
 // These controls distinguish incomplete Wasm definitions from the supported command contract.
 test("real Runtime rejects incomplete Wasm definitions but accepts unloaded host commands", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

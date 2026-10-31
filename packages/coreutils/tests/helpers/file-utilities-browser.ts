@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { createShell, type Shell } from "../../src/shell.ts";
 import { installTouch } from "../../src/utilities/touch.ts";
@@ -40,6 +41,7 @@ async function install(state: Fixture, name: (typeof fileUtilityNames)[number]) 
 async function fixture() {
   const state: Fixture = {
     runtime: createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
       onProcessAdmission(event) {
         if (event.stage === "launched") state.childLaunched();

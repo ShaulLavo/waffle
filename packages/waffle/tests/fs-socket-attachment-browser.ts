@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { SharedFilesystem } from "../browser/shared-fs.js";
 import { createRuntime, type Runtime } from "../runtime.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -92,6 +93,7 @@ function runtimeFilesystemOwner(): {
     return original.call(this, path);
   };
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workspace: true,
@@ -151,6 +153,7 @@ async function delayedAttachment(forwardLate: boolean): Promise<void> {
     );
     if (forwardLate) relay.forward();
     successor = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: {
         mode: "memory",
         workspace: true,

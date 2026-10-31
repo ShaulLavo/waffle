@@ -1,7 +1,7 @@
+import { allocateSharedControl } from "../memory/control.js";
 import {
   arrayAppend,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   Uint32ArrayConstructor,
   atomicsLoad,
   atomicsStore,
@@ -289,7 +289,7 @@ export class WorkerProcessClient {
     )
       return -ProcessErrno.AGAIN;
     const id = this.nextAccess++,
-      cells = new Int32ArrayConstructor(new SharedArrayBufferConstructor(8));
+      cells = new Int32ArrayConstructor(allocateSharedControl(8));
     mapSet((this.accesses ??= new MapConstructor()), id, cells);
     try {
       this.options.postMessage({

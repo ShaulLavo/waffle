@@ -1,8 +1,10 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { createRuntime } from "../runtime.js";
 import { CommandStdio } from "../proc/command-stdio.js";
 import { commandShell } from "./program-host-command-fixture.js";
 
 const runtime = createRuntime({
+  sharedMemory: testSharedMemory,
   filesystem: {
     mode: "memory",
     workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
@@ -39,7 +41,7 @@ const disposal = await runtime.dispose().then(
 if (!(disposal instanceof Error)) throw new Error("disposal must retain failed cleanup debt");
 let guardRetained = false;
 try {
-  createRuntime();
+  createRuntime({ sharedMemory: testSharedMemory });
 } catch {
   guardRetained = true;
 }

@@ -1,3 +1,10 @@
+import {
+  allocateHostProgramMemory,
+  allocateSharedControl,
+  createSharedControlAllocator,
+  installSharedControlAllocator,
+  type SharedControlGrant,
+} from "../memory/control.js";
 import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
@@ -79,6 +86,7 @@ import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import type { GroupMember } from "../group/member.js";
 
 export interface RuntimeWorkerRequest {
+  readonly controlGrant?: SharedControlGrant;
   /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
   memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
@@ -105,6 +113,7 @@ export interface RuntimeWorkerRequest {
 export type SleepMode = "atomics" | "busy-wait";
 export type RuntimeWorkerMessage =
   | WorkerProcessMessage
+  | { type: "shared-control-allocation"; buffer: SharedArrayBuffer }
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
   /** The page drained terminalOutput and waits for this before reading it again. */
@@ -277,7 +286,7 @@ export function describeWorkerError(err: unknown): string {
 
 function createSleepCell(host: RuntimeWorkerHost): Int32Array | null {
   if (!host.crossOriginIsolated || typeof SharedArrayBufferConstructor !== "function") return null;
-  return new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+  return new Int32ArrayConstructor(allocateSharedControl(4));
 }
 
 function captureWorkerHost(host: RuntimeWorkerHost) {
@@ -459,6 +468,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
   const { postToHost, addListener, removeListener } = captureWorkerHost(host);
+  const allocateShared = createSharedControlAllocator(
+    req.controlGrant ?? { kind: "unbounded" },
+    (buffer) => postToHost({ type: "shared-control-allocation", buffer }),
+  );
+  if (req.controlGrant) installSharedControlAllocator(allocateShared);
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
@@ -937,6 +951,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
+        allocateShared,
         transport: req.runtimeProcess,
         postMessage,
         fallback: createFilesystemDescriptorCodec(fs),
@@ -1143,7 +1158,7 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
 ): HostProgramContext<R> {
   const { wasi, fs, checkActive } = context;
   const cwd = context.request.runtimeProcess?.cwd ?? "/";
-  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const memory = allocateHostProgramMemory(context.request.controlGrant ?? { kind: "unbounded" });
   bindMemory(memory);
   enter();
   const buffer = wasmMemoryBuffer(memory);

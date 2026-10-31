@@ -1,3 +1,5 @@
+const sharedMemory = declareSharedMemoryPlatform({ kind: "unbounded" });
+import { declareSharedMemoryPlatform } from "waffle";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "bun:test";
@@ -13,6 +15,7 @@ const workerUrl = new URL("../packages/waffle/browser/preview1-worker.ts", impor
 
 test("every real base program installs lazily, run on one generic runtime, and release their paths", async () => {
   const runtime = createRuntime({
+    sharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../packages/waffle/browser/fs-worker.ts", import.meta.url),

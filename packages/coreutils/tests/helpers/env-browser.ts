@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime } from "waffle";
 import { createShell, type Shell } from "../../src/shell.ts";
 import { installEnv } from "../../src/utilities/env.ts";
@@ -20,6 +21,7 @@ async function dispose(state: Fixture) {
 async function fixture() {
   const state: Fixture = {
     runtime: createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
     }),
     active: undefined,

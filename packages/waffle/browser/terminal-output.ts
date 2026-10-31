@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 // Original browser adapter: bounded terminal output between process Workers and the page. It
 // gives host terminal destinations the flow control of a real TTY: a write waits for room or
 // reports the exact prefix it accepted, and each root holds at most one budget of bytes.
@@ -17,7 +18,6 @@ import {
   setDelete,
   setForEach,
   setHas,
-  SharedArrayBufferConstructor,
   sharedArrayBufferByteLength,
   typedArrayLength,
   typedArraySet,
@@ -147,7 +147,7 @@ export function createTerminalOutput(capacity = DEFAULT_CAPACITY): TerminalOutpu
     (capacity & (capacity - 1)) !== 0
   )
     throw new RangeError("terminal output capacity must be a power of two above 4 bytes");
-  const buffer = new SharedArrayBufferConstructor(HEADER_BYTES + capacity);
+  const buffer = allocateSharedControl(HEADER_BYTES + capacity);
   atomicsStore(words(buffer), H.armed, 1);
   return new TerminalOutputReader(buffer);
 }

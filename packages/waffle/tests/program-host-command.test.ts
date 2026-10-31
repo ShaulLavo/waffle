@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createRuntime, type HostCommand, type Runtime } from "../index.js";
 import { defineProgramPackage } from "../programs/index.js";
@@ -17,6 +18,7 @@ afterEach(async () => {
 });
 function create(): Runtime {
   return (runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../browser/fs-worker.ts", import.meta.url),

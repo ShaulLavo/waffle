@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { createRuntime, type GuestLauncher, type Runtime } from "../index.js";
 import { installPrograms, ProgramConflictError, type ProgramPackage } from "../programs/index.js";
@@ -51,6 +52,7 @@ beforeEach(() => {
   tables = [];
   launches = [];
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });
 });

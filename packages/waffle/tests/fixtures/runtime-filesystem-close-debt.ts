@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./shared-memory-platform.js";
 import { createRuntime, type Runtime } from "../../index.js";
 import { MemoryBackend } from "../../fs/backend.js";
 import { FilesystemService } from "../../fs/service.js";
@@ -77,6 +78,7 @@ class CloseBoundary extends EventTarget {
 }
 async function exercise(mode: string, reason: unknown, boundary: CloseBoundary) {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: withVfsImplementation("indexeddb", { workerURL: "https://fixture.invalid/fs.js" }),
   });
   await runtime.filesystem.writeFile("/marker", "close debt");
@@ -101,6 +103,7 @@ async function exercise(mode: string, reason: unknown, boundary: CloseBoundary) 
   let blocked = false;
   try {
     next = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { mode: "memory", workerURL: "https://fixture.invalid/next.js" },
     });
   } catch (error) {

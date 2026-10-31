@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime } from "waffle";
 import { GhosttyRuntime } from "ghostty-webgpu";
 import { createShell, type Shell } from "../src/shell.ts";
@@ -7,7 +8,10 @@ import {
   type UtilityInstallation,
 } from "bash-web/utilities/clear";
 
-const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "/fs-worker.js" } });
+const runtime = createRuntime({
+  sharedMemory: testSharedMemory,
+  filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
+});
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 let shell: Shell | undefined;

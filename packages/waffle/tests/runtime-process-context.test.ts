@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   createProcessIdentity,
@@ -161,6 +162,7 @@ afterEach(async () => {
 
 function page(hostIdentity?: RuntimeHostIdentity) {
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: "https://fixture.test/filesystem.js" },
     hostIdentity,
   });
@@ -195,7 +197,7 @@ async function runChild(hostIdentity?: RuntimeHostIdentity) {
     identity: owner.identities.buffer,
   });
   transport.data = { filesystem: owner.filesystem.createIdentity() };
-  await service.adoptRuntimeRoot(transport);
+  await service.adoptRuntimeRoot(transport, { memory: [] });
   const root = transport.pid;
   const descriptors = new DescriptorTable();
   descriptorTables.push(descriptors);

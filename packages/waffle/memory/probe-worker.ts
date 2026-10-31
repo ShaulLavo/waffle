@@ -1,54 +1,59 @@
-import { PAGE_BYTES, PROBE_CEILING_BYTES, type ReservationKind } from "./reservations";
-
-interface ProbeRequest { readonly ceilingBytes?: number }
-interface ProbeResult {
-  readonly growableBytes: number;
-  readonly ceilingReached: boolean;
-  readonly counts: Readonly<Record<Exclude<ReservationKind, "growable-buffer">, boolean>>;
-}
-
-function growableBuffer(maxByteLength: number): SharedArrayBuffer {
-  const value = Reflect.construct(SharedArrayBuffer, [0, { maxByteLength }]);
-  if (!(value instanceof SharedArrayBuffer)) throw new TypeError("probe did not create SharedArrayBuffer");
+import { PAGE_BYTES, PROBE_CEILING_BYTES, type ProbeResult } from "./reservations.js";
+function growable(maxByteLength: number): SharedArrayBuffer {
+  const value: unknown = Reflect.construct(SharedArrayBuffer, [0, { maxByteLength }]);
+  if (!(value instanceof SharedArrayBuffer)) throw new TypeError("invalid probe buffer");
   return value;
 }
-
-function probe(event: MessageEvent<ProbeRequest>): ProbeResult {
-  const ceiling = event.data?.ceilingBytes ?? PROBE_CEILING_BYTES;
-  let current: SharedArrayBuffer | undefined;
+function counted(create: () => object, retained: object[]): boolean {
+  try {
+    retained.push(create());
+    return false;
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    return true;
+  }
+}
+const retained: object[] = [];
+function probe(): ProbeResult {
   let growableBytes = 0;
-  const coarse = 256 * 1024 * 1024;
-  const fine = 16 * 1024 * 1024;
-  let step = coarse;
-  let ceilingReached = false;
-  for (;;) {
-    const next = Math.min(ceiling, growableBytes + step);
+  let step = 256 * 1024 ** 2;
+  while (growableBytes < PROBE_CEILING_BYTES) {
     try {
-      current = growableBuffer(next);
-      growableBytes = next;
-      if (growableBytes === ceiling) { ceilingReached = true; break; }
-    } catch {
-      if (step === fine) break;
-      step = fine;
+      retained.push(growable(step));
+      growableBytes += step;
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      if (step === 16 * 1024 ** 2) break;
+      step = 16 * 1024 ** 2;
     }
   }
-  if (ceilingReached) return { growableBytes, ceilingReached, counts: { "fixed-buffer": true, "shared-memory": true, "private-memory": true } };
-  const counts = {
-    "fixed-buffer": true,
-    "shared-memory": true,
-    "private-memory": true,
-  };
-  try { new SharedArrayBuffer(fine); counts["fixed-buffer"] = false; } catch {}
-  try { new WebAssembly.Memory({ initial: fine / PAGE_BYTES, maximum: fine / PAGE_BYTES, shared: true }); counts["shared-memory"] = false; } catch {}
-  try { new WebAssembly.Memory({ initial: fine / PAGE_BYTES, maximum: fine / PAGE_BYTES }); counts["private-memory"] = false; } catch {}
-  void current;
+  if (growableBytes === 0) throw new RangeError("No growable shared memory available");
+  const ceilingReached = growableBytes >= PROBE_CEILING_BYTES;
+  const test = 64 * 1024 ** 2;
+  const counts = ceilingReached
+    ? { "fixed-buffer": true, "shared-memory": true, "private-memory": true }
+    : {
+        "fixed-buffer": counted(() => new SharedArrayBuffer(test), retained),
+        "shared-memory": counted(
+          () => new WebAssembly.Memory({ initial: 1, maximum: test / PAGE_BYTES, shared: true }),
+          retained,
+        ),
+        "private-memory": counted(
+          () => new WebAssembly.Memory({ initial: 1, maximum: test / PAGE_BYTES }),
+          retained,
+        ),
+      };
+  // Keep all successful reservations reachable until the owning worker is terminated.
+  self.postMessage({ growableBytes, ceilingReached, counts });
+  void retained.length;
   return { growableBytes, ceilingReached, counts };
 }
-
-self.onmessage = event => {
+self.onmessage = () => {
   try {
-    self.postMessage(probe(event));
-  } finally {
-    self.close();
+    probe();
+  } catch (error) {
+    setTimeout(() => {
+      throw error;
+    });
   }
 };

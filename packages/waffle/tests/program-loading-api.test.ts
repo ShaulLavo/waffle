@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createRuntime, type Runtime, type RuntimeOptions, type GuestLauncher } from "../index.js";
 import {
@@ -14,8 +15,9 @@ import { SharedFilesystem } from "../browser/shared-fs.js";
 let runtime: Runtime | undefined;
 let tables: DescriptorTable[] = [];
 let releases: Array<() => void> = [];
-function create(options: RuntimeOptions = {}): Runtime {
+function create(options: Omit<RuntimeOptions, "sharedMemory"> = {}): Runtime {
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
     ...options,
   });
@@ -418,6 +420,7 @@ test("the actual prepared runtime executes through its default prepared preview1
   );
   const program = fixture();
   const owner = prepared.createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../dist/browser/fs-worker.js", import.meta.url),

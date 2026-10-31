@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { createRuntime, type Runtime, type RuntimeSupervisor } from "../runtime.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import {
@@ -129,7 +130,10 @@ class Harness {
     private readonly launches: Map<SharedArrayBuffer, Launch>,
   ) {}
   static async create(launches: Map<SharedArrayBuffer, Launch>): Promise<Harness> {
-    const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
+    const runtime = createRuntime({
+      sharedMemory: testSharedMemory,
+      filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
+    });
     const harness = new Harness(runtime, launches);
     await harness.start();
     return harness;
@@ -169,7 +173,7 @@ class Harness {
     });
     this.root.data = { filesystem: runtime.filesystem.createIdentity() };
     const service = await runtime.processes();
-    await service.adoptRuntimeRoot(this.root);
+    await service.adoptRuntimeRoot(this.root, { memory: [] });
     this.pipes = new WorkerPipeHost({
       transport: this.root,
       registry: (this.root.data as { pipeRegistry: never }).pipeRegistry,

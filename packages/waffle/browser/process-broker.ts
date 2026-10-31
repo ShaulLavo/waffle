@@ -1,3 +1,14 @@
+import { allocateSharedControl, type SharedControlGrant } from "../memory/control.js";
+import {
+  bytes,
+  type Headroom,
+  type RuntimeReservations,
+  type Ticket,
+  type LaunchedTicket,
+  type ProcessGuestPlan,
+  type ProcessPlan,
+} from "../memory/reservations.js";
+import { moduleMemoryDeclarations, type MemoryDeclaration } from "../memory/declarations.js";
 import {
   prepareTerminalDescendant,
   terminalPreparationReceipt,
@@ -107,7 +118,7 @@ import type { FileHandle } from "../core/filesystem.js";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
-  connect(identity: FilesystemIdentity): FilesystemConnection;
+  connect(identity: FilesystemIdentity, headroom?: Headroom | null): FilesystemConnection;
   revoke(identity: FilesystemIdentity): void;
   reap(identity: FilesystemIdentity): void;
   quiesce(identity: FilesystemIdentity): Promise<void>;
@@ -130,6 +141,7 @@ export interface ProcessController {
   retired?(): void;
 }
 export interface BrowserProcessBrokerOptions {
+  readonly reservations: RuntimeReservations;
   hostIdentity?: RuntimeHostIdentity | null;
   filesystem: ProcessFilesystem;
   /** Injectable lazy supervisor module loader; pipe-only roots never invoke it. */
@@ -183,6 +195,7 @@ export interface RootDescendantPreparation {
   settled?(descendant: RuntimeDescendant, completion: RootPreparationCompletion): undefined;
 }
 export interface RuntimeRootOptions {
+  readonly memory: readonly MemoryDeclaration[] | "group";
   readonly signalDelegation?: SignalDelegation;
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
@@ -216,9 +229,12 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
     | "memoryObservation"
     | "terminalOutput"
     | "memoryGroup"
+    | "controlGrant"
   >;
   /** Join a memory group. Admission is reserved before the Worker is constructed. */
   memoryGroup?: MemoryGroupLaunch;
+  /** Trusted adapter-created memories in addition to the module declarations. */
+  memories?: readonly MemoryDeclaration[];
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
   wake?(): void;
@@ -265,6 +281,8 @@ interface RuntimeChild {
   wake?(): void;
   output?: TerminalOutputReader;
   group?: MemberLease;
+  ticket?: Ticket;
+  launched?: LaunchedTicket;
 }
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
@@ -276,7 +294,7 @@ export class BrowserProcessBroker {
   private disposing?: Promise<void>;
   private activation?: Promise<ProcessSupervisor>;
   private supervisor?: ProcessSupervisor;
-  private readonly pipes = new WorkerPipeBroker();
+  private readonly pipes: WorkerPipeBroker;
   private readonly workers = new ReadyWorkerPool();
   private readonly roots = new Map<number, WorkerProcessTransport>();
   private readonly reservedRoots = new Map<
@@ -309,6 +327,8 @@ export class BrowserProcessBroker {
   private readonly terminalLifetimes = new Map<number, TerminalProcessLifetime>();
   private groups?: MemoryGroups;
   private rootGroups?: Map<number, MemberLease>;
+  private readonly rootTickets = new Map<number, LaunchedTicket>();
+  private readonly rootGrants = new Map<number, SharedControlGrant>();
   private readonly stopTrackingConsumers: () => void;
   private readonly accesses = new WorkerExecutableAccess({
     active: (sender) => !this.suspended && !isRevoked(this.filesystem(sender)),
@@ -320,6 +340,10 @@ export class BrowserProcessBroker {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly transport: WorkerProcessBroker;
   constructor(private readonly options: BrowserProcessBrokerOptions) {
+    this.pipes = new WorkerPipeBroker({
+      allocateShared: (length) =>
+        options.reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
+    });
     void this.retirementGate.promise.catch(() => {});
     this.hostIdentity = snapshotHostIdentity(options.hostIdentity);
     this.transport = new WorkerProcessBroker({
@@ -398,9 +422,10 @@ export class BrowserProcessBroker {
       },
     ));
   }
-  private launchPrepared(
+  private async launchPrepared(
     context: ProcessContext | CommandProcessContext,
-  ): ProcessHandle | Promise<ProcessHandle> {
+  ): Promise<ProcessHandle> {
+    await this.options.reservations.settled();
     const descendant = this.descendant(context.pid);
     if (!descendant) return this.launchAdapter(context);
     return this.prepareDescendant(context, descendant.hook, descendant.transport);
@@ -765,7 +790,7 @@ export class BrowserProcessBroker {
         ? value
         : value instanceof Int32Array
           ? value
-          : new Int32Array(value ?? new SharedArrayBuffer(4));
+          : new Int32Array(value ?? allocateSharedControl(4));
     const reserved = {
       ...root,
       pid,
@@ -865,8 +890,27 @@ export class BrowserProcessBroker {
       }
     }
   }
-  async adoptRoot(root: RootProcessOptions, controller: ProcessController = {}): Promise<number> {
-    const pid = this.reserveRoot(root, controller);
+  async adoptRoot(
+    root: RootProcessOptions & { readonly memory: readonly MemoryDeclaration[] },
+    controller: ProcessController = {},
+  ): Promise<number> {
+    const ticket = this.options.reservations.admit({
+      pid: root.pid ?? 0,
+      executable: "external root",
+      guest: { kind: "declared", memories: root.memory },
+      group: "none",
+      connection: false,
+      controls: true,
+    });
+    let pid: number;
+    try {
+      pid = this.reserveRoot(root, controller);
+    } catch (error) {
+      ticket.abort();
+      throw error;
+    }
+    this.rootTickets.set(pid, ticket.launched());
+    this.rootGrants.set(pid, ticket.control);
     // Reservation transfers an external consumer's teardown capabilities to this owner.
     // Activation may fail after creating its table record; keep those capabilities until
     // disposal even when the caller observes a rejected admission promise.
@@ -876,39 +920,67 @@ export class BrowserProcessBroker {
   }
   async adoptRuntimeRoot(
     transport: WorkerProcessTransport,
-    options: RuntimeRootOptions = {},
+    options: RuntimeRootOptions,
   ): Promise<void> {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    await this.options.reservations.settled();
     if (this.suspended) throw new Error("Process broker is disposed");
     const cwd = checkedProcessCwd(transport.cwd);
     if (transport.identity !== this.options.identities.buffer)
       throw new TypeError("root must borrow the runtime identity allocator");
     this.filesystem(transport);
-    const state = workerProcessState(transport);
-    this.transport.adoptRoot(transport);
-    this.roots.set(state.pid, transport);
-    this.outputs.set(state.pid, rootOutput(options));
-    const data = transport.data as {
-      filesystem: FilesystemIdentity;
-      pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle;
-    };
-    const registry = data.pipeRegistry
-      ? attachPipePublicationRegistry(data.pipeRegistry)
-      : new PipePublicationRegistry({ wake: state.wake });
-    registry.registerProcess(state.pid);
-    this.registries.set(state.pid, registry);
-    transport.data = { ...data, pipeRegistry: registry.handle() };
-    // Capture once: later option mutation cannot redirect or remove descendant preparation.
-    const prepare = options.prepareDescendant;
-    this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
-    if (prepare)
-      this.descendantHooks.set(state.pid, {
-        prepare: Object.freeze({
-          terminal: prepare.terminal,
-          run: prepare.run,
-          settled: prepare.settled,
-        }),
-        directory: workerProcessDirectoryId(transport),
-      });
+    const ticket = this.options.reservations.admit({
+      pid: workerProcessState(transport).pid,
+      executable: "adopted root",
+      guest:
+        options.memory === "group"
+          ? { kind: "group" }
+          : { kind: "declared", memories: options.memory },
+      group: "none",
+      connection: false,
+      controls: true,
+    });
+    try {
+      const state = workerProcessState(transport);
+      this.transport.adoptRoot(transport);
+      this.roots.set(state.pid, transport);
+      this.outputs.set(state.pid, rootOutput(options));
+      const data = transport.data as {
+        filesystem: FilesystemIdentity;
+        pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle;
+      };
+      const registry = data.pipeRegistry
+        ? attachPipePublicationRegistry(data.pipeRegistry)
+        : new PipePublicationRegistry({
+            wake: state.wake,
+            allocate: (length, maximum) =>
+              this.options.reservations.buffer("pipe-registry", {
+                kind: "growable-buffer",
+                initial: length,
+                maximum: bytes(maximum),
+              }),
+          });
+      registry.registerProcess(state.pid);
+      this.rootTickets.set(state.pid, ticket.launched());
+      this.rootGrants.set(state.pid, ticket.control);
+      this.registries.set(state.pid, registry);
+      transport.data = { ...data, pipeRegistry: registry.handle() };
+      // Capture once: later option mutation cannot redirect or remove descendant preparation.
+      const prepare = options.prepareDescendant;
+      this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
+      if (prepare)
+        this.descendantHooks.set(state.pid, {
+          prepare: Object.freeze({
+            terminal: prepare.terminal,
+            run: prepare.run,
+            settled: prepare.settled,
+          }),
+          directory: workerProcessDirectoryId(transport),
+        });
+    } catch (error) {
+      ticket.abort();
+      throw error;
+    }
     if (this.activation) {
       const supervisor = await this.activation;
       if (this.suspended) throw new Error("Process broker is disposed");
@@ -1338,6 +1410,17 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     return this.workers.take(workerUrl);
   }
+  /** Trusted external-root bootstrap field, never guest environment configuration. */
+  rootControlGrant(pid: number): SharedControlGrant {
+    const grant = this.rootGrants.get(pid);
+    if (!grant) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
+    return grant;
+  }
+  rootControlAllocated(pid: number, buffer: SharedArrayBuffer): void {
+    const ticket = this.rootTickets.get(pid);
+    if (!ticket) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
+    ticket.controlAllocated(buffer);
+  }
   /** Whether this already-observed worker is still inert and owned by this broker's pool. */
   isIdleWorker(worker: Worker): boolean {
     return this.workers.isIdle(worker);
@@ -1369,6 +1452,32 @@ export class BrowserProcessBroker {
     if (isRevoked(filesystem)) throw new Error("process filesystem is revoked");
     return Object.freeze({ filesystem, directory });
   }
+  private workerPlan(context: ProcessContext, options: WorkerLaunchOptions): ProcessPlan {
+    const memories = moduleMemoryDeclarations(options.request.module);
+    const guest: ProcessGuestPlan = options.memoryGroup
+      ? { kind: "group" }
+      : memories
+        ? { kind: "declared", memories: memories.concat(options.memories ?? []) }
+        : { kind: "undeclared" };
+    const group =
+      options.memoryGroup === "new"
+        ? {
+            create: this.options.reservations.sizing.groupShape(
+              this.options.memoryGroups?.maximumPages,
+            ),
+          }
+        : options.memoryGroup
+          ? "join"
+          : "none";
+    return {
+      pid: context.pid,
+      executable: context.request.executable,
+      guest,
+      group,
+      connection: true,
+      controls: true,
+    };
+  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
@@ -1378,11 +1487,19 @@ export class BrowserProcessBroker {
     if (!transport) throw new Error("process has no admitted worker transport");
     if (this.children.has(context.pid)) throw new Error("process already has a worker");
     const state = workerProcessState(transport);
-    const memory = new BigInt64Array(new SharedArrayBuffer(8));
-    Atomics.store(memory, 0, -1n);
+    const ticket = this.options.reservations.admit(this.workerPlan(context, options));
+    let memory: BigInt64Array;
+    try {
+      memory = new BigInt64Array(allocateSharedControl(8));
+      Atomics.store(memory, 0, -1n);
+    } catch (error) {
+      ticket.abort();
+      throw error;
+    }
     const filesystem = this.filesystem(transport);
     // Record cleanup ownership before either connection or Worker construction can throw.
     const child: RuntimeChild = {
+      ticket,
       memory,
       identity: {
         pid: state.pid,
@@ -1402,13 +1519,13 @@ export class BrowserProcessBroker {
     this.children.set(context.pid, child);
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
-    const output = (child.output = createTerminalOutput());
-    let budget = this.terminalOutputs.get(state.rootPid);
-    if (!budget) this.terminalOutputs.set(state.rootPid, (budget = new TerminalOutputBudget()));
-    budget.readers.add(output);
-    // Revocation refuses further writes and wakes a blocked writer; accepted bytes remain.
-    context.registerRevocation(() => output.close());
+    let output: TerminalOutputReader;
     try {
+      output = child.output = createTerminalOutput();
+      let budget = this.terminalOutputs.get(state.rootPid);
+      if (!budget) this.terminalOutputs.set(state.rootPid, (budget = new TerminalOutputBudget()));
+      budget.readers.add(output);
+      context.registerRevocation(() => output.close());
       const stderr = context.descriptors.get(2)?.resource;
       if (stderr instanceof PipeEndpoint) {
         // Imported page/worker descriptions share one close-once lifetime. Keep an independent
@@ -1424,12 +1541,19 @@ export class BrowserProcessBroker {
         this.options.filesystem.revoke(filesystem);
       });
       if (options.memoryGroup)
-        child.group = this.admitGroupMember(context.pid, transport, options.memoryGroup);
-      connection = this.options.filesystem.connect(filesystem);
+        child.group = this.admitGroupMember(
+          context.pid,
+          transport,
+          options.memoryGroup,
+          ticket.group,
+        );
+      connection = this.options.filesystem.connect(filesystem, ticket.arena);
       worker = child.worker = this.workers.take(options.workerUrl);
+      child.launched = ticket.launched();
     } catch (error) {
       // No Worker exists yet: the group reservation returns exactly once.
       child.group?.abort();
+      ticket.abort();
       child.failed = true;
       this.disposeNotifications(child);
       connection?.port.close();
@@ -1439,6 +1563,7 @@ export class BrowserProcessBroker {
       ...options.request,
       hostIdentity: this.hostIdentity,
       memoryObservation: memory.buffer,
+      controlGrant: ticket.control,
       filesystem: connection,
       runtimeProcess: transport,
       outcome: serializeOutcome(context.outcome),
@@ -1450,6 +1575,10 @@ export class BrowserProcessBroker {
     if (group) Object.assign(request, { memoryGroup: group.request });
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
+      if (data.type === "shared-control-allocation") {
+        child.launched?.controlAllocated(data.buffer);
+        return;
+      }
       if (data.type === "terminal-output") {
         // Bytes the guest was told it wrote are delivered even after a signal won.
         this.serviceTerminalOutput(state.rootPid);
@@ -1565,7 +1694,29 @@ export class BrowserProcessBroker {
     const transport = this.roots.get(pid);
     if (!transport) throw new Error(`Unknown runtime root ${pid}`);
     if (this.rootGroups?.has(pid)) throw new Error(`Root ${pid} already has a memory group`);
-    const lease = this.admitGroupMember(pid, transport, join);
+    const ticket = this.options.reservations.admit({
+      pid,
+      executable: "root memory group",
+      guest: { kind: "group" },
+      group:
+        join === "new"
+          ? {
+              create: this.options.reservations.sizing.groupShape(
+                this.options.memoryGroups?.maximumPages,
+              ),
+            }
+          : "join",
+      connection: false,
+      controls: false,
+    });
+    let lease: MemberLease;
+    try {
+      lease = this.admitGroupMember(pid, transport, join, ticket.group);
+      ticket.launched();
+    } catch (error) {
+      ticket.abort();
+      throw error;
+    }
     const { request, transfer } = lease.launch();
     (this.rootGroups ??= new Map()).set(pid, lease);
     return Object.freeze({
@@ -1584,12 +1735,17 @@ export class BrowserProcessBroker {
     pid: number,
     transport: WorkerProcessTransport,
     join: MemoryGroupLaunch,
+    headroom: Headroom | null = null,
   ): MemberLease {
-    const groups = (this.groups ??= new MemoryGroups(this.options.memoryGroups));
+    const groups = (this.groups ??= new MemoryGroups(
+      this.options.memoryGroups,
+      this.options.reservations.groups,
+      this.options.reservations.sizing,
+    ));
     const target =
       join === "inherit" ? groups.groupOf(workerProcessState(transport).parentPid) : join;
     if (!target) throw new ProcessError(ProcessErrno.SRCH, "parent has no memory group");
-    return groups.admit(pid, workerProcessDirectoryId(transport), target);
+    return groups.admit(pid, workerProcessDirectoryId(transport), target, headroom);
   }
   private writeStartupDiagnostic(
     pid: number,
@@ -1723,9 +1879,11 @@ export class BrowserProcessBroker {
       if (errors.length) {
         // Cleanup after a failed terminate proves nothing: keep group memory and capacity.
         child.group?.failed();
+        child.launched?.failed(errors);
         throw new AggregateError(errors, "Child physical stop failed");
       }
       child.group?.stopped();
+      child.launched?.stopped();
       this.children.delete(child.context.pid);
       // Its accepted bytes stay with the root; its unused credit returns to other writers.
       child.output?.retire();
@@ -1733,7 +1891,11 @@ export class BrowserProcessBroker {
       this.retireChildController(child.context.pid);
     };
     const fence = this.quiesceProcess(child.context.pid);
-    return (child.stopping = fence ? fence.then(stop) : stop());
+    return (child.stopping = (fence ? fence.then(stop) : stop()).catch((error) => {
+      child.group?.failed();
+      child.launched?.failed([error]);
+      throw error;
+    }));
   }
   private retireChildController(pid: number): void {
     // Generic child controllers have no external root ancestry to retain. During disposal,
@@ -1988,9 +2150,15 @@ export class BrowserProcessBroker {
       .then(() => {
         terminal?.stopped();
         if (group) this.settleRootGroup(pid, group);
+        if (ownsConsumer) {
+          this.rootTickets.get(pid)?.stopped();
+          this.rootTickets.delete(pid);
+          this.rootGrants.delete(pid);
+        }
       })
       .catch((error) => {
         group?.failed();
+        if (ownsConsumer) this.rootTickets.get(pid)?.failed([error]);
         failed.add(controller);
         throw error;
       });

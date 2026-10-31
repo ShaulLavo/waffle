@@ -1,3 +1,4 @@
+import { testSharedMemory } from "../../waffle/tests/fixtures/shared-memory-platform.js";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { createRuntime } from "waffle";
@@ -74,6 +75,7 @@ async function selectedNl(session: FamilyAcceptanceSession) {
 
 test("the selectable nl catalog runs real file and stdin guests on one runtime", async () => {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../../waffle/browser/fs-worker.ts", import.meta.url),

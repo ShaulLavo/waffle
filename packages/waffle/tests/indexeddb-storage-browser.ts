@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
@@ -397,6 +398,7 @@ export async function runtimeStartupCase(
     resolveReady = resolve;
   });
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: withVfsImplementation(
       storage === false ? "memory" : storage === "opfs" ? "opfs-memory" : "indexeddb",
       {
@@ -454,6 +456,7 @@ export async function runtimeVfsCase(
     await storage.close();
   }
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: withVfsImplementation(vfs, {
       name,
       mode: vfs === "memory" ? "memory" : "fast",
@@ -497,6 +500,7 @@ export async function runtimeInvalidStorageCase(
   workerURL: string | URL,
 ): Promise<void> {
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: withVfsImplementation(vfs, {
       name,
       mode: vfs === "memory" ? "memory" : "fast",
@@ -609,6 +613,7 @@ async function pendingRuntimeOpenCase(
   let restarted: ReturnType<typeof createRuntime> | undefined;
   try {
     runtime = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { name, whenBusy, workerURL: new URL(gatedWorkerURL, location.href) },
     });
     globalThis.Worker = NativeWorker;
@@ -632,6 +637,7 @@ async function pendingRuntimeOpenCase(
     );
     // Restart before the first open is released: neither a lock nor an epoch may escape.
     restarted = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: { name, whenBusy, workerURL: new URL(workerURL, location.href) },
     });
     await promptly(restarted.filesystem.writeFile("/restarted", "new owner"));
@@ -793,6 +799,7 @@ function indexedDBCases(
     test("pending IndexedDB constructor failure restores the native Worker", async (name) => {
       const NativeWorker = globalThis.Worker;
       const owner = createRuntime({
+        sharedMemory: testSharedMemory,
         filesystem: {
           name,
           mode: "memory",

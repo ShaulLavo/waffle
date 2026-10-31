@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import {
   createRuntime,
@@ -79,6 +80,7 @@ test("runtime observation is opt-in, with no diagnostic clocks or messages by de
   clockSpies.push(clock);
   installWorker();
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: "https://example.test/fs.js", mode: "memory" },
   });
   runtimes.push(runtime);
@@ -101,6 +103,7 @@ test("runtime forwards fixed stages and original worker timestamps, with readine
     });
   installWorker();
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { workerURL: "https://example.test/fs.js", mode: "memory" },
     onStartupStage: (stage, timestamp) => {
       seen.push([stage, timestamp]);

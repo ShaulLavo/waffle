@@ -1,10 +1,14 @@
+import { testSharedMemory } from "../../../../waffle/tests/fixtures/shared-memory-platform.js";
 import { createRuntime } from "waffle";
 import { createShell, type Shell } from "bash-web/shell";
 import { installSed } from "bash-web/utilities/sed";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "/fs-worker.js" } });
+const runtime = createRuntime({
+  sharedMemory: testSharedMemory,
+  filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
+});
 const results: Array<{ name: string; details: unknown }> = [];
 let shell: Shell | undefined;
 let output: number[] = [];

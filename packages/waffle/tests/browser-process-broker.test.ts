@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { startFixtureChild } from "./fixtures/browser-process-child.js";
 import { ProcessErrno } from "../proc/types.js";
 import { TaggedCells, controlLoad } from "../proc/control.js";
@@ -43,6 +44,7 @@ test("one browser process owner admits multiple roots with shared monotonically 
   const identities = new ProcessIdentityAllocator();
   const table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -71,9 +73,9 @@ test("one browser process owner admits multiple roots with shared monotonically 
     });
     first.data = { filesystem: createFilesystemIdentity() };
     second.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(first);
+    await broker.adoptRuntimeRoot(first, { memory: [] });
     const supervisor = await broker.ready();
-    await broker.adoptRuntimeRoot(second);
+    await broker.adoptRuntimeRoot(second, { memory: [] });
     expect(supervisor.table).toBe(table);
     expect(supervisor.get(workerProcessState(first).pid)?.parentPid).toBe(0);
     expect(supervisor.get(workerProcessState(second).pid)?.parentPid).toBe(0);
@@ -89,6 +91,7 @@ test("root admission cannot create a live process behind concurrent disposal", a
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -104,7 +107,7 @@ test("root admission cannot create a live process behind concurrent disposal", a
       throw new Error("unused");
     },
   });
-  const admission = broker.adoptRoot({ pid: identities.pid(), job: identities.job() });
+  const admission = broker.adoptRoot({ memory: [], pid: identities.pid(), job: identities.job() });
   const disposal = broker.dispose();
   await expect(admission).rejects.toThrow(/disposed/);
   await disposal;
@@ -116,6 +119,7 @@ test("revocation never allocates a process in an unrelated root pipe registry", 
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -148,7 +152,7 @@ test("revocation never allocates a process in an unrelated root pipe registry", 
     return transport;
   });
   try {
-    for (const root of roots) await broker.adoptRuntimeRoot(root);
+    for (const root of roots) await broker.adoptRuntimeRoot(root, { memory: [] });
     await broker.ready();
     for (const root of roots) await broker.rootExit(workerProcessState(root).pid, 0);
     expect(
@@ -199,6 +203,7 @@ test("failed direct root activation retains its consumer fence and stop capabili
     }
   }
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -221,7 +226,7 @@ test("failed direct root activation retains its consumer fence and stop capabili
   try {
     await expect(
       broker.adoptRoot(
-        { pid: identities.pid(), job: identities.job() },
+        { memory: [], pid: identities.pid(), job: identities.job() },
         {
           filesystem: createFilesystemIdentity(),
           stop() {
@@ -249,6 +254,7 @@ test("adopting and closing a pipe-only root never activates a supervisor", async
     table = new ProcessTable(identities);
   let activations = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -275,7 +281,7 @@ test("adopting and closing a pipe-only root never activates a supervisor", async
       identity: identities.buffer,
     });
     root.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     await broker.rootExit(workerProcessState(root).pid, 0);
     expect(activations).toBe(0);
     expect(Array.from(table.values())).toHaveLength(0);
@@ -289,6 +295,7 @@ test("explicit lazy root identities advance the shared allocator before activati
     table = new ProcessTable(identities);
   let activations = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -359,6 +366,7 @@ test("job kill publishes every lazy direct and runtime root before callbacks and
       ),
     );
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -389,7 +397,7 @@ test("job kill publishes every lazy direct and runtime root before callbacks and
       { pid: identities.pid(), job: otherJob, ...unrelated },
       { wake: snapshot },
     );
-    await broker.adoptRuntimeRoot(generic, { wake: snapshot });
+    await broker.adoptRuntimeRoot(generic, { memory: [], wake: snapshot });
     killing = broker.killJob(job, 9);
     expect(readOutcome(first.outcome)?.status).toBe(137);
     expect(readOutcome(second.outcome)?.status).toBe(137);
@@ -433,6 +441,7 @@ test("disposal settles every consumer stop before disposing fenced relays and re
   });
   const events: string[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -478,12 +487,14 @@ test("disposal settles every consumer stop before disposing fenced relays and re
   let disposal: Promise<unknown> | undefined;
   try {
     await broker.adoptRuntimeRoot(roots[0]!.root, {
+      memory: [],
       stop() {
         events.push("first-stop");
         throw stopFailure;
       },
     });
     await broker.adoptRuntimeRoot(roots[1]!.root, {
+      memory: [],
       async stop() {
         events.push("second-stop");
         startedStop();
@@ -532,6 +543,7 @@ test("a rejected filesystem fence does not stop consumers or force relay disposa
   let stops = 0,
     relayDisposals = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -574,6 +586,7 @@ test("a rejected filesystem fence does not stop consumers or force relay disposa
   let disposal: Promise<unknown> | undefined;
   try {
     await broker.adoptRuntimeRoot(root, {
+      memory: [],
       stop() {
         stops++;
       },
@@ -605,6 +618,7 @@ for (const operation of ["process", "job"] as const)
     const identities = new ProcessIdentityAllocator(),
       table = new ProcessTable(identities);
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry: new ExecutableRegistry(),
@@ -622,7 +636,7 @@ for (const operation of ["process", "job"] as const)
     });
     let killing: Promise<void> | undefined, disposal: Promise<void> | undefined;
     try {
-      const pid = await broker.adoptRoot({}),
+      const pid = await broker.adoptRoot({ memory: [] }),
         supervisor = await broker.ready();
       const root = supervisor.get(pid)!;
       killing = operation === "process" ? broker.kill(pid, 9) : broker.killJob(root.job, 9);
@@ -645,6 +659,7 @@ for (const kind of ["direct", "runtime"] as const)
       retired = 0;
     const filesystem = createFilesystemIdentity();
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry: new ExecutableRegistry(),
@@ -691,7 +706,7 @@ for (const kind of ["direct", "runtime"] as const)
             }).handle(),
           };
           pid = workerProcessState(root).pid;
-          await broker.adoptRuntimeRoot(root, controller);
+          await broker.adoptRuntimeRoot(root, { memory: [], ...controller });
         }
         await broker.rootExit(pid, 0);
         expect(broker.transportFor(pid)).toBeUndefined();
@@ -725,6 +740,7 @@ test("root retirement waits for the filesystem fence", async () => {
   });
   let retired = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -768,6 +784,7 @@ test("a pending admission lease retains a completed root until released exactly 
     table = new ProcessTable(identities);
   let retired = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -810,6 +827,7 @@ test("a direct root retains its controller while immutable-root descendants outl
     table = new ProcessTable(identities);
   let retired = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -827,7 +845,7 @@ test("a direct root retains its controller while immutable-root descendants outl
   });
   try {
     const root = await broker.adoptRoot(
-      {},
+      { memory: [] },
       {
         retired() {
           retired++;
@@ -863,6 +881,7 @@ test("a long-running direct root does not retain settled child filesystem fences
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -883,7 +902,7 @@ test("a long-running direct root does not retain settled child filesystem fences
   const controller = { quiesce: () => fence };
   let release: (() => void) | undefined;
   try {
-    const root = await broker.adoptRoot({}),
+    const root = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready();
     for (let iteration = 0; iteration < 64; iteration++) {
       const child = supervisor.reserveSpawn(root, {
@@ -921,6 +940,7 @@ for (const operation of ["states", "revoke"] as const)
     const identities = new ProcessIdentityAllocator(),
       table = new ProcessTable(identities);
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry: new ExecutableRegistry(),
@@ -963,7 +983,7 @@ for (const operation of ["states", "revoke"] as const)
     });
     let load: ReturnType<typeof spyOn> | undefined;
     try {
-      await broker.adoptRuntimeRoot(root);
+      await broker.adoptRuntimeRoot(root, { memory: [] });
       client.spawn(client.pid, {
         executable: "fixture",
         argv: [],
@@ -1011,6 +1031,7 @@ test("suspension still fences and stops every consumer when a Worker collects a 
     fenced = 0;
   const diagnostics: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -1057,6 +1078,7 @@ test("suspension still fences and stops every consumer when a Worker collects a 
   let load: ReturnType<typeof spyOn> | undefined;
   try {
     await broker.adoptRuntimeRoot(root, {
+      memory: [],
       stop() {
         stops++;
       },
@@ -1127,6 +1149,7 @@ test("suspension skips consumed shared outcomes still retained in completed host
     retired = 0;
   const diagnostics: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -1171,6 +1194,7 @@ test("suspension skips consumed shared outcomes still retained in completed host
   });
   try {
     await broker.adoptRuntimeRoot(root, {
+      memory: [],
       stop() {
         stopped++;
       },
@@ -1214,6 +1238,7 @@ for (const phase of ["publication", "outcome snapshot"] as const)
     const identities = new ProcessIdentityAllocator(),
       table = new ProcessTable(identities);
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry: new ExecutableRegistry(),
@@ -1256,7 +1281,7 @@ for (const phase of ["publication", "outcome snapshot"] as const)
     });
     let guard: ReturnType<typeof spyOn> | undefined;
     try {
-      await broker.adoptRuntimeRoot(root);
+      await broker.adoptRuntimeRoot(root, { memory: [] });
       const request = {
         executable: "fixture",
         argv: [],
@@ -1335,6 +1360,7 @@ test("a completed runtime root retains queued background descendants until their
   let retired = 0,
     launches = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -1382,7 +1408,7 @@ test("a completed runtime root retains queued background descendants until their
         retired++;
       },
     };
-    await broker.adoptRuntimeRoot(root, controller);
+    await broker.adoptRuntimeRoot(root, { memory: [], ...controller });
     const owner = Reflect.get(broker, "transport") as WorkerProcessBroker;
     expect(() => owner.releaseRoot(client.pid)).toThrow(/unconfirmed or unreaped/);
     const childPid = client.spawn(client.pid, {
@@ -1425,6 +1451,7 @@ test("reentrant disposal shares one promise and stops each consumer once", async
   let stops = 0,
     nested: Promise<void> | undefined;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -1497,6 +1524,7 @@ for (const terminal of ["cleanup-error", "exit", "error"] as const)
       releaseFence = resolve;
     });
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -1539,7 +1567,7 @@ for (const terminal of ["cleanup-error", "exit", "error"] as const)
       prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
     });
     try {
-      await broker.adoptRuntimeRoot(root);
+      await broker.adoptRuntimeRoot(root, { memory: [] });
       const pid = client.spawn(client.pid, {
         executable: "fixture",
         argv: ["fixture"],
@@ -1598,6 +1626,7 @@ for (const diagnostic of ["inherited", "controller"] as const)
       output: string[] = [],
       source = new DescriptorTable();
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -1614,7 +1643,7 @@ for (const diagnostic of ["inherited", "controller"] as const)
       },
     });
     try {
-      const rootPid = await broker.adoptRoot({}),
+      const rootPid = await broker.adoptRoot({ memory: [] }),
         supervisor = await broker.ready();
       const pid = supervisor.reserveSpawn(rootPid, {
         executable: "fixture",
@@ -1689,6 +1718,7 @@ test("broker disposal does not await a controller startup diagnostic that never 
     stopped = 0;
   const errors: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -1706,7 +1736,7 @@ test("broker disposal does not await a controller startup diagnostic that never 
     },
   });
   try {
-    const root = await broker.adoptRoot({}),
+    const root = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(root, {
       executable: "fixture",
@@ -1782,6 +1812,7 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
       module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
     });
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -1821,7 +1852,7 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
       prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
     });
     try {
-      await broker.adoptRuntimeRoot(root);
+      await broker.adoptRuntimeRoot(root, { memory: [] });
       const pid = client.spawn(client.pid, {
         executable: "fixture",
         argv: [],
@@ -1955,6 +1986,7 @@ for (const activation of ["lazy", "eager"] as const)
       regressionCleanups.push(cleanup);
       globalThis.Worker = FakeWorker as unknown as typeof Worker;
       const broker = new BrowserProcessBroker({
+        reservations: testReservations(),
         identities,
         table,
         registry,
@@ -2035,7 +2067,7 @@ for (const activation of ["lazy", "eager"] as const)
         fds: [{ child: 1, parent }],
       });
       try {
-        await bounded(broker.adoptRuntimeRoot(root));
+        await bounded(broker.adoptRuntimeRoot(root, { memory: [] }));
         if (activation === "eager") await bounded(broker.ready());
         const owner = makeClient(root),
           pair = owner.host.createPipe();
@@ -2166,6 +2198,7 @@ for (const completion of [
       interruptible: true,
     });
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -2232,7 +2265,7 @@ for (const completion of [
     });
     let disposing: Promise<void> | undefined;
     try {
-      await broker.adoptRuntimeRoot(root);
+      await broker.adoptRuntimeRoot(root, { memory: [] });
       const { pid, supervisor } = await startFixtureChild({ broker, parent: client, messages });
       const transport = broker.transportFor(pid)!;
       const record = supervisor.get(pid)!;
@@ -2310,6 +2343,7 @@ for (const controllerStop of [false, true])
       release = resolve;
     });
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -2347,7 +2381,7 @@ for (const controllerStop of [false, true])
     });
     let disposal: Promise<void> | undefined;
     try {
-      const root = await broker.adoptRoot({}),
+      const root = await broker.adoptRoot({ memory: [] }),
         supervisor = await broker.ready();
       const pid = supervisor.spawn(root, {
         executable: "external",
@@ -2399,6 +2433,7 @@ test("a controller registered before module rejection fences and settles physica
     releaseStop = resolve;
   });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -2416,7 +2451,7 @@ test("a controller registered before module rejection fences and settles physica
     },
   });
   try {
-    const root = await broker.adoptRoot({}),
+    const root = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(root, {
       executable: "rejected",
@@ -2474,6 +2509,7 @@ test("lazy external roots revoke before fencing without activating a supervisor"
     release = resolve;
   });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -2543,6 +2579,7 @@ test("a pending external launcher retains authority until its late rejection the
     rejectLaunch = reject;
   });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -2563,7 +2600,7 @@ test("a pending external launcher retains authority until its late rejection the
   });
   let starting: Promise<void> | undefined;
   try {
-    const root = await broker.adoptRoot({}),
+    const root = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(root, {
       executable: "pending",
@@ -2623,6 +2660,7 @@ test("a throwing exited notification still settles failed-start cleanup before r
     releaseStop = resolve;
   });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -2643,7 +2681,7 @@ test("a throwing exited notification still settles failed-start cleanup before r
     },
   });
   try {
-    const root = await broker.adoptRoot({}),
+    const root = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(root, {
       executable: "rejected",
@@ -2723,6 +2761,7 @@ for (const settlement of ["resolve", "reject"] as const)
       },
     };
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -2742,7 +2781,7 @@ for (const settlement of ["resolve", "reject"] as const)
     });
     let starting: Promise<void> | undefined, disposal: Promise<void> | undefined;
     try {
-      const root = await broker.adoptRoot({}),
+      const root = await broker.adoptRoot({ memory: [] }),
         supervisor = await broker.ready();
       const pid = supervisor.reserveSpawn(root, {
         executable: "pending",
@@ -2820,6 +2859,7 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
       release = resolve;
     });
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -2848,7 +2888,7 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
       },
     });
     try {
-      const root = await broker.adoptRoot({}),
+      const root = await broker.adoptRoot({ memory: [] }),
         supervisor = await broker.ready();
       const pid = supervisor.reserveSpawn(root, {
         executable: "external",
@@ -2905,6 +2945,7 @@ for (const activation of ["lazy", "eager"] as const)
       const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
       registry.register("bun-like", { module, adapter: "fixture", interruptible: true });
       const broker = new BrowserProcessBroker({
+        reservations: testReservations(),
         identities,
         table,
         registry,
@@ -2963,7 +3004,7 @@ for (const activation of ["lazy", "eager"] as const)
         fds: [],
       });
       try {
-        await broker.adoptRuntimeRoot(root);
+        await broker.adoptRuntimeRoot(root, { memory: [] });
         if (activation === "eager") await broker.ready();
         const shell = makeClient(root);
         const bunPid = shell.client.spawn(shell.client.pid, request(0));
@@ -3026,6 +3067,7 @@ test("ignored broker notifications preserve the last actually delivered signal f
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -3042,7 +3084,7 @@ test("ignored broker notifications preserve the last actually delivered signal f
     },
   });
   try {
-    const pid = await broker.adoptRoot({}),
+    const pid = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready(),
       record = supervisor.get(pid)!;
     setSignalDisposition(record.signalState, 2, 2);
@@ -3071,6 +3113,7 @@ test("startup diagnostics reject write-only stderr without calling its blocking 
   let writes = 0,
     closes = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -3088,7 +3131,7 @@ test("startup diagnostics reject write-only stderr without calling its blocking 
     },
   });
   try {
-    const root = await broker.adoptRoot({}),
+    const root = await broker.adoptRoot({ memory: [] }),
       supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(root, {
       executable: "fixture",
@@ -3168,6 +3211,7 @@ async function admissionFixture(
   const contexts: import("../proc/types.js").ProcessContext[] = [];
   const errors: unknown[] = [];
   const broker = (owned.broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -3194,7 +3238,7 @@ async function admissionFixture(
     identity: identities.buffer,
   });
   root.data = { filesystem: createFilesystemIdentity() };
-  await bounded(broker.adoptRuntimeRoot(root));
+  await bounded(broker.adoptRuntimeRoot(root, { memory: [] }));
   const messages: WorkerProcessMessage[] = [];
   const descriptors = (owned.descriptors = new DescriptorTable());
   const host = new WorkerPipeHost({
@@ -3906,6 +3950,7 @@ test("consumer roots take single-use workers from the broker's precreated pool",
   try {
     const identities = new ProcessIdentityAllocator();
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table: new ProcessTable(identities),
       registry: new ExecutableRegistry(),

@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { browserStartupPool } from "./startup-pool-browser.js";
 import { nestedWasi } from "./fixtures/nested-wasi.js";
 import { fdReopenCases } from "./fixtures/fd-reopen-cases.js";
@@ -1562,6 +1563,7 @@ async function rootCleanupCase(): Promise<void> {
   const notices: WorkerProcessMessage[] = [];
   let retired = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -1590,6 +1592,7 @@ async function rootCleanupCase(): Promise<void> {
       const pid = transport.pid,
         job = workerProcessState(transport).job;
       await broker.adoptRuntimeRoot(transport, {
+        memory: [],
         retired() {
           retired++;
         },

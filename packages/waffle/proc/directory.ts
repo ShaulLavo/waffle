@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import {
   TaggedCells,
   packedControl,
@@ -19,7 +20,6 @@ import {
   BigInt64ArrayConstructor,
   Int32ArrayConstructor,
   Uint32ArrayConstructor,
-  SharedArrayBufferConstructor,
   cryptoGetRandomValues,
   typedArraySet,
   typedArraySubarray,
@@ -52,7 +52,7 @@ function directoryCapacity(directory: SharedArrayBuffer): number {
   return capacity;
 }
 export function createDirectory(capacity: number): SharedArrayBuffer {
-  const directory = new SharedArrayBufferConstructor(
+  const directory = allocateSharedControl(
     HEADER_BYTES + capacity * (PROCESS_WORDS + JOB_WORDS) * 8,
   );
   typedArraySet(
