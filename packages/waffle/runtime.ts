@@ -388,11 +388,11 @@ function sourceTime(): number | undefined {
 }
 
 export function createRuntime(options: RuntimeOptions): Runtime {
+  if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
+  const hostIdentity = snapshotHostIdentity(options?.hostIdentity);
   const reservations = pageSharedMemoryLedger(options?.sharedMemory).openRuntime(
     options.sharedMemory,
   );
-  const hostIdentity = snapshotHostIdentity(options.hostIdentity);
-  if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
   const token = {};
   owners[ownerKey] = token;
   const restoreControlAllocator = installSharedControlAllocator((length) =>

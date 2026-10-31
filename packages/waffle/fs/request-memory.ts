@@ -7,6 +7,7 @@ import {
   BigInt64ArrayConstructor,
   BigIntConstructor,
   Uint8ArrayConstructor,
+  typedArrayFill,
   SharedArrayBufferConstructor,
   objectFreeze,
   atomicsLoad,
@@ -376,6 +377,7 @@ export class FilesystemRequestPool {
       const abandoned = atomicsExchange(control(previous), C.count, 0n);
       atomicsAdd(new Int32ArrayConstructor(this.budget), B.pending, -Number(abandoned & MASK));
       atomicsStore(control(previous), C.bytes, 0n);
+      typedArrayFill(new Uint8ArrayConstructor(arena.data), 0);
       arena.control = this.createControl();
     }
     arena.revocation = revocation;

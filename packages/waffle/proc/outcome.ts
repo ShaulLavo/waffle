@@ -1,4 +1,4 @@
-import { allocateSharedControl } from "../memory/control.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import { startFailureName, startFailureErrno } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 import { packedControl, type CellValidity } from "./control.ts";

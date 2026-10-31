@@ -102,6 +102,18 @@ test("page guard uses the global stable symbol and remains held until disposal c
     release = resolve;
   });
   const runtime = create({ processHost: processHost(() => gate) });
+  const platform = runtime.sharedMemory.snapshot().platform;
+  const { declareSharedMemoryPlatform, bytes } = await import("../memory/index.js");
+  expect(() =>
+    createRuntime({
+      sharedMemory: declareSharedMemoryPlatform({
+        kind: "bounded",
+        budgetBytes: bytes(1),
+        counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+      }),
+    }),
+  ).toThrow(/live|owner|runtime/i);
+  expect(runtime.sharedMemory.snapshot().platform).toEqual(platform);
   expect(Reflect.get(globalThis, Symbol.for("waffle.runtime.owner"))).toBeDefined();
   expect(() => create()).toThrow(/live|owner|runtime/i);
   await runtime.processes();

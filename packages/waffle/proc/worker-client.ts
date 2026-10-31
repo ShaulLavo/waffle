@@ -1,5 +1,5 @@
 import type { PipePublicationRegistryHandle } from "./pipes.js";
-import { allocateSharedControl } from "../memory/control.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   arrayAppend,
   Int32ArrayConstructor,

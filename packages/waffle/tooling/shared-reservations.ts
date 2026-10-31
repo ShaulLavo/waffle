@@ -4,6 +4,8 @@ import { join, relative } from "node:path";
 /** Explicit trusted construction boundaries. Runtime paths must provide their allocation hooks. */
 const boundaries: Readonly<Record<string, string>> = {
   "memory/reservations.ts": "Page-wide charge-before-construction authority.",
+  "memory/allocator.ts":
+    "Import-inert realm router; live runtimes install their captured, charged allocator. The lazy native fallback is only for standalone core embeddings.",
   "memory/control.ts":
     "Captured guest control allocator claims a finite grant before construction.",
   "memory/probe-worker.ts":

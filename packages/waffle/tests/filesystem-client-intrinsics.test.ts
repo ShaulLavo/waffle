@@ -70,6 +70,7 @@ function fixture() {
     }),
   };
   const bindings = {
+    allocateSharedControl: (length: number) => new captures.SharedArrayBufferConstructor(length),
     localPublication,
     mutationIntent,
     ...protocol,

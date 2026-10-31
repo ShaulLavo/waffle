@@ -1,4 +1,4 @@
-import { allocateSharedControl } from "../memory/control.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import { ProcessError, ProcessErrno } from "./errors.js";
 import { atomicsWait, Int32ArrayConstructor } from "./intrinsics.ts";
 

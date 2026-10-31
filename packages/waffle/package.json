@@ -39,6 +39,11 @@
       "browser": "./index.ts",
       "default": "./index.ts"
     },
+    "./memory/probe-worker": {
+      "types": "./memory/probe-worker.ts",
+      "bun": "./memory/probe-worker.ts",
+      "browser": "./memory/probe-worker.ts"
+    },
     "./program-build-tools": {
       "types": "./tooling/program/program-build-tools.ts",
       "bun": "./tooling/program/program-build-tools.ts",

@@ -1,4 +1,4 @@
-import { ProcessError, ProcessErrno } from "../proc/errors.js";
+import { ProcessError, ProcessErrno } from "../proc/errors.ts";
 import {
   BigInt64ArrayConstructor,
   BigIntConstructor,
@@ -7,7 +7,7 @@ import {
   atomicsCompareExchange,
   atomicsAdd,
   sharedArrayBufferByteLength,
-} from "../proc/intrinsics.js";
+} from "../proc/intrinsics.ts";
 
 /** Bounded grants count all allocations for an incarnation, not just currently open pipes. */
 export type SharedControlGrant =
@@ -63,20 +63,7 @@ export function consumedControlBytes(grant: SharedControlGrant): number {
     : 0;
 }
 
-let realmAllocator: ((length: number) => SharedArrayBuffer) | undefined;
-/** Realm-local trusted ownership; one page runtime or one guest bootstrap installs it. */
-export function installSharedControlAllocator(
-  allocate: (length: number) => SharedArrayBuffer,
-): () => void {
-  const previous = realmAllocator;
-  realmAllocator = allocate;
-  return () => {
-    if (realmAllocator === allocate) realmAllocator = previous;
-  };
-}
-export function allocateSharedControl(length: number): SharedArrayBuffer {
-  return realmAllocator ? realmAllocator(length) : new SharedArrayBufferConstructor(length);
-}
+export { allocateSharedControl, installSharedControlAllocator } from "./allocator.ts";
 
 const HostMemory = WebAssembly.Memory;
 /** The real two-page host-program WASI scratch memory shares the bounded control quota. */

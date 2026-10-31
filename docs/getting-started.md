@@ -30,13 +30,21 @@ Create `fs-worker.ts`. It makes your build include Waffle's filesystem service:
 import "waffle/browser/fs-worker";
 ```
 
+Create `probe-worker.ts`. This entry measures shared-memory capacity before runtime construction:
+
+```ts
+import "waffle/memory/probe-worker";
+```
+
 Create `app.ts`:
 
 ```ts
 import { createRuntime, measureSharedMemory } from "waffle";
 
 const runtime = createRuntime({
-  sharedMemory: await measureSharedMemory(),
+  sharedMemory: await measureSharedMemory({
+    workerURL: new URL("./probe-worker.js", import.meta.url),
+  }),
   filesystem: { workerURL: "/fs-worker.js", mode: "memory" },
 });
 try {
@@ -65,13 +73,13 @@ Create `public/index.html`:
 
 ## Build
 
-Bundle both entries into `public/`:
+Bundle all three entries into `public/`:
 
 ```sh
-bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting
+bun build ./app.ts ./fs-worker.ts ./probe-worker.ts --outdir ./public --target browser --splitting
 ```
 
-`public/` now holds `app.js`, `fs-worker.js` and a few chunk files.
+`public/` now holds `app.js`, `fs-worker.js`, `probe-worker.js` and a few chunk files.
 
 ## Serve with isolation headers
 

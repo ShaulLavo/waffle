@@ -1476,7 +1476,7 @@ export class BrowserProcessBroker {
   private workerPlan(context: ProcessContext, options: WorkerLaunchOptions): ProcessPlan {
     const memories = moduleMemoryDeclarations(options.request.module);
     const guest: ProcessGuestPlan = options.memoryGroup
-      ? { kind: "group" }
+      ? { kind: "declared", memories: options.memories ?? [] }
       : memories
         ? { kind: "declared", memories: memories.concat(options.memories ?? []) }
         : { kind: "undeclared" };

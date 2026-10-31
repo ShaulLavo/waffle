@@ -1,4 +1,4 @@
-import { allocateSharedControl } from "../memory/control.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   Int32ArrayConstructor,
   atomicsCompareExchange,

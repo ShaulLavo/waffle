@@ -36,8 +36,12 @@ type TypedArray = Parameters<typeof typedArrayBuffer>[0];
 const byteLengthGetter = descriptor(prototype, "byteLength")!.get!;
 const tagGetter = descriptor(prototype, Symbol.toStringTag)!.get!;
 const setMethod = prototype.set;
+const fillMethod = prototype.fill;
 export function typedArrayByteLength(view: TypedArray): number {
   return apply(byteLengthGetter, view, []);
+}
+export function typedArrayFill(view: Uint8Array, value: number): void {
+  apply(fillMethod, view, [value]);
 }
 export function typedArraySet(
   view: TypedArray,

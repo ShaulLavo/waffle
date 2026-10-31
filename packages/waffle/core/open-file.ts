@@ -1,4 +1,4 @@
-import { allocateSharedControl } from "../memory/control.js";
+import { allocateSharedControl } from "../memory/allocator.ts";
 import type { Resource } from "./descriptors.js";
 import { FilesystemError } from "./filesystem.js";
 import { FilesystemSection, isRevoked } from "../fs/section.js";

@@ -5,9 +5,13 @@
 ```ts
 import { createRuntime, measureSharedMemory } from "waffle";
 
-const sharedMemory = await measureSharedMemory();
+const sharedMemory = await measureSharedMemory({
+  workerURL: new URL("./probe-worker.js", import.meta.url),
+});
 const runtime = createRuntime({ sharedMemory });
 ```
+
+The browser build includes a `probe-worker.ts` entry that imports `waffle/memory/probe-worker`, emitted beside the app as `probe-worker.js`. Include it in the build and pass its emitted URL. [Getting started](getting-started.md#build) shows all three entries. Bundling the app alone does not emit the probe asset.
 
 The measurement fills growable shared buffers in a disposable worker until allocation fails or reaches 16 GiB. It tests fixed buffers, shared Wasm memories, and private Wasm memories separately. The worker is terminated before measurement resolves. Unknown or failed measurements reject. A native allocation refusal on a bounded platform triggers one new measurement. Failure keeps the bounded classification.
 

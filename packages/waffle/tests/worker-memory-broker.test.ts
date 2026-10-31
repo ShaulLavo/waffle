@@ -1,8 +1,11 @@
+import { pieCore } from "./fixtures/memory-group-pie.js";
+import { prepareLinkPlan } from "../link/index.js";
 import {
   SharedMemoryLedger,
   SharedMemoryAdmissionError,
   declareSharedMemoryPlatform,
   bytes,
+  pages,
   type RuntimeReservations,
 } from "../memory/reservations.js";
 import { FilesystemRequestPool } from "../fs/request-memory.js";
@@ -10,7 +13,7 @@ import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 import { expect, test } from "bun:test";
 import { Worker as NodeWorker } from "node:worker_threads";
-import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { BrowserProcessBroker, type WorkerLaunchOptions } from "../browser/process-broker.js";
 import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "../browser/worker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemoryBackend } from "../fs/backend.js";
@@ -50,6 +53,9 @@ async function fixture(
   stopping: Promise<void> = Promise.resolve(),
   rootRetired?: () => void,
   reservations: RuntimeReservations = testReservations(),
+  launchOptions: Pick<WorkerLaunchOptions, "memoryGroup" | "memories"> & {
+    module?: WebAssembly.Module;
+  } = {},
 ) {
   const previousWorker = globalThis.Worker;
   const workers: EmbeddingWorker[] = [];
@@ -86,10 +92,11 @@ async function fixture(
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
-  const module = memoryObservationGuest();
+  const module = launchOptions.module ?? memoryObservationGuest();
   registry.register("fixture", { module, adapter: "preview1" });
   const broker = new BrowserProcessBroker({
     reservations,
+    memoryGroups: { maximumPages: 64, stackBytes: 65_536 },
     identities,
     table,
     registry,
@@ -111,6 +118,7 @@ async function fixture(
     },
     launch: (context) =>
       broker.launchWorker(context, {
+        ...launchOptions,
         workerUrl: "generic",
         request: { module, args: [], env: {} },
       }),
@@ -396,6 +404,87 @@ test("actual supervisor returns ENOMEM before allocating a child arena, group, o
     expect(
       reservations.snapshot().holders.filter((holder) => holder.label === "request-arena"),
     ).toHaveLength(0);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("group adapter memory is refused before group, arena or Worker allocation", async () => {
+  const linked = await prepareLinkPlan({
+    core: {
+      id: "core",
+      source: pieCore([0x10, 0]),
+      cooperative: true,
+      checkpoint: { module: "env", name: "check" },
+      initializeMemory: [],
+      initialize: [],
+    },
+    libraries: [],
+    reserve: "reserve",
+  });
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(256 * 1024 ** 2),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+  });
+  const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
+  const f = await fixture(false, Promise.resolve(), undefined, reservations, {
+    module: linked.entryModule,
+    memoryGroup: "new",
+    memories: [{ kind: "private", maximumPages: pages(65_536), origin: "defined" }],
+  });
+  try {
+    expect(f.workers).toHaveLength(0);
+    expect(await f.supervisor.waitForExit(f.root.pid, f.pid)).toMatchObject({
+      kind: "start-failed",
+      error: "ENOMEM",
+    });
+    expect(f.broker.memoryGroups()).toHaveLength(0);
+    expect(
+      reservations.snapshot().holders.filter((holder) => holder.label === "request-arena"),
+    ).toHaveLength(0);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a small group adapter memory is charged without charging the shared import twice", async () => {
+  const linked = await prepareLinkPlan({
+    core: {
+      id: "core",
+      source: pieCore([0x10, 0]),
+      cooperative: true,
+      checkpoint: { module: "env", name: "check" },
+      initializeMemory: [],
+      initialize: [],
+    },
+    libraries: [],
+    reserve: "reserve",
+  });
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(256 * 1024 ** 2),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+  });
+  const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
+  const f = await fixture(false, Promise.resolve(), undefined, reservations, {
+    module: linked.entryModule,
+    memoryGroup: "new",
+    memories: [{ kind: "private", maximumPages: pages(8), origin: "defined" }],
+  });
+  try {
+    expect(f.workers.filter((worker) => worker.request)).toHaveLength(1);
+    expect(
+      reservations.snapshot().holders.filter((holder) => holder.label === "guest-memory"),
+    ).toMatchObject([{ declaredBytes: 0 }, { declaredBytes: 8 * 65_536 }]);
+    expect(
+      reservations.snapshot().holders.filter((holder) => holder.label === "memory-group"),
+    ).toMatchObject([{ declaredBytes: 64 * 65_536 }]);
+    await f.broker.kill(f.pid, 9);
+    await until(() => f.broker.workerMemory().length === 0);
+    expect(
+      reservations.snapshot().holders.filter((holder) => holder.label === "guest-memory"),
+    ).toMatchObject([{ declaredBytes: 0 }]);
   } finally {
     await f.dispose();
   }
