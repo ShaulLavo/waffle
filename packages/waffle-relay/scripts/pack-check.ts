@@ -27,6 +27,13 @@ try {
   assert.equal(cli.status, 1, "Invalid arguments must reach the CLI validation path");
   assert.ok(cli.stderr.includes("Relay startup failed."), "Packed CLI did not run its entry point");
   assert.ok(readFileSync(executable, "utf8").startsWith("#!/usr/bin/env node\n"));
+  mkdirSync(join(scratch, "node_modules/@fails-components"));
+  for (const name of ["webtransport", "webtransport-transport-http3-quiche"])
+    symlinkSync(
+      resolve(root, `node_modules/@fails-components/${name}`),
+      join(scratch, `node_modules/@fails-components/${name}`),
+      "dir",
+    );
   for (const [name, conditions] of Object.entries(manifest.exports)) {
     assert.ok(existsSync(resolve(packed, conditions.types)), `Missing types for ${name}`);
     assert.ok(existsSync(resolve(packed, conditions.node)), `Missing Node entry for ${name}`);

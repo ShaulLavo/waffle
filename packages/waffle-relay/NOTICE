@@ -1,1 +1,6 @@
 waffle-relay uses the Waffle fetch transport contract and platform APIs. It contains no vendored third-party source.
+
+The optional WebTransport server uses @fails-components/webtransport 1.6.11 and
+@fails-components/webtransport-transport-http3-quiche 1.6.11, BSD-3-Clause,
+revision 71d1ba5147c7733fbfd3a375116b9f58484d9f13. Their source and native
+prebuilds are separately installed dependencies, not vendored in this package.

@@ -6,8 +6,13 @@ import { mintRelayToken, tokenKey, verifyRelayToken } from "./token.js";
 import { DRAIN_MS, MAX_DATA_BYTES, TCP_PATH, TcpFailure, record } from "./tcp-protocol.js";
 import { TcpAdmissions, tcpPolicy, type TcpServerOptions } from "./tcp-policy.js";
 import { ServerTcpStream } from "./tcp-server-stream.js";
+import type { TcpCarrierFactory } from "./tcp-carrier.js";
 
-export function createTcpRelay(options: TcpServerOptions, origins: readonly string[]) {
+export function createTcpRelay(
+  options: TcpServerOptions,
+  origins: readonly string[],
+  carrier?: TcpCarrierFactory,
+) {
   const policy = tcpPolicy(options, origins);
   const admissions = new TcpAdmissions(policy.limits);
   const wss = new WebSocketServer({
@@ -17,6 +22,7 @@ export function createTcpRelay(options: TcpServerOptions, origins: readonly stri
     clientTracking: false,
   });
   const streams = new Set<ServerTcpStream>();
+  const webtransport = carrier?.(policy, admissions);
   const denials = new Set<Promise<void>>();
   const issuerKey = policy.issuer && tokenKey(policy.issuer.credential);
   let revoked = false;
@@ -49,12 +55,18 @@ export function createTcpRelay(options: TcpServerOptions, origins: readonly stri
     });
   }
   return {
-    revoke,
+    ready: webtransport?.ready ?? Promise.resolve(),
+    failure: webtransport?.failure,
+    status: webtransport?.status,
+    revoke() {
+      revoke();
+      webtransport?.revoke();
+    },
     get active() {
       return admissions.active;
     },
     get counters() {
-      return Array.from(streams, (stream) => stream.counters);
+      return Array.from(streams, (stream) => stream.counters).concat(webtransport?.counters ?? []);
     },
     upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
       try {
@@ -86,7 +98,10 @@ export function createTcpRelay(options: TcpServerOptions, origins: readonly stri
           socket.removeListener("close", release);
           const stream = new ServerTcpStream(ws, policy, admissions, release);
           streams.add(stream);
-          void stream.done.then(() => streams.delete(stream));
+          void stream.done.then(
+            () => streams.delete(stream),
+            () => {},
+          );
         });
       } catch (error) {
         rejectUpgrade(socket, error instanceof TcpFailure && error.code === "limit" ? 429 : 403);
@@ -95,8 +110,10 @@ export function createTcpRelay(options: TcpServerOptions, origins: readonly stri
     async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
       const path = request.url;
       if (path === "/healthz" || path === "/readyz") {
-        json(response, path === "/readyz" && revoked ? 503 : 200, {
-          ok: path === "/healthz" || !revoked,
+        const available = !revoked && (!webtransport || webtransport.status().state === "serving");
+        json(response, path === "/readyz" && !available ? 503 : 200, {
+          ok: path === "/healthz" || available,
+          ...(path === "/readyz" && webtransport ? { webtransport: available } : {}),
         });
         return true;
       }
@@ -122,7 +139,10 @@ export function createTcpRelay(options: TcpServerOptions, origins: readonly stri
         const bearer = authorization(request);
         if (path.endsWith("/session")) {
           await verifyRelayToken(await policy.key, bearer);
-          json(response, 200, { v: 1, webtransport: null });
+          json(response, 200, {
+            v: 1,
+            webtransport: webtransport?.discovery() ?? null,
+          });
           return true;
         }
         if (!policy.issuer || !issuerKey) {
@@ -166,7 +186,9 @@ export function createTcpRelay(options: TcpServerOptions, origins: readonly stri
     },
     async close(): Promise<void> {
       revoke();
+      webtransport?.revoke();
       await Promise.all(Array.from(streams, (stream) => stream.done).concat(Array.from(denials)));
+      await webtransport?.close();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };

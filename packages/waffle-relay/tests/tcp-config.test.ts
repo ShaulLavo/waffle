@@ -55,3 +55,19 @@ test("operator config contains secret references, validates permissions, and rej
     await rm(scratch, { force: true, recursive: true });
   }
 });
+
+test("manual certificate startup failure leaves the CLI's HTTP service alive instead of restarting", async () => {
+  const { tcpStartup } = await import("../src/cli-config.js");
+  await expect(
+    tcpStartup({
+      ready: Promise.reject(new Error("expired certificate")),
+      failure: Promise.resolve({ code: "certificate-expired", manualActionRequired: true }),
+    }),
+  ).resolves.toBeUndefined();
+  await expect(
+    tcpStartup({
+      ready: Promise.reject(new Error("bind failed")),
+      failure: Promise.resolve({ code: "endpoint-failed", manualActionRequired: false }),
+    }),
+  ).rejects.toThrow("bind failed");
+});

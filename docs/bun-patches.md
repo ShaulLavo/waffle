@@ -37,6 +37,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `packages/awk/patches/wasi-unsupported-ops.patch`, `packages/awk/scripts/`                                                            | Adaptation       | The One True Awk 20260426 at `5739fd79bcfc75ba7526773d0cf634521f8aca3c`. Preserves the evaluator and real setjmp exit behavior. WASI-only startup and capability guards reject unavailable system commands and command pipes.                                                                                                                                                                                                |
 | `packages/tar/patches/wasi.patch`, `packages/tar/producer/`, `packages/tar/scripts/`                                                  | Adaptation       | uutils/tar at `dffa9350f78b3bfbc9b4fc70a0f0205a53a937b6`; standalone locked producer, runtime cwd adapter, `-C`, pure Rust gzip with trailer checks, rejected unsupported helpers/member filters, and explicit WASI metadata failures. Read-only candidate; create/extract are not qualified.                                                                                                                                |
 | `packages/program-support/src/{executor,io,runtime}.rs`, `src/runtime/wasi.rs`                                                        | Adaptation       | Neutral guest support from bash-web `shell/engine/src/{executor,io,runtime}.rs` and `runtime/wasi.rs` at `ed31b2bf47fe92afa4c9568868f206f35b9add27`. Public lifetime/cancellation hooks, filesystem adapter and wire decoders; original Waffle timers and read-readiness observations; shell policy stays in bash-web. See [Guest program support](#guest-program-support).                                                  |
+| `packages/waffle-relay/src/*webtransport*.ts`, `tcp-byte-channel.ts`, `tcp-target.ts` | Original adapter | Original carrier, lifetime, parser and reset adaptation around the public APIs of fails-components/webtransport revision `71d1ba5147c7733fbfd3a375116b9f58484d9f13`, exact npm pair 1.6.11. No upstream implementation is copied. See [WebTransport relay adapter](#webtransport-relay-adapter). |
 
 ## GNU diffutils
 
@@ -434,3 +435,9 @@ socket description. The descriptor and WASI changes add standard Preview 1 socke
 readiness and directional shutdown. The WAT and C fixtures are original test programs.
 No Bun, Node, wasi-libc or other upstream implementation was copied or adapted for this work.
 The existing wasi-libc patch remains unchanged.
+
+## WebTransport relay adapter
+
+The optional relay's WebTransport modules are original Waffle adapters. They use `main/lib/server.js`, `main/lib/session.js` and `main/lib/stream.js` from `fails-components/webtransport` revision `71d1ba5147c7733fbfd3a375116b9f58484d9f13` through the exact `@fails-components/webtransport@1.6.11` and `@fails-components/webtransport-transport-http3-quiche@1.6.11` packages. Both dependencies are BSD-3-Clause and remain outside this source tree. No native code or upstream stream implementation is copied or patched.
+
+The private reset adapter translates relay codes 1 through 4 to the dependency's `{ code }` argument and recognizes only its exact bounded reset-message forms. The endpoint owner replaces a stopped server instead of calling `updateCert`, because the pinned native binding does not implement that operation. Certificate rotation resets WebTransport streams and leaves the independently owned WebSocket service running.

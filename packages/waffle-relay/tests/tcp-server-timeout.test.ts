@@ -50,7 +50,7 @@ test("a hanging resolution is bounded, late results cannot dial, and close/log h
     ws.on("error", () => {});
     await once(ws, "open");
     const reply = once(ws, "message");
-    ws.send(JSON.stringify({ v: 1, token, ...target }));
+    ws.send(JSON.stringify({ v: 1, token, ...target, window: 262144 }));
     expect(JSON.parse(String((await reply)[0]))).toEqual({
       v: 1,
       ok: false,
