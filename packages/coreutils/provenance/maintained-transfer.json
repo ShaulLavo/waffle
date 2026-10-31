@@ -379,14 +379,6 @@
       "classification": "exact"
     },
     {
-      "oldPath": "tests/test-programs.unit.ts",
-      "oldBlob": "dcaed320aae253d4b4ee989a439892da047a91f2",
-      "newPath": "packages/coreutils/tests/test-programs.unit.ts",
-      "sourceSha256": "a8656c0aaa12a2758f9732a6c735d21ced4e70366560aa20e62a7a3121cb260e",
-      "transferredSha256": "a8656c0aaa12a2758f9732a6c735d21ced4e70366560aa20e62a7a3121cb260e",
-      "classification": "exact"
-    },
-    {
       "oldPath": "tests/tr.spec.ts",
       "oldBlob": "a97150d4dc1052fc91b6b39f5896820b73cab4bc",
       "newPath": "packages/coreutils/tests/tr.spec.ts",
@@ -449,14 +441,6 @@
       "newPath": "packages/coreutils/tests/helpers/file-utility-filesystem.ts",
       "sourceSha256": "0347eedfd6f19a67671c817d70f19d23010102500bc39eefe4590cf02a84522e",
       "transferredSha256": "0347eedfd6f19a67671c817d70f19d23010102500bc39eefe4590cf02a84522e",
-      "classification": "exact"
-    },
-    {
-      "oldPath": "tests/helpers/test-programs.ts",
-      "oldBlob": "608eba480700d44b8379205cf0ba05edb52a5607",
-      "newPath": "packages/coreutils/tests/helpers/test-programs.ts",
-      "sourceSha256": "254186fdbb583db2afb190c71241f9132856d41e1f05577eb0281a08369dc19f",
-      "transferredSha256": "254186fdbb583db2afb190c71241f9132856d41e1f05577eb0281a08369dc19f",
       "classification": "exact"
     },
     {
@@ -673,7 +657,6 @@
       "tests/file-utilities.spec.ts",
       "tests/ls.spec.ts",
       "tests/sort-uniq.spec.ts",
-      "tests/test-programs.unit.ts",
       "tests/tr.spec.ts",
       "tests/helpers/cut-tr-cases.ts",
       "tests/helpers/cut-tr-recording.ts",
@@ -682,7 +665,6 @@
       "tests/helpers/file-utilities-browser.ts",
       "tests/helpers/file-utility-cases.ts",
       "tests/helpers/file-utility-filesystem.ts",
-      "tests/helpers/test-programs.ts",
       "tests/helpers/tr-cases.ts",
       "shell/clear/Cargo.toml",
       "shell/clear/LICENSE",

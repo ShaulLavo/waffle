@@ -15,7 +15,7 @@
     "remaining": "Final monorepo composition supplies the singular root tools file and packages/waffle libc/scanner sources."
   },
   "installer": {
-    "pendingSources": ["tests/env-install.unit.ts", "tests/clear-browser.ts", "tests/test-programs.unit.ts", "scripts/test-coreutils-packaging.ts"],
+    "pendingSources": ["tests/env-install.unit.ts", "tests/clear-browser.ts", "scripts/test-coreutils-packaging.ts"],
     "rule": "Wire actual family exports, /usr/bin canonical paths and declared /bin aliases after Waffle step 2; do not import Bash installers."
   },
   "browserHarness": {
