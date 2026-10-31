@@ -235,6 +235,7 @@ const processCapabilities = {
   takeWorker: "method",
   rootControlGrant: "method",
   rootControlAllocated: "method",
+  rootStopped: "method",
   isIdleWorker: "method",
   kill: "async",
   killJob: "async",

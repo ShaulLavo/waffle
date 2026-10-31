@@ -33,7 +33,7 @@ Each bounded worker receives a 64 MiB lifetime byte quota for Waffle controls an
 
 Successful physical stop returns unused quota only. Consumed bytes remain explicit page-lifetime debt because transferred endpoints can outlive their creator, and failed publication does not prove that an allocated backing disappeared. A long-running bounded worker can exhaust its quota through churn. Repeated workers can accumulate consumed debt. The snapshot reports that retained-budget limit; it does not call those bytes reclaimed.
 
-External roots pass their declared memories when adopted. After adoption, include `service.rootControlGrant(pid)` as `controlGrant` in their bootstrap request and forward `shared-control-allocation` messages to `service.rootControlAllocated(pid, buffer)`. Supply the root's physical `stop` callback.
+External roots pass their declared memories when adopted. After adoption, include `service.rootControlGrant(pid)` as `controlGrant` in their bootstrap request and forward `shared-control-allocation` messages to `service.rootControlAllocated(pid, buffer)`. Supply the root's physical `stop` callback. If the embedder terminates a non-group root itself, call `service.rootStopped(pid)` after successful physical termination. A group root's membership `stopped()` receipt settles the same reservation.
 
 ## Inspect the page
 

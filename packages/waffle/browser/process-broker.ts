@@ -961,8 +961,6 @@ export class BrowserProcessBroker {
               }),
           });
       registry.registerProcess(state.pid);
-      this.rootTickets.set(state.pid, ticket.launched());
-      this.rootGrants.set(state.pid, ticket.control);
       this.registries.set(state.pid, registry);
       transport.data = { ...data, pipeRegistry: registry.handle() };
       // Capture once: later option mutation cannot redirect or remove descendant preparation.
@@ -977,6 +975,8 @@ export class BrowserProcessBroker {
           }),
           directory: workerProcessDirectoryId(transport),
         });
+      this.rootTickets.set(state.pid, ticket.launched());
+      this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
       ticket.abort();
       throw error;
@@ -1416,6 +1416,12 @@ export class BrowserProcessBroker {
     if (!grant) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
     return grant;
   }
+  /** The external root's owner proves successful physical termination, not logical exit. */
+  rootStopped(pid: number): void {
+    this.rootTickets.get(pid)?.stopped();
+    this.rootTickets.delete(pid);
+    this.rootGrants.delete(pid);
+  }
   rootControlAllocated(pid: number, buffer: SharedArrayBuffer): void {
     const ticket = this.rootTickets.get(pid);
     if (!ticket) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
@@ -1731,7 +1737,9 @@ export class BrowserProcessBroker {
   /** A settled root lease must not keep its group's backing reachable; debt stays tracked. */
   private settleRootGroup(pid: number, lease: MemberLease): void {
     lease.stopped();
-    if (lease.settled() && this.rootGroups?.get(pid) === lease) this.rootGroups.delete(pid);
+    if (!lease.settled()) return;
+    this.rootStopped(pid);
+    if (this.rootGroups?.get(pid) === lease) this.rootGroups.delete(pid);
   }
   private admitGroupMember(
     pid: number,
@@ -2153,9 +2161,7 @@ export class BrowserProcessBroker {
         terminal?.stopped();
         if (group) this.settleRootGroup(pid, group);
         if (ownsConsumer) {
-          this.rootTickets.get(pid)?.stopped();
-          this.rootTickets.delete(pid);
-          this.rootGrants.delete(pid);
+          this.rootStopped(pid);
         }
       })
       .catch((error) => {
