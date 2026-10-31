@@ -25,15 +25,16 @@
     "build": "node scripts/build-sed.ts",
     "test:build-routes": "node --test ../../tools/test-family-build-routes.ts",
     "test:source": "node --test scripts/test-sed-source.ts",
-    "pack": "node ../../tools/program-package.ts pack",
-    "prepack": "node ../../tools/program-package.ts check",
+    "pack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check",
     "notices": "node scripts/notices.ts",
     "prepare:package": "bun run build && bun run notices"
+  },
+  "devDependencies": {
+    "waffle": "workspace:*"
   },
   "peerDependencies": {
     "waffle": "*"
   },
-  "devDependencies": {
-    "waffle": "workspace:*"
-  }
+  "waffleHostInterface": 1
 }

@@ -31,8 +31,8 @@
     "test:wasi": "bun test tests/awk-wasi.test.ts",
     "test:source": "node --test scripts/awk-source.test.ts tests/command-deadline.test.ts",
     "typecheck": "tsc -p .",
-    "pack": "node scripts/verify-package.ts && node ../../tools/program-package.ts pack",
-    "prepack": "node scripts/verify-package.ts && node ../../tools/program-package.ts check",
+    "pack": "node scripts/verify-package.ts && bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "node scripts/verify-package.ts && bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check",
     "prepare:package": "bun run build",
     "test:wasm": "node scripts/test-wasm.ts",
     "test:artifacts": "node scripts/verify-package.ts"
@@ -44,5 +44,6 @@
   },
   "peerDependencies": {
     "waffle": "*"
-  }
+  },
+  "waffleHostInterface": 1
 }
