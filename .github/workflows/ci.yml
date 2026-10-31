@@ -1284,7 +1284,7 @@ jobs:
       - run: bun run --cwd packages/waffle tsc -p ../../scripts/tsconfig.json
       - uses: ./.github/actions/program-optimizer
       - run: bun run programs:tools
-      - run: bun test scripts/program-release.test.ts scripts/program-rebind.test.ts
+      - run: bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts
       - run: bun run programs:routes
       - run: bun run programs:source
       - uses: actions/setup-node@v4

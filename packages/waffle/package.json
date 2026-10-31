@@ -597,14 +597,14 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check:tooling": "tsc -p tsconfig.tooling.json",
-    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts",
+    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts && bun ../../tools/waffle-family-metadata.ts",
     "unused": "knip --no-progress",
     "duplicates": "jscpd --fail-on-new-clones 0",
     "quality": "bun run check:source && bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
     "build:network": "bun tooling/build-network.ts",
     "size:network": "bun tooling/network-size.ts",
     "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked",
-    "pack": "bun pm pack --destination dist",
+    "pack": "bun tooling/check-package-metadata.ts && bun pm pack --destination dist",
     "pack:check": "bun tooling/tarball-smoke.ts"
   },
   "dependencies": {},
@@ -619,5 +619,6 @@
     "playwright-core": "1.64.1",
     "typescript": "^7.0.2",
     "vite": "8.3.4"
-  }
+  },
+  "waffleHostInterface": 1
 }

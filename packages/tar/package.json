@@ -28,8 +28,8 @@
     "test:source": "node --test tests/source.test.ts",
     "test:wasi": "bun test tests/tar-wasi.test.ts",
     "typecheck": "tsc -p .",
-    "pack": "node ../../tools/program-package.ts pack",
-    "prepack": "node ../../tools/program-package.ts check"
+    "pack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
@@ -39,5 +39,6 @@
   },
   "peerDependencies": {
     "waffle": "*"
-  }
+  },
+  "waffleHostInterface": 1
 }

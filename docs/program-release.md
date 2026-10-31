@@ -1,10 +1,11 @@
 # Releasing program families
 
 Program families ship as GitHub release tarballs, not npm packages. A consumer depends on the
-`base` tarball URL (and optionally `git`), and every edge inside that closure is an exact
-release-asset URL: `base` names each family's tarball, and every family names the published
-`waffle-v<version>` runtime tarball as its `waffle` dependency or peer. Nothing in the closure
-resolves through npm, so no workspace label or unpublished `0.0.0` reaches an installer.
+`base` tarball URL (and optionally `git`). Family-to-family edges inside that closure are exact
+release-asset URLs. Each family carries `waffleHostInterface` and a wildcard
+`peerDependencies.waffle`; the consumer manifest names the exact runtime archive separately.
+Nothing in the closure resolves through npm, so no workspace label or unpublished `0.0.0` reaches
+an installer.
 
 ## Build the closure
 
@@ -12,10 +13,8 @@ Prepare each family with its own `prepare:package` route first (see
 [program-package-builds.md](program-package-builds.md)). Then, from a clean checkout:
 
 ```sh
-bun scripts/program-release.ts --tag programs-v0.0.92 --out /work/tmp/programs-v0.0.92 \
-  --runtime-url https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.91/waffle-0.0.91.tgz \
-  --runtime-sha256 4802672be0fc458d3ef6ae4f5d4998c4c349cae790c6d99236d60a373f4faaea \
-  --families base
+bun scripts/program-release.ts --tag "$PROGRAM_TAG" --out "$OUTPUT" \
+  --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" --families base
 ```
 
 `--list --families base,git` prints the dependency-ordered package directories to prepare.
@@ -31,18 +30,20 @@ The command:
 
 1. Orders the requested families and their workspace dependencies, dependencies first.
 2. Copies each package into disposable staging, sets the release version, and rewrites every
-   workspace edge (and the `waffle` peer) to its immutable asset URL. `scripts` and
-   `devDependencies` are dropped. The source checkout is never modified, and uncommitted
-   changes under the released packages refuse the release.
+   family-to-family workspace edge to its immutable asset URL. It keeps the Waffle peer as `*`,
+   records the exact host-interface integer, and rejects a Waffle dependency or optional
+   dependency. `scripts` and `devDependencies` are dropped. The source checkout is never
+   modified, and uncommitted changes under the released packages refuse the release.
 3. Admits prepared guests, notices and payloads with the shared `tools/program-package.ts`, packs
    once with `bun pm pack`, and reads every required asset back from the tarball.
 4. Rejects any edge outside the closure, `workspace:` or local-path spec, and `0.0.0` pin, and
    checks that every export, packed relative import, static asset URL and root license exists.
-   Bare runtime imports must be declared dependencies.
+   Bare runtime imports must be declared peers or dependencies.
 5. Packs a twin pointing at a local HTTP server, proves it equals the release tarballs except for
    those URLs, and runs a real `bun install` of the whole closure with the npm registry
    unreachable (`--registry` admits declared third-party pins, which Git needs). It imports
-   every export. Every exported program descriptor's guest must be the admitted artifact, and
+   every export only after checking matching host-interface integers, one physical runtime,
+   and one runtime lock entry. Every exported program descriptor's guest must be the admitted artifact, and
    every admitted `.wasm` must be reached, by a descriptor or by a literal
    `new URL(path, import.meta.url)` in exported code. The manifest records which, per package
    (`guests`). Python's interpreter is a static reference; its qualified-artifact route is not
@@ -51,8 +52,9 @@ The command:
    Every fetch and child command has a deadline (`--timeout-ms`, default ten minutes). Each child
    runs in its own process group. SIGINT or SIGTERM, or a deadline, retires the whole group before
    staging is removed. A group that will not exit leaves its staging in place and is reported.
-6. Writes the tarballs, `program-release.json` (source commit and trees, URLs, sizes, SHA-256s,
-   edges and artifact hashes) and `SHA256SUMS` into `OUT/assets`.
+6. Writes the tarballs, `program-release.json` using schema `waffle-program-release/2`, and
+   `SHA256SUMS` into `OUT/assets`. The manifest retains source commits and trees, URLs, sizes,
+   SHA-256 values, exact family edges, artifact hashes, and runtime and family interface integers.
 
 The `Program family release` workflow runs the same steps on a `programs-v*` tag that is already
 on main. It uploads the verified assets as a workflow artifact, and creates the GitHub release
@@ -86,10 +88,10 @@ bun scripts/program-rebind.ts \
   --from-tag programs-v0.0.13 \
   --from-manifest-sha256 <source-manifest-sha256> \
   --from-assets /work/tmp/programs-v0.0.13 \
-  --tag programs-v0.0.14 --out /work/tmp/programs-v0.0.14 \
-  --runtime-url https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.106/waffle-0.0.106.tgz \
-  --runtime-sha256 <runtime-sha256> --runtime-tarball /work/tmp/waffle-0.0.106.tgz \
-  --runtime-source-commit <runtime-source-commit> \
+  --tag "$NEW_PROGRAM_TAG" --out "$OUTPUT" \
+  --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" \
+  --runtime-tarball "$RUNTIME_ARCHIVE" --host-interface "$HOST_INTERFACE" \
+  --runtime-source-commit "$RUNTIME_SOURCE_COMMIT" \
   --historical-root /work/worktrees/waffle/checker-3050f69 \
   --acceptance /work/worktrees/waffle/checker-3050f69/tools/family-packed-app.ts
 ```
@@ -99,14 +101,31 @@ repacking, and rewrites only `package.json`. Guest binaries, notices, descriptor
 source trees and artifact bytes remain unchanged. The runtime tarball is read from the local file
 when supplied, so a private draft asset can be qualified without an unauthenticated fetch.
 
-Rebind output keeps `program-release.json` and schema `waffle-program-release/1`, with
-`operation: "peer-rebind"`. Its `rebind` block records the original manifest, historical checker,
-tool commit and acceptance harness. Each package records its metadata changes. Normal releases write
-`operation: "release"`; there is no separate rebind manifest. Current-main admission is not used
-for historical receipts that the current checker correctly refuses.
+Rebind output uses `program-release.json` schema `waffle-program-release/2`, with
+`operation: "peer-rebind"`. It reads the immutable schema-1 source manifest explicitly, including
+family packages that lack `waffleHostInterface`, and never treats missing metadata as compatible for
+new releases. Migration requires an explicit `--host-interface` and the unchanged historical `--acceptance`
+script. The target runtime archive must carry that same valid integer. A schema-2 source also
+requires equality with its existing runtime and family metadata. Each rebound
+package receives that exact integer, a wildcard Waffle peer, and no Waffle runtime dependency.
+The `rebind` block records the original manifest, historical checker, tool commit, and acceptance
+harness. Each package records its metadata changes. Normal releases use `operation: "release"` in the
+same schema. Current-main admission is not used for historical receipts that the current checker
+correctly refuses.
 
 A local runtime archive defaults to provisional candidate metadata. `--runtime-source-commit`
 records its supplied source identity. After the runtime publisher verifies the public bytes,
 `--runtime-published` marks that same input as published. The program tarballs do not embed the
 runtime checksum, so changing the runtime archive or its publication state leaves their hashes
 unchanged. Do not publish a manifest that promises a provisional runtime checksum.
+
+## Qualify a local runtime candidate
+
+To qualify unpublished interface-bearing bytes without promising a public runtime release, pass
+`--runtime-tarball "$RUNTIME_ARCHIVE"`, its exact SHA-256, its absolute `file:` URL as
+`--runtime-url`, and `--runtime-candidate-source-commit "$SOURCE_COMMIT"`. Normal release and
+rebind commands accept this explicit candidate mode. The runtime package version stays unchanged.
+The output records `runtime.input.kind: "local-candidate"` and the supplied source commit.
+A candidate cannot use a public release URL or be marked published. This creates no tag or release
+and does not modify an existing runtime archive. The public release path still requires its exact
+immutable URL and archive hash.

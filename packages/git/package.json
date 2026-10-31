@@ -27,8 +27,8 @@
     "test:browser": "bun scripts/test-git-six-browser.ts",
     "test:browser:lookup": "bun scripts/test-git-six-browser.ts lookup",
     "test:browser:dispose": "bun scripts/test-git-six-browser.ts dispose",
-    "pack": "node ../../tools/program-package.ts pack",
-    "prepack": "node ../../tools/program-package.ts check",
+    "pack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check",
     "prepare:package": "node scripts/build-git.ts && node scripts/git-notices.ts"
   },
   "dependencies": {
@@ -54,5 +54,6 @@
     "waffle",
     "bun-wasm",
     "esbuild"
-  ]
+  ],
+  "waffleHostInterface": 1
 }
