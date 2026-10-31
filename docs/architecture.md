@@ -393,6 +393,14 @@ each reused writer needs only one new publication cell. Each fresh or reused rea
 cells. A root-held default pipe with 3,001 sequential child writers uses 3,020 cells, or 48,320
 bytes of cell storage, without growing its initial registry backing. The root's four cells and
 15 fresh writer leases are included. Cells remain shared with all other service uses.
+`PipeOptions.allocateShared(length)` supplies a realm-local allocator for fixed pipe backing,
+a locally created wake, endpoint lifetimes and new description flags. Attached handles reuse
+existing backing without charging it again; their later endpoint controls use the receiving
+realm's allocator. `attachPipeEndpoint` and `attachPipeController` accept that allocator in
+private options, as do worker host, broker and codec construction. No function crosses the
+cloneable wire handle. Inherited descriptions share flags and allocate only a new lifetime.
+The hook provides accounting, not a nominal allowance, refund policy or lifetime ledger.
+
 The separate process directory supports 1,024 simultaneously enrolled processes; collected
 process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
 
