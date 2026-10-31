@@ -114,7 +114,7 @@ export interface MemoryGroupSnapshot {
   readonly pins: number;
   readonly holds: number;
   readonly watches: number;
-  /** Actual backing of the group memory, the W3 charge. */
+  /** Owner-granted logical backing, the W3 charge. Fixed reservation bytes are reported by the page ledger. */
   readonly committedBytes: number;
   /** Growth that bypassed the owner was found and charged; the group admits nothing more. */
   readonly bypassed: boolean;
