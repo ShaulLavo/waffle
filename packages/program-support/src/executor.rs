@@ -14,6 +14,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
+    time::Instant,
 };
 
 /// A host's race-safe idle primitive. `notify` must advance `epoch` before waking
@@ -48,11 +49,41 @@ struct Task {
     future: LocalBoxFuture<'static, ()>,
     wake: Arc<TaskWake>,
 }
+type TimerKey = (Instant, u64);
+
+struct TimerEntry {
+    elapsed: Rc<Cell<bool>>,
+    waker: Waker,
+}
+
+#[derive(Default)]
+struct TimerRegistry {
+    entries: BTreeMap<TimerKey, TimerEntry>,
+    next: u64,
+}
+
+impl TimerRegistry {
+    fn register(&mut self, deadline: Instant, elapsed: Rc<Cell<bool>>, waker: &Waker) -> TimerKey {
+        let sequence = self.next;
+        self.next = sequence.checked_add(1).expect("timer sequence exhausted");
+        let key = (deadline, sequence);
+        self.entries.insert(
+            key,
+            TimerEntry {
+                elapsed,
+                waker: waker.clone(),
+            },
+        );
+        key
+    }
+}
+
 struct ExecutorState {
     tasks: RefCell<BTreeMap<usize, Task>>,
     next: Cell<usize>,
     queue: Arc<ReadyQueue>,
     driving: Cell<bool>,
+    timers: Rc<RefCell<TimerRegistry>>,
 }
 #[derive(Clone)]
 pub struct Executor(Rc<ExecutorState>);
@@ -83,6 +114,7 @@ impl Executor {
                 idle,
             }),
             driving: Cell::new(false),
+            timers: Rc::new(RefCell::new(TimerRegistry::default())),
         }))
     }
     pub fn spawn<T: Clone + 'static>(
@@ -118,6 +150,49 @@ impl Executor {
         ArcWake::wake_by_ref(&wake);
         handle
     }
+    /// Create a fused, removable timer future without retaining the task map.
+    pub fn sleep_until(&self, deadline: Instant) -> Sleep {
+        Sleep {
+            registry: self.0.timers.clone(),
+            deadline,
+            key: None,
+            elapsed: Rc::new(Cell::new(false)),
+        }
+    }
+    /// Return the earliest deadline among currently registered timers.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.0
+            .timers
+            .borrow()
+            .entries
+            .first_key_value()
+            .map(|(key, _)| key.0)
+    }
+    /// Fire all timers at or before `now`, waking tasks after releasing the
+    /// timer registry borrow. Equal deadlines retain registration order.
+    pub fn fire_timers(&self, now: Instant) -> usize {
+        let mut wakers = Vec::new();
+        {
+            let mut timers = self.0.timers.borrow_mut();
+            while timers
+                .entries
+                .first_key_value()
+                .is_some_and(|(key, _)| key.0 <= now)
+            {
+                let (_, entry) = timers.entries.pop_first().unwrap();
+                entry.elapsed.set(true);
+                wakers.push(entry.waker);
+            }
+        }
+        let fired = wakers.len();
+        for waker in wakers {
+            waker.wake();
+        }
+        fired
+    }
+    fn has_timers(&self) -> bool {
+        !self.0.timers.borrow().entries.is_empty()
+    }
     /// Nonblocking host turn, bounded even if tasks continually yield to themselves.
     pub fn drive(&self, max_polls: usize) -> Drive {
         #[cfg(any(test, feature = "stack-observation"))]
@@ -135,6 +210,9 @@ impl Executor {
             }
         }
         let _reset = Reset(&self.0.driving);
+        if self.has_timers() {
+            self.fire_timers(Instant::now());
+        }
         let mut polls = 0;
         while polls < max_polls {
             let id = self.0.queue.ids.lock().unwrap().pop_front();
@@ -161,7 +239,11 @@ impl Executor {
     }
     /// Snapshot first, then check readiness: a notification anywhere in between
     /// the check and the host wait makes `park` return without sleeping.
+    /// Armed timers prevent parking because `IdleWakeSource::park` has no timeout.
     pub fn park_if_idle(&self) -> bool {
+        if self.has_timers() {
+            return false;
+        }
         let Some(idle) = &self.0.queue.idle else {
             return false;
         };
@@ -174,6 +256,64 @@ impl Executor {
         }
         idle.park(epoch);
         true
+    }
+}
+
+/// A fused executor timer. It registers on first poll, updates its waker on
+/// re-poll and unregisters itself when dropped. The timer registry is separate
+/// from the executor task map, so a task may own its own `Sleep` safely.
+pub struct Sleep {
+    registry: Rc<RefCell<TimerRegistry>>,
+    deadline: Instant,
+    key: Option<TimerKey>,
+    elapsed: Rc<Cell<bool>>,
+}
+
+impl Sleep {
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub fn is_elapsed(&self) -> bool {
+        self.elapsed.get()
+    }
+
+    fn unregister(&mut self) {
+        let Some(key) = self.key.take() else {
+            return;
+        };
+        self.registry.borrow_mut().entries.remove(&key);
+    }
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        if this.elapsed.get() {
+            return Poll::Ready(());
+        }
+        if this.key.is_none() && Instant::now() >= this.deadline {
+            this.elapsed.set(true);
+            return Poll::Ready(());
+        }
+
+        let mut registry = this.registry.borrow_mut();
+        let key = *this.key.get_or_insert_with(|| {
+            registry.register(this.deadline, this.elapsed.clone(), cx.waker())
+        });
+        let entry = registry.entries.get_mut(&key).unwrap();
+        if !entry.waker.will_wake(cx.waker()) {
+            entry.waker = cx.waker().clone();
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        self.unregister();
     }
 }
 
@@ -491,7 +631,265 @@ pub async fn yield_now() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{FutureExt, task::noop_waker};
+    use futures::{
+        FutureExt,
+        task::{ArcWake, noop_waker, waker_ref},
+    };
+    use std::{sync::Mutex, thread, time::Duration};
+
+    struct RecordingWake {
+        id: u8,
+        log: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl ArcWake for RecordingWake {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.log.lock().unwrap().push(this.id);
+        }
+    }
+
+    fn recording_waker(log: &Arc<Mutex<Vec<u8>>>, id: u8) -> Waker {
+        waker_ref(&Arc::new(RecordingWake {
+            id,
+            log: log.clone(),
+        }))
+        .clone()
+    }
+
+    fn assert_unpin<T: Unpin>() {}
+
+    #[test]
+    fn timers_register_order_fire_and_fuse() {
+        assert_unpin::<Sleep>();
+        let executor = Executor::new();
+        let now = Instant::now();
+        let first_deadline = now + Duration::from_secs(1);
+        let second_deadline = now + Duration::from_secs(2);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let first_waker = recording_waker(&log, 1);
+        let second_waker = recording_waker(&log, 2);
+        let mut first = executor.sleep_until(first_deadline);
+        let mut second = executor.sleep_until(second_deadline);
+        let mut abandoned = executor.sleep_until(now + Duration::from_secs(3));
+        let mut first_cx = Context::from_waker(&first_waker);
+        let mut second_cx = Context::from_waker(&second_waker);
+        let abandoned_waker = recording_waker(&log, 9);
+        let mut abandoned_cx = Context::from_waker(&abandoned_waker);
+
+        assert!(Pin::new(&mut second).poll(&mut second_cx).is_pending());
+        assert!(Pin::new(&mut first).poll(&mut first_cx).is_pending());
+        assert!(
+            Pin::new(&mut abandoned)
+                .poll(&mut abandoned_cx)
+                .is_pending()
+        );
+        assert_eq!(executor.next_deadline(), Some(first_deadline));
+        assert_eq!(executor.fire_timers(now), 0);
+        drop(abandoned);
+        assert_eq!(executor.next_deadline(), Some(first_deadline));
+        assert_eq!(executor.fire_timers(first_deadline), 1);
+        assert_eq!(*log.lock().unwrap(), vec![1]);
+        assert!(first.is_elapsed());
+        assert!(!second.is_elapsed());
+        assert_eq!(executor.next_deadline(), Some(second_deadline));
+        assert_eq!(Pin::new(&mut first).poll(&mut first_cx), Poll::Ready(()));
+        assert_eq!(Pin::new(&mut first).poll(&mut first_cx), Poll::Ready(()));
+        drop(first);
+        assert_eq!(executor.next_deadline(), Some(second_deadline));
+        assert_eq!(executor.fire_timers(second_deadline), 1);
+        assert_eq!(*log.lock().unwrap(), vec![1, 2]);
+        assert_eq!(Pin::new(&mut second).poll(&mut second_cx), Poll::Ready(()));
+        drop(second);
+        assert_eq!(executor.next_deadline(), None);
+        assert_eq!(executor.fire_timers(now + Duration::from_secs(4)), 0);
+    }
+
+    #[test]
+    fn timers_update_wakers_and_preserve_equal_deadline_order() {
+        let executor = Executor::new();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let first_waker = recording_waker(&log, 1);
+        let updated_waker = recording_waker(&log, 2);
+        let second_waker = recording_waker(&log, 3);
+        let mut first = executor.sleep_until(deadline);
+        let mut second = executor.sleep_until(deadline);
+        assert!(
+            Pin::new(&mut first)
+                .poll(&mut Context::from_waker(&first_waker))
+                .is_pending()
+        );
+        assert!(
+            Pin::new(&mut first)
+                .poll(&mut Context::from_waker(&updated_waker))
+                .is_pending()
+        );
+        assert!(
+            Pin::new(&mut second)
+                .poll(&mut Context::from_waker(&second_waker))
+                .is_pending()
+        );
+        assert_eq!(executor.fire_timers(deadline), 2);
+        assert_eq!(*log.lock().unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn busy_tasks_do_not_starve_expiry_within_one_rotation() {
+        let executor = Executor::new();
+        let fired = Rc::new(Cell::new(false));
+        let timer_fired = fired.clone();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let timer = executor.sleep_until(deadline);
+        let timer_task = executor.spawn(async move {
+            timer.await;
+            timer_fired.set(true);
+        });
+        let cancel = Cancel::new();
+        let busy_cancel = cancel.clone();
+        let busy = executor.spawn(async move {
+            while !busy_cancel.is_cancelled() {
+                yield_now().await;
+            }
+        });
+        executor.drive(2);
+        assert!(!timer_task.is_finished());
+        assert_eq!(executor.fire_timers(deadline), 1);
+        executor.drive(2);
+        assert!(fired.get());
+        assert!(timer_task.is_finished());
+        cancel.cancel();
+        executor.drive(8);
+        assert!(busy.is_finished());
+    }
+
+    #[test]
+    fn drive_fires_registered_timers_automatically() {
+        let executor = Executor::new();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let mut timer = executor.sleep_until(deadline);
+        let waker = noop_waker();
+        assert!(
+            Pin::new(&mut timer)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        assert!(!timer.is_elapsed());
+        assert_eq!(executor.drive(0).polls, 0);
+        assert!(timer.is_elapsed());
+        assert_eq!(executor.next_deadline(), None);
+    }
+
+    #[test]
+    fn park_if_idle_refuses_to_park_with_an_armed_timer() {
+        let idle = Arc::new(Idle {
+            epoch: 0.into(),
+            parks: 0.into(),
+        });
+        let executor = Executor::with_idle_source(idle.clone());
+        let timer = executor.sleep_until(Instant::now() + Duration::from_secs(1));
+        let task = executor.spawn(timer);
+        executor.drive(1);
+        assert!(!executor.park_if_idle());
+        assert_eq!(idle.parks.load(Ordering::Relaxed), 0);
+        executor.fire_timers(Instant::now() + Duration::from_secs(2));
+        executor.drive(1);
+        assert!(task.is_finished());
+    }
+
+    thread_local! {
+        static WAKING_EXECUTOR: RefCell<Option<Executor>> = const { RefCell::new(None) };
+    }
+
+    struct ReentrantTimerWake;
+    impl std::task::Wake for ReentrantTimerWake {
+        fn wake(self: Arc<Self>) {
+            WAKING_EXECUTOR.with(|slot| {
+                let borrowed = slot.borrow();
+                let executor = borrowed.as_ref().unwrap();
+                assert_eq!(executor.next_deadline(), None);
+                assert_eq!(executor.fire_timers(Instant::now()), 0);
+            });
+        }
+    }
+
+    #[test]
+    fn fire_releases_the_registry_before_waking() {
+        let executor = Executor::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut sleep = executor.sleep_until(deadline);
+        let waker = Waker::from(Arc::new(ReentrantTimerWake));
+        assert!(
+            Pin::new(&mut sleep)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        WAKING_EXECUTOR.with(|slot| *slot.borrow_mut() = Some(executor.clone()));
+        assert_eq!(executor.fire_timers(deadline), 1);
+        WAKING_EXECUTOR.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    #[test]
+    fn timers_do_not_retain_the_task_map_and_drop_unregisters() {
+        let executor = Executor::new();
+        let observer = executor.sleep_until(Instant::now() + Duration::from_secs(60));
+        let state = Rc::downgrade(&executor.0);
+        let registry = observer.registry.clone();
+        let sleep = executor.sleep_until(observer.deadline());
+        executor.spawn(sleep);
+        executor.drive(1);
+        assert_eq!(registry.borrow().entries.len(), 1);
+        drop(executor);
+        assert!(state.upgrade().is_none());
+        assert!(registry.borrow().entries.is_empty());
+        drop(observer);
+    }
+
+    #[test]
+    fn already_elapsed_sleep_never_registers() {
+        let executor = Executor::new();
+        let mut sleep = executor.sleep_until(Instant::now() - Duration::from_secs(1));
+        assert_eq!(
+            Pin::new(&mut sleep).poll(&mut Context::from_waker(&noop_waker())),
+            Poll::Ready(())
+        );
+        assert!(sleep.is_elapsed());
+        assert_eq!(executor.next_deadline(), None);
+    }
+
+    #[test]
+    fn cancelling_or_dropping_a_sleep_removes_its_registration() {
+        let executor = Executor::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let cancel = Cancel::new();
+        let mut wait = Box::pin(cancel.run(executor.sleep_until(deadline)));
+        let waker = noop_waker();
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert_eq!(executor.next_deadline(), Some(deadline));
+        cancel.cancel();
+        assert_eq!(
+            wait.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Err(Cancelled))
+        );
+        drop(wait);
+        assert_eq!(executor.next_deadline(), None);
+        assert_eq!(cancel.event.waiter_count(), 0);
+
+        let mut wait = executor.sleep_until(deadline);
+        assert!(
+            Pin::new(&mut wait)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(wait);
+        assert_eq!(executor.fire_timers(deadline), 0);
+        assert_eq!(executor.next_deadline(), None);
+    }
+
     #[test]
     fn spawn_join_and_fair_budget() {
         let ex = Executor::new();

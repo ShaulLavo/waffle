@@ -28,6 +28,11 @@ pub trait HostEndpoint {
     fn runtime_fd(&self) -> Option<u32> {
         None
     }
+    /// Non-consuming readiness observation. Hosts that cannot provide an exact
+    /// answer must report `Unsupported` rather than guessing readiness.
+    fn read_ready(&self) -> Result<bool, IoError> {
+        Err(IoError::Unsupported)
+    }
     /// Non-consuming observation; must not duplicate or retain an endpoint.
     fn descriptor_kind(&self) -> Result<DescriptorKind, IoError> {
         Ok(DescriptorKind::Other)
@@ -303,6 +308,8 @@ enum Open {
         data: Rc<BufferedInput>,
         exported: RefCell<Option<Rc<dyn HostEndpoint>>>,
     },
+    /// A source view over buffered bytes. It shares the source offset but not
+    /// the exported host endpoint of the original `Bytes` description.
     BytesSource(Rc<BufferedInput>),
     Host(Rc<dyn HostEndpoint>),
     Null,
@@ -415,6 +422,27 @@ impl Endpoint {
                 Ok(DescriptorKind::Regular)
             }
             Open::Capture(_) | Open::Null => Ok(DescriptorKind::Other),
+        }
+    }
+    /// Observe whether a read would make progress without consuming bytes or
+    /// changing an open description's offset. This is not a read permission
+    /// check: a write-only regular file can still be ready, while its read
+    /// operation will return `BadDescriptor`.
+    pub fn read_ready(&self) -> Result<bool, IoError> {
+        match self.0.as_ref() {
+            Open::File(_) | Open::Null => Ok(true),
+            Open::PipeRead(pipe) => {
+                let state = pipe.state.borrow();
+                Ok(!state.bytes.is_empty() || state.writers == 0)
+            }
+            Open::PipeWrite(pipe) => Ok(pipe.state.borrow().readers == 0),
+            Open::Capture(_) => Ok(false),
+            Open::Bytes { exported, .. } => exported
+                .borrow()
+                .as_ref()
+                .map_or(Ok(true), |host| host.read_ready()),
+            Open::BytesSource(_) => Ok(true),
+            Open::Host(host) => host.read_ready(),
         }
     }
     pub fn null() -> Self {
@@ -1646,5 +1674,224 @@ mod tests {
         assert_eq!(read.read(&mut bytes).now_or_never(), Some(Ok(5)));
         assert_eq!(&bytes[..5], b"bytes");
         assert_eq!(read.read(&mut bytes).now_or_never(), Some(Ok(0)));
+    }
+
+    struct ReadyHost {
+        ready: Result<bool, IoError>,
+        calls: Cell<usize>,
+    }
+
+    impl HostEndpoint for ReadyHost {
+        fn read_ready(&self) -> Result<bool, IoError> {
+            self.calls.set(self.calls.get() + 1);
+            self.ready.clone()
+        }
+
+        fn read<'a>(&'a self, _: &'a mut [u8]) -> LocalBoxFuture<'a, Result<usize, IoError>> {
+            Box::pin(async { Ok(0) })
+        }
+
+        fn write<'a>(&'a self, _: &'a [u8]) -> LocalBoxFuture<'a, Result<usize, IoError>> {
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    struct UnsupportedHost;
+
+    impl HostEndpoint for UnsupportedHost {
+        fn read<'a>(&'a self, _: &'a mut [u8]) -> LocalBoxFuture<'a, Result<usize, IoError>> {
+            Box::pin(async { Ok(0) })
+        }
+
+        fn write<'a>(&'a self, _: &'a [u8]) -> LocalBoxFuture<'a, Result<usize, IoError>> {
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    #[test]
+    fn read_ready_matches_local_observation_matrix_without_consuming() {
+        let fs = MemoryFs::new(16);
+        fs.write_file("/f", b"abc").unwrap();
+        let write_only = fs
+            .open(
+                "/f",
+                &OpenOptions {
+                    read: false,
+                    write: true,
+                    ..OpenOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(write_only.read_ready(), Ok(true));
+        let mut byte = [0];
+        assert_eq!(
+            write_only.read(&mut byte).now_or_never(),
+            Some(Err(IoError::BadDescriptor))
+        );
+
+        let null = Endpoint::null();
+        assert_eq!(null.read_ready(), Ok(true));
+        assert_eq!(null.read(&mut byte).now_or_never(), Some(Ok(0)));
+
+        let readable = fs.open("/f", &OpenOptions::default()).unwrap();
+        let before = fs.stat("/f", true).unwrap();
+        let Open::File(open) = readable.0.as_ref() else {
+            unreachable!()
+        };
+        let owners = Rc::strong_count(&readable.0);
+        assert_eq!(readable.read_ready(), Ok(true));
+        assert_eq!(readable.read_ready(), Ok(true));
+        assert_eq!(open.offset.get(), 0);
+        assert_eq!(Rc::strong_count(&readable.0), owners);
+        assert_eq!(fs.stat("/f", true).unwrap(), before);
+        assert_eq!(fs.read_file("/f").unwrap(), b"abc");
+        assert_eq!(readable.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(byte, [b'a']);
+
+        let (reader, writer) = pipe();
+        assert_eq!(reader.read_ready(), Ok(false));
+        assert_eq!(writer.write(b"x").now_or_never(), Some(Ok(1)));
+        assert_eq!(reader.read_ready(), Ok(true));
+        assert_eq!(reader.read_ready(), Ok(true));
+        assert_eq!(reader.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(byte, [b'x']);
+        assert_eq!(reader.read_ready(), Ok(false));
+        drop(writer);
+        assert_eq!(reader.read_ready(), Ok(true));
+        assert_eq!(reader.read(&mut byte).now_or_never(), Some(Ok(0)));
+
+        let (reader, writer) = pipe();
+        assert_eq!(writer.write(b"x").now_or_never(), Some(Ok(1)));
+        assert_eq!(writer.read_ready(), Ok(false));
+        assert_eq!(
+            writer.read(&mut byte).now_or_never(),
+            Some(Err(IoError::BadDescriptor))
+        );
+        drop(reader);
+        assert_eq!(writer.read_ready(), Ok(true));
+        assert_eq!(
+            writer.read(&mut byte).now_or_never(),
+            Some(Err(IoError::BadDescriptor))
+        );
+
+        let (capture_endpoint, captured) = capture(8);
+        assert_eq!(capture_endpoint.write(b"data").now_or_never(), Some(Ok(4)));
+        assert_eq!(capture_endpoint.read_ready(), Ok(false));
+        assert_eq!(captured.bytes(), b"data");
+        assert_eq!(
+            capture_endpoint.read(&mut byte).now_or_never(),
+            Some(Err(IoError::BadDescriptor))
+        );
+        assert!(FdTable::default().get(9).is_none());
+    }
+
+    #[test]
+    fn read_ready_covers_bytes_source_eof_and_exported_host() {
+        assert_eq!(Endpoint::bytes(Vec::new()).read_ready(), Ok(true));
+        let buffered = Endpoint::bytes(b"abc".to_vec());
+        let source = buffered.buffered_source();
+        assert_eq!(buffered.read_ready(), Ok(true));
+        assert_eq!(source.read_ready(), Ok(true));
+        let mut byte = [0];
+        assert_eq!(source.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(byte, [b'a']);
+        assert_eq!(buffered.read_ready(), Ok(true));
+        assert_eq!(buffered.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(byte, [b'b']);
+
+        let host = Rc::new(ReadyHost {
+            ready: Ok(false),
+            calls: Cell::new(0),
+        });
+        let host_endpoint = Endpoint::host(host.clone());
+        buffered.export_buffer(&host_endpoint);
+        let host_weak = buffered.host_owner().unwrap();
+        let owners = host_weak.strong_count();
+        assert_eq!(buffered.read_ready(), Ok(false));
+        assert_eq!(host.calls.get(), 1);
+        assert_eq!(host_weak.strong_count(), owners);
+        assert_eq!(source.read_ready(), Ok(true));
+        assert_eq!(host.calls.get(), 1);
+        assert_eq!(source.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(byte, [b'c']);
+        assert_eq!(source.read_ready(), Ok(true));
+        assert_eq!(source.read(&mut byte).now_or_never(), Some(Ok(0)));
+        drop(host_endpoint);
+        drop(host);
+        drop(buffered);
+        assert!(host_weak.upgrade().is_none());
+        assert_eq!(source.read_ready(), Ok(true));
+    }
+
+    #[test]
+    fn read_ready_preserves_pipe_waiters_buffers_and_last_close() {
+        let (reader, writer) = pipe();
+        let writer_weak = writer.downgrade();
+        let Open::PipeRead(state) = reader.0.as_ref() else {
+            unreachable!()
+        };
+        let waker = noop_waker();
+        let mut byte = [0];
+        let mut pending = Box::pin(reader.read(&mut byte));
+        assert!(
+            pending
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        let owners = Rc::strong_count(&reader.0);
+        for _ in 0..8 {
+            assert_eq!(reader.read_ready(), Ok(false));
+            assert_eq!(writer.read_ready(), Ok(false));
+            assert_eq!(state.readable.waiter_count(), 1);
+            assert_eq!(state.writable.waiter_count(), 0);
+            assert_eq!(Rc::strong_count(&reader.0), owners);
+            assert_eq!(
+                (state.state.borrow().readers, state.state.borrow().writers),
+                (1, 1)
+            );
+        }
+        drop(pending);
+        assert_eq!(state.readable.waiter_count(), 0);
+        assert_eq!(writer.write(b"x").now_or_never(), Some(Ok(1)));
+        assert_eq!(reader.read_ready(), Ok(true));
+        assert_eq!(writer.read_ready(), Ok(false));
+        assert_eq!(state.state.borrow().bytes.len(), 1);
+        drop(writer);
+        assert!(writer_weak.upgrade().is_none());
+        assert_eq!(reader.read(&mut byte).now_or_never(), Some(Ok(1)));
+        assert_eq!(byte, [b'x']);
+        assert_eq!(reader.read(&mut byte).now_or_never(), Some(Ok(0)));
+    }
+
+    #[test]
+    fn host_read_ready_defaults_to_unsupported() {
+        let host = Endpoint::host(Rc::new(UnsupportedHost));
+        assert_eq!(host.read_ready(), Err(IoError::Unsupported));
+    }
+
+    #[test]
+    fn host_and_exported_buffers_preserve_exact_observation_results() {
+        for result in [
+            Ok(false),
+            Ok(true),
+            Err(IoError::Unsupported),
+            Err(IoError::BadDescriptor),
+        ] {
+            let host = Rc::new(ReadyHost {
+                ready: result.clone(),
+                calls: Cell::new(0),
+            });
+            let endpoint = Endpoint::host(host.clone());
+            let buffered = Endpoint::bytes(b"original".to_vec());
+            buffered.export_buffer(&endpoint);
+            assert_eq!(endpoint.read_ready(), result);
+            assert_eq!(buffered.read_ready(), result);
+            assert_eq!(host.calls.get(), 2);
+            let source = buffered.buffered_source();
+            let mut original = [0; 8];
+            assert_eq!(source.read(&mut original).now_or_never(), Some(Ok(8)));
+            assert_eq!(&original, b"original");
+        }
     }
 }

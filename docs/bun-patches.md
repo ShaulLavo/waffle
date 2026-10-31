@@ -35,7 +35,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/program-build-tools.ts`                                                                                                        | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds verified optimization and bounded final-program name stripping with original optimizer/derivation adapters; no external Wasm parser is copied.                                                                                                                                                |
 | `packages/awk/patches/wasi-unsupported-ops.patch`, `packages/awk/scripts/`                                                            | Adaptation       | The One True Awk 20260426 at `5739fd79bcfc75ba7526773d0cf634521f8aca3c`. Preserves the evaluator and real setjmp exit behavior. WASI-only startup and capability guards reject unavailable system commands and command pipes.                                                                                                                                                                                                |
 | `packages/tar/patches/wasi.patch`, `packages/tar/producer/`, `packages/tar/scripts/`                                                  | Adaptation       | uutils/tar at `dffa9350f78b3bfbc9b4fc70a0f0205a53a937b6`; standalone locked producer, runtime cwd adapter, `-C`, pure Rust gzip with trailer checks, rejected unsupported helpers/member filters, and explicit WASI metadata failures. Read-only candidate; create/extract are not qualified.                                                                                                                                |
-| `packages/program-support/src/{executor,io,runtime}.rs`, `src/runtime/wasi.rs`                                                        | Adaptation       | Neutral guest support from bash-web `shell/engine/src/{executor,io,runtime}.rs` and `runtime/wasi.rs` at `ed31b2bf47fe92afa4c9568868f206f35b9add27`. Public lifetime/cancellation hooks, filesystem adapter and wire decoders; shell policy stays in bash-web. See [Guest program support](#guest-program-support).                                                                                                          |
+| `packages/program-support/src/{executor,io,runtime}.rs`, `src/runtime/wasi.rs`                                                        | Adaptation       | Neutral guest support from bash-web `shell/engine/src/{executor,io,runtime}.rs` and `runtime/wasi.rs` at `ed31b2bf47fe92afa4c9568868f206f35b9add27`. Public lifetime/cancellation hooks, filesystem adapter and wire decoders; original Waffle timers and read-readiness observations; shell policy stays in bash-web. See [Guest program support](#guest-program-support).                                                  |
 
 ## GNU diffutils
 
@@ -396,6 +396,15 @@ and exposes stack measurements only for tests or the opt-in `stack-observation`
 feature. `WasiAbi::with_inherited_fds` accepts the embedding's launch metadata and
 uses the existing bounded root-preopen scan. Shell process groups, access requests,
 signals and prompt imports remain in bash-web. No new guest import is introduced.
+
+Waffle's deadline registry, fused `Sleep`, poll-timeout conversion and
+non-consuming read-readiness dispatch are original additions. They extend the
+existing executor and descriptors so consumers do not copy scheduling or I/O
+internals. Runtime read observation uses one existing kind-0, zero-time
+subscription and never dispatches other waiters. No upstream implementation or
+new host ABI is copied. The existing `proc/abi.ts` zero-time read scan reports
+regular files ready without entering pending-I/O or shared-offset waits;
+positive and indefinite poll waits retain their completion semantics.
 
 [Program-support APIs](../packages/program-support/docs/api.md) lists the public
 contracts. Native public-API tests cover descriptor lifetime, allocation accounting,
