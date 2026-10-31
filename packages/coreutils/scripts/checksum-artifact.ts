@@ -48,22 +48,44 @@ function selectedSource(name: ChecksumName, raw: string) {
   );
 }
 
+export function readStrippedChecksumProgram({
+  raw,
+  stagedPath,
+  derivationBytes,
+}: {
+  raw: Uint8Array;
+  stagedPath: string;
+  derivationBytes: Buffer;
+}) {
+  const final = readFileSync(stagedPath);
+  const module = new WebAssembly.Module(final);
+  assert.equal(
+    WebAssembly.Module.customSections(module, "name").length,
+    0,
+    "Checksum final guest retains function names",
+  );
+  assert.ok(
+    !WebAssembly.Module.imports(module).some((entry) => entry.kind === "memory"),
+    "Checksum guest memory must not be imported",
+  );
+  const derivation: unknown = JSON.parse(derivationBytes.toString("utf8"));
+  validateProgramDerivation(derivation, final);
+  assert.ok(derivation && typeof derivation === "object" && "input" in derivation);
+  assert.deepEqual(derivation.input, programBytesIdentity(raw), "Checksum compiler input changed");
+  return final;
+}
+
 function guestAssets(name: ChecksumName) {
   const raw = resolve(releaseDirectory, `${name}.wasm`);
   const stagedPath = resolve(packageRoot, "dist", `${name}.wasm`);
   verifyWasiGuest(raw, verificationOptions(name));
-  verifyWasiGuest(stagedPath, verificationOptions(name));
   selectedSource(name, raw);
-  const final = readFileSync(stagedPath);
   const derivationBytes = readFileSync(resolve(packageRoot, "dist", `${name}-program.json`));
-  const derivation: unknown = JSON.parse(derivationBytes.toString("utf8"));
-  validateProgramDerivation(derivation, final);
-  assert.ok(derivation && typeof derivation === "object" && "input" in derivation);
-  assert.deepEqual(
-    derivation.input,
-    programBytesIdentity(readFileSync(raw)),
-    "Checksum compiler input changed",
-  );
+  const final = readStrippedChecksumProgram({
+    raw: readFileSync(raw),
+    stagedPath,
+    derivationBytes,
+  });
   const gzip = readFileSync(resolve(packageRoot, "dist", `${name}.wasm.gz`));
   const brotli = readFileSync(resolve(packageRoot, "dist", `${name}.wasm.br`));
   assert.deepEqual(gunzipSync(gzip), final, "Checksum gzip readback differs");

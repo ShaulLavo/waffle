@@ -956,6 +956,9 @@ test("checksums has a bounded leaf using the existing producer route", () => {
   expect(String(steps[readback]?.run)).toContain("packages/coreutils/scripts/checksum-artifact.ts");
   expect(String(steps[readback]?.run)).toContain("$GITHUB_WORKSPACE/.build/checksum-artifact");
   expect(String(steps[readback]?.run)).not.toContain("build-coreutils");
+  expect(record(steps[readback]?.env).WASI_SDK_PATH).toBe(
+    "${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux",
+  );
 
   const commands = steps.map((step) => String(step.run ?? "")).join("\n");
   expect(commands).not.toMatch(
@@ -1007,6 +1010,7 @@ test("checksums caches the pinned toolchain, Cargo inputs and actual build outpu
     expect(String(record(cache?.with).path)).toContain(path);
   const key = String(record(cache?.with).key);
   expect(key).toContain("packages/coreutils/crates/checksums/Cargo.lock");
+  expect(key).toContain("packages/coreutils/crates/checksums/patches/**");
   expect(key).toContain("packages/coreutils/scripts/build-checksums.ts");
   expect(key).toContain("tools/program-locales/**");
   expect(key).toContain("packages/waffle/patches/wasi-libc/**");
