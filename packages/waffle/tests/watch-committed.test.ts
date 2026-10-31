@@ -9,7 +9,12 @@ import { SharedFilesystemState } from "../fs/shared.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemClient } from "../fs/client.js";
 import { FilesystemService } from "../fs/service.js";
-import { createFilesystemConnection, revokeFilesystem, reapFilesystem } from "../fs/protocol.js";
+import {
+  createFilesystemConnection,
+  revokeFilesystem,
+  reapFilesystem,
+  type FilesystemConnection,
+} from "../fs/protocol.js";
 import { WatchService } from "../fs/watch-service.js";
 import { Wasi } from "../core/wasi.js";
 import { FilesystemError, type FileSystem, type WatchFileSystem } from "../core/filesystem.js";
@@ -42,6 +47,85 @@ async function fixture(backend = new MemoryBackend()) {
   };
   return { backend, service, page, guest, root, guestRoot, close };
 }
+
+function workerStopped(worker: Worker): Promise<void> {
+  return new Promise((resolve) => {
+    worker.addEventListener("close", () => resolve(), { once: true });
+  });
+}
+
+async function stopWorker(
+  worker: Worker,
+  connection: FilesystemConnection,
+  stopped: Promise<void>,
+): Promise<void> {
+  revokeFilesystem(connection);
+  worker.terminate();
+  await stopped;
+  reapFilesystem(connection);
+}
+
+function failureRace<T>(pending: Promise<T>, failed: Promise<never>): Promise<T> {
+  const result = Promise.race([pending, failed]);
+  // An earlier assertion or startup failure can leave a later operation unawaited.
+  void result.catch(() => {});
+  return result;
+}
+
+test("worker cleanup waits for close before reaping and shares the same completion", async () => {
+  const f = await fixture();
+  const connection = f.page.fork();
+  const worker = new Worker(new URL("./fixtures/watch-lifecycle-worker.ts", import.meta.url).href);
+  const stopped = workerStopped(worker);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      worker.onmessage = () => resolve();
+      worker.onerror = (event) => reject(event.error ?? new Error(event.message));
+    });
+    const revocation = new Int32Array(connection.revocations[0]!);
+    const stopping = stopWorker(worker, connection, stopped);
+    expect(Atomics.load(revocation, 0)).toBe(1);
+    await stopping;
+    expect(Atomics.load(revocation, 0)).toBe(2);
+    await stopWorker(worker, connection, stopped);
+  } finally {
+    await stopWorker(worker, connection, stopped);
+    await f.close();
+  }
+});
+
+for (const stage of ["startup", "delivery"])
+  test(`worker ${stage} errors remain observable without orphan rejections`, async () => {
+    const url =
+      stage === "startup"
+        ? new URL("./fixtures/watch-startup-error-worker.ts", import.meta.url)
+        : new URL("./fixtures/watch-delivery-error-worker.ts", import.meta.url);
+    const worker = new Worker(url.href);
+    const stopped = workerStopped(worker);
+    const failed = new Promise<never>((_, reject) => {
+      worker.onerror = (event) => reject(event.error ?? new Error(event.message));
+    });
+    let ready!: () => void;
+    const started = failureRace(
+      new Promise<void>((resolve) => {
+        ready = resolve;
+      }),
+      failed,
+    );
+    const done = failureRace(new Promise<never>(() => {}), failed);
+    worker.onmessage = () => ready();
+    try {
+      if (stage === "startup") {
+        await expect(started).rejects.toThrow("watch worker startup failure");
+        return;
+      }
+      await started;
+      await expect(done).rejects.toThrow("watch worker delivery failure");
+    } finally {
+      worker.terminate();
+      await stopped;
+    }
+  });
 
 async function file(client: FilesystemClient, root: number, name: string) {
   const path = await client.asyncCall("resolve", [root, name]);
@@ -142,7 +226,9 @@ test("overflow is explicit and close or process revocation wakes pending next", 
 
 test("registration capture excludes a real DIRECT worker until cursor and subscriber activation commit", async () => {
   const f = await fixture();
+  const connection = f.page.fork();
   const worker = new Worker(new URL("./watch-direct-worker.ts", import.meta.url).href);
+  const stopped = workerStopped(worker);
   try {
     const handle = await file(f.page, f.root, "one");
     await f.page.asyncCall("resize", [handle, 16, false]);
@@ -162,7 +248,6 @@ test("registration capture excludes a real DIRECT worker until cursor and subscr
       if (data === "ready") ready();
       else finish(data);
     };
-    const connection = f.page.fork();
     worker.postMessage({ connection, control: controlBuffer }, [connection.port]);
     await started;
     const ensureIdentity = f.backend.ensureIdentity.bind(f.backend);
@@ -188,7 +273,7 @@ test("registration capture excludes a real DIRECT worker until cursor and subscr
     expect(messages.length).toBe(2);
     await watch.close();
   } finally {
-    worker.terminate();
+    await stopWorker(worker, connection, stopped);
     await f.close();
   }
 }, 10000);
@@ -413,32 +498,41 @@ test("AbortSignal closes an armed next and enforces subscription ownership", asy
 for (const killed of [false, true])
   test(`real guest watcher receives peer direct commit or is forcibly reaped, killed=${killed}`, async () => {
     const f = await fixture();
+    const connection = f.page.fork();
     const worker = new Worker(new URL("./watch-direct-worker.ts", import.meta.url).href);
+    const stopped = workerStopped(worker);
     try {
       const handle = await file(f.guest, f.guestRoot, "one");
       await f.guest.asyncCall("resize", [handle, 16, false]);
       let ready!: () => void;
       let finish!: (batch: { events: { name: string }[] }) => void;
-      const started = new Promise<void>((resolve) => {
-        ready = resolve;
+      // A worker startup failure rejects instead of looking like a missed delivery.
+      const failed = new Promise<never>((_, reject) => {
+        worker.onerror = (event) => reject(event.error ?? new Error(event.message));
       });
-      const done = new Promise<{ events: { name: string }[] }>((resolve) => {
-        finish = resolve;
-      });
+      const started = failureRace(
+        new Promise<void>((resolve) => {
+          ready = resolve;
+        }),
+        failed,
+      );
+      const done = failureRace(
+        new Promise<{ events: { name: string }[] }>((resolve) => {
+          finish = resolve;
+        }),
+        failed,
+      );
       worker.onmessage = ({ data }) => {
         if (data === "ready") ready();
         else finish(data);
       };
-      const connection = f.page.fork();
       worker.postMessage({ connection, mode: "watch", control: new SharedArrayBuffer(8) }, [
         connection.port,
       ]);
       await started;
       expect(f.backend.shared.watch.active).toBe(true);
       if (killed) {
-        revokeFilesystem(connection);
-        worker.terminate();
-        reapFilesystem(connection);
+        await stopWorker(worker, connection, stopped);
         f.service.sweep();
         expect(f.backend.shared.watch.active).toBe(false);
         return;
@@ -446,7 +540,7 @@ for (const killed of [false, true])
       expect(f.guest.write(handle, [new Uint8Array([4])], 0)).toBe(1);
       expect((await done).events.map((event) => event.name)).toEqual(["one"]);
     } finally {
-      worker.terminate();
+      await stopWorker(worker, connection, stopped);
       await f.close();
     }
   }, 10000);
