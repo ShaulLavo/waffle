@@ -5,6 +5,7 @@ import type { ExecutableRegistry, Executable } from "./proc/registry";
 import type { ProcessSupervisor } from "./proc/supervisor";
 import type { ProcessContext, ProcessHandle } from "./proc/types";
 import type { FilesystemIdentity } from "./fs/protocol";
+import { pageSharedMemoryLedger, type SharedMemoryLedger, type SharedMemoryPlatform, type GuestReservation, type SharedMemoryAdmissionError, type SharedMemorySnapshot } from "./memory";
 
 /** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
 export interface RuntimeConsumer {
@@ -28,11 +29,17 @@ export type ProgramDefinition = { readonly adapter: string } & (
 );
 export interface RuntimeOptions {
   filesystem?: SharedFilesystemOptions;
+  /** A measured feature-test result. Omit it to measure lazily at first process admission. */
+  sharedMemory?: SharedMemoryPlatform;
   /** Inject a host, not a second runtime. The factory receives this runtime's exact owners. */
   processHost?: (options: BrowserProcessBrokerOptions) => BrowserProcessBroker | Promise<BrowserProcessBroker>;
 }
 export interface Runtime {
   readonly filesystem: RuntimeFilesystem;
+  readonly sharedMemory: {
+    snapshot(): SharedMemorySnapshot;
+    check(reservation: GuestReservation): { readonly kind: "admitted" } | { readonly kind: "refused"; readonly error: SharedMemoryAdmissionError };
+  };
   /** Shared before process activation so synchronous worker stubs can reserve identities. */
   readonly identities: ProcessIdentityAllocator;
   readonly disposed: boolean;
@@ -47,6 +54,9 @@ export interface Runtime {
 
 const ownerKey = Symbol.for("waffle.runtime.owner");
 const owners = globalThis as typeof globalThis & { [ownerKey]?: object };
+const runtimeFinalizer = typeof FinalizationRegistry === "function"
+  ? new FinalizationRegistry<{ readonly ledger: SharedMemoryLedger; readonly token: ReturnType<SharedMemoryLedger["runtimeToken"]> }>(held => held.ledger.collectRuntime(held.token))
+  : undefined;
 type CapabilityKind = "method" | "async" | "readonly" | "callback";
 // Positive, exhaustive projections: a new public owner member requires an explicit capability
 // decision here. TypeScript-private owner fields and future implementation details never leak.
@@ -112,6 +122,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
   const token = {};
   owners[ownerKey] = token;
+  const sharedMemory = pageSharedMemoryLedger(options.sharedMemory);
+  const runtimeToken = sharedMemory.runtimeToken();
   let filesystem: SharedFilesystem;
   let identities: ProcessIdentityAllocator;
   let registry: ExecutableRegistry | undefined;
@@ -137,12 +149,17 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let service: ProcessService | undefined;
   const assertLive = () => { if (disposed) throw new Error("Runtime is disposed"); };
   const borrowedFilesystem = borrow<RuntimeFilesystem>(filesystem, filesystemCapabilities, assertLive);
+  const sharedMemoryView = Object.freeze({
+    snapshot: () => sharedMemory.snapshot(),
+    check: (reservation: GuestReservation) => sharedMemory.check(reservation),
+  });
   const suspend = (failures: unknown[]) => {
     if (!host) return;
     try { host.suspend(); } catch (error) { failures.push(error); }
   };
   const runtime: Runtime = {
     filesystem: borrowedFilesystem,
+    sharedMemory: sharedMemoryView,
     identities,
     get disposed() { return disposed; },
     registerAdapter(name, launch) {
@@ -214,7 +231,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             quiesce: identity => filesystem.quiesce(identity),
             sweep: () => filesystem.client.sweep(),
           },
-          identities, registry, table,
+          identities, registry, table, sharedMemory,
           launch: context => {
             assertLive();
             const launch = adapters.get(context.adapter);
@@ -304,6 +321,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         consumers.clear();
         await attempt(() => host?.dispose());
         await attempt(() => filesystem.dispose());
+        sharedMemory.disposeRuntime(runtimeToken);
         adapters.clear();
         for (const name of programs.keys()) registry?.unregister(name);
         programs.clear();
@@ -320,5 +338,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       return disposal;
     },
   };
-  return Object.freeze(runtime);
+  const frozen = Object.freeze(runtime);
+  runtimeFinalizer?.register(frozen, { ledger: sharedMemory, token: runtimeToken });
+  return frozen;
 }

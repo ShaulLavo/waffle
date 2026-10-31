@@ -465,7 +465,8 @@ for (const terminal of ["cleanup-error", "exit", "error"] as const) test(`generi
     filesystem: { connect(identity) { const { client, server } = connectFilesystemIdentity(identity); channels.push(client.port, server.port); return client; },
       revoke() {}, reap() { reaped++; }, quiesce: () => fence },
     launch: context => broker.launchWorker(context, { workerUrl: "http://localhost/fixture-worker.js",
-      request: { module: context.module, args: context.request.argv, env: context.request.env } }),
+      request: { module: context.module, args: context.request.argv, env: context.request.env },
+      reservation: { memory: "none" } }),
   });
   const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
   root.data = { filesystem: createFilesystemIdentity() };

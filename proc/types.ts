@@ -67,7 +67,7 @@ export class ProcessError extends Error {
   readonly errno: number;
   constructor(errno: number, message: string) { super(message); this.errno = errno; this.name = "ProcessError"; }
 }
-export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CHILD: 12, INVAL: 28, SRCH: 71 });
+export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CHILD: 12, INVAL: 28, NOMEM: 48, SRCH: 71 });
 export function checkedSignal(signal: number): ProcessSignal {
   if (signal !== 2 && signal !== 9 && signal !== 13 && signal !== 15) {
     throw new ProcessError(ProcessErrno.INVAL, `unsupported signal ${signal}`);

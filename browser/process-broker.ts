@@ -15,6 +15,7 @@ import { WorkerPipeBroker } from "../proc/worker-pipes";
 import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes";
 import { createRuntimeTerminalCodec } from "./runtime-terminals";
 import type { RuntimeWorkerRequest } from "./worker";
+import type { GuestReservation, LaunchedAdmission, SharedMemoryLedger } from "../memory";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
@@ -47,6 +48,7 @@ export interface BrowserProcessBrokerOptions {
   registry: ExecutableRegistry;
   table: ProcessTable;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  sharedMemory?: SharedMemoryLedger;
   onError?(error: unknown): void;
 }
 export interface RuntimeRootOptions {
@@ -65,6 +67,8 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   onMessage?(message: unknown, context: ProcessContext): void;
   wake?(): void;
   executableName?(name: string): string;
+  /** Required guest reservation; admission happens before filesystem connect or Worker construction. */
+  reservation: GuestReservation;
 }
 interface RuntimeChild {
   filesystem: FilesystemIdentity;
@@ -77,6 +81,7 @@ interface RuntimeChild {
   stopping?: Promise<void>;
   cleanup?(): void;
   wake?(): void;
+  admission?: LaunchedAdmission;
 }
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
@@ -317,11 +322,22 @@ export class BrowserProcessBroker {
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
     const filesystem = this.filesystem(transport);
-    const request = { ...options.request, filesystem: this.options.filesystem.connect(filesystem), runtimeProcess: transport };
+    const admission = this.options.sharedMemory?.admit({
+      pid: context.pid,
+      executable: context.request.executable,
+      guest: options.reservation,
+      connections: 0,
+    });
+    let request: RuntimeWorkerRequest;
     let worker: Worker;
-    try { worker = new Worker(options.workerUrl, { type: "module" }); }
-    catch (error) { request.filesystem.port.close(); throw error; }
-    const child: RuntimeChild = { filesystem, context, worker, acknowledged: false, failed: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
+    try {
+      request = { ...options.request, filesystem: this.options.filesystem.connect(filesystem), runtimeProcess: transport };
+      worker = new Worker(options.workerUrl, { type: "module" });
+    } catch (error) {
+      admission?.abort();
+      throw error;
+    }
+    const child: RuntimeChild = { filesystem, context, worker, acknowledged: false, failed: false, stopped: false, cleanup: options.cleanup, wake: options.wake, admission: admission?.launched() };
     this.children.set(context.pid, child);
     this.watch();
     context.registerRevocation(() => { this.revokeRuntimeProcess(context.pid); this.options.filesystem.revoke(filesystem); });
@@ -384,7 +400,20 @@ export class BrowserProcessBroker {
   }
   private stop(child: RuntimeChild): void | Promise<void> {
     if (child.stopped) return;
-    const stop = () => { if (child.stopped) return; child.stopped = true; child.worker.terminate(); child.cleanup?.(); this.children.delete(child.context.pid); };
+    const stop = () => {
+      if (child.stopped) return;
+      child.stopped = true;
+      try {
+        child.worker.terminate();
+        child.cleanup?.();
+        child.admission?.stopped();
+      } catch (error) {
+        child.admission?.failed(error);
+        throw error;
+      } finally {
+        this.children.delete(child.context.pid);
+      }
+    };
     if (child.acknowledged) { stop(); return; }
     return child.stopping ??= Promise.resolve(this.quiesceChild(child)).then(stop);
   }

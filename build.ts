@@ -62,7 +62,7 @@ export async function buildNodeModules(root = import.meta.dir): Promise<void> {
       else await emit(path);
     }
   }
-  for (const directory of ["core", "fs", "proc", "interrupt", "browser"]) await visit(directory);
+  for (const directory of ["core", "fs", "proc", "interrupt", "browser", "memory"]) await visit(directory);
   for (const file of ["index.ts", "runtime.ts"]) if (existsSync(join(root, file))) await emit(file);
 }
 

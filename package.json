@@ -305,6 +305,13 @@
       "browser": "./interrupt/rewriter.ts",
       "default": "./interrupt/rewriter.ts"
     },
+    "./memory": {
+      "types": "./memory/index.ts",
+      "node": "./dist/memory/index.js",
+      "bun": "./memory/index.ts",
+      "browser": "./memory/index.ts",
+      "default": "./memory/index.ts"
+    },
     "./browser/fs-worker": {
       "types": "./browser/fs-worker.ts",
       "bun": "./browser/fs-worker.ts",
