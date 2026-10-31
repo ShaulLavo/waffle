@@ -1,6 +1,6 @@
 # Bounded command behavior
 
-These are pure snapshot operations, not installed shell commands. No function in this package signals a process.
+The default entry contains pure snapshot operations. The optional `waffle-procps/programs` catalog installs host commands over the same bounded algorithms. Its `pkill` adapter sends signals only through Waffle-granted delegated authority.
 
 ## ps
 
@@ -30,7 +30,7 @@ Groups, alternation, braces, named POSIX classes, escaped letters, backreference
 
 Selection shares pgrep's subset. Supported signal spellings are `-TERM`, `-INT`, `-KILL`, `-PIPE`, their numeric forms, and `--signal` with or without `SIG`. TERM is the default. A match returns an inert plan containing only the signal and selected PIDs. It has no successful exit status because no signal was delivered. A no-match result is ordinary status 1.
 
-Signal zero, other signals, oldest/newest, account/session/group/TTY matching, listing, and count are unsupported. An invalid signal has parser status 2 but package-specific diagnostic text. Signaling success, per-target permission errors, stale-target races, delivery counts, and stop completion remain untested until a procps host-command adapter uses Waffle's delegated authority.
+Signal zero, other signals, oldest/newest, account/session/group/TTY matching, listing, and count are unsupported. An invalid signal has parser status 2 but package-specific diagnostic text. The optional adapter reports status 0 only when at least one runtime send returns `sent`. Other selected targets retain per-PID diagnostics. If no send succeeds, status is 1. Missing authority, missing or exited targets, denied targets, and revoked authority have distinct diagnostics. A `sent` result means runtime signal publication, not physical callback completion. Removal and runtime disposal retain Waffle's separate completion fences.
 
 ## Recorded native comparisons
 
@@ -41,4 +41,4 @@ Signal zero, other signals, oldest/newest, account/session/group/TTY matching, l
 - The TERM case compares only the signal plan and selected fixture PID. It is not delivery evidence.
 - The invalid-signal case compares only status and empty stdout. It does not claim native usage-text parity.
 
-No native process is launched or inspected by these comparisons. The oracle and survey files retain their original SHA-256 hashes. The collector's raw output remains authoritative, including its normalization limitations. Waffle now supports host commands and delegated signals. Procps lazy-load identity, archive-installed command execution, removal, signal delivery, and physical-stop fences remain unimplemented and unqualified by these fixtures.
+No native process is launched or inspected by these comparisons. The oracle and survey files retain their original SHA-256 hashes. The collector's raw output remains authoritative, including its normalization limitations. These native fixtures qualify only pure behavior. Separate real-runtime and extracted-package tests qualify optional command execution, lazy identity, delegated delivery, removal, cancellation, and physical completion. They use owned Waffle command fixtures, never host processes.
