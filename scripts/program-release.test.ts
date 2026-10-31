@@ -29,6 +29,9 @@ import {
   type ReleaseOptions,
 } from "./program-release.ts";
 
+import { parseHostInterface } from "../packages/waffle/tooling/host-interface.ts";
+
+const hostInterface = parseHostInterface(1, "fixture");
 const repository = resolve(import.meta.dirname, "..");
 const runtimeVersion: unknown = JSON.parse(
   readFileSync(resolve(repository, "packages/waffle/package.json"), "utf8"),
@@ -137,8 +140,10 @@ describe("base closure", () => {
       "waffle-ripgrep",
       "waffle-sed",
     ]);
+    expect(manifest.schema).toBe("waffle-program-release/2");
     expect(manifest.runtime).toMatchObject({
       version: runtimeVersion,
+      waffleHostInterface: 1,
       url: runtimeUrl,
       sha256: runtimeSha256,
     });
@@ -189,13 +194,13 @@ describe("base closure", () => {
         ...packed.dependencies,
         ...packed.peerDependencies,
       })) {
-        expect(spec).toBe(name === "waffle" ? runtimeUrl : urls.get(name));
+        expect(spec).toBe(name === "waffle" ? "*" : urls.get(name));
       }
     }
     const base = packedManifest(resolve(out, "assets", "waffle-base-0.0.92.tgz"));
-    expect(base.peerDependencies).toEqual({ waffle: runtimeUrl });
+    expect(base.waffleHostInterface).toBe(1);
+    expect(base.peerDependencies).toEqual({ waffle: "*" });
     expect(Object.keys(base.dependencies).toSorted()).toEqual([
-      "waffle",
       "waffle-coreutils",
       "waffle-findutils",
       "waffle-grep",
@@ -267,28 +272,72 @@ describe("refusals", () => {
   const urls = new Map([["waffle", runtimeUrl]]);
 
   test("workspace edge outside the closure", () => {
-    const manifest = { name: "waffle-b", dependencies: { "waffle-a": "workspace:*" } };
-    expect(() => rewriteManifest(manifest, "0.0.92", { workspace, urls })).toThrow(
-      /outside the release closure/,
-    );
+    const manifest = {
+      name: "waffle-b",
+      waffleHostInterface: 1,
+      peerDependencies: { waffle: "*" },
+      dependencies: { "waffle-a": "workspace:*" },
+    };
+    expect(() =>
+      rewriteManifest(manifest, "0.0.92", { workspace, urls, runtimeHostInterface: hostInterface }),
+    ).toThrow(/outside the release closure/);
   });
 
   test("unpublished 0.0.0, unknown workspace and local path specs", () => {
     const rewrite = (dependencies: Record<string, string>) =>
-      rewriteManifest({ name: "waffle-b", dependencies }, "0.0.92", { workspace, urls });
+      rewriteManifest(
+        {
+          name: "waffle-b",
+          waffleHostInterface: 1,
+          peerDependencies: { waffle: "*" },
+          dependencies,
+        },
+        "0.0.92",
+        {
+          workspace,
+          urls,
+          runtimeHostInterface: hostInterface,
+        },
+      );
     expect(() => rewrite({ other: "0.0.0" })).toThrow(/unpublished 0\.0\.0/);
     expect(() => rewrite({ other: "workspace:^" })).toThrow(/unresolved workspace edge/);
     expect(() => rewrite({ other: "file:../other" })).toThrow(/local path/);
   });
 
-  test("peer * on the runtime becomes the runtime asset URL", () => {
+  test("new releases reject missing and mismatched family metadata", () => {
+    const base = {
+      name: "waffle-b",
+      peerDependencies: { waffle: "*" },
+    };
+    expect(() =>
+      rewriteManifest({ ...base, dependencies: { other: "0.0.1" } }, "0.0.92", {
+        workspace,
+        urls,
+        runtimeHostInterface: hostInterface,
+      }),
+    ).toThrow(/positive safe integer/);
+    expect(() =>
+      rewriteManifest(
+        { ...base, waffleHostInterface: 2, dependencies: { other: "0.0.1" } },
+        "0.0.92",
+        { workspace, urls, runtimeHostInterface: hostInterface },
+      ),
+    ).toThrow(/requires waffleHostInterface 2, runtime provides 1/);
+  });
+
+  test("peer * on the runtime remains a wildcard placement edge", () => {
     const manifest = {
       name: "waffle-b",
+      waffleHostInterface: 1,
       peerDependencies: { waffle: "*" },
       devDependencies: { waffle: "workspace:*" },
     };
-    const result = rewriteManifest(manifest, "0.0.92", { workspace, urls });
-    expect(result.manifest.peerDependencies).toEqual({ waffle: runtimeUrl });
+    const result = rewriteManifest(manifest, "0.0.92", {
+      workspace,
+      urls,
+      runtimeHostInterface: hostInterface,
+    });
+    expect(result.manifest.peerDependencies).toEqual({ waffle: "*" });
     expect(result.manifest.devDependencies).toBeUndefined();
     expect(result.stripped).toEqual(["devDependencies"]);
   });

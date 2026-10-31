@@ -356,7 +356,8 @@ test("programs normal CI runs the release closure test from the folded source ch
   expect(
     stepsFor("programs").some(
       (step) =>
-        step.run === "bun test scripts/program-release.test.ts scripts/program-rebind.test.ts",
+        step.run ===
+        "bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts",
     ),
   ).toBe(true);
 });

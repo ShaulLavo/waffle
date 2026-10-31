@@ -19,8 +19,15 @@ import {
 import { builtinModules } from "node:module";
 import { basename, dirname, extname, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
+import { pathToFileURL } from "node:url";
 import { CommandCleanupError, runOwned } from "../packages/waffle/scripts/owned-command.ts";
 import { admitProgramPackage, verifyProgramTarball } from "../tools/program-package.ts";
+import {
+  assertExactHostInterface,
+  assertWaffleFamilyManifest,
+  assertRuntimeManifest,
+  type HostInterface,
+} from "../packages/waffle/tooling/host-interface.ts";
 
 export const runtimePackageName = "waffle";
 const dependencyFields = ["dependencies", "peerDependencies", "optionalDependencies"] as const;
@@ -40,6 +47,8 @@ export interface RuntimeAsset {
   readonly sha256: string;
   /** Optional local copy; it must hash to `sha256`. Otherwise `url` is downloaded. */
   readonly tarball?: string;
+  /** Explicit local candidate, addressed by its file URL rather than a promised public release. */
+  readonly candidateSourceCommit?: string;
 }
 
 export interface ReleaseOptions {
@@ -79,6 +88,7 @@ interface WorkspacePackage {
 
 export interface ReleasedPackage {
   readonly name: string;
+  readonly waffleHostInterface: HostInterface;
   readonly sourceDirectory: string;
   readonly sourceTree: string;
   readonly sourceVersion: string;
@@ -112,13 +122,15 @@ export interface GuestReach {
 }
 
 export interface RebindMetadata {
+  readonly hostInterface: HostInterface;
   readonly from: {
+    readonly schema: "waffle-program-release/1" | "waffle-program-release/2";
     readonly tag: string;
     readonly version: string;
     readonly manifestUrl: string;
     readonly manifestSha256: string;
     readonly sourceCommit: string;
-    readonly runtime: RuntimeManifestAsset;
+    readonly runtime: HistoricalRuntimeManifestAsset;
   };
   readonly toolCommit: string;
   readonly toolDirty: boolean;
@@ -136,16 +148,26 @@ export interface RebindMetadata {
   };
 }
 
-export interface RuntimeManifestAsset {
+export interface HistoricalRuntimeManifestAsset {
   readonly name: string;
   readonly version: string;
   readonly url: string;
   readonly bytes: number;
   readonly sha256: string;
+  readonly waffleHostInterface?: HostInterface;
+}
+
+export type RuntimeInput =
+  | { readonly kind: "published-release" }
+  | { readonly kind: "local-candidate"; readonly sourceCommit: string };
+
+export interface RuntimeManifestAsset extends HistoricalRuntimeManifestAsset {
+  readonly waffleHostInterface: HostInterface;
+  readonly input: RuntimeInput;
 }
 
 export interface ReleaseManifest {
-  readonly schema: "waffle-program-release/1";
+  readonly schema: "waffle-program-release/2";
   readonly operation: "release" | "peer-rebind";
   readonly tag: string;
   readonly version: string;
@@ -167,6 +189,8 @@ export interface InstallReceipt {
   readonly imports: string[];
   readonly wasm: { specifier: string; path: string; sha256: string }[];
   readonly runtimeRoots: number;
+  readonly runtimeLockEntries: number;
+  readonly hostInterfaces: { name: string; waffleHostInterface: HostInterface }[];
   readonly acceptance?: { script: string; output: string };
 }
 
@@ -290,6 +314,7 @@ export function releaseOrder(
 interface EdgeContext {
   readonly workspace: Map<string, WorkspacePackage>;
   readonly urls: Map<string, string>;
+  readonly runtimeHostInterface: HostInterface;
 }
 
 function rewriteEdge(
@@ -314,23 +339,42 @@ function rewriteEdge(
   return { registry: spec };
 }
 
-/** Rewrite one staged manifest. Every workspace edge becomes the exact asset URL. */
+function rewriteDependencyField(
+  owner: string,
+  field: DependencyField,
+  source: Json,
+  context: EdgeContext,
+) {
+  const rewritten: Record<string, string> = {};
+  const closure: Record<string, string> = {};
+  const registry: Record<string, string> = {};
+  const entries = Object.entries(stringRecord(source[field], `${owner} ${field}`));
+  for (const [name, spec] of entries) {
+    if (name === runtimePackageName) {
+      rewritten[name] = spec;
+      continue;
+    }
+    const edge = rewriteEdge(owner, field, name, spec, context);
+    rewritten[name] = edge.url ?? edge.registry!;
+    if (edge.url) closure[name] = edge.url;
+    else registry[name] = edge.registry!;
+  }
+  return { rewritten, closure, registry };
+}
+
+/** Keep the wildcard runtime peer and rewrite family edges to exact release assets. */
 export function rewriteManifest(source: Json, version: string, context: EdgeContext) {
   const owner = String(source.name);
+  const required = assertWaffleFamilyManifest(source, owner);
+  assertExactHostInterface(required, context.runtimeHostInterface, owner);
   const manifest: Json = { ...source, version };
   const closureDependencies: Record<string, string> = {};
   const registryDependencies: Record<string, string> = {};
   for (const field of dependencyFields) {
-    const entries = Object.entries(stringRecord(source[field], `${owner} ${field}`));
-    if (!entries.length) continue;
-    const rewritten: Record<string, string> = {};
-    for (const [name, spec] of entries) {
-      const edge = rewriteEdge(owner, field, name, spec, context);
-      rewritten[name] = edge.url ?? edge.registry!;
-      if (edge.url) closureDependencies[name] = edge.url;
-      else registryDependencies[name] = edge.registry!;
-    }
-    manifest[field] = rewritten;
+    const { rewritten, closure, registry } = rewriteDependencyField(owner, field, source, context);
+    if (Object.keys(rewritten).length) manifest[field] = rewritten;
+    Object.assign(closureDependencies, closure);
+    Object.assign(registryDependencies, registry);
   }
   const stripped = strippedFields.filter((field) => field in manifest);
   for (const field of stripped) delete manifest[field];
@@ -501,6 +545,7 @@ interface PackPlan {
   readonly workspace: Map<string, WorkspacePackage>;
   readonly urls: Map<string, string>;
   readonly version: string;
+  readonly runtimeHostInterface: HostInterface;
   readonly work: string;
   readonly destination: string;
 }
@@ -514,10 +559,14 @@ async function stageAndPack(plan: PackPlan, control: Control): Promise<StagedPac
 
 async function stageOne(entry: WorkspacePackage, plan: PackPlan, control: Control) {
   control.signal?.throwIfAborted();
-  const { workspace, urls, version, work } = plan;
+  const { workspace, urls, version, runtimeHostInterface, work } = plan;
   const staged = resolve(work, "packages", entry.directory);
   copyPackage(entry.root, staged);
-  const rewrite = rewriteManifest(entry.manifest, version, { workspace, urls });
+  const rewrite = rewriteManifest(entry.manifest, version, {
+    workspace,
+    urls,
+    runtimeHostInterface,
+  });
   writeFileSync(resolve(staged, "package.json"), `${JSON.stringify(rewrite.manifest, null, 2)}\n`);
   const artifacts = existsSync(resolve(staged, "package-artifacts.json"))
     ? admitProgramPackage(staged)
@@ -576,14 +625,34 @@ export function assertTwin(
   }
 }
 
+function runtimeInput(runtime: RuntimeAsset, repository: string): RuntimeInput {
+  if (runtime.candidateSourceCommit !== undefined) {
+    assert.match(
+      runtime.candidateSourceCommit,
+      /^[a-f0-9]{40}$/,
+      "Invalid runtime candidate commit",
+    );
+    assert.ok(runtime.tarball, "A runtime candidate requires its local tarball");
+    assert.equal(
+      runtime.url,
+      pathToFileURL(resolve(runtime.tarball)).href,
+      "A runtime candidate must use its local tarball file URL",
+    );
+    return { kind: "local-candidate", sourceCommit: runtime.candidateSourceCommit };
+  }
+  const urlVersion = runtimeUrlVersion(runtime.url);
+  assert.equal(runtime.url, runtimeReleaseUrl(repository, urlVersion), "Runtime URL is not ours");
+  return { kind: "published-release" };
+}
+
 export async function readRuntime(
   runtime: RuntimeAsset,
   repository: string,
   work: string,
   control: Control,
 ) {
-  const urlVersion = runtimeUrlVersion(runtime.url);
-  assert.equal(runtime.url, runtimeReleaseUrl(repository, urlVersion), "Runtime URL is not ours");
+  const input = runtimeInput(runtime, repository);
+
   const bytes = runtime.tarball
     ? readFileSync(runtime.tarball)
     : new Uint8Array(await (await fetchOk(runtime.url, control)).arrayBuffer());
@@ -594,10 +663,13 @@ export async function readRuntime(
   const manifest = readJson(
     resolve(extract(path, resolve(work, "runtime-extracted")), "package.json"),
   );
-  assert.equal(manifest.name, runtimePackageName, "Runtime asset is not the waffle package");
+  const hostInterface = assertRuntimeManifest(manifest, "runtime package");
   const version = String(manifest.version);
-  assert.equal(version, urlVersion, `Runtime URL names ${urlVersion}, its package is ${version}`);
-  return { path, bytes: bytes.length, version };
+  if (input.kind === "published-release") {
+    const urlVersion = runtimeUrlVersion(runtime.url);
+    assert.equal(version, urlVersion, `Runtime URL names ${urlVersion}, its package is ${version}`);
+  }
+  return { path, bytes: bytes.length, version, hostInterface, input };
 }
 
 async function fetchOk(url: string, control: Control) {
@@ -661,6 +733,7 @@ export function assertLockfile(consumer: string, urls: Map<string, string>) {
     !JSON.stringify(lock).includes("workspace:"),
     "Installed lockfile kept a workspace edge",
   );
+  return runtimeEntries.length;
 }
 
 function declaredRegistryDependencies(manifest: Json): string[] {
@@ -701,13 +774,36 @@ function physicalRuntimeRoots(consumer: string): string[] {
   return Array.from(roots).toSorted();
 }
 
-export function assertOnePhysicalRuntime(consumer: string, version: string): number {
+export function assertOnePhysicalRuntime(
+  consumer: string,
+  version: string,
+  hostInterface: HostInterface,
+): number {
   const roots = physicalRuntimeRoots(consumer);
   assert.equal(roots.length, 1, `Expected one physical waffle runtime, found ${roots.length}`);
   const manifest = readJson(resolve(roots[0]!, "package.json"));
-  assert.equal(manifest.name, runtimePackageName, "Physical runtime has the wrong package name");
+  const provided = assertRuntimeManifest(manifest, "installed runtime package");
   assert.equal(manifest.version, version, `Physical waffle runtime is ${String(manifest.version)}`);
+  assertExactHostInterface(hostInterface, provided, "installed runtime package");
   return roots.length;
+}
+
+export function assertInstalledHostInterfaces(
+  consumer: string,
+  twins: readonly PackageArchive[],
+  runtimeHostInterface: HostInterface,
+) {
+  return twins.map((twin) => {
+    const packageRoot = resolve(consumer, "node_modules", twin.name);
+    const installed = readJson(resolve(packageRoot, "package.json"));
+    assert.deepEqual(installed, twin.manifest, `${twin.name} installed manifest differs`);
+    const required = assertWaffleFamilyManifest(installed, `installed ${twin.name}`);
+    assertExactHostInterface(required, runtimeHostInterface, `installed ${twin.name}`);
+    const imported = realpathSync(Bun.resolveSync(runtimePackageName, packageRoot));
+    const root = realpathSync(resolve(consumer, "node_modules", runtimePackageName));
+    assert.ok(imported.startsWith(root + sep), `${twin.name} resolves a different Waffle runtime`);
+    return { name: twin.name, waffleHostInterface: required };
+  });
 }
 
 export interface InstallInputs {
@@ -719,12 +815,17 @@ export interface InstallInputs {
   readonly requests: string[];
   readonly acceptance: string | undefined;
   readonly runtimeVersion: string;
+  readonly runtimeHostInterface: HostInterface;
   readonly control: Control;
 }
 
 /** Real Bun install of the whole twin closure from the local server, then import every export. */
 export async function verifyInstall(inputs: InstallInputs): Promise<InstallReceipt> {
-  const { twins, urls, top, registry, work, control } = inputs;
+  const { twins, urls, top, registry, work, control, runtimeHostInterface } = inputs;
+  for (const twin of twins) {
+    const required = assertWaffleFamilyManifest(twin.manifest, twin.name);
+    assertExactHostInterface(required, runtimeHostInterface, twin.name);
+  }
   const pinned = twins.flatMap((twin) => declaredRegistryDependencies(twin.manifest));
   assert.ok(registry || !pinned.length, `Registry edges need --registry: ${pinned.join(" ")}`);
   const consumer = resolve(work, "consumer");
@@ -740,9 +841,25 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
     BUN_CONFIG_REGISTRY: registry ?? unreachableRegistry,
     NPM_CONFIG_REGISTRY: registry ?? unreachableRegistry,
   };
-  await runCommand(["bun", "install", "--ignore-scripts"], consumer, env, control);
-  assertLockfile(consumer, urls);
-  const runtimeRoots = assertOnePhysicalRuntime(consumer, inputs.runtimeVersion);
+  await runCommand(
+    ["bun", "install", "--lockfile-only", "--ignore-scripts"],
+    consumer,
+    env,
+    control,
+  );
+  await runCommand(
+    ["bun", "install", "--frozen-lockfile", "--ignore-scripts"],
+    consumer,
+    env,
+    control,
+  );
+  const runtimeLockEntries = assertLockfile(consumer, urls);
+  const runtimeRoots = assertOnePhysicalRuntime(
+    consumer,
+    inputs.runtimeVersion,
+    runtimeHostInterface,
+  );
+  const hostInterfaces = assertInstalledHostInterfaces(consumer, twins, runtimeHostInterface);
   const specifiers = twins.flatMap((twin) =>
     exportSpecifiers(String(twin.manifest.name), twin.manifest.exports),
   );
@@ -768,6 +885,8 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
     imports: result.imports,
     wasm,
     runtimeRoots,
+    runtimeLockEntries,
+    hostInterfaces,
   };
   if (!inputs.acceptance) return receipt;
   const external = Array.from(urls.keys());
@@ -889,8 +1008,10 @@ function releasedPackage(
   receipt: InstallReceipt,
 ): ReleasedPackage {
   const bytes = readFileSync(item.archive);
+  const waffleHostInterface = assertWaffleFamilyManifest(item.rewrite.manifest, item.entry.name);
   return {
     name: item.entry.name,
+    waffleHostInterface,
     sourceDirectory: `packages/${item.entry.directory}`,
     sourceTree: git(root, ["rev-parse", `HEAD:packages/${item.entry.directory}`]),
     sourceVersion: String(item.entry.manifest.version),
@@ -935,6 +1056,7 @@ interface Closure {
   readonly workspace: Map<string, WorkspacePackage>;
   readonly order: WorkspacePackage[];
   readonly version: string;
+  readonly runtimeHostInterface: HostInterface;
   readonly work: string;
   readonly control: Control;
 }
@@ -943,18 +1065,25 @@ interface Closure {
 async function verifyClosure(
   closure: Closure,
   production: { staged: StagedPackage[]; urls: Map<string, string> },
-  runtimePath: string,
+  runtime: Awaited<ReturnType<typeof readRuntime>>,
   options: ReleaseOptions,
 ) {
-  const { workspace, order, version, work, control } = closure;
+  const { workspace, order, version, runtimeHostInterface, work, control } = closure;
   const twinAssets = resolve(work, "twin-assets");
   const requests: string[] = [];
-  const server = serve([twinAssets, dirname(runtimePath)], requests);
+  const server = serve([twinAssets, dirname(runtime.path)], requests);
   try {
     const origin = `http://127.0.0.1:${server.port}`;
-    const runtimeUrl = `${origin}/${basename(runtimePath)}`;
+    const runtimeUrl = `${origin}/${basename(runtime.path)}`;
     const urls = closureUrls(order, version, origin, runtimeUrl);
-    const plan = { order, workspace, urls, version, work: resolve(work, "twin") };
+    const plan = {
+      order,
+      workspace,
+      urls,
+      version,
+      runtimeHostInterface,
+      work: resolve(work, "twin"),
+    };
     const twins = await stageAndPack({ ...plan, destination: twinAssets }, control);
     const toProduction = (text: string) => replaceUrls(text, urls, production.urls);
     production.staged.forEach((item, index) =>
@@ -970,7 +1099,8 @@ async function verifyClosure(
       work,
       requests,
       acceptance,
-      runtimeVersion: runtimeUrlVersion(options.runtime.url),
+      runtimeVersion: runtime.version,
+      runtimeHostInterface,
       control,
     };
     return await verifyInstall(inputs);
@@ -1001,16 +1131,30 @@ export async function buildRelease(options: ReleaseOptions): Promise<ReleaseMani
     const urls = closureUrls(order, options.version, assetBase, options.runtime.url);
     assertUniqueFilenames(urls);
     const assets = resolve(out, "assets");
-    const plan = { order, workspace, urls, version: options.version };
+    const plan = {
+      order,
+      workspace,
+      urls,
+      version: options.version,
+      runtimeHostInterface: runtime.hostInterface,
+    };
     const productionWork = resolve(work, "production");
     const staged = await stageAndPack(
       { ...plan, work: productionWork, destination: assets },
       control,
     );
-    const closure = { root, workspace, order, version: options.version, work, control };
-    const installCheck = await verifyClosure(closure, { staged, urls }, runtime.path, options);
+    const closure = {
+      root,
+      workspace,
+      order,
+      version: options.version,
+      runtimeHostInterface: runtime.hostInterface,
+      work,
+      control,
+    };
+    const installCheck = await verifyClosure(closure, { staged, urls }, runtime, options);
     const manifest: ReleaseManifest = {
-      schema: "waffle-program-release/1",
+      schema: "waffle-program-release/2",
       operation: "release",
       tag: options.tag,
       version: options.version,
@@ -1021,6 +1165,8 @@ export async function buildRelease(options: ReleaseOptions): Promise<ReleaseMani
       runtime: {
         name: runtimePackageName,
         version: runtime.version,
+        waffleHostInterface: runtime.hostInterface,
+        input: runtime.input,
         url: options.runtime.url,
         bytes: runtime.bytes,
         sha256: options.runtime.sha256,
@@ -1060,6 +1206,7 @@ function cliOptions(argv: string[]): ReleaseOptions {
       "runtime-url": { type: "string" },
       "runtime-sha256": { type: "string" },
       "runtime-tarball": { type: "string" },
+      "runtime-candidate-source-commit": { type: "string" },
       families: { type: "string", default: "base" },
       out: { type: "string" },
       "allow-dirty": { type: "boolean", default: false },
@@ -1078,7 +1225,12 @@ function cliOptions(argv: string[]): ReleaseOptions {
     tag,
     version: versionFromTag(tag),
     repository: values.repository,
-    runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: values["runtime-tarball"] },
+    runtime: {
+      url: runtimeUrl,
+      sha256: runtimeSha256,
+      tarball: values["runtime-tarball"],
+      candidateSourceCommit: values["runtime-candidate-source-commit"],
+    },
     families: values.families.split(",").filter(Boolean),
     out,
     allowDirty: values["allow-dirty"],

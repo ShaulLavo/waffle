@@ -25,7 +25,11 @@
     "pack:check": "bun scripts/check-packed.ts",
     "size:commands": "bun scripts/measure-commands.ts"
   },
+  "devDependencies": {
+    "waffle": "workspace:*"
+  },
   "peerDependencies": {
     "waffle": "*"
-  }
+  },
+  "waffleHostInterface": 1
 }
