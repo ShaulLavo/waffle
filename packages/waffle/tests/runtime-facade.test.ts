@@ -132,6 +132,19 @@ test("page guard uses the global stable symbol and remains held until disposal c
   expect(next.disposed).toBe(false);
 });
 
+test("runtime ownership is held while host option getters run", () => {
+  const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
+    filesystem: { workerURL: "fixture", mode: "memory" },
+    get hostIdentity() {
+      expect(() => create()).toThrow(/live page runtime/);
+      return undefined;
+    },
+  });
+  runtimes.push(runtime);
+  expect(events.filter((event) => event === "filesystem:start")).toHaveLength(1);
+});
+
 test("constructor failure releases the owner guard", () => {
   globalThis.Worker = class {
     constructor() {

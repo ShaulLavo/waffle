@@ -389,15 +389,21 @@ function sourceTime(): number | undefined {
 
 export function createRuntime(options: RuntimeOptions): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
-  const hostIdentity = snapshotHostIdentity(options?.hostIdentity);
-  const reservations = pageSharedMemoryLedger(options?.sharedMemory).openRuntime(
-    options.sharedMemory,
-  );
   const token = {};
   owners[ownerKey] = token;
-  const restoreControlAllocator = installSharedControlAllocator((length) =>
-    reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
-  );
+  let hostIdentity: ReturnType<typeof snapshotHostIdentity>;
+  let reservations: RuntimeReservations;
+  let restoreControlAllocator: () => void;
+  try {
+    hostIdentity = snapshotHostIdentity(options?.hostIdentity);
+    reservations = pageSharedMemoryLedger(options?.sharedMemory).openRuntime(options.sharedMemory);
+    restoreControlAllocator = installSharedControlAllocator((length) =>
+      reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
+    );
+  } catch (error) {
+    if (owners[ownerKey] === token) delete owners[ownerKey];
+    throw error;
+  }
   let filesystem: SharedFilesystem;
   let identities: ProcessIdentityAllocator;
   let registry: ExecutableRegistry | undefined;
