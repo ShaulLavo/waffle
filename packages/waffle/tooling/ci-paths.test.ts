@@ -870,3 +870,145 @@ test("procps pure runs the real leaf without a producer or native setup", () => 
     "bun run --cwd packages/procps test && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
   );
 });
+
+test("checksums has a bounded leaf using the existing producer route", () => {
+  const job = record(jobs["coreutils-checksums"]);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}",
+  );
+  expect(record(changes.outputs).checksums).toBe("${{ steps.paths.outputs.checksums }}");
+  expect(job["timeout-minutes"]).toBe(30);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(record(job.env).WASI_LIBC_JOBS).toBe("2");
+
+  const steps = stepsFor("coreutils-checksums");
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  const rust = steps.findIndex((step) => step.uses === "dtolnay/rust-toolchain@stable");
+  const optimizer = steps.findIndex((step) => step.uses === "./.github/actions/program-optimizer");
+  const oracle = steps.findIndex(
+    (step) => step.name === "Verify the pinned GNU 9.12 checksum oracle",
+  );
+  const producer = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/coreutils build:checksums",
+  );
+  const readback = steps.findIndex(
+    (step) => step.name === "Read back the exact admitted checksum guests",
+  );
+  const acceptance = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/coreutils test:checksums:wasi",
+  );
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(rust).toBeGreaterThanOrEqual(0);
+  expect(record(steps[rust]?.with).toolchain).toBe("1.98.1");
+  expect(record(steps[rust]?.with).targets).toBe("wasm32-wasip1");
+  expect(optimizer).toBeGreaterThan(verify);
+  expect(install).toBeGreaterThan(verify);
+  expect(oracle).toBeGreaterThan(install);
+  expect(producer).toBeGreaterThan(optimizer);
+  expect(producer).toBeGreaterThan(oracle);
+  expect(readback).toBeGreaterThan(producer);
+  expect(acceptance).toBeGreaterThan(readback);
+  expect(
+    steps.filter((step) => step.run === "bun run --cwd packages/coreutils build:checksums"),
+  ).toHaveLength(1);
+  expect(record(steps[acceptance]?.env).CHECKSUM_ARTIFACTS).toBe(
+    "${{ github.workspace }}/.build/checksum-artifact",
+  );
+  expect(String(steps[readback]?.run)).toContain("packages/coreutils/scripts/checksum-artifact.ts");
+  expect(String(steps[readback]?.run)).toContain("$GITHUB_WORKSPACE/.build/checksum-artifact");
+  expect(String(steps[readback]?.run)).not.toContain("build-coreutils");
+
+  const commands = steps.map((step) => String(step.run ?? "")).join("\n");
+  expect(commands).not.toMatch(
+    /build:network|program-release|programs:(?:integration|check|prepare|pack|packed)/,
+  );
+  expect(commands).not.toContain("build-date");
+});
+
+test("checksums caches the pinned toolchain, Cargo inputs and actual build outputs", () => {
+  const steps = stepsFor("coreutils-checksums");
+  const cache = steps.find((step) => step.id === "checksum-cache");
+  expect(cache).toBeDefined();
+  expect(cache?.uses).toBe("actions/cache@v4");
+  expect(steps.find((step) => step.id === "bun-cache")?.uses).toBe("actions/cache@v4");
+  expect(steps.find((step) => step.id === "sdk")?.uses).toBe("actions/cache@v4");
+  for (const path of [
+    "~/.rustup/toolchains",
+    "~/.cargo/registry",
+    "~/.cargo/git",
+    ".build/coreutils-checksums",
+    ".build/program-locales",
+    ".build/wasi-libc",
+    "packages/coreutils/.sources",
+  ])
+    expect(String(record(cache?.with).path)).toContain(path);
+  const key = String(record(cache?.with).key);
+  expect(key).toContain("packages/coreutils/crates/checksums/Cargo.lock");
+  expect(key).toContain("packages/coreutils/scripts/build-checksums.ts");
+  expect(key).toContain("tools/program-locales/**");
+  expect(key).toContain("packages/waffle/patches/wasi-libc/**");
+  expect(record(cache?.with)["restore-keys"]).toBe(
+    "${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-",
+  );
+});
+
+test("checksums selects its compiler, locale, libc, runtime and leaf inputs without unrelated guests", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".github/actions/program-optimizer/action.yml",
+    "package.json",
+    "bun.lock",
+    "rust-toolchain.toml",
+    "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
+    "tools/program-locales/prepare.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/core/wasi.ts",
+    "packages/waffle/fs/index.ts",
+    "packages/waffle/proc/worker-client.ts",
+    "packages/waffle/interrupt/check.ts",
+    "packages/waffle/browser/preview1-worker.ts",
+    "packages/waffle/programs/collection.ts",
+    "packages/waffle/scripts/build-wasi-libc.sh",
+    "packages/waffle/patches/wasi-libc/preopen-scan.patch",
+    "packages/coreutils/src/index.ts",
+    "packages/coreutils/crates/checksums/src/bin/sha256sum.rs",
+    "packages/coreutils/crates/checksums/Cargo.lock",
+    "packages/coreutils/scripts/build-checksums.ts",
+    "packages/coreutils/scripts/checksum-artifact.ts",
+    "packages/coreutils/scripts/checksum-oracle.ts",
+    "packages/coreutils/scripts/checksum-source.test.ts",
+    "packages/coreutils/scripts/checksum-parser.test.ts",
+    "packages/coreutils/scripts/prepare-checksum-source.ts",
+    "packages/coreutils/tests/checksums-wasi.test.ts",
+    "packages/coreutils/fixtures/checksums.json",
+    "packages/coreutils/provenance/checksums.source.json",
+  ])
+    expect(selected("checksums", path), path).toBe(true);
+  for (const path of [
+    "packages/waffle/browser/net/module.ts",
+    "packages/coreutils/scripts/build-date.ts",
+    "packages/coreutils/scripts/date-source.test.ts",
+    "packages/coreutils/crates/date/src/main.rs",
+    "packages/findutils/src/index.ts",
+    "packages/grep/src/index.ts",
+    "packages/sed/src/index.ts",
+    "packages/ripgrep/src/index.ts",
+    "packages/jq/src/index.ts",
+    "packages/diffutils/src/index.ts",
+    "site/src/pages/index.astro",
+    "docs/development.md",
+  ])
+    expect(selected("checksums", path), path).toBe(false);
+});
