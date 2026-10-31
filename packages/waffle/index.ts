@@ -123,4 +123,6 @@ export type {
   SharedMemoryRefusal,
   MemoryDeclaration,
   ProcessPlan,
+  ProcessGuestPlan,
+  SharedMemoryMeasureOptions,
 } from "./memory/index.js";

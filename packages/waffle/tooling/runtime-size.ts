@@ -5,7 +5,9 @@ import { resolve } from "node:path";
 // at 0ac89e7. Increase by the measured 1,026 B, preserving the 168 B margin.
 // /dev/null device support: 10,846 B gzip on Bun 1.4.4 (2026-10-30), up from 10,640 B.
 // Increase by the measured 206 B, preserving the 168 B margin.
-export const CORE_BUDGET_BYTES = 11_014;
+// Accounted shared-control construction: 11,360 B gzip on Bun 1.4.4 (2026-10-31).
+// Increase by the measured 514 B, preserving the existing 168 B margin.
+export const CORE_BUDGET_BYTES = 11_528;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
     throw new Error(

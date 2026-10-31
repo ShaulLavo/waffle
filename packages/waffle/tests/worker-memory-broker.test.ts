@@ -1,5 +1,6 @@
 import {
   SharedMemoryLedger,
+  SharedMemoryAdmissionError,
   declareSharedMemoryPlatform,
   bytes,
   type RuntimeReservations,
@@ -355,6 +356,31 @@ test("bounded declarations run the real guest and keep its reservation until phy
     expect(f.errors).toEqual([]);
   } finally {
     stopped.resolve();
+    await f.dispose();
+  }
+});
+
+test("actual supervisor returns ENOMEM before allocating a child arena, group, or Worker", async () => {
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(96 * 1024 ** 2),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+  });
+  const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
+  const f = await fixture(false, Promise.resolve(), undefined, reservations);
+  try {
+    const result = await f.supervisor.waitForExit(f.root.pid, f.pid);
+    expect(result).toMatchObject({ kind: "start-failed", error: "ENOMEM", code: 12 });
+    expect(f.workers).toHaveLength(0);
+    expect(f.broker.workerMemory()).toHaveLength(0);
+    expect(f.broker.memoryGroups()).toHaveLength(0);
+    expect(
+      f.errors.some((error) => error instanceof SharedMemoryAdmissionError && error.errno === 48),
+    ).toBe(true);
+    expect(
+      reservations.snapshot().holders.filter((holder) => holder.label === "request-arena"),
+    ).toHaveLength(0);
+  } finally {
     await f.dispose();
   }
 });

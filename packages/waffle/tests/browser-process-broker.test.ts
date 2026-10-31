@@ -10,7 +10,7 @@ import {
   findDirectoryJob,
 } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { BrowserProcessBroker, type ProcessFilesystem } from "../browser/process-broker.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
@@ -22,6 +22,7 @@ import {
   workerProcessState,
   workerProcessDirectoryId,
   type WorkerProcessMessage,
+  type WorkerSpawnTransfer,
 } from "../proc/worker-client.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import {
@@ -40,6 +41,57 @@ import {
 import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
 import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes.js";
 
+function unusedFilesystem(): ProcessFilesystem {
+  return {
+    connect() {
+      throw new Error("unused");
+    },
+    revoke() {},
+    reap() {},
+    async quiesce() {},
+  };
+}
+async function reserveFixtureChild(broker: BrowserProcessBroker, executable: string) {
+  const root = await broker.adoptRoot({ memory: [] });
+  const supervisor = await broker.ready();
+  const pid = supervisor.reserveSpawn(root, {
+    executable,
+    argv: [],
+    env: {},
+    cwd: "/",
+    job: -1,
+    fds: [],
+  });
+  return { root, supervisor, pid };
+}
+
+function pipeClientFixture(
+  identities: ProcessIdentityAllocator,
+  prepare?: (host: WorkerPipeHost, pid: number) => WorkerSpawnTransfer,
+) {
+  const root = createWorkerProcessTransport({
+    pid: identities.pid(),
+    job: identities.job(),
+    identity: identities.buffer,
+  });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const messages: WorkerProcessMessage[] = [],
+    descriptors = new DescriptorTable();
+  const host = new WorkerPipeHost({
+    transport: root,
+    postMessage: (message) => messages.push(message),
+  });
+  const client = new WorkerProcessClient({
+    transport: root,
+    descriptors,
+    codec: host.codec(),
+    postMessage: (message) => messages.push(message),
+    prepareSpawn: (pid) =>
+      prepare?.(host, pid) ?? { data: { filesystem: createFilesystemIdentity() } },
+  });
+  return { root, messages, descriptors, client };
+}
+
 test("one browser process owner admits multiple roots with shared monotonically allocated identities", async () => {
   const identities = new ProcessIdentityAllocator();
   const table = new ProcessTable(identities);
@@ -48,14 +100,7 @@ test("one browser process owner admits multiple roots with shared monotonically 
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unknown adapter");
     },
@@ -95,14 +140,7 @@ test("root admission cannot create a live process behind concurrent disposal", a
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -123,14 +161,7 @@ test("revocation never allocates a process in an unrelated root pipe registry", 
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -262,14 +293,7 @@ test("adopting and closing a pipe-only root never activates a supervisor", async
       activations++;
       return import("../proc/index.js");
     },
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -303,14 +327,7 @@ test("explicit lazy root identities advance the shared allocator before activati
       activations++;
       return import("../proc/index.js");
     },
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -371,14 +388,7 @@ test("job kill publishes every lazy direct and runtime root before callbacks and
     table,
     registry: new ExecutableRegistry(),
     activate: () => activation,
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -622,14 +632,7 @@ for (const operation of ["process", "job"] as const)
       identities,
       table,
       registry: new ExecutableRegistry(),
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         throw new Error("unused");
       },
@@ -667,14 +670,7 @@ for (const kind of ["direct", "runtime"] as const)
         activations++;
         return import("../proc/index.js");
       },
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         throw new Error("unused");
       },
@@ -744,14 +740,7 @@ test("root retirement waits for the filesystem fence", async () => {
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -788,14 +777,7 @@ test("a pending admission lease retains a completed root until released exactly 
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -831,14 +813,7 @@ test("a direct root retains its controller while immutable-root descendants outl
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -885,14 +860,7 @@ test("a long-running direct root does not retain settled child filesystem fences
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -944,14 +912,7 @@ for (const operation of ["states", "revoke"] as const)
       identities,
       table,
       registry: new ExecutableRegistry(),
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         throw new Error("unused");
       },
@@ -1154,14 +1115,7 @@ test("suspension skips consumed shared outcomes still retained in completed host
     table,
     registry,
     onError: (error) => diagnostics.push(error),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       return { terminate() {} };
     },
@@ -1242,14 +1196,7 @@ for (const phase of ["publication", "outcome snapshot"] as const)
       identities,
       table,
       registry: new ExecutableRegistry(),
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         throw new Error("unused");
       },
@@ -1364,43 +1311,18 @@ test("a completed runtime root retains queued background descendants until their
     identities,
     table,
     registry,
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       launches++;
       return { terminate() {} };
     },
   });
-  const root = createWorkerProcessTransport({
-    pid: identities.pid(),
-    job: identities.job(),
-    identity: identities.buffer,
-  });
-  root.data = { filesystem: createFilesystemIdentity() };
-  const messages: WorkerProcessMessage[] = [],
-    descriptors = new DescriptorTable();
-  const host = new WorkerPipeHost({
-    transport: root,
-    postMessage: (message) => messages.push(message),
-  });
-  const client = new WorkerProcessClient({
-    transport: root,
-    descriptors,
-    codec: host.codec(),
-    postMessage: (message) => messages.push(message),
-    prepareSpawn: (pid) => {
-      host.registry.registerProcess(pid);
-      return {
-        data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() },
-        cancel: () => host.registry.collectProcess(pid),
-      };
-    },
+  const { root, messages, descriptors, client } = pipeClientFixture(identities, (host, pid) => {
+    host.registry.registerProcess(pid);
+    return {
+      data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() },
+      cancel: () => host.registry.collectProcess(pid),
+    };
   });
   try {
     const controller = {
@@ -1455,14 +1377,7 @@ test("reentrant disposal shares one promise and stops each consumer once", async
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -1547,25 +1462,7 @@ for (const terminal of ["cleanup-error", "exit", "error"] as const)
           request: { module: context.module, args: context.request.argv, env: context.request.env },
         }),
     });
-    const root = createWorkerProcessTransport({
-      pid: identities.pid(),
-      job: identities.job(),
-      identity: identities.buffer,
-    });
-    root.data = { filesystem: createFilesystemIdentity() };
-    const messages: WorkerProcessMessage[] = [],
-      descriptors = new DescriptorTable();
-    const host = new WorkerPipeHost({
-      transport: root,
-      postMessage: (message) => messages.push(message),
-    });
-    const client = new WorkerProcessClient({
-      transport: root,
-      descriptors,
-      codec: host.codec(),
-      postMessage: (message) => messages.push(message),
-      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
-    });
+    const { root, messages, descriptors, client } = pipeClientFixture(identities);
     try {
       await broker.adoptRuntimeRoot(root, { memory: [] });
       const pid = client.spawn(client.pid, {
@@ -1630,14 +1527,7 @@ for (const diagnostic of ["inherited", "controller"] as const)
       identities,
       table,
       registry,
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         throw new Error("must not launch failed source");
       },
@@ -1723,29 +1613,13 @@ test("broker disposal does not await a controller startup diagnostic that never 
     table,
     registry,
     onError: (error) => errors.push(error),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("must not launch failed source");
     },
   });
   try {
-    const root = await broker.adoptRoot({ memory: [] }),
-      supervisor = await broker.ready();
-    const pid = supervisor.reserveSpawn(root, {
-      executable: "fixture",
-      argv: [],
-      env: {},
-      cwd: "/",
-      job: -1,
-      fds: [],
-    });
+    const { supervisor, pid } = await reserveFixtureChild(broker, "fixture");
     supervisor.get(pid)!.descriptors.open(
       {
         kind: "terminal",
@@ -1832,25 +1706,7 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
           request: { module: context.module, args: [], env: {} },
         }),
     });
-    const root = createWorkerProcessTransport({
-      pid: identities.pid(),
-      job: identities.job(),
-      identity: identities.buffer,
-    });
-    root.data = { filesystem: createFilesystemIdentity() };
-    const messages: WorkerProcessMessage[] = [],
-      descriptors = new DescriptorTable();
-    const host = new WorkerPipeHost({
-      transport: root,
-      postMessage: (message) => messages.push(message),
-    });
-    const client = new WorkerProcessClient({
-      transport: root,
-      descriptors,
-      codec: host.codec(),
-      postMessage: (message) => messages.push(message),
-      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
-    });
+    const { root, messages, descriptors, client } = pipeClientFixture(identities);
     try {
       await broker.adoptRuntimeRoot(root, { memory: [] });
       const pid = client.spawn(client.pid, {
@@ -2244,25 +2100,7 @@ for (const completion of [
         });
       },
     });
-    const root = createWorkerProcessTransport({
-      pid: identities.pid(),
-      job: identities.job(),
-      identity: identities.buffer,
-    });
-    root.data = { filesystem: createFilesystemIdentity() };
-    const messages: WorkerProcessMessage[] = [],
-      descriptors = new DescriptorTable();
-    const host = new WorkerPipeHost({
-      transport: root,
-      postMessage: (message) => messages.push(message),
-    });
-    const client = new WorkerProcessClient({
-      transport: root,
-      descriptors,
-      codec: host.codec(),
-      postMessage: (message) => messages.push(message),
-      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
-    });
+    const { root, messages, descriptors, client } = pipeClientFixture(identities);
     let disposing: Promise<void> | undefined;
     try {
       await broker.adoptRuntimeRoot(root, { memory: [] });
@@ -2347,14 +2185,7 @@ for (const controllerStop of [false, true])
       identities,
       table,
       registry,
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch(value) {
         context = value;
         broker.registerController(value.pid, {
@@ -2438,29 +2269,13 @@ test("a controller registered before module rejection fences and settles physica
     table,
     registry,
     onError() {},
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("must not launch");
     },
   });
   try {
-    const root = await broker.adoptRoot({ memory: [] }),
-      supervisor = await broker.ready();
-    const pid = supervisor.reserveSpawn(root, {
-      executable: "rejected",
-      argv: [],
-      env: {},
-      cwd: "/",
-      job: -1,
-      fds: [],
-    });
+    const { root, supervisor, pid } = await reserveFixtureChild(broker, "rejected");
     broker.registerController(pid, {
       revoke() {
         events.push("revoke");
@@ -2517,14 +2332,7 @@ test("lazy external roots revoke before fencing without activating a supervisor"
       activations++;
       return import("../proc/index.js");
     },
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -2584,14 +2392,7 @@ test("a pending external launcher retains authority until its late rejection the
     table,
     registry,
     onError() {},
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch(value) {
       context = value;
       entered();
@@ -2600,16 +2401,7 @@ test("a pending external launcher retains authority until its late rejection the
   });
   let starting: Promise<void> | undefined;
   try {
-    const root = await broker.adoptRoot({ memory: [] }),
-      supervisor = await broker.ready();
-    const pid = supervisor.reserveSpawn(root, {
-      executable: "pending",
-      argv: [],
-      env: {},
-      cwd: "/",
-      job: -1,
-      fds: [],
-    });
+    const { supervisor, pid } = await reserveFixtureChild(broker, "pending");
     broker.registerController(pid, {
       revoke() {
         events.push("revoke");
@@ -2668,29 +2460,13 @@ test("a throwing exited notification still settles failed-start cleanup before r
       errors.push(error);
       events.push("error");
     },
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("must not launch");
     },
   });
   try {
-    const root = await broker.adoptRoot({ memory: [] }),
-      supervisor = await broker.ready();
-    const pid = supervisor.reserveSpawn(root, {
-      executable: "rejected",
-      argv: [],
-      env: {},
-      cwd: "/",
-      job: -1,
-      fds: [],
-    });
+    const { supervisor, pid } = await reserveFixtureChild(broker, "rejected");
     broker.registerController(pid, {
       revoke() {
         events.push("revoke");
@@ -2766,14 +2542,7 @@ for (const settlement of ["resolve", "reject"] as const)
       table,
       registry,
       onError() {},
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         entered();
         return pending;
@@ -2781,16 +2550,7 @@ for (const settlement of ["resolve", "reject"] as const)
     });
     let starting: Promise<void> | undefined, disposal: Promise<void> | undefined;
     try {
-      const root = await broker.adoptRoot({ memory: [] }),
-        supervisor = await broker.ready();
-      const pid = supervisor.reserveSpawn(root, {
-        executable: "pending",
-        argv: [],
-        env: {},
-        cwd: "/",
-        job: -1,
-        fds: [],
-      });
+      const { supervisor, pid } = await reserveFixtureChild(broker, "pending");
       broker.registerController(pid, {
         revoke() {
           events.push("revoke");
@@ -2867,14 +2627,7 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
         errors.push(error);
         events.push("error");
       },
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch(value) {
         context = value;
         if (exitAt !== "after launch") value.startFailed(new Error("reentrant startup failure"));
@@ -2888,16 +2641,7 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
       },
     });
     try {
-      const root = await broker.adoptRoot({ memory: [] }),
-        supervisor = await broker.ready();
-      const pid = supervisor.reserveSpawn(root, {
-        executable: "external",
-        argv: [],
-        env: {},
-        cwd: "/",
-        job: -1,
-        fds: [],
-      });
+      const { supervisor, pid } = await reserveFixtureChild(broker, "external");
       broker.registerController(pid, {
         exited() {
           events.push("exited");
@@ -2949,14 +2693,7 @@ for (const activation of ["lazy", "eager"] as const)
         identities,
         table,
         registry,
-        filesystem: {
-          connect() {
-            throw new Error("unused");
-          },
-          revoke() {},
-          reap() {},
-          async quiesce() {},
-        },
+        filesystem: unusedFilesystem(),
         launch() {
           return { terminate() {} };
         },
@@ -3071,14 +2808,7 @@ test("ignored broker notifications preserve the last actually delivered signal f
     identities,
     table,
     registry: new ExecutableRegistry(),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unused");
     },
@@ -3118,29 +2848,13 @@ test("startup diagnostics reject write-only stderr without calling its blocking 
     table,
     registry,
     onError: (error) => errors.push(error),
-    filesystem: {
-      connect() {
-        throw new Error("unused");
-      },
-      revoke() {},
-      reap() {},
-      async quiesce() {},
-    },
+    filesystem: unusedFilesystem(),
     launch() {
       throw new Error("unreachable launch");
     },
   });
   try {
-    const root = await broker.adoptRoot({ memory: [] }),
-      supervisor = await broker.ready();
-    const pid = supervisor.reserveSpawn(root, {
-      executable: "fixture",
-      argv: [],
-      env: {},
-      cwd: "/",
-      job: -1,
-      fds: [],
-    });
+    const { root, supervisor, pid } = await reserveFixtureChild(broker, "fixture");
     supervisor.get(pid)!.descriptors.openAt(
       2,
       {
@@ -3954,14 +3668,7 @@ test("consumer roots take single-use workers from the broker's precreated pool",
       identities,
       table: new ProcessTable(identities),
       registry: new ExecutableRegistry(),
-      filesystem: {
-        connect() {
-          throw new Error("unused");
-        },
-        revoke() {},
-        reap() {},
-        async quiesce() {},
-      },
+      filesystem: unusedFilesystem(),
       launch() {
         throw new Error("unused");
       },
