@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { sharedArrayBufferMaxByteLength } from "../proc/intrinsics.js";
 import {
   FilesystemRequestPool,
   FilesystemRequestAllocator,
@@ -8,6 +9,9 @@ import {
   requestCells,
   requestBytes,
   requestMemoryResources,
+  createRequestArenaData,
+  FALLBACK_REQUEST_CONNECTION_BYTES,
+  FILESYSTEM_REQUEST_LIMITS,
   closeRequestMemory,
   retireRequestMemory,
   requestTransportError,
@@ -28,6 +32,42 @@ function release(buffer: ReturnType<FilesystemRequestAllocator["allocate"]>) {
   releaseRequestBuffer(buffer, REQUEST_CLIENT);
   releaseRequestBuffer(buffer, REQUEST_SERVICE);
 }
+
+test("retries an oversized arena reservation at the small-tab cap", () => {
+  const attempts: number[] = [];
+  const data = createRequestArenaData((_bytes, maximum) => {
+    attempts.push(maximum);
+    if (maximum === FILESYSTEM_REQUEST_LIMITS.connectionBytes)
+      throw new RangeError("simulated small-tab reservation failure");
+    return new SharedArrayBuffer(0, { maxByteLength: maximum });
+  });
+  expect(attempts).toEqual([
+    FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+    FALLBACK_REQUEST_CONNECTION_BYTES,
+  ]);
+  expect(sharedArrayBufferMaxByteLength(data)).toBe(FALLBACK_REQUEST_CONNECTION_BYTES);
+});
+
+test("does not retry non-allocation arena failures", () => {
+  let attempts = 0;
+  expect(() =>
+    createRequestArenaData((_bytes, _maximum) => {
+      attempts++;
+      throw new Error("transport setup failed");
+    }),
+  ).toThrow("transport setup failed");
+  expect(attempts).toBe(1);
+});
+
+test("live request connections keep separate small-tab arenas", () => {
+  const budget = createRequestBudget();
+  const pool = new FilesystemRequestPool(budget, FALLBACK_REQUEST_CONNECTION_BYTES);
+  const first = pool.take(new SharedArrayBuffer(4));
+  const second = pool.take(new SharedArrayBuffer(4));
+  expect(first.data).not.toBe(second.data);
+  expect(requestMemoryResources(first).maximumBytes).toBe(FALLBACK_REQUEST_CONNECTION_BYTES);
+  expect(requestMemoryResources(second).maximumBytes).toBe(FALLBACK_REQUEST_CONNECTION_BYTES);
+});
 test("request bytes and status use prepublished memory and preserve independent concurrent requests", () => {
   const f = fixture();
   const a = f.allocator.allocate(16),
