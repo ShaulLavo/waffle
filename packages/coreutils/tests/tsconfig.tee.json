@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tools/tsconfig.programs.json",
+  "include": [
+    "tee-wasi.test.ts",
+    "../scripts/build-tee.ts",
+    "../scripts/tee-oracle.ts",
+    "../scripts/tee-source.test.ts",
+    "../fixtures/tee-cases.ts"
+  ]
+}
