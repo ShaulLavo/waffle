@@ -1,11 +1,17 @@
 import { expect, test } from "bun:test";
-import { attachPipeEndpoint, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
+import {
+  attachPipeEndpoint,
+  PipeController,
+  PipeErrno,
+  PipePublicationRegistry,
+} from "../proc/pipes.js";
 
 test("registry-backed inherited readers reuse fully recovered slots", () => {
   const registry = new PipePublicationRegistry();
   registry.registerProcess(1);
   const pipe = new PipeController({ registry, relay: "manual" });
-  const reader = pipe.retain(1, "read"), writer = pipe.retain(1, "write");
+  const reader = pipe.retain(1, "read"),
+    writer = pipe.retain(1, "write");
   const allocated = new Int32Array(registry.handle().buffer, 0, 1);
   const initial = Atomics.load(allocated, 0);
   let stale: ReturnType<typeof attachPipeEndpoint> | undefined;

@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
-import { PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, attachPipeEndpoint } from "../proc/pipes.js";
+import {
+  PipeController,
+  PipeEndpoint,
+  PipeErrno,
+  PipePublicationRegistry,
+  attachPipeEndpoint,
+} from "../proc/pipes.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import type { ProcessContext } from "../proc/types.js";
@@ -11,24 +17,36 @@ const byte = new Uint8Array([120]);
 
 function fixture() {
   const pipe = new PipeController({ relay: "manual" });
-  const reader = pipe.retain(1, "read"), writer = pipe.retain(1, "write");
+  const reader = pipe.retain(1, "read"),
+    writer = pipe.retain(1, "write");
   const descriptors = new DescriptorTable();
-  descriptors.open(reader);
-  descriptors.open(writer);
+  descriptors.open(reader, 0n, 0n);
+  descriptors.open(writer, 0n, 0n);
   const registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "preview1" });
   let context: ProcessContext | undefined;
-  const supervisor = new ProcessSupervisor({ registry, launch(value) {
-    context = value;
-    value.started();
-    return { terminate() {} };
-  } });
+  const supervisor = new ProcessSupervisor({
+    registry,
+    launch(value) {
+      context = value;
+      value.started();
+      return { terminate() {} };
+    },
+  });
   const root = supervisor.createRoot({ pid: 1, descriptors });
-  return { pipe, reader, writer, supervisor, root, context: () => context, dispose() {
-    supervisor.dispose();
-    descriptors.dispose();
-    pipe.dispose();
-  } };
+  return {
+    pipe,
+    reader,
+    writer,
+    supervisor,
+    root,
+    context: () => context,
+    dispose() {
+      supervisor.dispose();
+      descriptors.dispose();
+      pipe.dispose();
+    },
+  };
 }
 
 test("one parent-held default pipe survives repeated inherited child writers through the supervisor", async () => {
@@ -37,7 +55,10 @@ test("one parent-held default pipe survives repeated inherited child writers thr
   let stale: PipeEndpoint | undefined;
   try {
     for (let index = 0; index < 3001; index++) {
-      const pid = f.supervisor.reserveSpawn(f.root, fixtureSpawnRequest({ fds: [{ parent: 1, child: 1 }] }));
+      const pid = f.supervisor.reserveSpawn(
+        f.root,
+        fixtureSpawnRequest({ fds: [{ parent: 1, child: 1 }] }),
+      );
       await f.supervisor.start(pid);
       const context = f.context()!;
       const inherited = context.descriptors.get(1)!.resource;
@@ -64,15 +85,17 @@ test("one parent-held default pipe survives repeated inherited child writers thr
     expect(attachedReader.tryRead([new Uint8Array(1)])).toBe(1);
     f.writer.close();
     expect(attachedReader.tryRead([new Uint8Array(1)])).toBe(0);
-  } finally { f.dispose(); }
+  } finally {
+    f.dispose();
+  }
 });
-
 
 test("one registry-backed worker pipe survives 3001 inherited writer identities", () => {
   const registry = new PipePublicationRegistry();
   registry.registerProcess(1);
   const pipe = new PipeController({ registry, relay: "manual" });
-  const reader = pipe.retain(1, "read"), writer = pipe.retain(1, "write");
+  const reader = pipe.retain(1, "read"),
+    writer = pipe.retain(1, "write");
   const backing = registry.handle().buffer;
   const allocated = new Int32Array(backing, 0, 1);
   const initialCells = Atomics.load(allocated, 0);
