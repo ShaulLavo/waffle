@@ -112,6 +112,7 @@ export {
   declareSharedMemoryPlatform,
   measureSharedMemory,
   SharedMemoryAdmissionError,
+  SharedMemoryMeasurementError,
   declareModuleMemory,
   createSharedControlAllocator,
 } from "./memory/index.js";
@@ -127,4 +128,5 @@ export type {
   ProcessPlan,
   ProcessGuestPlan,
   SharedMemoryMeasureOptions,
+  SharedMemoryObservation,
 } from "./memory/index.js";

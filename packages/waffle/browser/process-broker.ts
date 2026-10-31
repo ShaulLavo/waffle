@@ -425,7 +425,6 @@ export class BrowserProcessBroker {
   private async launchPrepared(
     context: ProcessContext | CommandProcessContext,
   ): Promise<ProcessHandle> {
-    await this.options.reservations.settled();
     const descendant = this.descendant(context.pid);
     if (!descendant) return this.launchAdapter(context);
     return this.prepareDescendant(context, descendant.hook, descendant.transport);
@@ -923,7 +922,6 @@ export class BrowserProcessBroker {
     options: RuntimeRootOptions,
   ): Promise<void> {
     if (this.suspended) throw new Error("Process broker is disposed");
-    await this.options.reservations.settled();
     if (this.suspended) throw new Error("Process broker is disposed");
     const cwd = checkedProcessCwd(transport.cwd);
     if (transport.identity !== this.options.identities.buffer)

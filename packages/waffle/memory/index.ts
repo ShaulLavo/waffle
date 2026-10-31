@@ -4,6 +4,7 @@ export {
   declareSharedMemoryPlatform,
   measureSharedMemory,
   SharedMemoryAdmissionError,
+  SharedMemoryMeasurementError,
 } from "./reservations.js";
 export type {
   ReservedBytes,
@@ -15,6 +16,7 @@ export type {
   ProcessPlan,
   ProcessGuestPlan,
   SharedMemoryMeasureOptions,
+  SharedMemoryObservation,
 } from "./reservations.js";
 export { declareModuleMemory } from "./declarations.js";
 export type { MemoryDeclaration } from "./declarations.js";

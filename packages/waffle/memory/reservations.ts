@@ -100,7 +100,8 @@ export interface SharedMemorySnapshot {
   readonly availableBytes: number | null;
   readonly awaitingReleaseBytes: number;
   readonly debtBytes: number;
-  readonly measurementError: string | null;
+  readonly effectiveBudgetBytes: number | null;
+  readonly contradictions: readonly SharedMemoryContradiction[];
   readonly holders: readonly {
     readonly label: HolderLabel;
     readonly shape: ReservationShape;
@@ -109,6 +110,11 @@ export interface SharedMemorySnapshot {
     readonly declaredBytes: number;
     readonly grownBytes: number | null;
   }[];
+}
+interface SharedMemoryContradiction {
+  readonly label: string;
+  readonly requestedBytes: number;
+  readonly totalChargedBytesAfterRefund: number;
 }
 export type SharedMemoryRefusal =
   | {
@@ -122,7 +128,13 @@ export type SharedMemoryRefusal =
       readonly kind: "configuration";
       readonly configuration: "undeclared-module-memory" | "memory64-module";
     }
-  | { readonly kind: "platform"; readonly label: string; readonly cause: RangeError };
+  | { readonly kind: "platform"; readonly label: string; readonly cause: RangeError }
+  | {
+      readonly kind: "uncounted-platform";
+      readonly label: string;
+      readonly requestedBytes: ReservedBytes;
+      readonly cause: RangeError;
+    };
 export class SharedMemoryAdmissionError extends ProcessError {
   readonly code = "ENOMEM";
   constructor(readonly refusal: SharedMemoryRefusal) {
@@ -133,7 +145,7 @@ export class SharedMemoryAdmissionError extends ProcessError {
 function describeRefusal(refusal: SharedMemoryRefusal): string {
   if (refusal.kind === "configuration")
     return `Shared memory admission requires ${refusal.configuration}`;
-  if (refusal.kind === "platform")
+  if (refusal.kind === "platform" || refusal.kind === "uncounted-platform")
     return `Shared memory platform refused ${refusal.label}: ${refusal.cause.message}`;
   return `Shared memory budget refused ${refusal.requested} bytes: ${refusal.available} available of ${refusal.budget}; ${refusal.awaitingRelease} awaiting release`;
 }
@@ -199,7 +211,6 @@ export interface RuntimeReservations {
   buffer(label: RuntimeBufferLabel, shape: BufferShape): SharedArrayBuffer;
   ownsBuffer(label: RuntimeBufferLabel, buffer: SharedArrayBuffer): boolean;
   admit(plan: ProcessPlan): Ticket;
-  settled(): Promise<void>;
   snapshot(): SharedMemorySnapshot;
   check(
     plan: ProcessPlan,
@@ -265,12 +276,11 @@ export class SharedMemoryLedger {
   private readonly values = new WeakMap<object, Holder>();
   private readonly headrooms = new WeakMap<Headroom, Holder>();
   private readonly finalizer: { register(target: object, id: number): void };
-  private pending?: Promise<void>;
-  private measurementError: string | null = null;
+  private ceiling: number | null = null;
+  private readonly contradictions: SharedMemoryContradiction[] = [];
   constructor(
     private platform: SharedMemoryPlatform,
     private readonly allocations = allocator,
-    private readonly remeasure = () => measureSharedMemory({ remeasure: true }),
     finalizer: (receive: (id: number) => void) => { register(target: object, id: number): void } = (
       receive,
     ) => new FinalizationRegistry(receive),
@@ -325,7 +335,6 @@ export class SharedMemoryLedger {
         return holder?.runtime === runtime && holder.label === label && holder.state === "live";
       },
       admit: (plan) => this.admit(runtime, sizing, plan),
-      settled: () => this.pending ?? Promise.resolve(),
       snapshot: () => this.snapshot(),
       check: (plan) => {
         try {
@@ -345,14 +354,16 @@ export class SharedMemoryLedger {
   snapshot(): SharedMemorySnapshot {
     const reserved = this.total();
     const budget = this.platform.kind === "bounded" ? this.platform.budgetBytes : null;
+    const effective = this.effectiveBudget();
     return {
       platform: this.platform,
       budgetBytes: budget,
       reservedBytes: reserved,
-      availableBytes: budget === null ? null : Math.max(0, budget - reserved),
+      availableBytes: effective === null ? null : Math.max(0, effective - reserved),
       awaitingReleaseBytes: this.total("awaiting-collection"),
       debtBytes: this.total("debt"),
-      measurementError: this.measurementError,
+      effectiveBudgetBytes: effective,
+      contradictions: this.contradictions.slice(),
       holders: Array.from(this.holders.values(), (holder) => ({
         label: holder.label,
         shape: holder.shape,
@@ -370,21 +381,20 @@ export class SharedMemoryLedger {
       if (!state || holder.state === state) total += holder.chargedBytes;
     return total;
   }
+  private effectiveBudget(): number | null {
+    if (this.platform.kind === "unbounded") return this.ceiling;
+    return Math.min(this.platform.budgetBytes, this.ceiling ?? Infinity);
+  }
   private capacity(requested: number): void {
-    if (this.platform.kind !== "bounded") return;
-    if (this.pending)
-      throw new SharedMemoryAdmissionError({
-        kind: "platform",
-        label: "measurement pending",
-        cause: new RangeError("await reservations.settled()"),
-      });
-    const available = Math.max(0, this.platform.budgetBytes - this.total());
+    const budget = this.effectiveBudget();
+    if (budget === null) return;
+    const available = Math.max(0, budget - this.total());
     if (requested <= available) return;
     throw new SharedMemoryAdmissionError({
       kind: "budget",
       requested: bytes(requested),
       available: bytes(available),
-      budget: this.platform.budgetBytes,
+      budget: bytes(budget),
       awaitingRelease: bytes(this.total("awaiting-collection")),
     });
   }
@@ -472,7 +482,14 @@ export class SharedMemoryLedger {
     } catch (error) {
       this.holders.delete(provisional.id);
       if (!(error instanceof RangeError)) throw error;
-      this.scheduleRemeasure();
+      if (charged === 0)
+        throw new SharedMemoryAdmissionError({
+          kind: "uncounted-platform",
+          label,
+          requestedBytes: bytes(shapeBytes(shape)),
+          cause: error,
+        });
+      this.contradiction(label, shapeBytes(shape));
       throw new SharedMemoryAdmissionError({ kind: "platform", label, cause: error });
     }
   }
@@ -721,37 +738,15 @@ export class SharedMemoryLedger {
       holder.state = holder.scope === "worker" ? "debt" : "awaiting-collection";
     }
   }
-  private scheduleRemeasure(): void {
-    if (this.platform.kind !== "bounded" || this.pending) return;
-    const previous = this.platform;
-    // The probe sees remaining capacity, not page-owned backing already constructed.
-    // Do not add unconstructed headroom or speculative guest declarations to that receipt.
-    let constructed = 0;
-    for (const holder of this.holders.values()) {
-      if (holder.value?.deref() || holder.memory?.deref()) constructed += holder.chargedBytes;
-    }
-    this.pending = Promise.resolve()
-      .then(this.remeasure)
-      .then(
-        (platform) => {
-          this.platform =
-            platform.kind === "bounded"
-              ? {
-                  ...platform,
-                  budgetBytes: bytes(
-                    Math.min(previous.budgetBytes, platform.budgetBytes + constructed),
-                  ),
-                }
-              : previous;
-          this.measurementError = null;
-        },
-        (error: unknown) => {
-          this.measurementError = error instanceof Error ? error.message : String(error);
-        },
-      )
-      .finally(() => {
-        this.pending = undefined;
-      });
+  private contradiction(label: HolderLabel, requestedBytes: number): void {
+    const budget = this.effectiveBudget();
+    // Preserve the unbounded arena ladder until a bounded contradiction set a page cap.
+    if (budget === null) return;
+    const totalChargedBytesAfterRefund = this.total();
+    this.ceiling = Math.min(budget, totalChargedBytesAfterRefund);
+    this.contradictions.push(
+      Object.freeze({ label, requestedBytes, totalChargedBytesAfterRefund }),
+    );
   }
 }
 function validatePlatform(platform: SharedMemoryPlatform): void {
@@ -784,80 +779,83 @@ export function pageSharedMemoryLedger(platform: SharedMemoryPlatform): SharedMe
   return (host[pageLedgerKey] ??= new SharedMemoryLedger(platform));
 }
 export interface ProbeResult {
-  readonly growableBytes: number;
+  readonly reachedBytes: number;
+  readonly chunkBytes: number;
   readonly ceilingReached: boolean;
-  readonly counts: {
-    readonly "fixed-buffer": boolean;
-    readonly "shared-memory": boolean;
-    readonly "private-memory": boolean;
-  };
+}
+export type SharedMemoryObservation =
+  | {
+      readonly kind: "bounded";
+      readonly heldBytes: ReservedBytes;
+      readonly chunkBytes: ReservedBytes;
+    }
+  | { readonly kind: "unavailable" };
+export class SharedMemoryMeasurementError extends Error {
+  constructor(readonly observation: SharedMemoryObservation) {
+    super(
+      observation.kind === "unavailable"
+        ? "Shared memory classification could not reserve a probe chunk"
+        : `Shared memory classification held ${observation.heldBytes} bytes in ${observation.chunkBytes}-byte chunks; bounded capacity requires a trusted declaration before probing`,
+    );
+    this.name = "SharedMemoryMeasurementError";
+  }
 }
 export interface SharedMemoryMeasureOptions {
   readonly workerURL?: string | URL;
-  readonly remeasure?: true;
 }
 let measurement: Promise<SharedMemoryPlatform> | undefined;
+/** Classify once per page. A bounded observation is never usable post-probe capacity. */
 export function measureSharedMemory(
   options: SharedMemoryMeasureOptions = {},
 ): Promise<SharedMemoryPlatform> {
-  if (!options.remeasure && measurement) return measurement;
-  const pending = runProbeWorker(options.workerURL).then((result): SharedMemoryPlatform => {
+  return (measurement ??= runProbeWorker(options.workerURL).then((result): SharedMemoryPlatform => {
     if (result.ceilingReached)
-      return { kind: "unbounded", source: "measured", probedBytes: bytes(result.growableBytes) };
-    return {
-      kind: "bounded",
-      source: "measured",
-      budgetBytes: bytes(Math.max(0, result.growableBytes - PROBE_SAFETY_MARGIN_BYTES)),
-      counts: {
-        fixedBuffer: result.counts["fixed-buffer"],
-        sharedMemory: result.counts["shared-memory"],
-        privateMemory: result.counts["private-memory"],
-      },
-    };
-  });
-  if (!options.remeasure) measurement = pending;
-  return pending;
+      return { kind: "unbounded", source: "measured", probedBytes: bytes(result.reachedBytes) };
+    throw new SharedMemoryMeasurementError(
+      result.reachedBytes === 0
+        ? { kind: "unavailable" }
+        : {
+            kind: "bounded",
+            heldBytes: bytes(result.reachedBytes),
+            chunkBytes: bytes(result.chunkBytes),
+          },
+    );
+  }));
 }
 function parseProbeResult(value: unknown): ProbeResult {
   if (
     !value ||
     typeof value !== "object" ||
-    !("growableBytes" in value) ||
-    !("ceilingReached" in value) ||
-    !("counts" in value)
+    !("reachedBytes" in value) ||
+    !("chunkBytes" in value) ||
+    !("ceilingReached" in value)
   )
     throw new TypeError("Invalid shared-memory measurement");
-  const counts = value.counts;
+  const { reachedBytes, chunkBytes, ceilingReached } = value;
   if (
-    typeof value.growableBytes !== "number" ||
-    !Number.isSafeInteger(value.growableBytes) ||
-    value.growableBytes < 0 ||
-    typeof value.ceilingReached !== "boolean"
+    typeof reachedBytes !== "number" ||
+    !Number.isSafeInteger(reachedBytes) ||
+    reachedBytes < 0 ||
+    typeof chunkBytes !== "number" ||
+    !Number.isSafeInteger(chunkBytes) ||
+    chunkBytes < 0 ||
+    typeof ceilingReached !== "boolean"
   )
     throw new TypeError("Invalid shared-memory probe capacity");
+  if (reachedBytes === 0 && chunkBytes === 0 && !ceilingReached)
+    return { reachedBytes, chunkBytes, ceilingReached };
+  const halvingSteps = Math.log2(PROBE_CEILING_BYTES / chunkBytes);
   if (
-    !counts ||
-    typeof counts !== "object" ||
-    !("fixed-buffer" in counts) ||
-    !("shared-memory" in counts) ||
-    !("private-memory" in counts)
+    chunkBytes < 256 * 1024 ** 2 ||
+    !Number.isInteger(halvingSteps) ||
+    halvingSteps < 0 ||
+    reachedBytes === 0 ||
+    reachedBytes > PROBE_CEILING_BYTES ||
+    reachedBytes % chunkBytes !== 0 ||
+    ceilingReached !== (reachedBytes === PROBE_CEILING_BYTES)
   )
-    throw new TypeError("Unknown shared-memory counted kinds");
-  if (
-    typeof counts["fixed-buffer"] !== "boolean" ||
-    typeof counts["shared-memory"] !== "boolean" ||
-    typeof counts["private-memory"] !== "boolean"
-  )
-    throw new TypeError("Unknown shared-memory counted kinds");
-  return {
-    growableBytes: value.growableBytes,
-    ceilingReached: value.ceilingReached,
-    counts: {
-      "fixed-buffer": counts["fixed-buffer"],
-      "shared-memory": counts["shared-memory"],
-      "private-memory": counts["private-memory"],
-    },
-  };
+    throw new TypeError("Invalid shared-memory probe capacity");
+  return { reachedBytes, chunkBytes, ceilingReached };
 }
 async function runProbeWorker(workerURL?: string | URL): Promise<ProbeResult> {
   if (typeof Worker !== "function") throw new Error("Shared memory measurement requires Worker");

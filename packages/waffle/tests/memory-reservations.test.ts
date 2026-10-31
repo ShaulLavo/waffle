@@ -133,27 +133,6 @@ test("abort after actual request pool reuse retains the arena charge", () => {
   expect(runtime.snapshot().reservedBytes).toBe(BOUNDED_ARENA_BYTES);
 });
 
-test("a failed remeasurement never converts a bounded page to unbounded", async () => {
-  const platform = bounded();
-  const runtime = new SharedMemoryLedger(
-    platform,
-    {
-      ...allocations,
-      buffer() {
-        throw new RangeError("native pool exhausted");
-      },
-    },
-    async () => {
-      throw new Error("probe failed");
-    },
-  ).openRuntime(platform);
-  expect(() => runtime.arenas.create(null)).toThrow(SharedMemoryAdmissionError);
-  await runtime.settled();
-  expect(runtime.snapshot().platform.kind).toBe("bounded");
-  expect(runtime.snapshot().measurementError).toBe("probe failed");
-  expect(runtime.snapshot().reservedBytes).toBe(0);
-});
-
 test("exact group shapes are distinct and all addressable dirty pages are scrubbed on reuse", () => {
   const runtime = new SharedMemoryLedger(bounded()).openRuntime(bounded());
   const first = runtime.groups.create({ kind: "fixed", pages: pages(4) }, null);
@@ -353,19 +332,14 @@ test("finalization is a reachability receipt and cannot erase failed-stop debt",
   const registered: { target: WeakRef<object>; id: number }[] = [];
   let collect: (id: number) => void = () => {};
   const platform = bounded(PAGE_BYTES * 2);
-  const ledger = new SharedMemoryLedger(
-    platform,
-    allocations,
-    async () => platform,
-    (receive) => {
-      collect = receive;
-      return {
-        register(target, id) {
-          registered.push({ target: new WeakRef(target), id });
-        },
-      };
-    },
-  );
+  const ledger = new SharedMemoryLedger(platform, allocations, (receive) => {
+    collect = receive;
+    return {
+      register(target, id) {
+        registered.push({ target: new WeakRef(target), id });
+      },
+    };
+  });
   const first = ledger.openRuntime(platform);
   const buffer = first.buffer("filesystem-root", {
     kind: "fixed-buffer",
@@ -383,4 +357,185 @@ test("finalization is a reachability receipt and cannot erase failed-stop debt",
   second.dispose();
   for (const receipt of registered) collect(receipt.id);
   expect(second.snapshot().debtBytes).toBe(PAGE_BYTES);
+});
+
+test("F3 native counted refusal refunds and lowers the cap without constructing a probe Worker", () => {
+  const NativeWorker = globalThis.Worker;
+  let probes = 0;
+  globalThis.Worker = new Proxy(NativeWorker, {
+    construct() {
+      probes++;
+      throw new Error("probe forbidden");
+    },
+  });
+  try {
+    const platform = bounded(PAGE_BYTES * 4);
+    const runtime = new SharedMemoryLedger(platform, {
+      ...allocations,
+      buffer() {
+        throw new RangeError("native counted refusal");
+      },
+    }).openRuntime(platform);
+    const running = runtime.admit(plan(1)).launched();
+    expect(() =>
+      runtime.buffer("filesystem-root", { kind: "fixed-buffer", length: bytes(PAGE_BYTES) }),
+    ).toThrow(SharedMemoryAdmissionError);
+    expect(runtime.snapshot()).toMatchObject({
+      budgetBytes: PAGE_BYTES * 4,
+      effectiveBudgetBytes: PAGE_BYTES,
+      reservedBytes: PAGE_BYTES,
+      availableBytes: 0,
+      contradictions: [
+        {
+          label: "filesystem-root",
+          requestedBytes: PAGE_BYTES,
+          totalChargedBytesAfterRefund: PAGE_BYTES,
+        },
+      ],
+    });
+    expect(runtime.check(plan())).toMatchObject({
+      kind: "refused",
+      error: { refusal: { kind: "budget", budget: PAGE_BYTES } },
+    });
+    running.stopped();
+    expect(probes).toBe(0);
+  } finally {
+    globalThis.Worker = NativeWorker;
+  }
+});
+
+test("F7 contradiction ceiling survives release and larger bounded or unbounded declarations", () => {
+  const platform = bounded(PAGE_BYTES * 8);
+  const ledger = new SharedMemoryLedger(platform, {
+    ...allocations,
+    buffer() {
+      throw new RangeError("contradiction");
+    },
+  });
+  const first = ledger.openRuntime(platform);
+  const held = first.admit(plan(3)).launched();
+  expect(() =>
+    first.buffer("filesystem-root", { kind: "fixed-buffer", length: bytes(PAGE_BYTES) }),
+  ).toThrow(SharedMemoryAdmissionError);
+  const history = first.snapshot().contradictions;
+  held.stopped();
+  first.dispose();
+  const larger = ledger.openRuntime(bounded(PAGE_BYTES * 16));
+  expect(larger.snapshot()).toMatchObject({
+    budgetBytes: PAGE_BYTES * 16,
+    effectiveBudgetBytes: PAGE_BYTES * 3,
+    availableBytes: PAGE_BYTES * 3,
+    contradictions: history,
+  });
+  expect(larger.check(plan(4))).toMatchObject({
+    kind: "refused",
+    error: { refusal: { kind: "budget", budget: PAGE_BYTES * 3 } },
+  });
+  larger.dispose();
+  const unbounded = ledger.openRuntime(unlimited);
+  expect(unbounded.snapshot()).toMatchObject({
+    budgetBytes: null,
+    effectiveBudgetBytes: PAGE_BYTES * 3,
+    availableBytes: PAGE_BYTES * 3,
+    contradictions: history,
+  });
+  expect(unbounded.check(plan(4))).toMatchObject({
+    kind: "refused",
+    error: { refusal: { kind: "budget" } },
+  });
+  const second = unbounded.admit(plan(1)).launched();
+  expect(() =>
+    unbounded.buffer("filesystem-root", { kind: "fixed-buffer", length: bytes(PAGE_BYTES) }),
+  ).toThrow(SharedMemoryAdmissionError);
+  expect(unbounded.snapshot().effectiveBudgetBytes).toBe(PAGE_BYTES);
+  expect(unbounded.snapshot().contradictions).toHaveLength(2);
+  expect(history).toHaveLength(1);
+  second.stopped();
+  expect(unbounded.snapshot().availableBytes).toBe(PAGE_BYTES);
+});
+
+for (const kind of ["fixed-buffer", "memory-group"] as const)
+  test(`F8 uncounted ${kind} native refusal leaves counted debt cap and history alone`, () => {
+    const platform = declareSharedMemoryPlatform({
+      kind: "bounded",
+      budgetBytes: bytes(PAGE_BYTES * 8),
+      counts: { fixedBuffer: false, sharedMemory: false, privateMemory: true },
+    });
+    const runtime = new SharedMemoryLedger(platform, {
+      buffer() {
+        throw new RangeError("uncounted native refusal");
+      },
+      memory() {
+        throw new RangeError("uncounted native refusal");
+      },
+    }).openRuntime(platform);
+    const before = runtime.snapshot();
+    const construct = () =>
+      kind === "fixed-buffer"
+        ? runtime.buffer("filesystem-root", { kind, length: bytes(PAGE_BYTES) })
+        : runtime.groups.create({ kind: "fixed", pages: pages(1) }, null);
+    const error: unknown = (() => {
+      try {
+        construct();
+        return null;
+      } catch (failure) {
+        return failure;
+      }
+    })();
+    expect(error).toMatchObject({
+      refusal: {
+        kind: "uncounted-platform",
+        requestedBytes: PAGE_BYTES,
+        cause: expect.any(RangeError),
+      },
+    });
+    expect(runtime.snapshot()).toEqual(before);
+  });
+
+test("F6 reservation measurement-pending API is removed without deleting lifecycle settlement", async () => {
+  const reservations = await Bun.file(new URL("../memory/reservations.ts", import.meta.url)).text();
+  const broker = await Bun.file(new URL("../browser/process-broker.ts", import.meta.url)).text();
+  expect(reservations).not.toMatch(
+    /\bremeasure\b|readonly measurementError:|measurement pending|settled\(\): Promise<void>/,
+  );
+  expect(broker).not.toContain("reservations.settled()");
+  expect(broker).toContain(".stopped()");
+  expect(new SharedMemoryLedger(unlimited).openRuntime(unlimited)).not.toHaveProperty("settled");
+});
+
+test("trusted declarations are chosen without probing and remain explicitly declared", () => {
+  const NativeWorker = globalThis.Worker;
+  globalThis.Worker = new Proxy(NativeWorker, {
+    construct() {
+      throw new Error("declaration must not probe");
+    },
+  });
+  try {
+    const platform = bounded();
+    const runtime = new SharedMemoryLedger(platform).openRuntime(platform);
+    expect(runtime.snapshot().platform.source).toBe("declared");
+    expect(runtime.snapshot().budgetBytes).toBe(6 * 1024 ** 3);
+    expect(runtime.snapshot().effectiveBudgetBytes).toBe(6 * 1024 ** 3);
+    expect(runtime.snapshot().contradictions).toEqual([]);
+    runtime.dispose();
+  } finally {
+    globalThis.Worker = NativeWorker;
+  }
+});
+
+test("a native unbounded arena refusal preserves the historical fallback ladder without a cap", () => {
+  const attempts: number[] = [];
+  const runtime = new SharedMemoryLedger(unlimited, {
+    ...allocations,
+    buffer(shape) {
+      const maximum = shape.kind === "fixed-buffer" ? shape.length : shape.maximum;
+      attempts.push(maximum);
+      if (maximum === DESKTOP_ARENA_BYTES) throw new RangeError("per-object cap");
+      return allocations.buffer(shape);
+    },
+  }).openRuntime(unlimited);
+  expect(runtime.arenas.create(null).maxByteLength).toBe(BOUNDED_ARENA_BYTES);
+  expect(attempts).toEqual([DESKTOP_ARENA_BYTES, BOUNDED_ARENA_BYTES]);
+  expect(runtime.snapshot().effectiveBudgetBytes).toBeNull();
+  expect(runtime.snapshot().contradictions).toEqual([]);
 });
