@@ -66,14 +66,19 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
   };
 }
 
-export interface WorkerPipeHostOptions extends Pick<PipeOptions, "allocateShared"> {
+interface WorkerPipeHostBaseOptions {
   transport: WorkerProcessTransport;
   postMessage(message: WorkerProcessMessage): void;
-  /** Descendants attach the root service's registry; only the root creates a new one. */
-  registry?: PipePublicationRegistry | PipePublicationRegistryHandle;
   fallback?: WorkerDescriptorCodec;
   pipe?: Pick<PipeOptions, "capacity" | "maxWriters" | "maxReaders">;
 }
+
+type WorkerPipeRegistry = PipePublicationRegistry | PipePublicationRegistryHandle;
+export type WorkerPipeHostOptions = WorkerPipeHostBaseOptions &
+  (
+    | { registry?: WorkerPipeRegistry; allocateShared?: never }
+    | { registry: WorkerPipeRegistry; allocateShared: NonNullable<PipeOptions["allocateShared"]> }
+  );
 
 /** Guest-worker factory and codec composition, separate from the pipe-free ownership stub.
  * A manual controller has no background relay loop and can be garbage-collected after export.
@@ -83,6 +88,8 @@ export class WorkerPipeHost {
   readonly registry: PipePublicationRegistry;
   private readonly pid: number;
   constructor(private readonly options: WorkerPipeHostOptions) {
+    if (options.allocateShared && !options.registry)
+      throw new TypeError("tracked pipe allocation requires a supplied registry");
     const state = workerProcessState(options.transport);
     this.pid = state.pid;
     this.registry = isInstance(options.registry, PipePublicationRegistry)

@@ -120,6 +120,20 @@ for (const failAt of [2, 3]) {
   });
 }
 
+test("worker host requires an admitted registry when shared allocation is tracked", () => {
+  const allocation = allocator();
+  const options = {
+    transport: createWorkerProcessTransport(),
+    allocateShared: allocation.allocateShared,
+    postMessage() {},
+  };
+  expect(() => {
+    // @ts-expect-error Tracked allocation requires an already admitted registry.
+    new WorkerPipeHost(options);
+  }).toThrow("tracked pipe allocation requires a supplied registry");
+  expect(allocation.calls).toEqual([]);
+});
+
 test("worker host and imported codec endpoints retain their realm-local allocator", () => {
   const registry = new PipePublicationRegistry();
   registry.registerProcess(1);
