@@ -1273,7 +1273,7 @@ import {
 
     // ---------- camera & layout ----------
     if (opts.layout && typeof opts.layout === 'object') { REG_INIT = opts.layout; }
-    var state = { target: clamp01(opts.progress || 0), p: clamp01(opts.progress || 0), layout: (opts.layout && typeof opts.layout === 'object') ? 'custom' : (opts.layout || 'split'), labels: opts.labels !== false, mx: 0, my: 0, smx: 0, smy: 0, w: 0, h: 0, visible: true, bgKey: -1 };
+    var state = { target: clamp01(opts.progress || 0), p: clamp01(opts.progress || 0), layout: (opts.layout && typeof opts.layout === 'object') ? 'custom' : (opts.layout || 'split'), labels: opts.labels !== false, mx: 0, my: 0, smx: 0, smy: 0, w: 0, h: 0, visible: true, bgKey: -1, reduced: !!opts.reducedMotion };
     var REG = { split: { cx: 0.665, cy: 0.54, wf: 0.6, hf: 0.86 }, stack: { cx: 0.5, cy: 0.73, wf: 0.98, hf: 0.5 }, center: { cx: 0.5, cy: 0.53, wf: 0.94, hf: 0.9 }, phone: { cx: 0.455, cy: 0.5, wf: 0.8, hf: 0.86 } };
     if (REG_INIT) REG.custom = { cx: REG_INIT.cx, cy: REG_INIT.cy, wf: REG_INIT.wf, hf: REG_INIT.hf };
     var reg = Object.assign({}, REG[state.layout] || REG.split);
@@ -1301,7 +1301,7 @@ import {
       var fitR = lerp(6.1, 6.2, ph.fit) * (state.layout === 'stack' ? lerp(1, 1.06, ph.fit) : 1);
       if (state.layout === 'custom') fitR *= lerp(1, 1.1, ph.fit);
       var dist = fitR / Math.min(tv * reg.hf, tv * aspect * reg.wf);
-      var live = ph.lit;
+      var live = state.reduced ? 0 : ph.lit;
       var el = lerp(EL_START, EL_FINAL, ph.cam) + state.smy * 0.05 * live;
       var az = lerp(0, AZ_FINAL, ph.cam) + Math.sin(t * 0.22) * 0.03 * live + state.smx * 0.12 * live;
       var ty = lerp(0, 0.15, ph.cam);
@@ -1350,10 +1350,23 @@ import {
       lastMove = { clientX: ev.clientX, clientY: ev.clientY }; moveDirty = true;
     }
     function onLeave() { state.mx = 0; state.my = 0; canvas.style.cursor = ''; moveDirty = false; }
-    function onDown(ev) { if (opts.interactive === false) return; var h = pick(ev); if (h) poke(h); }
+    function onDown(ev) {
+      if (opts.interactive === false) return;
+      // A touch that starts on the canvas is usually a scroll; only a tap pokes, on release.
+      if (ev.pointerType === 'touch') { touchStart = { id: ev.pointerId, x: ev.clientX, y: ev.clientY }; return; }
+      var h = pick(ev); if (h) poke(h);
+    }
+    var touchStart = null;
+    function onUp(ev) {
+      var s = touchStart; touchStart = null;
+      if (!s || s.id !== ev.pointerId || opts.interactive === false) return;
+      if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) > 10) return;
+      var h = pick(ev); if (h) poke(h);
+    }
+    function onCancel() { touchStart = null; }
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerleave', onLeave);
-    canvas.addEventListener('pointerdown', onDown);
+    canvas.addEventListener('pointerdown', onDown); canvas.addEventListener('pointerup', onUp); canvas.addEventListener('pointercancel', onCancel);
     var io = null;
     if ('IntersectionObserver' in window) { io = new IntersectionObserver(function (es) { state.visible = es[0] ? es[0].isIntersecting : true; }, { threshold: 0 }); io.observe(canvas); }
 
@@ -1422,7 +1435,7 @@ import {
         if (o.tag) {
           o.tagMat.opacity = state.labels ? ph.labels * Math.min(1, s) : 0;
           o.tag.visible = o.tagMat.opacity > 0.01;
-          o.tag.position.set(o.g.position.x, (o.h + 0.35) * s + o.g.position.y + Math.sin(t * 1.4 + i) * 0.04, o.g.position.z);
+          o.tag.position.set(o.g.position.x, (o.h + 0.35) * s + o.g.position.y + (state.reduced ? 0 : Math.sin(t * 1.4 + i) * 0.04), o.g.position.z);
         }
       }
 
@@ -1461,7 +1474,7 @@ import {
           if (fl.hop > 0) { fl.hop = Math.max(0, fl.hop - dt * 1.8); fl.car.position.y += Math.sin((1 - fl.hop) * Math.PI) * 0.55; fl.car.rotateY((1 - fl.hop) * Math.PI * 2); }
         } else { fl.bead.position.copy(tmpV); fl.halo.position.copy(tmpV); }
         var cyc = Math.floor((t + fl.phase) / period);
-        if (s2 > 0.97 && fl.lastArr !== cyc) { fl.lastArr = cyc; if (p > 0.6) kick(fl.B, 0.3); }
+        if (s2 > 0.97 && fl.lastArr !== cyc) { fl.lastArr = cyc; if (p > 0.6 && !state.reduced) kick(fl.B, 0.3); }
       }
 
       placeCamera(ph, t, dt);
@@ -1481,11 +1494,12 @@ import {
     return {
       setProgress: function (p, now) { state.target = clamp01(p); if (now) state.p = state.target; },
       setLayout: function (l) { if (l && typeof l === 'object') { REG.custom = { cx: l.cx, cy: l.cy, wf: l.wf, hf: l.hf }; state.layout = 'custom'; } else if (REG[l]) state.layout = l; },
+      setReducedMotion: function (b) { state.reduced = !!b; if (b) { state.mx = 0; state.my = 0; } },
       setLabels: function (b) { state.labels = !!b; },
       getProgress: function () { return state.p; },
       destroy: function () {
         cancelAnimationFrame(raf);
-        canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('pointerdown', onDown);
+        canvas.removeEventListener('pointermove', onMove); canvas.removeEventListener('pointerleave', onLeave); canvas.removeEventListener('pointerdown', onDown); canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onCancel);
         if (io) io.disconnect();
         if (ro) ro.disconnect();
         disposables.forEach(function (d) { try { d.dispose(); } catch (e) {} });

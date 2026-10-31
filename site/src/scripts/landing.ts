@@ -14,6 +14,7 @@ interface SceneOptions {
   progress: number;
   layout: SceneRegion;
   compact: boolean;
+  reducedMotion: boolean;
   background: boolean;
   labels: boolean;
   adaptive: boolean;
@@ -24,6 +25,7 @@ interface SceneOptions {
 interface WaffleSceneInstance {
   setProgress(progress: number, immediate?: boolean): void;
   setLayout(layout: SceneRegion): void;
+  setReducedMotion(reduced: boolean): void;
   destroy(): void;
 }
 
@@ -182,6 +184,7 @@ class Story {
     window.addEventListener("scroll", this.onScroll, { passive: true });
     this.compact.addEventListener("change", this.scheduleMeasure);
     this.reduced.addEventListener("change", this.scheduleMeasure);
+    this.reduced.addEventListener("change", this.onReducedChange);
     this.measure();
   }
 
@@ -196,6 +199,7 @@ class Story {
     window.removeEventListener("scroll", this.onScroll);
     this.compact.removeEventListener("change", this.scheduleMeasure);
     this.reduced.removeEventListener("change", this.scheduleMeasure);
+    this.reduced.removeEventListener("change", this.onReducedChange);
     this.resizeObserver.disconnect();
     if (this.frame) cancelAnimationFrame(this.frame);
     if (this.measureFrame) cancelAnimationFrame(this.measureFrame);
@@ -209,6 +213,10 @@ class Story {
       this.frame = 0;
       this.update();
     });
+  };
+
+  private onReducedChange = () => {
+    this.scene?.setReducedMotion(this.reduced.matches);
   };
 
   private scheduleMeasure = () => {
@@ -321,6 +329,7 @@ class Story {
       progress: this.progress,
       layout: this.region(),
       compact: this.compact.matches,
+      reducedMotion: this.reduced.matches,
       background: false,
       labels: true,
       adaptive: !new URLSearchParams(location.search).has("full-quality"),
