@@ -35,6 +35,7 @@ jobs:
       gh: ${{ steps.paths.outputs.gh }}
       jq: ${{ steps.paths.outputs.jq }}
       curl: ${{ steps.paths.outputs.curl }}
+      awk: ${{ steps.paths.outputs.awk }}
       tar: ${{ steps.paths.outputs.tar }}
       procps: ${{ steps.paths.outputs.procps }}
     steps:
@@ -186,6 +187,20 @@ jobs:
               - "tools/program-package.ts"
               - "tools/tsconfig.programs.json"
               - "packages/curl/**"
+            awk:
+              - ".github/**"
+              - "package.json"
+              - "bun.lock"
+              - "tools/program-build-tools.ts"
+              - "tools/program-optimize.ts"
+              - "tools/program-derivation.ts"
+              - "tools/program-package.ts"
+              - "tools/program-notices.ts"
+              - "tools/family-acceptance.ts"
+              - "tools/tsconfig.programs.json"
+              - "packages/waffle/**"
+              - "packages/base/**"
+              - "packages/awk/**"
             tar:
               - ".github/**"
               - "package.json"
@@ -308,6 +323,83 @@ jobs:
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
+  awk:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: [changes, network-wasm]
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - uses: actions/cache/restore@v4
+        id: bun-cache
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - uses: actions/cache@v4
+        id: sdk
+        with:
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+      - name: Install pinned wasi-sdk 34
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --max-time 120 -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
+          echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
+          tar -xzf wasi-sdk.tar.gz
+          rm wasi-sdk.tar.gz
+      - uses: actions/cache@v4
+        id: libc-cache
+        with:
+          path: .build/wasi-libc
+          key: ${{ runner.os }}-${{ runner.arch }}-awk-libc-${{ hashFiles('tools/program-build-tools.ts', 'packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
+      - uses: actions/cache@v4
+        id: wasmtime
+        with:
+          path: ~/downloader/bin/wasmtime
+          key: ${{ runner.os }}-wasmtime-49.0.3
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+        if: steps.wasmtime.outputs.cache-hit != 'true'
+        with:
+          version: 49.0.3
+      - run: echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bison ninja-build
+      - uses: ./.github/actions/program-optimizer
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run prepare:package
+      - name: Build and qualify only awk
+        run: bun run programs:awk
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
+          AWK_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Report awk dependency cache hits
+        if: always()
+        run: |
+          echo "network cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
+          echo "Bun cache-hit=${{ steps.bun-cache.outputs.cache-hit }}"
+          echo "SDK cache-hit=${{ steps.sdk.outputs.cache-hit }}"
+          echo "libc cache-hit=${{ steps.libc-cache.outputs.cache-hit }}"
+          echo "Wasmtime cache-hit=${{ steps.wasmtime.outputs.cache-hit }}"
   procps:
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}
