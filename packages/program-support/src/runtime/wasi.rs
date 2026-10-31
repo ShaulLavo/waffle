@@ -23,9 +23,22 @@ unsafe extern "C" {
     fn proc_inherited_fd(index: u32) -> i32;
 }
 
+#[link(wasm_import_module = "runtime_fs")]
+unsafe extern "C" {
+    #[link_name = "path_permissions_get"]
+    fn fs_path_permissions_get(
+        fd: u32,
+        path: *const u8,
+        length: usize,
+        flags: u32,
+        output: *mut u8,
+    ) -> i32;
+}
+
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 unsafe extern "C" {
     fn fd_close(fd: u32) -> u16;
+    fn fd_readdir(fd: u32, buffer: *mut u8, length: usize, cookie: u64, used: *mut usize) -> u16;
     fn fd_prestat_get(fd: u32, output: *mut u8) -> u16;
     fn fd_prestat_dir_name(fd: u32, output: *mut u8, length: usize) -> u16;
     fn path_create_directory(fd: u32, path: *const u8, length: usize) -> u16;
@@ -77,25 +90,25 @@ pub struct WasiAbi {
 impl WasiAbi {
     pub fn new() -> Result<Self, i32> {
         let inherited = inherited_fds()?;
-        let last = 3u32.checked_add(inherited.len() as u32).ok_or(28)?;
-        for fd in 3..=last {
+        Self::with_inherited_fds(inherited)
+    }
+
+    /// Use launch metadata supplied by the embedding, without querying the
+    /// runtime_proc descriptor list. Root scanning stays bounded by list length.
+    pub fn with_inherited_fds(inherited: Vec<u32>) -> Result<Self, i32> {
+        let root = find_root_preopen(inherited.len(), |fd| {
             let mut stat = [0; 8];
             if unsafe { fd_prestat_get(fd, stat.as_mut_ptr()) } != 0 || stat[0] != 0 {
-                continue;
+                return false;
             }
-            let length = u32::from_le_bytes(stat[4..8].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(stat[4..8].try_into().unwrap());
             if length != 1 {
-                continue;
+                return false;
             }
             let mut name = [0];
-            if unsafe { fd_prestat_dir_name(fd, name.as_mut_ptr(), 1) } == 0 && name[0] == b'/' {
-                return Ok(Self {
-                    root: fd,
-                    inherited,
-                });
-            }
-        }
-        Err(44)
+            (unsafe { fd_prestat_dir_name(fd, name.as_mut_ptr(), 1) }) == 0 && name[0] == b'/'
+        })?;
+        Ok(Self { root, inherited })
     }
 
     pub fn handle_interrupts(&self) -> Result<(), i32> {
@@ -159,6 +172,81 @@ impl Abi for WasiAbi {
         }
     }
 
+    fn stat(&self, path: &str, follow_symlinks: bool) -> Result<FileMetadata, i32> {
+        if !path.starts_with('/') || path.contains('\0') || path.len() > crate::io::MAX_PATH_BYTES {
+            return Err(28);
+        }
+        let path = path.trim_start_matches('/');
+        let path = if path.is_empty() { "." } else { path };
+        let mut bytes = [0u8; 64];
+        let errno = unsafe {
+            path_filestat_get(
+                self.root,
+                u32::from(follow_symlinks),
+                path.as_ptr(),
+                path.len(),
+                bytes.as_mut_ptr(),
+            )
+        };
+        if errno != 0 {
+            return Err(errno as i32);
+        }
+        let mut metadata = decode_filestat(&bytes);
+        let mut permissions = [0u8; 16];
+        // Waffle has no symbolic links. The query's flags must be zero.
+        let errno = unsafe {
+            fs_path_permissions_get(
+                self.root,
+                path.as_ptr(),
+                path.len(),
+                0,
+                permissions.as_mut_ptr(),
+            )
+        };
+        if errno == 0 {
+            decode_permissions(&mut metadata, &permissions);
+        } else if errno != 58 {
+            return Err(errno);
+        }
+        Ok(metadata)
+    }
+    fn open_dir(&self, path: &str) -> Result<u32, i32> {
+        if !path.starts_with('/') || path.contains('\0') || path.len() > crate::io::MAX_PATH_BYTES {
+            return Err(28);
+        }
+        let path = path.trim_start_matches('/');
+        let path = if path.is_empty() { "." } else { path };
+        let mut fd = 0;
+        // DIRECTORY and FD_READDIR only; enumeration cannot read file payloads.
+        let errno = unsafe {
+            path_open(
+                self.root,
+                1,
+                path.as_ptr(),
+                path.len(),
+                2,
+                1 << 14,
+                0,
+                0,
+                &mut fd,
+            )
+        };
+        if errno != 0 {
+            return Err(errno as i32);
+        }
+        Ok(fd)
+    }
+    fn read_dir(&self, fd: u32, cookie: u64, output: &mut [u8]) -> Result<usize, i32> {
+        let mut used = 0;
+        let errno = unsafe { fd_readdir(fd, output.as_mut_ptr(), output.len(), cookie, &mut used) };
+        if errno != 0 {
+            return Err(errno as i32);
+        }
+        if used > output.len() {
+            return Err(48);
+        }
+        Ok(used)
+    }
     fn open(&self, path: &str, options: &OpenOptions) -> Result<u32, i32> {
         if !path.starts_with('/') || path.contains('\0') || path.len() > crate::io::MAX_PATH_BYTES {
             return Err(28);
