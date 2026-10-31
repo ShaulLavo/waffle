@@ -91,6 +91,8 @@ export type TcpCommand =
   | { type: "tcp-listen"; id: number; port: number; host: string }
   | { type: "tcp-connect"; id: number; port: number; host: string }
   | { type: "tcp-write"; id: number; data: Uint8Array }
+  /** Descriptor-only readiness query; reply status is 1 when writable, 0 while blocked. */
+  | { type: "tcp-ready"; id: number }
   | { type: "unix-listen"; id: number; path: string; unlinkOnClose: boolean }
   | { type: "unix-connect"; id: number; path: string }
   /** Acknowledged path-listener close: replies after the requested unlink settles. */

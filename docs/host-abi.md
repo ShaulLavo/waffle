@@ -99,9 +99,10 @@ kind inferred from WASI preview1's filetype (which has no FIFO value).
 |     2 | Terminal                            |
 |     3 | Regular file                        |
 |     4 | Directory                           |
+|     5 | Socket stream                       |
 
 These values are append-only: existing numbers must never be reused or renumbered.
-No socket kind is assigned. Guests must not interpret preview1 `UNKNOWN` as a pipe.
+Guests must not interpret preview1 `UNKNOWN` as a pipe.
 The shared `ProcessABI` exposes the import in host and worker process adapters;
 the browser's signal-only worker namespace also exposes it without activating the
 process service. The descriptor number itself (including stdio 0, 1 and 2) never
@@ -141,7 +142,7 @@ the requested rights must fit its inheriting rights, and `TRUNC` requires its
 `PATH_FILESTAT_SET_SIZE` right (`ENOTCAPABLE`, 76). No root preopen means no regular-file
 reopen. Rights stripped from the root are not restored by reopening another descriptor.
 
-Pipes, terminals and directories receive a new binding to the **same** description, like
+Pipes, terminals, sockets and directories receive a new binding to the **same** description, like
 `dup`, rather than a new cursor or flags. Requested rights must fit the source's rights
 (`EACCES`); directory truncation returns `EISDIR` (31). Invalid or closed descriptors
 return `EBADF` (8). Both process adapters and signal-only browser workers expose the import;
@@ -762,6 +763,79 @@ The helper limits unread inbound bytes and unsettled outbound writes to 1 MiB pe
 `tcp-read` acknowledgement releases inbound credit; `Kind.Writable` releases a blocked writer.
 Target EOF is `Kind.End` and does not prevent guest writes. Shutdown closes only the local write
 side, while full close closes the write side gracefully and cancels reads.
+
+### Preview 1 launch sockets
+
+Preview 1 has no standard `connect` import. A launcher can bind an already-connecting socket
+at an explicit fd. Arbitrary unmodified programs cannot initiate connections through a missing
+standard import. Unknown imports still fail linking. Listener bindings and `sock_accept` on a
+listener are not implemented.
+
+`waffle/browser/preview1-network` exports `createPreview1Network(runtime, options)` and the types
+`Preview1NetworkOptions`, `Preview1SocketBinding`, `Preview1NetworkConnection` and `Preview1Network`.
+The options are `{ sockets: readonly Preview1SocketBinding[], connect?: NetConnect }`.
+Each binding is `{ fd, socket: { connect: { host, port } } }`. Targets use the existing `NetHost`
+connect rules. The fd must be a unique integer in `0..0x7fffffff`; ports are in `1..65535`.
+
+The function snapshots bindings before awaiting `runtime.network()`. Empty bindings resolve to
+`undefined` without activating networking or process services. Nonempty bindings create a helper
+on the responsive owner and return a single-launch `{ connection, dispose() }` owner. The
+connector, credentials and Web Streams stay in that owner's realm. `dispose()` is idempotent.
+
+`BrowserProcessBroker.launchWorker(context, { network, ...options })` takes this owner, transfers
+its port and supplies `RuntimeWorkerRequest.network`. It disposes the helper on launch failure,
+worker error, ordinary exit, revocation and physical stop. Do not pass the owner through
+`request`. A manually launched worker instead receives `network.connection` in its request and
+transfers `connection.port`; that launcher must dispose the owner on every exit and failed setup.
+
+The exact cloneable connection payload is:
+
+```ts
+interface Preview1NetworkConnection {
+  readonly ring: SharedArrayBuffer;
+  readonly port: MessagePort;
+  readonly sockets: readonly {
+    readonly fd: number;
+    readonly socket: { readonly connect: { readonly host: string; readonly port: number } };
+  }[];
+}
+```
+
+The ring is Waffle's single-producer helper response ring. The port carries existing `NetRequest`
+messages to that helper, including synchronous reply cells. The descriptor-only `tcp-ready`
+request is `{ type: "tcp-ready", id, reply }`; its 12-byte reply contains completion 1, status
+1 for writable or 0 for blocked, and value 0. Existing `tcp-write` reply bytes are unchanged. No function, helper instance, stream,
+relay endpoint, token or credential is part of this payload. The generic bootstrap dynamically
+loads the descriptor adapter only when socket bindings exist, reserves their exact numbers before
+preopen placement, and installs them before instantiation. The root preopen moves from fd 3 to
+the lowest free number. Socket targets 0, 1 and 2 replace default stdio. `inherited_fd` includes these sockets; `fd_prestat_get` excludes them.
+
+A socket is a `Stream` with `kind: "socket"`. `fd_kind` returns 5. Both `fd_fdstat_get` and
+`fd_filestat_get` report `SOCKET_STREAM`, filetype 6. Its rights allow read, write, setting fd
+flags, filestat, polling and shutdown. Duplicate fds share flags, the handle and its final-close
+lifetime. Passing a socket to a `runtime_proc` child returns `NOTSUP`, errno 58, before descriptor
+export. Sockets may be rebound within the same process with `fd_reopen` or `dup`.
+
+| Import | Socket behavior |
+| --- | --- |
+| `sock_send(fd, iovs, count, flags, out_written)` | Flags must be zero, otherwise `NOTSUP`. Partial writes are valid. It waits for open and credit unless `FDFLAG_NONBLOCK` is set, which returns `AGAIN`. After write shutdown, writes return `PIPE`. A failed connect returns its mapped errno on the first send and `PIPE` on later sends. |
+| `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`. |
+| `sock_shutdown(fd, how)` | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes. |
+| `fd_read`, `fd_write` | Same descriptor I/O without socket flags. |
+| `poll_oneoff` | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
+| `fd_close` | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens. |
+| `sock_accept` | A connected socket returns `INVAL`; listener support is deferred. |
+
+For every `sock_*` call, a valid non-socket fd returns `NOTSOCK`, errno 57; an absent fd returns
+`BADF`, errno 8. The adapter's `HOST_CALL_FD` special case in `sock_send` stays first and unchanged.
+Socket iovecs and result spans are validated before I/O; faults return `FAULT`, errno 21.
+
+These are additive imports and descriptor values. `waffleHostInterface` remains 1 under the bump
+rule below. Existing calls retain their behavior; no old-shape fallback or version negotiation
+is added. bun-wasm's separate `preview1Launcher` must adopt this connection payload and keep its
+connector on the responsive page. That consumer handoff and a real outside line/echo exchange
+are separate release gates. The scripted SSLRequest fixture proves bytes only, not a Postgres
+query.
 
 ## Compatibility
 

@@ -13,6 +13,7 @@ import {
 import {
   CONN_BASE,
   AGAIN,
+  BADF,
   FETCH_WINDOW,
   type FetchHead,
   Kind,
@@ -707,6 +708,11 @@ export class NetHelper {
   }
 
   private executeTcp(req: Exclude<TcpRequest, UnixRequest>): [number, number] {
+    if (req.type === "tcp-ready") {
+      const socket = this.sockets.get(req.id) ?? this.outbound.get(req.id);
+      if (socket) return [Number(socket.writableNow()), 0];
+      return [this.connections.has(req.id) ? 1 : BADF, 0];
+    }
     if (req.type !== "tcp-write" && this.claimed(req.id)) return [TCP_INVALID, 0];
     if (req.type === "tcp-listen") {
       const port = this.listen(req.id, req.port, req.host, true);
@@ -1065,6 +1071,8 @@ function snapshotRequest(req: NetRequest): NetRequest {
       return { type, id, reply: req.reply, port: req.port, host: req.host };
     case "tcp-write":
       return { type, id, reply: req.reply, data: req.data };
+    case "tcp-ready":
+      return { type, id, reply: req.reply };
     case "unix-listen":
       return {
         type,

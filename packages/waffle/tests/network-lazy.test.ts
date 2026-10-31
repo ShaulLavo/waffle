@@ -62,7 +62,11 @@ test("no module compilation before network(), and exactly one instance belongs t
   expect(output).toContain("compile=1, instances=2, helpers=4");
 });
 
-for (const entry of ["../browser/net/host.ts", "./network-browser-worker.ts"]) {
+for (const entry of [
+  "../browser/net/host.ts",
+  "./network-browser-worker.ts",
+  "../browser/preview1-worker.ts",
+]) {
   test(`${entry} excludes owner, helper, loader, native and WASM inputs from the guest graph`, async () => {
     const result = await Bun.build({
       entrypoints: [new URL(entry, import.meta.url).pathname],
