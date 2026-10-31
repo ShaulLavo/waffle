@@ -909,6 +909,9 @@ test("checksums has a bounded leaf using the existing producer route", () => {
   expect(job["timeout-minutes"]).toBe(30);
   expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
   expect(record(job.env).WASI_LIBC_JOBS).toBe("2");
+  expect(record(job.env).GNU_CHECKSUM_ORACLE_ROOT).toBe(
+    "${{ github.workspace }}/.build/gnu-checksum-native-oracle",
+  );
 
   const steps = stepsFor("coreutils-checksums");
   const restore = steps.findIndex((step) => step.id === "network-artifact");
@@ -959,6 +962,10 @@ test("checksums has a bounded leaf using the existing producer route", () => {
     /build:network|program-release|programs:(?:integration|check|prepare|pack|packed)/,
   );
   expect(commands).not.toContain("build-date");
+  expect(commands).not.toContain("test:checksums:oracle");
+  expect(steps[oracle]?.run).toBe(
+    "node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only",
+  );
 });
 
 test("checksums caches the pinned toolchain, Cargo inputs and actual build outputs", () => {
@@ -1000,7 +1007,23 @@ test("checksums caches the pinned toolchain, Cargo inputs and actual build outpu
     (step) => step.name === "Retain the exact checksum-only producer closure",
   );
   expect(retained?.uses).toBe("actions/upload-artifact@v4");
-  expect(record(retained?.with).path).toBe(".build/checksum-artifact");
+  expect(String(record(retained?.with).path)).toContain(".build/checksum-artifact");
+  expect(String(record(retained?.with).path)).toContain(
+    ".build/gnu-checksum-native-oracle/metadata.json",
+  );
+  const native = steps.find((step) => step.id === "checksum-native-oracle");
+  expect(native?.uses).toBe("actions/cache@v4");
+  expect(record(native?.with).path).toBe(".build/gnu-checksum-native-oracle");
+  expect(String(record(native?.with).key)).toContain("steps.checksum-oracle-identity.outputs.key");
+  expect(String(record(native?.with).key)).toContain(
+    "steps.checksum-oracle-identity.outputs.image",
+  );
+  expect(record(native?.with)["restore-keys"]).toBeUndefined();
+  const nativeBuild = steps.find(
+    (step) => step.name === "Build the nine native GNU oracle programs on cache miss",
+  );
+  expect(nativeBuild?.if).toBe("steps.checksum-native-oracle.outputs.cache-hit != 'true'");
+  expect(nativeBuild?.run).toBe("node packages/coreutils/scripts/build-native-checksum-oracle.ts");
 });
 
 test("checksums selects its compiler, locale, libc, runtime and leaf inputs without unrelated guests", () => {
@@ -1031,6 +1054,9 @@ test("checksums selects its compiler, locale, libc, runtime and leaf inputs with
     "packages/coreutils/scripts/build-checksums.ts",
     "packages/coreutils/scripts/checksum-artifact.ts",
     "packages/coreutils/scripts/checksum-oracle.ts",
+    "packages/coreutils/scripts/build-native-checksum-oracle.ts",
+    "packages/coreutils/scripts/build-native-date-oracle.ts",
+    "packages/coreutils/scripts/gnu-date-source.json",
     "packages/coreutils/scripts/checksum-source.test.ts",
     "packages/coreutils/scripts/checksum-parser.test.ts",
     "packages/coreutils/scripts/prepare-checksum-source.ts",

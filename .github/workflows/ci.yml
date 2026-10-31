@@ -119,6 +119,9 @@ jobs:
               - "packages/coreutils/scripts/build-family.ts"
               - "packages/coreutils/scripts/checksum-artifact.ts"
               - "packages/coreutils/scripts/checksum-oracle.ts"
+              - "packages/coreutils/scripts/build-native-checksum-oracle.ts"
+              - "packages/coreutils/scripts/build-native-date-oracle.ts"
+              - "packages/coreutils/scripts/gnu-date-source.json"
               - "packages/coreutils/scripts/checksum-*.test.ts"
               - "packages/coreutils/scripts/prepare-checksum-source.ts"
               - "packages/coreutils/scripts/programs.ts"
@@ -967,6 +970,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
       WASI_LIBC_JOBS: "2"
+      GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}
     runs-on: ubuntu-latest
@@ -1034,8 +1038,26 @@ jobs:
       - uses: ./.github/actions/program-optimizer
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run prepare:package
+      - name: Identify the pinned GNU checksum source and native toolchain
+        id: checksum-oracle-identity
+        run: |
+          set -euo pipefail
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "key=$(node packages/coreutils/scripts/build-native-checksum-oracle.ts --identity)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: checksum-native-oracle
+        with:
+          path: .build/gnu-checksum-native-oracle
+          key: ${{ runner.os }}-${{ runner.arch }}-gnu-checksum-native-v1-${{ steps.checksum-oracle-identity.outputs.image }}-${{ steps.checksum-oracle-identity.outputs.key }}
+      - name: Build the nine native GNU oracle programs on cache miss
+        if: steps.checksum-native-oracle.outputs.cache-hit != 'true'
+        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts
+        env:
+          GNU_CHECKSUM_ORACLE_SCRATCH_ROOT: ${{ runner.temp }}
       - name: Verify the pinned GNU 9.12 checksum oracle
-        run: bun run --cwd packages/coreutils test:checksums:oracle
+        run: node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only
       - name: Build the nine checksum guests once through the existing leaf route
         run: bun run --cwd packages/coreutils build:checksums
         env:
@@ -1051,7 +1073,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: checksum-producer-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .build/checksum-artifact
+          path: |
+            .build/checksum-artifact
+            .build/gnu-checksum-native-oracle/metadata.json
           if-no-files-found: error
           retention-days: 7
       - name: Report checksum dependency cache hits
@@ -1061,6 +1085,7 @@ jobs:
           echo "Bun=${{ steps.bun-cache.outputs.cache-hit }}"
           echo "SDK=${{ steps.sdk.outputs.cache-hit }}"
           echo "Cargo/sysroot/locale=${{ steps.checksum-cache.outputs.cache-hit }}"
+          echo "GNU oracle=${{ steps.checksum-native-oracle.outputs.cache-hit }}"
   programs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true') }}

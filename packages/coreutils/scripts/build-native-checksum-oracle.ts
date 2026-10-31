@@ -156,8 +156,9 @@ function step(command: string, args: readonly string[], cwd: string, env: NodeJS
     child.once("error", fail);
     child.once("exit", (code, signal) => {
       active = undefined;
-      if (code === 0) done();
-      else fail(new Error(`${command} ${args.join(" ")} failed: ${signal ?? code}`));
+      return code === 0
+        ? done()
+        : fail(new Error(`${command} ${args.join(" ")} failed: ${signal ?? code}`));
     });
   });
 }

@@ -14,7 +14,8 @@ import {
 import { sha256 } from "../../../tools/program-locales/patch.ts";
 import { packageRoot, releaseDirectory, workspaceRoot } from "./build-config.ts";
 import { checksumRevision, checksumSource } from "./prepare-checksum-source.ts";
-import { checksumNames, type ChecksumName } from "./programs.ts";
+import { verifyWasiGuest } from "../../../tools/program-build-tools.ts";
+import { checksumNames, verificationOptions, type ChecksumName } from "./programs.ts";
 
 function selectedSource(name: ChecksumName, raw: string) {
   const proof = readProgramLocaleProof(raw, name);
@@ -49,8 +50,11 @@ function selectedSource(name: ChecksumName, raw: string) {
 
 function guestAssets(name: ChecksumName) {
   const raw = resolve(releaseDirectory, `${name}.wasm`);
+  const stagedPath = resolve(packageRoot, "dist", `${name}.wasm`);
+  verifyWasiGuest(raw, verificationOptions(name));
+  verifyWasiGuest(stagedPath, verificationOptions(name));
   selectedSource(name, raw);
-  const final = readFileSync(resolve(packageRoot, "dist", `${name}.wasm`));
+  const final = readFileSync(stagedPath);
   const derivationBytes = readFileSync(resolve(packageRoot, "dist", `${name}-program.json`));
   const derivation: unknown = JSON.parse(derivationBytes.toString("utf8"));
   validateProgramDerivation(derivation, final);
