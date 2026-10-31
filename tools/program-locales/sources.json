@@ -105,6 +105,56 @@
         "package": "uu_date",
         "path": "locales/en-US.ftl",
         "sha256": "344ba912c04381beb335b49750d9185761cb0fc3dfc145f9b23749af7af42657"
+      },
+      "b2sum/en-US.ftl": {
+        "package": "uu_b2sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "06d43bb4a1af796c74768909bf104d16cff1ae931c33804b2779cb5e53e6da38"
+      },
+      "cksum/en-US.ftl": {
+        "package": "uu_cksum",
+        "path": "locales/en-US.ftl",
+        "sha256": "af10ffe30af0ce9f4cffe234f8882d955d8d8a10e037aa98c4b5aa647815e70a"
+      },
+      "md5sum/en-US.ftl": {
+        "package": "uu_md5sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "0c30fe82f3ee557387beb52973b3a49e5814bf00ff53ebe483453ed9073f5d40"
+      },
+      "sha1sum/en-US.ftl": {
+        "package": "uu_sha1sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "08632ac03fe912db0cd014c1328eddddc5047b1e9f8008e31c172ec7afcb20ed"
+      },
+      "sha224sum/en-US.ftl": {
+        "package": "uu_sha224sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "52419597770b096011fcaf3178eddec366d286ec8568ba34b9805d10e9e95734"
+      },
+      "sha256sum/en-US.ftl": {
+        "package": "uu_sha256sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "2fab34e5f9930c5c97fe405de19addac6cbcab07df65ddb58e4eb62acb6a1396"
+      },
+      "sha384sum/en-US.ftl": {
+        "package": "uu_sha384sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "e73e60ec2441959f21554ad4040a467ac7748b8f888f192903ac2bee077b77f9"
+      },
+      "sha512sum/en-US.ftl": {
+        "package": "uu_sha512sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "97b5289906411e534eafdf06f96a6f2bb307e3dc0e6fff97bd0ef1e78f1cbe5f"
+      },
+      "sum/en-US.ftl": {
+        "package": "uu_sum",
+        "path": "locales/en-US.ftl",
+        "sha256": "be92e16471edb1a68f4926b964af96b5d1842823cbc5d76edfee0b0c2ed2d547"
+      },
+      "checksum_common/en-US.ftl": {
+        "package": "uu_checksum_common",
+        "path": "locales/en-US.ftl",
+        "sha256": "15f6b86555b047295388cefa99b48246a1bf6cbd47891911306c52d74004a923"
       }
     }
   }

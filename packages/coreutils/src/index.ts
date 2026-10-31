@@ -22,6 +22,15 @@ const names = [
   "mv",
   "echo",
   "date",
+  "b2sum",
+  "cksum",
+  "md5sum",
+  "sha1sum",
+  "sha224sum",
+  "sha256sum",
+  "sha384sum",
+  "sha512sum",
+  "sum",
 ] as const;
 
 export const coreutils = defineProgramPackage({

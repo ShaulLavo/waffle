@@ -1,0 +1,105 @@
+--- a/src/uucore/src/lib/features/checksum/validate.rs
++++ b/src/uucore/src/lib/features/checksum/validate.rs
+@@ -0,0 +1,4 @@
++#[cfg(test)]
++#[path = "record_tests.rs"]
++mod record_tests;
++
+@@ -8,0 +13 @@
++use crate::checksum::stdio::{stdin, stdout};
+@@ -13 +18 @@
+-use std::io::{self, BufReader, Read, Write, stderr, stdin};
++use std::io::{self, BufReader, Read, Write, stderr};
+@@ -350 +355 @@
+-            filename: filename.to_vec(),
++            filename: decoded_filename(filename, algo_start != 0),
+@@ -362,0 +368,2 @@
++        let escaped = line.starts_with(b"\\");
++        let line = &line[usize::from(escaped)..];
+@@ -380 +387 @@
+-            filename: filename.to_vec(),
++            filename: decoded_filename(filename, escaped),
+@@ -396,0 +404,2 @@
++        let escaped = line.starts_with(b"\\");
++        let line = &line[usize::from(escaped)..];
+@@ -412 +421 @@
+-            filename: filename.to_vec(),
++            filename: decoded_filename(filename, escaped),
+@@ -486,0 +496,7 @@
++}
++
++fn decoded_filename(filename: &[u8], escaped: bool) -> Vec<u8> {
++    if escaped {
++        return unescape_filename(filename).0;
++    }
++    filename.to_vec()
+@@ -590 +606 @@
+-                io::stdout(),
++                stdout(),
+@@ -721,2 +737 @@
+-    let (filename_to_check_unescaped, _prefix) = unescape_filename(filename);
+-    let real_filename_to_check = os_str_from_bytes(&filename_to_check_unescaped)?;
++    let real_filename_to_check = os_str_from_bytes(filename)?;
+@@ -743 +758 @@
+-                    io::stdout(),
++                    stdout(),
+@@ -758,2 +773,2 @@
+-    let _ = write_file_report(
+-        io::stdout(),
++    write_file_report(
++        stdout(),
+@@ -763 +778,2 @@
+-    );
++    )
++    .map_err(ChecksumError::Write)?;
+--- a/src/uucore/src/lib/features/checksum/compute.rs
++++ b/src/uucore/src/lib/features/checksum/compute.rs
+@@ -248 +248 @@
+-                stdin_buf = io::stdin();
++                stdin_buf = super::stdio::stdin();
+--- a/src/uucore/src/lib/features/checksum/mod.rs
++++ b/src/uucore/src/lib/features/checksum/mod.rs
+@@ -21,0 +22 @@
++pub mod stdio;
+--- a/src/uu/checksum_common/src/lib.rs
++++ b/src/uu/checksum_common/src/lib.rs
+@@ -10 +9,0 @@
+-use std::io;
+@@ -221 +220 @@
+-    perform_checksum_computation(io::stdout(), opts, files)?;
++    perform_checksum_computation(uucore::checksum::stdio::stdout(), opts, files)?;
+--- a/src/uu/sum/src/sum.rs
++++ b/src/uu/sum/src/sum.rs
+@@ -11 +11,2 @@
+-use std::io::{ErrorKind, Read, Write, stdin, stdout};
++use std::io::{ErrorKind, Read, Write};
++use uucore::checksum::stdio::{stdin, stdout};
+@@ -155 +156 @@
+-        let mut stdout = stdout().lock();
++        let mut stdout = stdout();
+@@ -195,0 +197,5 @@
++#[cfg(target_os = "wasi")]
++type ChecksumStdin = uucore::checksum::stdio::Stdin;
++#[cfg(not(target_os = "wasi"))]
++type ChecksumStdin = std::io::Stdin;
++
+@@ -197 +203 @@
+-    Stdin(std::io::Stdin),
++    Stdin(ChecksumStdin),
+--- a/src/uucore/src/lib/mods/clap_localization.rs
++++ b/src/uucore/src/lib/mods/clap_localization.rs
+@@ -140 +140,8 @@
+-        print!("{}", err.render());
++        #[cfg(all(target_os = "wasi", feature = "checksum"))]
++        let mut output = crate::checksum::stdio::stdout();
++        #[cfg(not(all(target_os = "wasi", feature = "checksum")))]
++        let mut output = std::io::stdout();
++        if let Err(error) = write!(output, "{}", err.render()) {
++            let _ = writeln!(stderr(), "{}: write error: {error}", self.util_name);
++            return 1;
++        }
+--- a/src/uucore/src/lib/mods/clap_localization.rs
++++ b/src/uucore/src/lib/mods/clap_localization.rs
+@@ -477 +477 @@
+-        if e.exit_code() == 0 {
++        if e.exit_code() == 0 && !cfg!(all(target_os = "wasi", feature = "checksum")) {

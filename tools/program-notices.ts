@@ -26,7 +26,7 @@ function text(value: unknown): string {
 function licenseFiles(pkg: Record<string, unknown>): string[] {
   const directory = dirname(text(pkg.manifest_path));
   const names = readdirSync(directory).filter((name) =>
-    /^(licen[cs]e|copying|notice|unlicense)(\.|-|$)/i.test(name),
+    /^(licen[cs]e|copying|notice|unlicense)([._-]|$)/i.test(name),
   );
   names.sort();
   const files = names.map((name) => resolve(directory, name));
@@ -47,7 +47,7 @@ function licenseFiles(pkg: Record<string, unknown>): string[] {
 }
 
 /** Follow only the locked production/build edges of the selected family roots. */
-export function rustDependencyNotices(metadata: unknown, roots: readonly string[]): string {
+function selectedPackages(metadata: unknown, roots: readonly string[]) {
   const source = record(metadata);
   const packages = array(source.packages).map(record);
   const nodes = array(record(source.resolve).nodes).map(record);
@@ -59,19 +59,24 @@ export function rustDependencyNotices(metadata: unknown, roots: readonly string[
       packages.some((pkg) => pkg.name === root),
       `Missing family root: ${root}`,
     );
-  const selected = new Set<string>();
+  const selected = new Map<string, Record<string, unknown>>();
   for (const id of queue) {
     if (selected.has(id)) continue;
-    selected.add(id);
+    const pkg = byId.get(id);
+    assert.ok(pkg, `Missing dependency package: ${id}`);
+    selected.set(id, pkg);
     const node = graph.get(id);
     assert.ok(node, `Missing dependency node: ${id}`);
     queue.push(...productionDependencies(node));
   }
-  return Array.from(selected)
+  return selected;
+}
+
+function formatNotices(packages: ReadonlyMap<string, Record<string, unknown>>): string {
+  return Array.from(packages.keys())
     .sort()
     .map((id) => {
-      const pkg = byId.get(id);
-      assert.ok(pkg, `Missing dependency package: ${id}`);
+      const pkg = packages.get(id)!;
       return licenseFiles(pkg)
         .map(
           (path) =>
@@ -80,6 +85,10 @@ export function rustDependencyNotices(metadata: unknown, roots: readonly string[
         .join("\n");
     })
     .join("\n");
+}
+
+export function rustDependencyNotices(metadata: unknown, roots: readonly string[]): string {
+  return formatNotices(selectedPackages(metadata, roots));
 }
 
 function productionDependencies(node: Record<string, unknown>): string[] {
@@ -93,12 +102,7 @@ function productionDependencies(node: Record<string, unknown>): string[] {
     .map((dep) => text(dep.pkg));
 }
 
-export function generateRustNotices(options: {
-  readonly root: string;
-  readonly packages: readonly string[];
-  readonly features?: string;
-  readonly prefix?: string;
-}) {
+function cargoMetadata(root: string, features?: string, manifest?: string): unknown {
   const args = [
     "metadata",
     "--offline",
@@ -108,23 +112,47 @@ export function generateRustNotices(options: {
     "--filter-platform",
     "wasm32-wasip1",
   ];
-  if (options.features) args.push("--features", options.features);
-  const metadata: unknown = JSON.parse(
-    execFileSync("cargo", args, {
-      cwd: options.root,
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-    }),
+  if (features) args.push("--features", features);
+  if (manifest) args.push("--manifest-path", manifest);
+  return JSON.parse(
+    execFileSync("cargo", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }),
   );
-  const notices = rustDependencyNotices(metadata, options.packages);
+}
+
+export function generateRustNotices(options: {
+  readonly root: string;
+  readonly packages: readonly string[];
+  readonly features?: string;
+  readonly prefix?: string;
+  /** Family crates with their own Cargo workspace and lockfile; shared crates appear once. */
+  readonly isolated?: readonly {
+    readonly manifest: string;
+    readonly packages: readonly string[];
+  }[];
+}) {
+  const selected = selectedPackages(
+    cargoMetadata(options.root, options.features),
+    options.packages,
+  );
+  for (const workspace of options.isolated ?? []) {
+    const metadata = cargoMetadata(options.root, undefined, workspace.manifest);
+    for (const [id, pkg] of selectedPackages(metadata, workspace.packages)) selected.set(id, pkg);
+  }
   const output = resolve(options.root, "dist/THIRD_PARTY_NOTICES.txt");
   mkdirSync(dirname(output), { recursive: true });
-  writeFileSync(output, (options.prefix ?? "# Third-party notices\n\n") + notices);
+  writeFileSync(output, (options.prefix ?? "# Third-party notices\n\n") + formatNotices(selected));
 }
 
 function pinnedLicense(pkg: Record<string, unknown>, directory: string): string | undefined {
   const identity = `${text(pkg.name)}-${text(pkg.version)}`;
-  if (!["fluent-langneg-0.13.1", "intl_pluralrules-7.0.2"].includes(identity)) return undefined;
+  const pinned = [
+    "fluent-langneg-0.13.1",
+    "intl_pluralrules-7.0.2",
+    "base64-simd-0.8.0",
+    "vsimd-0.8.0",
+    "blake2b_simd-1.0.5",
+  ];
+  if (!pinned.includes(identity)) return undefined;
   const receipt = record(
     JSON.parse(readFileSync(new URL(`./licenses/${identity}.json`, import.meta.url), "utf8")),
   );
