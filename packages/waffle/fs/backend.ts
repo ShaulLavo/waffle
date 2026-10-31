@@ -17,7 +17,7 @@ import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "
 import type { PublicationBuffers } from "./publication-internal.js";
 import { type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
-import { FilesystemError } from "./protocol.js";
+import { FilesystemError, type FilesystemIdentity } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
 
 /** Storage boundary. 3b can add asynchronous loading/commit without changing guest transport. */
@@ -110,6 +110,8 @@ export interface WatchMutationObserver {
   beforeMutation(): void;
   committed(plan: LocalMutationPlan): void;
 }
+export type MemoryBackendSharedRoot = Pick<FilesystemIdentity, "shared" | "maxBytes" | "segments">;
+
 export class MemoryBackend implements FilesystemBackend {
   private readonly watchOwner: { observer?: WatchMutationObserver };
   installWatchObserver(observer: WatchMutationObserver): void {
@@ -132,7 +134,10 @@ export class MemoryBackend implements FilesystemBackend {
     reservation: IdentityReservation = { workspace: crypto.randomUUID(), era: 1n },
     startupRoot?: MemoryBudget | MemoryBackend,
     watchLimits?: WatchResourceLimits,
+    sharedRoot?: MemoryBackendSharedRoot,
   ) {
+    if (sharedRoot && startupRoot)
+      throw new TypeError("an imported root cannot also own a startup root");
     if (startupRoot instanceof MemoryBackend) {
       if (watchLimits) throw new TypeError("a backend wrapper borrows its watch account");
       this.watchOwner = startupRoot.watchOwner;
@@ -141,21 +146,22 @@ export class MemoryBackend implements FilesystemBackend {
       this.workspaceId = startupRoot.workspaceId;
       this.shared = startupRoot.shared;
       this.startupRoot = startupRoot.startupRoot;
-      this.sharedAttached = startupRoot.sharedAttached;
+      this.sharedPhase = startupRoot.sharedPhase;
       return;
     }
     this.watchOwner = {};
     this.watchAccount = new RootWatchAccount(watchLimits, startupRoot);
     this.shared = new SharedFilesystemState(
+      sharedRoot?.shared,
+      sharedRoot?.maxBytes,
       undefined,
-      undefined,
-      undefined,
-      undefined,
+      sharedRoot?.segments,
       undefined,
       undefined,
       startupRoot,
     );
     if (this.shared.startupMemoryBudget) this.startupRoot = this.shared;
+    if (sharedRoot) this.sharedPhase = "imported";
     this.fs = fs;
     this.workspaceId = reservation.workspace;
     this.shared.identities.configure(reservation);
@@ -171,7 +177,7 @@ export class MemoryBackend implements FilesystemBackend {
   }
   shared: SharedFilesystemState;
   private readonly startupRoot?: SharedFilesystemState;
-  private sharedAttached = false;
+  private sharedPhase: "standalone" | "imported" | "attached" = "standalone";
   private directoryTimes = new Map<FileHandle, number>();
   attachShared(
     buffer: SharedArrayBuffer,
@@ -179,9 +185,9 @@ export class MemoryBackend implements FilesystemBackend {
     segments: readonly SharedArrayBuffer[] = [],
     publication?: PublicationBuffers,
   ): void {
-    if (this.sharedAttached || this.startupRoot) {
+    if (this.sharedPhase !== "standalone" || this.startupRoot) {
       if (
-        this.sharedAttached &&
+        this.sharedPhase === "attached" &&
         (!!this.shared.publication !== !!publication ||
           (publication && this.shared.publication?.buffers.history !== publication.history))
       )
@@ -195,7 +201,7 @@ export class MemoryBackend implements FilesystemBackend {
       const same = Atomics.load(incoming, 6) === probe;
       Atomics.store(this.shared.cells, 6, previous);
       if (!same) throw new Error("filesystem service cannot attach a second shared tree");
-      if (this.sharedAttached) return;
+      if (this.sharedPhase === "attached") return;
     }
     const previous = this.shared;
     this.shared = new SharedFilesystemState(
@@ -206,8 +212,8 @@ export class MemoryBackend implements FilesystemBackend {
       undefined,
       publication,
     );
-    this.shared.identities.copyFrom(previous.identities);
-    this.sharedAttached = true;
+    if (this.sharedPhase !== "imported") this.shared.identities.copyFrom(previous.identities);
+    this.sharedPhase = "attached";
   }
   /** revoked ends a wait for another owner's shared lock when the caller's request is cancelled. */
   readMetadata(node: Node, revoked?: () => boolean) {
