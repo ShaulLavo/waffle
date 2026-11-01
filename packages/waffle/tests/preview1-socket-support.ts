@@ -1,9 +1,10 @@
 import { Worker } from "node:worker_threads";
 import { FilesystemService } from "../fs/service.js";
 import { MemoryBackend } from "../fs/backend.js";
-import { createFilesystemConnection } from "../fs/protocol.js";
-import { createRuntimeNetwork } from "../browser/net/runtime.js";
+import { createFilesystemConnection, revokeFilesystem } from "../fs/protocol.js";
+import { createRuntimeNetwork, type RuntimeNetwork } from "../browser/net/runtime.js";
 import { createPreview1Network } from "../browser/preview1-network.js";
+import type { Preview1SocketBinding } from "../browser/preview1-network-types.js";
 import type { NetConnect, NetOutboundStream } from "../browser/net/outbound.js";
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 
@@ -85,17 +86,24 @@ export async function socketGuest(options: {
   interactive?: boolean;
   args?: string[];
   host?: string;
+  hostCallFd?: number;
   sockets?: number[];
+  bindings?: readonly Preview1SocketBinding[];
+  network?: RuntimeNetwork;
 }) {
-  const owner = await createRuntimeNetwork(() => {});
+  const owner = options.network ? undefined : await createRuntimeNetwork(() => {});
+  const runtimeNetwork = options.network ?? owner?.network;
+  if (!runtimeNetwork) throw Error("socket fixture needs a network");
   const network = await createPreview1Network(
-    { network: async () => owner.network },
+    { network: async () => runtimeNetwork },
     {
       connect: options.connect,
-      sockets: (options.sockets ?? [3]).map((fd) => ({
-        fd,
-        socket: { connect: { host: options.host ?? "echo.example", port: 4321 } },
-      })),
+      sockets:
+        options.bindings ??
+        (options.sockets ?? [3]).map((fd) => ({
+          fd,
+          socket: { connect: { host: options.host ?? "echo.example", port: 4321 } },
+        })),
     },
   );
   if (!network) throw Error("fixture needs a socket binding");
@@ -114,12 +122,18 @@ export async function socketGuest(options: {
   }>();
   const pending = new Map<number, ReturnType<typeof Promise.withResolvers<unknown>>>();
   const output: Uint8Array[] = [];
+  const stdout = Promise.withResolvers<void>();
   let next = 0;
   worker.on("message", (message) => {
     if (message.type === "ready") return ready.resolve();
-    if (message.type === "stdout") output.push(message.data);
+    if (message.type === "stdout") {
+      output.push(message.data);
+      stdout.resolve();
+    }
     if (message.type === "exit" || message.type === "error" || message.type === "cleanup-error") {
       ready.resolve();
+      for (const call of pending.values()) call.reject(Error("socket worker exited"));
+      pending.clear();
       network.dispose();
       exit.resolve(message);
     }
@@ -151,6 +165,7 @@ export async function socketGuest(options: {
           network: network.connection,
         },
         interactive: options.interactive ?? true,
+        hostCallFd: options.hostCallFd,
       },
       nodeWorkerTransfers([pair.client.port, network.connection.port]),
     );
@@ -159,12 +174,14 @@ export async function socketGuest(options: {
     await worker.terminate();
     network.dispose();
     fs.dispose();
-    await owner.dispose();
+    await owner?.dispose();
     throw error;
   }
   return {
     exit: exit.promise,
+    cancel: () => revokeFilesystem(pair.client),
     output,
+    stdout: stdout.promise,
     network,
     call: async (name: string, ...args: (number | bigint)[]) =>
       Number(await rpc({ op: "call", name, args })),
@@ -179,7 +196,7 @@ export async function socketGuest(options: {
       fs.dispose();
       pair.server.port.close();
       pair.client.port.close();
-      await owner.dispose();
+      await owner?.dispose();
     },
   };
 }

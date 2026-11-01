@@ -35,6 +35,8 @@ export interface Stream {
   readonly notification?: Int32Array;
   recv?(chunks: readonly Uint8Array[], waitall: boolean): number;
   shutdown?(how: number): number;
+  /** Listener-only operation. Returns a new owned socket or negative WASI errno. */
+  accept?(flags: number): Stream | number;
   close?(): void;
   /** A process gets independent capabilities; dup within one process keeps its description. */
   forProcess?(pid: number): Stream;
@@ -148,10 +150,20 @@ export class DescriptorTable {
   add(
     description: OpenDescription,
     rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string },
+    excluded?: number,
   ): number {
-    if (mapSize(this.entries) > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
+    const reserved =
+      excluded !== undefined &&
+      excluded >= 0 &&
+      excluded <= MAX_DESCRIPTOR &&
+      Number.isInteger(excluded) &&
+      !mapHas(this.entries, excluded)
+        ? 1
+        : 0;
+    if (mapSize(this.entries) > MAX_DESCRIPTOR - reserved)
+      throw new RangeError("descriptor table is full");
     let fd = this.next;
-    while (mapHas(this.entries, fd)) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    while (mapHas(this.entries, fd) || fd === excluded) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     this.next = fd;
     return this.addAt(fd, description, rights);
   }

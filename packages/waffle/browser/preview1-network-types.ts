@@ -1,7 +1,9 @@
-/** Launch-only sockets. Preview 1 has no standard connect import. */
+type SocketAddress = { readonly host: string; readonly port: number };
+
+/** Launch-only sockets. Preview 1 has no standard connect or listen import. */
 export interface Preview1SocketBinding {
   readonly fd: number;
-  readonly socket: { readonly connect: { readonly host: string; readonly port: number } };
+  readonly socket: { readonly connect: SocketAddress } | { readonly listen: SocketAddress };
 }
 
 /** The complete structured-clone payload. No connector, stream or credential belongs here. */

@@ -29,6 +29,7 @@ import {
   RIGHT_PATH_UNLINK_FILE,
   RIGHT_POLL_FD_READWRITE,
   RIGHT_SOCK_SHUTDOWN,
+  RIGHT_SOCK_ACCEPT,
 } from "./rights.js";
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
@@ -45,6 +46,7 @@ import {
 } from "./filesystem.js";
 import {
   DescriptorTable,
+  OpenDescription,
   MAX_DESCRIPTOR,
   type Readiness,
   type Resource,
@@ -519,6 +521,30 @@ export class Wasi {
     if (entry.resource.kind !== "socket") return ENOTSOCK;
     if ((entry.rightsBase & right) !== right) return ENOTCAPABLE;
     return run(entry.resource);
+  }
+
+  private socketAccept(socket: Stream, fd: number, flags: number, out: number): number {
+    if (!socket.accept) return EINVAL;
+    if (flags & ~FDFLAG_NONBLOCK) return EINVAL;
+    if (out + 4 > this.bytes().length) return EFAULT;
+    const entry = this.descriptors.get(fd)!;
+    if (!(entry.rightsBase & RIGHT_SOCK_ACCEPT)) return ENOTCAPABLE;
+    const accepted = socket.accept(flags);
+    if (typeof accepted === "number") return -accepted;
+    let next: number | undefined;
+    try {
+      const output = this.view();
+      if (out + 4 > output.byteLength) return EFAULT;
+      next = this.descriptors.add(
+        new OpenDescription(accepted, () => accepted.close?.()),
+        { rightsBase: entry.rightsBase & ~RIGHT_SOCK_ACCEPT, rightsInheriting: 0n },
+        this.opts.hostCallFd,
+      );
+      output.setUint32(out, next, true);
+      return SUCCESS;
+    } finally {
+      if (next === undefined) accepted.close?.();
+    }
   }
 
   private socketIovecs(
@@ -1348,7 +1374,8 @@ export class Wasi {
         return SUCCESS;
       },
       sched_yield: () => SUCCESS,
-      sock_accept: (fd: number) => this.socketCall(fd, 0n, () => EINVAL),
+      sock_accept: (fd: number, flags: number, out: number) =>
+        this.socketCall(fd, 0n, (socket) => this.socketAccept(socket, fd >>> 0, flags, out >>> 0)),
       sock_recv: (
         fd: number,
         data: number,
