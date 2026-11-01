@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../../memory/control.js";
 import {
   Int32ArrayConstructor,
   typedArrayBuffer,
@@ -26,7 +27,7 @@ const RECORD_HEADER = 12;
 export const CAPACITY = 1 << 20;
 
 export function createRing(): SharedArrayBuffer {
-  return new SharedArrayBuffer(HEADER_BYTES + CAPACITY);
+  return allocateSharedControl(HEADER_BYTES + CAPACITY);
 }
 
 type WaitAsync = (

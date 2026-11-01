@@ -62,7 +62,7 @@ test(
   },
   async (context) => {
     assert.ok(artifact);
-    const { createRuntime } = await import("waffle");
+    const { createRuntime, declareSharedMemoryPlatform } = await import("waffle");
     const { createPythonPackage } = await import("../src/index.ts");
     const { createProgramTestRoot } = await import("../../../tools/program-test-root.ts");
     const server = await serveTestFiles(resolve(artifact));
@@ -92,6 +92,7 @@ test(
       });
     };
     const owner = createRuntime({
+      sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }),
       filesystem: { mode: "memory", workerURL: new URL("browser/fs-worker.js", nodeRoot) },
       programs: { launcher },
     });

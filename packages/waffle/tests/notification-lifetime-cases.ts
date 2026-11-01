@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { NotificationWaitScope } from "../browser/notification-wait.js";
 import { NetHost } from "../browser/net/host.js";
@@ -71,6 +72,7 @@ export async function bootstrapNotificationCase(
   try {
     worker.postMessage(
       {
+        controlGrant: { kind: "unbounded" },
         module: processContextGuest,
         filesystem: pair.client,
         notifications: bridge.connection,
@@ -187,6 +189,7 @@ export async function brokerNotificationCase(
   const diagnostics: unknown[] = [];
   let hostCleanups = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: new ProcessTable(identities),
     registry,
@@ -237,7 +240,7 @@ export async function brokerNotificationCase(
     prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
   });
   try {
-    await broker.adoptRuntimeRoot(transport);
+    await broker.adoptRuntimeRoot(transport, { memory: [] });
     const pid = client.spawn(client.pid, {
       executable: "notification",
       argv: [],

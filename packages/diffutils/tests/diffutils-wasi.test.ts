@@ -93,7 +93,9 @@ test("optional GNU diffutils catalog loads lazily and runs through Waffle", asyn
         sed: empty("sed"),
         ripgrep: empty("ripgrep"),
       },
-      cases: [{ name: "real GNU diffutils through onDemand", family: "coreutils", run: proveDiffutils }],
+      cases: [
+        { name: "real GNU diffutils through onDemand", family: "coreutils", run: proveDiffutils },
+      ],
     });
     assert.equal(runtime.programs.get("diff")?.state.kind, "loaded");
     assert.equal(runtime.programs.get("cmp")?.state.kind, "loaded");

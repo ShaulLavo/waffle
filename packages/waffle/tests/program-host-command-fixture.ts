@@ -14,7 +14,7 @@ import {
 export async function commandShell(
   runtime: Runtime,
   cleanup: Array<() => void | Promise<void>>,
-  options: RuntimeRootOptions = {},
+  options: Omit<RuntimeRootOptions, "memory"> = {},
 ) {
   const service = await runtime.processes();
   const transport = createWorkerProcessTransport({
@@ -24,7 +24,7 @@ export async function commandShell(
   });
   const identity = runtime.filesystem.createIdentity();
   transport.data = { filesystem: identity };
-  await service.adoptRuntimeRoot(transport, options);
+  await service.adoptRuntimeRoot(transport, { memory: [], ...options });
   const filesystem = new FilesystemClient(runtime.filesystem.connect(identity));
   cleanup.push(() => filesystem.dispose());
   const descriptors = new DescriptorTable();

@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 export interface NotificationConnection {
   readonly port: MessagePort;
   /** Sequence, then external lifetime fence. */
@@ -27,7 +28,7 @@ export interface NotificationBridge {
 /** Page-owned. No guest closure is needed to fence or physically stop the relay. */
 export function createNotificationBridge(workerUrl: string): NotificationBridge {
   const channel = new MessageChannel();
-  const state = new Int32Array(new SharedArrayBuffer(8));
+  const state = new Int32Array(allocateSharedControl(8));
   let worker: Worker;
   try {
     worker = new Worker(workerUrl, { type: "module" });

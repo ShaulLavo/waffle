@@ -1,5 +1,6 @@
+import { allocateSharedControl } from "../memory/control.ts";
 import { ProcessError, ProcessErrno } from "./errors.js";
-import { atomicsWait, Int32ArrayConstructor, SharedArrayBufferConstructor } from "./intrinsics.ts";
+import { atomicsWait, Int32ArrayConstructor } from "./intrinsics.ts";
 
 let controlDepth = 0;
 let policyDepth = 0;
@@ -49,7 +50,7 @@ function captureWaitPlacement(): "page" | "worker" {
   const scope = host.WorkerGlobalScope;
   if (typeof scope !== "function" || !(globalThis instanceof scope)) return "page";
   try {
-    atomicsWait(new Int32ArrayConstructor(new SharedArrayBufferConstructor(4)), 0, 1, 0);
+    atomicsWait(new Int32ArrayConstructor(allocateSharedControl(4)), 0, 1, 0);
     return "worker";
   } catch {
     return "page";

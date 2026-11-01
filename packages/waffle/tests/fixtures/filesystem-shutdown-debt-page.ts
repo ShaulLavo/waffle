@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./shared-memory-platform.js";
 import { SharedFilesystem } from "../../browser/shared-fs.js";
 import { createRuntime, type Runtime } from "../../runtime.js";
 import { withVfsImplementation } from "../../fs/vfs-internal.js";
@@ -108,7 +109,7 @@ class ShutdownDebtPage {
     globalThis.Worker = this.RecordedWorker;
     try {
       if (next.startsWith("filesystem")) this.filesystem = new SharedFilesystem(options);
-      else this.runtime = createRuntime({ filesystem: options });
+      else this.runtime = createRuntime({ sharedMemory: testSharedMemory, filesystem: options });
     } finally {
       globalThis.Worker = nativeWorker;
     }

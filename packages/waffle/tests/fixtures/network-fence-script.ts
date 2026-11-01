@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./shared-memory-platform.js";
 // Runs in its own process: a runtime that keeps its filesystem also keeps the page guard.
 import assert from "node:assert/strict";
 import { createRuntime } from "../../index.js";
@@ -6,7 +7,7 @@ import { FilesystemClient } from "../../fs/client.js";
 
 const worker = new URL("../../browser/fs-worker.ts", import.meta.url);
 const options = { filesystem: { mode: "memory" as const, workerURL: worker } };
-const runtime = createRuntime(options);
+const runtime = createRuntime({ sharedMemory: testSharedMemory, ...options });
 await runtime.filesystem.mkdirp("/run/sub");
 const network = await runtime.network();
 const admin = new FilesystemClient(runtime.filesystem.connect(runtime.filesystem.createIdentity()));
@@ -41,6 +42,6 @@ let failure: unknown;
 await runtime.dispose().catch((error: unknown) => (failure = error));
 assert.match(String((failure as Error)?.message), /Socket cleanup failed|Network disposal failed/);
 // Unsettled socket cleanup keeps the filesystem and the page guard alive.
-assert.throws(() => createRuntime(options), /already owns/);
+assert.throws(() => createRuntime({ sharedMemory: testSharedMemory, ...options }), /already owns/);
 console.log("fence retained filesystem after socket cleanup failure");
 process.exit(0);

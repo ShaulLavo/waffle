@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import {
   assertDescriptorKinds,
   assertStdioKinds,
@@ -117,7 +118,14 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
     worker.onerror = (event) => done.reject(event.error ?? new Error(event.message));
     worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => childMessage(data, done);
     worker.postMessage(
-      { module, args: [], env: {}, filesystem: connection.client, runtimeProcess: child },
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess: standaloneRuntimeProcess(child),
+      },
       [connection.client.port],
     );
     await done.promise;
@@ -137,7 +145,13 @@ export async function browserFdKindWithoutProcess(): Promise<void> {
   let ran = false;
   try {
     await bootstrap(
-      { module: fdKindModule(), args: [], env: {}, filesystem: connection.client },
+      {
+        controlGrant: { kind: "unbounded" },
+        module: fdKindModule(),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+      },
       {
         setup({ fs }) {
           fs.preopen = () => 1;

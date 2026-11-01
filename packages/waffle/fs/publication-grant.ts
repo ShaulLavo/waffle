@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import { FilesystemError, type FileStat } from "../core/filesystem.js";
 import {
   atomicsLoad,
@@ -5,7 +6,6 @@ import {
   atomicsCompareExchange,
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
-  SharedArrayBufferConstructor,
   arrayFrom,
   typedArraySubarray,
   typedArrayBuffer,
@@ -196,9 +196,9 @@ export class ResidentGrantCell {
     storage?: { state: SharedArrayBuffer; payload: SharedArrayBuffer },
     private claimAllowed: () => boolean = () => true,
   ) {
-    this.state = new Int32ArrayConstructor(storage?.state ?? new SharedArrayBufferConstructor(12));
+    this.state = new Int32ArrayConstructor(storage?.state ?? allocateSharedControl(12));
     this.payload = new Uint8ArrayConstructor(
-      storage?.payload ?? new SharedArrayBufferConstructor(grant.effectBytes),
+      storage?.payload ?? allocateSharedControl(grant.effectBytes),
     );
   }
   cancel(): boolean {

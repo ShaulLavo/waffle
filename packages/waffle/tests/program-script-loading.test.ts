@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, test } from "bun:test";
 import { createGitPackage } from "../../git/src/program.js";
 import { createRuntime, type Runtime, type GuestLauncher } from "../index.js";
@@ -17,6 +18,7 @@ afterEach(async () => {
 });
 async function create(launcher?: GuestLauncher) {
   const owner = createRuntime({
+    sharedMemory: testSharedMemory,
     programs: { launcher },
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });

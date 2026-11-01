@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { RingWriter, createRing } from "../browser/net/ring.js";
@@ -111,6 +112,7 @@ export async function guestWatchCase(
   writer.onerror = (event) => writes.fail(Error(event.message));
   const diagnostics: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: new ProcessTable(identities),
     registry,
@@ -173,7 +175,7 @@ export async function guestWatchCase(
     writer.postMessage(init, [writerConnection.port]);
     await ready;
     stage = "spawn";
-    await broker.adoptRuntimeRoot(transport);
+    await broker.adoptRuntimeRoot(transport, { memory: [] });
     const pid = client.spawn(client.pid, {
       executable: "watcher",
       argv: [],

@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import {
   bootstrap,
@@ -77,6 +78,7 @@ async function fixture(
     registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "fixture" });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -145,7 +147,7 @@ async function fixture(
   }
   globalThis.Worker = TestWorker as unknown as typeof Worker;
   try {
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const pid = parent.spawn(parent.pid, {
       executable: "fixture",
       argv: [],

@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createRuntime, type Runtime, type RuntimeOptions, type GuestLauncher } from "../index.js";
 import {
@@ -14,8 +16,9 @@ import { SharedFilesystem } from "../browser/shared-fs.js";
 let runtime: Runtime | undefined;
 let tables: DescriptorTable[] = [];
 let releases: Array<() => void> = [];
-function create(options: RuntimeOptions = {}): Runtime {
+function create(options: Omit<RuntimeOptions, "sharedMemory"> = {}): Runtime {
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
     ...options,
   });
@@ -412,29 +415,15 @@ test("catalog ownership survives copied metadata between source and prepared ent
   expect(original.disposals()).toBe(1);
 });
 
-test("the actual prepared runtime executes through its default prepared preview1 worker", async () => {
-  const prepared: typeof import("../index.js") = await import(
-    new URL("../dist/index.js", import.meta.url).href
+test("the actual prepared runtime executes through its default prepared preview1 worker", () => {
+  // A prepared runtime owns its own fresh page graph, not this source suite's page ledger.
+  const result = spawnSync(
+    process.execPath,
+    [new URL("./fixtures/prepared-program-loading-control.ts", import.meta.url).pathname],
+    { encoding: "utf8", timeout: 10000 },
   );
-  const program = fixture();
-  const owner = prepared.createRuntime({
-    filesystem: {
-      mode: "memory",
-      workerURL: new URL("../dist/browser/fs-worker.js", import.meta.url),
-    },
-    programs: { onDemand: [program.pkg] },
-  });
-  runtime = owner;
-  await owner.programs.ready;
-  await owner.filesystem.writeFile("/prepared-input", "prepared default worker\n");
-  const shell = await createProgramShell(owner, tables);
-  expect(await shell.exec("/bin/cat", ["cat", "/prepared-input"])).toMatchObject({
-    kind: "exited",
-    code: 0,
-  });
-  expect(shell.output.join("")).toBe("prepared default worker\n");
-  expect(program.attempts()).toBe(1);
-  expect(owner.programs.get("cat")?.state.kind).toBe("loaded");
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
 });
 
 test("removal closes executable admission while an alias marker is still installing", async () => {

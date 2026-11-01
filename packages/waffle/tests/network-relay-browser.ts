@@ -186,6 +186,7 @@ async function preview1(
     const module = await WebAssembly.compile(await response.arrayBuffer());
     worker.postMessage(
       {
+        controlGrant: { kind: "unbounded" },
         module,
         args: [],
         env: {},

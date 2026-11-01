@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createRuntime, type Runtime, type RuntimeNetwork } from "../index.js";
 import { createRing } from "../browser/net/ring.js";
@@ -16,6 +17,7 @@ let admin: FilesystemClient;
 let adminRoot: number;
 beforeEach(async () => {
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });
   network = await runtime.network();
@@ -251,6 +253,7 @@ test("a failed acknowledged close keeps its lease and the owner retries it", asy
   admin.dispose();
   await runtime.dispose();
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });
   admin = new FilesystemClient(runtime.filesystem.connect(runtime.filesystem.createIdentity()));

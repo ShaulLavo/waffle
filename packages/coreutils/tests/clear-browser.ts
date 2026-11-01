@@ -7,7 +7,9 @@ import {
   type UtilityInstallation,
 } from "bash-web/utilities/clear";
 
-const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "/fs-worker.js" } });
+const runtime = createRuntime({
+  filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
+});
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 let shell: Shell | undefined;

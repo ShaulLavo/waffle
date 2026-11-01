@@ -63,7 +63,11 @@ Reflect.set(globalThis, "gitDispose", async () => {
     }
     return { ok: true, results };
   } catch (error) {
-    return { ok: false, results, error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error) };
+    return {
+      ok: false,
+      results,
+      error: error instanceof Error ? `${error.message}\n${error.stack}` : String(error),
+    };
   } finally {
     await runtime.dispose();
   }

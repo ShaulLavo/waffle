@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import {
   assertTerminalWaitAllowed,
   terminalTurnActive,
@@ -249,7 +250,6 @@ import {
   BigInt64ArrayConstructor,
   BigIntConstructor,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   Uint32ArrayConstructor,
   cryptoGetRandomValues,
   isSharedArrayBuffer,
@@ -940,7 +940,7 @@ export function createTerminalSession(options: {
   const state = workerProcessState(controller);
   if (!live(state) || state.rootPid !== state.pid)
     throw new ProcessError(ProcessErrno.SRCH, "terminal root is not live");
-  const buffer = new SharedArrayBufferConstructor(TERMINAL_SESSION_LIMITS.controlBytes);
+  const buffer = allocateSharedControl(TERMINAL_SESSION_LIMITS.controlBytes);
   const random = cryptoGetRandomValues(new Uint32ArrayConstructor(2));
   const identity: IdentityRecord = objectFreeze({
     [identityBrand]: true as const,

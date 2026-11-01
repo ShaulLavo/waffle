@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { createRuntime, type NamespaceCut, type NamespaceEntry, type WorkspaceVfs } from "waffle";
 import { FilesystemClient, createWorkspaceVfs, revokeFilesystem } from "waffle/fs";
 
@@ -138,6 +139,7 @@ export async function runWorkspaceSafari() {
     "COOP/COEP isolation missing",
   );
   const runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workspace: true, workerURL: "/fs-worker.js" },
   });
   const fs = runtime.filesystem;

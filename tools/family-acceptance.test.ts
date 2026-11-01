@@ -9,6 +9,7 @@ const root = resolve(import.meta.dirname, "..");
 // Program-tools CI runs before Node export preparation; bind the real source modules.
 const { mock } = await import("bun:test");
 const sourceRuntime = await import("../packages/waffle/index.ts");
+const sharedMemory = sourceRuntime.declareSharedMemoryPlatform({ kind: "unbounded" });
 const sourceDescriptors = await import("../packages/waffle/core/descriptors.ts");
 const sourceTerminals = await import("../packages/waffle/browser/runtime-terminals.ts");
 const sourceFilesystem = await import("../packages/waffle/browser/shared-fs.ts");
@@ -43,6 +44,14 @@ const fixtures = [
   {
     path: "packages/sed/provenance/bash/tests/sed-installed-app.ts",
     sha256: "2b4add220ea037db030ecd02154efdc2f5b3909aa7df1433926ee8fd2fe4b0ba",
+  },
+  {
+    path: "packages/findutils/provenance/bash/scripts/test-own-shell-find.ts",
+    sha256: "31c65497e238453ee16b4d18d5915648ac86c15e1c9225a04e47471577cef1c9",
+  },
+  {
+    path: "packages/findutils/provenance/bash/tests/helpers/find-browser-api.ts",
+    sha256: "41f0cbd4311be15d301389d262c9db135f9196d8e5b368589daeb65c3cc085d0",
   },
 ] as const;
 
@@ -192,6 +201,7 @@ async function rootLifecycleFixture() {
     }),
   );
   const runtime = createRuntime({
+    sharedMemory,
     filesystem: {
       mode: "memory",
       workerURL: new URL("../packages/waffle/browser/fs-worker.ts", import.meta.url),

@@ -60,6 +60,7 @@ export async function preview1ListenerBrowserCases(runtime: Runtime, peer: Peer)
         module,
         args: [],
         env: {},
+        controlGrant: { kind: "unbounded" },
         filesystem,
         network: owner.connection,
       } satisfies RuntimeWorkerRequest,

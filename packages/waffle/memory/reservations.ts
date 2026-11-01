@@ -1,0 +1,730 @@
+import {
+  CONTROL_GRANT_BYTES,
+  CONTROL_GRANT_STATE_BYTES,
+  consumedControlBytes,
+  type SharedControlGrant,
+} from "./control.js";
+import { ProcessError, ProcessErrno } from "../proc/errors.js";
+import type { MemoryDeclaration } from "./declarations.js";
+
+import {
+  bytes,
+  pages,
+  validatePlatform,
+  type ReservedBytes,
+  type WasmPages,
+  type SharedMemoryPlatform,
+} from "./platform.js";
+export { bytes, pages, declareSharedMemoryPlatform } from "./platform.js";
+export type { ReservedBytes, WasmPages, CountedKinds, SharedMemoryPlatform } from "./platform.js";
+export const PAGE_BYTES = 65_536;
+export const DESKTOP_ARENA_BYTES = 2_147_479_552;
+export const BOUNDED_ARENA_BYTES = 67_108_864;
+export const DESKTOP_GROUP_MAXIMUM_PAGES = 65_536;
+export const BOUNDED_GROUP_MAXIMUM_PAGES = 16_384;
+export type BufferShape =
+  | { readonly kind: "fixed-buffer"; readonly length: ReservedBytes }
+  | { readonly kind: "growable-buffer"; readonly initial: number; readonly maximum: ReservedBytes };
+export type GroupMemoryShape =
+  | { readonly kind: "growable"; readonly maximumPages: WasmPages }
+  | { readonly kind: "fixed"; readonly pages: WasmPages };
+export type ReservationShape =
+  | BufferShape
+  | GroupMemoryShape
+  | { readonly kind: "guest"; readonly memories: readonly MemoryDeclaration[] };
+export type RuntimeBufferLabel =
+  | "filesystem-root"
+  | "filesystem-segment"
+  | "owner-states"
+  | "workspace-publication"
+  | "pipe-registry"
+  | "control";
+type HolderLabel =
+  | RuntimeBufferLabel
+  | "request-arena"
+  | "memory-group"
+  | "guest-memory"
+  | "headroom"
+  | "guest-control";
+type HolderState = "live" | "idle" | "awaiting-collection" | "debt";
+interface Holder {
+  readonly id: number;
+  readonly runtime: symbol;
+  readonly label: HolderLabel;
+  readonly shape: ReservationShape;
+  readonly scope: "runtime" | "pooled" | "worker" | "ticket";
+  readonly declaredBytes: number;
+  readonly chargedBytes: number;
+  readonly value?: WeakRef<SharedArrayBuffer>;
+  readonly memory?: WeakRef<WebAssembly.Memory>;
+  receipts: number;
+  state: HolderState;
+}
+export interface SharedMemorySnapshot {
+  readonly platform: SharedMemoryPlatform;
+  readonly budgetBytes: number | null;
+  readonly reservedBytes: number;
+  readonly availableBytes: number | null;
+  readonly awaitingReleaseBytes: number;
+  readonly debtBytes: number;
+  readonly effectiveBudgetBytes: number | null;
+  readonly contradictions: readonly SharedMemoryContradiction[];
+  readonly holders: readonly {
+    readonly label: HolderLabel;
+    readonly shape: ReservationShape;
+    readonly scope: Holder["scope"];
+    readonly state: HolderState;
+    readonly declaredBytes: number;
+    readonly grownBytes: number | null;
+  }[];
+}
+interface SharedMemoryContradiction {
+  readonly label: string;
+  readonly requestedBytes: number;
+  readonly totalChargedBytesAfterRefund: number;
+}
+export type SharedMemoryRefusal =
+  | {
+      readonly kind: "budget";
+      readonly requested: ReservedBytes;
+      readonly available: ReservedBytes;
+      readonly budget: ReservedBytes;
+      readonly awaitingRelease: ReservedBytes;
+    }
+  | {
+      readonly kind: "configuration";
+      readonly configuration: "undeclared-module-memory" | "memory64-module";
+    }
+  | { readonly kind: "platform"; readonly label: string; readonly cause: RangeError }
+  | {
+      readonly kind: "uncounted-platform";
+      readonly label: string;
+      readonly requestedBytes: ReservedBytes;
+      readonly cause: RangeError;
+    };
+export class SharedMemoryAdmissionError extends ProcessError {
+  readonly code = "ENOMEM";
+  constructor(readonly refusal: SharedMemoryRefusal) {
+    super(ProcessErrno.NOMEM, describeRefusal(refusal));
+    this.name = "SharedMemoryAdmissionError";
+  }
+}
+function describeRefusal(refusal: SharedMemoryRefusal): string {
+  if (refusal.kind === "configuration")
+    return `Shared memory admission requires ${refusal.configuration}`;
+  if (refusal.kind === "platform" || refusal.kind === "uncounted-platform")
+    return `Shared memory platform refused ${refusal.label}: ${refusal.cause.message}`;
+  return `Shared memory budget refused ${refusal.requested} bytes: ${refusal.available} available of ${refusal.budget}; ${refusal.awaitingRelease} awaiting release`;
+}
+export interface Headroom {
+  readonly bytes: ReservedBytes;
+}
+export interface ArenaSource {
+  create(headroom: Headroom | null): SharedArrayBuffer;
+  strand(arena: SharedArrayBuffer): void;
+}
+export type GroupBacking =
+  | {
+      readonly kind: "growable";
+      readonly memory: WebAssembly.Memory;
+      readonly maximumPages: WasmPages;
+      exposed: boolean;
+    }
+  | {
+      readonly kind: "fixed";
+      readonly memory: WebAssembly.Memory;
+      readonly pages: WasmPages;
+      exposed: boolean;
+    };
+export interface GroupMemorySource {
+  control(length: number): SharedArrayBuffer;
+  create(shape: GroupMemoryShape, headroom: Headroom | null): GroupBacking;
+  retire(backing: GroupBacking): void;
+  failed(backing: GroupBacking): void;
+}
+export interface ReservationSizing {
+  readonly arena: { readonly bytes: ReservedBytes; readonly fallback: ReservedBytes | null };
+  groupShape(maximumPages?: number): GroupMemoryShape;
+}
+export type ProcessGuestPlan =
+  | { readonly kind: "declared"; readonly memories: readonly MemoryDeclaration[] }
+  | { readonly kind: "undeclared" }
+  | { readonly kind: "group" };
+export interface ProcessPlan {
+  readonly pid: number;
+  readonly executable: string;
+  readonly guest: ProcessGuestPlan;
+  readonly group: "none" | "join" | { readonly create: GroupMemoryShape };
+  /** Adopted roots already own their filesystem connection. */
+  readonly connection: boolean;
+  readonly controls: boolean;
+}
+export interface Ticket {
+  readonly control: SharedControlGrant;
+  readonly arena: Headroom | null;
+  readonly group: Headroom | null;
+  abort(): void;
+  launched(): LaunchedTicket;
+}
+export interface LaunchedTicket {
+  controlAllocated(buffer: SharedArrayBuffer): void;
+  stopped(): void;
+  failed(errors: readonly unknown[]): void;
+}
+export interface RuntimeReservations {
+  readonly sizing: ReservationSizing;
+  readonly arenas: ArenaSource;
+  readonly groups: GroupMemorySource;
+  buffer(label: RuntimeBufferLabel, shape: BufferShape): SharedArrayBuffer;
+  ownsBuffer(label: RuntimeBufferLabel, buffer: SharedArrayBuffer): boolean;
+  admit(plan: ProcessPlan): Ticket;
+  snapshot(): SharedMemorySnapshot;
+  check(
+    plan: ProcessPlan,
+  ):
+    | { readonly kind: "admitted" }
+    | { readonly kind: "refused"; readonly error: SharedMemoryAdmissionError };
+  dispose(): void;
+}
+export interface ReservationAllocator {
+  buffer(shape: BufferShape): SharedArrayBuffer;
+  memory(shape: GroupMemoryShape): WebAssembly.Memory;
+}
+const allocator: ReservationAllocator = {
+  buffer(shape) {
+    if (shape.kind === "fixed-buffer") return new SharedArrayBuffer(shape.length);
+    const value: unknown = Reflect.construct(SharedArrayBuffer, [
+      shape.initial,
+      { maxByteLength: shape.maximum },
+    ]);
+    if (!(value instanceof SharedArrayBuffer)) throw new TypeError("invalid shared buffer");
+    return value;
+  },
+  memory(shape) {
+    const maximum = shape.kind === "fixed" ? shape.pages : shape.maximumPages;
+    return new WebAssembly.Memory({
+      initial: shape.kind === "fixed" ? maximum : 1,
+      maximum,
+      shared: true,
+    });
+  },
+};
+function shapeBytes(shape: BufferShape | GroupMemoryShape): number {
+  if (shape.kind === "fixed-buffer") return shape.length;
+  if (shape.kind === "growable-buffer") return shape.maximum;
+  return (shape.kind === "fixed" ? shape.pages : shape.maximumPages) * PAGE_BYTES;
+}
+function chargeBytes(
+  platform: SharedMemoryPlatform,
+  shape: BufferShape | GroupMemoryShape,
+): number {
+  if (platform.kind === "unbounded" || shape.kind === "growable-buffer") return shapeBytes(shape);
+  const counts =
+    shape.kind === "fixed-buffer" ? platform.counts.fixedBuffer : platform.counts.sharedMemory;
+  return counts ? shapeBytes(shape) : 0;
+}
+function declaredGuestBytes(guest: Extract<ProcessGuestPlan, { kind: "declared" }>): number {
+  let total = 0;
+  for (const memory of guest.memories) total += memory.maximumPages * PAGE_BYTES;
+  return total;
+}
+function guestBytes(platform: SharedMemoryPlatform, guest: ProcessGuestPlan): number {
+  if (guest.kind !== "declared") return 0;
+  let total = 0;
+  for (const memory of guest.memories) {
+    const counted =
+      platform.kind === "unbounded" || memory.kind === "shared" || platform.counts.privateMemory;
+    if (counted) total += memory.maximumPages * PAGE_BYTES;
+  }
+  return total;
+}
+function shapeKey(shape: GroupMemoryShape): string {
+  return shape.kind === "fixed" ? `fixed:${shape.pages}` : `growable:${shape.maximumPages}`;
+}
+
+export class SharedMemoryLedger {
+  private next = 1;
+  private readonly holders = new Map<number, Holder>();
+  private readonly values = new WeakMap<object, Holder>();
+  private readonly headrooms = new WeakMap<Headroom, Holder>();
+  private readonly finalizer: { register(target: object, id: number): void };
+  private ceiling: number | null = null;
+  private readonly contradictions: SharedMemoryContradiction[] = [];
+  constructor(
+    private platform: SharedMemoryPlatform,
+    private readonly allocations = allocator,
+    finalizer: (receive: (id: number) => void) => { register(target: object, id: number): void } = (
+      receive,
+    ) => new FinalizationRegistry(receive),
+  ) {
+    validatePlatform(platform);
+    this.finalizer = finalizer((id) => {
+      const holder = this.holders.get(id);
+      if (!holder) return;
+      holder.receipts--;
+      if (holder.receipts === 0 && holder.state !== "debt") this.holders.delete(id);
+    });
+  }
+
+  openRuntime(platform: SharedMemoryPlatform): RuntimeReservations {
+    validatePlatform(platform);
+    // A later explicit override cannot erase debt or existing reservations.
+    this.platform = platform;
+    const runtime = Symbol("waffle.runtime.reservations");
+    const idle = new Map<string, GroupBacking[]>();
+    const sizing: ReservationSizing = {
+      arena:
+        platform.kind === "bounded"
+          ? { bytes: bytes(BOUNDED_ARENA_BYTES), fallback: null }
+          : { bytes: bytes(DESKTOP_ARENA_BYTES), fallback: bytes(BOUNDED_ARENA_BYTES) },
+      groupShape: (maximum) =>
+        platform.kind === "bounded"
+          ? { kind: "fixed", pages: pages(maximum ?? BOUNDED_GROUP_MAXIMUM_PAGES) }
+          : { kind: "growable", maximumPages: pages(maximum ?? DESKTOP_GROUP_MAXIMUM_PAGES) },
+    };
+    return {
+      sizing,
+      arenas: {
+        create: (headroom) => this.arena(runtime, sizing, headroom),
+        strand: (value) => this.debt(value),
+      },
+      groups: {
+        control: (length) =>
+          this.construct(
+            runtime,
+            "control",
+            { kind: "fixed-buffer", length: bytes(length) },
+            null,
+            () => this.allocations.buffer({ kind: "fixed-buffer", length: bytes(length) }),
+          ),
+        create: (shape, headroom) => this.group(runtime, idle, shape, headroom),
+        retire: (backing) => this.retireGroup(idle, backing),
+        failed: (backing) => this.debt(backing.memory),
+      },
+      buffer: (label, shape) =>
+        this.construct(runtime, label, shape, null, () => this.allocations.buffer(shape)),
+      ownsBuffer: (label, buffer) => {
+        const holder = this.values.get(buffer);
+        return holder?.runtime === runtime && holder.label === label && holder.state === "live";
+      },
+      admit: (plan) => this.admit(runtime, sizing, plan),
+      snapshot: () => this.snapshot(),
+      check: (plan) => {
+        try {
+          this.validatePlan(sizing, plan);
+          return { kind: "admitted" };
+        } catch (error) {
+          if (!(error instanceof SharedMemoryAdmissionError)) throw error;
+          return { kind: "refused", error };
+        }
+      },
+      dispose: () => {
+        idle.clear();
+        this.disposeRuntime(runtime);
+      },
+    };
+  }
+  snapshot(): SharedMemorySnapshot {
+    const reserved = this.total();
+    const budget = this.platform.kind === "bounded" ? this.platform.budgetBytes : null;
+    const effective = this.effectiveBudget();
+    return {
+      platform: this.platform,
+      budgetBytes: budget,
+      reservedBytes: reserved,
+      availableBytes: effective === null ? null : Math.max(0, effective - reserved),
+      awaitingReleaseBytes: this.total("awaiting-collection"),
+      debtBytes: this.total("debt"),
+      effectiveBudgetBytes: effective,
+      contradictions: this.contradictions.slice(),
+      holders: Array.from(this.holders.values(), (holder) => ({
+        label: holder.label,
+        shape: holder.shape,
+        scope: holder.scope,
+        state: holder.state,
+        declaredBytes: holder.declaredBytes,
+        grownBytes:
+          holder.memory?.deref()?.buffer.byteLength ?? holder.value?.deref()?.byteLength ?? null,
+      })),
+    };
+  }
+  private total(state?: HolderState): number {
+    let total = 0;
+    for (const holder of this.holders.values())
+      if (!state || holder.state === state) total += holder.chargedBytes;
+    return total;
+  }
+  private effectiveBudget(): number | null {
+    if (this.platform.kind === "unbounded") return this.ceiling;
+    return Math.min(this.platform.budgetBytes, this.ceiling ?? Infinity);
+  }
+  private capacity(requested: number): void {
+    const budget = this.effectiveBudget();
+    if (budget === null) return;
+    const available = Math.max(0, budget - this.total());
+    if (requested <= available) return;
+    throw new SharedMemoryAdmissionError({
+      kind: "budget",
+      requested: bytes(requested),
+      available: bytes(available),
+      budget: bytes(budget),
+      awaitingRelease: bytes(this.total("awaiting-collection")),
+    });
+  }
+  private record(
+    runtime: symbol,
+    label: HolderLabel,
+    shape: ReservationShape,
+    declaredBytes: number,
+    chargedBytes: number,
+    scope: Holder["scope"],
+    value?: SharedArrayBuffer,
+    memory?: WebAssembly.Memory,
+  ): Holder {
+    const holder: Holder = {
+      id: this.next++,
+      runtime,
+      label,
+      shape,
+      scope,
+      declaredBytes,
+      chargedBytes,
+      state: "live",
+      receipts: value ? 1 : 0,
+      ...(memory ? { memory: new WeakRef(memory) } : {}),
+      ...(value ? { value: new WeakRef(value) } : {}),
+    };
+    this.holders.set(holder.id, holder);
+    if (value) {
+      this.values.set(value, holder);
+      this.finalizer.register(memory ?? value, holder.id);
+      if (memory) this.values.set(memory, holder);
+    }
+    return holder;
+  }
+  private headroom(runtime: symbol, shape: BufferShape | GroupMemoryShape): Headroom {
+    const charged = chargeBytes(this.platform, shape);
+    const value = Object.freeze({ bytes: bytes(charged) });
+    this.headrooms.set(
+      value,
+      this.record(runtime, "headroom", shape, shapeBytes(shape), charged, "ticket"),
+    );
+    return value;
+  }
+  private release(headroom: Headroom | null): void {
+    if (!headroom) return;
+    const holder = this.headrooms.get(headroom);
+    if (!holder) return;
+    this.holders.delete(holder.id);
+    this.headrooms.delete(headroom);
+  }
+  private construct<T extends SharedArrayBuffer | WebAssembly.Memory>(
+    runtime: symbol,
+    label: HolderLabel,
+    shape: BufferShape | GroupMemoryShape,
+    headroom: Headroom | null,
+    create: () => T,
+  ): T {
+    this.release(headroom);
+    const charged = chargeBytes(this.platform, shape);
+    this.capacity(charged);
+    const provisional = this.record(
+      runtime,
+      label,
+      shape,
+      shapeBytes(shape),
+      charged,
+      label === "request-arena" || label === "memory-group" ? "pooled" : "runtime",
+    );
+    try {
+      const value = create();
+      const buffer = value instanceof WebAssembly.Memory ? value.buffer : value;
+      if (!(buffer instanceof SharedArrayBuffer)) throw new TypeError("shared backing required");
+      this.holders.delete(provisional.id);
+      this.record(
+        runtime,
+        label,
+        shape,
+        shapeBytes(shape),
+        charged,
+        provisional.scope,
+        buffer,
+        value instanceof WebAssembly.Memory ? value : undefined,
+      );
+      return value;
+    } catch (error) {
+      this.holders.delete(provisional.id);
+      if (!(error instanceof RangeError)) throw error;
+      if (charged === 0)
+        throw new SharedMemoryAdmissionError({
+          kind: "uncounted-platform",
+          label,
+          requestedBytes: bytes(shapeBytes(shape)),
+          cause: error,
+        });
+      this.contradiction(label, shapeBytes(shape));
+      throw new SharedMemoryAdmissionError({ kind: "platform", label, cause: error });
+    }
+  }
+  private arena(
+    runtime: symbol,
+    sizing: ReservationSizing,
+    headroom: Headroom | null,
+  ): SharedArrayBuffer {
+    const shape: BufferShape = { kind: "growable-buffer", initial: 0, maximum: sizing.arena.bytes };
+    try {
+      return this.construct(runtime, "request-arena", shape, headroom, () =>
+        this.allocations.buffer(shape),
+      );
+    } catch (error) {
+      if (
+        !sizing.arena.fallback ||
+        !(error instanceof SharedMemoryAdmissionError) ||
+        error.refusal.kind !== "platform"
+      )
+        throw error;
+      const fallback: BufferShape = {
+        kind: "growable-buffer",
+        initial: 0,
+        maximum: sizing.arena.fallback,
+      };
+      return this.construct(runtime, "request-arena", fallback, null, () =>
+        this.allocations.buffer(fallback),
+      );
+    }
+  }
+  private group(
+    runtime: symbol,
+    idle: Map<string, GroupBacking[]>,
+    shape: GroupMemoryShape,
+    headroom: Headroom | null,
+  ): GroupBacking {
+    const previous = idle.get(shapeKey(shape))?.pop();
+    if (previous) {
+      this.release(headroom);
+      // Fixed initial memory is fully guest-addressable, including ungranted pages.
+      new Uint8Array(previous.memory.buffer).fill(0);
+      const holder = this.values.get(previous.memory);
+      if (holder) holder.state = "live";
+      return previous;
+    }
+    const memory = this.construct(runtime, "memory-group", shape, headroom, () =>
+      this.allocations.memory(shape),
+    );
+    return shape.kind === "fixed"
+      ? { kind: "fixed", memory, pages: shape.pages, exposed: false }
+      : { kind: "growable", memory, maximumPages: shape.maximumPages, exposed: false };
+  }
+  private retireGroup(idle: Map<string, GroupBacking[]>, backing: GroupBacking): void {
+    const holder = this.values.get(backing.memory);
+    if (!holder || holder.state !== "live") return;
+    if (backing.kind !== "fixed" || backing.exposed) {
+      if (backing.exposed) {
+        holder.receipts++;
+        this.finalizer.register(backing.memory.buffer, holder.id);
+      }
+      holder.state = "awaiting-collection";
+      return;
+    }
+    holder.state = "idle";
+    const key = shapeKey(backing);
+    const pool = idle.get(key) ?? [];
+    pool.push(backing);
+    idle.set(key, pool);
+  }
+  private debt(value: object): void {
+    const holder = this.values.get(value);
+    if (holder) holder.state = "debt";
+  }
+  private validatePlan(sizing: ReservationSizing, plan: ProcessPlan): void {
+    if (plan.guest.kind === "undeclared" && this.effectiveBudget() !== null)
+      throw new SharedMemoryAdmissionError({
+        kind: "configuration",
+        configuration: "undeclared-module-memory",
+      });
+    const arena: BufferShape = { kind: "growable-buffer", initial: 0, maximum: sizing.arena.bytes };
+    const group =
+      typeof plan.group === "object" ? chargeBytes(this.platform, plan.group.create) : 0;
+    this.capacity(
+      guestBytes(this.platform, plan.guest) +
+        (plan.connection ? chargeBytes(this.platform, arena) : 0) +
+        group +
+        (plan.controls ? this.controlCharge(CONTROL_GRANT_BYTES + CONTROL_GRANT_STATE_BYTES) : 0),
+    );
+  }
+  private admit(runtime: symbol, sizing: ReservationSizing, plan: ProcessPlan): Ticket {
+    this.validatePlan(sizing, plan);
+    const amount = guestBytes(this.platform, plan.guest);
+    const guest =
+      plan.guest.kind === "declared"
+        ? this.record(
+            runtime,
+            "guest-memory",
+            { kind: "guest", memories: plan.guest.memories },
+            declaredGuestBytes(plan.guest),
+            amount,
+            "worker",
+          )
+        : undefined;
+    const arena = plan.connection
+      ? this.headroom(runtime, { kind: "growable-buffer", initial: 0, maximum: sizing.arena.bytes })
+      : null;
+    const group = typeof plan.group === "object" ? this.headroom(runtime, plan.group.create) : null;
+    let control: ReturnType<SharedMemoryLedger["controlGrant"]>;
+    try {
+      control = this.controlGrant(runtime, plan.controls);
+    } catch (error) {
+      this.release(arena);
+      this.release(group);
+      if (guest) this.holders.delete(guest.id);
+      throw error;
+    }
+    let phase: "admitted" | "launched" | "settled" = "admitted";
+    const release = () => {
+      this.release(arena);
+      this.release(group);
+    };
+    const launched: LaunchedTicket = {
+      controlAllocated: (buffer) => control.receipt(buffer),
+      stopped: () => {
+        if (phase !== "launched") return;
+        phase = "settled";
+        release();
+        if (guest) this.holders.delete(guest.id);
+        control.stopped();
+      },
+      failed: () => {
+        if (phase !== "launched") return;
+        phase = "settled";
+        release();
+        if (guest) guest.state = "debt";
+        control.failed();
+      },
+    };
+    return {
+      control: control.grant,
+      arena,
+      group,
+      abort: () => {
+        if (phase !== "admitted") return;
+        phase = "settled";
+        release();
+        if (guest) this.holders.delete(guest.id);
+        control.stopped();
+      },
+      launched: () => {
+        if (phase === "admitted") {
+          phase = "launched";
+          release();
+        }
+        return launched;
+      },
+    };
+  }
+  private controlCharge(length: number): number {
+    return this.platform.kind === "bounded" &&
+      !this.platform.counts.fixedBuffer &&
+      !this.platform.counts.privateMemory
+      ? 0
+      : length;
+  }
+  private controlGrant(runtime: symbol, enabled: boolean) {
+    if (!enabled || this.effectiveBudget() === null)
+      return {
+        grant: { kind: "unbounded" as const },
+        stopped() {},
+        failed() {},
+        receipt: (buffer: SharedArrayBuffer) => {
+          if (!enabled) return;
+          if (this.values.has(buffer)) return;
+          this.record(
+            runtime,
+            "guest-control",
+            { kind: "fixed-buffer", length: bytes(buffer.byteLength) },
+            buffer.byteLength,
+            this.controlCharge(buffer.byteLength),
+            "runtime",
+            buffer,
+          );
+        },
+      };
+    const shape: BufferShape = { kind: "fixed-buffer", length: bytes(CONTROL_GRANT_BYTES) };
+    const stateShape: BufferShape = {
+      kind: "fixed-buffer",
+      length: bytes(CONTROL_GRANT_STATE_BYTES),
+    };
+    const holder = this.record(
+      runtime,
+      "guest-control",
+      shape,
+      CONTROL_GRANT_BYTES,
+      this.controlCharge(CONTROL_GRANT_BYTES),
+      "worker",
+    );
+    let state: SharedArrayBuffer;
+    try {
+      state = this.construct(runtime, "control", stateShape, null, () =>
+        this.allocations.buffer(stateShape),
+      );
+    } catch (error) {
+      this.holders.delete(holder.id);
+      throw error;
+    }
+    const grant: SharedControlGrant = { kind: "bounded", state, limit: CONTROL_GRANT_BYTES };
+    const seen = new WeakSet<SharedArrayBuffer>();
+    let settled = false;
+    let received = 0;
+    return {
+      grant,
+      receipt: (buffer: SharedArrayBuffer) => {
+        if (seen.has(buffer)) return;
+        seen.add(buffer);
+        received += buffer.byteLength;
+        if (received > consumedControlBytes(grant))
+          throw new TypeError("Control receipt exceeds charged allocations");
+      },
+      stopped: () => {
+        if (settled) return;
+        settled = true;
+        this.holders.delete(holder.id);
+        const consumed = consumedControlBytes(grant);
+        if (!consumed) return;
+        const debt = this.record(
+          runtime,
+          "guest-control",
+          { kind: "fixed-buffer", length: bytes(consumed) },
+          consumed,
+          this.controlCharge(consumed),
+          "worker",
+        );
+        debt.state = "debt";
+      },
+      failed: () => {
+        settled = true;
+        holder.state = "debt";
+      },
+    };
+  }
+  private disposeRuntime(runtime: symbol): void {
+    for (const holder of this.holders.values()) {
+      if (holder.runtime !== runtime || holder.state === "debt") continue;
+      holder.state = holder.scope === "worker" ? "debt" : "awaiting-collection";
+    }
+  }
+  private contradiction(label: HolderLabel, requestedBytes: number): void {
+    const budget = this.effectiveBudget();
+    // Preserve the unbounded arena ladder until a bounded contradiction set a page cap.
+    if (budget === null) return;
+    const totalChargedBytesAfterRefund = this.total();
+    this.ceiling = Math.min(budget, totalChargedBytesAfterRefund);
+    this.contradictions.push(
+      Object.freeze({ label, requestedBytes, totalChargedBytesAfterRefund }),
+    );
+  }
+}
+const pageLedgerKey = Symbol.for("waffle.shared-memory.ledger");
+const host = globalThis as typeof globalThis & { [pageLedgerKey]?: SharedMemoryLedger };
+export function pageSharedMemoryLedger(platform: SharedMemoryPlatform): SharedMemoryLedger {
+  validatePlatform(platform);
+  return (host[pageLedgerKey] ??= new SharedMemoryLedger(platform));
+}

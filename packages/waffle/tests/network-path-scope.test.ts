@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   createRuntime,
@@ -19,6 +20,7 @@ let tables: DescriptorTable[];
 beforeEach(() => {
   tables = [];
   runtime = createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: { mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) },
   });
 });
@@ -37,7 +39,7 @@ async function spawnFromRoot(executable: string) {
     identity: runtime.identities.buffer,
   });
   transport.data = { filesystem: runtime.filesystem.createIdentity() };
-  await service.adoptRuntimeRoot(transport, { output: () => {} });
+  await service.adoptRuntimeRoot(transport, { memory: [], output: () => {} });
   const notices: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
   tables.push(descriptors);

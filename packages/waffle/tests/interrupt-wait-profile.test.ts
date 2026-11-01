@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { moduleMemoryDeclarations, parseModuleMemory } from "../memory/declarations.js";
 import { InterruptModuleCache } from "../interrupt/loader.js";
 import {
   ADMITTED_STORE_LIMITS,
@@ -103,3 +104,23 @@ test("terminal checkpoints preserve every selected result and leave ordinary sig
     expect(fatalInterrupt(word)).toBe(kind === "signaled" ? 9 : 0);
   }
 });
+
+for (const profile of ["ordinary", "supervised-thread"] as const) {
+  test(`${profile} memory declarations survive fresh and stored profile compilation`, async () => {
+    const source = interruptLoopFixture();
+    const expected = parseModuleMemory(source);
+    const data = persistent();
+    const first = await new InterruptModuleCache(16, data.store).compile(source, profile);
+    expect(moduleMemoryDeclarations(first)).toEqual(expected);
+    await data.flush();
+    const compile = spyOn(WebAssembly, "compile");
+    try {
+      const stored = await new InterruptModuleCache(16, data.store).compile(source, profile);
+      expect(moduleMemoryDeclarations(stored)).toEqual(expected);
+      expect(names(stored)).toEqual(profile === "ordinary" ? ordinary : supervised);
+      expect(compile).toHaveBeenCalledTimes(0);
+    } finally {
+      compile.mockRestore();
+    }
+  });
+}

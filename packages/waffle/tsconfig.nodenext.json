@@ -10,6 +10,7 @@
     "runtime.ts",
     "browser/**/*.ts",
     "core/**/*.ts",
+    "memory/**/*.ts",
     "fs/**/*.ts",
     "proc/**/*.ts",
     "interrupt/**/*.ts",

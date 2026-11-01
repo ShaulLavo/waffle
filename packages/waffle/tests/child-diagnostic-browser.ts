@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { type RuntimeWorkerMessage } from "../browser/worker.js";
 import { DIAGNOSTIC_STALL_TIMEOUT_MS } from "../browser/diagnostic.js";
 import { createFilesystemConnection } from "../fs/index.js";
@@ -62,7 +63,15 @@ export async function browserRuntimeDiagnostic(
     if (mode === "closed") reader.close();
     const started = performance.now();
     worker.postMessage(
-      { module, args: [], env: {}, filesystem: connection.client, runtimeProcess, diagnostic },
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess: standaloneRuntimeProcess(runtimeProcess),
+        diagnostic,
+      },
       [connection.client.port],
     );
     const chunks: Uint8Array[] = [];

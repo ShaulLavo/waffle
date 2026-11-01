@@ -11,7 +11,13 @@ let fd = 0;
 let finish: (() => void) | undefined;
 async function start(connection: FilesystemConnection): Promise<void> {
   await bootstrap(
-    { filesystem: connection, args: [], env: {}, module: publicationWasiModule() },
+    {
+      controlGrant: { kind: "unbounded" },
+      filesystem: connection,
+      args: [],
+      env: {},
+      module: publicationWasiModule(),
+    },
     {
       namespaces: () => ({ env: { memory } }),
       beforeBindings(context) {

@@ -1308,3 +1308,17 @@ test("procps CLI checks use package-local input paths and explicit configuration
     expect(step?.run).toBe(check.run);
   }
 });
+
+test("package prepares exactly the pinned shallow-safe desktop reference before runtime tests", () => {
+  const steps = stepsFor("package");
+  const setup = steps.findIndex(
+    (step) => step.run === "bun packages/waffle/tooling/prepare-desktop-reference.ts",
+  );
+  const tests = steps.findIndex((step) => step.run === "bun run test && bun run test:ci");
+  expect(setup).toBeGreaterThanOrEqual(0);
+  expect(setup).toBeLessThan(tests);
+  const source = readFileSync(new URL("./prepare-desktop-reference.ts", import.meta.url), "utf8");
+  expect(source).toContain("9b66e3aa2462771f65ca263745a23c80e2c8fea3");
+  expect(source).toContain('"--depth=1"');
+  expect(source).not.toMatch(/--unshallow|fetch.*--all/);
+});

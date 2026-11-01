@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createRuntime, type RuntimeNetworkHelper } from "../index.js";
 import { NetHost } from "../browser/net/host.js";
@@ -11,6 +12,7 @@ const noFetch = async () => {
 };
 function create() {
   return createRuntime({
+    sharedMemory: testSharedMemory,
     filesystem: {
       workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
       mode: "memory",

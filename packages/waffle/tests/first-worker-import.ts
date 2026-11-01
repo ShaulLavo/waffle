@@ -1,3 +1,4 @@
+import * as memoryControls from "../memory/control.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "../browser/worker-memory.js";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
@@ -43,7 +44,13 @@ export async function failFirstWorkerImport(
   request: RuntimeWorkerRequest,
   postMessage: (message: RuntimeWorkerMessage) => void,
 ) {
+  let restoreControls: (() => void) | undefined;
   const context = {
+    ...memoryControls,
+    installSharedControlAllocator(allocate: (length: number) => SharedArrayBuffer) {
+      restoreControls = memoryControls.installSharedControlAllocator(allocate);
+      return restoreControls;
+    },
     ...processIntrinsics,
     createWorkerMemorySampler,
     bindImportedMemory,
@@ -89,13 +96,17 @@ export async function failFirstWorkerImport(
     ) => Promise<void>,
   };
   runInNewContext(source, context);
-  await context.runBootstrap(
-    request,
-    {
-      run() {
-        throw new Error("must not execute");
+  try {
+    await context.runBootstrap(
+      request,
+      {
+        run() {
+          throw new Error("must not execute");
+        },
       },
-    },
-    { crossOriginIsolated: true, postMessage },
-  );
+      { crossOriginIsolated: true, postMessage },
+    );
+  } finally {
+    restoreControls?.();
+  }
 }

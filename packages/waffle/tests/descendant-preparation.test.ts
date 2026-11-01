@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { Worker } from "node:worker_threads";
 import type { TerminalControlWorkerData } from "./fixtures/terminal-control-worker.js";
 import { controlLoad } from "../proc/control.js";
@@ -63,6 +64,7 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
     terminated: number[] = [],
     errors: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -89,14 +91,16 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
     },
   });
   cleanups.push(() => broker.dispose());
-  async function adopt(options: (root: WorkerProcessTransport) => RuntimeRootOptions = () => ({})) {
+  async function adopt(
+    options: (root: WorkerProcessTransport) => Omit<RuntimeRootOptions, "memory"> = () => ({}),
+  ) {
     const root = createWorkerProcessTransport({
       pid: identities.pid(),
       job: identities.job(),
       identity: identities.buffer,
     });
     root.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(root, options(root));
+    await broker.adoptRuntimeRoot(root, { memory: [], ...options(root) });
     return root;
   }
   /** Reserve in the parent's directory exactly as a guest would, then post to the page. */
@@ -141,7 +145,7 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
 /** The Shell recipe: root admission in the hook, one-shot membership cleanup on child exit. */
 async function shellTerminal(
   f: ReturnType<typeof fixture>,
-  extra: Omit<RuntimeRootOptions, "prepareDescendant"> & {
+  extra: Omit<RuntimeRootOptions, "prepareDescendant" | "memory"> & {
     run?: RootDescendantPreparation["run"];
     settled?: RootDescendantPreparation["settled"];
   } = {},
@@ -431,6 +435,7 @@ test("only the descendant's own preparation runs, as captured at adoption", asyn
       }),
     );
     captured = {
+      memory: [],
       prepareDescendant: {
         terminal,
         run() {

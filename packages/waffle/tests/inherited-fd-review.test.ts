@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { expect, test } from "bun:test";
 import {
   bootstrap,
@@ -88,7 +89,14 @@ async function launch(transport: WorkerProcessTransport, hooks: Partial<WorkerEx
   const messages: RuntimeWorkerMessage[] = [];
   try {
     await bootstrap(
-      { module, args: [], env: {}, filesystem: conn.client, runtimeProcess: transport },
+      {
+        controlGrant: { kind: "unbounded" },
+        module,
+        args: [],
+        env: {},
+        filesystem: conn.client,
+        runtimeProcess: standaloneRuntimeProcess(transport),
+      },
       {
         ...preview1Executor,
         ...hooks,

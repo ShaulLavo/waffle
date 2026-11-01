@@ -1,12 +1,12 @@
+import { createSharedControlAllocator } from "waffle";
 import type { Runtime } from "waffle";
 import type { SpawnRequest } from "waffle/proc/types";
 import { DescriptorTable } from "waffle/core/descriptors";
 import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
 import { WorkerPipeHost } from "waffle/proc/worker-pipes";
-import { PipePublicationRegistry } from "waffle/proc/pipes";
 import {
   createWorkerProcessTransport,
-  workerProcessState,
+  workerProcessPipeRegistry,
   WorkerProcessClient,
   type WorkerProcessMessage,
   type WorkerSpawnTransfer,
@@ -136,11 +136,10 @@ export async function createProgramTestRoot(runtime: Runtime) {
     job: runtime.identities.job(),
     identity: runtime.identities.buffer,
   });
-  const registry = new PipePublicationRegistry({ wake: workerProcessState(transport).wake });
-  const pipeRegistry = registry.handle();
-  transport.data = { filesystem: runtime.filesystem.createIdentity(), pipeRegistry };
+  transport.data = { filesystem: runtime.filesystem.createIdentity() };
   const output = { stdout: [] as Uint8Array[], stderr: [] as Uint8Array[] };
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (fd, data) => (fd === 2 ? output.stderr : output.stdout).push(data.slice()),
   });
   const supervisor = await service.ready();
@@ -160,8 +159,12 @@ export async function createProgramTestRoot(runtime: Runtime) {
   }
   const notices: Notice[] = [];
   const pipes = new WorkerPipeHost({
+    allocateShared: createSharedControlAllocator(
+      service.rootControlGrant(transport.pid),
+      (buffer) => service.rootControlAllocated(transport.pid, buffer),
+    ),
     transport,
-    registry: pipeRegistry,
+    registry: workerProcessPipeRegistry(transport),
     postMessage: (message) => notices.push({ kind: "input", message }),
   });
   const client = new WorkerProcessClient({

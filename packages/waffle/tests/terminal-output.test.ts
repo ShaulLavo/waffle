@@ -1,3 +1,4 @@
+import { testSharedMemory } from "./fixtures/shared-memory-platform.js";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createRuntime, type Runtime } from "../index.js";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
@@ -451,6 +452,7 @@ describe("generic preview1 Worker terminal output", () => {
   let broker: BrokerOutputs;
   beforeEach(() => {
     runtime = createRuntime({
+      sharedMemory: testSharedMemory,
       filesystem: {
         mode: "memory",
         workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
@@ -488,12 +490,12 @@ describe("generic preview1 Worker terminal output", () => {
     });
     transport.data = { filesystem: runtime.filesystem.createIdentity() };
     const bounded = destination.tryOutput;
-    await service.adoptRuntimeRoot(
-      transport,
-      bounded
+    await service.adoptRuntimeRoot(transport, {
+      memory: [],
+      ...(bounded
         ? { tryOutput: (_fd, data) => bounded.tryWrite(data) }
-        : { output: (_fd, data) => destination.output!.push(data.slice()) },
-    );
+        : { output: (_fd, data) => destination.output!.push(data.slice()) }),
+    });
     const descriptors = new DescriptorTable();
     const unused = () => -58;
     const terminal: Stream = {

@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
@@ -195,6 +196,7 @@ test("browser root adoption preserves explicit cwd across lazy activation", asyn
   const f = fixture();
   const identities = f.supervisor.table.identities;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: f.supervisor.table,
     registry: new ExecutableRegistry(),
@@ -216,7 +218,7 @@ test("browser root adoption preserves explicit cwd across lazy activation", asyn
     cwd: "/shell/root",
   });
   transport.data = { filesystem: createFilesystemIdentity() };
-  await broker.adoptRuntimeRoot(transport);
+  await broker.adoptRuntimeRoot(transport, { memory: [] });
   const supervisor = await broker.ready();
   expect(supervisor.cwd(transport.pid)).toBe("/shell/root");
   const nativeRoot = { cwd: "/external/root" };
