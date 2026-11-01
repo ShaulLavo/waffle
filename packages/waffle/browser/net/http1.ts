@@ -76,12 +76,16 @@ type State =
   | "done";
 
 const NO_BODY = new Set([204, 304]);
+const MAX_HEAD_BYTES = 64 * 1024;
+const MAX_CHUNK_LINE_BYTES = 8 * 1024;
+const MAX_TRAILER_BYTES = 64 * 1024;
 
 /** Incremental HTTP/1.1 response parser. Feed it with `push`, then `end` when the connection closes. */
 export class ResponseParser {
   private pending: Uint8Array = new Uint8Array(0);
   private state: State = "head";
   private remaining = 0;
+  private trailerBytes = 0;
 
   constructor(
     private sink: ResponseSink,
@@ -95,12 +99,39 @@ export class ResponseParser {
 
   push(bytes: Uint8Array): void {
     if (this.state === "done") return;
-    this.pending = concat(this.pending, bytes);
     try {
-      this.process();
+      while (bytes.length > 0 && !this.done) {
+        // Recheck framing after each bounded metadata slice; body delivery has no byte cap.
+        const count = this.inputCount(bytes.length);
+        this.pending = concat(this.pending, bytes.subarray(0, count));
+        bytes = bytes.subarray(count);
+        this.process();
+      }
+      // A short unfinished line must not retain a coalesced body's larger backing buffer.
+      this.pending = this.pending.length ? this.pending.slice() : new Uint8Array(0);
     } catch (err) {
       this.fail(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  private inputCount(available: number): number {
+    let limit = available;
+    switch (this.state) {
+      case "head":
+        limit = MAX_HEAD_BYTES - this.pending.length;
+        break;
+      case "chunk-size":
+        limit = MAX_CHUNK_LINE_BYTES - this.pending.length;
+        break;
+      case "trailers":
+        limit = MAX_TRAILER_BYTES - this.trailerBytes - this.pending.length;
+        break;
+      case "chunk-crlf":
+        limit = 2 - this.pending.length;
+        break;
+    }
+    if (limit === 0) throw new Error(`${this.state} metadata limit exceeded`);
+    return Math.min(available, limit);
   }
 
   /** The guest closed the connection. */
@@ -143,8 +174,16 @@ export class ResponseParser {
     }
   }
 
+  private metadataEnd(limit: number, delimiterBytes = 2): number {
+    const bytes = this.pending.subarray(0, limit);
+    const end = delimiterBytes === 4 ? indexOfCrlfCrlf(bytes) : indexOfCrlf(bytes);
+    if (end < 0 && this.pending.length > limit)
+      throw new Error(`${this.state} metadata limit exceeded`);
+    return end;
+  }
+
   private parseHead(): boolean {
-    const end = indexOfCrlfCrlf(this.pending);
+    const end = this.metadataEnd(MAX_HEAD_BYTES, 4);
     if (end < 0) return false;
     const text = decoder.decode(this.pending.subarray(0, end));
     this.pending = this.pending.subarray(end + 4);
@@ -170,7 +209,7 @@ export class ResponseParser {
     if (status >= 100 && status < 200 && status !== 101) return true;
     this.sink.head({ status, statusText: match[2] ?? "", headers });
     this.state = this.bodyFraming(status, headers);
-    if (this.state === "done") this.sink.end();
+    if (this.state === "done") this.finish();
     return true;
   }
 
@@ -202,12 +241,14 @@ export class ResponseParser {
   }
 
   private parseChunkSize(): boolean {
-    const eol = indexOfCrlf(this.pending);
+    const eol = this.metadataEnd(MAX_CHUNK_LINE_BYTES);
     if (eol < 0) return false;
     const line = decoder.decode(this.pending.subarray(0, eol));
     this.pending = this.pending.subarray(eol + 2);
-    const size = Number.parseInt(line.split(";")[0]!.trim(), 16);
-    if (Number.isNaN(size)) throw new Error(`bad chunk size: ${JSON.stringify(line.slice(0, 40))}`);
+    const token = line.split(";", 1)[0]!.trim();
+    const size = /^[0-9a-f]+$/i.test(token) ? Number.parseInt(token, 16) : NaN;
+    if (!Number.isSafeInteger(size))
+      throw new Error(`bad chunk size: ${JSON.stringify(line.slice(0, 40))}`);
     this.remaining = size;
     this.state = size === 0 ? "trailers" : "chunk-data";
     return true;
@@ -215,14 +256,17 @@ export class ResponseParser {
 
   private skipCrlf(): boolean {
     if (this.pending.length < 2) return false;
+    if (this.pending[0] !== 13 || this.pending[1] !== 10)
+      throw new Error("bad chunk terminator: expected CRLF");
     this.pending = this.pending.subarray(2);
     this.state = "chunk-size";
     return true;
   }
 
   private skipTrailers(): boolean {
-    const eol = indexOfCrlf(this.pending);
+    const eol = this.metadataEnd(MAX_TRAILER_BYTES - this.trailerBytes);
     if (eol < 0) return false;
+    this.trailerBytes += eol + 2;
     this.pending = this.pending.subarray(eol + 2);
     if (eol === 0) this.finish();
     return true;
@@ -230,11 +274,14 @@ export class ResponseParser {
 
   private finish(): void {
     this.state = "done";
+    this.pending = new Uint8Array(0);
     this.sink.end();
   }
 
   private fail(message: string): void {
+    if (this.state === "done") return;
     this.state = "done";
+    this.pending = new Uint8Array(0);
     this.sink.error(message);
   }
 }
