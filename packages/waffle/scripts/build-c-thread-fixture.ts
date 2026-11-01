@@ -92,7 +92,7 @@ function fileArray(value: unknown, label: string): CompilerFile[] {
 function run(command: readonly string[], cwd = packageRoot): string {
   const child = Bun.spawnSync(Array.from(command), {
     cwd,
-    env: { ...process.env, RUSTUP_AUTO_INSTALL: "0" },
+    env: cThreadCompilerEnvironment(process.env),
     stdout: "pipe",
     stderr: "pipe",
     timeout: 120_000,
@@ -140,25 +140,93 @@ function compilerPath(sdk: string, name: string): string {
   return path;
 }
 
-function dependencies(path: string): string[] {
-  const text = readFileSync(path, "utf8").replaceAll("\\\n", " ");
-  const tokens = text.split(/\s+/).filter(Boolean).slice(2);
-  return tokens.map((token) => resolve(dirname(path), token));
+export function cThreadCompilerEnvironment(input: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { RUSTUP_AUTO_INSTALL: "0", LANG: "C", LC_ALL: "C" };
+  for (const key of ["PATH", "TMPDIR", "TMP", "TEMP", "SystemRoot", "SYSTEMROOT"]) {
+    const value = input[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
-function inventory(sdk: string, paths: readonly string[]): CompilerFile[] {
+function dependencyBody(text: string): string {
+  let escaped = false;
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at]!;
+    if (!escaped && char === ":" && /\s/.test(text[at + 1] ?? " ")) return text.slice(at + 1);
+    escaped = char === "\\" ? !escaped : false;
+  }
+  throw new Error("missing compiler dependency target");
+}
+
+export function cThreadDependencyPaths(text: string, cwd: string): string[] {
+  const body = dependencyBody(text.replaceAll(/\\\r?\n/g, ""));
+  const tokens: string[] = [];
+  let token = "";
+  for (let at = 0; at < body.length; at++) {
+    const char = body[at]!;
+    if (char === "\\") {
+      const next = body[++at];
+      if (next === undefined) throw new Error("truncated compiler dependency escape");
+      token += next;
+      continue;
+    }
+    if (char === "$" && body[at + 1] === "$") {
+      token += "$";
+      at++;
+      continue;
+    }
+    if (/\s/.test(char) && token) {
+      tokens.push(resolve(cwd, token));
+      token = "";
+      continue;
+    }
+    if (!/\s/.test(char)) token += char;
+  }
+  if (token) tokens.push(resolve(cwd, token));
+  return tokens;
+}
+
+export function cThreadCompilerInventory(sdk: string, paths: readonly string[]): CompilerFile[] {
+  const boundary = realpathSync(sdk);
   const unique = new Set<string>();
   const files: CompilerFile[] = [];
   for (const path of paths) {
-    if (!existsSync(path)) continue;
     const actual = realpathSync(path);
-    if (!statSync(actual).isFile() || unique.has(actual)) continue;
+    if (!statSync(actual).isFile()) throw new Error(`compiler input is not a file: ${path}`);
+    if (!actual.startsWith(`${boundary}/`))
+      throw new Error(`compiler input outside wasi-sdk: ${path}`);
+    if (unique.has(actual)) continue;
     unique.add(actual);
-    if (!actual.startsWith(`${sdk}/`)) continue;
-    files.push({ path: relative(sdk, actual), sha256: digest(readFileSync(actual)) });
+    files.push({ path: relative(boundary, actual), sha256: digest(readFileSync(actual)) });
   }
   files.sort((left, right) => left.path.localeCompare(right.path, "en"));
   return files;
+}
+
+function tracedCompilerInputs(paths: readonly string[], output: string, depfile: string): string[] {
+  const produced = new Set([output, depfile]);
+  for (let index = 1; index < paths.length; index++)
+    if (["-o", "-dumpdir", "-dependency-file", "-MT"].includes(paths[index - 1]!))
+      produced.add(paths[index]!);
+  return paths.filter((path) => {
+    if (!isAbsolute(path) || produced.has(path) || path === source) return false;
+    if (!existsSync(path)) throw new Error(`missing compiler input: ${path}`);
+    return statSync(path).isFile();
+  });
+}
+
+function tracedLibraries(args: readonly string[]): string[] {
+  const directories = args.filter((arg) => arg.startsWith("-L")).map((arg) => arg.slice(2));
+  return args
+    .filter((arg) => arg.startsWith("-l"))
+    .map((arg) => {
+      const name = arg.slice(2);
+      const candidates = directories.map((directory) => join(directory, `lib${name}.a`));
+      const found = candidates.find((path) => existsSync(path));
+      if (!found) throw new Error(`missing compiler library: ${arg}`);
+      return found;
+    });
 }
 
 function compiler(sdk: string, scratch: string): FixtureReceipt["compiler"] {
@@ -176,7 +244,7 @@ function compiler(sdk: string, scratch: string): FixtureReceipt["compiler"] {
   ]);
   const trace = Bun.spawnSync(command.concat("-###"), {
     cwd: packageRoot,
-    env: { ...process.env, RUSTUP_AUTO_INSTALL: "0" },
+    env: cThreadCompilerEnvironment(process.env),
     stderr: "pipe",
     stdout: "pipe",
     timeout: 120_000,
@@ -196,15 +264,17 @@ function compiler(sdk: string, scratch: string): FixtureReceipt["compiler"] {
     join(sysrootLib, "libc.a"),
     clang,
     linker,
-  ].concat(tracedPaths);
+  ].concat(tracedCompilerInputs(tracedPaths, output, depfile), tracedLibraries(tracedPaths));
   const clangVersion = run([clang, "--version"]);
   const linkerVersion = run([linker, "--version"]);
-  const depPaths = dependencies(join(scratch, "dependencies.d"));
+  const depPaths = cThreadDependencyPaths(readFileSync(depfile, "utf8"), packageRoot).filter(
+    (path) => path !== source,
+  );
   return {
     clangVersion: `${version}\n${clangVersion}`,
     linkerVersion,
-    files: inventory(sdk, sdkFiles),
-    dependencies: inventory(sdk, depPaths),
+    files: cThreadCompilerInventory(sdk, sdkFiles),
+    dependencies: cThreadCompilerInventory(sdk, depPaths),
   };
 }
 

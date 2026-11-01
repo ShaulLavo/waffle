@@ -9,6 +9,7 @@ static _Atomic uint32_t main_static = 17;
 static const uint32_t main_sentinel = 0x51a7c0de;
 static _Thread_local uint32_t tls_value;
 static _Atomic uint32_t progress;
+static _Atomic uint32_t expected_progress;
 static _Atomic uint32_t ready;
 static _Atomic uint32_t release_children;
 static _Atomic uintptr_t stack_addresses[2];
@@ -28,13 +29,15 @@ static void *child(void *argument) {
   atomic_fetch_add_explicit(&progress, 1, memory_order_seq_cst);
   atomic_fetch_add_explicit(&ready, 1, memory_order_seq_cst);
   wait_for_release();
-  assert(atomic_load_explicit(&progress, memory_order_seq_cst) == 2);
+  assert(atomic_load_explicit(&progress, memory_order_seq_cst) ==
+         atomic_load_explicit(&expected_progress, memory_order_seq_cst));
   assert(stack[0] == id);
   assert(tls_value == 100 + id);
   return (void *)(uintptr_t)(100 + id);
 }
 
-static void reset_pair(void) {
+static void reset_pair(uint32_t expected) {
+  atomic_store_explicit(&expected_progress, expected, memory_order_seq_cst);
   atomic_store_explicit(&progress, 0, memory_order_seq_cst);
   atomic_store_explicit(&ready, 0, memory_order_seq_cst);
   atomic_store_explicit(&release_children, 0, memory_order_seq_cst);
@@ -48,7 +51,7 @@ static void pair(void) {
   pthread_t first, second;
   void *first_result = NULL;
   void *second_result = NULL;
-  reset_pair();
+  reset_pair(2);
   assert(pthread_create(&first, NULL, child, (void *)(uintptr_t)1) == 0);
   assert(pthread_create(&second, NULL, child, (void *)(uintptr_t)2) == 0);
   while (atomic_load_explicit(&ready, memory_order_seq_cst) != 2) sched_yield();
@@ -84,9 +87,10 @@ static void *nested_outer(void *unused) {
 
 static void nested(void) {
   pthread_t outer;
-  reset_pair();
+  reset_pair(1);
   assert(pthread_create(&outer, NULL, nested_outer, NULL) == 0);
   assert(pthread_join(outer, NULL) == 0);
+  assert(atomic_load_explicit(&progress, memory_order_seq_cst) == 1);
   assert(tls_value == 901);
   assert(atomic_load_explicit(&main_static, memory_order_seq_cst) == main_sentinel);
 }

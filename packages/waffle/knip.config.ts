@@ -22,6 +22,7 @@ export default {
         "tests/fixtures/interrupt-dom-consumer.ts",
         "scripts/browser-supervisor.ts",
         "scripts/threads-fixture-producer.test.ts",
+        "scripts/c-threads-fixture-producer.test.ts",
         "tooling/check-network-rust.ts",
         "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
         "tests/search-executor-browser.ts",
