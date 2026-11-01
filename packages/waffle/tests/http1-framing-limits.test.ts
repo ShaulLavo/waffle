@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ResponseParser, type ResponseHead } from "../browser/net/http1";
+import { bufferKinds, callerSpan } from "./fixtures/buffer-boundaries";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -236,3 +237,43 @@ test("WAF-003 counts encoded bytes rather than Unicode characters", () => {
   push(trailers, chunked + "0\r\nX: " + "é".repeat(TRAILER_LIMIT / 2) + "\r\n\r\n");
   failed(trailers, "trailers");
 });
+
+function observedSnapshotSizes(run: () => void): number[] {
+  const Native = globalThis.Uint8Array;
+  const sizes: number[] = [];
+  globalThis.Uint8Array = new Proxy(Native, {
+    construct(target, args, newTarget) {
+      const source = args[0];
+      if (ArrayBuffer.isView(source)) sizes.push(source.byteLength);
+      return Reflect.construct(target, args, newTarget);
+    },
+  });
+  try {
+    run();
+    return sizes;
+  } finally {
+    globalThis.Uint8Array = Native;
+  }
+}
+
+for (const kind of bufferKinds.filter((value) => !value.startsWith("fixed"))) {
+  for (const framing of ["length", "chunked"]) {
+    test(`WAF-003 bounds a ${kind} special-backing snapshot after short ${framing} data`, () => {
+      const f = fixture();
+      const prefix =
+        framing === "length" ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx" : chunked + "2\r\nx";
+      push(f, prefix);
+      const ending = framing === "chunked" ? "\r\n0;" : "";
+      const span = callerSpan(encoder.encode("y" + ending + "a".repeat(HEAD_LIMIT * 8)), kind);
+      const copies = observedSnapshotSizes(() => f.parser.push(span));
+      expect(copies.length).toBeGreaterThan(0);
+      expect(Math.max(...copies)).toBeLessThanOrEqual(framing === "length" ? 1 : LINE_LIMIT);
+      expect(f.chunks.map((bytes) => decoder.decode(bytes)).join("")).toBe("xy");
+      if (framing === "chunked") failed(f, "chunk-size");
+      else {
+        expect(f.errors).toEqual([]);
+        expect(f.ended).toBe(1);
+      }
+    });
+  }
+}

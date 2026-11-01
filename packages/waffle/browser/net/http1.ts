@@ -117,6 +117,10 @@ export class ResponseParser {
   private inputCount(available: number): number {
     let limit = available;
     switch (this.state) {
+      case "length":
+      case "chunk-data":
+        limit = this.remaining;
+        break;
       case "head":
         limit = MAX_HEAD_BYTES - this.pending.length;
         break;
