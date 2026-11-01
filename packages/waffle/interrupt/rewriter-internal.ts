@@ -1,5 +1,5 @@
 // Bump on every edit. interrupt-transform-pin.test.ts binds this revision to the implementation.
-export const INTERRUPT_REWRITER_REVISION = 3;
+export const INTERRUPT_REWRITER_REVISION = 4;
 
 /**
  * Fail-closed core-Wasm interrupt instrumentation. Supported features are MVP,
@@ -209,6 +209,10 @@ interface ImportSummary {
   readonly globals: number;
   readonly tags: number;
 }
+function readSharedEnvMemory(reader: Reader, namespace: string, name: string): number {
+  const flags = limits(reader, true);
+  return namespace === "env" && name === "memory" && flags === 3 ? 1 : 0;
+}
 function validateImports(
   reader: Reader,
   count: number,
@@ -242,12 +246,10 @@ function validateImports(
         referenceType(reader);
         limits(reader, false);
         break;
-      case 2: {
-        const flags = limits(reader, true);
-        if (namespace === "env" && name === "memory" && flags === 3) sharedEnvMemories++;
+      case 2:
+        sharedEnvMemories += readSharedEnvMemory(reader, namespace, name);
         memories++;
         break;
-      }
       case 3:
         valueType(reader);
         if (reader.byte() > 1) fail("unsupported global mutability");
