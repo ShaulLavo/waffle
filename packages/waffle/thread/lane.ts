@@ -147,7 +147,12 @@ function parseRequest(value: unknown): ThreadRequest | undefined {
   }
   if (!("fd" in value) || !unsigned(value.fd)) return;
   const fd = value.fd;
-  if (value.kind === "tell" || value.kind === "stat" || value.kind === "close")
+  if (
+    value.kind === "tell" ||
+    value.kind === "stat" ||
+    value.kind === "fdstat" ||
+    value.kind === "close"
+  )
     return { kind: value.kind, fd };
   if (value.kind === "seek") return parseSeek(value, fd);
   if (value.kind !== "read" && value.kind !== "write") return;
@@ -185,6 +190,14 @@ function encodeResult(words: Int32Array, view: DataView, result: ThreadResult): 
     storeNumber(view, 24, result.value);
     return;
   }
+  if ("filetype" in result.value) {
+    atomicsStore(words, 3, 2);
+    atomicsStore(words, 4, result.value.filetype);
+    atomicsStore(words, 5, result.value.flags);
+    dataViewSetBigUint64(view, 24, result.value.rightsBase, true);
+    dataViewSetBigUint64(view, 32, result.value.rightsInheriting, true);
+    return;
+  }
   const stat = result.value;
   atomicsStore(words, 3, 1);
   atomicsStore(words, 4, kinds.indexOf(stat.kind));
@@ -204,7 +217,19 @@ function readNumber(view: DataView, offset: number): number {
 function decodeResult(words: Int32Array, view: DataView): ThreadResult {
   const errno = atomicsLoad(words, 2);
   if (errno) return { kind: "error", errno };
-  if (atomicsLoad(words, 3) === 0) return { kind: "ok", value: readNumber(view, 24) };
+  const tag = atomicsLoad(words, 3);
+  if (tag === 0) return { kind: "ok", value: readNumber(view, 24) };
+  if (tag === 2)
+    return {
+      kind: "ok",
+      value: {
+        filetype: atomicsLoad(words, 4),
+        flags: atomicsLoad(words, 5),
+        rightsBase: dataViewGetBigUint64(view, 24, true),
+        rightsInheriting: dataViewGetBigUint64(view, 32, true),
+      },
+    };
+  if (tag !== 1) throw new Error("invalid thread service reply tag");
   const kind = kinds[atomicsLoad(words, 4)];
   if (!kind) throw new Error("invalid thread stat reply");
   const mode = atomicsLoad(words, 5);
