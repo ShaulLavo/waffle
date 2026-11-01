@@ -14,9 +14,9 @@ import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 
 export type CThreadsRuntimeMode = "pair" | "repeat" | "nested";
 export const cThreadArtifactSha256 =
-  "72672a11a126d643db51ec568718c31cb3bde92070c74309a3f799b7be20e81d";
+  "07cbf777fee58c8a7e24402cae839dc5fa74795034e1dc3662b1db7b24b59cf6";
 export const cThreadReceiptSha256 =
-  "e74cc148308a443abbbfe1320c000584c330f0e831f9d831f34f909ecf3b5a65";
+  "bb5f866e9ccd98a8ac5c47e87b64e5102741e64faabcdb7099f18b980608b140";
 
 function check(value: unknown, label: string): asserts value {
   if (!value) throw new Error(label);
@@ -28,6 +28,48 @@ function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
     timer = setTimeout(() => reject(new Error(label)), 15_000);
   });
   return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+async function workerAtomicControl(local: boolean) {
+  const nonce = crypto.randomUUID();
+  const shared = new SharedArrayBuffer(4);
+  const worker = new Worker(
+    local ? new URL("./c-threads-positive-worker.ts", import.meta.url).href : "/c-positive.js",
+  );
+  const reply = Promise.withResolvers<unknown>();
+  worker.onmessage = (event) => reply.resolve(event.data);
+  worker.onerror = (event) => reply.reject(new Error(event.message));
+  const timeOrigin = performance.timeOrigin;
+  const url = globalThis.location?.href ?? "Bun";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("C Worker/atomic positive control deadline")),
+        10_000,
+      );
+    });
+    worker.postMessage({ shared, nonce });
+    const data = await Promise.race([reply.promise, expired]);
+    check(
+      data && typeof data === "object" && "nonce" in data && "atomic" in data,
+      "C Worker/atomic positive control response missing",
+    );
+    check(
+      data.nonce === nonce && data.atomic === 42 && Atomics.load(new Int32Array(shared), 0) === 42,
+      "C Worker/atomic positive control did not arm",
+    );
+    return {
+      nonce,
+      atomic: 42,
+      timeOrigin,
+      url,
+      isolated: globalThis.crossOriginIsolated ?? false,
+    };
+  } finally {
+    clearTimeout(timer);
+    await worker.terminate();
+  }
 }
 
 function sourceAdmission(source: Uint8Array) {
@@ -47,6 +89,7 @@ function observeWorkers() {
   const initialBytes: number[] = [];
   const readyTids: number[] = [];
   const returnedTids: number[] = [];
+  const guestMemoryObservations: { kind: unknown; tid: number; bytes: number }[] = [];
   const receive = ({ data }: MessageEvent<unknown>) => {
     if (!data || typeof data !== "object" || !("kind" in data) || !("thread" in data)) return;
     const thread = data.thread;
@@ -57,6 +100,12 @@ function observeWorkers() {
       typeof thread.tid !== "number"
     )
       return;
+    if ("observedGuestBytes" in data && typeof data.observedGuestBytes === "number")
+      guestMemoryObservations.push({
+        kind: data.kind,
+        tid: thread.tid,
+        bytes: data.observedGuestBytes,
+      });
     if (data.kind === "ready") readyTids.push(thread.tid);
     if (data.kind === "thread-returned") returnedTids.push(thread.tid);
   };
@@ -90,6 +139,7 @@ function observeWorkers() {
     returned: returnedTids.length,
     readyTids,
     returnedTids,
+    guestMemoryObservations,
     workers: created.length,
     stopped: stopped.size,
     urls,
@@ -119,6 +169,7 @@ export async function runCThreadsRuntime(
     (value) => value.toString(16).padStart(2, "0"),
   ).join("");
   check(digest === cThreadArtifactSha256, "C artifact changed in the execution host");
+  const control = await workerAtomicControl(local);
   const observer = observeWorkers();
   const errors: string[] = [];
   const runtime = createRuntime({
@@ -147,7 +198,7 @@ export async function runCThreadsRuntime(
             ? new URL("../thread/service-worker.ts", import.meta.url).href
             : "/thread-service.js",
           guestWorkerUrl: local
-            ? new URL("../thread/guest-bootstrap.ts", import.meta.url).href
+            ? new URL("./c-threads-runtime-guest.ts", import.meta.url).href
             : "/thread-guest.js",
         },
         request: {
@@ -213,7 +264,10 @@ export async function runCThreadsRuntime(
       workers.returnedTids.every((tid) => tid !== 1 && workers.readyTids.includes(tid)) &&
       workers.initialGuestBytes.length === 1 &&
       workers.initialGuestBytes[0] === 17 * 65_536 &&
-      workers.currentGuestBytes.every((length) => length > 17 * 65_536 && length <= 512 * 65_536) &&
+      workers.guestMemoryObservations.length > 0 &&
+      workers.guestMemoryObservations.every(
+        (item) => item.bytes >= 17 * 65_536 && item.bytes <= 512 * 65_536,
+      ) &&
       snapshot.sharedGuests.length === 1 &&
       snapshot.sharedGuests.every(
         (item) =>
@@ -227,10 +281,15 @@ export async function runCThreadsRuntime(
           item.continuations.active === 0,
       ) &&
       workers.stopped === workers.workers &&
-      errors.length === 0;
+      errors.length === 0 &&
+      control.timeOrigin === performance.timeOrigin &&
+      control.url === (globalThis.location?.href ?? "Bun");
     return {
       passed,
       selected,
+      control,
+      timeOrigin: performance.timeOrigin,
+      documentURL: globalThis.location?.href ?? "Bun",
       artifactSha256: digest,
       sourceAdmission: sourceAdmission(source),
       exit,
@@ -239,6 +298,7 @@ export async function runCThreadsRuntime(
       ...workers,
       sharedGuests: snapshot.sharedGuests,
       debtBytes: snapshot.debtBytes,
+      controlDebts: snapshot.holders.filter((holder) => holder.state === "debt"),
       errors,
       compilerInvoked: false,
       runtimeDisposed: runtime.disposed,

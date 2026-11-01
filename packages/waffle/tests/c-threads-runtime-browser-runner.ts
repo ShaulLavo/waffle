@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readCThreadsPacket } from "./c-threads-packet.js";
 import { verifiedCThreadFixture } from "../scripts/build-c-thread-fixture.js";
 import {
   cThreadArtifactSha256,
@@ -13,9 +14,19 @@ const caseIndex = args.indexOf("--case");
 const selected = caseIndex < 0 ? "pair" : args.splice(caseIndex, 2)[1];
 if (selected !== "pair" && selected !== "repeat" && selected !== "nested")
   throw new Error("unknown C Runtime case");
-const directory = process.env.C_THREAD_FIXTURE_DIR;
+const packetIndex = args.indexOf("--packet");
+const packetDirectory = packetIndex < 0 ? undefined : args.splice(packetIndex, 2)[1];
+const packetManifestSha256 = process.env.C_THREAD_PACKET_SHA256;
+const packet =
+  packetDirectory && packetManifestSha256
+    ? await readCThreadsPacket(packetDirectory, packetManifestSha256)
+    : undefined;
+if (packetDirectory && !packet) throw new Error("set C_THREAD_PACKET_SHA256");
+const directory = packetDirectory ?? process.env.C_THREAD_FIXTURE_DIR;
 if (!directory) throw new Error("set C_THREAD_FIXTURE_DIR to the retained C artifact directory");
-const wasm = verifiedCThreadFixture(directory);
+const wasm = packet
+  ? new Uint8Array(readFileSync(join(directory, "c-threads.wasm")))
+  : verifiedCThreadFixture(directory);
 const artifact = createHash("sha256").update(wasm).digest("hex");
 const receipt = createHash("sha256")
   .update(readFileSync(join(directory, "c-threads.receipt.json")))
@@ -44,7 +55,14 @@ if (args[0] === "--embedding") {
 } else if (args[0] === "--bun") {
   const report = await runCThreadsRuntime(wasm, selected, true);
   console.log(
-    JSON.stringify({ engine: "bun", version: Bun.version, receiptSha256: receipt, report }),
+    JSON.stringify({
+      engine: "bun",
+      version: Bun.version,
+      packet,
+      packetManifestSha256,
+      receiptSha256: receipt,
+      report,
+    }),
   );
   if (!report.passed) process.exitCode = 1;
 } else {
@@ -59,17 +77,29 @@ if (args[0] === "--embedding") {
     scratchPrefix: "cthread-",
     port,
     names: args.length ? args : ["chromium"],
-    sources: {
-      "/runtime-page.js": new URL("./c-threads-runtime-browser.ts", import.meta.url).pathname,
-      "/fs-worker.js": new URL("../browser/fs-worker.ts", import.meta.url).pathname,
-      "/preview1-worker.js": new URL("../browser/preview1-worker.ts", import.meta.url).pathname,
-      "/thread-service.js": new URL("../thread/service-worker.ts", import.meta.url).pathname,
-      "/thread-guest.js": new URL("../thread/guest-bootstrap.ts", import.meta.url).pathname,
+    sources: packet
+      ? {}
+      : {
+          "/c-positive.js": new URL("./c-threads-positive-worker.ts", import.meta.url).pathname,
+          "/runtime-page.js": new URL("./c-threads-runtime-browser.ts", import.meta.url).pathname,
+          "/fs-worker.js": new URL("../browser/fs-worker.ts", import.meta.url).pathname,
+          "/preview1-worker.js": new URL("../browser/preview1-worker.ts", import.meta.url).pathname,
+          "/thread-service.js": new URL("../thread/service-worker.ts", import.meta.url).pathname,
+          "/thread-guest.js": new URL("./c-threads-runtime-guest.ts", import.meta.url).pathname,
+        },
+    route: (path, headers) => {
+      const asset = packet?.assets.find((entry) => path === `/${entry.path}`);
+      if (asset)
+        return new Response(Bun.file(join(directory, asset.path)), {
+          headers: {
+            ...headers,
+            "content-type": path.endsWith(".wasm") ? "application/wasm" : "text/javascript",
+          },
+        });
+      if (path === "/c-threads.wasm")
+        return new Response(wasm, { headers: { ...headers, "content-type": "application/wasm" } });
+      return undefined;
     },
-    route: (path, headers) =>
-      path === "/c-threads.wasm"
-        ? new Response(wasm, { headers: { ...headers, "content-type": "application/wasm" } })
-        : undefined,
     evaluate: async (page) => {
       const report = await page.evaluate(async (mode) => {
         if (mode !== "pair" && mode !== "repeat" && mode !== "nested")
@@ -84,6 +114,8 @@ if (args[0] === "--embedding") {
         JSON.stringify({
           browserVersion: page.context().browser()?.version(),
           receiptSha256: receipt,
+          packet,
+          packetManifestSha256,
           report,
         }),
       );
