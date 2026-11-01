@@ -66,7 +66,9 @@ THREAD_BROWSER_PORT=19437 bun packages/waffle/tests/threads-browser-runner.ts ch
 
 Add `--case pair`, `--case repeat`, or `--case nested` to run one stock Rust mode.
 Every invocation first proves start-section wait32 and wait64 registration, delayed entry,
-canonical pipe output, real filesystem reads, and a bounded child-exit control in that engine.
+canonical pipe output, real filesystem reads, and bounded child-exit controls in that engine. A child grows the shared memory while main is
+parked in wait32 or wait64. The private control route retains the captured wait buffer until its
+matching clear or real host-idle event, and terminal teardown wakes the parked address.
 The Rust modes check exact stdout and all child returns with native shared memory starting at
 17 pages and capped at 512 pages. No growable-buffer conversion or allocator patch is used.
 
@@ -86,7 +88,7 @@ host-idle receipts do not measure OS memory reclamation.
 
 This is an internal service and guest-bridge embedding, not a production threaded Runtime launcher.
 It does not qualify reservation accounting, aggregate backing lifetime, Runtime two-step kill,
-growth-time cancellation, or iOS. Playwright WebKit is not actual Safari evidence.
+all growth-time cancellation races, or iOS. Playwright WebKit is not actual Safari evidence.
 
 ### Run the local TCP relay matrix
 

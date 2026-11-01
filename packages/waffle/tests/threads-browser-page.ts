@@ -10,8 +10,12 @@ import {
 import { compileThreadGuest } from "../thread/guest-module.ts";
 import type { GuestEntry } from "../thread/entry.ts";
 import type { GuestWorkerEvent, GuestWorkerRequest } from "../thread/guest-worker.ts";
-import { THREAD_LANE_BYTES } from "../thread/lane.ts";
-import { readWaitRegistration, WAIT_REGISTRATION_WORDS } from "../interrupt/wait.ts";
+import { THREAD_LANE_BYTES, ThreadWaitOwner } from "../thread/lane.ts";
+import {
+  readWaitRegistration,
+  WAIT_REGISTRATION_WORDS,
+  type CapturedWaitRegistration,
+} from "../interrupt/wait.ts";
 import { guestModule, i32, store, wait32, wait64, call } from "./threads-guest-module.ts";
 import {
   check,
@@ -26,7 +30,8 @@ interface Guest {
   readonly waits: Int32Array;
   readonly ready: Promise<void>;
   readonly idle: Promise<void>;
-  readonly events: GuestWorkerEvent[];
+  readonly waitOwner: ThreadWaitOwner;
+  readonly events: GuestWorkerEvent["kind"][];
   phase: "starting" | "running" | "idle" | "stopped";
   enter(): void;
 }
@@ -51,6 +56,9 @@ class BrowserEmbedding {
   readonly guests: Guest[] = [];
   readonly serviceEvents: ServiceEvent[] = [];
   readonly failures: string[] = [];
+  readonly retainedWaits = new Set<CapturedWaitRegistration>();
+  waitReferences = 0;
+  releasedWaitReferences = 0;
   readonly serviceWaiters = new Map<
     string,
     ReturnType<typeof Promise.withResolvers<ServiceEvent>>
@@ -63,7 +71,13 @@ class BrowserEmbedding {
   private module: WebAssembly.Module | undefined;
   private closing = false;
   private disposal:
-    | Promise<{ liveWorkers: number; serviceLanes: number; filesystem: string; nativeStop: string }>
+    | Promise<{
+        retainedWaits: number;
+        liveWorkers: number;
+        serviceLanes: number;
+        filesystem: string;
+        nativeStop: string;
+      }>
     | undefined;
   static async create() {
     const filesystem = new SharedFilesystem({ mode: "memory", workerURL: "/fs-worker.js" });
@@ -147,6 +161,21 @@ class BrowserEmbedding {
     const channel = new MessageChannel();
     const reply = new SharedArrayBuffer(THREAD_LANE_BYTES);
     const waits = new Int32Array(new SharedArrayBuffer(WAIT_REGISTRATION_WORDS * 4));
+    const waitOwner = new ThreadWaitOwner({
+      thread,
+      memory: this.memory,
+      waits,
+      terminal: () => readOutcome(this.outcome) !== null,
+      retain: (registration) => {
+        this.retainedWaits.add(registration);
+        this.waitReferences++;
+        return () => {
+          check(this.retainedWaits.delete(registration), "wait reference released twice");
+          this.releasedWaitReferences++;
+        };
+      },
+      failed: (cause) => this.fail(String(cause)),
+    });
     const ready = Promise.withResolvers<void>();
     const idle = Promise.withResolvers<void>();
     void ready.promise.catch(() => {});
@@ -157,6 +186,7 @@ class BrowserEmbedding {
       waits,
       ready: ready.promise,
       idle: idle.promise,
+      waitOwner,
       events: [],
       phase: "starting",
       enter: () => {
@@ -165,7 +195,9 @@ class BrowserEmbedding {
       },
     };
     worker.onmessage = ({ data }: MessageEvent<GuestWorkerEvent>) => {
-      guest.events.push(data);
+      waitOwner.receive(data);
+      guest.events.push(data.kind);
+      if (data.kind === "process-terminal") this.beginTerminal();
       if (data.kind === "ready") ready.resolve();
       if (data.kind === "host-idle") {
         ready.reject(new Error("idled before ready"));
@@ -220,7 +252,7 @@ class BrowserEmbedding {
   }
   private async retire(guest: Guest) {
     guest.phase = "idle";
-    if (guest.events.some((event) => event.kind === "thread-returned")) this.returned++;
+    if (guest.events.includes("thread-returned")) this.returned++;
     const retired = this.serviceEvent("retired", guest.tid);
     this.send({ kind: "retire", tid: guest.tid });
     await retired;
@@ -231,6 +263,7 @@ class BrowserEmbedding {
     this.failures.push(message);
     for (const waiter of this.serviceWaiters.values()) waiter.reject(new Error(message));
     claimOutcome(this.outcome, processOutcome({ kind: "exited", code: 1 }));
+    this.beginTerminal();
   }
   private terminate(worker: Worker) {
     worker.onmessage = null;
@@ -260,13 +293,12 @@ class BrowserEmbedding {
     const errors: unknown[] = [];
     claimOutcome(this.outcome, processOutcome({ kind: "exited", code: 1 }));
     for (const guest of this.guests) guest.worker.postMessage({ kind: "close" });
-    const wake = setInterval(() => this.wake(), 5);
+    this.beginTerminal();
     try {
       await bounded(Promise.all(this.guests.map((guest) => guest.idle)), "cleanup idle", 1500);
     } catch (error) {
       errors.push(error);
     }
-    clearInterval(wake);
     try {
       const stopped = this.serviceEvent("stopped");
       this.send({ kind: "stop" });
@@ -292,19 +324,21 @@ class BrowserEmbedding {
       this.liveWorkers.size === 0 && this.filesystem.state.status === "disposed",
       "workers retained after teardown",
     );
+    check(
+      this.retainedWaits.size === 0 && this.waitReferences === this.releasedWaitReferences,
+      "parked buffer references retained",
+    );
+    check(this.failures.length === 0, this.failures.join("\n"));
     return {
+      retainedWaits: this.retainedWaits.size,
       liveWorkers: this.liveWorkers.size,
       serviceLanes: 0,
       filesystem: this.filesystem.state.status,
       nativeStop: "requested after host-idle; not OS reclamation",
     };
   }
-  private wake() {
-    for (const guest of this.guests) {
-      const registration = readWaitRegistration(guest.waits);
-      if (registration)
-        Atomics.notify(new Int32Array(this.memory.buffer), registration.address / 4);
-    }
+  private beginTerminal() {
+    for (const guest of this.guests) guest.waitOwner.beginTerminal();
   }
 }
 async function readiness(width: 4 | 8) {
@@ -334,10 +368,7 @@ async function readiness(width: 4 | 8) {
       () => readWaitRegistration(guest.waits)?.width === width,
       `start-section wait${width * 8} registration`,
     );
-    check(
-      !guest.events.some((event) => event.kind === "ready"),
-      "ready preceded start-section wait",
-    );
+    check(!guest.events.includes("ready"), "ready preceded start-section wait");
     const wake = setInterval(
       () => Atomics.notify(new Int32Array(fixture.memory.buffer), 256 / 4),
       5,
@@ -414,15 +445,20 @@ async function runRust(module: WebAssembly.Module, mode: ThreadBrowserMode) {
     throw error;
   }
 }
-async function terminalControl() {
+async function terminalControl(width: 4 | 8) {
   const module = await compileThreadGuest(
     guestModule({
       imports: [
         { module: "wasi", name: "thread-spawn", params: [0x7f] },
         { name: "proc_exit", params: [0x7f], result: false },
       ],
-      initial: i32(0).concat(call(0), [0x1a], wait64(512)),
-      secondary: wait32(520).concat(i32(0), call(1)),
+      initial: i32(0).concat(
+        call(0),
+        [0x1a],
+        width === 4 ? wait32(512) : wait64(512),
+        store(600, i32(99)),
+      ),
+      secondary: wait32(520).concat(i32(1), [0x40, 0, 0x1a], i32(0), call(1)),
     }),
   );
   const fixture = await BrowserEmbedding.create();
@@ -434,23 +470,40 @@ async function terminalControl() {
     await until(
       () =>
         fixture.guests.length === 2 &&
-        readWaitRegistration(main.waits)?.width === 8 &&
+        fixture.retainedWaits.size === 2 &&
+        readWaitRegistration(main.waits)?.width === width &&
         readWaitRegistration(fixture.guests[1]!.waits)?.width === 4,
       "parked main and child",
+    );
+    check(
+      fixture.retainedWaits.size === 2,
+      "private wait events did not retain both parked buffers",
+    );
+    const parkedBufferBytes = Array.from(
+      fixture.retainedWaits,
+      (registration) => registration.buffer.byteLength,
     );
     Atomics.store(new Int32Array(fixture.memory.buffer), 520 / 4, 1);
     Atomics.notify(new Int32Array(fixture.memory.buffer), 520 / 4);
     await until(() => readOutcome(fixture.outcome) !== null, "child proc_exit");
     const outcome = readOutcome(fixture.outcome);
     check(outcome?.kind === "exited" && outcome.code === 0, "child zero exit was replaced");
+    check(fixture.memory.buffer.byteLength === 18 * 65536, "child did not grow shared memory");
     const cleanup = await fixture.dispose();
     check(
-      fixture.guests.every((guest) => guest.events.some((event) => event.kind === "host-idle")),
+      new Int32Array(fixture.memory.buffer)[600 / 4] === 0,
+      "terminal waiter resumed guest instructions",
+    );
+    check(
+      fixture.guests.every((guest) => guest.events.includes("host-idle")),
       "terminal control missed host-idle",
     );
     return {
       outcome,
-      mainParkedInWait64: true,
+      mainWaitWidth: width,
+      parkedBufferBytes,
+      nativeGrowthPages: 1,
+      capturedReferencesReleased: fixture.waitReferences === fixture.releasedWaitReferences,
       childParkedInWait32: true,
       cleanup,
       qualification: "bounded guest terminal control, not Runtime two-step-kill",
@@ -473,7 +526,7 @@ export async function runThreadsBrowser(
     "COOP/COEP or SharedArrayBuffer missing",
   );
   const controls = [await readiness(4), await readiness(8)];
-  const terminal = await terminalControl();
+  const terminal = [await terminalControl(4), await terminalControl(8)];
   const source = new Uint8Array(await (await fetch("/threads.wasm")).arrayBuffer());
   const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", source)), (byte) =>
     byte.toString(16).padStart(2, "0"),
