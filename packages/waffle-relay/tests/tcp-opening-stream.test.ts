@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { ServerWebTransportStream } from "../src/tcp-webtransport-server-stream.js";
 import { TcpAdmissions, tcpPolicy } from "../src/tcp-policy.js";
 import { mintRelayToken } from "../src/token.js";
-import { encodeOpenHeader } from "../src/tcp-protocol.js";
+import { encodeOpenHeader, OpenHeaderDecoder } from "../src/tcp-protocol.js";
+import { StreamTransport } from "../src/tcp-frame-stream.js";
 
 const target = { host: "fixture.example", port: 5432 };
 async function opening(extra: "merged" | "while-resolving" | "missing-window") {
@@ -72,3 +73,45 @@ async function opening(extra: "merged" | "while-resolving" | "missing-window") {
 }
 for (const extra of ["merged", "while-resolving", "missing-window"] as const)
   test(`WT opening rejects ${extra} before target publication and logs once`, () => opening(extra));
+
+for (const code of [
+  "relay-auth",
+  "destination-denied",
+  "target-refused",
+  "target-timeout",
+] as const)
+  test(`WT ${code} reply finishes before rejected-open cleanup can reset it`, async () => {
+    const events: string[] = [];
+    const chunks: Uint8Array[] = [];
+    const decoder = new OpenHeaderDecoder();
+    let received: string | undefined;
+    const transport = new StreamTransport(
+      {
+        readable: new ReadableStream({ cancel: () => void events.push("cancel") }),
+        writable: new WritableStream<Uint8Array>({
+          write(bytes) {
+            events.push("write");
+            chunks.push(bytes);
+          },
+          close() {
+            events.push("close");
+            for (const chunk of chunks) received = decoder.push(chunk)?.header;
+          },
+          abort() {
+            events.push("abort");
+            chunks.length = 0;
+          },
+        }),
+      },
+      16384,
+      (value) => ({ code: value }),
+    );
+    try {
+      await transport.handoffHeader({ v: 1, ok: false, code }, () => {});
+      await transport.reset(1);
+      expect(received && JSON.parse(received)).toEqual({ v: 1, ok: false, code });
+      expect(events).toEqual(["write", "close", "cancel"]);
+    } finally {
+      await transport.reset(1);
+    }
+  });

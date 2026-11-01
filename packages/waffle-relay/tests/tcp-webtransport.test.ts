@@ -210,3 +210,24 @@ test("oversized discovery and more than one hash fail before allocating a native
     }
   }
 });
+
+test("a rejected native handshake closes cleanly after WebSocket fallback", async () => {
+  const failure = new Error("certificate hash validation failed");
+  let closed = 0;
+  const run = fixture(() => ({
+    ready: Promise.reject(failure),
+    closed: Promise.reject(failure),
+    createBidirectionalStream: () => Promise.reject(new Error("handshake never opened")),
+    close() {
+      closed++;
+    },
+  }));
+  try {
+    await run.relay.connect(target, new AbortController().signal);
+    expect(run.relay.carrier).toBe("websocket");
+    expect(closed).toBeGreaterThan(0);
+    await expect(run.relay.close()).resolves.toBeUndefined();
+  } finally {
+    await run.relay.close().catch(() => {});
+  }
+});

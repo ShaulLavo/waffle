@@ -103,10 +103,11 @@ export class StreamTransport implements FrameTransport {
     void this.firstInput.catch(() => {});
   }
   attach(_flow: TcpFlow): void {}
-  handoffHeader(reply: OpenReply, handoff: () => void): Promise<void> {
+  async handoffHeader(reply: OpenReply, handoff: () => void): Promise<void> {
     this.opened = true;
     handoff();
-    return this.channel.writer.write(encodeOpenHeader(reply));
+    await this.channel.writer.write(encodeOpenHeader(reply));
+    if (!reply.ok) await this.channel.writer.close();
   }
   async write(frame: TcpFrame, handoff: () => void): Promise<void> {
     const bytes = encodeStreamFrame(frame);

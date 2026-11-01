@@ -176,7 +176,12 @@ export class WebTransportCarrier {
   private dropSession(session: Session): void {
     this.lost(session);
     session.transport.close({ closeCode: 0, reason: "cleanup" });
-    this.ownCleanup(session.transport.closed.then(() => {}));
+    this.ownCleanup(
+      session.transport.closed.then(
+        () => {},
+        () => {},
+      ),
+    );
   }
   private ownCleanup(receipt: Promise<void>, terminal = true): void {
     const bounded = terminal ? deadline(receipt, DRAIN_MS) : receipt;
