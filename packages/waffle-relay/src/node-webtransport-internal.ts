@@ -61,9 +61,7 @@ export function createNativeRelay(
         rotationMs: selected.rotationMs,
         hashMode,
         certificate: (signal, remaining) =>
-          hashMode
-            ? createCertificate(signal, remaining)
-            : Promise.resolve(certificate),
+          hashMode ? createCertificate(signal, remaining) : Promise.resolve(certificate),
         construct: (record, live) => {
           const endpoint = new NativeEndpoint(
             selected.bind,
@@ -335,21 +333,32 @@ interface NativeOptionsSnapshot {
 }
 
 function snapshotOptions(options: TcpWebTransportOptions): NativeOptionsSnapshot {
-  const address = snapshotWebTransportAddress(options);
-  const rotationMs = options.rotationMs ?? 7 * 86400000;
-  if (
-    !Number.isSafeInteger(rotationMs) ||
-    rotationMs < 1000 ||
-    rotationMs > 12 * 86400000
-  )
+  rejectUnknownKeys(options, [
+    "bind",
+    "advertisedUrl",
+    "certificate",
+    "rotationMs",
+    "onEndpointFailure",
+  ]);
+  const {
+    bind,
+    advertisedUrl,
+    certificate: inputCertificate,
+    rotationMs = 7 * 86400000,
+    onEndpointFailure,
+  } = options;
+  const address = snapshotWebTransportAddress({ bind, advertisedUrl });
+  if (!Number.isSafeInteger(rotationMs) || rotationMs < 1000 || rotationMs > 12 * 86400000)
     throw new TypeError("Invalid WebTransport rotation interval");
-  const certificate = snapshotCertificate(options.certificate, address.advertisedHostname);
+  if (onEndpointFailure !== undefined && typeof onEndpointFailure !== "function")
+    throw new TypeError("Invalid WebTransport endpoint failure callback");
+  const certificate = snapshotCertificate(inputCertificate, address.advertisedHostname);
   return Object.freeze({
     address,
     bind: address.bind,
     ...(certificate ? { certificate } : {}),
     rotationMs,
-    ...(options.onEndpointFailure ? { onEndpointFailure: options.onEndpointFailure } : {}),
+    ...(onEndpointFailure ? { onEndpointFailure } : {}),
   });
 }
 
@@ -357,9 +366,17 @@ function snapshotCertificate(
   value: TcpWebTransportOptions["certificate"],
   hostname: string,
 ): NativeOptionsSnapshot["certificate"] {
-  if (!value || value === "rotating-hash") return value;
-  return parseOperatorCertificate(
-    Object.freeze({ cert: value.cert, key: value.key }),
-    hostname,
-  );
+  if (value === undefined || value === "rotating-hash") return value;
+  rejectUnknownKeys(value, ["cert", "key"]);
+  const { cert, key } = value;
+  if (typeof cert !== "string" || typeof key !== "string")
+    throw new TypeError("Invalid WebTransport certificate material");
+  return parseOperatorCertificate({ cert, key }, hostname);
+}
+
+function rejectUnknownKeys(value: unknown, allowed: readonly string[]): void {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new TypeError("Invalid WebTransport configuration");
+  if (Object.keys(value).some((key) => !allowed.includes(key)))
+    throw new TypeError("Unknown WebTransport configuration field");
 }

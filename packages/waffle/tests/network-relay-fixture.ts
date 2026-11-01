@@ -95,17 +95,11 @@ export function createRelayBrowserFixture() {
         const entry = new URL("../../waffle-relay/src/node-webtransport.ts", import.meta.url).href;
         const {
           createNodeWebTransportRelayServer,
-        }: {
-          createNodeWebTransportRelayServer(
-            options: Parameters<typeof createNodeRelayServer>[0] & {
-              tcp: typeof tcp & { webtransport: { host: string; port: number } };
-            },
-          ): ReturnType<typeof createNodeRelayServer>;
-        } = await import(entry);
+        }: typeof import("../../waffle-relay/src/node-webtransport.js") = await import(entry);
         nativePort = await udpPort();
         relay = createNodeWebTransportRelayServer({
           ...options,
-          tcp: { ...tcp, webtransport: { host: "127.0.0.1", port: nativePort } },
+          tcp: { ...tcp, webtransport: { bind: { host: "127.0.0.1", port: nativePort } } },
         });
       } else relay = createNodeRelayServer(options);
       await relay.tcp?.ready;

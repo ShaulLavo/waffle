@@ -2,9 +2,7 @@ import { expect, test } from "bun:test";
 import { snapshotWebTransportAddress } from "../src/webtransport-address.js";
 
 test("loopback defaults use canonical discovery URL", () => {
-  expect(
-    snapshotWebTransportAddress({ bind: { host: "127.42.0.9", port: 4433 } }),
-  ).toEqual({
+  expect(snapshotWebTransportAddress({ bind: { host: "127.42.0.9", port: 4433 } })).toEqual({
     bind: { host: "127.42.0.9", port: 4433 },
     advertisedUrl: "https://127.42.0.9:4433/v1/tcp/wt",
     advertisedHostname: "127.42.0.9",
@@ -54,7 +52,10 @@ test("bind and advertised validation rejects unsafe or legacy shapes", () => {
   credentials.username = "u";
   credentials.password = "p";
   expect(() =>
-    snapshotWebTransportAddress({ bind: { host: "127.0.0.1", port: 4433 }, advertisedUrl: credentials }),
+    snapshotWebTransportAddress({
+      bind: { host: "127.0.0.1", port: 4433 },
+      advertisedUrl: credentials,
+    }),
   ).toThrow();
   expect(() =>
     snapshotWebTransportAddress({
@@ -76,4 +77,26 @@ test("URL and bind inputs are copied synchronously", () => {
     advertisedUrl: "https://relay.example/v1/tcp/wt",
     advertisedHostname: "relay.example",
   });
+});
+
+test("bind accessors are read once and the validated values are retained", () => {
+  let hostReads = 0;
+  let portReads = 0;
+  const bind = {
+    get host() {
+      hostReads++;
+      return hostReads === 1 ? "127.0.0.1" : "0.0.0.0";
+    },
+    get port() {
+      portReads++;
+      return portReads === 1 ? 4433 : 0;
+    },
+  };
+  expect(snapshotWebTransportAddress({ bind })).toEqual({
+    bind: { host: "127.0.0.1", port: 4433 },
+    advertisedUrl: "https://127.0.0.1:4433/v1/tcp/wt",
+    advertisedHostname: "127.0.0.1",
+  });
+  expect(hostReads).toBe(1);
+  expect(portReads).toBe(1);
 });

@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseOperatorCertificate } from "../src/webtransport-certificate.js";
 
-function certificateFixture(): { cert: string; key: string; otherKey: string } {
+function certificateFixture(
+  commonName = "relay.example",
+  subjectAltName = "DNS:relay.example,IP:127.0.0.1,IP:::1",
+): { cert: string; key: string; otherKey: string } {
   const directory = mkdtempSync(join(process.env.WAFFLE_RELAY_TMPDIR ?? tmpdir(), "wt-cert-test-"));
   try {
     const cert = join(directory, "cert.pem");
@@ -23,21 +26,16 @@ function certificateFixture(): { cert: string; key: string; otherKey: string } {
         "-days",
         "2",
         "-subj",
-        "/CN=relay.example",
-        "-addext",
-        "subjectAltName=DNS:relay.example,IP:127.0.0.1,IP:::1",
+        `/CN=${commonName}`,
+      ].concat(subjectAltName ? ["-addext", `subjectAltName=${subjectAltName}`] : [], [
         "-keyout",
         key,
         "-out",
         cert,
-      ],
+      ]),
       { stdio: "ignore" },
     );
-    execFileSync(
-      "openssl",
-      ["genrsa", "-out", otherKey, "2048"],
-      { stdio: "ignore" },
-    );
+    execFileSync("openssl", ["genrsa", "-out", otherKey, "2048"], { stdio: "ignore" });
     return {
       cert: readFileSync(cert, "utf8"),
       key: readFileSync(key, "utf8"),
@@ -70,4 +68,19 @@ test("operator certificate rejects identity, key and parse failures", () => {
   expect(() =>
     parseOperatorCertificate({ cert: "not a certificate", key: fixture.key }, "relay.example"),
   ).toThrow("certificate");
+});
+
+test.each([
+  ["127.0.0.1", "DNS:127.0.0.1"],
+  ["127.0.0.1", ""],
+  ["::1", "DNS:::1"],
+])("numeric certificate identity %s requires an IP SAN, not %s", (hostname, san) => {
+  const fixture = certificateFixture(hostname, san);
+  expect(() => parseOperatorCertificate(fixture, hostname)).toThrow("hostname");
+});
+
+test("operator certificate accepts IPv4 IP SAN and DNS SAN controls", () => {
+  const fixture = certificateFixture();
+  expect(parseOperatorCertificate(fixture, "127.0.0.1").cert).toBe(fixture.cert);
+  expect(parseOperatorCertificate(fixture, "relay.example").cert).toBe(fixture.cert);
 });

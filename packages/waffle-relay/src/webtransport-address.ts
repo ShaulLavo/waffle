@@ -38,17 +38,17 @@ export function snapshotWebTransportAddress(
 }
 
 function parseBind(value: WebTransportBind): WebTransportBind {
-  if (!value || typeof value.host !== "string")
+  if (!value || typeof value !== "object" || Array.isArray(value))
     throw new TypeError("WebTransport bind requires a numeric address and port");
-  const identity = parseIp(value.host);
-  if (
-    typeof value.port !== "number" ||
-    !Number.isInteger(value.port) ||
-    value.port < 1 ||
-    value.port > 65535
-  )
+  if (Object.keys(value).some((key) => key !== "host" && key !== "port"))
+    throw new TypeError("Unknown WebTransport bind field");
+  const { host, port } = value;
+  if (typeof host !== "string")
+    throw new TypeError("WebTransport bind requires a numeric address and port");
+  const identity = parseIp(host);
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
     throw new TypeError("WebTransport bind requires a port from 1 through 65535");
-  return { host: identity.value, port: value.port };
+  return { host: identity.value, port };
 }
 
 function parseAdvertised(
@@ -75,8 +75,7 @@ function parseAdvertised(
   } catch {
     throw new TypeError("Invalid WebTransport advertisedUrl");
   }
-  if (url.protocol !== "https:")
-    throw new TypeError("WebTransport advertisedUrl must use HTTPS");
+  if (url.protocol !== "https:") throw new TypeError("WebTransport advertisedUrl must use HTTPS");
   if (url.username || url.password)
     throw new TypeError("WebTransport advertisedUrl cannot contain credentials");
   if (url.pathname !== WEBTRANSPORT_PATH)

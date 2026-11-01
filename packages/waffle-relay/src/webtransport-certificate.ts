@@ -27,9 +27,10 @@ export function parseOperatorCertificate(
   hostname: string,
   now = Date.now(),
 ): CertificateMaterial {
+  const { cert, key } = value;
   let parsed: X509Certificate;
   try {
-    parsed = new X509Certificate(value.cert);
+    parsed = new X509Certificate(cert);
   } catch {
     throw new TypeError("Invalid WebTransport certificate");
   }
@@ -41,14 +42,14 @@ export function parseOperatorCertificate(
     throw new TypeError("WebTransport certificate does not match advertised hostname");
   let matches: boolean;
   try {
-    matches = parsed.checkPrivateKey(createPrivateKey(value.key));
+    matches = parsed.checkPrivateKey(createPrivateKey(key));
   } catch {
     throw new TypeError("Invalid WebTransport private key");
   }
   if (!matches) throw new TypeError("WebTransport certificate and key do not match");
   return Object.freeze({
-    cert: value.cert,
-    key: value.key,
+    cert,
+    key,
     starts,
     expires,
     hash: Object.freeze({ algorithm: "sha-256" as const, value: "" }),
@@ -56,23 +57,7 @@ export function parseOperatorCertificate(
 }
 
 function certificateMatchesHostname(certificate: X509Certificate, hostname: string): boolean {
-  if (certificate.checkHost(hostname)) return true;
-  if (!isIP(hostname)) return false;
-  const entries = certificate.subjectAltName?.split(/,\s*/) ?? [];
-  return entries.some((entry) => {
-    if (!entry.startsWith("IP Address:")) return false;
-    try {
-      return canonicalCertificateIp(entry.slice("IP Address:".length)) === hostname;
-    } catch {
-      return false;
-    }
-  });
-}
-
-function canonicalCertificateIp(value: string): string {
-  if (isIP(value) === 4) return value;
-  if (isIP(value) !== 6) throw new TypeError("Invalid certificate IP");
-  return new URL(`https://[${value}]/`).hostname.slice(1, -1).toLowerCase();
+  return Boolean(isIP(hostname) ? certificate.checkIP(hostname) : certificate.checkHost(hostname));
 }
 
 export async function createCertificate(
