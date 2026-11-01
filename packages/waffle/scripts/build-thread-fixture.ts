@@ -49,15 +49,15 @@ function run(args: string[]): string {
     stdout: "pipe",
     stderr: "pipe",
   });
-  if (child.exitCode !== 0)
-    throw new Error(`${args.join(" ")} failed\n${child.stderr.toString()}`);
+  if (child.exitCode !== 0) throw new Error(`${args.join(" ")} failed\n${child.stderr.toString()}`);
   return child.stdout.toString().trim();
 }
 
 function contract() {
   for (const name of inputs.filter((name) => name.endsWith("rust-toolchain.toml"))) {
     const pin = record(Bun.TOML.parse(readFileSync(join(root, name), "utf8")));
-    if (record(pin.toolchain).channel !== toolchain) throw new Error(`${name} must pin ${toolchain}`);
+    if (record(pin.toolchain).channel !== toolchain)
+      throw new Error(`${name} must pin ${toolchain}`);
   }
   return {
     target,
@@ -101,9 +101,11 @@ function compilerInputs() {
 }
 
 function outputDirectory(directory: string): string {
-  if (!isAbsolute(directory)) throw new Error("THREAD_FIXTURE_DIR must be absolute and outside Git");
+  if (!isAbsolute(directory))
+    throw new Error("THREAD_FIXTURE_DIR must be absolute and outside Git");
   const path = resolve(directory);
-  if (!relative(root, path).startsWith("../")) throw new Error("fixture output must be outside Git");
+  if (!relative(root, path).startsWith("../"))
+    throw new Error("fixture output must be outside Git");
   mkdirSync(path, { recursive: true });
   const actual = realpathSync(path);
   if (!relative(realpathSync(root), actual).startsWith("../"))
@@ -121,10 +123,14 @@ export function buildThreadFixture(directory: string) {
     const configuration = contract();
     const compiler = compilerInputs();
     const output = join(scratch, THREAD_FIXTURE_WASM);
-    run([compiler.rustc].concat(flags, [
-      `--remap-path-prefix=${root}=/waffle-thread-fixture`,
-      join(root, source), "-o", output,
-    ]));
+    run(
+      [compiler.rustc].concat(flags, [
+        `--remap-path-prefix=${root}=/waffle-thread-fixture`,
+        join(root, source),
+        "-o",
+        output,
+      ]),
+    );
     const wasm = readFileSync(output);
     const payload = {
       schema: 1,
@@ -175,7 +181,11 @@ export function verifiedThreadFixture(directory: string): Uint8Array<ArrayBuffer
     throw new Error("thread fixture has no compiler inventory");
   const artifact = record(receipt.artifact);
   const wasm = readFileSync(join(directory, THREAD_FIXTURE_WASM));
-  if (artifact.path !== THREAD_FIXTURE_WASM || artifact.sha256 !== digest(wasm) || artifact.size !== wasm.length)
+  if (
+    artifact.path !== THREAD_FIXTURE_WASM ||
+    artifact.sha256 !== digest(wasm) ||
+    artifact.size !== wasm.length
+  )
     throw new Error("thread fixture output changed or is missing");
   return new Uint8Array(wasm);
 }

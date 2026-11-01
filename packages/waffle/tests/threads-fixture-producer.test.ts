@@ -1,113 +1,95 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { THREAD_FIXTURE_RECEIPT, THREAD_FIXTURE_WASM, verifiedThreadFixture } from "../scripts/build-thread-fixture.ts";
-import { inspectThreadFixture } from "./threads-fixture-inspect.ts";
+import { Glob, YAML } from "bun";
+import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { verifiedThreadFixture } from "../scripts/build-thread-fixture.ts";
 
-const root = resolve(import.meta.dir, "../../..");
-const source = "packages/waffle/tests/fixtures/threads.rs";
-const builder = "packages/waffle/scripts/build-thread-fixture.ts";
-let scratch = "", project = "", outdir = "";
-
-function command(args: string[], directory = outdir) {
-  return Bun.spawnSync([process.execPath, join(project, builder)].concat(args), {
-    env: { ...process.env, THREAD_FIXTURE_DIR: directory },
-    stdout: "pipe", stderr: "pipe", timeout: 120_000,
-  });
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("expected a workflow mapping");
+  return Object.fromEntries(Object.entries(value));
 }
 
-function success(args: string[], directory = outdir) {
-  const child = command(args, directory);
-  expect(child.stderr.toString()).toBe("");
-  expect(child.exitCode).toBe(0);
+const workflow = record(
+  YAML.parse(
+    readFileSync(
+      new URL("../../../.github/workflows/threads-fixture.yml", import.meta.url),
+      "utf8",
+    ),
+  ),
+);
+const events = record(workflow.on);
+const producer = record(record(workflow.jobs).producer);
+const compile =
+  "bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000";
+
+function patterns(event: "push" | "pull_request"): string[] {
+  const paths = record(events[event]).paths;
+  if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string"))
+    throw new Error("expected fixture input paths");
+  return paths;
 }
 
-beforeAll(() => {
-  const directory = process.env.THREAD_FIXTURE_TEST_ROOT;
-  if (!directory) throw new Error("THREAD_FIXTURE_TEST_ROOT must name external disposable scratch");
-  scratch = mkdtempSync(join(directory, "threads-producer-test-"));
-  project = join(scratch, "source");
-  outdir = join(scratch, "artifact");
-  for (const path of [source, builder, "rust-toolchain.toml", "packages/waffle/rust-toolchain.toml"]) {
-    const destination = join(project, path);
-    mkdirSync(dirname(destination), { recursive: true });
-    cpSync(join(root, path), destination);
-  }
-  success([]);
-}, 120_000);
-
-afterAll(() => {
-  if (scratch) rmSync(scratch, { recursive: true, force: true });
+test("real fixture compilation is selected for every producer input, not unrelated runtime jobs", () => {
+  expect(patterns("push")).toEqual(patterns("pull_request"));
+  for (const path of [
+    ".github/workflows/threads-fixture.yml",
+    "rust-toolchain.toml",
+    "packages/waffle/rust-toolchain.toml",
+    "packages/waffle/scripts/build-thread-fixture.ts",
+    "packages/waffle/scripts/threads-fixture-producer.test.ts",
+    "packages/waffle/tests/threads-fixture-inspect.ts",
+    "packages/waffle/tests/threads-fixture-producer.test.ts",
+    "packages/waffle/tests/fixtures/threads.rs",
+  ])
+    expect(
+      patterns("pull_request").some((pattern) => new Glob(pattern).match(path)),
+      path,
+    ).toBe(true);
+  for (const path of [
+    "docs/concepts.md",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/core/wasi.ts",
+  ])
+    expect(
+      patterns("pull_request").some((pattern) => new Glob(pattern).match(path)),
+      path,
+    ).toBe(false);
 });
 
-test("real stock Rust producer emits deterministic guest and receipt without build leftovers", () => {
-  const wasm = readFileSync(join(outdir, THREAD_FIXTURE_WASM));
-  const receipt = readFileSync(join(outdir, THREAD_FIXTURE_RECEIPT));
-  const second = join(scratch, "second");
-  success([], second);
-  expect(readFileSync(join(second, THREAD_FIXTURE_WASM))).toEqual(wasm);
-  expect(readFileSync(join(second, THREAD_FIXTURE_RECEIPT))).toEqual(receipt);
-  expect(readdirSync(outdir).sort()).toEqual([THREAD_FIXTURE_RECEIPT, THREAD_FIXTURE_WASM].sort());
-  success(["--verify"]);
-  success(["--verify-toolchain"]);
-}, 120_000);
-
-test("real module imports signed spawn and shared memory and exports stock command and thread entries", () => {
-  const inspected = inspectThreadFixture(new Uint8Array(readFileSync(join(outdir, THREAD_FIXTURE_WASM))));
-  expect(inspected.imports).toContainEqual({
-    kind: "function", module: "wasi", name: "thread-spawn", typeIndex: expect.any(Number), parameters: ["i32"], results: ["i32"],
+test("the dedicated compiler job owns its pinned target and scratch without changing default discovery", () => {
+  if (!Array.isArray(producer.steps)) throw new Error("expected producer steps");
+  const steps = producer.steps.map(record);
+  const toolchain = steps.find((step) => step.uses === "dtolnay/rust-toolchain@stable");
+  expect(record(toolchain?.with)).toEqual({
+    toolchain: "1.98.1",
+    targets: "wasm32-wasip1-threads",
+    components: "rustfmt",
   });
-  expect(inspected.imports.filter((entry) => entry.kind === "memory")).toHaveLength(1);
-  expect(inspected.exports).toContainEqual({ name: "_start", kind: "function", index: expect.any(Number), parameters: [], results: [] });
-  expect(inspected.exports).toContainEqual({ name: "wasi_thread_start", kind: "function", index: expect.any(Number), parameters: ["i32", "i32"], results: [] });
-  expect(inspected.start).toMatchObject({ parameters: [], results: [] });
-  expect(inspected.data.some((segment) => segment.kind === "passive")).toBe(true);
-  expect(inspected.data.every((segment) => segment.kind === "passive")).toBe(true);
-  expect(inspected.fixed32MiBImportCompatible).toBe(true);
+  expect(steps.filter((step) => step.run === compile)).toHaveLength(1);
+  expect(record(steps.find((step) => step.run === compile)?.env).THREAD_FIXTURE_TEST_ROOT).toBe(
+    "${{ runner.temp }}",
+  );
+  expect(
+    steps.some((step) => /bun install|prepare:package|cargo build/.test(String(step.run))),
+  ).toBe(false);
+  const manifest = record(
+    JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")),
+  );
+  expect(record(manifest.scripts).test).toBe("bun test ./tests");
+  expect(compile).toContain("/scripts/");
 });
 
-function changedFile(path: string, change: (before: Buffer) => void) {
-  const before = readFileSync(path);
+test("receipt verification fails closed without invoking a compiler or creating output", () => {
+  const directory = mkdtempSync(join(tmpdir(), "threads-receipt-"));
   try {
-    change(before);
-    expect(command(["--verify"]).exitCode).not.toBe(0);
+    expect(() => verifiedThreadFixture(directory)).toThrow();
+    expect(readdirSync(directory)).toEqual([]);
+    writeFileSync(join(directory, "threads.receipt.json"), '{"schema":1,"sha256":"tampered"}');
+    expect(() => verifiedThreadFixture(directory)).toThrow("receipt digest does not match");
+    expect(readdirSync(directory)).toEqual(["threads.receipt.json"]);
   } finally {
-    writeFileSync(path, before);
+    rmSync(directory, { recursive: true, force: true });
   }
-  success(["--verify"]);
-}
-
-test("verification fails closed on changed or missing source, builder, config, receipt and wasm", () => {
-  for (const path of [source, builder, "rust-toolchain.toml", "packages/waffle/rust-toolchain.toml"]) {
-    changedFile(join(project, path), (before) => writeFileSync(join(project, path), Buffer.concat([before, Buffer.from("\n")])));
-    changedFile(join(project, path), () => rmSync(join(project, path)));
-  }
-  const artifact = join(outdir, THREAD_FIXTURE_WASM);
-  changedFile(artifact, (before) => writeFileSync(artifact, before.subarray(0, before.length - 1)));
-  changedFile(artifact, () => rmSync(artifact));
-  const receipt = join(outdir, THREAD_FIXTURE_RECEIPT);
-  changedFile(receipt, (before) => writeFileSync(receipt, before.toString().replace('"panic=abort"', '"panic=unwind"').replace('"schema": 1', '"schema": 2')));
-  changedFile(receipt, () => rmSync(receipt));
-}, 30_000);
-
-test("verification has no compiler dependency and never regenerates missing output", () => {
-  const child = Bun.spawnSync([process.execPath, join(project, builder), "--verify"], {
-    env: { ...process.env, PATH: "/no-compiler-here", THREAD_FIXTURE_DIR: outdir }, stdout: "pipe", stderr: "pipe",
-  });
-  expect(child.exitCode).toBe(0);
-  const missing = join(scratch, "absent");
-  expect(command(["--verify"], missing).exitCode).not.toBe(0);
-  expect(existsSync(missing)).toBe(false);
-  expect(() => verifiedThreadFixture(missing)).toThrow();
-});
-
-test("producer rejects output inside its source and does not install a missing compiler", () => {
-  expect(command([], project).exitCode).not.toBe(0);
-  const child = Bun.spawnSync([process.execPath, join(project, builder)], {
-    env: { ...process.env, THREAD_FIXTURE_DIR: join(scratch, "no-rust"), RUSTUP_HOME: join(scratch, "empty-rustup") },
-    stdout: "pipe", stderr: "pipe", timeout: 10_000,
-  });
-  expect(child.exitCode).not.toBe(0);
-  expect(existsSync(join(scratch, "no-rust", THREAD_FIXTURE_RECEIPT))).toBe(false);
-  expect(existsSync(join(scratch, "empty-rustup", "toolchains"))).toBe(false);
 });

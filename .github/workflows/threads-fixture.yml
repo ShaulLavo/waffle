@@ -1,0 +1,60 @@
+name: Rust threads fixture
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/threads-fixture.yml"
+      - "rust-toolchain.toml"
+      - "packages/waffle/rust-toolchain.toml"
+      - "packages/waffle/scripts/build-thread-fixture.ts"
+      - "packages/waffle/scripts/threads-fixture-producer.test.ts"
+      - "packages/waffle/tests/threads-fixture*.ts"
+      - "packages/waffle/tests/fixtures/threads*"
+  pull_request:
+    paths:
+      - ".github/workflows/threads-fixture.yml"
+      - "rust-toolchain.toml"
+      - "packages/waffle/rust-toolchain.toml"
+      - "packages/waffle/scripts/build-thread-fixture.ts"
+      - "packages/waffle/scripts/threads-fixture-producer.test.ts"
+      - "packages/waffle/tests/threads-fixture*.ts"
+      - "packages/waffle/tests/fixtures/threads*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threads-fixture-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  producer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - uses: actions/cache@v4
+        id: toolchain
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+          key: ${{ runner.os }}-${{ runner.arch }}-threads-toolchain-1.98.1-v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.1"
+          targets: wasm32-wasip1-threads
+          components: rustfmt
+      - name: Build the real fixture twice and verify receipts and tamper failures
+        run: bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000
+        env:
+          THREAD_FIXTURE_TEST_ROOT: ${{ runner.temp }}
+      - run: rustfmt +1.98.1 --check packages/waffle/tests/fixtures/threads.rs
+      - name: Report the compiler cache result
+        if: always()
+        run: echo "threads toolchain cache-hit=${{ steps.toolchain.outputs.cache-hit }}"

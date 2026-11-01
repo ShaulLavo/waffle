@@ -35,7 +35,12 @@ class Reader {
   }
 }
 
-const valueTypes = new Map([[0x7f, "i32"], [0x7e, "i64"], [0x7d, "f32"], [0x7c, "f64"]]);
+const valueTypes = new Map([
+  [0x7f, "i32"],
+  [0x7e, "i64"],
+  [0x7d, "f32"],
+  [0x7c, "f64"],
+]);
 
 function valueType(reader: Reader): string {
   const type = valueTypes.get(reader.byte());
@@ -47,7 +52,10 @@ function functionTypes(bytes: Uint8Array) {
   const reader = new Reader(bytes);
   const result = reader.vector(() => {
     if (reader.byte() !== 0x60) throw new Error("fixture must use function types");
-    return { parameters: reader.vector(() => valueType(reader)), results: reader.vector(() => valueType(reader)) };
+    return {
+      parameters: reader.vector(() => valueType(reader)),
+      results: reader.vector(() => valueType(reader)),
+    };
   });
   reader.done();
   return result;
@@ -56,12 +64,21 @@ function functionTypes(bytes: Uint8Array) {
 function imports(bytes: Uint8Array) {
   const reader = new Reader(bytes);
   const result = reader.vector(() => {
-    const module = reader.name(), name = reader.name(), kind = reader.byte();
+    const module = reader.name(),
+      name = reader.name(),
+      kind = reader.byte();
     if (kind === 0) return { kind: "function", module, name, typeIndex: reader.u32() } as const;
     if (kind !== 2) throw new Error("unexpected fixture import kind");
     const flags = reader.u32();
     if (flags !== 3) throw new Error("fixture must import wasm32 shared memory with a maximum");
-    return { kind: "memory", module, name, minimum: reader.u32(), maximum: reader.u32(), shared: true } as const;
+    return {
+      kind: "memory",
+      module,
+      name,
+      minimum: reader.u32(),
+      maximum: reader.u32(),
+      shared: true,
+    } as const;
   });
   reader.done();
   return result;
@@ -69,7 +86,9 @@ function imports(bytes: Uint8Array) {
 
 function constant(reader: Reader): number {
   if (reader.byte() !== 0x41) throw new Error("fixture initializer must be i32.const");
-  let value = 0, shift = 0, byte: number;
+  let value = 0,
+    shift = 0,
+    byte: number;
   do {
     byte = reader.byte();
     value += (byte & 127) * 2 ** shift;
@@ -81,7 +100,11 @@ function constant(reader: Reader): number {
 
 function globals(bytes: Uint8Array) {
   const reader = new Reader(bytes);
-  const result = reader.vector(() => ({ type: valueType(reader), mutable: reader.byte() === 1, initial: constant(reader) }));
+  const result = reader.vector(() => ({
+    type: valueType(reader),
+    mutable: reader.byte() === 1,
+    initial: constant(reader),
+  }));
   reader.done();
   return result;
 }
@@ -105,14 +128,17 @@ export function inspectThreadFixture(bytes: Uint8Array<ArrayBuffer>) {
   reader.take(8);
   const sections = new Map<number, Uint8Array>();
   while (reader.remaining > 0) {
-    const id = reader.byte(), body = reader.take(reader.u32());
+    const id = reader.byte(),
+      body = reader.take(reader.u32());
     if (id !== 0) sections.set(id, body);
   }
   const get = (id: number) => sections.get(id) ?? new Uint8Array([0]);
   const types = functionTypes(get(1));
   const imported = imports(get(2));
   const functions = new Reader(get(3));
-  const typeIndices = imported.filter((entry) => entry.kind === "function").map((entry) => entry.typeIndex)
+  const typeIndices = imported
+    .filter((entry) => entry.kind === "function")
+    .map((entry) => entry.typeIndex)
     .concat(functions.vector(() => functions.u32()));
   functions.done();
   const signature = (index: number) => {
@@ -124,20 +150,30 @@ export function inspectThreadFixture(bytes: Uint8Array<ArrayBuffer>) {
   const globalEntries = globals(get(6));
   const exports = new Reader(get(7));
   const exported = exports.vector(() => {
-    const name = exports.name(), kind = exports.byte(), index = exports.u32();
+    const name = exports.name(),
+      kind = exports.byte(),
+      index = exports.u32();
     if (kind === 0) return { name, kind: "function", index, ...signature(index) };
     if (kind === 3) return { name, kind: "global", index, ...globalEntries[index] };
-    return { name, kind: WebAssembly.Module.exports(module).find((entry) => entry.name === name)?.kind, index };
+    return {
+      name,
+      kind: WebAssembly.Module.exports(module).find((entry) => entry.name === name)?.kind,
+      index,
+    };
   });
   exports.done();
   const start = sections.get(8);
   const startIndex = start ? new Reader(start).u32() : null;
   return {
-    imports: imported.map((entry) => entry.kind === "function" ? { ...entry, ...types[entry.typeIndex] } : entry),
+    imports: imported.map((entry) =>
+      entry.kind === "function" ? { ...entry, ...types[entry.typeIndex] } : entry,
+    ),
     exports: exported,
     start: startIndex === null ? null : { index: startIndex, ...signature(startIndex) },
     globals: globalEntries,
     data: dataSegments(get(11)),
-    fixed32MiBImportCompatible: imported.some((entry) => entry.kind === "memory" && entry.minimum <= 512 && entry.maximum >= 512),
+    fixed32MiBImportCompatible: imported.some(
+      (entry) => entry.kind === "memory" && entry.minimum <= 512 && entry.maximum >= 512,
+    ),
   };
 }
