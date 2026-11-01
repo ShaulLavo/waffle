@@ -46,28 +46,90 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
   const barriers = new Set<Worker>();
   let heldSections: Int32Array | undefined;
   let drainRevoked = false;
+  let resolveDrainMarker!: () => void;
+  const drainMarker = new Promise<void>((resolve) => (resolveDrainMarker = resolve));
   let barrierReleased = false;
+  let resolveBarrierReleased!: () => void;
+  const barrierRelease = new Promise<void>((resolve) => (resolveBarrierReleased = resolve));
+  let fixtureProbeReceived = false;
+  let resolveFixtureProbe!: () => void;
+  const fixtureProbe = new Promise<void>((resolve) => (resolveFixtureProbe = resolve));
   let fenceBlocked = false;
+  const causalCounter = new SharedArrayBuffer(4);
+  const causalEvents: Record<string, unknown>[] = [];
+  const recordCausal = (kind: string, fields: Record<string, unknown> = {}) => {
+    causalEvents.push({
+      sequence: Atomics.add(new Int32Array(causalCounter), 0, 1) + 1,
+      actor: "page",
+      kind,
+      at: performance.now(),
+      ...fields,
+    });
+  };
+  (globalThis as Record<string, unknown>).__waffleRuntimeSafariCausalEvents = causalEvents;
+  const workerTargets = new WeakMap<Worker, string>();
   const NativeWorker = globalThis.Worker;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
+      const target = String(url);
+      workerTargets.set(this, target);
       created.push(this);
-      urls.push(String(url));
+      urls.push(target);
       if (
         selected === "kill-start" &&
         (String(url).includes("thread-guest") || String(url).includes("guest-bootstrap"))
       )
         killAtConstruction?.();
-      if (String(url).includes("thread-barrier") || String(url).includes("service-barrier"))
+      if (target.includes("thread-barrier") || target.includes("service-barrier"))
         barriers.add(this);
       this.addEventListener("message", ({ data }) => {
+        const kind = data?.kind ?? typeof data;
+        recordCausal("worker-message", {
+          worker: target,
+          messageKind: kind,
+          workerSequence: data?.causalSequence,
+        });
         if (data?.kind === "wait-registered") registered++;
         if (data?.kind === "ready") guestReady++;
         if (data?.kind === "fixture-held") heldSections = new Int32Array(data.sections);
-        if (data?.kind === "fixture-draining") drainRevoked = data.revoked;
-        if (data?.kind === "fixture-released") barrierReleased = true;
+        if (data?.kind === "fixture-draining") {
+          drainRevoked = data.revoked;
+          resolveDrainMarker();
+        }
+        if (data?.kind === "fixture-released") {
+          barrierReleased = true;
+          resolveBarrierReleased();
+        }
+        if (data?.kind === "fixture-probe-received") {
+          fixtureProbeReceived = true;
+          resolveFixtureProbe();
+        }
       });
+    }
+    override postMessage(
+      message: unknown,
+      transfer?: Transferable[] | StructuredSerializeOptions,
+    ): void {
+      const target = workerTargets.get(this) ?? "unknown";
+      recordCausal("worker-post", {
+        worker: target,
+        messageKind:
+          message && typeof message === "object" && "kind" in message
+            ? (message as { kind?: unknown }).kind
+            : typeof message,
+      });
+      if (
+        target.includes("thread-barrier") &&
+        message &&
+        typeof message === "object" &&
+        (message as { kind?: unknown }).kind === "thread-service" &&
+        !("__waffleCausal" in message)
+      ) {
+        message = { ...(message as Record<string, unknown>), __waffleCausal: causalCounter };
+      }
+      if (transfer === undefined) return super.postMessage(message);
+      return super.postMessage(message, transfer);
     }
     override terminate() {
       if (barriers.has(this) && heldSections && Atomics.load(heldSections, 0) !== 0)
@@ -95,6 +157,7 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
   let output = "";
   let drainingOutput: ReturnType<typeof setInterval> | undefined;
   try {
+    recordCausal("runtime-start", { selected });
     const stock = selected === "pair" || selected === "repeat" || selected === "nested";
     const killed = ["kill-start", "cpu", "wait32", "wait64"].includes(selected);
     const source = stock
@@ -223,16 +286,25 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
         "one admitted ceiling before kill",
       );
       await until(() => !!heldSections);
+      recordCausal("kill-request", { pid });
       await service.kill(pid, 9);
-      await until(() => drainRevoked);
+      await deadline(drainMarker, "fixture drain marker deadline");
+      recordCausal("drain-marker-observed", { pid, revoked: drainRevoked });
       check(
         heldSections && Atomics.load(heldSections, 0) === 1,
         "real section disappeared before release",
       );
       check(!client.childExited(root.pid, pid), "process collected before filesystem safety");
       fenceBlocked = true;
+      recordCausal("fixture-probe-post-before", { barriers: barriers.size });
+      for (const worker of barriers) worker.postMessage({ kind: "fixture-probe" });
+      recordCausal("fixture-probe-post-after", { barriers: barriers.size });
+      recordCausal("fixture-release-post-before", { barriers: barriers.size });
       for (const worker of barriers) worker.postMessage({ kind: "fixture-release" });
-      await until(() => barrierReleased);
+      recordCausal("fixture-release-post-after", { barriers: barriers.size });
+      await deadline(barrierRelease, "fixture release deadline");
+      await deadline(fixtureProbe, "fixture probe deadline");
+      check(fixtureProbeReceived, "same-process fixture probe did not return");
     }
     let exit;
     try {
@@ -311,6 +383,7 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       controlDebts: snapshot.holders
         .filter((holder) => holder.label === "guest-control" && holder.state === "debt")
         .map((holder) => holder.declaredBytes),
+      causalEvents,
     };
   } finally {
     if (!barrierReleased)

@@ -47,6 +47,7 @@ test("Safari Runtime script executes exactly one selected case per document", ()
   for (const selected of runtimeSafariCases) {
     const script = runtimeSafariScript(selected);
     expect(script).toContain(`module.runThreadsRuntime(${JSON.stringify(selected)})`);
+    expect(script).toContain("causalEvents");
     expect(script).not.toContain("for (");
     expect(script).not.toContain("while (");
   }

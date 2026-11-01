@@ -63,11 +63,16 @@ async function buildBrowserAsset(source: string): Promise<Uint8Array> {
 }
 
 function assertPinnedSource(): void {
-  const excluded = ["packet.ts", "runner.ts", "runner.test.ts"].map(
-    (name) => `:(exclude)packages/waffle/tests/threads-runtime-safari-${name}`,
-  );
+  const excluded = [
+    ":(exclude)packages/waffle/tests/threads-runtime-safari-packet.ts",
+    ":(exclude)packages/waffle/tests/threads-runtime-safari-runner.ts",
+    ":(exclude)packages/waffle/tests/threads-runtime-safari-runner.test.ts",
+    ":(exclude)packages/waffle/tests/threads-runtime-browser.ts",
+    ":(exclude)packages/waffle/tests/threads-runtime-service-barrier.ts",
+  ];
+  const root = resolve(import.meta.dir, "../../..");
   const args = ["diff", "--quiet", RUNTIME_SOURCE_COMMIT, "--", "."].concat(excluded);
-  if (Bun.spawnSync(["git"].concat(args), { cwd: import.meta.dir }).exitCode !== 0)
+  if (Bun.spawnSync(["git"].concat(args), { cwd: root }).exitCode !== 0)
     throw new Error("Runtime Safari packet requires unchanged pinned production source");
   if (gitOutput(["merge-base", RUNTIME_SOURCE_COMMIT, "HEAD"]) !== RUNTIME_SOURCE_COMMIT)
     throw new Error(`Runtime Safari packet requires source ${RUNTIME_SOURCE_COMMIT}`);

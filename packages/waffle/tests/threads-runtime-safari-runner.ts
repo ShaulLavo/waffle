@@ -61,7 +61,7 @@ globalThis.Worker = class extends NativeWorker {
     const record = {url: String(url), messages: [], errors: [], nativeStops: 0};
     records.set(this, record);
     events.push(record);
-    this.addEventListener('message', event => record.messages.push({kind: event.data?.kind ?? typeof event.data, revoked: event.data?.revoked, at: performance.now()}));
+    this.addEventListener('message', event => record.messages.push({kind: event.data?.kind ?? typeof event.data, revoked: event.data?.revoked, causalSequence: event.data?.causalSequence, at: performance.now()}));
     this.addEventListener('error', event => record.errors.push(event.message));
   }
   terminate() {
@@ -72,8 +72,8 @@ globalThis.Worker = class extends NativeWorker {
 const documentIdentity = () => ({ ...globalThis.__waffleRuntimeSafariDocument,
   url: location.href, observedTimeOrigin: performance.timeOrigin });
 import('/runtime-page.js').then(module => module.runThreadsRuntime(${JSON.stringify(selected)}))
-.then(result => done({ document: documentIdentity(), result, workerEvents: events }),
-error => done({ document: documentIdentity(), failure: String(error), stack: error?.stack, workerEvents: events }))
+.then(result => done({ document: documentIdentity(), result, causalEvents: globalThis.__waffleRuntimeSafariCausalEvents, workerEvents: events }),
+error => done({ document: documentIdentity(), failure: String(error), stack: error?.stack, causalEvents: globalThis.__waffleRuntimeSafariCausalEvents, workerEvents: events }))
 .finally(() => { globalThis.Worker = NativeWorker; });`;
 }
 
