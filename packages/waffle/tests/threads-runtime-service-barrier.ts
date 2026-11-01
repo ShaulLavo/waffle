@@ -29,8 +29,8 @@ self.onmessage = ({
     return;
   }
   if (data.kind === "thread-service") {
-    const received = data as ThreadServiceCommand & { __waffleCausal?: SharedArrayBuffer };
-    if (received.__waffleCausal) causal = new Int32Array(received.__waffleCausal);
+    if ("__waffleCausal" in data && data.__waffleCausal instanceof SharedArrayBuffer)
+      causal = new Int32Array(data.__waffleCausal);
     connection = data.filesystem;
     section = new FilesystemSection(connection);
     section.enter();

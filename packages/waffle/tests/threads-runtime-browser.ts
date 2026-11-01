@@ -46,14 +46,11 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
   const barriers = new Set<Worker>();
   let heldSections: Int32Array | undefined;
   let drainRevoked = false;
-  let resolveDrainMarker!: () => void;
-  const drainMarker = new Promise<void>((resolve) => (resolveDrainMarker = resolve));
+  const drainMarker = Promise.withResolvers<void>();
   let barrierReleased = false;
-  let resolveBarrierReleased!: () => void;
-  const barrierRelease = new Promise<void>((resolve) => (resolveBarrierReleased = resolve));
+  const barrierRelease = Promise.withResolvers<void>();
   let fixtureProbeReceived = false;
-  let resolveFixtureProbe!: () => void;
-  const fixtureProbe = new Promise<void>((resolve) => (resolveFixtureProbe = resolve));
+  const fixtureProbe = Promise.withResolvers<void>();
   let fenceBlocked = false;
   const causalCounter = new SharedArrayBuffer(4);
   const causalEvents: Record<string, unknown>[] = [];
@@ -66,7 +63,7 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       ...fields,
     });
   };
-  (globalThis as Record<string, unknown>).__waffleRuntimeSafariCausalEvents = causalEvents;
+  Object.assign(globalThis, { __waffleRuntimeSafariCausalEvents: causalEvents });
   const workerTargets = new WeakMap<Worker, string>();
   const NativeWorker = globalThis.Worker;
   globalThis.Worker = class extends NativeWorker {
@@ -95,15 +92,15 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
         if (data?.kind === "fixture-held") heldSections = new Int32Array(data.sections);
         if (data?.kind === "fixture-draining") {
           drainRevoked = data.revoked;
-          resolveDrainMarker();
+          drainMarker.resolve();
         }
         if (data?.kind === "fixture-released") {
           barrierReleased = true;
-          resolveBarrierReleased();
+          barrierRelease.resolve();
         }
         if (data?.kind === "fixture-probe-received") {
           fixtureProbeReceived = true;
-          resolveFixtureProbe();
+          fixtureProbe.resolve();
         }
       });
     }
@@ -116,17 +113,18 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
         worker: target,
         messageKind:
           message && typeof message === "object" && "kind" in message
-            ? (message as { kind?: unknown }).kind
+            ? message.kind
             : typeof message,
       });
       if (
-        target.includes("thread-barrier") &&
+        barriers.has(this) &&
         message &&
         typeof message === "object" &&
-        (message as { kind?: unknown }).kind === "thread-service" &&
+        "kind" in message &&
+        message.kind === "thread-service" &&
         !("__waffleCausal" in message)
       ) {
-        message = { ...(message as Record<string, unknown>), __waffleCausal: causalCounter };
+        message = { ...message, __waffleCausal: causalCounter };
       }
       if (transfer === undefined) return super.postMessage(message);
       return super.postMessage(message, transfer);
@@ -288,7 +286,8 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       await until(() => !!heldSections);
       recordCausal("kill-request", { pid });
       await service.kill(pid, 9);
-      await deadline(drainMarker, "fixture drain marker deadline");
+      await deadline(drainMarker.promise, "fixture drain marker deadline");
+      check(drainRevoked, "fixture drain started without real filesystem revocation");
       recordCausal("drain-marker-observed", { pid, revoked: drainRevoked });
       check(
         heldSections && Atomics.load(heldSections, 0) === 1,
@@ -299,12 +298,12 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
       recordCausal("fixture-probe-post-before", { barriers: barriers.size });
       for (const worker of barriers) worker.postMessage({ kind: "fixture-probe" });
       recordCausal("fixture-probe-post-after", { barriers: barriers.size });
+      await deadline(fixtureProbe.promise, "fixture probe deadline");
+      check(fixtureProbeReceived, "same-process fixture probe did not return");
       recordCausal("fixture-release-post-before", { barriers: barriers.size });
       for (const worker of barriers) worker.postMessage({ kind: "fixture-release" });
       recordCausal("fixture-release-post-after", { barriers: barriers.size });
-      await deadline(barrierRelease, "fixture release deadline");
-      await deadline(fixtureProbe, "fixture probe deadline");
-      check(fixtureProbeReceived, "same-process fixture probe did not return");
+      await deadline(barrierRelease.promise, "fixture release deadline");
     }
     let exit;
     try {

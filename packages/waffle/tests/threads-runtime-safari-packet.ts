@@ -3,7 +3,7 @@ import { copyFile, mkdir, readdir, lstat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { verifiedThreadFixture } from "../scripts/build-thread-fixture.js";
 
-export const RUNTIME_SOURCE_COMMIT = "9a4925903d856043a353a1d723cf4cdea6bf6452";
+export const RUNTIME_SOURCE_COMMIT = "99d1db0179ae1cd9fc22bce909ae13b052f1f562";
 export const RUNTIME_FIXTURE_SHA256 =
   "410f9f16ee994fd58a9e3e3382fbf0c092d5231518e9d6a21360582ca402fa40";
 export const RUNTIME_RECEIPT_SHA256 =
