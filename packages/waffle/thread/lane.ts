@@ -1,3 +1,4 @@
+import { readWaitRegistration, type CapturedWaitRegistration } from "../interrupt/wait.ts";
 import type { FileStat } from "../core/filesystem.ts";
 import {
   atomicsLoad,
@@ -11,6 +12,7 @@ import {
   reflectApply,
   sharedArrayBufferByteLength,
   isSharedArrayBuffer,
+  wasmMemoryBuffer,
 } from "../proc/intrinsics.ts";
 import type { CallKey, ThreadKey, ThreadOperation, ThreadResult } from "./protocol.ts";
 
@@ -68,6 +70,7 @@ export function createThreadLaneOwner(
     if (phase === "retired") return pending ?? Promise.resolve();
     phase = "retired";
     atomicsStore(words, 1, 1);
+    atomicsStore(words, 0, -1);
     atomicsNotify(words, 0);
     reflectApply(unlisten, port, ["message", receive]);
     reflectApply(closePort, port, []);
@@ -252,10 +255,175 @@ export class ThreadLane {
   }
   private wait(sequence: number): void {
     for (;;) {
-      this.check();
       const observed = atomicsLoad(this.words, 0);
+      this.check();
       if (observed === sequence) return;
-      atomicsWait(this.words, 0, observed, 50);
+      atomicsWait(this.words, 0, observed);
     }
   }
+}
+
+export type ThreadWaitEvent =
+  | { kind: "wait-registered"; thread: ThreadKey; registration: CapturedWaitRegistration }
+  | { kind: "wait-cleared"; thread: ThreadKey; generation: number };
+
+type OwnedWait =
+  | { kind: "parked"; registration: CapturedWaitRegistration; release(): void }
+  | { kind: "retained"; registration: CapturedWaitRegistration };
+
+/** Bound to one private guest control route. Retention hooks belong to its aggregate lease. */
+export class ThreadWaitOwner {
+  private phase: "open" | "draining" | "idle" | "failed" = "open";
+  private generation = 0;
+  private active: OwnedWait | undefined;
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private deadline: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(
+    private readonly options: Readonly<{
+      thread: ThreadKey;
+      memory: WebAssembly.Memory;
+      waits: Int32Array;
+      terminal(): boolean;
+      retain(registration: CapturedWaitRegistration): () => void;
+      failed(cause: unknown): void;
+    }>,
+  ) {}
+
+  receive(value: unknown): boolean {
+    if (!value || typeof value !== "object" || !("kind" in value)) return false;
+    if (!this.matches(value)) return false;
+    if (value.kind === "host-idle") {
+      this.idle();
+      return true;
+    }
+    if (this.phase === "idle") return false;
+    if (value.kind === "wait-cleared") {
+      if (!("generation" in value) || !waitGeneration(value.generation)) return false;
+      this.clear(value.generation);
+      return true;
+    }
+    if (value.kind !== "wait-registered" || !("registration" in value)) return false;
+    const registration = capturedWait(value.registration);
+    if (!registration || registration.generation <= this.generation) return false;
+    if (this.active) {
+      this.fail(new Error("overlapping guest wait registration"));
+      return false;
+    }
+    this.active = { kind: "retained", registration };
+    this.generation = registration.generation;
+    try {
+      this.active = { kind: "parked", registration, release: this.options.retain(registration) };
+    } catch (error) {
+      this.fail(error);
+    }
+    if (this.options.terminal()) this.beginTerminal();
+    return true;
+  }
+
+  beginTerminal(): void {
+    if (this.phase === "idle" || !this.options.terminal()) return;
+    this.wake();
+    if (this.phase !== "open") return;
+    this.phase = "draining";
+    this.timer = setInterval(() => this.wake(), 10);
+    this.deadline = setTimeout(() => {
+      this.fail(new Error("guest wait did not reach host-idle before teardown deadline"));
+    }, 1000);
+  }
+
+  fail(cause: unknown): void {
+    this.stopTimers();
+    if (this.phase === "idle" || this.phase === "failed") return;
+    this.phase = "failed";
+    this.options.failed(cause);
+  }
+
+  wake(): void {
+    if (this.phase === "idle" || !this.options.terminal()) return;
+    const current = readWaitRegistration(this.options.waits);
+    if (!current) return;
+    const buffer = wasmMemoryBuffer(this.options.memory);
+    const parked = this.active?.registration;
+    if (parked?.generation === current.generation) {
+      notifyWait(parked.buffer, parked.address);
+      if (parked.buffer === buffer) return;
+    }
+    notifyWait(buffer, current.address);
+  }
+
+  private matches(value: object): boolean {
+    if (!("thread" in value) || !value.thread || typeof value.thread !== "object") return false;
+    const thread = value.thread;
+    return (
+      "directory" in thread &&
+      thread.directory === this.options.thread.directory &&
+      "pid" in thread &&
+      thread.pid === this.options.thread.pid &&
+      "tid" in thread &&
+      thread.tid === this.options.thread.tid
+    );
+  }
+
+  private clear(generation: number): void {
+    if (generation < this.generation) return;
+    if (this.active && this.active.registration.generation !== generation) {
+      this.fail(new Error("wait clear skipped the parked generation"));
+      return;
+    }
+    this.generation = generation;
+    this.releaseActive();
+  }
+
+  private idle(): void {
+    if (this.phase === "idle") return;
+    this.stopTimers();
+    this.releaseActive();
+    if (!this.active) this.phase = "idle";
+  }
+
+  private releaseActive(): void {
+    const active = this.active;
+    if (!active || active.kind === "retained") return;
+    this.active = { kind: "retained", registration: active.registration };
+    try {
+      active.release();
+      this.active = undefined;
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private stopTimers(): void {
+    clearInterval(this.timer);
+    clearTimeout(this.deadline);
+    this.timer = undefined;
+    this.deadline = undefined;
+  }
+}
+
+function waitGeneration(value: unknown): value is number {
+  return typeof value === "number" && safeInteger(value) && value > 0 && value <= MAX_SEQUENCE;
+}
+function capturedWait(value: unknown): CapturedWaitRegistration | undefined {
+  if (!value || typeof value !== "object") return;
+  if (!("generation" in value) || !waitGeneration(value.generation)) return;
+  if (!("address" in value) || !unsigned(value.address)) return;
+  if (!("width" in value) || (value.width !== 4 && value.width !== 8)) return;
+  if (!("buffer" in value) || !isSharedArrayBuffer(value.buffer)) return;
+  if (
+    value.address % value.width ||
+    value.address > sharedArrayBufferByteLength(value.buffer) - value.width
+  )
+    return;
+  return {
+    generation: value.generation,
+    address: value.address,
+    width: value.width,
+    buffer: value.buffer,
+  };
+}
+function notifyWait(buffer: ArrayBuffer | SharedArrayBuffer, address: number): void {
+  if (!isSharedArrayBuffer(buffer) || address > sharedArrayBufferByteLength(buffer) - 4) return;
+  atomicsNotify(new Int32ArrayConstructor(buffer), address / 4);
 }

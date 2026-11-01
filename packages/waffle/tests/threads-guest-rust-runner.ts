@@ -1,13 +1,47 @@
+import { createHash } from "node:crypto";
+import { inspectThreadFixture } from "./threads-fixture-inspect.ts";
 import { verifiedThreadFixture } from "../scripts/build-thread-fixture.ts";
 import { compileThreadGuest } from "../thread/guest-module.ts";
 import { readOutcome } from "../proc/outcome.ts";
 import { guestFixture } from "./threads-guest-fixture.ts";
 
+export function threadRustMemoryPlan(bytes: Uint8Array<ArrayBuffer>, policyMaximumPages = 512) {
+  const imported = inspectThreadFixture(bytes).imports.filter((entry) => entry.kind === "memory");
+  const declaration = imported[0];
+  if (
+    imported.length !== 1 ||
+    !declaration ||
+    declaration.module !== "env" ||
+    declaration.name !== "memory"
+  )
+    throw new TypeError("Rust fixture must import one shared wasm32 env.memory");
+  if (
+    !Number.isSafeInteger(policyMaximumPages) ||
+    policyMaximumPages < 1 ||
+    policyMaximumPages > 65536
+  )
+    throw new RangeError("invalid Rust guest memory ceiling");
+  const maximumPages = Math.min(policyMaximumPages, declaration.maximum);
+  if (declaration.minimum > maximumPages)
+    throw new RangeError("Rust guest minimum exceeds the selected ceiling");
+  return {
+    initialPages: declaration.minimum,
+    maximumPages,
+    sourceMaximumPages: declaration.maximum,
+  };
+}
+
 /** Compiler-free, opt-in low-level embedding, not Runtime or browser qualification. */
 export async function runThreadRust(directory: string, mode: "pair" | "repeat" | "nested") {
   const bytes = verifiedThreadFixture(directory);
   const module = await compileThreadGuest(bytes);
-  const memory = new WebAssembly.Memory({ initial: 512, maximum: 512, shared: true });
+  const plan = threadRustMemoryPlan(bytes);
+  const memory = new WebAssembly.Memory({
+    initial: plan.initialPages,
+    maximum: plan.maximumPages,
+    shared: true,
+  });
+  const initialBuffer = memory.buffer;
   const fixture = await guestFixture(memory);
   let nextTid = 1;
   let live = 0;
@@ -70,7 +104,18 @@ export async function runThreadRust(directory: string, mode: "pair" | "repeat" |
       spawned: nextTid - 1,
       returned,
       peakGuestWorkers: peak,
-      fixedGuestBytes: memory.buffer.byteLength,
+      ...plan,
+      initialGuestBytes: initialBuffer.byteLength,
+      currentGuestBytes: memory.buffer.byteLength,
+      ceilingBytes: plan.maximumPages * 65536,
+      bufferIdentityChanged: memory.buffer !== initialBuffer,
+      fixtureSha256: createHash("sha256").update(bytes).digest("hex"),
+      waitRegistrations: fixture.guests.reduce(
+        (count, guest) =>
+          count + guest.events.filter((event) => event.kind === "wait-registered").length,
+        0,
+      ),
+      retainedWaits: fixture.retainedWaits.size,
       receiptVerified: true,
       compilerInvoked: false,
     };

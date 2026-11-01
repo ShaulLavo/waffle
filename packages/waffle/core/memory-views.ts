@@ -9,12 +9,17 @@ type ResizableMemory = WebAssembly.Memory & {
 };
 
 const hosts = new WeakMap<WebAssembly.Memory, MemoryViews>();
+const fixedHosts = new WeakMap<WebAssembly.Memory, MemoryViews>();
 
-export function memoryViews(memory: ResizableMemory): MemoryViews {
-  const existing = hosts.get(memory);
+export function memoryViews(
+  memory: ResizableMemory,
+  conversion: "allowed" | "forbidden" = "allowed",
+): MemoryViews {
+  const cache = conversion === "forbidden" ? fixedHosts : hosts;
+  const existing = cache.get(memory);
   if (existing) return existing;
   let views: MemoryViews | undefined;
-  if (typeof memory.toResizableBuffer === "function") {
+  if (conversion === "allowed" && typeof memory.toResizableBuffer === "function") {
     try {
       // This also returns a growable SharedArrayBuffer for shared wasm memories.
       const buffer = memory.toResizableBuffer();
@@ -54,6 +59,6 @@ export function memoryViews(memory: ResizableMemory): MemoryViews {
     };
   }
   // Bounded views still need their own range and must reject invalid guest pointers.
-  hosts.set(memory, views);
+  cache.set(memory, views);
   return views;
 }
