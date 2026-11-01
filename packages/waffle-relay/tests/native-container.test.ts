@@ -6,8 +6,10 @@ import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { nativeRelease } from "../container/native/release.ts";
 import { serveConfig } from "../src/cli-config.js";
 import {
+  requirePublicNativeRelease,
   verifyNativeContainerInputs,
   verifyPairedReleaseArchives,
 } from "../scripts/prepare-native-container.ts";
@@ -135,7 +137,15 @@ test("archive tuple checks real source and rejects mismatched bytes, versions an
     ).rejects.toThrow();
     const prebuild = join(directory, "bad-native.tar.gz");
     await writeFile(prebuild, "not a native release archive");
-    await expect(verifyNativeContainerInputs({ ...input, prebuild })).rejects.toThrow("checksum");
+    await expect(
+      verifyNativeContainerInputs({
+        ...input,
+        source: nativeRelease.source,
+        runtime: { ...input.runtime, sha256: nativeRelease.runtime.sha256 },
+        relay: { ...input.relay, sha256: nativeRelease.relay.sha256 },
+        prebuild,
+      }),
+    ).rejects.toThrow("checksum");
     const relayManifest = join(directory, "relay/package/package.json");
     const manifest = JSON.parse(await readFile(relayManifest, "utf8"));
     await writeFile(relayManifest, JSON.stringify({ ...manifest, version: "0.0.0" }));
@@ -162,3 +172,34 @@ test("archive tuple checks real source and rejects mismatched bytes, versions an
     await rm(directory, { recursive: true, force: true });
   }
 }, 15000);
+
+test("native pins admit only the final public pair and freeze the install graph", async () => {
+  const input = {
+    source: nativeRelease.source,
+    runtime: { path: "runtime.tgz", sha256: nativeRelease.runtime.sha256 },
+    relay: { path: "relay.tgz", sha256: nativeRelease.relay.sha256 },
+  };
+  expect(() => requirePublicNativeRelease(input)).not.toThrow();
+  expect(() =>
+    requirePublicNativeRelease({ ...input, source: "06025df07b207322111056d345e167971d5b09eb" }),
+  ).toThrow("final public source");
+  expect(() =>
+    requirePublicNativeRelease({
+      ...input,
+      runtime: {
+        ...input.runtime,
+        sha256: "03c9e93cb8e75c026b00cb38c47305d6fb4f8da164729b47b7efd2975c6ad594",
+      },
+    }),
+  ).toThrow("final public runtime hash");
+  const lock = JSON.parse(await read("package-lock.json"));
+  const manifest = JSON.parse(await read("package.json"));
+  expect(lock.packages[""].dependencies).toEqual(manifest.dependencies);
+  for (const name of [
+    "@fails-components/webtransport",
+    "@fails-components/webtransport-transport-http3-quiche",
+  ])
+    expect(lock.packages[`node_modules/${name}`].version).toBe("1.6.11");
+  expect(lock.packages["node_modules/waffle"].version).toBe(nativeRelease.version);
+  expect(lock.packages["node_modules/waffle-relay"].version).toBe(nativeRelease.version);
+});

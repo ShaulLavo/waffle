@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { nativeRelease } from "../container/native/release.ts";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
@@ -81,12 +82,37 @@ export async function verifyPairedReleaseArchives(input: Omit<NativeContainerInp
   };
 }
 
+export function requirePublicNativeRelease(input: Omit<NativeContainerInputs, "prebuild">): void {
+  assert.equal(
+    input.source,
+    nativeRelease.source,
+    "Native context requires the final public source",
+  );
+  assert.equal(
+    input.runtime.sha256,
+    nativeRelease.runtime.sha256,
+    "Native context requires the final public runtime hash",
+  );
+  assert.equal(
+    input.relay.sha256,
+    nativeRelease.relay.sha256,
+    "Native context requires the final public relay hash",
+  );
+}
+
 export async function verifyNativeContainerInputs(input: NativeContainerInputs) {
+  requirePublicNativeRelease(input);
   await checkedArchive({ path: input.prebuild, sha256: prebuildSha256 });
   const paired = await verifyPairedReleaseArchives(input);
   await execute("git", ["merge-base", "--is-ancestor", correction, input.source], { cwd: root });
+  const sourceTree = (
+    await execute("git", ["rev-parse", `${input.source}^{tree}`], { cwd: root })
+  ).stdout.trim();
+  assert.equal(sourceTree, nativeRelease.tree);
   return {
     source: input.source,
+    sourceTree,
+    release: nativeRelease,
     version: paired.version,
     hostInterface: paired.hostInterface,
     archives: { runtime: input.runtime.sha256, relay: input.relay.sha256 },
@@ -120,41 +146,8 @@ async function prepare(input: NativeContainerInputs, output: string): Promise<vo
     for (const file of ["Dockerfile", ".dockerignore", "relay.json"])
       await copyFile(join(template, file), join(output, file));
     await writeFile(join(output, "source-inputs.json"), JSON.stringify(receipt, null, 2) + "\n");
-    await writeFile(
-      join(output, "package.json"),
-      JSON.stringify(
-        {
-          name: "waffle-relay-native-container",
-          private: true,
-          type: "module",
-          dependencies: {
-            waffle: "file:assets/waffle.tgz",
-            "waffle-relay": "file:assets/relay.tgz",
-            "@fails-components/webtransport": "1.6.11",
-            "@fails-components/webtransport-transport-http3-quiche": "1.6.11",
-          },
-        },
-        null,
-        2,
-      ) + "\n",
-    );
-    await execute(
-      "npm",
-      [
-        "install",
-        "--package-lock-only",
-        "--omit=optional",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-      ],
-      {
-        cwd: output,
-        timeout: 90000,
-        env: { ...process.env, npm_config_cache: join(output, ".npm-cache") },
-      },
-    );
-    await rm(join(output, ".npm-cache"), { recursive: true, force: true });
+    for (const file of ["package.json", "package-lock.json"])
+      await copyFile(join(template, file), join(output, file));
     const files = [
       "assets/waffle.tgz",
       "assets/relay.tgz",

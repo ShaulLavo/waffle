@@ -3,7 +3,8 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { once } from "node:events";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { nativeRelease } from "./release.ts";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -11,12 +12,29 @@ const require = createRequire("/app/package.json");
 const origin = "https://waffle-network.sprockt.dev";
 const url = "https://waffle-relay-public.sprockt.dev:4433/v1/tcp/wt";
 const input = JSON.parse(await readFile("/app/source-inputs.json", "utf8"));
+assert.equal(input.source, nativeRelease.source);
+assert.equal(input.sourceTree, nativeRelease.tree);
+assert.deepEqual(input.release, nativeRelease);
+assert.deepEqual(input.archives, {
+  runtime: nativeRelease.runtime.sha256,
+  relay: nativeRelease.relay.sha256,
+});
 assert.equal(process.version, "v26.12.1");
 assert.equal(process.platform, "linux");
 assert.equal(process.arch, "x64");
 assert.equal(process.getuid!(), 1000);
 assert.equal(process.getgid!(), 1000);
 assert.match(execFileSync("openssl", ["version"], { encoding: "utf8" }), /^OpenSSL /);
+const opensslVersion = execFileSync("dpkg-query", ["-W", "-f", "${Version}", "openssl"], {
+  encoding: "utf8",
+});
+assert.equal(opensslVersion, nativeRelease.opensslVersion);
+for (const path of ["/app", "/app/package.json", "/app/relay.json"]) {
+  const info = await stat(path);
+  assert.equal(info.uid, 0);
+  assert.equal(info.gid, 0);
+  assert.equal(info.mode & 0o022, 0);
+}
 for (const name of ["waffle", "waffle-relay"]) {
   const manifest = JSON.parse(await readFile(`/app/node_modules/${name}/package.json`, "utf8"));
   assert.equal(manifest.version, input.version);
@@ -169,6 +187,9 @@ assert.notEqual(await cycle(), firstHash, "Restart reused the previous certifica
 console.log(
   JSON.stringify({
     source: input.source,
+    sourceTree: input.sourceTree,
+    releaseTag: nativeRelease.tag,
+    opensslVersion,
     preparationSource: input.preparationSource,
     configSha256: createHash("sha256")
       .update(await readFile("/app/relay.json"))
@@ -189,6 +210,7 @@ console.log(
     startup: true,
     restart: true,
     cleanup: "joined",
-    acceptance: "local candidate only, no published UDP mapping or authenticated native stream",
+    acceptance:
+      "isolated service qualification only; no published UDP mapping or authenticated native stream",
   }),
 );

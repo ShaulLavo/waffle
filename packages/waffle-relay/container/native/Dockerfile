@@ -16,7 +16,7 @@ FROM docker.io/library/node@sha256:84f8a721625927ef3ccdf94509ecaea463a266d23f1b0
 ARG SOURCE_COMMIT
 ARG RELEASE_VERSION
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl \
+    && apt-get install -y --no-install-recommends openssl=3.5.7-1~deb13u3 \
     && rm -r /var/lib/apt/lists/*
 LABEL org.opencontainers.image.source="https://github.com/ShaulLavo/waffle" \
       org.opencontainers.image.revision="$SOURCE_COMMIT" \
