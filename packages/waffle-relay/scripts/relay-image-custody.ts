@@ -220,10 +220,16 @@ export async function checkPublished(
     assert.match(String(descriptor.digest), /^sha256:[0-9a-f]{64}$/);
     const layer = await layerIdentity(await readLayer(String(descriptor.digest)));
     checkLayerDescriptor(descriptor, layer);
-    assert.deepEqual(
-      { diffId: layer.diffId, uncompressedSize: layer.uncompressedSize },
-      expectedLayers[index],
+    const expected = expectedLayers[index]!;
+    assert.equal(
+      layer.diffId,
+      expected.diffId,
       "Published layer content/order differs from qualified image",
+    );
+    assert.equal(
+      layer.uncompressedSize,
+      expected.uncompressedSize,
+      "Published layer size differs from qualified image",
     );
   }
 }

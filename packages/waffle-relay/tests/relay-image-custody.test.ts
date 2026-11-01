@@ -362,3 +362,20 @@ for (const altered of [false, true]) {
     else await expect(result).resolves.toBeUndefined();
   });
 }
+
+test("published checks accept the actual saved-layer records without losing content checks", async () => {
+  await withFixture(true, async (directory, input) => {
+    const checked = await verifyArtifact(directory, input.env);
+    const reference = `ghcr.io/shaullavo/waffle-relay@${input.manifestDigest}`;
+    await expect(
+      checkPublished(
+        input.manifestBytes,
+        input.bytes,
+        reference,
+        input.bytes,
+        checked.saved.layers,
+        fixtureLayer,
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
