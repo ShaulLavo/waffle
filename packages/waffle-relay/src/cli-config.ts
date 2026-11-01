@@ -5,7 +5,11 @@ import { canonicalDestination, canonicalOrigin } from "./tcp-destination.js";
 import { record } from "./tcp-protocol.js";
 import { tcpLimits, type TcpDestination, type TcpServerOptions } from "./tcp-policy.js";
 import type { NodeRelayOptions } from "./node.js";
-import type { TcpWebTransportOptions, NodeWebTransportRelayOptions } from "./node-webtransport.js";
+import type {
+  TcpWebTransportOptions,
+  NodeWebTransportRelayOptions,
+} from "./node-webtransport-options.js";
+import { snapshotWebTransportAddress } from "./webtransport-address.js";
 
 export interface ServeConfig {
   readonly listen: { host: string; port: number };
@@ -116,9 +120,13 @@ function devConfig(flags: Map<string, string[]>): ServeConfig {
 }
 async function webtransportFrom(value: unknown): Promise<TcpWebTransportOptions | undefined> {
   if (value === undefined) return;
-  if (!record(value) || typeof value.host !== "string" || typeof value.port !== "number")
-    throw new TypeError("Invalid WebTransport config");
-  rejectKeys(value, ["host", "port", "certificate", "rotationMs"]);
+  if (!record(value) || !record(value.bind)) throw new TypeError("Invalid WebTransport config");
+  rejectKeys(value, ["bind", "advertisedUrl", "certificate", "rotationMs"]);
+  rejectKeys(value.bind, ["host", "port"]);
+  if (typeof value.bind.host !== "string" || typeof value.bind.port !== "number")
+    throw new TypeError("Invalid WebTransport bind config");
+  if (value.advertisedUrl !== undefined && typeof value.advertisedUrl !== "string")
+    throw new TypeError("Invalid WebTransport advertised URL");
   let certificate: TcpWebTransportOptions["certificate"];
   if (value.certificate === undefined || value.certificate === "rotating-hash") {
     certificate = value.certificate;
@@ -135,9 +143,13 @@ async function webtransportFrom(value: unknown): Promise<TcpWebTransportOptions 
       key: await secretFile(value.certificate.keyFile),
     };
   }
+  const address = snapshotWebTransportAddress({
+    bind: { host: value.bind.host, port: value.bind.port },
+    ...(value.advertisedUrl === undefined ? {} : { advertisedUrl: value.advertisedUrl }),
+  });
   return {
-    host: value.host,
-    port: value.port,
+    bind: address.bind,
+    advertisedUrl: address.advertisedUrl,
     ...(certificate ? { certificate } : {}),
     ...(value.rotationMs === undefined ? {} : { rotationMs: rotationFrom(value.rotationMs) }),
   };

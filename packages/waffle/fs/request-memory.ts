@@ -1,6 +1,6 @@
 import { FilesystemError } from "../core/filesystem.js";
 import { FilesystemSection } from "./section.js";
-import type { FilesystemIdentity } from "./protocol.js";
+import type { FilesystemConnection, FilesystemIdentity } from "./protocol.js";
 import type { ArenaSource, Headroom } from "../memory/reservations.js";
 import {
   Int32ArrayConstructor,
@@ -437,6 +437,26 @@ export function requestMemoryRetired(memory: FilesystemRequestMemory): boolean {
 export function requestMemoryRetirementError(memory: FilesystemRequestMemory): number {
   return get(memory, C.retirementError);
 }
+/** Local cancellation is not a remote transport retirement receipt. */
+export async function waitForFilesystemTransportRetirement(
+  connection: Pick<FilesystemConnection, "requests" | "signal">,
+): Promise<void> {
+  const memory = connection.requests;
+  const signal = new Int32ArrayConstructor(connection.signal);
+  for (;;) {
+    const observed = atomicsLoad(signal, 0);
+    const failure = requestTransportError(memory);
+    if (failure) throw failure;
+    if (requestMemoryRetired(memory)) {
+      const errno = requestMemoryRetirementError(memory);
+      if (errno) throw new FilesystemError(errno, "filesystem transport retirement failed");
+      return;
+    }
+    const waiting = atomicsWaitAsync(signal, 0, observed);
+    if (waiting.async) await waiting.value;
+  }
+}
+
 function prefix(buffer: FilesystemRequestBuffer): Int32Array {
   return new Int32ArrayConstructor(buffer.memory.data, buffer.offset - PREFIX, PREFIX / 4);
 }

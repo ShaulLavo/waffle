@@ -15,6 +15,7 @@
     "proc/**/*.ts",
     "interrupt/**/*.ts",
     "group/**/*.ts",
+    "thread/**/*.ts",
     "link/**/*.ts",
     "programs/**/*.ts",
     "search/**/*.ts",

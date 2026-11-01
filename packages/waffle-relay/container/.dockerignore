@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!relay.json
+!assets/
+!assets/waffle-0.0.109.tgz
+!assets/waffle-relay-0.0.109.tgz

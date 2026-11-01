@@ -22,6 +22,7 @@
     "proc",
     "interrupt",
     "group",
+    "thread",
     "link",
     "programs",
     "browser",

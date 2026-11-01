@@ -127,13 +127,13 @@ The runnable server is WebSocket-only unless its explicit native block and optio
 
 For private Mesh staging, install a reviewed package into a versioned directory under `/work/services/waffle-relay/releases/`. Run the CLI with an enabled user service and `Restart=on-failure`. Proxy HTTPS and WebSocket upgrades to its numeric loopback listener. Keep the private route private. Verify the exact route from an authorized device. Mesh routing is not process supervision. Record the service name, restart command and route-removal command before retaining it.
 
-For Brine hosting, build a digest-pinned image from reviewed source. Supply the config as a secret-free file and the secret through a protected reference. Configure a health check and a Caddy route that preserves Origin and supports WebSocket upgrades. Keep `/v1/tcp/token` behind the app's authenticated boundary. Validate `brine plan --json` before `brine apply --json`. Record `brine status`, `brine logs`, restart and rollback evidence for the selected target. WebTransport needs a separate UDP listener and a supported deployment route. The approved deployment below uses direct private PC UDP, not Brine. A working WebSocket route is not proof of UDP support.
+For Brine hosting, build a digest-pinned image from reviewed source. Supply the config as a secret-free file and the secret through a protected reference. Configure a health check and a Caddy route that preserves Origin and supports WebSocket upgrades. Keep `/v1/tcp/token` behind the app's authenticated boundary. Validate `brine plan --json` before `brine apply --json`. Record `brine status`, `brine logs`, restart and rollback evidence for the selected target. WebTransport needs a separate UDP listener and a supported deployment route. The private-PC recipe below is historical and is not the public deployment path. A working WebSocket route is not proof of UDP support.
 
 For either target, check `/healthz`, `/readyz`, rejection without a token, and a scoped connection to an operator-approved fixture. Test shutdown with live sockets. Rotate the protected secret atomically and restart the service to invalidate existing tokens. Keep the previous reviewed package for rollback without changing policy or secret scope. Limit log retention and exclude the local development token output from collectors. Remove temporary fixtures and routes after verification.
 
 ## Private PC WebTransport deployment
 
-This lane prepares configuration only. The approved host is the private PC. Mesh supplies authenticated HTTPS and WSS; the native endpoint binds UDP only to `100.77.94.94:4433`. Nothing is public. Mesh's HTTP route does not publish or supervise UDP. Do not add Brine UDP or host-network workarounds.
+This historical recipe describes the retired private-PC deployment. Do not recreate it for public hosting. Mesh supplies authenticated HTTPS and WSS; the native endpoint binds UDP only to `100.77.94.94:4433`. Nothing is public. Mesh's HTTP route does not publish or supervise UDP. Do not add Brine UDP or host-network workarounds.
 
 Use a versioned install below `/work/services/waffle-relay/releases/` and a `current` symlink. Keep config and owner-owned mode-0600 secrets outside the version directory. Install the prepared Waffle archive and the matching relay archive together. WebTransport additionally requires these exact packages:
 
@@ -165,8 +165,8 @@ Add the native block to the existing secret-free config:
     "tokenSecretFile": "/work/services/waffle-relay/token-secret",
     "destinations": [],
     "webtransport": {
-      "host": "100.77.94.94",
-      "port": 4433,
+      "bind": { "host": "0.0.0.0", "port": 4433 },
+      "advertisedUrl": "https://relay.example:4433/v1/tcp/wt",
       "certificate": "rotating-hash"
     }
   }
@@ -174,6 +174,11 @@ Add the native block to the existing secret-free config:
 ```
 
 Populate the exact destination allowlist and numeric private-target overrides before enabling the service. Configure an authenticated issuer only with a separate protected credential and an explicit narrowed scope. Tailnet reachability alone never authorizes token issuance.
+
+`bind` is the numeric address inside the relay host or container. `advertisedUrl` is the exact
+HTTPS authority and `/v1/tcp/wt` path returned to browsers. A wildcard or non-loopback bind must
+set it explicitly. The relay does not rewrite this URL when a host publishes the container UDP
+socket.
 
 The [systemd user unit](private-pc.service) pins the Node executable and joins normal shutdown. Adjust its executable path to the reviewed installed Node version. Linger is already enabled on the approved PC. Verify it rather than changing it. Create the private scratch directory before starting the unit.
 
@@ -189,3 +194,27 @@ D1 must record the versioned install, private Mesh route, service, exact native 
 Removal is `systemctl --user disable --now waffle-relay.service`, removal of the task's Mesh route, and deletion of the versioned service directory only after its sockets and consumers are stopped. D1 owns that deployment and its removal. N3 does not deploy or retain a service.
 
 For reproducible package checks, build the relay, set `WAFFLE_PACKAGE_ARCHIVE` to the matching prepared Waffle archive, and run `bun run --cwd packages/waffle-relay test:install`. This verifies clean npm and Bun installs, optional-native loading, native checksum equality and actual executable startup. `test:webtransport` runs the local Chromium carrier fixture under Node and Bun. Set `WAFFLE_TEST_WINDOW=65536` to repeat its paused-direction matrix with a 64 KiB receive window. Both carriers advertise mandatory peer windows and use consumer-boundary application credit. Native write settlement alone is not a receive-memory bound. It requires the pinned Playwright Chromium installation and `NETWORK_SCRATCH_ROOT` on a data drive. Use the host's heavy runner for these fixtures.
+
+## Publish the public WebSocket checkpoint image
+
+The `Waffle relay image` workflow builds a linux/amd64 image from the two checksum-pinned
+0.0.109 public release archives. The Node base image is pinned by platform manifest digest.
+It installs no optional native peers and runs the actual image's health, authenticated
+WS-only discovery, denial and TCP lifecycle fixtures before publication.
+
+Pull requests build and qualify without package write permission. After review and merge,
+dispatch `relay-image.yml` on main. Only its separate publish job receives `packages: write`
+through the normal workflow token. That job loads the qualified image rather than rebuilding
+it, checks the saved image identity, and pushes only `ghcr.io/shaullavo/waffle-relay`.
+
+The package must allow anonymous pulls. The workflow uses an empty Docker credential directory
+to pull the published digest, verifies its raw manifest hash and checks that its config digest
+matches the qualified image. A private package or a denied push fails publication acceptance.
+The receipt artifact records the actual registry manifest, source commit and image config.
+Do not substitute an earlier local image digest for this workflow's resulting digest.
+
+The embedded configuration is only a safe checkpoint. It accepts the exact demo Origin
+`https://waffle-network.sprockt.dev`, has no TCP or HTTP destinations, and disables the network
+issuer and native WebTransport. Inject `WAFFLE_RELAY_TOKEN_SECRET` through the deployment's
+protected secret binding. A healthy deny-all deployment is not proof of outside TCP,
+a complete demo, a Bun query, or physical-device acceptance.

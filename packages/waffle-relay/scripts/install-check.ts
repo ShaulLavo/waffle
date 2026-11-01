@@ -47,7 +47,9 @@ async function startup(directory: string, native: boolean): Promise<void> {
       tcp: {
         tokenSecretFile: secret,
         destinations: [],
-        ...(native ? { webtransport: { host: "127.0.0.1", port: await availablePort() } } : {}),
+        ...(native
+          ? { webtransport: { bind: { host: "127.0.0.1", port: await availablePort() } } }
+          : {}),
       },
     }),
   );
