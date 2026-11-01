@@ -40,6 +40,8 @@ assert.ok(
   !Object.keys(require.cache).some((path) => path.endsWith("webtransport.node")),
   "Ordinary entry loaded the optional native addon",
 );
+await import(require.resolve("waffle-relay/node-webtransport"));
+await import(require.resolve("@fails-components/webtransport-transport-http3-quiche"));
 const { mintRelayToken } = await import(require.resolve("waffle-relay/token"));
 const { serveConfig } = await import(
   require.resolve("waffle-relay/node").replace(/node\.js$/, "cli-config.js")
