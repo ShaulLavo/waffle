@@ -69,6 +69,7 @@ jobs:
             test ! -e "$scratch" || cleanup_result=1
             ! docker container inspect "$container" >/dev/null 2>&1 || cleanup_result=1
             ! docker image inspect waffle-relay:validated >/dev/null 2>&1 || cleanup_result=1
+            printf '{"productExit":%s,"cleanupExit":%s,"qualificationResourcesRemoved":%s}\n' "$result" "$cleanup_result" "$([ "$cleanup_result" = 0 ] && echo true || echo false)"
             test "$result" = 0 && test "$cleanup_result" = 0
           }
           trap cleanup EXIT
@@ -77,8 +78,8 @@ jobs:
           docker image ls --no-trunc
           docker container ls --all --no-trunc
           test ! -e "$scratch"
-          ! docker container inspect "$container" >/dev/null 2>&1
-          ! docker image inspect waffle-relay:validated >/dev/null 2>&1
+          if docker container inspect "$container" >/dev/null 2>&1; then exit 1; fi
+          if docker image inspect waffle-relay:validated >/dev/null 2>&1; then exit 1; fi
           owned=1
           mkdir "$scratch"
           node packages/waffle-relay/scripts/prepare-relay-image.ts "$scratch"
@@ -105,6 +106,7 @@ jobs:
           export RECEIPT_SHA256
           docker image rm waffle-relay:validated
           node packages/waffle-relay/scripts/relay-image-custody.ts load "$RUNNER_TEMP/image"
+          cat "$RUNNER_TEMP/image/receipt.json"
           printf 'receipt-sha256=%s\n' "$RECEIPT_SHA256" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         id: image
@@ -176,7 +178,7 @@ jobs:
           curl --fail --silent --show-error --location --header "Authorization: Bearer $token" \
             "https://ghcr.io/v2/shaullavo/waffle-relay/blobs/$config" --output image/published-config.json
           node packages/waffle-relay/scripts/relay-image-custody.ts published image "$reference"
-          printf 'Published and anonymously pulled `%s`.\n\nVariant `%s`, exact Origin, deny-all TCP checkpoint.\n' "$reference" "$IMAGE_VARIANT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Published and anonymously pulled %s.\n\nVariant %s, exact Origin, deny-all TCP checkpoint.\n' "$reference" "$IMAGE_VARIANT" >> "$GITHUB_STEP_SUMMARY"
           cat image/published-manifest.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
