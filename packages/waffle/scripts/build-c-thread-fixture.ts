@@ -187,9 +187,16 @@ function compiler(sdk: string, scratch: string): FixtureReceipt["compiler"] {
     trace.stderr.toString().matchAll(/"([^"]+)"/g),
     (match) => match[1],
   ).filter((path): path is string => path !== undefined);
-  const sdkFiles = [join(sdk, "VERSION"), join(sdk, "bin", "clang.cfg"), clang, linker].concat(
-    tracedPaths,
-  );
+  const sysrootLib = join(sdk, "share/wasi-sysroot/lib/wasm32-wasip1-threads");
+  const sdkFiles = [
+    join(sdk, "VERSION"),
+    join(sdk, "bin", "clang.cfg"),
+    join(sysrootLib, "crt1-command.o"),
+    join(sysrootLib, "libpthread.a"),
+    join(sysrootLib, "libc.a"),
+    clang,
+    linker,
+  ].concat(tracedPaths);
   const clangVersion = run([clang, "--version"]);
   const linkerVersion = run([linker, "--version"]);
   const depPaths = dependencies(join(scratch, "dependencies.d"));
