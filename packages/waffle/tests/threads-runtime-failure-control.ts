@@ -94,12 +94,10 @@ try {
     service.launchWorker(context, {
       workerUrl: new URL("../browser/preview1-worker.ts", import.meta.url).href,
       threaded: {
-        serviceWorkerUrl: new URL(
+        serviceWorkerUrl:
           selected === "late-read"
-            ? "./threads-runtime-late-read-service.ts"
-            : "../thread/service-worker.ts",
-          import.meta.url,
-        ).href,
+            ? new URL("./threads-runtime-late-read-service.ts", import.meta.url).href
+            : new URL("../thread/service-worker.ts", import.meta.url).href,
         guestWorkerUrl: new URL("../thread/guest-bootstrap.ts", import.meta.url).href,
       },
       request: {
