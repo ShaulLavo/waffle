@@ -37,6 +37,8 @@ jobs:
         run: docker build --platform linux/amd64 --tag waffle-relay:validated packages/waffle-relay/container
       - name: Qualify this actual image and the released client/server fixture
         run: |
+          git fetch --depth=1 origin 5f3d329f35be618e5b4d822c0ee933bbfd9a10f5
+          test "$(git rev-parse FETCH_HEAD^{commit})" = 5f3d329f35be618e5b4d822c0ee933bbfd9a10f5
           mkdir "$RUNNER_TEMP/qualification"
           cp packages/waffle-relay/container/verify.ts "$RUNNER_TEMP/qualification/verify.ts"
           mkdir "$RUNNER_TEMP/qualification/tests"
