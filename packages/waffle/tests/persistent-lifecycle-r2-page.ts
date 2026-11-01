@@ -209,7 +209,7 @@ async function deleteWorkspace(value: unknown): Promise<unknown> {
   });
   return { deleted: true };
 }
-/** @browserEntry Native lifecycle controls with an explicit worker owner. */
+/** Native lifecycle controls with an explicit worker owner. */
 export async function control(operation: string, body?: unknown): Promise<unknown> {
   if (operation === "start") return start(body);
   if (operation === "refusedStart")

@@ -1,15 +1,18 @@
-import { isIP } from "node:net";
-import { randomBytes, X509Certificate } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   Http3Server,
   type WebTransportSession,
   type WebTransportBidirectionalStream,
 } from "@fails-components/webtransport";
-import { createNodeServer, type NodeRelayOptions } from "./node-server.js";
+import { createNodeServer } from "./node-server.js";
 import { canonicalOrigin } from "./tcp-destination.js";
-import { createCertificate, type CertificateMaterial } from "./webtransport-certificate.js";
+import {
+  createCertificate,
+  parseOperatorCertificate,
+  type CertificateMaterial,
+} from "./webtransport-certificate.js";
 import { ServerWebTransportStream } from "./tcp-webtransport-server-stream.js";
-import type { TcpAdmissions, TcpPolicy, TcpServerOptions } from "./tcp-policy.js";
+import type { TcpAdmissions, TcpPolicy } from "./tcp-policy.js";
 import {
   WebTransportLifecycle,
   rotationDependencies,
@@ -19,31 +22,31 @@ import {
   type ManagedEndpoint,
 } from "./webtransport-lifecycle.js";
 import { nativeResetReason } from "./webtransport-native.js";
+import {
+  snapshotWebTransportAddress,
+  WEBTRANSPORT_PATH,
+  type WebTransportAddressSnapshot,
+  type WebTransportBind,
+} from "./webtransport-address.js";
 
-const PATH = "/v1/tcp/wt";
-export interface TcpWebTransportOptions {
-  readonly host: string;
-  readonly port: number;
-  readonly certificate?: "rotating-hash" | { readonly cert: string; readonly key: string };
-  readonly rotationMs?: number;
-  readonly onEndpointFailure?: (failure: EndpointFailure) => void | Promise<void>;
-}
-export interface NodeWebTransportRelayOptions extends Omit<NodeRelayOptions, "tcp"> {
-  readonly tcp: TcpServerOptions & { readonly webtransport: TcpWebTransportOptions };
-}
-export function createNodeWebTransportRelayServer(options: NodeWebTransportRelayOptions) {
+import type {
+  TcpWebTransportOptions,
+  NodeWebTransportRelayOptions,
+  NodeWebTransportRelayFactory,
+} from "./node-webtransport-options.js";
+
+export const createNodeWebTransportRelayServer: NodeWebTransportRelayFactory = (options) => {
   const relay = createNativeRelay(options, rotationDependencies).relay;
   const tcp = relay.tcp;
   if (!tcp) throw new Error("Missing TCP relay");
   return Object.freeze({ ...relay, tcp });
-}
+};
 
 export function createNativeRelay(
   options: NodeWebTransportRelayOptions,
   dependencies: RotationTestDependencies,
 ) {
-  const selected = options.tcp.webtransport;
-  validateOptions(selected);
+  const selected = snapshotOptions(options.tcp.webtransport);
   const endpoints = new Set<NativeEndpoint>();
   let lifecycle: WebTransportLifecycle;
   const relay = createNodeServer(options, (policy, admissions) => {
@@ -51,15 +54,13 @@ export function createNativeRelay(
     const hashMode = !certificate || certificate === "rotating-hash";
     lifecycle = new WebTransportLifecycle(
       {
-        rotationMs: selected.rotationMs ?? 7 * 86400000,
+        rotationMs: selected.rotationMs,
         hashMode,
         certificate: (signal, remaining) =>
-          hashMode
-            ? createCertificate(signal, remaining)
-            : Promise.resolve(parseCertificate(certificate)),
+          hashMode ? createCertificate(signal, remaining) : Promise.resolve(certificate),
         construct: (record, live) => {
           const endpoint = new NativeEndpoint(
-            selected,
+            selected.bind,
             record.certificate,
             policy,
             admissions,
@@ -74,7 +75,7 @@ export function createNativeRelay(
           return endpoint;
         },
         discovery: (material) => ({
-          url: endpointURL(selected),
+          url: selected.address.advertisedUrl,
           ...(hashMode ? { certificateHashes: [material.hash] } : {}),
         }),
         onEndpointFailure: selected.onEndpointFailure,
@@ -117,7 +118,7 @@ class NativeEndpoint implements ManagedEndpoint {
   private readonly accepting: Promise<void>;
   private reason: "shutdown" | "certificate-rotation" = "shutdown";
   constructor(
-    options: TcpWebTransportOptions,
+    bind: WebTransportBind,
     certificate: CertificateMaterial,
     private readonly policy: TcpPolicy,
     private readonly admissions: TcpAdmissions,
@@ -125,8 +126,8 @@ class NativeEndpoint implements ManagedEndpoint {
     private readonly generation: number,
   ) {
     this.server = new Http3Server({
-      host: options.host,
-      port: options.port,
+      host: bind.host,
+      port: bind.port,
       secret: randomBytes(32).toString("hex"),
       cert: certificate.cert,
       privKey: certificate.key,
@@ -147,7 +148,7 @@ class NativeEndpoint implements ManagedEndpoint {
     this.server.setRequestCallback(({ header }: { header: Record<string, unknown> }) =>
       Promise.resolve(this.admitSession(header)),
     );
-    this.accepting = this.accept(this.server.sessionStream(PATH).getReader());
+    this.accepting = this.accept(this.server.sessionStream(WEBTRANSPORT_PATH).getReader());
     void this.accepting.catch(() => {});
   }
   get counters() {
@@ -171,7 +172,7 @@ class NativeEndpoint implements ManagedEndpoint {
     return this.stopping;
   }
   private admitSession(header: Record<string, unknown>): object {
-    if (header[":path"] !== PATH || !allowedOrigin(header.origin, this.policy.origins))
+    if (header[":path"] !== WEBTRANSPORT_PATH || !allowedOrigin(header.origin, this.policy.origins))
       return { status: 403 };
     if (!this.live() || this.fenced || this.leases.size + this.sessions.size >= 64)
       return { status: 503 };
@@ -180,7 +181,11 @@ class NativeEndpoint implements ManagedEndpoint {
       epoch: this.epoch,
       timer: setTimeout(() => this.leases.delete(id), 10000),
     });
-    return { status: 200, path: PATH, userData: { lease: id, generation: this.generation } };
+    return {
+      status: 200,
+      path: WEBTRANSPORT_PATH,
+      userData: { lease: id, generation: this.generation },
+    };
   }
   private async accept(
     reader: import("node:stream/web").ReadableStreamDefaultReader<WebTransportSession>,
@@ -307,16 +312,6 @@ class NativeEndpoint implements ManagedEndpoint {
     this.disposal.resolve();
   }
 }
-function parseCertificate(value: TcpWebTransportOptions["certificate"]): CertificateMaterial {
-  if (!value || value === "rotating-hash") throw new TypeError("Missing certificate");
-  const parsed = new X509Certificate(value.cert);
-  return {
-    ...value,
-    starts: Date.parse(parsed.validFrom),
-    expires: Date.parse(parsed.validTo),
-    hash: { algorithm: "sha-256", value: "" },
-  };
-}
 function allowedOrigin(value: unknown, origins: Set<string>): boolean {
   if (typeof value !== "string") return false;
   try {
@@ -325,18 +320,59 @@ function allowedOrigin(value: unknown, origins: Set<string>): boolean {
     return false;
   }
 }
-function endpointURL(options: TcpWebTransportOptions): string {
-  const host = options.host.includes(":") ? `[${options.host}]` : options.host;
-  return `https://${host}:${options.port}${PATH}`;
+interface NativeOptionsSnapshot {
+  readonly address: WebTransportAddressSnapshot;
+  readonly bind: WebTransportBind;
+  readonly certificate?: "rotating-hash" | CertificateMaterial;
+  readonly rotationMs: number;
+  readonly onEndpointFailure?: (failure: EndpointFailure) => void | Promise<void>;
 }
-function validateOptions(options: TcpWebTransportOptions): void {
-  if (
-    !isIP(options.host) ||
-    options.host === "0.0.0.0" ||
-    options.host === "::" ||
-    !Number.isInteger(options.port) ||
-    options.port < 1 ||
-    options.port > 65535
-  )
-    throw new TypeError("WebTransport requires an explicit numeric interface and port");
+
+function snapshotOptions(options: TcpWebTransportOptions): NativeOptionsSnapshot {
+  rejectUnknownKeys(options, [
+    "bind",
+    "advertisedUrl",
+    "certificate",
+    "rotationMs",
+    "onEndpointFailure",
+  ]);
+  const {
+    bind,
+    advertisedUrl,
+    certificate: inputCertificate,
+    rotationMs = 7 * 86400000,
+    onEndpointFailure,
+  } = options;
+  const address = snapshotWebTransportAddress({ bind, advertisedUrl });
+  if (!Number.isSafeInteger(rotationMs) || rotationMs < 1000 || rotationMs > 12 * 86400000)
+    throw new TypeError("Invalid WebTransport rotation interval");
+  if (onEndpointFailure !== undefined && typeof onEndpointFailure !== "function")
+    throw new TypeError("Invalid WebTransport endpoint failure callback");
+  const certificate = snapshotCertificate(inputCertificate, address.advertisedHostname);
+  return Object.freeze({
+    address,
+    bind: address.bind,
+    ...(certificate ? { certificate } : {}),
+    rotationMs,
+    ...(onEndpointFailure ? { onEndpointFailure } : {}),
+  });
+}
+
+function snapshotCertificate(
+  value: TcpWebTransportOptions["certificate"],
+  hostname: string,
+): NativeOptionsSnapshot["certificate"] {
+  if (value === undefined || value === "rotating-hash") return value;
+  rejectUnknownKeys(value, ["cert", "key"]);
+  const { cert, key } = value;
+  if (typeof cert !== "string" || typeof key !== "string")
+    throw new TypeError("Invalid WebTransport certificate material");
+  return parseOperatorCertificate({ cert, key }, hostname);
+}
+
+function rejectUnknownKeys(value: unknown, allowed: readonly string[]): void {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new TypeError("Invalid WebTransport configuration");
+  if (Object.keys(value).some((key) => !allowed.includes(key)))
+    throw new TypeError("Unknown WebTransport configuration field");
 }

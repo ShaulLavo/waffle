@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { X509Certificate } from "node:crypto";
+import { createPrivateKey, X509Certificate } from "node:crypto";
+import { isIP } from "node:net";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,6 +16,50 @@ export interface CertificateMaterial {
   readonly hash: { readonly algorithm: "sha-256"; readonly value: string };
 }
 const execute = promisify(execFile);
+
+export interface OperatorCertificateInput {
+  readonly cert: string;
+  readonly key: string;
+}
+
+export function parseOperatorCertificate(
+  value: OperatorCertificateInput,
+  hostname: string,
+  now = Date.now(),
+): CertificateMaterial {
+  const { cert, key } = value;
+  let parsed: X509Certificate;
+  try {
+    parsed = new X509Certificate(cert);
+  } catch {
+    throw new TypeError("Invalid WebTransport certificate");
+  }
+  const starts = Date.parse(parsed.validFrom);
+  const expires = Date.parse(parsed.validTo);
+  if (!Number.isFinite(starts) || !Number.isFinite(expires) || now < starts || now >= expires)
+    throw new TypeError("Invalid WebTransport certificate validity");
+  if (!certificateMatchesHostname(parsed, hostname))
+    throw new TypeError("WebTransport certificate does not match advertised hostname");
+  let matches: boolean;
+  try {
+    matches = parsed.checkPrivateKey(createPrivateKey(key));
+  } catch {
+    throw new TypeError("Invalid WebTransport private key");
+  }
+  if (!matches) throw new TypeError("WebTransport certificate and key do not match");
+  return Object.freeze({
+    cert,
+    key,
+    starts,
+    expires,
+    hash: Object.freeze({ algorithm: "sha-256" as const, value: "" }),
+  });
+}
+
+function certificateMatchesHostname(certificate: X509Certificate, hostname: string): boolean {
+  return Boolean(isIP(hostname) ? certificate.checkIP(hostname) : certificate.checkHost(hostname));
+}
+
 export async function createCertificate(
   signal?: AbortSignal,
   timeoutMs = 10000,
