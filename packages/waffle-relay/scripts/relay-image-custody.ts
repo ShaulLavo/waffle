@@ -8,6 +8,8 @@ import {
   checkLayerDescriptor,
   layerIdentity,
   type QualifiedLayer,
+  type LayerSource,
+  webLayerSource,
 } from "./relay-image-layers.ts";
 import {
   array,
@@ -177,7 +179,7 @@ export async function checkPublished(
   reference: string,
   expectedConfig: Uint8Array,
   expectedLayers: readonly QualifiedLayer[],
-  readLayer: (digest: string) => Promise<AsyncIterable<Uint8Array> | Iterable<Uint8Array>>,
+  readLayer: (digest: string) => Promise<LayerSource>,
 ) {
   assert.match(
     reference,
@@ -241,7 +243,7 @@ async function registryLayer(digest: string) {
     signal: AbortSignal.timeout(60000),
   });
   assert.ok(response.ok && response.body, "Cannot read anonymous registry layer");
-  return response.body;
+  return webLayerSource(response.body);
 }
 
 async function main() {

@@ -10,6 +10,7 @@ on:
       - "packages/waffle-relay/tests/tcp-native-fixture.ts"
       - "packages/waffle-relay/tests/*container.test.ts"
       - "packages/waffle-relay/tests/relay-image*.test.ts"
+      - "packages/waffle-relay/tests/fixtures/relay-image-*.ts"
       - "packages/waffle-relay/docs/native-container.md"
   workflow_dispatch:
     inputs:

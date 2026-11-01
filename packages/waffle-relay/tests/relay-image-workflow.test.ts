@@ -82,6 +82,7 @@ test("every preparation, verifier, custody and contract input triggers read-only
   const inputs = [
     ".github/workflows/relay-image.yml",
     "packages/waffle-relay/docs/native-container.md",
+    "packages/waffle-relay/tests/fixtures/relay-image-lifecycle.ts",
     "packages/waffle-relay/container/.dockerignore",
     "packages/waffle-relay/container/native/.dockerignore",
   ];
