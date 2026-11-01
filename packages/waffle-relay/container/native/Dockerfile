@@ -15,6 +15,9 @@ RUN sha256sum --check SHA256SUMS \
 FROM docker.io/library/node@sha256:9d09a088be40a970e2b690a9fb13ad69a0fc529d7b98e9be6a11ba1e9176f0a1
 ARG SOURCE_COMMIT
 ARG RELEASE_VERSION
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -r /var/lib/apt/lists/*
 LABEL org.opencontainers.image.source="https://github.com/ShaulLavo/waffle" \
       org.opencontainers.image.revision="$SOURCE_COMMIT" \
       org.opencontainers.image.version="$RELEASE_VERSION"

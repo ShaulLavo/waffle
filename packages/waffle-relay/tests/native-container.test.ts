@@ -47,6 +47,11 @@ describe("native container preparation", () => {
       "5592208da56aee0f53615b8d8c5d57c99a87618593c6343787ac9f92761daf1d",
     );
     expect(dockerfile).toContain("USER 1000:1000");
+    const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+    expect(runtimeStage).toContain("apt-get install -y --no-install-recommends openssl");
+    expect(runtimeStage.indexOf("apt-get install")).toBeLessThan(
+      runtimeStage.indexOf("USER 1000:1000"),
+    );
     expect(dockerfile).not.toContain("--chown");
     expect(dockerfile).toContain("EXPOSE 8787/tcp 4433/udp");
     expect(dockerfile).toContain("STOPSIGNAL SIGTERM");
