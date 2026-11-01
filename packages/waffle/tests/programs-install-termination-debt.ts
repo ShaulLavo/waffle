@@ -23,8 +23,7 @@ const runtime = createRuntime({
     mode: "memory",
     workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
   },
-  processHost: (options) =>
-    new BrowserProcessBroker({ ...options, onError: stopReported.resolve }),
+  processHost: (options) => new BrowserProcessBroker({ ...options, onError: stopReported.resolve }),
 });
 const installRuntime: typeof runtime = {
   ...runtime,
@@ -33,8 +32,8 @@ const installRuntime: typeof runtime = {
 
 async function drain(): Promise<void> {
   await runtime.filesystem.drain();
-  // Resume the fixture after uninstall's final drain continuation enters its fence.
-  if (++drains === 2) queueMicrotask(() => fenceReady.resolve());
+  // Cross uninstall's drain catch and await before resuming the waiting-fence case.
+  if (++drains === 2) queueMicrotask(() => queueMicrotask(() => fenceReady.resolve()));
 }
 
 const launcher: GuestLauncher = (context) => {
