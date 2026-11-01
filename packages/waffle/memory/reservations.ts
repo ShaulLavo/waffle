@@ -1073,8 +1073,7 @@ export class SharedMemoryLedger {
     if (
       alias.role.kind === "service" &&
       alias.exposure === "escaped" &&
-      alias.backing.fence !== "passed" &&
-      alias.backing.phase !== "debt"
+      alias.backing.fence !== "passed"
     )
       throw new Error("Shared guest service stop requires its safety fence");
     alias.stop = Promise.resolve().then(() => this.finishSharedGuestStop(alias, id, lifecycle));

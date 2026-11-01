@@ -80,14 +80,22 @@ function guest(backing: SharedGuestBacking, tid: number): SharedGuestAlias {
 }
 const workerSource = `
 const { parentPort } = require("node:worker_threads");
+const { FilesystemSection } = require(${JSON.stringify(new URL("../fs/protocol.ts", import.meta.url).pathname)});
 let memory;
+let section;
 parentPort.on("message", message => {
   if (message === "idle") {
+    section?.exit();
+    section = undefined;
     memory = undefined;
     parentPort.postMessage("idle");
     return;
   }
   memory = message.memory;
+  if (message.filesystem) {
+    section = new FilesystemSection(message.filesystem);
+    section.enter();
+  }
   new Uint8Array(memory.buffer)[0] = 73;
   parentPort.postMessage(memory.buffer.byteLength);
 });
@@ -322,16 +330,74 @@ test("L4 failed actual stop and fence retain heap once plus independent Worker-c
   const stopError: unknown = await stopped.catch((error: unknown) => error);
   expect(stopError).toBeInstanceOf(AggregateError);
   expect(initial.stop(initialWorker.lifecycle)).toBe(stopped);
-  await service.stop(serviceWorker.lifecycle);
-  expect(runtime.snapshot().debtBytes).toBe(heapBytes + CONTROL_GRANT_BYTES + 16);
+  expect(() => service.stop(serviceWorker.lifecycle)).toThrow("safety fence");
+  expect(serviceWorker.worker.threadId).not.toBe(-1);
+  expect(runtime.snapshot().sharedGuests[0]?.fence).toBe("failed");
+  expect(runtime.snapshot().debtBytes).toBe(heapBytes + CONTROL_GRANT_BYTES);
   runtime.dispose();
   const fresh = ledger.openRuntime(platform);
   runtimes.add(fresh);
-  expect(fresh.snapshot().debtBytes).toBe(heapBytes + CONTROL_GRANT_BYTES + 16);
+  expect(fresh.snapshot().debtBytes).toBe(heapBytes + 2 * CONTROL_GRANT_BYTES);
   await outstanding.settle(() => {});
-  expect(fresh.snapshot().debtBytes).toBe(heapBytes + CONTROL_GRANT_BYTES + 16);
+  expect(fresh.snapshot().debtBytes).toBe(heapBytes + 2 * CONTROL_GRANT_BYTES);
   expect(backing.retire().kind).toBe("debt");
 });
+
+async function attemptUnfencedServiceStop(
+  alias: SharedGuestAlias,
+  worker: Worker,
+  events: string[],
+): Promise<unknown> {
+  try {
+    await alias.stop({
+      idle() {
+        events.push("idle-refused");
+        throw new Error("Service still owns filesystem work");
+      },
+      terminate() {
+        events.push("native-terminate");
+        return worker.terminate();
+      },
+      cleanup() {
+        events.push("cleanup");
+      },
+    });
+  } catch (error) {
+    return error;
+  }
+}
+
+async function serviceDebtKeepsFilesystemOwner(dispose: boolean) {
+  const { runtime, backing } = setup();
+  const service = backing.alias({ kind: "service", incarnation: 12 });
+  const running = await launched(runtime, service, true);
+  const filesystem = createFilesystemIdentity(undefined, 1024 * 1024);
+  const inside = message(running.worker);
+  running.worker.postMessage({ memory: running.memory, filesystem });
+  try {
+    expect(await inside).toBe(shape.initialPages * PAGE_BYTES);
+    expect(Atomics.load(new Int32Array(filesystem.sections), 0)).toBe(1);
+    backing.seal(exit);
+    if (dispose) runtime.dispose();
+    else backing.fail(new Error("Independent guest stop failed"));
+    const events: string[] = [];
+    const error = await attemptUnfencedServiceStop(service, running.worker, events);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("requires its safety fence");
+    expect(events).toEqual([]);
+    expect(running.worker.threadId).not.toBe(-1);
+    expect(Atomics.load(new Int32Array(filesystem.sections), 0)).toBe(1);
+    expect(backing.retire().kind).toBe("debt");
+    expect(runtime.snapshot().sharedGuests[0]?.fence).toBe("pending");
+  } finally {
+    if (running.worker.threadId !== -1) await running.lifecycle.idle();
+    reapFilesystem(filesystem);
+  }
+}
+
+for (const dispose of [false, true])
+  test(`service safety before native stop survives ${dispose ? "runtime disposal" : "aggregate debt"}`, () =>
+    serviceDebtKeepsFilesystemOwner(dispose));
 
 test("L5 counted mobile constructor refusal refunds provisional holder and preserves contradiction cap", () => {
   const mobile = sharedMemoryProfile({
