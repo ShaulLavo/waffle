@@ -5,10 +5,11 @@ import { canonicalDestination, canonicalOrigin } from "./tcp-destination.js";
 import { record } from "./tcp-protocol.js";
 import { tcpLimits, type TcpDestination, type TcpServerOptions } from "./tcp-policy.js";
 import type { NodeRelayOptions } from "./node.js";
+import type { TcpWebTransportOptions, NodeWebTransportRelayOptions } from "./node-webtransport.js";
 
 export interface ServeConfig {
   readonly listen: { host: string; port: number };
-  readonly options: NodeRelayOptions;
+  readonly options: NodeRelayOptions | NodeWebTransportRelayOptions;
   readonly dev: boolean;
 }
 export async function serveConfig(
@@ -33,7 +34,7 @@ export async function serveConfig(
     throw new TypeError("Invalid relay configuration");
   rejectKeys(value, ["listen", "allowedOrigins", "tcp"]);
   rejectKeys(value.listen, ["host", "port"]);
-  rejectKeys(value.tcp, ["tokenSecretFile", "destinations", "issuer", "limits"]);
+  rejectKeys(value.tcp, ["tokenSecretFile", "destinations", "issuer", "limits", "webtransport"]);
   const listen = listenFrom(value.listen);
   const origins = value.allowedOrigins.map((origin: unknown) => {
     if (typeof origin !== "string") throw new TypeError("Invalid origin");
@@ -43,6 +44,7 @@ export async function serveConfig(
   const destinations = destinationsFrom(value.tcp.destinations);
   const limits = limitsFrom(value.tcp.limits);
   const issuer = await issuerFrom(value.tcp.issuer, env);
+  const webtransport = await webtransportFrom(value.tcp.webtransport);
   if (issuer?.credential === secret) throw new TypeError("Issuer and TCP secrets must be distinct");
   return {
     listen,
@@ -50,7 +52,13 @@ export async function serveConfig(
     options: {
       credential: randomBytes(32).toString("hex"),
       allowedOrigins: origins,
-      tcp: { tokenSecret: secret, destinations, limits, ...(issuer ? { issuer } : {}) },
+      tcp: {
+        tokenSecret: secret,
+        destinations,
+        limits,
+        ...(issuer ? { issuer } : {}),
+        ...(webtransport ? { webtransport } : {}),
+      },
     },
   };
 }
@@ -106,6 +114,45 @@ function devConfig(flags: Map<string, string[]>): ServeConfig {
     },
   };
 }
+async function webtransportFrom(value: unknown): Promise<TcpWebTransportOptions | undefined> {
+  if (value === undefined) return;
+  if (!record(value) || typeof value.host !== "string" || typeof value.port !== "number")
+    throw new TypeError("Invalid WebTransport config");
+  rejectKeys(value, ["host", "port", "certificate", "rotationMs"]);
+  let certificate: TcpWebTransportOptions["certificate"];
+  if (value.certificate === undefined || value.certificate === "rotating-hash") {
+    certificate = value.certificate;
+  } else {
+    if (
+      !record(value.certificate) ||
+      typeof value.certificate.certFile !== "string" ||
+      typeof value.certificate.keyFile !== "string"
+    )
+      throw new TypeError("Invalid WebTransport certificate config");
+    rejectKeys(value.certificate, ["certFile", "keyFile"]);
+    certificate = {
+      cert: await readFile(value.certificate.certFile, "utf8"),
+      key: await secretFile(value.certificate.keyFile),
+    };
+  }
+  return {
+    host: value.host,
+    port: value.port,
+    ...(certificate ? { certificate } : {}),
+    ...(value.rotationMs === undefined ? {} : { rotationMs: rotationFrom(value.rotationMs) }),
+  };
+}
+function rotationFrom(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 1000 ||
+    value > 12 * 86400000
+  )
+    throw new TypeError("Invalid WebTransport rotation interval");
+  return value;
+}
+
 function listenFrom(value: Record<string, unknown>): ServeConfig["listen"] {
   if (
     typeof value.host !== "string" ||
@@ -193,4 +240,20 @@ function limitsFrom(value: unknown): ReturnType<typeof tcpLimits> {
   }
   rejectKeys(value, Object.keys(defaults));
   return tcpLimits(result);
+}
+
+export async function tcpStartup(
+  tcp:
+    | {
+        readonly ready: Promise<void>;
+        readonly failure?: Promise<import("./webtransport-lifecycle.js").EndpointFailure>;
+      }
+    | undefined,
+): Promise<void> {
+  try {
+    await tcp?.ready;
+  } catch (error) {
+    const failure = await tcp?.failure;
+    if (!failure?.manualActionRequired) throw error;
+  }
 }
