@@ -67,6 +67,7 @@ export class ThreadService {
   ) {}
 
   submit(call: CallKey, request: ThreadOperation): Promise<ThreadResult> {
+    if (isRevoked(this.options.filesystem.connection)) this.cancelAll();
     if (this.phase !== "open") return Promise.resolve({ kind: "error", errno: 11 });
     this.admit(call);
     const tid = call.thread.tid;
@@ -437,6 +438,7 @@ export class ThreadService {
   }
 
   private live(): void {
+    if (isRevoked(this.options.filesystem.connection)) this.cancelAll();
     if (this.phase !== "open") throw new FilesystemError(11);
   }
 

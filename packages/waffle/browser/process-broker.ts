@@ -276,7 +276,7 @@ export interface WorkerMemoryObservation {
   readonly bytes: number | null;
 }
 interface RuntimeChild {
-  threads?: Promise<ThreadAggregate>;
+  threads?: Promise<ThreadAggregate | undefined>;
   memory: BigInt64Array;
   identity: Omit<WorkerMemoryObservation, "bytes">;
   notifications?: NotificationBridge;
@@ -1603,24 +1603,28 @@ export class BrowserProcessBroker {
     context.registerRevocation(() => {
       this.revokeRuntimeProcess(context.pid);
       this.options.filesystem.revoke(filesystem);
-      void child.threads?.then((owner) => owner.terminal()).catch((error) => this.report(error));
+      void child.threads?.then((owner) => owner?.terminal()).catch((error) => this.report(error));
     });
-    child.threads = import("../thread/runtime-owner.js").then(
-      ({ RuntimeThreadOwner }) =>
-        new RuntimeThreadOwner({
-          context,
-          transport,
-          declaration,
-          urls,
-          reservations: this.options.reservations,
-          connect: (headroom) => this.options.filesystem.connect(filesystem, headroom),
-          filesystemFence: () => this.options.filesystem.quiesce(filesystem),
-          failed: (error) => {
-            this.report(error);
-            if (startStatus(context.outcome) === 0) context.fail(error);
-            else context.startFailed(error);
-          },
-        }),
+    child.threads = import("../thread/runtime-owner.js").then(({ RuntimeThreadOwner }) =>
+      RuntimeThreadOwner.create({
+        context,
+        transport,
+        declaration,
+        urls,
+        reservations: this.options.reservations,
+        connect: (headroom) => this.options.filesystem.connect(filesystem, headroom),
+        filesystemFence: () => this.options.filesystem.quiesce(filesystem),
+        cleanup: () => {
+          const dispose = child.cleanup;
+          child.cleanup = undefined;
+          dispose?.();
+        },
+        failed: (error) => {
+          this.report(error);
+          if (startStatus(context.outcome) === 0) context.fail(error);
+          else context.startFailed(error);
+        },
+      }),
     );
     void child.threads.catch((error) => {
       child.failed = true;
@@ -2009,7 +2013,9 @@ export class BrowserProcessBroker {
     if (threaded?.threads) {
       const adapterFence = controller?.quiesce?.();
       if (adapterFence) pending.push(adapterFence);
-      pending.push(threaded.threads.then((owner) => owner.fence()));
+      pending.push(
+        threaded.threads.then((owner) => (owner ? owner.fence() : this.quiesceChild(threaded))),
+      );
       if (controller?.filesystem && controller.filesystem.sections !== threaded.filesystem.sections)
         pending.push(this.options.filesystem.quiesce(controller.filesystem));
       return Promise.all(pending).then(() => {});
@@ -2055,9 +2061,8 @@ export class BrowserProcessBroker {
     if (child.stopped) return;
     if (child.threads) {
       return (child.stopping = child.threads
-        .then((owner) => owner.stop())
+        .then((owner) => (owner ? owner.stop() : this.quiesceChild(child)))
         .then(() => {
-          child.cleanup?.();
           child.stopped = true;
           this.terminalLifetimes.get(child.context.pid)?.stopped();
           this.children.delete(child.context.pid);

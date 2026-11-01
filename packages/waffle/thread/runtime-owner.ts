@@ -48,7 +48,14 @@ interface OwnerOptions {
   readonly urls: ThreadLaunchOptions;
   connect(headroom: Headroom | null): FilesystemConnection;
   filesystemFence(): Promise<void>;
+  cleanup(): void;
   failed(error: unknown): void;
+}
+class NoThreadOwner {
+  constructor(
+    readonly cause: unknown,
+    readonly rollback: () => Promise<void>,
+  ) {}
 }
 const capacities = new WeakMap<RuntimeReservations, { processes: number; guests: number }>();
 /** Page-only owner. The sole ledger owns bytes; this counter bounds admitted actors. */
@@ -76,17 +83,27 @@ export class RuntimeThreadOwner {
   private serviceFailure: unknown;
   private serviceSafe = false;
 
-  constructor(private readonly options: OwnerOptions) {
+  static async create(options: OwnerOptions): Promise<RuntimeThreadOwner | undefined> {
+    try {
+      return new RuntimeThreadOwner(options);
+    } catch (error) {
+      if (!(error instanceof NoThreadOwner)) throw error;
+      options.failed(error.cause);
+      await error.rollback();
+    }
+  }
+
+  private constructor(private readonly options: OwnerOptions) {
     const { reservations, context, transport } = options;
     this.directory = workerProcessDirectoryId(transport);
     this.capacity = capacities.get(reservations) ?? { processes: 0, guests: 0 };
     capacities.set(reservations, this.capacity);
-    if (this.capacity.processes >= 2) throw new Error("thread process capacity exhausted");
-    this.backing = reservations.sharedGuests.create({
-      owner: { directory: this.directory, pid: context.pid },
-      ...options.declaration,
-    });
-    this.serviceAlias = this.backing.alias({ kind: "service", incarnation: context.pid });
+    this.backing = this.createBacking();
+    try {
+      this.serviceAlias = this.backing.alias({ kind: "service", incarnation: context.pid });
+    } catch (error) {
+      throw new NoThreadOwner(error, () => this.rollbackBacking());
+    }
     const ticket = this.admitService();
     let worker: Worker | undefined;
     let connection: FilesystemConnection | undefined;
@@ -102,10 +119,17 @@ export class RuntimeThreadOwner {
         this.fail(new Error(event.message));
       };
     } catch (error) {
-      connection?.port.close();
-      ticket.abort();
-      this.rollbackBacking();
-      throw error;
+      if (worker) {
+        this.backing.fail(error);
+        ticket.launched().failed([error]);
+        throw error;
+      }
+      throw new NoThreadOwner(error, () =>
+        this.rollbackBacking(() => {
+          connection?.port.close();
+          ticket.abort();
+        }),
+      );
     }
     try {
       const memory = this.serviceAlias.transfer().memory;
@@ -128,21 +152,44 @@ export class RuntimeThreadOwner {
     context.registerRevocation(() => this.terminal());
     if (readOutcome(context.outcome)) this.terminal();
   }
+  private createBacking(): SharedGuestBacking {
+    try {
+      if (this.capacity.processes >= 2) throw new Error("thread process capacity exhausted");
+      return this.options.reservations.sharedGuests.create({
+        owner: { directory: this.directory, pid: this.options.context.pid },
+        ...this.options.declaration,
+      });
+    } catch (error) {
+      throw new NoThreadOwner(error, async () => {
+        await this.options.filesystemFence();
+        this.options.cleanup();
+      });
+    }
+  }
   private admitService() {
     try {
       return this.ticket(this.serviceAlias, true);
     } catch (error) {
-      this.serviceAlias.abortBeforeTransfer();
-      this.rollbackBacking();
-      throw error;
+      throw new NoThreadOwner(error, () =>
+        this.rollbackBacking(() => this.serviceAlias.abortBeforeTransfer()),
+      );
     }
   }
-  private rollbackBacking(): void {
-    this.backing.seal({ kind: "start-failed", code: 5, error: "EIO", status: null });
-    void this.backing
-      .fence({ kind: "no-agent" })
-      .then(() => this.backing.retire())
-      .catch((error) => this.backing.fail(error));
+  private async rollbackBacking(abort?: () => void): Promise<void> {
+    try {
+      abort?.();
+      const winner = readOutcome(this.options.context.outcome);
+      if (!winner) throw new Error("unstarted thread has no terminal outcome");
+      this.backing.seal(winner);
+      await this.backing.fence({ kind: "no-agent" });
+      await this.options.filesystemFence();
+      this.options.cleanup();
+      if (this.backing.retire().kind !== "awaiting-collection")
+        throw new Error("unstarted thread backing did not retire");
+    } catch (error) {
+      this.backing.fail(error);
+      throw error;
+    }
   }
   private async startInitial(): Promise<void> {
     await deadline(this.serviceReady.promise, "thread service ready");
@@ -479,8 +526,14 @@ export class RuntimeThreadOwner {
       this.backing.fail(errors);
       throw new AggregateError(errors, "thread aggregate stop failed");
     }
-    if (this.backing.retire().kind !== "awaiting-collection")
-      throw new Error("thread backing did not retire");
+    try {
+      this.options.cleanup();
+      if (this.backing.retire().kind !== "awaiting-collection")
+        throw new Error("thread backing did not retire");
+    } catch (error) {
+      this.backing.fail(error);
+      throw error;
+    }
     this.capacity.processes--;
     this.phase = "stopped";
   }
