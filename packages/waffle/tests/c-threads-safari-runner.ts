@@ -28,6 +28,32 @@ async function save(path: string, value: unknown) {
     await file.close();
   }
 }
+function checkSafariCase(
+  raw: Record<string, unknown>,
+  mode: string,
+  url: string,
+  origins: Set<number>,
+) {
+  if ("failure" in raw) throw new Error(`C Safari ${mode} failed: ${JSON.stringify(raw)}`);
+  const row = object(raw.result);
+  const control = object(row.control);
+  if (
+    row.passed !== true ||
+    row.isolated !== true ||
+    row.documentURL !== url ||
+    control.url !== url ||
+    control.atomic !== 42 ||
+    control.isolated !== true ||
+    typeof control.nonce !== "string" ||
+    typeof control.timeOrigin !== "number" ||
+    control.timeOrigin !== row.timeOrigin ||
+    control.documentNonce !== row.documentNonce ||
+    origins.has(control.timeOrigin)
+  )
+    throw new Error(`C Safari ${mode} contract or same-document control failed`);
+  origins.add(control.timeOrigin);
+  return row;
+}
 async function run(
   directory: string,
   digest: string,
@@ -118,24 +144,7 @@ import('/runtime-page.js').then(async module => {
       );
       const evidence = { mode, url, window, manifest, manifestSha256: digest, capabilities, raw };
       await save(join(output, `${mode}.json`), evidence);
-      if ("failure" in raw) throw new Error(`C Safari ${mode} failed: ${JSON.stringify(raw)}`);
-      const row = object(raw.result);
-      const control = object(row.control);
-      if (
-        row.passed !== true ||
-        row.isolated !== true ||
-        row.documentURL !== url ||
-        control.url !== url ||
-        control.atomic !== 42 ||
-        control.isolated !== true ||
-        typeof control.nonce !== "string" ||
-        typeof control.timeOrigin !== "number" ||
-        control.timeOrigin !== row.timeOrigin ||
-        control.documentNonce !== row.documentNonce ||
-        origins.has(control.timeOrigin)
-      )
-        throw new Error(`C Safari ${mode} contract or same-document control failed`);
-      origins.add(control.timeOrigin);
+      const row = checkSafariCase(raw, mode, url, origins);
       rows.push(evidence);
       console.log(JSON.stringify({ engine: "safari", mode, manifestSha256: digest, report: row }));
     }

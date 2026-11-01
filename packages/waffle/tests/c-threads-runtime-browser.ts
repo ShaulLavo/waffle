@@ -4,6 +4,7 @@ import { DescriptorTable } from "../core/descriptors.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import { inspectThreadSource } from "../memory/declarations.js";
 import { bytes, declareSharedMemoryPlatform } from "../memory/index.js";
+import type { SharedMemorySnapshot } from "../memory/reservations.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -164,6 +165,26 @@ function observeWorkers() {
   };
 }
 
+export function cThreadControlDebt(
+  snapshot: Pick<SharedMemorySnapshot, "debtBytes" | "holders">,
+  expectedChildren: number,
+) {
+  const controlDebts = snapshot.holders.filter((holder) => holder.state === "debt");
+  const passed =
+    snapshot.debtBytes === (expectedChildren + 1) * 80 &&
+    controlDebts.length === expectedChildren + 1 &&
+    controlDebts.every(
+      (holder) =>
+        holder.label === "guest-control" &&
+        holder.scope === "worker" &&
+        holder.declaredBytes === 80 &&
+        holder.grownBytes === null &&
+        holder.shape.kind === "fixed-buffer" &&
+        holder.shape.length === 80,
+    );
+  return { passed, controlDebts };
+}
+
 /** The bytes enter the real registry, source admission, supervisor and thread broker. */
 export async function runCThreadsRuntime(
   source: Uint8Array<ArrayBuffer>,
@@ -259,6 +280,7 @@ export async function runCThreadsRuntime(
     const snapshot = runtime.sharedMemory.snapshot();
     const workers = observer.snapshot();
     const expectedChildren = selected === "repeat" ? 16 : 2;
+    const debt = cThreadControlDebt(snapshot, expectedChildren);
     const passed =
       exit.kind === "exited" &&
       exit.code === 0 &&
@@ -287,6 +309,8 @@ export async function runCThreadsRuntime(
           item.continuations.active === 0,
       ) &&
       workers.stopped === workers.workers &&
+      runtime.disposed &&
+      debt.passed &&
       errors.length === 0 &&
       control.documentNonce === documentIdentity.nonce &&
       control.url === (globalThis.location?.href ?? "Bun");
@@ -306,7 +330,7 @@ export async function runCThreadsRuntime(
       ...workers,
       sharedGuests: snapshot.sharedGuests,
       debtBytes: snapshot.debtBytes,
-      controlDebts: snapshot.holders.filter((holder) => holder.state === "debt"),
+      controlDebts: debt.controlDebts,
       errors,
       compilerInvoked: false,
       runtimeDisposed: runtime.disposed,
