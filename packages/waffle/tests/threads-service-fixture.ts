@@ -75,7 +75,8 @@ export async function serviceFixture(mode: "cold" | "growth" | "dirty" = "cold")
     client.retain(handle);
     const resource = { kind: "file" as const, handle, offset: 0, append: false };
     const fd = descriptors.open(resource, RIGHTS_ALL, RIGHTS_ALL, () => client.release(handle));
-    const writerFd = descriptors.open(pipe.retain(1, "write"), RIGHTS_ALL, RIGHTS_ALL);
+    const writer = pipe.retain(1, "write");
+    const writerFd = descriptors.open(writer, RIGHTS_ALL, RIGHTS_ALL);
     const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
     service = new ThreadService({
       directory: "test",
@@ -103,6 +104,7 @@ export async function serviceFixture(mode: "cold" | "growth" | "dirty" = "cold")
       send,
       events,
       writerFd,
+      writer,
       reader,
       pair,
     };

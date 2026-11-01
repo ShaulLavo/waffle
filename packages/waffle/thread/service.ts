@@ -36,6 +36,7 @@ type FileResource = Extract<Resource, { kind: "file" }>;
 interface Operation {
   readonly pin: Descriptor;
   readonly request: ThreadOperation;
+  readonly fdflags: number;
   readonly completions: Set<FilesystemCompletion>;
   retained: boolean;
 }
@@ -72,7 +73,12 @@ export class ThreadService {
     const pin = this.options.descriptors.get(request.fd);
     if (!pin) return Promise.resolve({ kind: "error", errno: 8 });
     if (request.kind === "close") {
-      this.options.descriptors.close(request.fd);
+      try {
+        this.options.descriptors.close(request.fd);
+      } catch (error) {
+        this.failures.push(error);
+        throw error;
+      }
       return Promise.resolve({ kind: "ok", value: 0 });
     }
     let copied: ThreadOperation;
@@ -85,6 +91,7 @@ export class ThreadService {
     const operation: Operation = {
       pin: { ...pin },
       request: copied,
+      fdflags: "fdflags" in pin.resource ? (pin.resource.fdflags ?? 0) : 0,
       completions: new Set(),
       retained: false,
     };
@@ -199,6 +206,11 @@ export class ThreadService {
       this.rights(operation);
       if (operation.pin.resource.kind !== "file") return await this.stream(operation);
       const resource = operation.pin.resource;
+      if (
+        operation.request.kind === "write" &&
+        operation.request.spans.every((span) => span.length === 0)
+      )
+        return { kind: "ok", value: 0 };
       shareFileResource(resource, this.options.filesystem.connection);
       if (operation.request.kind === "stat") {
         const value = await this.request(operation, "stat", [resource.handle]);
@@ -330,7 +342,7 @@ export class ThreadService {
       const observed = resource.notification ? atomicsLoad(resource.notification, 0) : 0;
       const chunks = request.spans.map((span) => this.span(span));
       const result = attempt.call(resource, chunks);
-      if (result !== -6)
+      if (result !== -6 || (operation.fdflags & 4) !== 0)
         return result < 0 ? { kind: "error", errno: -result } : { kind: "ok", value: result };
       if (!resource.notification) throw new FilesystemError(58);
       await this.wait(resource.notification, observed);
