@@ -12,14 +12,14 @@ const sources = {
   "thread-service.js": new URL("../thread/service-worker.ts", import.meta.url).pathname,
   "thread-guest.js": new URL("./c-threads-runtime-guest.ts", import.meta.url).pathname,
 };
-export const packetDigest = (value: Uint8Array | string) =>
+const packetDigest = (value: Uint8Array | string) =>
   createHash("sha256").update(value).digest("hex");
 const assetNames = Object.keys(sources).concat([
   "c-threads.wasm",
   "c-threads.receipt.json",
   "runner.mjs",
 ]);
-export interface CThreadsPacket {
+interface CThreadsPacket {
   schema: 1;
   source: string;
   sourceTree: string;
