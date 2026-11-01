@@ -3,6 +3,7 @@ export type {
   TcpWebTransportOptions,
   NodeWebTransportRelayOptions,
 } from "./node-webtransport-internal.js";
+export type { WebTransportBind } from "./webtransport-address.js";
 export type { EndpointFailure } from "./webtransport-lifecycle.js";
 
 await verifyNativeInstallation();

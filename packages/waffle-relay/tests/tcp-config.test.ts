@@ -25,6 +25,10 @@ test("operator config contains secret references, validates permissions, and rej
       tcp: {
         tokenSecretFile: tokenFile,
         destinations: [{ host: "db.example", port: 5432 }],
+        webtransport: {
+          bind: { host: "0.0.0.0", port: 4433 },
+          advertisedUrl: "https://relay.example:4433/v1/tcp/wt",
+        },
         limits: { maxConnections: 2 },
         issuer: {
           credentialFile: issuerFile,
@@ -38,6 +42,14 @@ test("operator config contains secret references, validates permissions, and rej
     expect(result.dev).toBe(false);
     expect(result.options.tcp?.limits?.maxConnections).toBe(2);
     expect(result.options.tcp?.issuer?.ttlSeconds).toBe(60);
+    expect(
+      result.options.tcp && "webtransport" in result.options.tcp
+        ? result.options.tcp.webtransport
+        : undefined,
+    ).toMatchObject({
+      bind: { host: "0.0.0.0", port: 4433 },
+      advertisedUrl: "https://relay.example:4433/v1/tcp/wt",
+    });
     await chmod(tokenFile, 0o644);
     await expect(serveConfig(["serve", "--config", path], {})).rejects.toThrow("0600");
     await chmod(tokenFile, 0o600);
@@ -46,6 +58,17 @@ test("operator config contains secret references, validates permissions, and rej
       JSON.stringify({ ...config, tcp: { ...config.tcp, tokenSecret: "inline-not-allowed" } }),
     );
     await expect(serveConfig(["serve", "--config", path], {})).rejects.toThrow("Unknown");
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...config,
+        tcp: {
+          ...config.tcp,
+          webtransport: { host: "127.0.0.1", port: 4433 },
+        },
+      }),
+    );
+    await expect(serveConfig(["serve", "--config", path], {})).rejects.toThrow("WebTransport");
     await writeFile(
       path,
       JSON.stringify({ ...config, tcp: { ...config.tcp, limits: { nonsense: 1 } } }),
