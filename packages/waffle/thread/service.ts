@@ -13,10 +13,24 @@ import {
   RIGHT_FD_FILESTAT_GET,
 } from "../core/rights.ts";
 import { FilesystemClient, type FilesystemCompletion } from "../fs/client.ts";
-import { PAGE, revokeFilesystem } from "../fs/protocol.ts";
-import { waitForFilesystemTransportRetirement } from "../fs/request-memory.ts";
+import {
+  PAGE,
+  revokeFilesystem,
+  waitForFilesystemQuiescence,
+  reapFilesystem,
+  isRevoked,
+} from "../fs/protocol.ts";
+import {
+  waitForFilesystemTransportRetirement,
+  FilesystemTransportError,
+} from "../fs/request-memory.ts";
 import { atomicsLoad, atomicsWaitAsync } from "../proc/intrinsics.ts";
 import type { CallKey, GuestSpan, ThreadOperation, ThreadResult } from "./protocol.ts";
+
+interface ServiceSafetyReceipt {
+  readonly directory: string;
+  readonly pid: number;
+}
 
 type FileResource = Extract<Resource, { kind: "file" }>;
 interface Operation {
@@ -30,11 +44,16 @@ interface Operation {
 export class ThreadService {
   private readonly active = new Set<Promise<ThreadResult>>();
   private readonly operations = new Set<Operation>();
+  private readonly busyLanes = new Set<number>();
+  private readonly failures: unknown[] = [];
   private readonly lanes = new Map<number, number>();
   private readonly tails = new WeakMap<Resource, Promise<unknown>>();
   private readonly cancelled = Promise.withResolvers<void>();
   private phase: "open" | "draining" = "open";
   private retirement: Promise<void> | undefined;
+  private safety: Promise<ServiceSafetyReceipt> | undefined;
+  private receipt: ServiceSafetyReceipt | undefined;
+  private disposal: { error?: unknown } | undefined;
 
   constructor(
     private readonly options: Readonly<{
@@ -49,6 +68,7 @@ export class ThreadService {
   submit(call: CallKey, request: ThreadOperation): Promise<ThreadResult> {
     if (this.phase !== "open") return Promise.resolve({ kind: "error", errno: 11 });
     this.admit(call);
+    const tid = call.thread.tid;
     const pin = this.options.descriptors.get(request.fd);
     if (!pin) return Promise.resolve({ kind: "error", errno: 8 });
     if (request.kind === "close") {
@@ -69,7 +89,9 @@ export class ThreadService {
       retained: false,
     };
     this.operations.add(operation);
+    this.busyLanes.add(tid);
     const result = this.run(operation).finally(() => {
+      this.busyLanes.delete(tid);
       if (!operation.retained) {
         this.operations.delete(operation);
         pin.description.drop();
@@ -78,7 +100,10 @@ export class ThreadService {
     this.active.add(result);
     void result.then(
       () => this.active.delete(result),
-      () => this.active.delete(result),
+      (error: unknown) => {
+        this.failures.push(error);
+        this.active.delete(result);
+      },
     );
     return result;
   }
@@ -95,13 +120,57 @@ export class ThreadService {
 
   async drain(): Promise<void> {
     if (this.phase === "open") throw new Error("thread service admission is not sealed");
-    const results = await Promise.allSettled(Array.from(this.active));
+    await Promise.allSettled(Array.from(this.active));
     await this.retirement;
-    const failed = results.find((result) => result.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
+    if (this.failures.length)
+      throw new AggregateError(this.failures, "thread service drain failed");
+  }
+
+  quiesce(): Promise<ServiceSafetyReceipt> {
+    return (this.safety ??= this.fence());
+  }
+
+  disposeCanonical(
+    receipt: ServiceSafetyReceipt,
+    canonical: { descriptors: DescriptorTable; dropWatches(): void },
+  ): void {
+    if (receipt !== this.receipt || canonical.descriptors !== this.options.descriptors)
+      throw new Error("foreign or premature thread service safety receipt");
+    if (this.disposal) {
+      if ("error" in this.disposal) throw this.disposal.error;
+      return;
+    }
+    this.disposal = {};
+    const errors: unknown[] = [];
+    try {
+      canonical.dropWatches();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      canonical.descriptors.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (!errors.length) return;
+    const error = new AggregateError(errors, "thread canonical disposal failed");
+    this.disposal.error = error;
+    throw error;
+  }
+
+  private async fence(): Promise<ServiceSafetyReceipt> {
+    this.cancelAll();
+    await this.drain();
+    await waitForFilesystemQuiescence(this.options.filesystem.connection);
+    reapFilesystem(this.options.filesystem.connection);
+    return (this.receipt = Object.freeze({
+      directory: this.options.directory,
+      pid: this.options.pid,
+    }));
   }
 
   private admit({ thread, sequence }: CallKey): void {
+    if (this.busyLanes.has(thread.tid)) throw new Error("thread lane already has a pending call");
     if (thread.directory !== this.options.directory || thread.pid !== this.options.pid)
       throw new Error("foreign thread service call");
     if (
@@ -131,8 +200,11 @@ export class ThreadService {
       if (operation.pin.resource.kind !== "file") return await this.stream(operation);
       const resource = operation.pin.resource;
       shareFileResource(resource, this.options.filesystem.connection);
-      if (operation.request.kind === "stat")
-        return { kind: "ok", value: await this.request(operation, "stat", [resource.handle]) };
+      if (operation.request.kind === "stat") {
+        const value = await this.request(operation, "stat", [resource.handle]);
+        this.live();
+        return { kind: "ok", value };
+      }
       if ("position" in operation.request && operation.request.position !== undefined)
         return await this.file(operation, resource, operation.request.position);
       const previous = this.tails.get(resource);
@@ -191,6 +263,7 @@ export class ThreadService {
             : 0;
       const next = base + request.offset;
       this.position(next);
+      this.live();
       lease!.commit(next);
       return { kind: "ok", value: next };
     }
@@ -230,6 +303,13 @@ export class ThreadService {
     operation.completions.add(completion);
     try {
       return await completion.value();
+    } catch (error) {
+      if (
+        error instanceof FilesystemTransportError ||
+        isRevoked(this.options.filesystem.connection)
+      )
+        this.cancelAll();
+      throw error;
     } finally {
       if (this.phase !== "open") await this.retire(operation);
       completion.release();
@@ -259,7 +339,7 @@ export class ThreadService {
 
   private async wait(word: Int32Array, observed: number): Promise<void> {
     const waiting = atomicsWaitAsync(word, 0, observed, 10);
-    if (waiting.async) await Promise.race([waiting.value, this.cancelled.promise]);
+    if (waiting.async) await waiting.value;
     else await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 
@@ -333,7 +413,15 @@ export class ThreadService {
   }
 
   private cancelCompletions(operation: Operation): void {
-    for (const completion of operation.completions) completion.cancel();
+    for (const completion of operation.completions) {
+      try {
+        completion.cancel();
+      } catch (error) {
+        this.failures.push(error);
+      } finally {
+        completion.notify();
+      }
+    }
   }
 
   private live(): void {

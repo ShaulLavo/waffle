@@ -60,7 +60,7 @@ export default {
       ],
       project: [
         "*.ts",
-        "{browser,core,fs,group,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
+        "{browser,core,fs,group,thread,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
       ],
     },
   },
