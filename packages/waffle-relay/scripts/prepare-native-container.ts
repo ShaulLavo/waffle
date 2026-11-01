@@ -91,7 +91,7 @@ export async function verifyNativeContainerInputs(input: NativeContainerInputs) 
     hostInterface: paired.hostInterface,
     archives: { runtime: input.runtime.sha256, relay: input.relay.sha256 },
     native: { version: "1.6.11", prebuildSha256, addonSha256 },
-    base: "docker.io/library/node@sha256:9d09a088be40a970e2b690a9fb13ad69a0fc529d7b98e9be6a11ba1e9176f0a1",
+    base: "docker.io/library/node@sha256:84f8a721625927ef3ccdf94509ecaea463a266d23f1b01a184061e84d3a6574d",
     qualification: "preparation-only",
   };
 }

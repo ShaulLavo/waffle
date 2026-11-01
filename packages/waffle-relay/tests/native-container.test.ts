@@ -36,6 +36,9 @@ describe("native container preparation", () => {
   });
   test("checks archives and addon before load and keeps final app files root-owned", async () => {
     const dockerfile = await read("Dockerfile");
+    expect(
+      dockerfile.match(/84f8a721625927ef3ccdf94509ecaea463a266d23f1b01a184061e84d3a6574d/g),
+    ).toHaveLength(2);
     expect(dockerfile).toContain("npm ci --omit=optional --ignore-scripts");
     expect(dockerfile.indexOf("sha256sum --check SHA256SUMS")).toBeLessThan(
       dockerfile.indexOf("npm ci"),

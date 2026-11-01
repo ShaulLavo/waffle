@@ -1,4 +1,4 @@
-FROM docker.io/library/node@sha256:9d09a088be40a970e2b690a9fb13ad69a0fc529d7b98e9be6a11ba1e9176f0a1 AS dependencies
+FROM docker.io/library/node@sha256:84f8a721625927ef3ccdf94509ecaea463a266d23f1b01a184061e84d3a6574d AS dependencies
 ARG SOURCE_COMMIT
 ARG RELEASE_VERSION
 WORKDIR /app
@@ -12,7 +12,7 @@ RUN sha256sum --check SHA256SUMS \
     && printf '%s\n' '5592208da56aee0f53615b8d8c5d57c99a87618593c6343787ac9f92761daf1d  node_modules/@fails-components/webtransport-transport-http3-quiche/build/Release/webtransport.node' | sha256sum --check \
     && rm -r assets
 
-FROM docker.io/library/node@sha256:9d09a088be40a970e2b690a9fb13ad69a0fc529d7b98e9be6a11ba1e9176f0a1
+FROM docker.io/library/node@sha256:84f8a721625927ef3ccdf94509ecaea463a266d23f1b01a184061e84d3a6574d
 ARG SOURCE_COMMIT
 ARG RELEASE_VERSION
 RUN apt-get update \
