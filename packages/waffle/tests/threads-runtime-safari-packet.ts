@@ -63,13 +63,8 @@ async function buildBrowserAsset(source: string): Promise<Uint8Array> {
 }
 
 function assertPinnedSource(): void {
-  const excluded = [
-    ":(exclude)packages/waffle/tests/threads-runtime-safari-packet.ts",
-    ":(exclude)packages/waffle/tests/threads-runtime-safari-runner.ts",
-    ":(exclude)packages/waffle/tests/threads-runtime-safari-runner.test.ts",
-    ":(exclude)packages/waffle/tests/threads-runtime-browser.ts",
-    ":(exclude)packages/waffle/tests/threads-runtime-service-barrier.ts",
-  ];
+  // Test bundles are bound below by entry-source and complete asset digests.
+  const excluded = [":(exclude)packages/waffle/tests"];
   const root = resolve(import.meta.dir, "../../..");
   const args = ["diff", "--quiet", RUNTIME_SOURCE_COMMIT, "--", "."].concat(excluded);
   if (Bun.spawnSync(["git"].concat(args), { cwd: root }).exitCode !== 0)
