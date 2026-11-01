@@ -6,7 +6,10 @@ import { createFilesystemConnection } from "../fs/protocol.ts";
 import { PipeController } from "../proc/pipes.ts";
 import type { HostCommand, HostEvent } from "./threads-service-host.ts";
 
-export async function serviceFixture(mode: "cold" | "growth" | "dirty" = "cold") {
+export async function serviceFixture(
+  mode: "cold" | "growth" | "dirty" = "cold",
+  memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true }),
+) {
   const pair = createFilesystemConnection();
   const worker = new Worker(new URL("./threads-service-host.ts", import.meta.url).href);
   const events: HostEvent[] = [];
@@ -77,7 +80,6 @@ export async function serviceFixture(mode: "cold" | "growth" | "dirty" = "cold")
     const fd = descriptors.open(resource, RIGHTS_ALL, RIGHTS_ALL, () => client.release(handle));
     const writer = pipe.retain(1, "write");
     const writerFd = descriptors.open(writer, RIGHTS_ALL, RIGHTS_ALL);
-    const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
     service = new ThreadService({
       directory: "test",
       pid: 1,
