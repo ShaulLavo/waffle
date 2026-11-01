@@ -7,6 +7,7 @@ import { DRAIN_MS, MAX_DATA_BYTES, TCP_PATH, TcpFailure, record } from "./tcp-pr
 import { TcpAdmissions, tcpPolicy, type TcpServerOptions } from "./tcp-policy.js";
 import { ServerTcpStream } from "./tcp-server-stream.js";
 import type { TcpCarrierFactory } from "./tcp-carrier.js";
+import { LifecycleBudget } from "./webtransport-lifecycle.js";
 
 export function createTcpRelay(
   options: TcpServerOptions,
@@ -26,9 +27,14 @@ export function createTcpRelay(
   const denials = new Set<Promise<void>>();
   const issuerKey = policy.issuer && tokenKey(policy.issuer.credential);
   let revoked = false;
+  let budget: LifecycleBudget | undefined;
+  let closing: Promise<void> | undefined;
+  const closeBudget = () =>
+    (budget ??= webtransport?.closeBudget() ?? new LifecycleBudget(() => performance.now()));
   const revoke = () => {
     revoked = true;
-    for (const stream of streams) stream.revoke();
+    const remaining = closeBudget();
+    for (const stream of streams) stream.revoke("shutdown", remaining);
   };
   function denyUpgrade(
     code: "relay-origin" | "limit",
@@ -58,6 +64,7 @@ export function createTcpRelay(
     ready: webtransport?.ready ?? Promise.resolve(),
     failure: webtransport?.failure,
     status: webtransport?.status,
+    closeBudget,
     revoke() {
       revoke();
       webtransport?.revoke();
@@ -184,12 +191,21 @@ export function createTcpRelay(
       }
       return true;
     },
-    async close(): Promise<void> {
+    close(): Promise<void> {
+      if (closing) return closing;
       revoke();
       webtransport?.revoke();
-      await Promise.all(Array.from(streams, (stream) => stream.done).concat(Array.from(denials)));
-      await webtransport?.close();
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      const joined = Promise.all(
+        Array.from(streams, (stream) => stream.done).concat(
+          Array.from(denials),
+          webtransport?.close() ?? Promise.resolve(),
+          new Promise<void>((resolve) => wss.close(() => resolve())),
+        ),
+      );
+      closing = closeBudget()
+        .cleanup(joined)
+        .then(() => {});
+      return closing;
     },
   };
 }

@@ -77,9 +77,11 @@ export function createNodeServer(
       if (closing) return closing;
       const completion = Promise.withResolvers<void>();
       closing = completion.promise;
+      const budget = tcp?.closeBudget();
       tcp?.revoke();
       for (const socket of disabledUpgrades) socket.destroy();
-      void Promise.all([shutdown(relay, server), tcp?.close()]).then(
+      const joined = Promise.all([shutdown(relay, server), tcp?.close()]);
+      void (budget ? budget.cleanup(joined) : joined).then(
         () => completion.resolve(),
         completion.reject,
       );

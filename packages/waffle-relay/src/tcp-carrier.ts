@@ -10,7 +10,8 @@ export interface TcpCarrierServer {
   readonly counters: readonly TcpQueueCounters[];
   readonly failure: Promise<import("./webtransport-lifecycle.js").EndpointFailure>;
   discovery(): TcpDiscovery | null;
-  status(): { state: string; generation: number; ownedEndpoints: number };
+  status(): ReturnType<import("./webtransport-lifecycle.js").WebTransportLifecycle["status"]>;
+  closeBudget(): import("./webtransport-lifecycle.js").LifecycleBudget;
   revoke(): void;
   close(): Promise<void>;
 }

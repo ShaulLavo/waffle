@@ -14,7 +14,10 @@ async function main(): Promise<void> {
       : createNodeRelayServer(config.options);
   void relay.tcp?.failure?.then((failure) => {
     if (failure.manualActionRequired) return;
-    void relay.close().finally(() => process.exit(1));
+    void relay
+      .close()
+      .finally(() => process.exit(1))
+      .catch(() => {});
   });
   let stopping = false;
   const stop = () => {

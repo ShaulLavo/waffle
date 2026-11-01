@@ -27,6 +27,8 @@ export interface EndpointRecord {
   readonly certificate: CertificateMaterial;
   readonly endpoint: ManagedEndpoint;
   open: boolean;
+  closure: "active" | "stopping" | "closed";
+  stopping?: Promise<void>;
 }
 export class LifecycleBudget {
   readonly abort = new AbortController();
@@ -46,6 +48,8 @@ export class LifecycleBudget {
     return cancellable(this.cleanup(promise, cap), this.abort.signal);
   }
   async cleanup<T>(promise: Promise<T>, cap?: number): Promise<T> {
+    // Observe work even when the absolute deadline already expired before this join.
+    void promise.catch(() => {});
     const value = await deadline(promise, this.remaining(cap));
     this.remaining();
     return value;
@@ -71,7 +75,8 @@ export class WebTransportLifecycle {
   private current: EndpointRecord | undefined;
   private candidate: EndpointRecord | undefined;
   private operation: Promise<void> | undefined;
-  private generationWork: Promise<CertificateMaterial> | undefined;
+  private generationWork: Promise<void> | undefined;
+  private cleanupFailure: Error | undefined;
   private budget: LifecycleBudget | undefined;
   private terminalBudget: LifecycleBudget | undefined;
   private closing: Promise<void> | undefined;
@@ -111,8 +116,14 @@ export class WebTransportLifecycle {
       generation: this.generation,
       candidateGeneration: this.candidate?.generation,
       ownedEndpoints: this.owned.size,
+      generationPending: this.generationWork !== undefined,
+      cleanupFailed: this.cleanupFailure !== undefined,
       ownedGenerations: Array.from(this.owned, (record) => record.generation),
     };
+  }
+  closeBudget(): LifecycleBudget {
+    this.terminalBudget ??= this.budget ?? new LifecycleBudget(this.dependencies.monotonicNow);
+    return this.terminalBudget;
   }
   revoke(): void {
     void this.close().catch(() => {});
@@ -121,14 +132,17 @@ export class WebTransportLifecycle {
     if (this.closing) return this.closing;
     this.terminal = true;
     this.cancelSchedule();
-    const budget =
-      this.budget ?? this.terminalBudget ?? new LifecycleBudget(this.dependencies.monotonicNow);
-    this.terminalBudget = budget;
+    const budget = this.closeBudget();
     this.fence("shutdown", budget);
     budget.abort.abort(new Error("WebTransport closed"));
-    this.closing = this.operation
-      ? this.operation.catch(() => {}).then(() => this.assertClosed())
-      : this.cleanupOwned(budget).then(() => this.assertClosed());
+    const cleanup = this.operation ? this.operation.catch(() => {}) : this.cleanupOwned(budget);
+    this.closing = cleanup.then(
+      () => this.assertClosed(),
+      (error: unknown) => {
+        this.setState("failed");
+        throw this.retainCleanupFailure(error);
+      },
+    );
     return this.closing;
   }
   private check(): void {
@@ -139,6 +153,7 @@ export class WebTransportLifecycle {
     this.lastWall = now;
     if (!this.options.hashMode) {
       if (now < certificate.starts || now >= certificate.expires) this.expireOperatorCertificate();
+      else this.warnCertificate(certificate);
       return;
     }
     if (
@@ -155,18 +170,21 @@ export class WebTransportLifecycle {
     this.budget = budget;
     this.fence("certificate-rotation", budget);
     this.setState(recycle ? "recycling" : "starting");
-    this.operation = this.transition(budget).finally(() => {
-      this.operation = undefined;
-      this.budget = undefined;
-      if (this.fatal) this.notify();
-    });
+    this.operation = this.finishOperation(this.transition(budget));
     return this.operation;
   }
   private async transition(budget: LifecycleBudget): Promise<void> {
     try {
       const generation = this.options.certificate(budget.abort.signal, budget.remaining());
-      this.generationWork = generation;
-      void generation.catch(() => {});
+      const joined = generation.then(
+        () => {
+          this.generationWork = undefined;
+        },
+        () => {
+          this.generationWork = undefined;
+        },
+      );
+      this.generationWork = joined;
       const certificate = await budget.wait(generation);
       this.validate(certificate);
       await this.cleanupOwned(budget);
@@ -175,12 +193,12 @@ export class WebTransportLifecycle {
       const record = this.construct(certificate);
       this.candidate = record;
       this.owned.add(record);
-      void record.endpoint.closed.catch(() => {});
       record.endpoint.start();
       budget.remaining();
       await budget.wait(record.endpoint.ready, 5000);
       this.validate(certificate);
       budget.abort.signal.throwIfAborted();
+      if (record.closure !== "active") throw new Error("WebTransport endpoint closed");
       this.current = record;
       this.candidate = undefined;
       record.open = true;
@@ -207,8 +225,13 @@ export class WebTransportLifecycle {
         () => !this.terminal && this.state === "serving" && this.current === record && record.open,
       ),
       open: false,
+      closure: "active",
     };
     const endpoint = record.endpoint;
+    void endpoint.closed.then(
+      () => this.endpointClosed(record),
+      () => this.endpointClosed(record),
+    );
     void endpoint.ready.then(
       () => {
         if (!record.open && this.terminal) this.fenceRecord(record, "shutdown");
@@ -216,6 +239,31 @@ export class WebTransportLifecycle {
       () => {},
     );
     return record;
+  }
+  private finishOperation(operation: Promise<void>): Promise<void> {
+    return operation.finally(() => {
+      this.operation = undefined;
+      this.budget = undefined;
+      if (this.fatal) this.notify();
+    });
+  }
+  private endpointClosed(record: EndpointRecord): void {
+    const intentional = record.closure === "stopping";
+    record.closure = "closed";
+    record.open = false;
+    if (intentional || this.terminal || this.fatal) return;
+    const budget = this.budget ?? new LifecycleBudget(this.dependencies.monotonicNow);
+    this.fatal = { code: "endpoint-failed", manualActionRequired: false };
+    this.terminalBudget = budget;
+    this.setState("failed");
+    this.cancelSchedule();
+    this.fence("certificate-rotation", budget);
+    const error = new Error("WebTransport endpoint closed unexpectedly");
+    budget.abort.abort(error);
+    if (this.operation) return;
+    this.budget = budget;
+    this.operation = this.finishOperation(this.failedTransition(budget, error));
+    void this.operation.catch(() => {});
   }
   private async failedTransition(budget: LifecycleBudget, error: unknown): Promise<never> {
     if (!this.terminal) {
@@ -246,14 +294,19 @@ export class WebTransportLifecycle {
     record.endpoint.fence(reason, budget);
   }
   private async cleanupOwned(budget: LifecycleBudget): Promise<void> {
-    if (this.generationWork) await budget.cleanup(this.generationWork.catch(() => {}));
-    this.generationWork = undefined;
-    for (const record of this.owned) await this.cleanupRecord(record, budget);
-    this.current = undefined;
-    this.candidate = undefined;
+    try {
+      if (this.cleanupFailure) throw this.cleanupFailure;
+      if (this.generationWork) await budget.cleanup(this.generationWork);
+      for (const record of this.owned) await this.cleanupRecord(record, budget);
+      this.current = undefined;
+      this.candidate = undefined;
+    } catch (error) {
+      throw this.retainCleanupFailure(error);
+    }
   }
   private async cleanupRecord(record: EndpointRecord, budget: LifecycleBudget): Promise<void> {
-    const stopped = record.endpoint.stop(budget);
+    record.closure = "stopping";
+    const stopped = (record.stopping ??= record.endpoint.stop(budget));
     void stopped.then(
       () => this.owned.delete(record),
       () => {},
@@ -261,8 +314,18 @@ export class WebTransportLifecycle {
     await budget.cleanup(stopped);
     this.owned.delete(record);
   }
+  private retainCleanupFailure(error: unknown): Error {
+    this.cleanupFailure ??= new Error(
+      "WebTransport cleanup is unsettled within its lifecycle deadline",
+      { cause: error },
+    );
+    return this.cleanupFailure;
+  }
   private assertClosed(): void {
-    if (this.owned.size) throw new Error("WebTransport cleanup is unsettled");
+    if (this.cleanupFailure || this.generationWork || this.owned.size) {
+      this.setState("failed");
+      throw this.retainCleanupFailure(new Error("WebTransport cleanup is unsettled"));
+    }
     this.setState("closed");
   }
   private validate(certificate: CertificateMaterial): void {
@@ -295,10 +358,7 @@ export class WebTransportLifecycle {
     const budget = new LifecycleBudget(this.dependencies.monotonicNow);
     this.terminalBudget = budget;
     this.fence("shutdown", budget);
-    this.operation = this.cleanupOwned(budget).finally(() => {
-      this.operation = undefined;
-      this.notify();
-    });
+    this.operation = this.finishOperation(this.cleanupOwned(budget));
     void this.operation.catch(() => {});
   }
   private notify(): void {

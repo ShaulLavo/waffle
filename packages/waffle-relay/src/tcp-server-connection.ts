@@ -64,7 +64,7 @@ export class TcpServerConnection {
     };
   }
   revoke(reason: "shutdown" | "certificate-rotation" = "shutdown", budget?: CleanupBudget): void {
-    this.budget ??= budget;
+    if (budget) this.budget = { remaining: () => budget.remaining(DRAIN_MS) };
     this.fail(4, reason);
   }
   private async run(): Promise<void> {

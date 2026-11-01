@@ -90,6 +90,7 @@ export function createNativeRelay(
       },
       discovery: () => lifecycle.discovery(),
       status: () => lifecycle.status(),
+      closeBudget: () => lifecycle.closeBudget(),
       revoke: () => lifecycle.revoke(),
       close: () => lifecycle.close(),
     };
