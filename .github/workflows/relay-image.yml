@@ -1,0 +1,123 @@
+name: Waffle relay image
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/relay-image.yml"
+      - "packages/waffle-relay/container/**"
+      - "packages/waffle-relay/tests/tcp-native-fixture.ts"
+      - "packages/waffle-relay/tests/container.test.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/shaullavo/waffle-relay
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Fetch the immutable public release archives
+        working-directory: packages/waffle-relay/container
+        run: |
+          mkdir assets
+          base=https://github.com/ShaulLavo/waffle/releases/download/waffle-v0.0.109
+          for name in waffle-0.0.109.tgz waffle-relay-0.0.109.tgz; do
+            curl --fail --silent --show-error --location "$base/$name" --output "assets/$name"
+          done
+      - name: Build the checksum-verified native-free image
+        run: docker build --platform linux/amd64 --tag waffle-relay:validated packages/waffle-relay/container
+      - name: Qualify this actual image and the released client/server fixture
+        run: |
+          mkdir "$RUNNER_TEMP/qualification"
+          cp packages/waffle-relay/container/verify.ts "$RUNNER_TEMP/qualification/verify.ts"
+          mkdir "$RUNNER_TEMP/qualification/tests"
+          git show 5f3d329f35be618e5b4d822c0ee933bbfd9a10f5:packages/waffle-relay/tests/tcp-native-fixture.ts > "$RUNNER_TEMP/qualification/tests/tcp-native-fixture.ts"
+          ln -s /app/node_modules "$RUNNER_TEMP/qualification/node_modules"
+          ln -s /app/node_modules/waffle-relay/dist "$RUNNER_TEMP/qualification/dist"
+          for entry in verify.ts tests/tcp-native-fixture.ts; do
+            docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+              --mount "type=bind,src=$RUNNER_TEMP/qualification,dst=/qualification,readonly" \
+              --entrypoint /usr/local/bin/node waffle-relay:validated "/qualification/$entry"
+          done
+      - name: Save only the qualified image for publication
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'ShaulLavo/waffle'
+        run: |
+          mkdir "$RUNNER_TEMP/image"
+          docker save waffle-relay:validated | gzip -1 > "$RUNNER_TEMP/image/image.tar.gz"
+          docker image inspect --format '{{.Id}}' waffle-relay:validated > "$RUNNER_TEMP/image/image-id"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/image/source-head"
+          (cd "$RUNNER_TEMP/image" && sha256sum image.tar.gz image-id source-head > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'ShaulLavo/waffle'
+        with:
+          name: relay-image-${{ github.sha }}
+          path: ${{ runner.temp }}/image
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'ShaulLavo/waffle'
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: relay-image-${{ github.sha }}
+          path: image
+      - name: Verify and load the already-qualified image
+        run: |
+          test "$(cat image/source-head)" = "$GITHUB_SHA"
+          (cd image && sha256sum --check SHA256SUMS)
+          gzip -dc image/image.tar.gz | docker load
+          test "$(docker image inspect --format '{{.Id}}' waffle-relay:validated)" = "$(cat image/image-id)"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' waffle-relay:validated)" = linux/amd64
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish only the approved package
+        run: |
+          docker tag waffle-relay:validated "$IMAGE:ws-$GITHUB_SHA"
+          docker push "$IMAGE:ws-$GITHUB_SHA"
+      - name: Prove anonymous pull and record the actual manifest
+        run: |
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:ws-$GITHUB_SHA")
+          [[ "$reference" =~ ^ghcr.io/shaullavo/waffle-relay@sha256:[0-9a-f]{64}$ ]]
+          mkdir "$RUNNER_TEMP/anonymous"
+          if [ -d "$HOME/.docker/cli-plugins" ]; then
+            ln -s "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/anonymous/cli-plugins"
+          fi
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous" docker pull --platform linux/amd64 "$reference"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous" docker buildx imagetools inspect --raw "$reference" > image/published-manifest.json
+          digest=${reference##*@sha256:}
+          printf '%s  %s\n' "$digest" image/published-manifest.json | sha256sum --check
+          test "$(jq -r .config.digest image/published-manifest.json)" = "$(cat image/image-id)"
+          printf '%s\n' "$reference" > image/reference
+          printf 'Published and anonymously pulled `%s`.\n\nWebSocket-only, exact Origin, deny-all TCP checkpoint.\n' "$reference" >> "$GITHUB_STEP_SUMMARY"
+          cat image/published-manifest.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: relay-image-receipt-${{ github.sha }}
+          path: |
+            image/published-manifest.json
+            image/reference
+            image/image-id
+            image/source-head
+            image/SHA256SUMS
+          retention-days: 7

@@ -1,0 +1,10 @@
+{
+  "name": "waffle-relay-container",
+  "version": "0.0.109",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "waffle": "file:/assets/waffle-0.0.109.tgz",
+    "waffle-relay": "file:/assets/waffle-relay-0.0.109.tgz"
+  }
+}
