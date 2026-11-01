@@ -137,7 +137,7 @@ async function check(): Promise<string> {
     ).status,
     403,
   );
-  assert.equal((await request("/v1/tcp/wrong", { headers })).status, 404);
+  assert.equal((await request("/v1/tcp/wrong", { headers })).status, 400);
   return hash.value;
 }
 async function cycle(): Promise<string> {
