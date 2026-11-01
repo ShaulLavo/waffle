@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!relay.json
+!source-inputs.json
+!SHA256SUMS
+!assets/
+!assets/waffle.tgz
+!assets/relay.tgz
+!assets/native.tar.gz
