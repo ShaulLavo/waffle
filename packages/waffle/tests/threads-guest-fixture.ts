@@ -10,18 +10,36 @@ import {
   THREAD_LANE_BYTES,
   type ThreadDispatcher,
   type ThreadRequest,
+  ThreadWaitOwner,
 } from "../thread/lane.ts";
-import { readWaitRegistration } from "../interrupt/wait.ts";
+import type { CapturedWaitRegistration } from "../interrupt/wait.ts";
 import type { GuestFixtureEvent, GuestFixtureRequest } from "./threads-guest-worker.ts";
 import type { CallKey } from "../thread/protocol.ts";
 import type { GuestEntry } from "../thread/entry.ts";
 import { serviceFixture } from "./threads-service-fixture.ts";
 
+type GuestLogEvent =
+  | Exclude<GuestFixtureEvent, { kind: "wait-registered" }>
+  | {
+      kind: "wait-registered";
+      thread: CallKey["thread"];
+      registration: { generation: number; address: number; width: 4 | 8; bytes: number };
+    };
+function logEvent(event: GuestFixtureEvent): GuestLogEvent {
+  if (event.kind !== "wait-registered") return event;
+  const { generation, address, width, buffer } = event.registration;
+  return {
+    kind: event.kind,
+    thread: event.thread,
+    registration: { generation, address, width, bytes: buffer.byteLength },
+  };
+}
 interface Guest {
   worker: Worker;
   owner: ReturnType<typeof createThreadLaneOwner>;
   waits: Int32Array;
-  events: GuestFixtureEvent[];
+  waitOwner: ThreadWaitOwner;
+  events: GuestLogEvent[];
   ready: Promise<void>;
   idle: Promise<void>;
   enter(): void;
@@ -35,6 +53,7 @@ export async function guestFixture(
   const guests: Guest[] = [];
   const requests: { call: CallKey; request: ThreadRequest }[] = [];
   const failures: unknown[] = [];
+  const retainedWaits = new Set<CapturedWaitRegistration>();
   let afterDispatch: (() => void) | undefined;
   let spawn: (startArg: number) => Promise<number> = async () => -6;
   const dispatcher: ThreadDispatcher = {
@@ -73,13 +92,29 @@ export async function guestFixture(
     });
     const waitBuffer = new SharedArrayBuffer(12);
     const waits = new Int32Array(waitBuffer);
-    const events: GuestFixtureEvent[] = [];
+    const waitOwner = new ThreadWaitOwner({
+      thread,
+      memory,
+      waits,
+      terminal: () => readOutcome(outcome) !== null,
+      retain: (registration) => {
+        retainedWaits.add(registration);
+        return () => {
+          retainedWaits.delete(registration);
+        };
+      },
+      failed: (error) => {
+        failures.push(error);
+      },
+    });
+    const events: GuestLogEvent[] = [];
     const ready = Promise.withResolvers<void>();
     const idle = Promise.withResolvers<void>();
     // A negative startup test may never publish ready.
     void ready.promise.catch(() => {});
     worker.onmessage = ({ data }: MessageEvent<GuestFixtureEvent>) => {
-      events.push(data);
+      waitOwner.receive(data);
+      events.push(logEvent(data));
       if (data.kind === "ready") ready.resolve();
       if (data.kind === "process-terminal") terminal();
       if (data.kind === "host-idle") {
@@ -109,6 +144,7 @@ export async function guestFixture(
       worker,
       owner,
       waits,
+      waitOwner,
       events,
       ready: ready.promise,
       idle: idle.promise,
@@ -123,18 +159,11 @@ export async function guestFixture(
     for (const guest of guests) {
       void guest.owner.retire();
       guest.worker.postMessage({ kind: "close" });
-      wake(guest.waits);
+      guest.waitOwner.beginTerminal();
     }
-  }
-  function wake(waits: Int32Array) {
-    const registration = readWaitRegistration(waits);
-    if (registration) Atomics.notify(new Int32Array(memory.buffer), registration.address / 4);
   }
   async function dispose() {
     terminal();
-    const timer = setInterval(() => {
-      for (const guest of guests) wake(guest.waits);
-    }, 5);
     const timedOut = Promise.withResolvers<never>();
     const deadline = setTimeout(
       () => timedOut.reject(new Error("guest teardown did not idle")),
@@ -143,8 +172,10 @@ export async function guestFixture(
     try {
       await Promise.race([Promise.all(guests.map((guest) => guest.idle)), timedOut.promise]);
       await Promise.all(guests.map((guest) => guest.owner.retire()));
+    } catch (error) {
+      for (const guest of guests) guest.waitOwner.fail(error);
+      throw error;
     } finally {
-      clearInterval(timer);
       clearTimeout(deadline);
       for (const guest of guests) guest.worker.terminate();
       await fixture.dispose();
@@ -157,6 +188,7 @@ export async function guestFixture(
     guests,
     requests,
     failures,
+    retainedWaits,
     terminal,
     dispose,
     setAfterDispatch: (handler: () => void) => {
