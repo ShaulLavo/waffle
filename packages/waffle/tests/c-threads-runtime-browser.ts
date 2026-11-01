@@ -18,6 +18,12 @@ export const cThreadArtifactSha256 =
 export const cThreadReceiptSha256 =
   "bb5f866e9ccd98a8ac5c47e87b64e5102741e64faabcdb7099f18b980608b140";
 
+const documentIdentity = Object.freeze({
+  nonce: crypto.randomUUID(),
+  timeOrigin: performance.timeOrigin,
+  url: globalThis.location?.href ?? "Bun",
+});
+
 function check(value: unknown, label: string): asserts value {
   if (!value) throw new Error(label);
 }
@@ -39,8 +45,7 @@ async function workerAtomicControl(local: boolean) {
   const reply = Promise.withResolvers<unknown>();
   worker.onmessage = (event) => reply.resolve(event.data);
   worker.onerror = (event) => reply.reject(new Error(event.message));
-  const timeOrigin = performance.timeOrigin;
-  const url = globalThis.location?.href ?? "Bun";
+  const { timeOrigin, url } = documentIdentity;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const expired = new Promise<never>((_, reject) => {
@@ -61,6 +66,7 @@ async function workerAtomicControl(local: boolean) {
     );
     return {
       nonce,
+      documentNonce: documentIdentity.nonce,
       atomic: 42,
       timeOrigin,
       url,
@@ -282,13 +288,15 @@ export async function runCThreadsRuntime(
       ) &&
       workers.stopped === workers.workers &&
       errors.length === 0 &&
-      control.timeOrigin === performance.timeOrigin &&
+      control.documentNonce === documentIdentity.nonce &&
       control.url === (globalThis.location?.href ?? "Bun");
     return {
       passed,
       selected,
       control,
-      timeOrigin: performance.timeOrigin,
+      timeOrigin: documentIdentity.timeOrigin,
+      observedTimeOrigin: performance.timeOrigin,
+      documentNonce: documentIdentity.nonce,
       documentURL: globalThis.location?.href ?? "Bun",
       artifactSha256: digest,
       sourceAdmission: sourceAdmission(source),

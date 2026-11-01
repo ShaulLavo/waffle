@@ -34,6 +34,7 @@ async function run(
   driver: string,
   port: number,
   output: string,
+  modes: readonly string[],
 ) {
   const manifest = await readCThreadsPacket(directory, digest);
   const assets = new Set(manifest.assets.map((asset) => asset.path));
@@ -103,7 +104,7 @@ async function run(
     await command(driver, `/session/${session}/timeouts`, { script: 120_000 });
     const origins = new Set<number>();
     const rows = [];
-    for (const mode of ["pair", "repeat", "nested"]) {
+    for (const mode of modes) {
       const url = new URL(`?case=${mode}&nonce=${crypto.randomUUID()}`, server.url).href;
       await command(driver, `/session/${session}/url`, { url });
       const window = await command(driver, `/session/${session}/window`, undefined, "GET");
@@ -130,6 +131,7 @@ import('/runtime-page.js').then(async module => {
         typeof control.nonce !== "string" ||
         typeof control.timeOrigin !== "number" ||
         control.timeOrigin !== row.timeOrigin ||
+        control.documentNonce !== row.documentNonce ||
         origins.has(control.timeOrigin)
       )
         throw new Error(`C Safari ${mode} contract or same-document control failed`);
@@ -153,8 +155,15 @@ import('/runtime-page.js').then(async module => {
   }
 }
 if (import.meta.main) {
-  const [directory, digest, driver, port, output] = process.argv.slice(2);
+  const [directory, digest, driver, port, output, requested] = process.argv.slice(2);
+  const modes = requested?.split(",") ?? ["pair", "repeat", "nested"];
+  if (
+    modes.length === 0 ||
+    new Set(modes).size !== modes.length ||
+    modes.some((mode) => !["pair", "repeat", "nested"].includes(mode))
+  )
+    throw new Error("invalid C Safari cases");
   if (!directory || !digest || !driver || !output || !Number.isInteger(Number(port)))
     throw new Error("usage: runner.mjs PACKET MANIFEST_SHA256 DRIVER_URL PORT NEW_OUTPUT");
-  await run(resolve(directory), digest, driver, Number(port), resolve(output));
+  await run(resolve(directory), digest, driver, Number(port), resolve(output), modes);
 }
