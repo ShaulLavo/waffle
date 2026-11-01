@@ -129,3 +129,160 @@ export function moduleMemoryDeclarations(
 ): readonly MemoryDeclaration[] | undefined {
   return declarations.get(module);
 }
+
+export interface ThreadModuleDeclaration {
+  readonly initialPages: WasmPages;
+  readonly actualMaximumPages: WasmPages;
+  readonly sourceMaximumPages: WasmPages;
+}
+const threadDeclarations = new WeakMap<WebAssembly.Module, ThreadModuleDeclaration>();
+export function declareThreadModule(
+  module: WebAssembly.Module,
+  declaration: ThreadModuleDeclaration,
+): void {
+  threadDeclarations.set(module, declaration);
+}
+export function threadModuleDeclaration(
+  module: WebAssembly.Module,
+): ThreadModuleDeclaration | undefined {
+  return threadDeclarations.get(module);
+}
+type Signature = { parameters: number[]; results: number[] };
+const threadSignatures: Readonly<Record<string, readonly number[]>> = {
+  args_get: [0x7f, 0x7f],
+  args_sizes_get: [0x7f, 0x7f],
+  environ_get: [0x7f, 0x7f],
+  environ_sizes_get: [0x7f, 0x7f],
+  clock_time_get: [0x7f, 0x7e, 0x7f],
+  random_get: [0x7f, 0x7f],
+  sched_yield: [],
+  fd_read: [0x7f, 0x7f, 0x7f, 0x7f],
+  fd_write: [0x7f, 0x7f, 0x7f, 0x7f],
+  fd_pread: [0x7f, 0x7f, 0x7f, 0x7e, 0x7f],
+  fd_pwrite: [0x7f, 0x7f, 0x7f, 0x7e, 0x7f],
+  fd_seek: [0x7f, 0x7e, 0x7f, 0x7f],
+  fd_tell: [0x7f, 0x7f],
+  fd_filestat_get: [0x7f, 0x7f],
+  fd_close: [0x7f],
+  proc_exit: [0x7f],
+};
+function text(reader: Reader): string {
+  return new TextDecoder("utf-8", { fatal: true }).decode(reader.take(reader.u32()));
+}
+function signature(reader: Reader): Signature {
+  if (reader.byte() !== 0x60)
+    throw new WebAssembly.CompileError("Unsupported thread function type");
+  const parameters = Array.from({ length: reader.u32() }, () => reader.byte());
+  const results = Array.from({ length: reader.u32() }, () => reader.byte());
+  return { parameters, results };
+}
+function matchesSignature(
+  value: Signature | undefined,
+  parameters: readonly number[],
+  results: readonly number[],
+): boolean {
+  return (
+    !!value &&
+    value.parameters.length === parameters.length &&
+    value.results.length === results.length &&
+    value.parameters.every((item, index) => item === parameters[index]) &&
+    value.results.every((item, index) => item === results[index])
+  );
+}
+function threadSections(data: Uint8Array): Map<number, Uint8Array> | undefined {
+  const reader = new Reader(data);
+  reader.take(8);
+  const sections = new Map<number, Uint8Array>();
+  while (reader.position < data.length) {
+    const id = reader.byte();
+    const body = reader.take(reader.u32());
+    if (id) sections.set(id, body);
+    else {
+      const custom = text(new Reader(body));
+      if (custom === "dylink.0" || custom === "dylink") return undefined;
+    }
+  }
+  return sections;
+}
+function threadImports(data: Uint8Array | undefined) {
+  const imports = new Reader(data ?? new Uint8Array([0]));
+  const functions: { module: string; name: string; type: number }[] = [];
+  const memories: { module: string; name: string; declaration: MemoryDeclaration }[] = [];
+  const count = imports.u32();
+  for (let index = 0; index < count; index++) {
+    const module = text(imports),
+      name = text(imports),
+      kind = imports.byte();
+    if (kind === 0) functions.push({ module, name, type: imports.u32() });
+    else if (kind === 2) memories.push({ module, name, declaration: memory(imports, "imported") });
+    else return undefined;
+  }
+  return { functions, memories };
+}
+/** Source-only admission. Reflection cannot certify imported memory limits or function types. */
+export function inspectThreadSource(data: Uint8Array): ThreadModuleDeclaration | undefined {
+  const sections = threadSections(data);
+  if (!sections) return undefined;
+  const imported = threadImports(sections.get(2));
+  if (!imported) return undefined;
+  const { functions, memories } = imported;
+  if (!functions.some((value) => value.module === "wasi" && value.name === "thread-spawn"))
+    return undefined;
+  const fail = (): never => {
+    throw new WebAssembly.CompileError("Unsupported threaded Preview 1 source shape or signature");
+  };
+  const importedMemory = memories[0];
+  if (
+    memories.length !== 1 ||
+    !importedMemory ||
+    importedMemory.module !== "env" ||
+    importedMemory.name !== "memory" ||
+    importedMemory.declaration.kind !== "shared"
+  )
+    fail();
+  if (
+    sections.has(5) ||
+    functions.filter((value) => value.module === "wasi" && value.name === "thread-spawn").length !==
+      1
+  )
+    fail();
+  const typesReader = new Reader(sections.get(1) ?? new Uint8Array([0]));
+  const types = Array.from({ length: typesReader.u32() }, () => signature(typesReader));
+  for (const value of functions) {
+    const parameters =
+      value.module === "wasi" && value.name === "thread-spawn"
+        ? [0x7f]
+        : value.module === "wasi_snapshot_preview1"
+          ? threadSignatures[value.name]
+          : undefined;
+    const results = value.name === "proc_exit" ? [] : [0x7f];
+    if (!parameters || !matchesSignature(types[value.type], parameters, results)) fail();
+  }
+  const functionReader = new Reader(sections.get(3) ?? new Uint8Array([0]));
+  const indices = functions
+    .map((value) => value.type)
+    .concat(Array.from({ length: functionReader.u32() }, () => functionReader.u32()));
+  const exports = new Reader(sections.get(7) ?? new Uint8Array([0]));
+  const exported = new Map<string, Signature | undefined>();
+  const exportCount = exports.u32();
+  for (let index = 0; index < exportCount; index++) {
+    const name = text(exports),
+      kind = exports.byte(),
+      position = exports.u32();
+    if (kind === 0) exported.set(name, types[indices[position] ?? -1]);
+  }
+  if (
+    !matchesSignature(exported.get("_start"), [], []) ||
+    !matchesSignature(exported.get("wasi_thread_start"), [0x7f, 0x7f], [])
+  )
+    fail();
+  const declaration = importedMemory!.declaration;
+  if (declaration.kind !== "shared") return fail();
+  const maximum = pages(Math.min(512, declaration.maximumPages));
+  if (declaration.initialPages > maximum) fail();
+  return Object.freeze({
+    initialPages: declaration.initialPages,
+    actualMaximumPages: maximum,
+    sourceMaximumPages: declaration.maximumPages,
+  });
+}

@@ -1,5 +1,7 @@
 import type { FileStat } from "../core/filesystem.ts";
 import {
+  arrayAppend,
+  typedArrayLength,
   Uint8ArrayConstructor,
   DataViewConstructor,
   wasmMemoryBuffer,
@@ -69,7 +71,7 @@ class GuestMemory {
       const address = dataViewGetUint32(view, at, true);
       const length = dataViewGetUint32(view, at + 4, true);
       this.span(address, length);
-      spans.push({ address, length });
+      arrayAppend(spans, { address, length });
     }
     return spans;
   }
@@ -83,8 +85,8 @@ function strings(values: readonly string[]): Strings {
   let size = 0;
   for (let i = 0; i < values.length; i++) {
     const bytes: Uint8Array = apply(encode, encoder, [`${values[i]}\0`]);
-    result.push(bytes);
-    size += bytes.length;
+    arrayAppend(result, bytes);
+    size += typedArrayLength(bytes);
   }
   return { values: result, size };
 }
@@ -93,7 +95,7 @@ function environment(env: Readonly<Record<string, string>>): Strings {
   const values: string[] = [];
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i]!;
-    values.push(`${key}=${env[key]}`);
+    arrayAppend(values, `${key}=${env[key]}`);
   }
   return strings(values);
 }
@@ -116,8 +118,8 @@ function writeStrings(
   for (let i = 0; i < values.values.length; i++) {
     const value = values.values[i]!;
     memory.u32((pointers >>> 0) + i * 4, cursor);
-    typedArraySet(memory.span(cursor, value.length), value);
-    cursor += value.length;
+    typedArraySet(memory.span(cursor, typedArrayLength(value)), value);
+    cursor += typedArrayLength(value);
   }
   return 0;
 }

@@ -74,13 +74,13 @@ Terminal modules remain enforced even when an individual entry point is intended
 trusted host. Their runtime graph is reachable from guest bootstrap imports, and their
 closures and buffers carry process authority:
 
-| Enforced module                | Authority role                                                                                                              |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `browser/preview1-socket.ts` | Socket descriptions retain their handle, captured request-port hooks and descriptor flags in the guest worker. Payload copies use captured typed-array helpers. |
-| `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.       |
-| `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                          |
-| `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.       |
-| `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal. |
+| Enforced module                | Authority role                                                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser/preview1-socket.ts`   | Socket descriptions retain their handle, captured request-port hooks and descriptor flags in the guest worker. Payload copies use captured typed-array helpers. |
+| `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.                                           |
+| `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                                                              |
+| `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.                                           |
+| `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal.                                     |
 
 Terminal identity/context, policy/turn, attachment/authority, input and process-lifetime
 handles are named private types in the checker. None of these modules is classified as a
@@ -125,7 +125,7 @@ It contains no whole-file or wildcard suppression. The allowed cases are:
 | Owner                                      | Payload-only operation                                                                          | Why it carries no private authority                                                                                             |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `proc/pipes.ts` `length`                   | Reduce caller-supplied byte iovecs to a count                                                   | Elements are the caller's payload; the callback captures no ring or lifetime state.                                             |
-| `Ring.read` / `Ring.writeEntered`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
+| `Ring.read` / `Ring.writeEntered`          | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
 | Worker bootstrap `output`, `write`, `post` | Read `data.buffer` / `data.length`                                                              | Guest stdout/stderr bytes, not directory, signal or endpoint buffers.                                                           |
 | Terminal codec `import.write`              | Count/iterate terminal chunks, allocate an outbound byte array, copy payload, read byte lengths | These values are guest iovecs and fresh output bytes. The separate WeakMap of Stream provenance is private and remains checked. |
 
@@ -163,3 +163,16 @@ require zero private-authority observations during real process lifecycles.
 `proc/command-runner.ts` and `proc/command-stdio.ts` run only on the page and are lazy-loaded for host commands. Their trusted-module classification does not extend to guest bootstrap. The command context borrows asynchronous stdio and copied root-local process data. It never receives the descriptor table, filesystem connection, process service, or raw supervisor. Host commands remain trusted JavaScript in the page realm, not a sandbox.
 
 Delegated command signals are broker-created closures bound to the actual admitted holder, its root record, the root controller's captured package grant, and the target found at delivery. No command field supplies an anchor or a caller PID. Installation alone grants nothing. Root-local copied queries and a `send` method are the only process operations in the command context. The existing guest authority checks are unchanged.
+
+## Internal threaded process boundary
+
+The source-admitted threaded path keeps `thread/runtime-owner.ts` on the page and
+`thread/service-worker.ts` with `thread/service.ts` in the dedicated canonical service
+Worker. Neither executes guest code. The guest entry, imports, terminal adapter and
+lane implementation are checked through the `thread/guest-bootstrap.ts` root. This
+classification does not exempt their buffers, collections or callbacks.
+
+Argument and environment byte arrays are copied immutable launch payload, not process
+controls. Their construction and byte-length reads still use captured array and typed-array
+operations. Terminal wait timers use captured scheduling and cancellation functions because
+the callbacks retain private wait ownership. No payload exception is added for either path.

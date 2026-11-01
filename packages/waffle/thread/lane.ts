@@ -1,6 +1,10 @@
 import { readWaitRegistration, type CapturedWaitRegistration } from "../interrupt/wait.ts";
 import type { FileStat } from "../core/filesystem.ts";
 import {
+  scheduleTimeout,
+  cancelTimeout,
+  scheduleInterval,
+  cancelInterval,
   atomicsLoad,
   atomicsStore,
   atomicsNotify,
@@ -326,8 +330,8 @@ export class ThreadWaitOwner {
     this.wake();
     if (this.phase !== "open") return;
     this.phase = "draining";
-    this.timer = setInterval(() => this.wake(), 10);
-    this.deadline = setTimeout(() => {
+    this.timer = scheduleInterval(() => this.wake(), 10);
+    this.deadline = scheduleTimeout(() => {
       this.fail(new Error("guest wait did not reach host-idle before teardown deadline"));
     }, 1000);
   }
@@ -395,8 +399,8 @@ export class ThreadWaitOwner {
   }
 
   private stopTimers(): void {
-    clearInterval(this.timer);
-    clearTimeout(this.deadline);
+    cancelInterval(this.timer);
+    cancelTimeout(this.deadline);
     this.timer = undefined;
     this.deadline = undefined;
   }

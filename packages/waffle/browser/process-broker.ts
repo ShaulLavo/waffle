@@ -8,7 +8,12 @@ import {
   type ProcessGuestPlan,
   type ProcessPlan,
 } from "../memory/reservations.js";
-import { moduleMemoryDeclarations, type MemoryDeclaration } from "../memory/declarations.js";
+import type { ThreadAggregate, ThreadLaunchOptions } from "../thread/runtime-protocol.js";
+import {
+  threadModuleDeclaration,
+  moduleMemoryDeclarations,
+  type MemoryDeclaration,
+} from "../memory/declarations.js";
 import type { Preview1Network } from "./preview1-network-types.js";
 import {
   prepareTerminalDescendant,
@@ -220,6 +225,8 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   /** Module entry stays inert until its first request; unused workers may be prestarted. */
   workerUrl: string;
   notificationWorkerUrl?: string;
+  /** Explicit internal proof profile. Source admission is still mandatory. */
+  threaded?: ThreadLaunchOptions;
   /** Ownership moves to the broker, including all failed launch and termination paths. */
   network?: Preview1Network;
   request: Omit<
@@ -269,6 +276,7 @@ export interface WorkerMemoryObservation {
   readonly bytes: number | null;
 }
 interface RuntimeChild {
+  threads?: Promise<ThreadAggregate>;
   memory: BigInt64Array;
   identity: Omit<WorkerMemoryObservation, "bytes">;
   notifications?: NotificationBridge;
@@ -380,7 +388,7 @@ export class BrowserProcessBroker {
             return (
               this.suspended ||
               (child
-                ? child.acknowledged || child.failed
+                ? child.threads !== undefined || child.acknowledged || child.failed
                 : (this.controllers.get(pid)?.canConfirmExit?.() ?? true))
             );
           },
@@ -1521,6 +1529,24 @@ export class BrowserProcessBroker {
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
   ): ProcessHandle {
+    const threaded = threadModuleDeclaration(options.request.module);
+    if (threaded) {
+      if (
+        !options.threaded ||
+        options.memoryGroup ||
+        options.network ||
+        options.memories?.length ||
+        !options.request.interruptible
+      )
+        throw new Error("Threaded Preview 1 requires the explicit source-admitted thread launcher");
+      return this.launchThreadWorker(context, options.threaded, threaded, options.cleanup);
+    }
+    if (
+      WebAssembly.Module.imports(options.request.module).some(
+        (entry) => entry.module === "wasi" && entry.name === "thread-spawn",
+      )
+    )
+      throw new Error("Threaded Preview 1 requires validated source bytes");
     const owner = options.network;
     let released = false;
     const network = owner && {
@@ -1541,6 +1567,67 @@ export class BrowserProcessBroker {
       }
       throw error;
     }
+  }
+  private launchThreadWorker(
+    context: ProcessContext,
+    urls: ThreadLaunchOptions,
+    declaration: NonNullable<ReturnType<typeof threadModuleDeclaration>>,
+    cleanup?: () => void,
+  ): ProcessHandle {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    const transport = this.transport.get(context.pid);
+    if (!transport || this.children.has(context.pid))
+      throw new Error("process has no available worker transport");
+    const state = workerProcessState(transport);
+    const filesystem = this.filesystem(transport);
+    this.bindPipeRegistry(transport);
+    const memory = new BigInt64Array(allocateSharedControl(8));
+    Atomics.store(memory, 0, -1n);
+    const child: RuntimeChild = {
+      memory,
+      filesystem,
+      context,
+      cleanup,
+      identity: {
+        pid: state.pid,
+        parentPid: state.parentPid,
+        rootPid: state.rootPid,
+        job: state.job,
+        directory: workerProcessDirectoryId(transport),
+      },
+      acknowledged: false,
+      failed: false,
+      stopped: false,
+    };
+    this.children.set(context.pid, child);
+    context.registerRevocation(() => {
+      this.revokeRuntimeProcess(context.pid);
+      this.options.filesystem.revoke(filesystem);
+      void child.threads?.then((owner) => owner.terminal()).catch((error) => this.report(error));
+    });
+    child.threads = import("../thread/runtime-owner.js").then(
+      ({ RuntimeThreadOwner }) =>
+        new RuntimeThreadOwner({
+          context,
+          transport,
+          declaration,
+          urls,
+          reservations: this.options.reservations,
+          connect: (headroom) => this.options.filesystem.connect(filesystem, headroom),
+          filesystemFence: () => this.options.filesystem.quiesce(filesystem),
+          failed: (error) => {
+            this.report(error);
+            if (startStatus(context.outcome) === 0) context.fail(error);
+            else context.startFailed(error);
+          },
+        }),
+    );
+    void child.threads.catch((error) => {
+      child.failed = true;
+      context.startFailed(error);
+    });
+    this.watch();
+    return { terminate: () => this.stop(child) };
   }
   private launchOwnedWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
@@ -1918,6 +2005,15 @@ export class BrowserProcessBroker {
     // Lazy/external roots may have no supervisor record to invoke their revocation hook.
     this.revokeController(pid);
     const controller = this.controllers.get(pid);
+    const threaded = this.children.get(pid);
+    if (threaded?.threads) {
+      const adapterFence = controller?.quiesce?.();
+      if (adapterFence) pending.push(adapterFence);
+      pending.push(threaded.threads.then((owner) => owner.fence()));
+      if (controller?.filesystem && controller.filesystem.sections !== threaded.filesystem.sections)
+        pending.push(this.options.filesystem.quiesce(controller.filesystem));
+      return Promise.all(pending).then(() => {});
+    }
     const adapter = controller?.quiesce?.();
     if (adapter) pending.push(adapter);
     if (controller?.filesystem && !controller.acknowledged?.())
@@ -1957,6 +2053,17 @@ export class BrowserProcessBroker {
   private stop(child: RuntimeChild): void | Promise<void> {
     if (child.stopping) return child.stopping;
     if (child.stopped) return;
+    if (child.threads) {
+      return (child.stopping = child.threads
+        .then((owner) => owner.stop())
+        .then(() => {
+          child.cleanup?.();
+          child.stopped = true;
+          this.terminalLifetimes.get(child.context.pid)?.stopped();
+          this.children.delete(child.context.pid);
+          this.retireChildController(child.context.pid);
+        }));
+    }
     const terminal = this.terminalLifetimes.get(child.context.pid);
     const stop = async () => {
       if (child.stopped) return;
