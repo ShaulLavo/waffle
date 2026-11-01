@@ -751,3 +751,36 @@ test("writes preserve ECONNRESET even while the error record is blocked by a ful
     expect(JSON.parse(String(host.error(handle)))).toMatchObject({ code: "ECONNRESET" });
   });
 });
+
+test("a 64 KiB helper result at one byte of capacity publishes one byte and stages the rest", async () => {
+  await withDirect(async ({ host, helper, ring, stream }) => {
+    const handle = host.connect("staging.example", 443);
+    await until(
+      async () => host.write(handle, EMPTY),
+      (result) => result === 0,
+    );
+    const reader = new RingReader(ring);
+    let published = 0;
+    const drain = async () => {
+      for (const record of reader.drain()) {
+        if (record.kind === Kind.Data) published += record.payload.length;
+      }
+      await turn();
+      return published;
+    };
+    for (let index = 0; index < 15; index++) {
+      stream.data(new Uint8Array(65536).fill(7));
+      await until(drain, (count) => count === (index + 1) * 65536);
+    }
+    stream.data(new Uint8Array(65535).fill(7));
+    await until(drain, (count) => count === WINDOW - 1);
+    stream.data(new Uint8Array(65536).fill(9));
+    await until(drain, (count) => count === WINDOW);
+    for (let n = 0; n < 10; n++) await drain();
+    expect(published).toBe(WINDOW);
+    // Draining ring records is not guest consumption. Only this acknowledgement frees space.
+    helper.handle({ type: "tcp-read", id: handle, bytes: 65535 });
+    await until(drain, (count) => count === WINDOW + 65535);
+    expect(published).toBe(WINDOW + 65535);
+  });
+});

@@ -5,6 +5,11 @@ import { canonicalDestination, canonicalOrigin, destinationKey } from "./tcp-des
 import { MAX_OPEN_BYTES, TcpFailure, WINDOW_BYTES, type TcpTarget } from "./tcp-protocol.js";
 import { tokenKey } from "./token.js";
 
+let nextId = 0;
+export function nextTcpId(): number {
+  return ++nextId;
+}
+
 export interface TcpDestination extends TcpTarget {
   readonly connect?: TcpTarget;
   readonly allowMail?: boolean;
@@ -26,11 +31,12 @@ export interface TcpLog {
   readonly id: number;
   readonly sub: string;
   readonly destination?: TcpTarget;
-  readonly carrier: "websocket";
+  readonly carrier: "webtransport" | "websocket";
   readonly sentBytes: number;
   readonly receivedBytes: number;
   readonly durationMs: number;
   readonly reason?: string;
+  readonly resetCode?: 1 | 2 | 3 | 4;
 }
 export interface TcpServerOptions {
   readonly tokenSecret: string | Uint8Array;
@@ -64,7 +70,11 @@ export function tcpLimits(input?: Partial<TcpLimits>): TcpLimits {
     )
       throw new TypeError("Invalid TCP limit");
   }
-  if (limits.maxOpenBytes > MAX_OPEN_BYTES || limits.windowBytes > WINDOW_BYTES)
+  if (
+    limits.maxOpenBytes > MAX_OPEN_BYTES ||
+    limits.windowBytes < 16384 ||
+    limits.windowBytes > WINDOW_BYTES
+  )
     throw new TypeError("TCP header/window limit exceeds protocol maximum");
   return Object.freeze(limits);
 }

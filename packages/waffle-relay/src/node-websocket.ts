@@ -16,7 +16,10 @@ export function createNodeWebSocket(origin: string): (url: string) => ClientWebS
       get bufferedAmount() {
         return ws.bufferedAmount;
       },
-      send: (data) => ws.send(data),
+      send: (data) =>
+        new Promise<void>((resolve, reject) =>
+          ws.send(data, (error) => (error ? reject(error) : resolve())),
+        ),
       close: (code) => ws.close(code),
       terminate: () => ws.terminate(),
       listen(events) {

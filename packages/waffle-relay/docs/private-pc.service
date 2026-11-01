@@ -1,0 +1,26 @@
+[Unit]
+Description=Private Waffle relay
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/work/services/waffle-relay/current
+ExecStart=/home/shaul/.local/share/mise/installs/node/26.12.1/bin/node /work/services/waffle-relay/current/node_modules/waffle-relay/dist/cli.js serve --config /work/services/waffle-relay/config.json
+Environment=PATH=/usr/bin:/bin
+Environment=WAFFLE_RELAY_TMPDIR=/work/services/waffle-relay/tmp
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=default.target

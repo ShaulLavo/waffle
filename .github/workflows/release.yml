@@ -55,22 +55,34 @@ jobs:
       - name: Verify the release tag and package version
         run: |
           version=$(bun -p 'JSON.parse(require("node:fs").readFileSync("packages/waffle/package.json", "utf8")).version')
+          relay_version=$(bun -p 'JSON.parse(require("node:fs").readFileSync("packages/waffle-relay/package.json", "utf8")).version')
           test "$RELEASE_TAG" = "waffle-v$version"
+          test "$relay_version" = "$version"
+      - name: Verify the tagged commit belongs to main
+        run: |
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
       - run: bun install --frozen-lockfile
       - name: Pack the prepared runtime package
         run: bun run --cwd packages/waffle pack
-      - name: Write the archive checksum
-        id: archive
+      - name: Pack the prepared relay package
+        run: bun pm pack --cwd packages/waffle-relay --destination dist
+      - name: Write the archive checksums
+        id: archives
         run: |
-          archive=$(find packages/waffle/dist -maxdepth 1 -type f -name '*.tgz' -print -quit)
-          test -n "$archive"
-          (cd packages/waffle/dist && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
-          echo "path=$archive" >> "$GITHUB_OUTPUT"
+          version=$(bun -p 'JSON.parse(require("node:fs").readFileSync("packages/waffle/package.json", "utf8")).version')
+          runtime="packages/waffle/dist/waffle-$version.tgz"
+          relay="packages/waffle-relay/dist/waffle-relay-$version.tgz"
+          test -f "$runtime"
+          test -f "$relay"
+          (cd packages/waffle/dist && sha256sum "$(basename "$runtime")" > "$(basename "$runtime").sha256")
+          (cd packages/waffle-relay/dist && sha256sum "$(basename "$relay")" > "$(basename "$relay").sha256")
+          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
+          echo "relay=$relay" >> "$GITHUB_OUTPUT"
       - name: Publish the GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$RELEASE_TAG" "${{ steps.archive.outputs.path }}" "${{ steps.archive.outputs.path }}.sha256" \
+          gh release create "$RELEASE_TAG" "${{ steps.archives.outputs.runtime }}" "${{ steps.archives.outputs.runtime }}.sha256" \
+            "${{ steps.archives.outputs.relay }}" "${{ steps.archives.outputs.relay }}.sha256" \
             --draft --verify-tag --title "$RELEASE_TAG" --generate-notes

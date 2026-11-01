@@ -9,6 +9,7 @@ function fixture(
     v: 1,
     ok: true,
     remote: { address: "8.8.8.8", port: 80, family: "IPv4" },
+    window: 16384,
   }),
 ) {
   let events: WebSocketEvents | undefined;
@@ -37,7 +38,7 @@ function fixture(
   const relay = createRelayConnect({
     endpoint: "https://relay.example/",
     getToken: () => "fixture",
-    windowBytes: 8,
+    windowBytes: 16384,
     webSocket: () => socket,
     connectTimeoutMs: 20,
   });
@@ -62,13 +63,13 @@ test("client admits no payload until the one successful open, then waits for cre
     expect(run.frames.length).toBe(1);
     const writer = stream.writable.getWriter();
     let completed = false;
-    const write = writer.write(new Uint8Array(16)).then(() => {
+    const write = writer.write(new Uint8Array(32768)).then(() => {
       completed = true;
     });
     await new Promise((resolve) => setTimeout(resolve, 1));
     expect(completed).toBe(false);
-    expect(stream.counters.sendOutstandingBytes).toBe(8);
-    run.events.message(frameCredit(8));
+    expect(stream.counters.sendOutstandingBytes).toBe(16384);
+    run.events.message(frameCredit(16384));
     await write;
     expect(
       run.frames
@@ -86,11 +87,11 @@ test("receive queue withholds credit until an actual read and rejects data after
   const run = fixture();
   try {
     const stream = await run.relay.connect(target, new AbortController().signal);
-    run.events.message(new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8]));
-    expect(stream.counters.receiveQueuedBytes).toBe(8);
+    run.events.message(new Uint8Array(16385));
+    expect(stream.counters.receiveQueuedBytes).toBe(16384);
     expect(run.frames.length).toBe(1);
     const reader = stream.readable.getReader();
-    expect((await reader.read()).value?.length).toBe(8);
+    expect((await reader.read()).value?.length).toBe(16384);
     expect(stream.counters.receiveQueuedBytes).toBe(0);
     expect(run.frames.length).toBe(2);
     run.events.message(new Uint8Array([1]));

@@ -4,6 +4,7 @@
 
 - `waffle-relay` exports `createRelayFetch`, `createRelayConnect`, their errors, and configuration types. It imports no Node server code.
 - `waffle-relay/node` exports `createNodeRelayServer`. The same adapter runs on Node and Bun.
+- `waffle-relay/node-webtransport` exports `createNodeWebTransportRelayServer`. It requires the two explicitly installed native peers and accepts the same HTTP/TCP options plus `tcp.webtransport`. The ordinary Node entry does not evaluate the native entry.
 - `waffle-relay/worker` exports `createWorkerRelayHandler`. It uses the Worker's Fetch API.
 
 The base `waffle` package has no relay dependency. Its lazy network helper reads validated, page-owned response metadata from `waffle/browser/net/transport`. Ordinary direct fetch responses keep their existing URL and redirect behavior. An upstream header or similarly named response property cannot supply transport metadata.
@@ -56,13 +57,13 @@ The HTTP fetch relay remains HTTP-only. TCP is a separate opt-in capability desc
 
 `createRelayConnect({ endpoint, getToken, carriers?, webSocket?, windowBytes?, connectTimeoutMs? })` returns `{ connect, carrier, revoke, close }`. It imports no Waffle outbound connector module. Its stream shape is structurally compatible with a page-owned connector.
 
-`endpoint` is an HTTPS root URL without credentials, query or fragment. HTTP is accepted only for `localhost`, `127.0.0.1` and `[::1]`. `getToken` runs for every connect. Tokens never enter the URL or guest state. The WebSocket implementation loads dynamically on the first connection. The default carrier order is `["webtransport", "websocket"]`, but this foundation implements only WebSocket. It makes no WebTransport probe or retry. An exclusively WebTransport configuration fails with `ENETUNREACH`.
+`endpoint` is an HTTPS root URL without credentials, query or fragment. HTTP is accepted only for `localhost`, `127.0.0.1` and `[::1]`. `getToken` runs for every connect. Tokens never enter the URL or guest state. Both carrier implementations load dynamically on the first connection. The default order is `["webtransport", "websocket"]`. WebTransport selection includes authenticated discovery, a ready session, creation of a bidirectional stream, and the successful open reply. The whole probe has a three-second deadline. An unavailable API, invalid hash, discovery failure, session failure or stream-creation failure can select one WebSocket attempt before the open header is submitted. That preference lasts five minutes. A failure after header submission is final, even if no reply arrived. A later independent connect can establish a fresh session. No established byte stream is replayed.
 
 Browsers supply Origin. Node and Bun pass `webSocket: createNodeWebSocket(origin)`, imported from `waffle-relay/node`. This adapter sets the exact page origin, disables compression and redirects, and caps messages at 64 KiB plus one type byte. A custom `webSocket` factory is a trusted host adapter, not guest input.
 
 `connect({ host, port }, signal)` resolves after the successful open reply. The result contains `readable`, `writable`, `remote` and diagnostic `counters`. Reader EOF is the target's FIN. Writer close sends FIN without ending reads. Abort, carrier loss and revocation reset the connection. Reader cancellation normally resets too. After writer FIN, reader cancellation instead discards replies while preserving already-sent uploads until both FINs or the drain deadline. Established connections never reconnect. `revoke()` fences admission synchronously. `close()` also joins allocated carrier cleanup. A caller-aborted connection retains the caller's abort reason. Other failures use redacted `RelayConnectError.code` values.
 
-The 15 second client deadline includes token retrieval, lazy loading, carrier setup and open. The signal remains attached after open. The client does not retain a failed carrier for a later attempt. A late token result cannot create a carrier after revocation. Native adapters force termination at the cleanup deadline. Browsers expose no force-terminate API, so the deadline releases local ownership after requesting close; the browser owns the remaining close handshake. The caller owns queued `WritableStream` writes and must await each write rather than enqueue an unbounded series.
+The 15 second client deadline includes token retrieval, lazy loading, carrier setup and open. The signal remains attached after open. The client does not retain a failed carrier for a later attempt. A late token result cannot create a carrier after revocation. Native adapters request force termination within the cleanup budget. Browsers expose no force-terminate API. Unsettled cleanup rejects `close()` and remains tracked rather than claiming release. The caller owns queued `WritableStream` writes and must await each write rather than enqueue an unbounded series.
 
 ## TCP server policy
 
@@ -91,14 +92,14 @@ The optional issuer is `{ credential, ttlSeconds, destinations }`. Its credentia
 `GET /v1/tcp` upgrades to one WebSocket per TCP stream. Its first message in each direction is UTF-8 JSON text, at most 8 KiB:
 
 ```json
-{ "v": 1, "token": "<app-owned token>", "host": "db.example", "port": 5432 }
+{ "v": 1, "token": "<app-owned token>", "host": "db.example", "port": 5432, "window": 262144 }
 ```
 
-The reply is `{ v: 1, ok: true, remote: { address, port, family } }` or `{ v: 1, ok: false, code }`. The remote endpoint is the selected numeric target. A client sends no payload before success. A second header or data during opening is a protocol error. The shared incremental decoder also supports a two-byte big-endian length prefix for later stream carriers, including fragmented prefixes, JSON, and a following payload.
+The reply is `{ v: 1, ok: true, remote: { address, port, family }, window: 262144 }` or `{ v: 1, ok: false, code }`. The remote endpoint is the selected numeric target. A client sends no payload before success. A second header or data during opening is a protocol error. WebTransport uses the shared incremental decoder on the actual byte stream. Each open header has a two-byte big-endian length prefix. Prefix bytes and JSON can arrive in arbitrary fragments. Request-header rest rejects before target admission. The server observes and rejects additional input while opening, before its successful reply handoff. A client accepts merged success-header rest only after validating and installing its credit state. The WebSocket path continues to parse its first text message directly.
 
-After open, binary messages begin with a type byte. `0` carries 1 to 65536 data bytes. `1` carries no payload and means FIN. `2` carries a nonzero big-endian u32 credit increment. Each direction starts with 262144 bytes of credit. Duplicate FIN, data after FIN, text after open, invalid types, malformed messages, excess credit and credit overruns close with 1008.
+After open, binary messages begin with a type byte. `0` carries 1 to 65536 data bytes. `1` carries no payload and means FIN. `2` carries a nonzero big-endian u32 credit increment. Each header advertises its sender's receive window, an integer from 16384 through 262144. Each direction starts with the peer's window, which can differ from its own. Duplicate FIN, data after FIN, text after open, invalid types, malformed messages, excess credit and credit overruns close with 1008.
 
-Both FINs and all acknowledged data are required for graceful close with 1000. Reset codes are 4001 for target reset, 4002 for idle timeout, 4003 for a relay limit, and 4004 for shutdown. Other abnormal closes are carrier loss. A five-second drain deadline bounds half-close and carrier teardown. The target uses `allowHalfOpen`, `TCP_NODELAY`, and keepalive after 60 seconds.
+Both FINs and all acknowledged data are required for graceful close with 1000. Reset codes are 4001 for target reset, 4002 for idle timeout, 4003 for a relay limit, and 4004 for shutdown. Other abnormal closes are carrier loss. The five-second drain starts only after both logical FINs or guest full close. CREDIT remains valid after local FIN, so a slow reverse transfer can continue. Revoke and rotation inherit the caller's existing absolute deadline. The target uses `allowHalfOpen`, `TCP_NODELAY`, and keepalive after 60 seconds.
 
 Before open, auth, origin and policy errors map to `EACCES`, limits and refusal to `ECONNREFUSED`, DNS failure to `ENOTFOUND`, connect timeout to `ETIMEDOUT`, and target unreachability to `EHOSTUNREACH`. Carrier loss before a reply maps to `ENETUNREACH`. After open, resets map to `ECONNRESET`.
 
@@ -116,10 +117,50 @@ Before open, auth, origin and policy errors map to `EACCES`, limits and refusal 
 | `idleTimeoutMs`            |  900000 |
 | `windowBytes`              |  262144 |
 
-The subject is `sub`, or a SHA-256 token hash when `sub` is absent. Rate accounting uses fixed one-minute windows. Inactive expired subjects are removed before admission. The bounded subject table rejects new subjects when full. Header and window limits may be lowered, not raised above protocol maxima. A lowered window requires the same client `windowBytes`. Idle timeout `0` disables that timer.
+The subject is `sub`, or a SHA-256 token hash when `sub` is absent. Rate accounting uses fixed one-minute windows. Inactive expired subjects are removed before admission. The bounded subject table rejects new subjects when full. Header and window limits may be lowered, not raised above protocol maxima. Client and server windows need not match. Each sender obeys the peer's mandatory advertised window. Idle timeout `0` disables that timer.
 
-Server counters are `toTargetBytes`, `toClientBytes` and `readAheadBytes`. The first two count admitted bytes not yet consumed by their receiver. Target write completion returns upload credit. Actual client reads return download credit. A paused TCP read uses one fixed 64 KiB `onread` buffer, so read-ahead cannot grow with the stream's internal high-water mark. Client counters are `receiveQueuedBytes` and `sendOutstandingBytes`. These counters exclude the caller-owned guest queues, whose 1 MiB bound belongs to the injected helper, not this package.
+Server counters are `toTargetBytes`, `toClientBytes` and `readAheadBytes`. The first two count admitted bytes not yet consumed by their receiver. Target write completion returns upload credit. Actual client reads return download credit. A paused TCP read uses one fixed 64 KiB `onread` buffer, so read-ahead cannot grow with the stream's internal high-water mark. Client and server diagnostics include the monotonic payload totals `payloadHandedToCarrier`, `payloadReceived`, `consumerReleased`, `creditHandedToCarrier` and `creditApplied`. At a causal fixture barrier, sender outstanding equals receiver queued plus payload in flight, credit pending and credit in flight. Native write settlement does not return payload credit. `creditPending` is consumed minus credit handed. Receive credit uses received minus credit handed, not merely consumed.
+
+Decoded payload uses a fixed receive-window byte store. `dataMetadataUpperBound` is five times outstanding payload for WebTransport and once for WebSocket, including one-byte frames. `creditMetadataUpperBound` is 25 bytes for handed control, with a separate at-most-five-byte pending slot. One encoded DATA slot is at most 65541 bytes. `encodedSlotBytes` and `writeInFlight` expose writer ownership. An ordinary reader validates one returned backing buffer against `8192 + 2 + 6 * receiveWindow + 32` before copying. Parser scratch is fixed. No per-frame object queue accumulates.
+
+These counters exclude helper queues. The injected helper publishes at most 1 MiB of guest-unread bytes, with one separate unpublished staging chunk of at most 64 KiB. Its unsettled-write budget remains at most 1 MiB and can conservatively include a partially handed write. It is not added to sender outstanding as an exact byte identity. Terminal reset freezes the ledger. `discardedBytes` counts intentional full-close consumption; `failedReceiveBytes` records received payload left unsettled on reset.
 
 `tcp.log` receives bounded structured events. The default writes JSON to stdout. Each admitted connection logs an open on success and exactly one terminal close after cleanup. Events include time, connection ID, subject, canonical requested destination, carrier, byte counts, duration and close reason. They contain no token, payload, issuer credential, raw error text or resolved override. Logger failures do not retain connections.
 
 `GET /healthz` returns `{ ok: true }`. `GET /readyz` returns 200 while this local listener accepts work and 503 after revocation. Neither response reveals configuration. This WebSocket-only readiness does not certify TLS proxy configuration, UDP reachability or a production deployment.
+
+## WebTransport server
+
+`createNodeWebTransportRelayServer` is a separate entry. Both optional peers are exact `1.6.11` versions. A WebSocket-only install needs neither peer.
+
+```ts
+import { createNodeWebTransportRelayServer } from "waffle-relay/node-webtransport";
+
+const relay = createNodeWebTransportRelayServer({
+  credential: httpCredential,
+  allowedOrigins: [pageOrigin],
+  tcp: {
+    tokenSecret,
+    destinations,
+    webtransport: { host: "100.77.94.94", port: 4433, certificate: "rotating-hash" },
+  },
+});
+await relay.tcp.ready;
+relay.server.listen(8787, "127.0.0.1");
+```
+
+WebTransport binds only the configured numeric interface, never an unspecified wildcard. Address reuse is disabled. The exact `/v1/tcp/wt` path and one canonical allowed Origin are checked before accepting a session. Sessions are capped at 64. Each session must complete an authenticated stream within ten seconds. Every stream uses the same destination policy, token scope, connection count, subject count and rate accounting as WebSocket.
+
+`POST /v1/tcp/session` requires a bearer token and an allowed Origin. It returns `{ v: 1, webtransport: { url, certificateHashes } | null }` with `Cache-Control: no-store`. A generated certificate has exactly one SHA-256 hash, encoded as unpadded base64url. Discovery returns null while starting, recycling, failed or closed. The readiness response is false during those states. Health does not prove remote UDP reachability.
+
+Generated certificates use P-256 and last 13 days. Their keys and PEM files leave generation scratch before publication. The default seven-day rotation stops only the WebTransport endpoint and starts a new one on the same port. Live WebTransport connections reset with `ECONNRESET` and are never replayed. Existing WebSocket connections remain open. The exact pinned native library cannot replace a running HTTP/3 certificate; the relay never calls its ineffective `updateCert` wrapper.
+
+`rotationMs` is an integer between one second and 12 days. A wall-clock check runs every minute, and discovery checks again before advertising a hash. Clock rollback, the renewal time or the one-hour expiry guard triggers the same fenced operation. The certificate is checked before construction and again before publication. An endpoint owns its admissions before any asynchronous step. Close and rotation share one monotonic 12-second operation budget. This bounds asynchronous work, not a native synchronous call that does not return. Failed cleanup rejects and retains its ownership record.
+
+`onEndpointFailure` receives only `{ code, manualActionRequired }`. Its return value cannot hold lifecycle serialization. Throws, rejected promises and calls to `close()` do not prevent the CLI's independent fatal finalizer. Fatal generated-certificate failures make the CLI exit 1 after cleanup. An operator-provided `{ cert, key }` certificate uses normal browser chain and hostname validation and advertises no hash. Expiry in that mode requires replacing the files and restarting the service; it does not cause an automatic restart loop.
+
+After the open header, WebTransport uses length-framed DATA, logical FIN and CREDIT. DATA is `0x00`, a four-byte big-endian length from 1 through 65536, then payload. FIN is `0x01`. CREDIT is `0x02` plus a positive four-byte increment. This differs from WebSocket message framing, which needs no DATA length. The incremental decoder charges each declared DATA length before storing payload and copies out of native staging.
+
+Upload credit returns at the successful target-write callback. Download credit returns when the pull-driven readable hands an owned chunk to its consumer. Credit coalesces at a quarter-window threshold or the final peer-FIN flush. Native close requires both logical FINs, consumed and credited input, empty writer slots and no write in flight. Native EOF before peer FIN, inside a frame or while send credit remains outstanding is a protocol error. RESET_STREAM and STOP_SENDING reset the connection. Server application codes are 1 for target reset, 2 for idle timeout, 3 for a relay limit and 4 for shutdown or rotation. The native adapter sends `{ code }` privately and recognizes only the pinned library's exact bounded reset messages. No internal message reaches the guest.
+
+Browser support is feature-detected. Passing Chromium tests does not establish Safari or iPhone WebTransport support. Those devices use WebSocket unless the complete authenticated stream and certificate-hash probe succeeds on the actual device.

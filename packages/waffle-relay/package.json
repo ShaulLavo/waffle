@@ -1,6 +1,6 @@
 {
   "name": "waffle-relay",
-  "version": "0.0.0",
+  "version": "0.0.109",
   "description": "Optional authenticated HTTP and TCP relay for Waffle runtimes.",
   "license": "MIT",
   "bin": {
@@ -42,22 +42,32 @@
       "node": "./dist/token.js",
       "bun": "./src/token.ts",
       "default": "./src/token.ts"
+    },
+    "./node-webtransport": {
+      "types": "./src/node-webtransport.ts",
+      "node": "./dist/node-webtransport.js",
+      "bun": "./src/node-webtransport.ts",
+      "default": "./src/node-webtransport.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test ./tests",
     "build": "bun scripts/build.ts",
-    "test:native": "node tests/native-fixture.ts && bun tests/native-fixture.ts && node tests/tcp-native-fixture.ts && bun tests/tcp-native-fixture.ts",
+    "test:native": "node tests/native-fixture.ts && bun tests/native-fixture.ts && node tests/tcp-native-fixture.ts && bun tests/tcp-native-fixture.ts && node tests/webtransport-failure-fixture.ts && bun tests/webtransport-failure-fixture.ts",
     "prepack": "bun run build",
     "pack:check": "bun scripts/pack-check.ts",
     "size": "bun scripts/size.ts",
-    "test:worker": "bun scripts/test-worker.ts"
+    "test:worker": "bun scripts/test-worker.ts",
+    "test:webtransport": "bun tests/tcp-webtransport-fixture.ts && node tests/tcp-webtransport-fixture.ts",
+    "test:install": "bun scripts/install-check.ts"
   },
   "dependencies": {
     "ws": "8.22.1"
   },
   "devDependencies": {
+    "@fails-components/webtransport": "1.6.11",
+    "@fails-components/webtransport-transport-http3-quiche": "1.6.11",
     "@types/bun": "^1.4.3",
     "@types/node": "26.6.3",
     "@types/ws": "8.18.2",
@@ -65,7 +75,17 @@
     "waffle": "workspace:*"
   },
   "peerDependencies": {
+    "@fails-components/webtransport": "1.6.11",
+    "@fails-components/webtransport-transport-http3-quiche": "1.6.11",
     "waffle": "*"
+  },
+  "peerDependenciesMeta": {
+    "@fails-components/webtransport": {
+      "optional": true
+    },
+    "@fails-components/webtransport-transport-http3-quiche": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22.18"
