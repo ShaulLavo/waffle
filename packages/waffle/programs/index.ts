@@ -141,6 +141,7 @@ class Activity {
   closing = false;
   fenced = false;
   private active = 0;
+  private failure: { readonly error: unknown } | undefined;
   private readonly idle: Array<() => void> = [];
 
   enter(): () => void {
@@ -153,8 +154,16 @@ class Activity {
     };
   }
 
+  fail(error: unknown): never {
+    this.failure ??= { error };
+    for (const resolve of this.idle.splice(0)) resolve();
+    throw error;
+  }
+
   async fence(): Promise<void> {
-    while (this.active) await new Promise<void>((resolve) => this.idle.push(resolve));
+    while (this.active && !this.failure)
+      await new Promise<void>((resolve) => this.idle.push(resolve));
+    if (this.failure) throw this.failure.error;
     this.fenced = true;
   }
 }
@@ -396,7 +405,7 @@ function trackedLauncher(
       terminate: () =>
         (stopping ??= Promise.resolve()
           .then(() => handle.terminate())
-          .finally(leave)),
+          .then(leave, (error: unknown) => activity.fail(error))),
     };
   };
 }

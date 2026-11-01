@@ -6,6 +6,7 @@ import {
   RIGHT_FD_FILESTAT_GET,
   RIGHT_POLL_FD_READWRITE,
   RIGHT_SOCK_SHUTDOWN,
+  RIGHT_SOCK_ACCEPT,
 } from "../core/rights.js";
 import type { DescriptorTable, Readiness, Stream } from "../core/descriptors.js";
 import { NetHost } from "./net/host.js";
@@ -24,6 +25,7 @@ const EAGAIN = 6;
 const EPIPE = 64;
 const codes: Record<string, number> = {
   EACCES: 2,
+  EADDRINUSE: 3,
   EBADF: 8,
   ECANCELED: 11,
   ECONNREFUSED: 14,
@@ -49,15 +51,15 @@ function errorCode(value: unknown): string | undefined {
 class SocketStream implements Stream {
   readonly kind = "socket";
   fdflags = 0;
-  private closed = false;
+  protected closed = false;
   private writeEnded = false;
   private writeFailed = false;
   constructor(
-    private readonly host: NetHost,
-    private readonly handle: number,
-    private readonly initialError: number,
-    private readonly checkActive: () => void,
-    private readonly wait: (word: Int32Array, expected: number) => void,
+    protected readonly host: NetHost,
+    protected readonly handle: number,
+    protected readonly initialError: number,
+    protected readonly checkActive: () => void,
+    protected readonly wait: (word: Int32Array, expected: number) => void,
   ) {}
   get notification(): Int32Array {
     return this.host.notification;
@@ -81,7 +83,7 @@ class SocketStream implements Stream {
     if (result === BADF) return -8;
     return -errno(this.host.socketState(this.handle).error);
   }
-  private io(operation: () => number, blocking: boolean): number {
+  protected io(operation: () => number, blocking: boolean): number {
     for (;;) {
       this.checkActive();
       const word = this.notification;
@@ -178,6 +180,46 @@ class SocketStream implements Stream {
   }
 }
 
+class ListenerStream extends SocketStream {
+  constructor(
+    host: NetHost,
+    handle: number,
+    initialError: number,
+    checkActive: () => void,
+    wait: (word: Int32Array, expected: number) => void,
+    private readonly checkIoActive: () => void,
+  ) {
+    super(host, handle, initialError, checkActive, wait);
+  }
+  override tryRead(): number {
+    return -(this.initialError || 53);
+  }
+  override tryWrite(): number {
+    return -(this.initialError || 53);
+  }
+  override recv(): number {
+    return this.tryRead();
+  }
+  override shutdown(): number {
+    return -(this.initialError || 53);
+  }
+  accept(flags: number): Stream | number {
+    if (this.closed) return -8;
+    if (this.initialError) return -this.initialError;
+    const handle = this.io(
+      () => {
+        const result = this.host.accept(this.handle);
+        return result === AGAIN ? -EAGAIN : result === BADF ? -8 : result;
+      },
+      !(this.fdflags & 4),
+    );
+    if (handle < 0) return handle;
+    const stream = new SocketStream(this.host, handle, 0, this.checkActive, this.wait);
+    stream.fdflags = flags;
+    return guardedStream(stream, this.checkIoActive);
+  }
+}
+
 /** Runs only in the receiving worker before instantiation. The port sends requests, never secrets. */
 export function attachPreview1Sockets(
   connection: Preview1NetworkConnection,
@@ -207,12 +249,22 @@ export function attachPreview1Sockets(
       for (let i = 0; i < connection.sockets.length; i++) {
         checkActive();
         const binding = connection.sockets[i]!;
-        const target = binding.socket.connect;
-        const handle = host.connect(target.host, target.port);
+        const listening = "listen" in binding.socket;
+        const target = listening ? binding.socket.listen : binding.socket.connect;
+        const handle = listening
+          ? host.listen(target.host, target.port)
+          : host.connect(target.host, target.port);
         const failure = handle < 0 ? errno(errorCode(JSON.parse(String(host.error(0))))) : 0;
-        const stream = new SocketStream(host, handle, failure, checkActive, wait);
+        const stream = listening
+          ? new ListenerStream(host, handle, failure, checkActive, wait, checkIoActive)
+          : new SocketStream(host, handle, failure, checkActive, wait);
         descriptors.close(binding.fd);
-        descriptors.openAt(binding.fd, guardedStream(stream, checkIoActive), rights, 0n);
+        descriptors.openAt(
+          binding.fd,
+          guardedStream(stream, checkIoActive),
+          listening ? rights | RIGHT_SOCK_ACCEPT : rights,
+          0n,
+        );
       }
     },
     dispose() {

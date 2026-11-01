@@ -13,7 +13,7 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 
 ## Stability
 
-- **Version:** `0.0.109` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
+- **Version:** `0.0.110` in `packages/waffle/package.json`, with `private: true`. Only patch versions change.
 - **Distribution:** GitHub release archives of the runtime package (`waffle-v<version>` tags). Existing exact-commit Git pins keep installing their old trees. No npm package.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
@@ -42,7 +42,7 @@ The CI `browser` job installs Playwright's Chromium, Firefox and WebKit on `ubun
 - **WASI Preview 1 command that exports `_start` and memory:** runs through the generic `preview1` worker. See [Run a WASI program](guides/run-a-wasi-program.md).
 - **Module that imports `runtime_proc`:** gets spawn, pipes, jobs, signals and poll. See [Host ABI](host-abi.md).
 - **Module that imports an unknown namespace or name:** fails at link time. Waffle adds no stub that returns `ENOSYS`.
-- **Preview 1 launch-bound sockets:** `sock_send`, `sock_recv`, `sock_shutdown`, descriptor I/O and polling work on explicit connect bindings. The responsive owner holds the connector and helper. Preview 1 has no connect import; listener bindings and `sock_accept` are not implemented. bun-wasm's separate launcher handoff and outside line/echo coverage remain consumer gates. See [Run a WASI program](guides/run-a-wasi-program.md#bind-a-socket-before-launch).
+- **Preview 1 launch-bound sockets:** `sock_send`, `sock_recv`, `sock_shutdown`, descriptor I/O and polling work on explicit connect bindings. The responsive owner holds the connector and helper. Preview 1 has no connect import. Listener bindings accept virtual loopback connections from peers in the same runtime through `sock_accept`, including independent listener and accepted-socket NONBLOCK flags and pending-accept poll readiness. No OS listener or inbound relay is exposed. bun-wasm's separate launcher handoff and outside line/echo coverage remain consumer gates. See [Run a WASI program](guides/run-a-wasi-program.md#bind-a-socket-before-launch).
 - **Symlinks (`path_symlink`):** return `ENOTSUP`.
 - **Guest that inherits file descriptor 3 and scans preopens:** needs a wasi-libc rebuilt with the patch in [Guest libc](wasi-libc.md).
 - **Bun and Bash Web:** run on Waffle through their own adapters, in their own repositories.

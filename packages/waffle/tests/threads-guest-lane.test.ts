@@ -50,7 +50,7 @@ for (const invalid of ["repeat", "gap", "overlap", "malformed"] as const) {
       await owner.retire();
       expect(dispatched).toBe(invalid === "gap" || invalid === "malformed" ? 0 : 1);
       expect(Atomics.load(new Int32Array(reply), 1)).toBe(1);
-      expect(Atomics.load(new Int32Array(reply), 0)).toBe(0);
+      expect(Atomics.load(new Int32Array(reply), 0)).toBe(-1);
       expect(Array.from(new Uint8Array(fixture.memory.buffer, 256, 4))).toEqual([0, 0, 0, 0]);
     } finally {
       clearTimeout(deadline);

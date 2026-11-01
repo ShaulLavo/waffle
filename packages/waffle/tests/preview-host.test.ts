@@ -637,3 +637,37 @@ test("malformed interim response fields fail before a final response head", asyn
     host.close();
   }
 });
+
+test("WAF-003 oversized response head rejects preview fetch and closes its connection", async () => {
+  const f = fixture("HTTP/1.1 200 OK\r\nX: " + "a".repeat(64 * 1024) + "\r\n\r\n");
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    await expect(host.fetch(host.authorization, new Request(origin))).rejects.toThrow(
+      "head metadata limit",
+    );
+    expect(f.stopped).toBe(1);
+  } finally {
+    host.close();
+  }
+  expect(f.stopped).toBe(1);
+});
+
+for (const malformed of ["1g\r\n", "1\r\naXX", "0\r\n" + "X: abc\r\n".repeat(8192) + "\r\n"]) {
+  test(`WAF-003 ${malformed.startsWith("0") ? "trailer overflow" : "bad chunk framing"} errors an already resolved preview body and closes the connection`, async () => {
+    const f = fixture();
+    const host = await f.router.bindHost({ port: 3137 });
+    try {
+      const pending = host.fetch(host.authorization, new Request(origin));
+      await f.peer?.data(encoder.encode("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"));
+      const response = await pending;
+      expect(response.status).toBe(200);
+      const body = response.text();
+      void f.peer?.data(encoder.encode(malformed));
+      await expect(body).rejects.toThrow();
+      expect(f.stopped).toBe(1);
+    } finally {
+      host.close();
+    }
+    expect(f.stopped).toBe(1);
+  });
+}

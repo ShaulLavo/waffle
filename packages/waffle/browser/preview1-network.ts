@@ -20,12 +20,18 @@ function snapshot(bindings: readonly Preview1SocketBinding[]): Preview1SocketBin
     if (!Number.isInteger(fd) || fd < 0 || fd > 0x7fffffff || seen.has(fd))
       throw new RangeError("invalid or duplicate socket descriptor");
     seen.add(fd);
-    const { host, port } = socket.connect;
+    if ("connect" in socket && "listen" in socket)
+      throw new TypeError("socket binding requires either connect or listen");
+    const listening = "listen" in socket;
+    const { host, port } = listening ? socket.listen : socket.connect;
     if (typeof host !== "string" || !host || host.includes("\0"))
       throw new TypeError("socket target requires a hostname");
-    if (!Number.isInteger(port) || port < 1 || port > 65535)
-      throw new RangeError("socket target requires a port in 1..65535");
-    return { fd, socket: { connect: { host, port } } };
+    const minimum = listening ? 0 : 1;
+    if (!Number.isInteger(port) || port < minimum || port > 65535)
+      throw new RangeError(`socket target requires a port in ${minimum}..65535`);
+    return listening
+      ? { fd, socket: { listen: { host, port } } }
+      : { fd, socket: { connect: { host, port } } };
   });
 }
 

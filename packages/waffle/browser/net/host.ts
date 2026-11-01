@@ -392,6 +392,14 @@ export class NetHost {
   socketState(handle: number) {
     this.drain();
     const h = this.handles.get(handle);
+    if (h?.kind === "listener")
+      return {
+        readable: h.pending.length > 0 || !!h.error,
+        writable: false,
+        hangup: !!h.error,
+        nbytes: 0,
+        error: h.error?.code,
+      };
     if (h?.kind !== "conn")
       return { readable: true, writable: true, hangup: true, nbytes: 0, error: "EBADF" };
     const nbytes = h.chunks.reduce((size, chunk) => size + chunk.length, 0);
