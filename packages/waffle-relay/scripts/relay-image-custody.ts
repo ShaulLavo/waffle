@@ -4,6 +4,12 @@ import { createHash } from "node:crypto";
 import { createReadStream, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  archivedLayer,
+  checkLayerDescriptor,
+  layerIdentity,
+  type QualifiedLayer,
+} from "./relay-image-layers.ts";
+import {
   array,
   hash,
   imageRepository,
@@ -65,10 +71,14 @@ export function checkConfig(
   );
   const rootfs = record(config.rootfs);
   assert.equal(rootfs.type, "layers");
-  for (const layer of array(rootfs.diff_ids)) assert.match(String(layer), /^sha256:[0-9a-f]{64}$/);
-  return { config, runtime, diffIds: rootfs.diff_ids };
+  const diffIds = array(rootfs.diff_ids).map((layer) => {
+    assert.equal(typeof layer, "string");
+    assert.match(String(layer), /^sha256:[0-9a-f]{64}$/);
+    return String(layer);
+  });
+  return { config, runtime, diffIds };
 }
-function savedImage(directory: string, context: ReturnType<typeof publicationContext>) {
+async function savedImage(directory: string, context: ReturnType<typeof publicationContext>) {
   const archive = join(directory, "image.tar.gz");
   const manifestBytes = member(archive, "manifest.json");
   const manifests = array(json(manifestBytes));
@@ -79,15 +89,28 @@ function savedImage(directory: string, context: ReturnType<typeof publicationCon
   const configBytes = member(archive, String(manifest.Config));
   const configDigest = `sha256:${hash(configBytes)}`;
   const checked = checkConfig(configBytes, context.specification);
-  assert.equal(array(manifest.Layers).length, array(checked.diffIds).length);
-  return { archiveManifestSha256: hash(manifestBytes), configDigest, configBytes, ...checked };
+  const paths = array(manifest.Layers);
+  assert.equal(paths.length, checked.diffIds.length, "Saved layer count differs");
+  const layers: Awaited<ReturnType<typeof archivedLayer>>[] = [];
+  for (const [index, path] of paths.entries()) {
+    const layer = await archivedLayer(archive, path);
+    assert.equal(layer.diffId, checked.diffIds[index], "Saved layer content differs from config");
+    layers.push(layer);
+  }
+  return {
+    archiveManifestSha256: hash(manifestBytes),
+    configDigest,
+    configBytes,
+    layers,
+    ...checked,
+  };
 }
 function inspect(reference: string): Record<string, unknown> {
   return record(array(json(execFileSync("docker", ["image", "inspect", reference])))[0]);
 }
 export function checkInspection(
   value: unknown,
-  saved: Pick<ReturnType<typeof savedImage>, "runtime" | "diffIds">,
+  saved: Pick<Awaited<ReturnType<typeof savedImage>>, "runtime" | "diffIds">,
 ) {
   const image = record(value);
   assert.equal(`${image.Os}/${image.Architecture}`, "linux/amd64", "Wrong loaded platform");
@@ -98,10 +121,9 @@ export function checkInspection(
 }
 function savedIdentity(
   directory: string,
-  context: ReturnType<typeof publicationContext>,
+  saved: Awaited<ReturnType<typeof savedImage>>,
   engineId: string,
 ) {
-  const saved = savedImage(directory, context);
   // The engine ID is opaque. If it names a saved manifest, verify that blob separately.
   let manifestDigest: string | null = null;
   if (engineId !== saved.configDigest) {
@@ -114,6 +136,9 @@ function savedIdentity(
       "Saved manifest config differs",
     );
     assert.equal(record(manifest.config).size, saved.configBytes.length);
+    const descriptors = array(manifest.layers);
+    assert.equal(descriptors.length, saved.layers.length, "Saved manifest layer count differs");
+    saved.layers.forEach((layer, index) => checkLayerDescriptor(descriptors[index], layer));
     manifestDigest = engineId;
   }
   return {
@@ -121,6 +146,7 @@ function savedIdentity(
     archiveManifestSha256: saved.archiveManifestSha256,
     configDigest: saved.configDigest,
     manifestDigest,
+    layers: saved.layers.map(({ diffId, uncompressedSize }) => ({ diffId, uncompressedSize })),
   };
 }
 export async function verifyArtifact(directory: string, env: NodeJS.ProcessEnv) {
@@ -137,18 +163,21 @@ export async function verifyArtifact(directory: string, env: NodeJS.ProcessEnv) 
   );
   const image = record(receipt.image);
   assert.match(String(image.engineId), /^sha256:[0-9a-f]{64}$/);
+  const saved = await savedImage(directory, context);
   assert.deepEqual(
     image,
-    savedIdentity(directory, context, String(image.engineId)),
+    savedIdentity(directory, saved, String(image.engineId)),
     "Saved image identities differ",
   );
-  return { context, receipt, saved: savedImage(directory, context) };
+  return { context, receipt, saved };
 }
-export function checkPublished(
+export async function checkPublished(
   manifestBytes: Uint8Array,
   configBytes: Uint8Array,
   reference: string,
   expectedConfig: Uint8Array,
+  expectedLayers: readonly QualifiedLayer[],
+  readLayer: (digest: string) => Promise<AsyncIterable<Uint8Array> | Iterable<Uint8Array>>,
 ) {
   assert.match(
     reference,
@@ -180,7 +209,33 @@ export function checkPublished(
     "Registry config bytes differ",
   );
   const config = record(json(configBytes));
-  assert.equal(array(manifest.layers).length, array(record(config.rootfs).diff_ids).length);
+  const descriptors = array(manifest.layers);
+  assert.deepEqual(
+    array(record(config.rootfs).diff_ids),
+    expectedLayers.map((layer) => layer.diffId),
+  );
+  assert.equal(descriptors.length, expectedLayers.length, "Published layer count differs");
+  for (const [index, value] of descriptors.entries()) {
+    const descriptor = record(value);
+    assert.match(String(descriptor.digest), /^sha256:[0-9a-f]{64}$/);
+    const layer = await layerIdentity(await readLayer(String(descriptor.digest)));
+    checkLayerDescriptor(descriptor, layer);
+    assert.deepEqual(
+      { diffId: layer.diffId, uncompressedSize: layer.uncompressedSize },
+      expectedLayers[index],
+      "Published layer content/order differs from qualified image",
+    );
+  }
+}
+async function registryLayer(digest: string) {
+  const token = process.env.REGISTRY_PULL_TOKEN;
+  assert.ok(token, "Expected anonymous registry pull token");
+  const response = await fetch(`https://ghcr.io/v2/shaullavo/waffle-relay/blobs/${digest}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(60000),
+  });
+  assert.ok(response.ok && response.body, "Cannot read anonymous registry layer");
+  return response.body;
 }
 
 async function main() {
@@ -188,12 +243,12 @@ async function main() {
   assert.ok(directory, "Expected image custody directory");
   if (command === "record") {
     const context = publicationContext(process.env);
-    const saved = savedImage(directory, context);
+    const saved = await savedImage(directory, context);
     const engineId = checkInspection(inspect(localImage), saved);
     const receipt = {
       context,
       archiveSha256: await fileHash(join(directory, "image.tar.gz")),
-      image: savedIdentity(directory, context, engineId),
+      image: savedIdentity(directory, saved, engineId),
     };
     const text = JSON.stringify(receipt, null, 2) + "\n";
     writeFileSync(join(directory, "receipt.json"), text);
@@ -214,11 +269,13 @@ async function main() {
   }
   assert.equal(command, "published", "Expected record, load or published custody command");
   assert.ok(reference);
-  checkPublished(
+  await checkPublished(
     readFileSync(join(directory, "published-manifest.json")),
     readFileSync(join(directory, "published-config.json")),
     reference,
     saved.configBytes,
+    saved.layers,
+    registryLayer,
   );
   checkInspection(inspect(reference), saved);
   writeFileSync(join(directory, "reference"), reference + "\n");

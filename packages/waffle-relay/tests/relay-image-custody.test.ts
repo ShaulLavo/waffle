@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
+import { checkLayerDescriptor, layerIdentity } from "../scripts/relay-image-layers.ts";
 import {
   checkConfig,
   checkInspection,
@@ -11,6 +13,8 @@ import {
 } from "../scripts/relay-image-custody.ts";
 import {
   hash,
+  array,
+  record,
   localImage,
   publicationContext,
   specification,
@@ -18,6 +22,16 @@ import {
 } from "../scripts/relay-image-contract.ts";
 
 const sourceHead = "1".repeat(40);
+const layerBytes = [Buffer.from("first qualified layer"), Buffer.from("second qualified layer")];
+const expectedLayers = layerBytes.map((bytes) => ({
+  diffId: `sha256:${hash(bytes)}`,
+  uncompressedSize: bytes.length,
+}));
+async function fixtureLayer(digest: string) {
+  return [
+    layerBytes.find((bytes) => `sha256:${hash(bytes)}` === digest) ?? Buffer.from("wrong blob"),
+  ];
+}
 function environment(selected = "native") {
   return {
     IMAGE_VARIANT: selected,
@@ -42,7 +56,7 @@ function config(selected = "native") {
         "org.opencontainers.image.version": spec.version,
       },
     },
-    rootfs: { type: "layers", diff_ids: [`sha256:${"a".repeat(64)}`] },
+    rootfs: { type: "layers", diff_ids: expectedLayers.map((layer) => layer.diffId) },
   };
 }
 async function fixture(directory: string, manifestId: boolean) {
@@ -52,20 +66,31 @@ async function fixture(directory: string, manifestId: boolean) {
     JSON.stringify({
       schemaVersion: 2,
       config: { digest: configDigest, size: bytes.length },
-      layers: [{ digest: `sha256:${"b".repeat(64)}` }],
+      layers: layerBytes.map((bytes) => ({
+        mediaType: "application/vnd.oci.image.layer.v1.tar",
+        digest: `sha256:${hash(bytes)}`,
+        size: bytes.length,
+      })),
     }),
   );
   const manifestDigest = `sha256:${hash(manifestBytes)}`;
   const configPath = `blobs/sha256/${hash(bytes)}`;
   const archiveManifest = Buffer.from(
-    JSON.stringify([{ Config: configPath, RepoTags: [localImage], Layers: ["layer.tar"] }]),
+    JSON.stringify([
+      {
+        Config: configPath,
+        RepoTags: [localImage],
+        Layers: layerBytes.map((bytes) => `blobs/sha256/${hash(bytes)}`),
+      },
+    ]),
   );
   const contents = join(directory, "contents");
   await mkdir(join(contents, "blobs/sha256"), { recursive: true });
   await writeFile(join(contents, configPath), bytes);
   await writeFile(join(contents, `blobs/sha256/${hash(manifestBytes)}`), manifestBytes);
   await writeFile(join(contents, "manifest.json"), archiveManifest);
-  await writeFile(join(contents, "layer.tar"), "synthetic layer");
+  for (const layer of layerBytes)
+    await writeFile(join(contents, `blobs/sha256/${hash(layer)}`), layer);
   execFileSync("tar", [
     "-czf",
     join(directory, "image.tar.gz"),
@@ -73,7 +98,6 @@ async function fixture(directory: string, manifestId: boolean) {
     contents,
     "manifest.json",
     "blobs",
-    "layer.tar",
   ]);
   const receipt = {
     context: publicationContext(environment()),
@@ -83,6 +107,7 @@ async function fixture(directory: string, manifestId: boolean) {
       configDigest,
       archiveManifestSha256: hash(archiveManifest),
       manifestDigest: manifestId ? manifestDigest : null,
+      layers: expectedLayers,
     },
   };
   async function save() {
@@ -90,7 +115,28 @@ async function fixture(directory: string, manifestId: boolean) {
     await writeFile(join(directory, "receipt.json"), text);
     return { ...environment(), RECEIPT_SHA256: hash(text) };
   }
-  return { receipt, save, bytes, manifestBytes, manifestDigest, env: await save() };
+  async function repack() {
+    execFileSync("tar", [
+      "-czf",
+      join(directory, "image.tar.gz"),
+      "-C",
+      contents,
+      "manifest.json",
+      "blobs",
+    ]);
+    receipt.archiveSha256 = hash(await readFile(join(directory, "image.tar.gz")));
+    return save();
+  }
+  return {
+    receipt,
+    save,
+    repack,
+    contents,
+    bytes,
+    manifestBytes,
+    manifestDigest,
+    env: await save(),
+  };
 }
 async function withFixture(
   manifestId: boolean,
@@ -189,29 +235,130 @@ test("saved image config rejects another release, variant and platform", () => {
   );
 });
 
-test("registry proof hashes actual manifest and config, not the local image ID", async () => {
+test("registry proof hashes actual manifest, config and layer blobs", async () => {
   await withFixture(true, async (_directory, input) => {
     const reference = `ghcr.io/shaullavo/waffle-relay@${input.manifestDigest}`;
     expect(input.manifestDigest).not.toBe(input.receipt.image.configDigest);
-    expect(() =>
-      checkPublished(input.manifestBytes, input.bytes, reference, input.bytes),
-    ).not.toThrow();
-    expect(() =>
-      checkPublished(
-        input.manifestBytes,
-        input.bytes,
-        reference.replace("waffle-relay@", "other@"),
-        input.bytes,
-      ),
-    ).toThrow("repository");
-    expect(() => checkPublished(Buffer.from("{}"), input.bytes, reference, input.bytes)).toThrow(
-      "manifest digest",
-    );
-    expect(() =>
-      checkPublished(input.manifestBytes, Buffer.from("{}"), reference, input.bytes),
-    ).toThrow("blob hash");
-    expect(() =>
-      checkPublished(input.manifestBytes, input.bytes, reference, Buffer.from("{}")),
-    ).toThrow("qualified config");
+    const check = (
+      manifest = input.manifestBytes,
+      configBytes = input.bytes,
+      target = reference,
+      expected = input.bytes,
+    ) => checkPublished(manifest, configBytes, target, expected, expectedLayers, fixtureLayer);
+    await expect(check()).resolves.toBeUndefined();
+    await expect(
+      check(input.manifestBytes, input.bytes, reference.replace("waffle-relay@", "other@")),
+    ).rejects.toThrow("repository");
+    await expect(check(Buffer.from("{}"))).rejects.toThrow("manifest digest");
+    await expect(check(input.manifestBytes, Buffer.from("{}"))).rejects.toThrow("blob hash");
+    await expect(
+      check(input.manifestBytes, input.bytes, reference, Buffer.from("{}")),
+    ).rejects.toThrow("qualified config");
   });
 });
+
+for (const kind of ["digest", "size", "missing", "reordered"] as const) {
+  test(`publication rejects ${kind} layer identity`, async () => {
+    await withFixture(true, async (_directory, input) => {
+      const manifest = record(JSON.parse(input.manifestBytes.toString()));
+      const layers = array(manifest.layers).map(record);
+      if (kind === "digest") layers[0]!.digest = `sha256:${"f".repeat(64)}`;
+      if (kind === "size") layers[0]!.size = Number(layers[0]!.size) + 1;
+      if (kind === "missing") layers.pop();
+      if (kind === "reordered") layers.reverse();
+      const changed = Buffer.from(JSON.stringify({ ...manifest, layers }));
+      const reference = `ghcr.io/shaullavo/waffle-relay@sha256:${hash(changed)}`;
+      await expect(
+        Promise.resolve().then(() =>
+          checkPublished(
+            changed,
+            input.bytes,
+            reference,
+            input.bytes,
+            expectedLayers,
+            fixtureLayer,
+          ),
+        ),
+      ).rejects.toThrow();
+    });
+  });
+}
+
+for (const manifestId of [false, true]) {
+  test(`saved ${manifestId ? "manifest" : "config"} image rejects a changed layer even with refreshed outer hashes`, async () => {
+    await withFixture(manifestId, async (directory, input) => {
+      await writeFile(
+        join(input.contents, `blobs/sha256/${hash(layerBytes[0]!)}`),
+        "substituted layer",
+      );
+      await expect(verifyArtifact(directory, await input.repack())).rejects.toThrow();
+    });
+  });
+}
+
+test("plain and gzip layer streams bind encoded bytes and uncompressed diff IDs", async () => {
+  const original = layerBytes[0]!;
+  for (const encoded of [original, gzipSync(original)]) {
+    const actual = await layerIdentity(Array.from(encoded, (byte) => Uint8Array.of(byte)));
+    expect(actual.digest).toBe(`sha256:${hash(encoded)}`);
+    expect(actual.size).toBe(encoded.length);
+    expect(actual.diffId).toBe(`sha256:${hash(original)}`);
+    expect(actual.uncompressedSize).toBe(original.length);
+    const descriptor = {
+      digest: actual.digest,
+      size: actual.size,
+      mediaType: actual.gzip
+        ? "application/vnd.oci.image.layer.v1.tar+gzip"
+        : "application/vnd.oci.image.layer.v1.tar",
+    };
+    expect(() => checkLayerDescriptor(descriptor, actual)).not.toThrow();
+    expect(() =>
+      checkLayerDescriptor({ ...descriptor, mediaType: "application/unknown" }, actual),
+    ).toThrow("media type");
+  }
+  await expect(layerIdentity([])).rejects.toThrow();
+  await expect(layerIdentity([Buffer.from([0x1f, 0x8b])])).rejects.toThrow();
+});
+
+test("saved OCI manifest descriptor sizes bind the actual archived blobs", async () => {
+  await withFixture(true, async (directory, input) => {
+    const manifest = record(JSON.parse(input.manifestBytes.toString()));
+    const layers = array(manifest.layers).map(record);
+    layers[0]!.size = Number(layers[0]!.size) + 1;
+    const changed = Buffer.from(JSON.stringify({ ...manifest, layers }));
+    const digest = `sha256:${hash(changed)}`;
+    await writeFile(join(input.contents, `blobs/sha256/${hash(changed)}`), changed);
+    input.receipt.image.engineId = digest;
+    input.receipt.image.manifestDigest = digest;
+    await expect(verifyArtifact(directory, await input.repack())).rejects.toThrow(
+      "descriptor size",
+    );
+  });
+});
+
+for (const altered of [false, true]) {
+  test(`published gzip layers ${altered ? "reject changed contents" : "preserve qualified contents across compression"}`, async () => {
+    const encoded = layerBytes.map((bytes, index) =>
+      gzipSync(altered && index === 0 ? Buffer.from("different content") : bytes),
+    );
+    const bytes = Buffer.from(JSON.stringify(config()));
+    const manifest = Buffer.from(
+      JSON.stringify({
+        schemaVersion: 2,
+        config: { digest: `sha256:${hash(bytes)}`, size: bytes.length },
+        layers: encoded.map((layer) => ({
+          digest: `sha256:${hash(layer)}`,
+          size: layer.length,
+          mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+        })),
+      }),
+    );
+    const reference = `ghcr.io/shaullavo/waffle-relay@sha256:${hash(manifest)}`;
+    const read = async (digest: string) => [
+      encoded.find((layer) => `sha256:${hash(layer)}` === digest)!,
+    ];
+    const result = checkPublished(manifest, bytes, reference, bytes, expectedLayers, read);
+    if (altered) await expect(result).rejects.toThrow("content/order");
+    else await expect(result).resolves.toBeUndefined();
+  });
+}

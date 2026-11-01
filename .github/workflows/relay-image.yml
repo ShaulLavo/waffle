@@ -162,7 +162,7 @@ jobs:
         run: |
           docker tag waffle-relay:validated "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA"
           docker push "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA"
-      - name: Prove anonymous immutable pull and actual manifest/config correspondence
+      - name: Prove anonymous immutable pull and actual manifest/config/layer correspondence
         run: |
           reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA")
           [[ "$reference" =~ ^ghcr.io/shaullavo/waffle-relay@sha256:[0-9a-f]{64}$ ]]
@@ -177,7 +177,7 @@ jobs:
           token=$(curl --fail --silent --show-error 'https://ghcr.io/token?service=ghcr.io&scope=repository:shaullavo/waffle-relay:pull' | jq -er .token)
           curl --fail --silent --show-error --location --header "Authorization: Bearer $token" \
             "https://ghcr.io/v2/shaullavo/waffle-relay/blobs/$config" --output image/published-config.json
-          node packages/waffle-relay/scripts/relay-image-custody.ts published image "$reference"
+          REGISTRY_PULL_TOKEN="$token" node packages/waffle-relay/scripts/relay-image-custody.ts published image "$reference"
           printf 'Published and anonymously pulled %s.\n\nVariant %s, exact Origin, deny-all TCP checkpoint.\n' "$reference" "$IMAGE_VARIANT" >> "$GITHUB_STEP_SUMMARY"
           cat image/published-manifest.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

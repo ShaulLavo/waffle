@@ -135,4 +135,7 @@ test("the write job consumes the producer ID and receipt, validates before login
     'DOCKER_CONFIG="$RUNNER_TEMP/anonymous" docker pull --platform linux/amd64 "$reference"',
   );
   expect(commands).toContain("relay-image-custody.ts published image");
+  expect(commands).toContain(
+    'REGISTRY_PULL_TOKEN="$token" node packages/waffle-relay/scripts/relay-image-custody.ts published',
+  );
 });
