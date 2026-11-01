@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { once } from "node:events";
@@ -16,6 +16,7 @@ assert.equal(process.platform, "linux");
 assert.equal(process.arch, "x64");
 assert.equal(process.getuid!(), 1000);
 assert.equal(process.getgid!(), 1000);
+assert.match(execFileSync("openssl", ["version"], { encoding: "utf8" }), /^OpenSSL /);
 for (const name of ["waffle", "waffle-relay"]) {
   const manifest = JSON.parse(await readFile(`/app/node_modules/${name}/package.json`, "utf8"));
   assert.equal(manifest.version, input.version);
@@ -147,6 +148,11 @@ async function cycle(): Promise<string> {
   try {
     await ready(child);
     return await check();
+  } catch (error) {
+    process.stderr.write(
+      `Native candidate check failed: ${error instanceof Error ? error.message : "unknown failure"}\n`,
+    );
+    throw error;
   } finally {
     await stop(child, exited);
     await udpReleased();
