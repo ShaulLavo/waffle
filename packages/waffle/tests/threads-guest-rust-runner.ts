@@ -31,6 +31,17 @@ export function threadRustMemoryPlan(bytes: Uint8Array<ArrayBuffer>, policyMaxim
   };
 }
 
+function readGuestOutput(reader: Awaited<ReturnType<typeof guestFixture>>["reader"]) {
+  const output: number[] = [];
+  const chunk = new Uint8Array(4096);
+  for (;;) {
+    const size = reader.tryRead([chunk]);
+    if (size <= 0) break;
+    for (let i = 0; i < size; i++) output.push(chunk[i]!);
+  }
+  return new TextDecoder().decode(new Uint8Array(output));
+}
+
 /** Compiler-free, opt-in low-level embedding, not Runtime or browser qualification. */
 export async function runThreadRust(directory: string, mode: "pair" | "repeat" | "nested") {
   const bytes = verifiedThreadFixture(directory);
@@ -79,14 +90,7 @@ export async function runThreadRust(directory: string, mode: "pair" | "repeat" |
     await Promise.race([main.idle, deadline.promise]);
     await Promise.race([Promise.all(fixture.guests.map((guest) => guest.idle)), deadline.promise]);
     const outcome = readOutcome(fixture.outcome);
-    const output: number[] = [];
-    const chunk = new Uint8Array(4096);
-    for (;;) {
-      const size = fixture.reader.tryRead([chunk]);
-      if (size <= 0) break;
-      for (let i = 0; i < size; i++) output.push(chunk[i]!);
-    }
-    const stdout = new TextDecoder().decode(new Uint8Array(output));
+    const stdout = readGuestOutput(fixture.reader);
     const expected = `threads-ok mode=${mode} main-static=1369948382 main-tls=901\n`;
     if (
       outcome?.kind !== "exited" ||
