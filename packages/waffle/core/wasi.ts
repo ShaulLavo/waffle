@@ -495,7 +495,11 @@ export class Wasi {
   }
 
   private str(ptr: number, len: number): string {
-    return decoder.decode(this.bytes().slice(ptr, ptr + len));
+    ptr >>>= 0;
+    len >>>= 0;
+    const bytes = this.bytes();
+    if (ptr > bytes.length || len > bytes.length - ptr) throw new FilesystemError(EFAULT);
+    return decoder.decode(bytes.slice(ptr, ptr + len));
   }
 
   private iovecs(ptr: number, count: number): Uint8Array[] {
@@ -1089,14 +1093,16 @@ export class Wasi {
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
         if (node !== undefined && this.opts.fs.stat(node).kind === "symlink") return ELOOP;
+        if (node === undefined && (!(oflags & O_CREAT) || path.trailingSlash)) return ENOENT;
+        if (node === undefined && oflags & O_DIRECTORY) return EINVAL;
+        if (node !== undefined && this.opts.fs.stat(node).kind === "socket") return 60;
+        fdOut >>>= 0;
+        if (fdOut + 4 > this.bytes().length) return EFAULT;
         if (node === undefined) {
-          if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
-          if (oflags & O_DIRECTORY) return EINVAL;
           const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
           if (typeof result !== "number") return result.error;
           node = result;
         }
-        if (this.opts.fs.stat(node).kind === "socket") return 60;
         return this.writeResult(
           openInode(
             this.descriptors,
