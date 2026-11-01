@@ -4,9 +4,12 @@ import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   prepareWorkspaceSafari,
+  prepareNetworkRelaySafari,
+  serveNetworkRelaySafari,
   runWorkspaceSafariSession,
   serveWorkspaceSafari,
 } from "../tooling/workspace-safari-runner.js";
+import { createRelayBrowserFixture } from "./network-relay-fixture.js";
 
 async function driverFixture(
   mode: "success" | "failure" | "wrong-browser" | "abort" | "transport-failure",
@@ -242,4 +245,54 @@ test("generated rejection handler narrows string stacks and tolerates unprintabl
   const guarded = await executeGeneratedRejection(script, unprintable);
   expect(guarded.thrown).toBeUndefined();
   expect(guarded.callbacks).toEqual([{ failure: { type: "object", value: "<unprintable>" } }]);
+});
+
+test("portable relay Safari assets include the shipped Preview 1 worker and remain WebSocket-only", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "w-relay-safari-"));
+  const fixture = createRelayBrowserFixture();
+  let server: ReturnType<typeof serveNetworkRelaySafari> | undefined;
+  let configuration: Awaited<ReturnType<typeof fixture.start>> | undefined;
+  try {
+    await prepareNetworkRelaySafari(directory);
+    server = serveNetworkRelaySafari(directory, fixture, () => {
+      if (!configuration) throw new Error("fixture not ready");
+      return configuration;
+    });
+    configuration = await fixture.start(server.url.origin, false);
+    const origin = server.url.href;
+    const config = await fetch(new URL("/relay-config", origin));
+    expect(await config.json()).toMatchObject({ native: false });
+    for (const path of [
+      "browser.js",
+      "relay-helper-worker.js",
+      "relay-preview1-worker.js",
+      "relay-fs.js",
+      "relay-echo.wasm",
+      "relay-reset.wasm",
+      "network.wasm",
+    ]) {
+      const response = await fetch(new URL(path, origin));
+      expect(response.ok, path).toBe(true);
+      expect(response.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin");
+      expect(response.headers.get("Cross-Origin-Embedder-Policy")).toBe("require-corp");
+      if (path.endsWith(".wasm"))
+        expect(await WebAssembly.compile(await response.arrayBuffer())).toBeInstanceOf(
+          WebAssembly.Module,
+        );
+    }
+    expect((await fetch(new URL("package.json", origin))).status).toBe(404);
+    const prepared: typeof import("../tooling/workspace-safari-runner.js") = await import(
+      resolve(directory, "runner.mjs")
+    );
+    expect(typeof prepared.serveNetworkRelaySafari).toBe("function");
+    expect(typeof prepared.runWorkspaceSafariSession).toBe("function");
+    expect(await (await fetch(new URL("/relay-idle", origin))).json()).toEqual({
+      sockets: 0,
+      active: 0,
+    });
+  } finally {
+    await server?.stop(true);
+    await fixture.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

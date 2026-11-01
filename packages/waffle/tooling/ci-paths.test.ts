@@ -78,6 +78,31 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
+test("browser relay inputs select the normal gate and only its parallel group installs native peers", () => {
+  for (const path of [
+    "packages/waffle/tests/network-relay-browser-runner.ts",
+    "packages/waffle/tests/network-relay-worker.ts",
+    "packages/waffle/tests/fixtures/preview1-relay.wat",
+    "packages/waffle-relay/src/tcp-client.ts",
+    "packages/waffle-relay/src/node-webtransport.ts",
+    "packages/waffle-relay/package.json",
+    "packages/waffle/tooling/workspace-safari-runner.ts",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const steps = record(jobs.browser).steps;
+  if (!Array.isArray(steps)) throw new Error("expected browser steps");
+  const native = steps
+    .map(record)
+    .find(
+      (step) =>
+        step.name === "Install the declared optional native relay peer for real WebTransport tests",
+    );
+  expect(native?.if).toBe("matrix.group == 'parallel'");
+  expect(native?.run).toBe(
+    "bun run --cwd packages/waffle-relay/node_modules/@fails-components/webtransport-transport-http3-quiche install",
+  );
+});
+
 const release = record(
   YAML.parse(
     readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),

@@ -295,6 +295,9 @@ jobs:
               - "packages/waffle/scripts/browser-command.ts"
               - "packages/waffle/scripts/browser-supervisor.ts"
               - "packages/waffle/scripts/owned-command.ts"
+              - "packages/waffle-relay/src/**"
+              - "packages/waffle-relay/package.json"
+              - "packages/waffle/tooling/workspace-safari-runner.ts"
               - "packages/waffle/tests/**"
             libc:
               - '.github/**'
@@ -1071,6 +1074,9 @@ jobs:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install the declared optional native relay peer for real WebTransport tests
+        if: matrix.group == 'parallel'
+        run: bun run --cwd packages/waffle-relay/node_modules/@fails-components/webtransport-transport-http3-quiche install
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
