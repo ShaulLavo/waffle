@@ -1,6 +1,6 @@
 # Prepare a native relay container
 
-This is a separate Linux x64 preparation path. It does not change the existing WebSocket-only image, release pins, or publication workflow. Its policy remains deny-all for HTTP and TCP, with no network token issuer. The native context pins a separate Node 26.12.1 Trixie slim base. The existing Bookworm WS base cannot load this exact prebuild because it lacks GLIBC_2.38.
+This is a separate Linux x64 preparation path. The existing WebSocket-only image and its release pins remain the default. Its policy remains deny-all for HTTP and TCP, with no network token issuer. The native context pins a separate Node 26.12.1 Trixie slim base. The existing Bookworm WS base cannot load this exact prebuild because it lacks GLIBC_2.38.
 
 ## Supply exact qualified inputs
 
@@ -33,7 +33,15 @@ Mount `container/native/verify.ts` and its adjacent `release.ts` outside the ima
 
 The verifier exercises ordinary native-free imports despite installed peers, the exact public source/tree/archive tuple, root-owned application files, native CLI startup, authenticated non-null discovery, exact public advertised authority and current hash, health paths, authentication and Origin rejection, disabled issuer, normal SIGTERM shutdown, UDP release and a fresh certificate after restart. It does not prove an authenticated native stream, in-process timed rotation, external delivery or application acceptance. Also run the existing released TCP fixture from the exact release source against this image. Keep qualification fixtures out of the image.
 
-Record the preparation commit, release source, both archive hashes, frozen lock hash, config hash, base digest, addon hash and actual image ID. Preserve the reviewed same-run save/load image custody when integrating publication later. Local qualification cannot grant `packages:write`, and this preparation adds no workflow producer. The parent must arrange a reviewed change to the existing publication path after the exact candidate is qualified. Publish no placeholder or merely prepared image.
+Record the preparation commit, release source, both archive hashes, frozen lock hash, config hash, base digest, addon hash and actual image ID. Local qualification cannot grant `packages:write`. Publish no placeholder or merely prepared image.
+
+## Publication custody
+
+The existing `relay-image.yml` workflow qualifies both fixed variants on relevant pull requests with read-only permissions. A manual dispatch defaults to `ws`; selecting `native` explicitly qualifies the final public pair through this helper and verifier. Checkout includes full Git history for the exact source, tree and correction-ancestry checks. Each variant runs the unchanged TCP fixture from its pinned release source, not the current branch fixture.
+
+Only a manual dispatch on canonical repository `main` can upload the publication artifact or enter the existing single `packages:write` job. That job downloads only the same-run producer artifact ID and checks its separately passed receipt hash before loading. Source head, run, attempt, variant, platform, release inputs, Dockerfile, frozen lock and relay config hashes are bound to the saved archive, actual saved config and ordered uncompressed layer hashes and sizes. Every saved layer is streamed and hashed before loading; saved OCI descriptors also match their actual blob hashes and sizes. The qualifier checks the installed lock and policy before saving, removes the image tag, and proves reload of the same archive. The write job does not rebuild or rerun qualification.
+
+Tags remain `ws-<workflow-source>` for WS and become `native-<workflow-source>` for native, only under `ghcr.io/shaullavo/waffle-relay`. After pushing, the workflow proves anonymous pull by the actual immutable registry digest. It hashes the returned manifest and its anonymously downloaded config blob against the qualified saved config bytes. Each registry layer is anonymously streamed, checked against its descriptor hash and size, decompressed when necessary, and compared in order with the qualified layer hash and size. Recompression can change a blob digest but cannot change its qualified contents. Engine image IDs are recorded separately from config digests. A local manifest digest is not a promised future registry digest, and apt availability or equality of independent rebuilds is not guaranteed. Publication does not update a service or allocate UDP.
 
 ## Keep bind and discovery separate
 
