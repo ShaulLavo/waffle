@@ -142,14 +142,23 @@ const relay = createNodeWebTransportRelayServer({
   tcp: {
     tokenSecret,
     destinations,
-    webtransport: { host: "100.77.94.94", port: 4433, certificate: "rotating-hash" },
+    webtransport: {
+      bind: { host: "0.0.0.0", port: 4433 },
+      advertisedUrl: "https://relay.example:4433/v1/tcp/wt",
+      certificate: "rotating-hash"
+    },
   },
 });
 await relay.tcp.ready;
 relay.server.listen(8787, "127.0.0.1");
 ```
 
-WebTransport binds only the configured numeric interface, never an unspecified wildcard. Address reuse is disabled. The exact `/v1/tcp/wt` path and one canonical allowed Origin are checked before accepting a session. Sessions are capped at 64. Each session must complete an authenticated stream within ten seconds. Every stream uses the same destination policy, token scope, connection count, subject count and rate accounting as WebSocket.
+WebTransport binds the configured numeric interface and disables address reuse. A wildcard bind is
+allowed only with an explicit `advertisedUrl`; Waffle never derives a public URL from a wildcard or
+container address. The exact `/v1/tcp/wt` path and one canonical allowed Origin are checked before
+accepting a session. Sessions are capped at 64. Each session must complete an authenticated stream
+within ten seconds. Every stream uses the same destination policy, token scope, connection count,
+subject count and rate accounting as WebSocket.
 
 `POST /v1/tcp/session` requires a bearer token and an allowed Origin. It returns `{ v: 1, webtransport: { url, certificateHashes } | null }` with `Cache-Control: no-store`. A generated certificate has exactly one SHA-256 hash, encoded as unpadded base64url. Discovery returns null while starting, recycling, failed or closed. The readiness response is false during those states. Health does not prove remote UDP reachability.
 

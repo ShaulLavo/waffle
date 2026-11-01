@@ -165,8 +165,8 @@ Add the native block to the existing secret-free config:
     "tokenSecretFile": "/work/services/waffle-relay/token-secret",
     "destinations": [],
     "webtransport": {
-      "host": "100.77.94.94",
-      "port": 4433,
+      "bind": { "host": "0.0.0.0", "port": 4433 },
+      "advertisedUrl": "https://relay.example:4433/v1/tcp/wt",
       "certificate": "rotating-hash"
     }
   }
@@ -174,6 +174,11 @@ Add the native block to the existing secret-free config:
 ```
 
 Populate the exact destination allowlist and numeric private-target overrides before enabling the service. Configure an authenticated issuer only with a separate protected credential and an explicit narrowed scope. Tailnet reachability alone never authorizes token issuance.
+
+`bind` is the numeric address inside the relay host or container. `advertisedUrl` is the exact
+HTTPS authority and `/v1/tcp/wt` path returned to browsers. A wildcard or non-loopback bind must
+set it explicitly. The relay does not rewrite this URL when a host publishes the container UDP
+socket.
 
 The [systemd user unit](private-pc.service) pins the Node executable and joins normal shutdown. Adjust its executable path to the reviewed installed Node version. Linger is already enabled on the approved PC. Verify it rather than changing it. Create the private scratch directory before starting the unit.
 

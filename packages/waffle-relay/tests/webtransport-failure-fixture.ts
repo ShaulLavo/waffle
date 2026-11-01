@@ -18,7 +18,7 @@ try {
     tcp: {
       tokenSecret: crypto.getRandomValues(new Uint8Array(32)),
       destinations: [],
-      webtransport: { host: "127.0.0.1", port: socket.address().port },
+      webtransport: { bind: { host: "127.0.0.1", port: socket.address().port } },
     },
   };
   let notifications = 0;
