@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -111,7 +113,10 @@ async function fixture(directory: string) {
 
 test("archive tuple checks real source and rejects mismatched bytes, versions and old source", async () => {
   const directory = await mkdtemp(
-    join(process.env.WAFFLE_RELAY_TMPDIR ?? "/work/tmp", "waffle-native-prep-"),
+    join(
+      process.env.WAFFLE_RELAY_TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()),
+      "waffle-native-prep-",
+    ),
   );
   try {
     const input = await fixture(directory);

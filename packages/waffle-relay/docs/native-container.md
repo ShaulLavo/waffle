@@ -4,7 +4,7 @@ This is a separate Linux x64 preparation path. It does not change the existing W
 
 ## Supply exact qualified inputs
 
-Obtain the paired runtime and relay archives, their SHA-256 values, and the exact source commit from the release owner. Candidate archives are not public release assets. Do not substitute R1, rebuild its archives, or relabel its image. The source must contain the bind and advertised-address correction.
+Obtain the paired runtime and relay archives, their SHA-256 values, and the exact source commit from the release owner. Candidate archives are not public release assets. Do not substitute R1, rebuild its archives, or relabel its image. The source must contain the bind and advertised-address correction. Its Git ancestry through `e81d4808976ed97f5e746150a23b88743f6fb94f` must be available locally; a shallow history fails closed.
 
 Fetch the public `fails-components/webtransport` release asset `webtransport-transport-http3-quiche-v1.6.11-napi-v6-linux-x64.tar.gz` from tag `v1.6.11`. Its SHA-256 is `6340d0f657e37daaf168fe4bd77ad227653df3e3da52c96d1448a98dbfaf4c12`. The extracted `build/Release/webtransport.node` must hash to `5592208da56aee0f53615b8d8c5d57c99a87618593c6343787ac9f92761daf1d`.
 

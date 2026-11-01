@@ -49,7 +49,6 @@ export async function verifyPairedReleaseArchives(input: Omit<NativeContainerInp
   assert.match(input.source, /^[0-9a-f]{40}$/, "Expected an exact source commit");
   await checkedArchive(input.runtime);
   await checkedArchive(input.relay);
-  await execute("git", ["merge-base", "--is-ancestor", correction, input.source], { cwd: root });
   const runtime = metadata(await archiveFile(input.runtime.path, "package.json"), "waffle");
   const relay = metadata(await archiveFile(input.relay.path, "package.json"), "waffle-relay");
   assert.equal(runtime.version, relay.version, "Runtime and relay must be a paired release");
@@ -85,6 +84,7 @@ export async function verifyPairedReleaseArchives(input: Omit<NativeContainerInp
 export async function verifyNativeContainerInputs(input: NativeContainerInputs) {
   await checkedArchive({ path: input.prebuild, sha256: prebuildSha256 });
   const paired = await verifyPairedReleaseArchives(input);
+  await execute("git", ["merge-base", "--is-ancestor", correction, input.source], { cwd: root });
   return {
     source: input.source,
     version: paired.version,
