@@ -768,17 +768,21 @@ side, while full close closes the write side gracefully and cancels reads.
 
 Preview 1 has no standard `connect` import. A launcher can bind an already-connecting socket
 at an explicit fd. Arbitrary unmodified programs cannot initiate connections through a missing
-standard import. Unknown imports still fail linking. Listener bindings and `sock_accept` on a
-listener are not implemented.
+standard import. Unknown imports still fail linking. A launcher can also bind a virtual loopback
+listener for standard `sock_accept` calls. This exposes no OS listener or inbound relay.
 
 `waffle/browser/preview1-network` exports `createPreview1Network(runtime, options)` and the types
 `Preview1NetworkOptions`, `Preview1SocketBinding`, `Preview1NetworkConnection` and `Preview1Network`.
 The options are `{ sockets: readonly Preview1SocketBinding[], connect?: NetConnect }`.
-Each binding is `{ fd, socket: { connect: { host, port } } }`. Targets use the existing `NetHost`
-connect rules. The fd must be a unique integer in `0..0x7fffffff`; ports are in `1..65535`.
+Each binding is either `{ fd, socket: { connect: { host, port } } }` or
+`{ fd, socket: { listen: { host, port } } }`. Targets use the existing `NetHost` connect and
+virtual loopback bind rules. Wildcard binds still stay inside this runtime. The fd must be a
+unique integer in `0..0x7fffffff`. Connect ports are in `1..65535`; listen also accepts port zero
+for an ephemeral virtual port. Preview 1 has no standard address-query import.
 The selected executor's `hostCallFd` is reserved for its host-call trampoline. Bootstrap rejects
 socket bindings at that number with `ENOEXEC` before opening sockets or installing descriptors.
-The launcher still disposes its network helper on this startup failure.
+The launcher still disposes its network helper on this startup failure. Accepted descriptors
+also skip that reserved number.
 
 The function snapshots bindings before awaiting `runtime.network()`. Empty bindings resolve to
 `undefined` without activating networking or process services. Nonempty bindings create a helper
@@ -799,7 +803,9 @@ interface Preview1NetworkConnection {
   readonly port: MessagePort;
   readonly sockets: readonly {
     readonly fd: number;
-    readonly socket: { readonly connect: { readonly host: string; readonly port: number } };
+    readonly socket:
+      | { readonly connect: { readonly host: string; readonly port: number } }
+      | { readonly listen: { readonly host: string; readonly port: number } };
   }[];
 }
 ```
@@ -815,7 +821,9 @@ the lowest free number. Socket targets 0, 1 and 2 replace default stdio. `inheri
 
 A socket is a `Stream` with `kind: "socket"`. `fd_kind` returns 5. Both `fd_fdstat_get` and
 `fd_filestat_get` report `SOCKET_STREAM`, filetype 6. Its rights allow read, write, setting fd
-flags, filestat, polling and shutdown. Duplicate fds share flags, the handle and its final-close
+flags, filestat, polling and shutdown. Listeners additionally carry `SOCK_ACCEPT`, right bit 29.
+Accepted descriptors receive the listener's current rights without `SOCK_ACCEPT`, with zero inheriting
+rights. Duplicate fds share flags, the handle and its final-close
 lifetime. Passing a socket to a `runtime_proc` child returns `NOTSUP`, errno 58, before descriptor
 export. Sockets may be rebound within the same process with `fd_reopen` or `dup`.
 
@@ -825,15 +833,23 @@ export. Sockets may be rebound within the same process with `fd_reopen` or `dup`
 | `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`.                                                                                               |
 | `sock_shutdown(fd, how)`                                 | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes.                                                                                                                                                                 |
 | `fd_read`, `fd_write`                                    | Same descriptor I/O without socket flags.                                                                                                                                                                                                                                                                                           |
-| `poll_oneoff`                                            | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
+| `poll_oneoff`                                            | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. A listener is read-ready while an accept is pending, with `nbytes` zero; it is never write-ready unless reporting an error. Readiness does not consume a connection. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
 | `fd_close`                                               | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens.                                                                                                                                                                                                                 |
-| `sock_accept`                                            | A connected socket returns `INVAL`; listener support is deferred.                                                                                                                                                                                                                                                                   |
+| `sock_accept(fd, flags, out_fd)`                       | A listener waits for a pending connection, or returns `AGAIN` when its own `FDFLAG_NONBLOCK` is set. Flags must be zero or `FDFLAG_NONBLOCK` 4, otherwise `INVAL`. They set the accepted socket's flags independently of the listener. Success writes a new fd as little-endian u32. A connected socket returns `INVAL`.                                                                                                                                                                                                                                                                   |
 
 For every `sock_*` call, a valid non-socket fd returns `NOTSOCK`, errno 57; an absent fd returns
 `BADF`, errno 8. The adapter's `HOST_CALL_FD` special case in `sock_send` stays first and unchanged.
 Socket iovecs and result spans are validated before I/O; faults return `FAULT`, errno 21.
+Accept validates flags and the entire output span before consuming a connection or allocating a
+socket descriptor. Errors leave the output and pending accept unchanged. Listener read, write and
+shutdown return `NOTCONN`, errno 53, or the original bind error. Non-loopback listen returns
+`NOTSUP` even with an outbound connector. A bind conflict reports `ADDRINUSE`, errno 3.
+Closing the last listener reference closes queued unaccepted connections but preserves accepted
+sockets. Accepted sockets use the existing duplex I/O, EOF, shutdown, polling and final-close
+rules. Revocation interrupts a blocking accept through the existing worker liveness check.
 
-These are additive imports and descriptor values. `waffleHostInterface` remains 1 under the bump
+Listener bindings and right bit 29 are additive. Existing connected sockets still return `INVAL`
+from `sock_accept`, and non-socket results stay unchanged. `waffleHostInterface` remains 1 under the bump
 rule below. Existing calls retain their behavior; no old-shape fallback or version negotiation
 is added. bun-wasm's separate `preview1Launcher` must adopt this connection payload and keep its
 connector on the responsive page. That consumer handoff and a real outside line/echo exchange

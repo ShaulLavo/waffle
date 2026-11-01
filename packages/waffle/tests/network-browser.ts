@@ -6,6 +6,7 @@ import {
 } from "../index.js";
 import { FilesystemClient } from "../fs/client.js";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
+import { preview1ListenerBrowserCases } from "./preview1-listener-browser.js";
 import { networkFlowCases } from "./network-flow-cases.js";
 import { createRing } from "../browser/net/ring.js";
 import { PreviewRouter } from "../browser/preview.js";
@@ -437,6 +438,7 @@ export async function networkBrowserCases(): Promise<string[]> {
   try {
     await Promise.all(guests.map((item) => item.ready));
     await unixCases(runtime, (scope) => make(network, 0, false, scope));
+    await preview1ListenerBrowserCases(runtime, client);
     await addressCases(server, client);
     await fetchAddressCases(server, client);
     const p = await pair(server, client, 32130);
@@ -553,6 +555,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
     return [
+      "Preview 1 loopback listener accepts a same-runtime Bun-shaped peer, pending poll, NONBLOCK, duplex and half-close through the normal worker",
       "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied; abstract name served by an unscoped worker without a node",
       "runtime-owned IPv4 localhost lookup before any helper or worker exists",
       "IPv6 wildcard, loopback, mapped addresses and HTTP destination families across real workers",

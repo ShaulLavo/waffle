@@ -95,6 +95,20 @@ The shared namespace is smaller than another broker layer. Existing per-worker
 messages carry commands, existing rings carry replies and data, and helpers route
 ordinary owned socket objects. No additional cross-thread registry is needed.
 
+## Preview 1 listeners
+
+A page-owned `createPreview1Network(runtime, { sockets })` launch can bind
+`{ fd: 3, socket: { listen: { host: "127.0.0.1", port: 4321 } } }`.
+The same runtime's Bun-shaped `NetHost` peers connect through the existing virtual TCP namespace.
+No OS listener, DNS lookup, inbound relay, or second runtime is involved.
+
+The guest uses standard `sock_accept(fd, flags, out_fd)`. Its listener's `FDFLAG_NONBLOCK`
+controls whether an empty accept waits or returns `AGAIN`. The call's flags separately select
+blocking or nonblocking I/O on the accepted descriptor. `poll_oneoff` FD_READ observes pending
+accepts without consuming them. Closing a listener rejects queued connections but does not close
+accepted descriptors. The [host ABI](host-abi.md#preview-1-launch-sockets) lists rights, errors,
+validation, and lifetime rules.
+
 ## Outbound connectors
 
 The page can supply `connect?: NetConnect` alongside its fetch policy:
