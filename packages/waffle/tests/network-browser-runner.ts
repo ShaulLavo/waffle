@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { runNetworkRelayBrowser } from "./network-relay-browser-runner.js";
 import { networkBrowserCases } from "./network-browser.js";
 import { installNetworkServiceWorker } from "./network-browser-service-worker.js";
 import { runIsolatedPages } from "./isolated-page-runner.js";
@@ -33,6 +34,7 @@ export async function runNetworkBrowser(names: readonly string[] = ["chromium"])
         return fixture.networkBrowserCases();
       }),
   });
+  await runNetworkRelayBrowser(names);
 }
 
 if (import.meta.main)
