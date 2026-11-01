@@ -7,6 +7,7 @@ import {
   isSharedArrayBuffer,
   wasmMemoryBuffer,
   sharedArrayBufferByteLength,
+  wasmModuleImports,
 } from "../proc/intrinsics.ts";
 import { reviveOutcome, type OutcomeTransfer } from "../proc/outcome.ts";
 import { enterGuest, GuestTerminal, type GuestEntry, type GuestReport } from "./entry.ts";
@@ -15,6 +16,7 @@ import { ThreadLane, type ThreadLaneTransfer } from "./lane.ts";
 import type { ThreadKey } from "./protocol.ts";
 
 const Instance = WebAssembly.Instance;
+const closePort = MessagePort.prototype.close;
 export interface GuestWorkerRequest {
   readonly module: WebAssembly.Module;
   readonly memory: WebAssembly.Memory;
@@ -53,7 +55,8 @@ export async function bootstrapGuestWorker(
       permission.resolve(value.kind === "enter");
   }
   function cleanup(): void {
-    lane?.close();
+    if (lane) lane.close();
+    else reflectApply(closePort, request.lane.port, []);
     reflectApply(remove, host, ["message", command]);
   }
   const terminal = new GuestTerminal({
@@ -118,6 +121,27 @@ function validate(request: GuestWorkerRequest): void {
     sharedArrayBufferByteLength(request.waits) !== WAIT_REGISTRATION_WORDS * 4
   )
     throw new TypeError("invalid thread control shape");
+  const imports = wasmModuleImports(request.module);
+  const supervised =
+    imports.some(
+      (entry) =>
+        entry.module === "runtime_proc" &&
+        entry.name === "__waffle_wait32" &&
+        entry.kind === "function",
+    ) &&
+    imports.some(
+      (entry) =>
+        entry.module === "runtime_proc" &&
+        entry.name === "__waffle_wait64" &&
+        entry.kind === "function",
+    ) &&
+    imports.some(
+      (entry) =>
+        entry.module === "runtime_proc" &&
+        entry.name === "__waffle_fatal" &&
+        entry.kind === "function",
+    );
+  if (!supervised) throw new TypeError("thread guest requires supervised-thread admission");
   const tid = request.thread.tid;
   if (!Number.isSafeInteger(tid) || tid < 1 || tid > 0x1fffffff)
     throw new TypeError("invalid thread identity");

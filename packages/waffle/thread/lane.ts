@@ -22,6 +22,8 @@ const startPort = MessagePort.prototype.start;
 const safeInteger = Number.isSafeInteger;
 const number = Number;
 const bigint = BigInt;
+const signedBigInt = BigInt.asIntN;
+const floor = Math.floor;
 const MAX_SEQUENCE = 0x7fffffff;
 export const THREAD_LANE_BYTES = 64;
 export type ThreadRequest = ThreadOperation | { kind: "spawn"; startArg: number };
@@ -183,7 +185,7 @@ function encodeResult(words: Int32Array, view: DataView, result: ThreadResult): 
   storeNumber(view, 24, stat.ino);
   storeNumber(view, 32, stat.nlink);
   storeNumber(view, 40, stat.size);
-  storeNumber(view, 48, stat.mtime);
+  dataViewSetBigUint64(view, 48, bigint(floor(stat.mtime * 1_000_000)), true);
 }
 function storeNumber(view: DataView, offset: number, value: number): void {
   if (!safeInteger(value) || value < 0) throw new RangeError("invalid thread service result");
@@ -206,7 +208,7 @@ function decodeResult(words: Int32Array, view: DataView): ThreadResult {
       ino: readNumber(view, 24),
       nlink: readNumber(view, 32),
       size: readNumber(view, 40),
-      mtime: readNumber(view, 48),
+      mtime: number(signedBigInt(64, dataViewGetBigUint64(view, 48, true))) / 1_000_000,
       ...(mode === -1 ? {} : { mode }),
     },
   };

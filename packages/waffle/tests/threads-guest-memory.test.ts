@@ -208,3 +208,76 @@ for (const failure of ["closed", "failed", "terminal"] as const) {
     }
   });
 }
+
+test("captured lane and local imports still work after guest native replacement", async () => {
+  const fixture = await guestFixture();
+  try {
+    iovec(fixture.memory);
+    new Uint8Array(fixture.memory.buffer, 256, 4).set([65, 66, 67, 68]);
+    const module = await compileThreadGuest(
+      guestModule({
+        imports: [
+          ioImport("fd_write"),
+          { name: "args_sizes_get", params: [0x7f, 0x7f] },
+          { name: "args_get", params: [0x7f, 0x7f] },
+          { name: "environ_get", params: [0x7f, 0x7f] },
+          { name: "clock_time_get", params: [0x7f, 0x7e, 0x7f] },
+          { name: "random_get", params: [0x7f, 0x7f] },
+        ],
+        initial: store(32, invoke(fixture.writerFd)).concat(
+          i32(64),
+          i32(68),
+          call(1),
+          [0x1a],
+          i32(72),
+          i32(512),
+          call(2),
+          [0x1a],
+          i32(76),
+          i32(576),
+          call(3),
+          [0x1a],
+          i32(1),
+          i64(0n),
+          i32(80),
+          call(4),
+          [0x1a],
+          i32(1024),
+          i32(64),
+          call(5),
+          [0x1a],
+        ),
+      }),
+    );
+    const guest = fixture.launch(
+      module,
+      { kind: "initial" },
+      ["snapshot"],
+      { TEST: "value" },
+      true,
+    );
+    await guest.ready;
+    guest.enter();
+    await guest.idle;
+    const view = new DataView(fixture.memory.buffer);
+    expect(guest.events.some((event) => event.kind === "poison-armed")).toBe(true);
+    expect(readOutcome(fixture.outcome)).toMatchObject({ kind: "exited", code: 0 });
+    expect(view.getUint32(64, true)).toBe(1);
+    expect(view.getUint32(68, true)).toBe(9);
+    expect(new TextDecoder().decode(new Uint8Array(fixture.memory.buffer, 512, 9))).toBe(
+      "snapshot\0",
+    );
+    expect(new TextDecoder().decode(new Uint8Array(fixture.memory.buffer, 576, 11))).toBe(
+      "TEST=value\0",
+    );
+    expect(view.getBigUint64(80, true)).toBeGreaterThan(0n);
+    expect(
+      Array.from(new Uint8Array(fixture.memory.buffer, 1024, 64)).some((byte) => byte !== 0),
+    ).toBe(true);
+    const bytes = new Uint8Array(4);
+    expect(fixture.reader.tryRead([bytes])).toBe(4);
+    expect(Array.from(bytes)).toEqual([65, 66, 67, 68]);
+  } finally {
+    await fixture.dispose();
+  }
+});

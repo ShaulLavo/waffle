@@ -241,3 +241,19 @@ describe("thread guest bridge", () => {
     }
   });
 });
+
+test("ordinary precompiled modules cannot bypass supervised wait admission", async () => {
+  const fixture = await guestFixture();
+  try {
+    const guest = fixture.launch(
+      new WebAssembly.Module(guestModule({ initial: store(64, i32(99)) })),
+      { kind: "initial" },
+    );
+    await guest.idle;
+    expect(readOutcome(fixture.outcome)).toMatchObject({ kind: "start-failed" });
+    expect(guest.events.some((event) => event.kind === "ready")).toBe(false);
+    expect(new Int32Array(fixture.memory.buffer)[16]).toBe(0);
+  } finally {
+    await fixture.dispose();
+  }
+});

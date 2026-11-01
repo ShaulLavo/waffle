@@ -12,7 +12,7 @@ import {
   type ThreadRequest,
 } from "../thread/lane.ts";
 import { readWaitRegistration } from "../interrupt/wait.ts";
-import type { GuestWorkerEvent, GuestWorkerRequest } from "../thread/guest-worker.ts";
+import type { GuestFixtureEvent, GuestFixtureRequest } from "./threads-guest-worker.ts";
 import type { CallKey } from "../thread/protocol.ts";
 import type { GuestEntry } from "../thread/entry.ts";
 import { serviceFixture } from "./threads-service-fixture.ts";
@@ -21,7 +21,7 @@ interface Guest {
   worker: Worker;
   owner: ReturnType<typeof createThreadLaneOwner>;
   waits: Int32Array;
-  events: GuestWorkerEvent[];
+  events: GuestFixtureEvent[];
   ready: Promise<void>;
   idle: Promise<void>;
   enter(): void;
@@ -54,6 +54,7 @@ export async function guestFixture(
     entry: GuestEntry,
     args: readonly string[] = ["fixture"],
     env: Readonly<Record<string, string>> = {},
+    poison = false,
   ): Guest {
     const tid = entry.kind === "initial" ? 1 : entry.tid;
     const thread = { directory: "test", pid: 1, tid };
@@ -72,12 +73,12 @@ export async function guestFixture(
     });
     const waitBuffer = new SharedArrayBuffer(12);
     const waits = new Int32Array(waitBuffer);
-    const events: GuestWorkerEvent[] = [];
+    const events: GuestFixtureEvent[] = [];
     const ready = Promise.withResolvers<void>();
     const idle = Promise.withResolvers<void>();
     // A negative startup test may never publish ready.
     void ready.promise.catch(() => {});
-    worker.onmessage = ({ data }: MessageEvent<GuestWorkerEvent>) => {
+    worker.onmessage = ({ data }: MessageEvent<GuestFixtureEvent>) => {
       events.push(data);
       if (data.kind === "ready") ready.resolve();
       if (data.kind === "process-terminal") terminal();
@@ -90,7 +91,8 @@ export async function guestFixture(
       ready.reject(new Error(error.message));
       idle.reject(new Error(error.message));
     };
-    const request: GuestWorkerRequest = {
+    const request: GuestFixtureRequest = {
+      poison,
       module,
       memory,
       thread,
