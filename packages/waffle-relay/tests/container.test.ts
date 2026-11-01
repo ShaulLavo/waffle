@@ -15,11 +15,11 @@ describe("relay image publication contract", () => {
     expect(workflow).toContain("github.repository == 'ShaulLavo/waffle'");
     expect(workflow).toContain("needs: qualify");
     expect(workflow).toContain(
-      "git fetch --depth=1 origin 5f3d329f35be618e5b4d822c0ee933bbfd9a10f5",
+      "fetch-depth: 0",
     );
     expect(workflow).toContain("password: ${{ secrets.GITHUB_TOKEN }}");
     expect(workflow).toContain('DOCKER_CONFIG="$RUNNER_TEMP/anonymous" docker pull');
-    expect(workflow).toContain("jq -r .config.digest image/published-manifest.json");
+    expect(workflow).toContain("relay-image-custody.ts published image");
   });
   test("pins public release inputs and installs no optional native peers or scripts", () => {
     expect(dockerfile).toContain(
