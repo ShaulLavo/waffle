@@ -5,7 +5,10 @@ import { canonicalDestination, canonicalOrigin } from "./tcp-destination.js";
 import { record } from "./tcp-protocol.js";
 import { tcpLimits, type TcpDestination, type TcpServerOptions } from "./tcp-policy.js";
 import type { NodeRelayOptions } from "./node.js";
-import type { TcpWebTransportOptions, NodeWebTransportRelayOptions } from "./node-webtransport.js";
+import type {
+  TcpWebTransportOptions,
+  NodeWebTransportRelayOptions,
+} from "./node-webtransport-options.js";
 import { snapshotWebTransportAddress } from "./webtransport-address.js";
 
 export interface ServeConfig {
@@ -117,8 +120,7 @@ function devConfig(flags: Map<string, string[]>): ServeConfig {
 }
 async function webtransportFrom(value: unknown): Promise<TcpWebTransportOptions | undefined> {
   if (value === undefined) return;
-  if (!record(value) || !record(value.bind))
-    throw new TypeError("Invalid WebTransport config");
+  if (!record(value) || !record(value.bind)) throw new TypeError("Invalid WebTransport config");
   rejectKeys(value, ["bind", "advertisedUrl", "certificate", "rotationMs"]);
   rejectKeys(value.bind, ["host", "port"]);
   if (typeof value.bind.host !== "string" || typeof value.bind.port !== "number")

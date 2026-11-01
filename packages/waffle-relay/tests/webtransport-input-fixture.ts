@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mock } from "bun:test";
-import type { NodeWebTransportRelayOptions } from "../src/node-webtransport.js";
+import type { NodeWebTransportRelayOptions } from "../src/node-webtransport-options.js";
 import { snapshotWebTransportAddress } from "../src/webtransport-address.js";
 
 const mode = process.argv[2];

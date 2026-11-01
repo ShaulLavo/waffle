@@ -4,6 +4,7 @@ import { createSocket } from "node:dgram";
 import { createServer, type Server, type Socket } from "node:net";
 import { createNodeRelayServer, type TcpLog } from "../../waffle-relay/src/node.js";
 import { mintRelayToken } from "../../waffle-relay/src/token.js";
+import type { NodeWebTransportRelayFactory } from "../../waffle-relay/src/node-webtransport-options.js";
 import type { RelayBrowserConfig, RelayModeResult } from "./network-relay-contract.js";
 
 export function createRelayBrowserFixture() {
@@ -95,7 +96,9 @@ export function createRelayBrowserFixture() {
         const entry = new URL("../../waffle-relay/src/node-webtransport.ts", import.meta.url).href;
         const {
           createNodeWebTransportRelayServer,
-        }: typeof import("../../waffle-relay/src/node-webtransport.js") = await import(entry);
+        }: { createNodeWebTransportRelayServer: NodeWebTransportRelayFactory } = await import(
+          entry
+        );
         nativePort = await udpPort();
         relay = createNodeWebTransportRelayServer({
           ...options,

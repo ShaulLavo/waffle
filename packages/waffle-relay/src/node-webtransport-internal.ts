@@ -4,7 +4,7 @@ import {
   type WebTransportSession,
   type WebTransportBidirectionalStream,
 } from "@fails-components/webtransport";
-import { createNodeServer, type NodeRelayOptions } from "./node-server.js";
+import { createNodeServer } from "./node-server.js";
 import { canonicalOrigin } from "./tcp-destination.js";
 import {
   createCertificate,
@@ -12,7 +12,7 @@ import {
   type CertificateMaterial,
 } from "./webtransport-certificate.js";
 import { ServerWebTransportStream } from "./tcp-webtransport-server-stream.js";
-import type { TcpAdmissions, TcpPolicy, TcpServerOptions } from "./tcp-policy.js";
+import type { TcpAdmissions, TcpPolicy } from "./tcp-policy.js";
 import {
   WebTransportLifecycle,
   rotationDependencies,
@@ -29,22 +29,18 @@ import {
   type WebTransportBind,
 } from "./webtransport-address.js";
 
-export interface TcpWebTransportOptions {
-  readonly bind: WebTransportBind;
-  readonly advertisedUrl?: string | URL;
-  readonly certificate?: "rotating-hash" | { readonly cert: string; readonly key: string };
-  readonly rotationMs?: number;
-  readonly onEndpointFailure?: (failure: EndpointFailure) => void | Promise<void>;
-}
-export interface NodeWebTransportRelayOptions extends Omit<NodeRelayOptions, "tcp"> {
-  readonly tcp: TcpServerOptions & { readonly webtransport: TcpWebTransportOptions };
-}
-export function createNodeWebTransportRelayServer(options: NodeWebTransportRelayOptions) {
+import type {
+  TcpWebTransportOptions,
+  NodeWebTransportRelayOptions,
+  NodeWebTransportRelayFactory,
+} from "./node-webtransport-options.js";
+
+export const createNodeWebTransportRelayServer: NodeWebTransportRelayFactory = (options) => {
   const relay = createNativeRelay(options, rotationDependencies).relay;
   const tcp = relay.tcp;
   if (!tcp) throw new Error("Missing TCP relay");
   return Object.freeze({ ...relay, tcp });
-}
+};
 
 export function createNativeRelay(
   options: NodeWebTransportRelayOptions,
