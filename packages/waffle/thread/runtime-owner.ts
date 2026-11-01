@@ -341,6 +341,8 @@ export class RuntimeThreadOwner {
         ready: Promise.withResolvers<"ready" | "closed">(),
         phase: "starting",
       };
+      // A bootstrap error can precede the fence that joins this original promise.
+      void guest.idle.promise.catch(() => {});
       this.guests.set(thread.tid, guest);
       this.starting.delete(thread.tid);
       worker.onmessage = ({ data }: MessageEvent<GuestWorkerEvent>) =>
