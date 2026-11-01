@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import { ResponseParser, type ResponseHead } from "../browser/net/http1";
-import { bufferKinds, callerSpan } from "./fixtures/buffer-boundaries";
+import { bufferKinds, callerSpan, withStrictDecoder } from "./fixtures/buffer-boundaries";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -277,3 +278,47 @@ for (const kind of bufferKinds.filter((value) => !value.startsWith("fixed"))) {
     });
   }
 }
+
+for (const kind of ["Uint8Array", "fixed Buffer"]) {
+  test(`WAF-003 ${kind} retained-tail compaction drops a large body backing`, () => {
+    const body = "a".repeat(512 * 1024);
+    const wire = chunked + body.length.toString(16) + "\r\n" + body + "\r\n0;";
+    const input = kind === "fixed Buffer" ? Buffer.from(wire) : encoder.encode(wire);
+    const errors: string[] = [];
+    let delivered = 0;
+    const parser = new ResponseParser({
+      head() {},
+      data(bytes) {
+        delivered += bytes.length;
+      },
+      end() {},
+      error(message) {
+        errors.push(message);
+      },
+    });
+    try {
+      parser.push(input);
+      const pending: unknown = Reflect.get(parser, "pending");
+      if (!(pending instanceof Uint8Array)) throw new Error("Missing parser byte view");
+      expect(errors).toEqual([]);
+      expect(delivered).toBe(body.length);
+      expect(pending.byteLength).toBe(2);
+      expect(pending.buffer.byteLength).toBeLessThanOrEqual(LINE_LIMIT);
+      expect(pending.buffer).not.toBe(input.buffer);
+    } finally {
+      parser.end();
+    }
+  });
+}
+
+test("WAF-003 a complete fixed Buffer retains decoder backing identity", () => {
+  const input = Buffer.from("HTTP/1.1 204 No Content\r\n\r\n");
+  const f = fixture();
+  withStrictDecoder((backings) => {
+    f.parser.push(input);
+    expect(f.errors).toEqual([]);
+    expect(backings).toHaveLength(1);
+    expect(backings[0]).toBe(input.buffer);
+    expect(f.parser.done).toBe(true);
+  });
+});

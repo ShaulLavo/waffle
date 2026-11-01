@@ -108,7 +108,7 @@ export class ResponseParser {
         this.process();
       }
       // A short unfinished line must not retain a coalesced body's larger backing buffer.
-      this.pending = this.pending.length ? this.pending.slice() : new Uint8Array(0);
+      this.pending = new Uint8Array(this.pending);
     } catch (err) {
       this.fail(err instanceof Error ? err.message : String(err));
     }
