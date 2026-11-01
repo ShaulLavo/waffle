@@ -1,6 +1,6 @@
 import { declareModuleMemory } from "../memory/declarations.js";
 import { ExecutableFormatError } from "../proc/start-failure.js";
-import { rewriteInterruptsOwned } from "./rewriter-internal.js";
+import { type InterruptRewriteProfile, rewriteInterruptsOwned } from "./rewriter-internal.js";
 import {
   cacheStorageAdmittedStore,
   INTERRUPT_INTERVAL,
@@ -26,36 +26,45 @@ export class InterruptModuleCache {
       throw new RangeError("interrupt module cache capacity must be a positive integer");
   }
 
-  async compile(source: Uint8Array): Promise<WebAssembly.Module> {
+  async compile(
+    source: Uint8Array,
+    profile: InterruptRewriteProfile = "ordinary",
+  ): Promise<WebAssembly.Module> {
     // Hash and rewrite one owned snapshot, even if the caller mutates a borrowed view.
     const bytes = new Uint8Array(source);
     const start = programTime();
     const hash = await sha256Hex(bytes);
     programStage("digest", start, { bytes: bytes.length });
-    let pending = this.modules.get(hash);
+    const key = `${profile}:${hash}`;
+    let pending = this.modules.get(key);
     if (pending) {
-      this.modules.delete(hash);
-      this.modules.set(hash, pending);
+      this.modules.delete(key);
+      this.modules.set(key, pending);
       return pending;
     }
     // Publish before admission so aliases and concurrent loads share all expensive work.
-    pending = Promise.resolve().then(() => this.load(hash, bytes));
-    this.modules.set(hash, pending);
+    pending = Promise.resolve().then(() => this.load(hash, bytes, profile));
+    this.modules.set(key, pending);
     if (this.modules.size > this.capacity) this.modules.delete(this.modules.keys().next().value!);
     try {
       return await pending;
     } catch (error) {
-      if (this.modules.get(hash) === pending) this.modules.delete(hash);
+      if (this.modules.get(key) === pending) this.modules.delete(key);
       throw error;
     }
   }
 
-  private async load(hash: string, bytes: Uint8Array<ArrayBuffer>): Promise<WebAssembly.Module> {
-    const reused = await this.reuse(hash);
+  private async load(
+    hash: string,
+    bytes: Uint8Array<ArrayBuffer>,
+    profile: InterruptRewriteProfile,
+  ): Promise<WebAssembly.Module> {
+    const reused = await this.reuse(hash, profile);
     if (reused) return reused;
     try {
       const admitStart = programTime();
       const admitted = rewriteInterruptsOwned(bytes, {
+        profile,
         interval: INTERRUPT_INTERVAL,
         policy: INTERRUPT_POLICY,
       });
@@ -64,7 +73,7 @@ export class InterruptModuleCache {
       const module = await WebAssembly.compile(admitted);
       declareModuleMemory(module, admitted);
       programStage("compile", compileStart, { bytes: admitted.length });
-      void this.persist(hash, admitted);
+      void this.persist(hash, admitted, profile);
       return module;
     } catch (error) {
       if (error instanceof WebAssembly.CompileError)
@@ -73,34 +82,41 @@ export class InterruptModuleCache {
     }
   }
 
-  private async evict(hash: string): Promise<void> {
+  private async evict(hash: string, profile: InterruptRewriteProfile): Promise<void> {
     const start = programTime();
     try {
-      await this.store?.evict(hash);
+      await this.store?.evict(hash, profile);
     } catch (error) {
       storeError("evict", start, error);
     }
   }
 
-  private async persist(hash: string, admitted: Uint8Array<ArrayBuffer>): Promise<void> {
+  private async persist(
+    hash: string,
+    admitted: Uint8Array<ArrayBuffer>,
+    profile: InterruptRewriteProfile,
+  ): Promise<void> {
     if (!this.store) return;
     const start = programTime();
     try {
-      await this.store.put(hash, admitted);
+      await this.store.put(hash, admitted, profile);
     } catch (error) {
       storeError("put", start, error, admitted.length);
     }
   }
 
-  private async reuse(hash: string): Promise<WebAssembly.Module | undefined> {
+  private async reuse(
+    hash: string,
+    profile: InterruptRewriteProfile,
+  ): Promise<WebAssembly.Module | undefined> {
     if (!this.store) return undefined;
     const start = programTime();
     try {
-      const entry = await this.store.open(hash);
+      const entry = await this.store.open(hash, profile);
       programStage("store-open", start, { bytes: 0, result: entry ? "hit" : "miss" });
       if (!entry) return undefined;
-      const module = await reuseEntry(entry);
-      if (!module) void this.evict(hash);
+      const module = await reuseEntry(entry, profile);
+      if (!module) void this.evict(hash, profile);
       return module;
     } catch (error) {
       storeError("reuse", start, error);
@@ -109,10 +125,13 @@ export class InterruptModuleCache {
   }
 }
 
-async function reuseEntry(entry: AdmittedEntry): Promise<WebAssembly.Module | undefined> {
+async function reuseEntry(
+  entry: AdmittedEntry,
+  profile: InterruptRewriteProfile,
+): Promise<WebAssembly.Module | undefined> {
   const start = programTime();
   try {
-    return await compileEntry(entry, start);
+    return await compileEntry(entry, start, profile);
   } catch (error) {
     storeError("verify", start, error);
     programStage("store-verify", start, { bytes: 0, result: "rejected" });
@@ -135,6 +154,7 @@ async function compileStored(response: Response): Promise<WebAssembly.Module> {
 async function compileEntry(
   entry: AdmittedEntry,
   start: number | undefined,
+  profile: InterruptRewriteProfile,
 ): Promise<WebAssembly.Module | undefined> {
   const copy = entry.response.clone();
   const results = await Promise.allSettled([
@@ -148,7 +168,7 @@ async function compileEntry(
     digest = results[1];
   if (compiled.status === "rejected") storeError("compile-stored", start, compiled.reason);
   if (digest.status === "rejected") storeError("verify", start, digest.reason);
-  const module = verified(compiled, digest, entry.admittedSha256);
+  const module = verified(compiled, digest, entry.admittedSha256, profile);
   if (module && digest.status === "fulfilled") declareModuleMemory(module, digest.value.bytes);
   programStage("store-verify", start, {
     bytes: Number(copy.headers.get("content-length")),
@@ -161,23 +181,31 @@ function verified(
   compiled: PromiseSettledResult<WebAssembly.Module>,
   digest: PromiseSettledResult<{ bytes: Uint8Array; digest: string }>,
   expected: string,
+  profile: InterruptRewriteProfile,
 ): WebAssembly.Module | undefined {
   if (compiled.status !== "fulfilled" || digest.status !== "fulfilled") return undefined;
   if (digest.value.digest !== expected) return undefined;
-  const fatal = WebAssembly.Module.imports(compiled.value).some(
-    (entry) =>
-      entry.module === "runtime_proc" &&
-      entry.name === "__waffle_fatal" &&
-      entry.kind === "function",
-  );
-  return fatal ? compiled.value : undefined;
+  const imports = WebAssembly.Module.imports(compiled.value);
+  const has = (name: string) =>
+    imports.some(
+      (entry) =>
+        entry.module === "runtime_proc" && entry.name === name && entry.kind === "function",
+    );
+  if (!has("__waffle_fatal")) return undefined;
+  const wait32 = has("__waffle_wait32"),
+    wait64 = has("__waffle_wait64");
+  if (profile === "supervised-thread" ? !wait32 || !wait64 : wait32 || wait64) return undefined;
+  return compiled.value;
 }
 
 let modules: InterruptModuleCache | undefined;
 /** Called through the existing lazy loader import, not on the synchronous spawn path. */
-export function compileInterruptible(bytes: Uint8Array): Promise<WebAssembly.Module> {
+export function compileInterruptible(
+  bytes: Uint8Array,
+  profile: InterruptRewriteProfile = "ordinary",
+): Promise<WebAssembly.Module> {
   modules ??= new InterruptModuleCache(16, cacheStorageAdmittedStore());
-  return modules.compile(bytes);
+  return modules.compile(bytes, profile);
 }
 
 export { programStage } from "./admitted-store.js";
