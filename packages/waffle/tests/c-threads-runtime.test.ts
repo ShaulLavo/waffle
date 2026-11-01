@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { bytes } from "../memory/index.ts";
 import { cThreadControlDebt } from "./c-threads-runtime-browser.ts";
 
 const directory = process.env.C_THREAD_FIXTURE_DIR;
@@ -52,7 +53,7 @@ test("the C acceptance gate retains exact private control debts", () => {
       state: "debt",
       declaredBytes: 80,
       grownBytes: null,
-      shape: { kind: "fixed-buffer", length: 80 },
+      shape: { kind: "fixed-buffer", length: bytes(80) },
     })),
   };
   expect(cThreadControlDebt(snapshot, 2).passed).toBe(true);
