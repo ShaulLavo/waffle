@@ -12,7 +12,7 @@ import {
 import { reviveOutcome, type OutcomeTransfer } from "../proc/outcome.ts";
 import { enterGuest, GuestTerminal, type GuestEntry, type GuestReport } from "./entry.ts";
 import { guestImports } from "./guest-imports.ts";
-import { ThreadLane, type ThreadLaneTransfer } from "./lane.ts";
+import { ThreadLane, type ThreadLaneTransfer, type ThreadWaitEvent } from "./lane.ts";
 import type { ThreadKey } from "./protocol.ts";
 
 const Instance = WebAssembly.Instance;
@@ -29,7 +29,7 @@ export interface GuestWorkerRequest {
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
 }
-export type GuestWorkerEvent = GuestReport | { kind: "ready"; thread: ThreadKey };
+export type GuestWorkerEvent = GuestReport | ThreadWaitEvent | { kind: "ready"; thread: ThreadKey };
 export interface GuestWorkerHost {
   postMessage(event: GuestWorkerEvent): void;
   addEventListener(type: "message", listener: (event: MessageEvent<unknown>) => void): void;
@@ -79,6 +79,24 @@ export async function bootstrapGuestWorker(
         request.memory,
         new Int32ArrayConstructor(request.waits),
         () => terminalInterrupt(outcome),
+        {
+          registered: (registration) =>
+            reflectApply(send, host, [
+              {
+                kind: "wait-registered",
+                thread: request.thread,
+                registration,
+              } satisfies ThreadWaitEvent,
+            ]),
+          cleared: (generation) =>
+            reflectApply(send, host, [
+              {
+                kind: "wait-cleared",
+                thread: request.thread,
+                generation,
+              } satisfies ThreadWaitEvent,
+            ]),
+        },
       );
       const imports = guestImports(request.module, {
         memory: request.memory,

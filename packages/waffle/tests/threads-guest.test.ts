@@ -175,7 +175,7 @@ describe("thread guest bridge", () => {
       );
       const guest = fixture.launch(module, { kind: "initial" });
       await until(() => readWaitRegistration(guest.waits)?.width === 8);
-      expect(guest.events).toEqual([]);
+      expect(guest.events.some((event) => event.kind === "ready")).toBe(false);
       claimOutcome(fixture.outcome, processOutcome({ kind: "signaled", code: 9 }));
       fixture.terminal();
       await guest.idle;
