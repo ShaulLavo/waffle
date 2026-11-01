@@ -3,6 +3,7 @@ import { mkdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { relaySocketModules } from "./network-relay-modules.js";
 import { createRelayBrowserFixture } from "./network-relay-fixture.js";
+import type { RelayBrowserConfig } from "./network-relay-contract.js";
 import { networkRelayBrowserCases } from "./network-relay-browser.js";
 import { runIsolatedPages, type IsolatedPageRun } from "./isolated-page-runner.js";
 
@@ -21,81 +22,78 @@ export async function runNetworkRelayBrowser(
   const failures: unknown[] = [];
   for (const name of names) {
     try {
-      await runIsolatedPages(await relayBrowserPageRun(name, scratchRoot, modules));
+      await runIsolatedPages(relayBrowserPageRun(name, scratchRoot, modules));
     } catch (error) {
       failures.push(new Error(`${name} relay matrix failed`, { cause: error }));
     }
   }
   if (failures.length) throw new AggregateError(failures, "Network relay browser matrix failed");
 }
-export async function relayBrowserPageRun(
+export function relayBrowserPageRun(
   name: string,
   scratchRoot: string,
   modules: ReadonlyMap<string, Uint8Array<ArrayBuffer>>,
-): Promise<IsolatedPageRun> {
+): IsolatedPageRun {
   const fixture = createRelayBrowserFixture();
-  try {
-    const port = Number(process.env.NETWORK_RELAY_TEST_PORT ?? 43828);
-    const config = await fixture.start(`http://127.0.0.1:${port}`, name !== "webkit");
-    return {
-      label: "network-relay-browser",
-      entries: [networkRelayBrowserCases.name],
-      scratchRoot,
-      scratchPrefix: "wnr-",
-      port,
-      names: [name],
-      dispose: fixture.close,
-      sources: {
-        "/relay-tests.js": "network-relay-browser.ts",
-        "/relay-helper-worker.js": "network-relay-worker.ts",
-        "/relay-preview1-worker.js": "../browser/preview1-worker.ts",
-        "/relay-fs.js": "../browser/fs-worker.ts",
-      },
-      route(path, headers) {
-        if (path === "/relay-config") return Response.json(config, { headers });
-        if (path === "/relay-idle") return fixture.idle();
-        const module = modules.get(path);
-        if (module)
-          return new Response(module, {
-            headers: { ...headers, "Content-Type": "application/wasm" },
-          });
-        if (path.endsWith("/network.wasm"))
-          return new Response(Bun.file(new URL("../browser/net/network.wasm", import.meta.url)), {
-            headers: { ...headers, "Content-Type": "application/wasm" },
-          });
-      },
-      async evaluate(page) {
-        page.on("console", (message) =>
-          console.log(JSON.stringify({ engine: name, browserConsole: message.text() })),
-        );
-        const results = await page.evaluate(async () => {
-          const path = "/relay-tests.js";
-          const entry: typeof import("./network-relay-browser.js") = await import(path);
-          return entry.networkRelayBrowserCases();
+  let config: RelayBrowserConfig | undefined;
+  return {
+    label: "network-relay-browser",
+    entries: [networkRelayBrowserCases.name],
+    scratchRoot,
+    scratchPrefix: "wnr-",
+    port: 0,
+    names: [name],
+    dispose: fixture.close,
+    sources: {
+      "/relay-tests.js": "network-relay-browser.ts",
+      "/relay-helper-worker.js": "network-relay-worker.ts",
+      "/relay-preview1-worker.js": "../browser/preview1-worker.ts",
+      "/relay-fs.js": "../browser/fs-worker.ts",
+    },
+    route(path, headers) {
+      if (path === "/relay-config") {
+        assert.ok(config, "Relay configuration requested before page setup");
+        return Response.json(config, { headers });
+      }
+      if (path === "/relay-idle") return fixture.idle();
+      const module = modules.get(path);
+      if (module)
+        return new Response(module, {
+          headers: { ...headers, "Content-Type": "application/wasm" },
         });
-        fixture.verify(results.map((result) => result.carrier));
-        if (name !== "webkit")
-          assert.equal(
-            results[0]?.carrier,
-            "webtransport",
-            `${name}'s real complete WebTransport probe failed`,
-          );
-        console.log(
-          JSON.stringify({
-            browser: name,
-            version: page.context().browser()?.version(),
-            webtransport:
-              name === "webkit" ? "not claimed by Playwright WebKit" : results[0]?.probe,
-            results,
-          }),
+      if (path.endsWith("/network.wasm"))
+        return new Response(Bun.file(new URL("../browser/net/network.wasm", import.meta.url)), {
+          headers: { ...headers, "Content-Type": "application/wasm" },
+        });
+    },
+    async evaluate(page) {
+      config = await fixture.start(new URL(page.url()).origin, name !== "webkit");
+      page.on("console", (message) =>
+        console.log(JSON.stringify({ engine: name, browserConsole: message.text() })),
+      );
+      const results = await page.evaluate(async () => {
+        const path = "/relay-tests.js";
+        const entry: typeof import("./network-relay-browser.js") = await import(path);
+        return entry.networkRelayBrowserCases();
+      });
+      fixture.verify(results.map((result) => result.carrier));
+      if (name !== "webkit")
+        assert.equal(
+          results[0]?.carrier,
+          "webtransport",
+          `${name}'s real complete WebTransport probe failed`,
         );
-        return results;
-      },
-    };
-  } catch (error) {
-    await fixture.close();
-    throw error;
-  }
+      console.log(
+        JSON.stringify({
+          browser: name,
+          version: page.context().browser()?.version(),
+          webtransport: name === "webkit" ? "not claimed by Playwright WebKit" : results[0]?.probe,
+          results,
+        }),
+      );
+      return results;
+    },
+  };
 }
 if (import.meta.main)
   await runNetworkRelayBrowser(process.argv.length > 2 ? process.argv.slice(2) : undefined);

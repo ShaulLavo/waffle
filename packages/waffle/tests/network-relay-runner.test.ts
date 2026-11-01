@@ -67,24 +67,24 @@ for (const resource of ["browser", "fixture"])
     }
   });
 
-
 test("relay page keeps a legitimate competing listener and binds its own address", async () => {
-  const owner = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => new Response("suite control"),
-  });
-  const previous = process.env.NETWORK_RELAY_TEST_PORT;
   const scratch = await mkdtemp(join(tmpdir(), "relay-port-"));
-  process.env.NETWORK_RELAY_TEST_PORT = String(owner.port);
+  const previous = process.env.NETWORK_RELAY_TEST_PORT;
+  let owner: ReturnType<typeof Bun.serve> | undefined;
   try {
-    const run = await relayBrowserPageRun("webkit", scratch, new Map());
+    owner = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("suite control"),
+    });
+    process.env.NETWORK_RELAY_TEST_PORT = String(owner.port);
+    const run = relayBrowserPageRun("webkit", scratch, new Map());
     await runIsolatedPages({ ...run, sources: {}, names: [] });
     expect(await (await fetch(owner.url)).text()).toBe("suite control");
   } finally {
     if (previous === undefined) delete process.env.NETWORK_RELAY_TEST_PORT;
     else process.env.NETWORK_RELAY_TEST_PORT = previous;
-    await owner.stop(true);
+    await owner?.stop(true);
     await rm(scratch, { recursive: true, force: true });
   }
 });
@@ -106,6 +106,9 @@ test("relay fixture admits only the bound page origin and still requires its tok
     const denied = await session(other.url.origin, config.token);
     expect(denied.status).toBe(403);
     await denied.body?.cancel();
+    const unbound = await session("http://127.0.0.1:0", config.token);
+    expect(unbound.status).toBe(403);
+    await unbound.body?.cancel();
     const unauthorized = await session(page.url.origin);
     expect(unauthorized.status).toBe(401);
     await unauthorized.body?.cancel();
