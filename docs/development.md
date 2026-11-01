@@ -53,6 +53,41 @@ bun run test:browser
 
 Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs Chromium and Firefox together and WebKit afterwards, as CI does.
 
+### Run the low-level Rust threads proof
+
+The optional threads runner consumes an existing producer receipt and artifact. It verifies both
+against the current source before opening a browser and never invokes a compiler. Run it with
+Playwright's Chromium and Firefox, using an unused explicit loopback port:
+
+```sh
+THREAD_FIXTURE_DIR=/absolute/path/to/fixture PROCESS_SCRATCH_ROOT=/work/tmp \
+THREAD_BROWSER_PORT=19437 bun packages/waffle/tests/threads-browser-runner.ts chromium firefox
+```
+
+Add `--case pair`, `--case repeat`, or `--case nested` to run one stock Rust mode.
+Every invocation first proves start-section wait32 and wait64 registration, delayed entry,
+canonical pipe output, real filesystem reads, and a bounded child-exit control in that engine.
+The Rust modes check exact stdout and all child returns with native shared memory starting at
+17 pages and capped at 512 pages. No growable-buffer conversion or allocator patch is used.
+
+Prepare the same proof for actual desktop Safari without copying a checkout or installing a compiler:
+
+```sh
+THREAD_FIXTURE_DIR=/absolute/path/to/fixture \
+  bun packages/waffle/tests/threads-browser-runner.ts --prepare /work/tmp/threads-safari
+# Transfer that directory to a reserved Mac and start a task-owned safaridriver on port 19438.
+bun /path/to/threads-safari/runner.mjs /path/to/threads-safari http://127.0.0.1:19438 19437
+```
+
+The Safari runner checks packet hashes, requires desktop Safari capabilities, and deletes only
+its own WebDriver session. Both runners own their loopback server and browser resources. Remove
+the transferred and prepared packets after saving the small reports. Native stop requests and
+host-idle receipts do not measure OS memory reclamation.
+
+This is an internal service and guest-bridge embedding, not a production threaded Runtime launcher.
+It does not qualify reservation accounting, aggregate backing lifetime, Runtime two-step kill,
+growth-time cancellation, or iOS. Playwright WebKit is not actual Safari evidence.
+
 ### Run the local TCP relay matrix
 
 The network runner first runs the unchanged no-relay loopback cases, then the relay cases.
