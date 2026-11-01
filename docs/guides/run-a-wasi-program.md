@@ -169,12 +169,26 @@ loopback still works and a non-loopback socket reports `ENOTSUP` when the guest 
 
 Use `FDFLAG_NONBLOCK` for immediate I/O and `poll_oneoff` for readiness. `RECV_WAITALL` waits for
 the requested bytes unless EOF or an error occurs. `SHUT_WR` allows replies after local FIN;
-`SHUT_RD` discards local input without sending FIN. Listener bindings and `sock_accept` are not
-implemented. This does not let arbitrary unmodified programs connect to destinations they
-choose at runtime.
+`SHUT_RD` discards local input without sending FIN. This does not let arbitrary unmodified
+programs connect to destinations they choose at runtime.
+
+To accept connections from a Bun-shaped peer in the same runtime, replace the binding with:
+
+```ts
+const network = await createPreview1Network(runtime, {
+  sockets: [{ fd: 3, socket: { listen: { host: "127.0.0.1", port: 4321 } } }],
+});
+```
+
+The guest calls `sock_accept(3, flags, out_fd)` and uses the returned descriptor for I/O.
+Set the listener's fd flags to `FDFLAG_NONBLOCK` to get `AGAIN` when its queue is empty.
+Pass `FDFLAG_NONBLOCK` to `sock_accept` to make the accepted socket nonblocking instead.
+Use an FD_READ subscription to wait for a pending accept. This listener is virtual and private
+to the one runtime, even when its host is a wildcard. It cannot receive OS or relay connections.
 
 The runnable fixtures are `packages/waffle/tests/fixtures/preview1-socket.wat` and
-`preview1-socket.c`. The C fixture takes the socket fd in argv and uses the published patched
+`preview1-socket.c`. `preview1-listener.wat` accepts a same-runtime loopback peer in the regular
+Node-worker suite and network browser matrix. The C fixture takes the socket fd in argv and uses the published patched
 wasi-libc build route to discover the moved preopen. `bun run test:libc` builds and discovers its
 blocking and nonblocking tests. The regular test suite discovers the WAT matrix without a native
 guest compiler. The SSLRequest case is transport coverage, not a database query.

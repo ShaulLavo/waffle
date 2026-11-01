@@ -29,3 +29,5 @@ export const RIGHT_PATH_UNLINK_FILE = 0x400_0000n;
 export const RIGHT_POLL_FD_READWRITE = 0x800_0000n;
 
 export const RIGHT_SOCK_SHUTDOWN = 0x1000_0000n;
+
+export const RIGHT_SOCK_ACCEPT = 0x2000_0000n;

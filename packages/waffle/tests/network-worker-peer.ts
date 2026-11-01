@@ -5,6 +5,7 @@ import {
   type NetConnect,
   type NetHelperHooks,
 } from "../browser/net/helper.js";
+import type { RuntimeNetwork } from "../browser/net/runtime.js";
 import { createRing } from "../browser/net/ring.js";
 import type { NetworkCommand, NetworkWorkerMessage } from "./network-browser-worker.js";
 
@@ -14,23 +15,33 @@ afterEach(() => {
 });
 
 export function networkPeer(
-  namespace: NetNamespace,
+  namespace: NetNamespace | RuntimeNetwork,
   hooks: NetHelperHooks = {},
   connect?: NetConnect,
 ) {
   const ring = createRing();
-  const helper = new NetHelper(
-    ring,
-    async () => {
-      throw Error("No outbound fetch");
-    },
-    hooks,
-    namespace,
-    undefined,
-    undefined,
-    undefined,
-    connect,
-  );
+  const helper =
+    "createHelper" in namespace
+      ? namespace.createHelper({
+          ring,
+          hooks,
+          connect,
+          fetch: async () => {
+            throw Error("No outbound fetch");
+          },
+        })
+      : new NetHelper(
+          ring,
+          async () => {
+            throw Error("No outbound fetch");
+          },
+          hooks,
+          namespace,
+          undefined,
+          undefined,
+          undefined,
+          connect,
+        );
   const worker = new Worker(new URL("./network-browser-worker.ts", import.meta.url), {
     type: "module",
   });

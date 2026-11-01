@@ -21,7 +21,7 @@ parentPort!.on("message", (message) => {
       request,
       message.interactive
         ? {
-            hostCallFd: 0x7ffffffe,
+            hostCallFd: message.hostCallFd ?? 0x7ffffffe,
             imports(imports, { wasi }) {
               wasi.hostCall = (slot, args) => slot + args.reduce((n, value) => n + value, 0);
               return imports;
@@ -35,7 +35,13 @@ parentPort!.on("message", (message) => {
               return 0;
             },
           }
-        : { ...preview1Executor, hostCallFd: message.hostCallFd },
+        : {
+            ...preview1Executor,
+            hostCallFd: message.hostCallFd,
+            instantiated() {
+              parentPort!.postMessage({ type: "ready" });
+            },
+          },
       {
         crossOriginIsolated: true,
         postMessage(data: RuntimeWorkerMessage, transfer?: Transferable[]) {
