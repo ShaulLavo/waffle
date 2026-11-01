@@ -109,7 +109,10 @@ async function check(): Promise<string> {
   for (const path of ["/healthz", "/readyz"]) {
     const response = await request(path);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true });
+    assert.deepEqual(
+      await response.json(),
+      path === "/readyz" ? { ok: true, webtransport: true } : { ok: true },
+    );
   }
   const discovery = await request("/v1/tcp/session", { method: "POST", headers });
   assert.equal(discovery.status, 200);
