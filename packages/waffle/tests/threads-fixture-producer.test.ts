@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifiedThreadFixture } from "../scripts/build-thread-fixture.ts";
+import { inspectThreadFixture } from "./threads-fixture-inspect.ts";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -79,6 +80,12 @@ test("the dedicated compiler job owns its pinned target and scratch without chan
   );
   expect(record(manifest.scripts).test).toBe("bun test ./tests");
   expect(compile).toContain("/scripts/");
+  expect(record(steps.find((step) => step.run === compile)?.env).THREAD_FIXTURE_EXPORT_DIR).toBe(
+    "${{ runner.temp }}/threads-fixture",
+  );
+  const upload = steps.find((step) => step.uses === "actions/upload-artifact@v4");
+  expect(record(upload?.with).path).toBe("${{ runner.temp }}/threads-fixture");
+  expect(record(upload?.with)["if-no-files-found"]).toBe("error");
 });
 
 test("receipt verification fails closed without invoking a compiler or creating output", () => {
@@ -92,4 +99,18 @@ test("receipt verification fails closed without invoking a compiler or creating 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("artifact inspection validates shared memory without a Rust compiler", () => {
+  const bytes = new Uint8Array([
+    0, 97, 115, 109, 1, 0, 0, 0, 2, 18, 1, 3, 101, 110, 118, 6, 109, 101, 109, 111, 114, 121, 2, 3,
+    17, 128, 128, 1,
+  ]);
+  const inspected = inspectThreadFixture(bytes);
+  expect(inspected.imports).toEqual([
+    { kind: "memory", module: "env", name: "memory", minimum: 17, maximum: 16384, shared: true },
+  ]);
+  expect(inspected.fixed32MiBImportCompatible).toBe(true);
+  expect(inspected.start).toBeNull();
+  expect(() => inspectThreadFixture(bytes.slice(0, -1))).toThrow(WebAssembly.CompileError);
 });

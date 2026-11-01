@@ -116,7 +116,7 @@ function outputDirectory(directory: string): string {
   return actual;
 }
 
-export function buildThreadFixture(directory: string) {
+function buildThreadFixture(directory: string) {
   const outdir = outputDirectory(directory);
   const scratch = mkdtempSync(join(outdir, ".build-"));
   try {
@@ -162,7 +162,7 @@ function readReceipt(directory: string) {
   return receipt;
 }
 
-export function verifyThreadCompiler(directory: string): void {
+function verifyThreadCompiler(directory: string): void {
   verifiedThreadFixture(directory);
   const expected = record(readReceipt(directory).compiler);
   const actual = compilerInputs();

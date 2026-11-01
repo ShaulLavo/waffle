@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -10,6 +10,12 @@ thread_local! {
     static LOCAL: Cell<u32> = const { Cell::new(23) };
 }
 
+#[derive(Default)]
+struct LiveAddresses {
+    stacks: [AtomicUsize; 2],
+    tls: [AtomicUsize; 2],
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ChildResult {
     id: u32,
@@ -18,7 +24,12 @@ struct ChildResult {
     previous_progress: u32,
 }
 
-fn child(id: u32, barrier: Arc<Barrier>, progress: Arc<AtomicU32>) -> ChildResult {
+fn child(
+    id: u32,
+    barrier: Arc<Barrier>,
+    progress: Arc<AtomicU32>,
+    addresses: Arc<LiveAddresses>,
+) -> ChildResult {
     assert_eq!(MAIN_STATIC.load(Ordering::SeqCst), MAIN_SENTINEL);
     LOCAL.with(|local| {
         assert_eq!(local.get(), 23);
@@ -26,6 +37,11 @@ fn child(id: u32, barrier: Arc<Barrier>, progress: Arc<AtomicU32>) -> ChildResul
     });
     let mut stack = [id, id + 1, id + 2, id + 3];
     std::hint::black_box(&mut stack);
+    addresses.stacks[(id - 1) as usize].store(stack.as_ptr() as usize, Ordering::SeqCst);
+    LOCAL.with(|local| {
+        addresses.tls[(id - 1) as usize]
+            .store(local as *const Cell<u32> as usize, Ordering::SeqCst);
+    });
     barrier.wait();
     let previous_progress = progress.fetch_add(1, Ordering::SeqCst);
     barrier.wait();
@@ -42,13 +58,23 @@ fn child(id: u32, barrier: Arc<Barrier>, progress: Arc<AtomicU32>) -> ChildResul
 fn pair() {
     let barrier = Arc::new(Barrier::new(3));
     let progress = Arc::new(AtomicU32::new(0));
+    let addresses = Arc::new(LiveAddresses::default());
     let first_barrier = Arc::clone(&barrier);
     let first_progress = Arc::clone(&progress);
-    let first = thread::spawn(move || child(1, first_barrier, first_progress));
+    let first_addresses = Arc::clone(&addresses);
+    let first = thread::spawn(move || child(1, first_barrier, first_progress, first_addresses));
     let second_barrier = Arc::clone(&barrier);
     let second_progress = Arc::clone(&progress);
-    let second = thread::spawn(move || child(2, second_barrier, second_progress));
+    let second_addresses = Arc::clone(&addresses);
+    let second = thread::spawn(move || child(2, second_barrier, second_progress, second_addresses));
     barrier.wait();
+    for live in [&addresses.stacks, &addresses.tls] {
+        let first = live[0].load(Ordering::SeqCst);
+        let second = live[1].load(Ordering::SeqCst);
+        assert_ne!(first, 0);
+        assert_ne!(second, 0);
+        assert_ne!(first, second);
+    }
     barrier.wait();
     let first = first.join().expect("first child joins");
     let second = second.join().expect("second child joins");

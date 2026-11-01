@@ -72,6 +72,8 @@ test("real stock Rust producer emits deterministic guest and receipt without bui
   expect(readdirSync(outdir).sort()).toEqual([THREAD_FIXTURE_RECEIPT, THREAD_FIXTURE_WASM].sort());
   success(["--verify"]);
   success(["--verify-toolchain"]);
+  const exported = process.env.THREAD_FIXTURE_EXPORT_DIR;
+  if (exported) cpSync(outdir, exported, { recursive: true, errorOnExist: true });
 }, 120_000);
 
 test("real module imports signed spawn and shared memory and exports stock command and thread entries", () => {
@@ -134,14 +136,12 @@ test("verification fails closed on changed or missing source, builder, config, r
   changedFile(artifact, (before) => writeFileSync(artifact, before.subarray(0, before.length - 1)));
   changedFile(artifact, () => rmSync(artifact));
   const receipt = join(outdir, THREAD_FIXTURE_RECEIPT);
+  changedFile(receipt, (before) => {
+    expect(before.toString()).toContain('"-Cpanic=abort"');
+    writeFileSync(receipt, before.toString().replace('"-Cpanic=abort"', '"-Cpanic=unwind"'));
+  });
   changedFile(receipt, (before) =>
-    writeFileSync(
-      receipt,
-      before
-        .toString()
-        .replace('"-Cpanic=abort"', '"-Cpanic=unwind"')
-        .replace('"schema": 1', '"schema": 2'),
-    ),
+    writeFileSync(receipt, before.toString().replace('"schema": 1', '"schema": 2')),
   );
   changedFile(receipt, () => rmSync(receipt));
 }, 30_000);

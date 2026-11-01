@@ -54,6 +54,12 @@ jobs:
         run: bun test ./packages/waffle/scripts/threads-fixture-producer.test.ts --timeout 120000
         env:
           THREAD_FIXTURE_TEST_ROOT: ${{ runner.temp }}
+          THREAD_FIXTURE_EXPORT_DIR: ${{ runner.temp }}/threads-fixture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: threads-fixture-${{ github.sha }}
+          path: ${{ runner.temp }}/threads-fixture
+          if-no-files-found: error
       - run: rustfmt +1.98.1 --check packages/waffle/tests/fixtures/threads.rs
       - name: Report the compiler cache result
         if: always()
