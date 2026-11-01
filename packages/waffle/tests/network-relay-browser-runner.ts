@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { relaySocketModules } from "./network-relay-modules.js";
 import { createRelayBrowserFixture } from "./network-relay-fixture.js";
 import { networkRelayBrowserCases } from "./network-relay-browser.js";
-import { runIsolatedPages, exitAfterBrowserCleanup } from "./isolated-page-runner.js";
+import { runIsolatedPages, type IsolatedPageRun } from "./isolated-page-runner.js";
 
 export async function runNetworkRelayBrowser(
   names: readonly string[] = ["chromium"],
@@ -21,30 +21,23 @@ export async function runNetworkRelayBrowser(
   const failures: unknown[] = [];
   for (const name of names) {
     try {
-      await engine(name, scratchRoot, modules);
+      await runIsolatedPages(await relayBrowserPageRun(name, scratchRoot, modules));
     } catch (error) {
       failures.push(new Error(`${name} relay matrix failed`, { cause: error }));
     }
   }
   if (failures.length) throw new AggregateError(failures, "Network relay browser matrix failed");
 }
-async function engine(
+export async function relayBrowserPageRun(
   name: string,
   scratchRoot: string,
   modules: ReadonlyMap<string, Uint8Array<ArrayBuffer>>,
-): Promise<void> {
+): Promise<IsolatedPageRun> {
   const fixture = createRelayBrowserFixture();
-  const stop = () => {
-    void exitAfterBrowserCleanup("network-relay-fixture", fixture.close);
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
   try {
     const port = Number(process.env.NETWORK_RELAY_TEST_PORT ?? 43828);
     const config = await fixture.start(`http://127.0.0.1:${port}`, name !== "webkit");
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
-    await runIsolatedPages({
+    return {
       label: "network-relay-browser",
       entries: [networkRelayBrowserCases.name],
       scratchRoot,
@@ -98,11 +91,10 @@ async function engine(
         );
         return results;
       },
-    });
-  } finally {
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
+    };
+  } catch (error) {
     await fixture.close();
+    throw error;
   }
 }
 if (import.meta.main)

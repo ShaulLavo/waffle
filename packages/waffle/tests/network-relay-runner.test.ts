@@ -1,4 +1,10 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { relayBrowserPageRun } from "./network-relay-browser-runner.js";
+import { createRelayBrowserFixture } from "./network-relay-fixture.js";
+import { runIsolatedPages } from "./isolated-page-runner.js";
 import { requireCertificateRejection, type RelayProbe } from "./network-relay-contract.js";
 
 function probe(failures: string[]): RelayProbe {
@@ -60,3 +66,54 @@ for (const resource of ["browser", "fixture"])
       await child.exited;
     }
   });
+
+
+test("relay page keeps a legitimate competing listener and binds its own address", async () => {
+  const owner = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("suite control"),
+  });
+  const previous = process.env.NETWORK_RELAY_TEST_PORT;
+  const scratch = await mkdtemp(join(tmpdir(), "relay-port-"));
+  process.env.NETWORK_RELAY_TEST_PORT = String(owner.port);
+  try {
+    const run = await relayBrowserPageRun("webkit", scratch, new Map());
+    await runIsolatedPages({ ...run, sources: {}, names: [] });
+    expect(await (await fetch(owner.url)).text()).toBe("suite control");
+  } finally {
+    if (previous === undefined) delete process.env.NETWORK_RELAY_TEST_PORT;
+    else process.env.NETWORK_RELAY_TEST_PORT = previous;
+    await owner.stop(true);
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("relay fixture admits only the bound page origin and still requires its token", async () => {
+  const page = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("page") });
+  const other = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("other") });
+  const fixture = createRelayBrowserFixture();
+  try {
+    const config = await fixture.start(page.url.origin, false);
+    const session = (origin: string, token?: string) =>
+      fetch(new URL("v1/tcp/session", config.endpoint), {
+        method: "POST",
+        headers: { origin, ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      });
+    const admitted = await session(page.url.origin, config.token);
+    expect(admitted.status).toBe(200);
+    expect(await admitted.json()).toEqual({ v: 1, webtransport: null });
+    const denied = await session(other.url.origin, config.token);
+    expect(denied.status).toBe(403);
+    await denied.body?.cancel();
+    const unauthorized = await session(page.url.origin);
+    expect(unauthorized.status).toBe(401);
+    await unauthorized.body?.cancel();
+    expect(await (await fetch(page.url)).text()).toBe("page");
+    expect(await (await fetch(other.url)).text()).toBe("other");
+  } finally {
+    await fixture.close();
+    await page.stop(true);
+    await other.stop(true);
+  }
+});
