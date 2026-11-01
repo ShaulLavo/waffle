@@ -8,11 +8,12 @@ import type {
   WebTransportFactory,
   WebTransportLike,
 } from "../../waffle-relay/src/tcp-webtransport.js";
-import type {
-  RelayBrowserConfig,
-  RelayMode,
-  RelayModeResult,
-  RelayProbe,
+import {
+  requireCertificateRejection,
+  type RelayBrowserConfig,
+  type RelayMode,
+  type RelayModeResult,
+  type RelayProbe,
 } from "./network-relay-contract.js";
 import type { RelayGuestMessage, RelayGuestRequest } from "./network-relay-worker.js";
 
@@ -259,10 +260,7 @@ async function mode(config: RelayBrowserConfig, selected: RelayMode): Promise<Re
     if (selected === "websocket")
       check(probe.constructed === 0, "Forced WebSocket touched WebTransport");
     if (selected === "bad-certificate" && typeof WebTransport === "function")
-      check(
-        probe.constructed === 1 && probe.ready === 0 && probe.streams === 0,
-        "Bad certificate did not fail before target header submission",
-      );
+      requireCertificateRejection(probe);
     check(fallbackMs < 15000, "Carrier fallback exceeded its bounded deadline");
     await idle();
     const denied = await preview1(runtime, relay.connect, config.targets.denied, false, 2);

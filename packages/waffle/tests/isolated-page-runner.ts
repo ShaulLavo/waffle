@@ -14,6 +14,25 @@ import {
 } from "./process-recycling-browser-runner-control.js";
 
 export const engines = { chromium, firefox, webkit };
+
+export async function exitAfterBrowserCleanup(
+  label: string,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  try {
+    await cleanup();
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        cleanup: label,
+        failed: true,
+        error: String(error),
+        errors: error instanceof AggregateError ? error.errors.map(String) : [],
+      }),
+    );
+  }
+  process.exit(1);
+}
 type Engine = keyof typeof engines;
 
 export interface IsolatedPageRun {
@@ -70,7 +89,7 @@ export async function runIsolatedPages(run: IsolatedPageRun): Promise<void> {
       );
     })());
   const stop = () => {
-    void cleanup().finally(() => process.exit(1));
+    void exitAfterBrowserCleanup(run.label, cleanup);
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);

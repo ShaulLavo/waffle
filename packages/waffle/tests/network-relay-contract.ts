@@ -23,3 +23,13 @@ export interface RelayModeResult {
   readonly preview1: { echo: number; denied: number; reset: number };
   readonly fallbackMs: number;
 }
+
+export function requireCertificateRejection(probe: Readonly<RelayProbe>): void {
+  if (
+    probe.constructed !== 1 ||
+    probe.ready !== 0 ||
+    probe.streams !== 0 ||
+    probe.failures.length !== 1
+  )
+    throw new Error("Bad certificate did not reject before target header submission");
+}
