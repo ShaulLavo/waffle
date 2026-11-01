@@ -36,7 +36,7 @@ async function command(data: ThreadServiceCommand) {
 self.onmessage = ({
   data,
 }: MessageEvent<
-  ThreadServiceCommand | { kind: "fixture-release-read" | "fixture-release-drain" }
+  ThreadServiceCommand | { kind: "fixture-release-read" } | { kind: "fixture-release-drain" }
 >) => {
   if (data.kind === "fixture-release-read") return delivered.resolve();
   if (data.kind === "fixture-release-drain") return drain.resolve();

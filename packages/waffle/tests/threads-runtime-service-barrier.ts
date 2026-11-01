@@ -14,7 +14,9 @@ function failure(error: unknown): void {
 }
 self.onmessage = ({
   data,
-}: MessageEvent<ThreadServiceCommand | { kind: "fixture-release" | "fixture-probe" }>) => {
+}: MessageEvent<
+  ThreadServiceCommand | { kind: "fixture-release" } | { kind: "fixture-probe" }
+>) => {
   if (data.kind === "fixture-probe") {
     event("fixture-probe-received");
     return;

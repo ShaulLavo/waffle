@@ -127,6 +127,7 @@ export async function runThreadsRuntime(selected: RuntimeThreadCase = "pair", lo
         message = { ...message, __waffleCausal: causalCounter };
       }
       if (transfer === undefined) return super.postMessage(message);
+      if (Array.isArray(transfer)) return super.postMessage(message, transfer);
       return super.postMessage(message, transfer);
     }
     override terminate() {

@@ -1,7 +1,11 @@
 import { ProcessError } from "../proc/types.ts";
 import { createRuntime } from "../runtime.ts";
 import { BrowserProcessBroker } from "../browser/process-broker.ts";
-import { createWorkerProcessTransport, WorkerProcessClient } from "../proc/worker-client.ts";
+import {
+  createWorkerProcessTransport,
+  WorkerProcessClient,
+  type WorkerProcessMessage,
+} from "../proc/worker-client.ts";
 import { DescriptorTable } from "../core/descriptors.ts";
 import { createWorkerPipeCodec } from "../proc/worker-pipes.ts";
 import { guestModule, store, i32, call } from "./threads-guest-module.ts";
@@ -149,11 +153,12 @@ try {
     identity: runtime.identities.buffer,
     capacity: 8,
   });
-  root.data = { filesystem: runtime.filesystem.createIdentity() };
+  const rootFilesystem = runtime.filesystem.createIdentity();
+  root.data = { filesystem: rootFilesystem };
   if (selected === "late-read") {
     if (!filesystem) throw new Error("process host did not receive its filesystem owner");
     await runtime.filesystem.writeFile("/payload", "A");
-    fileClient = new FilesystemClient(filesystem.connect(root.data.filesystem));
+    fileClient = new FilesystemClient(filesystem.connect(rootFilesystem));
     const preopen: number = await fileClient.asyncCall("preopen", ["/"]);
     const { node: handle }: { node: number } = await fileClient.asyncCall("resolve", [
       preopen,
@@ -168,7 +173,7 @@ try {
       () => fileClient?.release(handle),
     );
   }
-  const notices: unknown[] = [];
+  const notices: WorkerProcessMessage[] = [];
   const client = new WorkerProcessClient({
     transport: root,
     descriptors,
@@ -193,7 +198,7 @@ try {
     job: -1,
     fds: selected === "late-read" ? [{ parent: 0, child: 0 }] : [],
   });
-  while (notices.length) await service.runtimeMessage(notices.shift(), root.pid);
+  while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   await supervisor.start(pid);
   let publication: unknown;
   if (selected === "late-read") {
@@ -210,7 +215,7 @@ try {
   const collected = selected === "service-constructor" ? client.wait(root.pid, pid) : undefined;
   const repeatedWait =
     selected === "service-constructor" ? collectAgain(client, root.pid, pid) : undefined;
-  while (notices.length) await service.runtimeMessage(notices.shift(), root.pid);
+  while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   const children = service.workerMemory();
   const disposal = await bounded(runtime.dispose(), 1800);
   const repeatedDisposal = await bounded(runtime.dispose(), 100);
