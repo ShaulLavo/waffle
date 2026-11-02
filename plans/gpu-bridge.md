@@ -1,6 +1,6 @@
 # WebGPU bridge for blocking guests
 
-Status: **Proposed plan. Nothing here is implemented.** The page-side service is TypeScript. Its
+Status: **Approved (owner, 2026-11-02). Scheduled later; don't start until the current finish lines are done.** The page-side service is TypeScript. Its
 Rust client, the [wgpu backend](wgpu-backend.md), lives outside this repository
 ([where the code lives](guest-graphics.md#where-the-code-lives)).
 

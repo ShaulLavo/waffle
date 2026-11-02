@@ -1,6 +1,6 @@
 # A wgpu backend for Waffle guests
 
-Status: **Proposed plan. Nothing here is implemented.** The crate lives outside this repository
+Status: **Approved (owner, 2026-11-02). Scheduled later; don't start until the current finish lines are done.** The crate lives outside this repository
 ([where the code lives](guest-graphics.md#where-the-code-lives)).
 
 Prepared: 2026-10-31. Inspected Waffle baseline

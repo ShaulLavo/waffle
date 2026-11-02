@@ -1,6 +1,6 @@
 # Windows, input and a winit backend for guests
 
-Status: **Proposed plan. Nothing here is implemented.** Rust crates live outside this repository
+Status: **Approved (owner, 2026-11-02). Scheduled later; don't start until the current finish lines are done.** Rust crates live outside this repository
 ([where the code lives](guest-graphics.md#where-the-code-lives)).
 
 Prepared: 2026-10-31. Inspected Waffle baseline
