@@ -1,0 +1,23 @@
+{
+  "listen": { "host": "0.0.0.0", "port": 8787 },
+  "allowedOrigins": ["https://waffle-network.sprockt.dev"],
+  "tcp": {
+    "destinations": [],
+    "limits": {
+      "maxConnections": 16,
+      "maxConnectionsPerSubject": 4,
+      "attemptsPerMinute": 12,
+      "maxSubjects": 128,
+      "maxOpenBytes": 8192,
+      "headerTimeoutMs": 3000,
+      "connectTimeoutMs": 5000,
+      "idleTimeoutMs": 60000,
+      "windowBytes": 65536
+    },
+    "webtransport": {
+      "bind": { "host": "0.0.0.0", "port": 4433 },
+      "advertisedUrl": "https://waffle-relay-public.sprockt.dev:4433/v1/tcp/wt",
+      "certificate": "rotating-hash"
+    }
+  }
+}

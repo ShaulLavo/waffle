@@ -63,6 +63,7 @@ const plan = (source: Uint8Array) =>
       source,
       cooperative: true,
       checkpoint: { module: "env", name: "check" },
+      initializeMemory: [],
       initialize: [],
     },
     libraries: [],

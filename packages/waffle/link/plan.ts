@@ -16,6 +16,9 @@ export interface LinkMemberSource {
   readonly source: Uint8Array;
   readonly cooperative: true;
   readonly checkpoint: { readonly module: string; readonly name: string };
+  /** Ordered memory and relocation stages, completed before the instance escapes. */
+  readonly initializeMemory: readonly string[];
+  /** Ordered constructor and registration stages, run by initialize(). */
   readonly initialize: readonly string[];
 }
 export interface LinkPlanSource {
@@ -42,7 +45,9 @@ export interface CompiledMember {
   readonly id: string;
   readonly module: WebAssembly.Module;
   readonly profile: ModuleProfile;
+  readonly initializeMemory: readonly string[];
   readonly initialize: readonly string[];
+  readonly automaticRelocation: boolean;
   readonly self: SelfPlan;
 }
 export interface PlanData {
@@ -184,29 +189,63 @@ function snapshot(member: LinkMemberSource): LinkMemberSource {
     source: new Uint8Array(member.source),
     cooperative: true,
     checkpoint: { module: member.checkpoint.module, name: member.checkpoint.name },
-    initialize: Array.from(member.initialize),
+    initializeMemory: copyStageNames(member, "initializeMemory"),
+    initialize: copyStageNames(member, "initialize"),
   };
 }
 
-function validateInitializers(member: LinkMemberSource, profile: ModuleProfile): void {
+const RELOCATION = "__wasm_apply_data_relocs";
+
+function copyStageNames(
+  member: LinkMemberSource,
+  field: "initializeMemory" | "initialize",
+): readonly string[] {
+  const stages = member[field];
+  if (!Array.isArray(stages)) invalid(member.id, `${field} must list export names`);
+  const names = Array.from(stages);
+  if (!names.every((name) => typeof name === "string"))
+    invalid(member.id, `${field} must list export names`);
+  return names;
+}
+
+function validateStages(member: LinkMemberSource, profile: ModuleProfile, side: boolean): boolean {
   const scheduled = new Set<number>();
   const entry = profile.functions.get("_start");
-  const relocation = profile.functions.get("__wasm_apply_data_relocs");
-  for (const name of member.initialize) {
+  const relocation = profile.functions.get(RELOCATION);
+  const memoryStages = member.initializeMemory;
+  const allStages = memoryStages.concat(member.initialize);
+  for (const name of allStages) {
     requireSignature(profile, member.id, name, [], []);
     const fn = profile.functions.get(name)!;
     if (fn.index === entry?.index)
       invalid(member.id, `initializer ${name} is owned by command entry`);
-    if (fn.index === relocation?.index)
-      invalid(member.id, `initializer ${name} is owned by automatic relocation`);
     if (scheduled.has(fn.index)) invalid(member.id, `duplicate initializer ${name}`);
     scheduled.add(fn.index);
+    if (fn.index === relocation?.index && !memoryStages.some((stage) => stage === name))
+      invalid(member.id, `relocation ${name} must be a memory stage`);
   }
+  if (profile.passiveData && !memoryStages.length)
+    invalid(member.id, "passive data requires declared memory stages");
+  const listedRelocation = Boolean(
+    relocation &&
+    memoryStages.some((name) => profile.functions.get(name)?.index === relocation.index),
+  );
+  const firstStage = memoryStages[0];
+  if (
+    profile.passiveData &&
+    relocation &&
+    firstStage !== undefined &&
+    profile.functions.get(firstStage)?.index === relocation.index
+  )
+    invalid(member.id, "relocation cannot precede passive memory initialization");
+  if (relocation && !listedRelocation && (profile.passiveData || profile.pie))
+    invalid(member.id, `${RELOCATION} must be a declared memory stage`);
+  return Boolean(relocation && side && !listedRelocation);
 }
 
 async function compile(member: LinkMemberSource, side: boolean): Promise<CompiledMember> {
   const profile = inspectProfile(member.source, member.id, side);
-  validateInitializers(member, profile);
+  const automaticRelocation = validateStages(member, profile, side);
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new Uint8Array(member.source)),
   );
@@ -225,14 +264,6 @@ async function compile(member: LinkMemberSource, side: boolean): Promise<Compile
     if (error instanceof WebAssembly.CompileError) invalid(member.id, error.message);
     throw error;
   }
-  if (
-    profile.passiveData &&
-    (!member.initialize.length || profile.functions.has("__wasm_apply_data_relocs"))
-  )
-    invalid(
-      member.id,
-      "passive data requires explicit ordered memory/relocation initialization; rename generic data reloc export",
-    );
   const checkpoint = member.checkpoint;
   if (
     !WebAssembly.Module.imports(module).some(
@@ -243,9 +274,16 @@ async function compile(member: LinkMemberSource, side: boolean): Promise<Compile
     )
   )
     invalid(member.id, `checkpoint import ${checkpoint.module}.${checkpoint.name} is absent`);
-  if (profile.functions.has("__wasm_apply_data_relocs"))
-    requireSignature(profile, member.id, "__wasm_apply_data_relocs", [], []);
-  return { id: member.id, module, profile, initialize: member.initialize, self: NO_SELF };
+  if (profile.functions.has(RELOCATION)) requireSignature(profile, member.id, RELOCATION, [], []);
+  return {
+    id: member.id,
+    module,
+    profile,
+    initializeMemory: member.initializeMemory,
+    initialize: member.initialize,
+    automaticRelocation,
+    self: NO_SELF,
+  };
 }
 
 export const prepareLinkPlan = PreparedLinkPlan.prepare;

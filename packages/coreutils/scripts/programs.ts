@@ -1,3 +1,17 @@
+export const checksumNames = [
+  "b2sum",
+  "cksum",
+  "md5sum",
+  "sha1sum",
+  "sha224sum",
+  "sha256sum",
+  "sha384sum",
+  "sha512sum",
+  "sum",
+] as const;
+
+export type ChecksumName = (typeof checksumNames)[number];
+
 export const coreutilsNames = [
   "env",
   "clear",
@@ -20,10 +34,13 @@ export const coreutilsNames = [
   "mv",
   "echo",
   "date",
+  ...checksumNames,
 ] as const;
 
+const separatelyBuilt: readonly string[] = ["clear", "cut", "tr", "wc", "echo", "date"];
+
 export const coreutilsPackageNames = coreutilsNames.filter(
-  (name) => !["clear", "cut", "tr", "wc", "echo", "date"].includes(name),
+  (name) => !separatelyBuilt.concat(checksumNames).includes(name),
 );
 
 const cooperative = new Set(["cat", "mkdir", "seq", "tail"]);

@@ -30,6 +30,9 @@ const intrinsicModules: Readonly<Record<string, string>> = {
 };
 const trustedModules: Readonly<Record<string, string>> = {
   ...intrinsicModules,
+  "proc/command.ts": "Trusted page-command data contract, not imported by the guest bootstrap.",
+  "proc/command-runner.ts": "Page-only trusted command execution and physical task ownership.",
+  "proc/command-stdio.ts": "Page-only asynchronous descriptor I/O for trusted host callbacks.",
   "proc/supervisor.ts": "Page-owned supervisor, not imported by the guest bootstrap.",
   "proc/table.ts": "Page-owned process table, not imported by the guest bootstrap.",
   "proc/registry.ts": "Page-owned process registry, not imported by the guest bootstrap.",
@@ -67,7 +70,7 @@ export const payloadExceptions: readonly PayloadException[] = [
   },
   {
     file: "proc/pipes.ts",
-    scope: "Ring.write",
+    scope: "Ring.writeEntered",
     rule: "private-iteration",
     expression: "chunks",
     reason: "Caller-owned source iovecs; ring copies use captured natives.",
@@ -133,6 +136,7 @@ export const enforcedModules = [
   "proc/errors.ts",
   "browser/worker.ts",
   "browser/worker-memory.ts",
+  "browser/preview1-socket.ts",
   "browser/guarded-stream.ts",
   "browser/runtime-terminals.ts",
   "browser/terminal-session.ts",

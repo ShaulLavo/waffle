@@ -1,0 +1,39 @@
+{
+  "schema": "waffle-program-build-recipe/v1",
+  "status": "optional package implementation",
+  "sharedTools": "../../../tools/program-build-tools.ts",
+  "copiedHelpers": false,
+  "familyRecipe": {
+    "root": "monorepo root",
+    "waffle": "packages/waffle",
+    "targetDirectory": ".build/awk",
+    "releaseDirectory": ".build/awk/wasm32-wasip1/release"
+  },
+  "wasiSdk": "34.0",
+  "wasiLibc": "2e6fb9d8ee0c",
+  "maxMemoryBytes": 268435456,
+  "toolRecipe": "scripts/build-awk.ts",
+  "generatedOutputs": [
+    "awk.wasm",
+    "awk-program.json",
+    "awk.wasm.gz",
+    "awk.wasm.br",
+    "awk.sizes.json",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
+  "upstream": {
+    "repository": "https://github.com/onetrueawk/awk",
+    "revision": "5739fd79bcfc75ba7526773d0cf634521f8aca3c",
+    "archiveSha256": "14b636bec87f5817012d883b9b318e808eee28881a7b4388f92ef6b5f940d7ef",
+    "licenseSha256": "200230e6fbeee50b17faec485fe3018dac0d224e02ef5eda6ed65e4c809d933b"
+  },
+  "patch": {
+    "path": "patches/wasi-unsupported-ops.patch",
+    "sha256": "f86abb28d347886ff591e4e4a6569cdeea86c1010cc3c67f9d33807e92b0825c"
+  },
+  "nativeOracle": "The native executable is compiled from the same prepared source tree and patch; it is never the host awk implementation.",
+  "qualification": "programs:awk runs the pinned native oracle, Wasmtime comparison, and enabled real Waffle runtime acceptance before actual package archive readback. Runtime qualification applies to the merged source used by the run, not an older published runtime.",
+  "exceptionHandling": "-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false and exact shared sysroot libsetjmp.a",
+  "finalization": "Shared stageProgram runs pinned Binaryen optimization, validates the named guest, strips names, and stages derivation and compression receipts.",
+  "optimizationPolicy": "waffle-program-size-v2"
+}

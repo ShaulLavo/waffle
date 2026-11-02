@@ -364,12 +364,43 @@ is drained; closing the last reader produces EPIPE.
 code marks a process revoked before freezing its linked cursors and exposing its exit. Cursor
 allocation links a new cell and then rechecks revocation before admitting the endpoint, so growth
 cannot escape a concurrent kill. Guest WASM never receives this control memory. A stopped
-producer cannot publish past that frozen watermark, and killed buffers are never recycled.
+producer cannot publish past that frozen watermark. Each ring also counts synchronous mutations
+in a finite slot incarnation. Reuse advances that incarnation only at zero active sections;
+stale endpoint writes, closes and pid revocation cannot change its replacement. A Worker
+terminated inside a section leaves the slot quarantined rather than permitting unsafe reuse.
+Raw buffers remain private runtime authority, not a guest corruption sandbox.
+
+The default pipe retains one fixed 2,622,760-byte buffer and admits 16 simultaneous writing
+processes and 16 reading processes. Closed writer rings can append new owners after unread
+committed records, preserving tickets, record pins and cursor counters. Reader rings must be
+fully drained or recovered by the relay before reuse. Reclaiming a direct reader switches to
+relay mode before publishing its replacement. Fresh slots are preferred. Each slot permits
+8,388,607 reuses without wrapping; active, quarantined or incarnation-exhausted slots consume
+capacity. Saturation returns ENFILE (41), independently of payload backpressure (EAGAIN).
+
+Without a publication registry, reclaimed slots do not retain historical revoked-pid tombstones:
+a direct host retain of that old pid can create a new endpoint. Production enrolls unique child
+pids in the registry, which permanently refuses collected identities. Retained old endpoints
+still fail their incarnation check.
 
 Registry cells are append-only, 16 bytes each, in a growable shared buffer. A simple same-process
 pipe uses four cells, or 64 bytes of lifetime metadata after its pipe buffers are released.
-Defaults allocate about 2 MiB initially and allow 16,777,216 cells (256 MiB plus the header),
-roughly 4,194,304 simple pipes per service; additional process endpoints consume more cells.
+Defaults allocate 2,105,360 bytes initially and allow 1,048,576 cells, or 16,785,424 bytes
+including owner metadata. An explicit maximum can admit up to 16,777,216 cells. The optional
+host allocator receives both exact sizes before construction so page owners can account for
+the declared backing. A fresh direct writer uses a publication cell and a reader-lease cell;
+each reused writer needs only one new publication cell. Each fresh or reused reader needs two
+cells. A root-held default pipe with 3,001 sequential child writers uses 3,020 cells, or 48,320
+bytes of cell storage, without growing its initial registry backing. The root's four cells and
+15 fresh writer leases are included. Cells remain shared with all other service uses.
+`PipeOptions.allocateShared(length)` supplies a realm-local allocator for fixed pipe backing,
+a locally created wake, endpoint lifetimes and new description flags. Attached handles reuse
+existing backing without charging it again; their later endpoint controls use the receiving
+realm's allocator. `attachPipeEndpoint` and `attachPipeController` accept that allocator in
+private options, as do worker host, broker and codec construction. No function crosses the
+cloneable wire handle. Inherited descriptions share flags and allocate only a new lifetime.
+The hook provides accounting, not a nominal allowance, refund policy or lifetime ledger.
+
 The separate process directory supports 1,024 simultaneously enrolled processes; collected
 process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
 

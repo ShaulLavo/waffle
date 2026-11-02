@@ -13,15 +13,19 @@ test("a catalog proof cannot relabel other bytes or the wrong utility selection"
     const path = resolve(directory, "echo.wasm");
     const bytes = "compiler-output-fixture";
     writeFileSync(path, bytes);
+    const keys = selectCatalogs("echo", "0.13.0");
+    const source = keys.map((key) => `        "${key}" => Some("catalog"),\n`).join("");
     const proof = {
       program: "echo",
       originalGuest: { sha256: sha256(bytes) },
-      generated: [
-        { version: "0.13.0", keys: selectCatalogs("echo", "0.13.0"), sha256: sha256("source") },
-      ],
+      generated: [{ version: "0.13.0", keys, sha256: sha256(source), source }],
     };
     writeFileSync(`${path}.locales.json`, JSON.stringify(proof));
     readProgramLocaleProof(path, "echo");
+    proof.generated[0]!.source = source.replace("catalog", "relabeled");
+    writeFileSync(`${path}.locales.json`, JSON.stringify(proof));
+    assert.throws(() => readProgramLocaleProof(path, "echo"), /Generated locale source changed/);
+    proof.generated[0]!.source = source;
     proof.generated[0]!.keys = selectCatalogs("ls", "0.13.0");
     writeFileSync(`${path}.locales.json`, JSON.stringify(proof));
     assert.throws(() => readProgramLocaleProof(path, "echo"), /catalog selection differs/);

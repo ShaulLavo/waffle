@@ -71,6 +71,55 @@ Reopen preserves surviving FileIds and FileVersions but creates a fresh history.
 Old cuts and leases do not transfer to the new root. Snapshot completion alone
 retains neither historical bytes nor historical stat.
 
+## Streaming reads
+
+`openWorkspaceRead(workspace, target, range?, atVersion?, signal?)` is exported from
+`waffle` and `waffle/fs`. It returns a `ReadOutcome<WorkspaceReadStream>`. Opening
+pins one complete version with the same permission, identity, and quota checks as
+`workspace.pin`. Even a small selected range retains that complete version.
+
+```ts
+const opened = await openWorkspaceRead(workspace, "/large-file", undefined, undefined, signal);
+if (opened.kind !== "ok") return opened;
+const stream = opened.value;
+try {
+  for (;;) {
+    const step = await stream.next();
+    if (step.kind === "end") break;
+    if (step.kind !== "chunk") return step;
+    await consume(step.bytes);
+  }
+} finally {
+  await stream.close();
+}
+```
+
+Each `next()` starts at most one 64 KiB lease read. There is no prefetch. A chunk
+has an absolute `offset` and caller-owned, exact-sized bytes. The frozen `stat`
+and clipped `range` describe the selected version, whose unread suffix survives
+writes, metadata changes, rename, unlink, and replacement.
+
+A concurrent pull returns `pressure/pull` without disturbing the accepted pull.
+Pull pressure for `operations`, `result-bytes`, or `metadata` leaves the position
+unchanged. The caller decides whether to retry. Other failures and EOF are
+terminal. A provider rejection remains a rejection with its original reason.
+`WorkspaceReadContractError` rejects invalid provider byte ownership or metadata.
+Previously delivered chunks remain valid after a later failure.
+
+EOF and terminal failure start lease release. Call `close()` in `finally` to join
+that release and observe cleanup errors. It returns the same promise every time,
+prevents new pulls immediately, suppresses late data, and joins the accepted pull
+before closing its lease. Abort uses the same cleanup, but returns `cancelled`.
+Projection close and root revocation retain the existing reader-drain rules.
+Cleanup rejection never becomes a successful close.
+
+A stream holds one of the existing 16 lease slots, with one bounded result ticket
+only while a pull runs. Between pulls it holds no result reservation. Existing
+`read()` calls still use their ephemeral tickets, not lease slots, and keep their
+1 MiB result limit. A whole read with one owned chunk reuses that result without
+another payload copy. Archive export uses the streaming helper and still refuses
+on pressure rather than silently retrying.
+
 ## Read results and pressure
 
 Read, stat, and pin return a discriminated `ReadOutcome`, not a newer-version
@@ -95,7 +144,7 @@ grant returns `unavailable`; staging bytes are never selected.
 | Output chunk                                                   |  64 KiB |
 
 A whole-file read over 1 MiB returns `pressure/result-bytes` before payload I/O.
-Read a large file in ranges through its lease instead. Budgets are shared by all
+Use `openWorkspaceRead` for demand-driven chunks, or read ranges through a lease instead. Budgets are shared by all
 public projections of the same root. Duplicate leases share physical backing
 charges but each owns metadata and a lease slot. Public roots allocate a fixed
 64 KiB shared page-reference table and 512 bytes of serial-qualified reader

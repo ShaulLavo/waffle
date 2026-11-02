@@ -76,6 +76,7 @@ closures and buffers carry process authority:
 
 | Enforced module                | Authority role                                                                                                              |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `browser/preview1-socket.ts` | Socket descriptions retain their handle, captured request-port hooks and descriptor flags in the guest worker. Payload copies use captured typed-array helpers. |
 | `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.       |
 | `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                          |
 | `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.       |
@@ -124,7 +125,7 @@ It contains no whole-file or wildcard suppression. The allowed cases are:
 | Owner                                      | Payload-only operation                                                                          | Why it carries no private authority                                                                                             |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `proc/pipes.ts` `length`                   | Reduce caller-supplied byte iovecs to a count                                                   | Elements are the caller's payload; the callback captures no ring or lifetime state.                                             |
-| `Ring.read` / `Ring.write`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
+| `Ring.read` / `Ring.writeEntered`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
 | Worker bootstrap `output`, `write`, `post` | Read `data.buffer` / `data.length`                                                              | Guest stdout/stderr bytes, not directory, signal or endpoint buffers.                                                           |
 | Terminal codec `import.write`              | Count/iterate terminal chunks, allocate an outbound byte array, copy payload, read byte lengths | These values are guest iovecs and fresh output bytes. The separate WeakMap of Stream provenance is private and remains checked. |
 
@@ -156,3 +157,9 @@ used for inference: its tuple serialization currently fails on real process ABI
 code. Keep transparent browser observers as the end-to-end proof: poison native
 entry points while delegating to the originals, confirm positive canaries, and
 require zero private-authority observations during real process lifecycles.
+
+## Trusted page commands
+
+`proc/command-runner.ts` and `proc/command-stdio.ts` run only on the page and are lazy-loaded for host commands. Their trusted-module classification does not extend to guest bootstrap. The command context borrows asynchronous stdio and copied root-local process data. It never receives the descriptor table, filesystem connection, process service, or raw supervisor. Host commands remain trusted JavaScript in the page realm, not a sandbox.
+
+Delegated command signals are broker-created closures bound to the actual admitted holder, its root record, the root controller's captured package grant, and the target found at delivery. No command field supplies an anchor or a caller PID. Installation alone grants nothing. Root-local copied queries and a `send` method are the only process operations in the command context. The existing guest authority checks are unchanged.

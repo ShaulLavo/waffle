@@ -176,7 +176,7 @@ describe("process pipe endpoints", () => {
     expect(output(reader)).toBe("");
   });
 
-  test("a dead writer's buffer is not reassigned to another writer", () => {
+  test("a dead writer keeps its slot while fresh slots remain", () => {
     const { controller, reader, writer } = pipe();
     const slot = writer.handle().slot;
     controller.revoke(2);

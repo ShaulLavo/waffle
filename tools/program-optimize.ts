@@ -21,7 +21,7 @@ export const programOptimizer = {
   archive: "binaryen-version_133-x86_64-linux.tar.gz",
 } as const;
 
-export const programOptimizationPolicy = "waffle-program-size-v1";
+export const programOptimizationPolicy = "waffle-program-size-v2";
 export const programOptimizationEnvironment = {
   BINARYEN_CORES: "1",
   LC_ALL: "C",
@@ -37,6 +37,7 @@ export const programOptimizationFlags = [
   "--enable-reference-types",
   "--enable-multivalue",
   "--enable-extended-const",
+  "--enable-exception-handling",
   "--skip-pass=remove-unused-module-elements",
   "--no-inline=__wasi_fd_*",
   "--no-inline=__wasilibc_populate_preopens",
@@ -136,6 +137,7 @@ const supportedFeatures = new Set([
   "reference-types",
   "multivalue",
   "extended-const",
+  "exception-handling",
   "bulk-memory-opt",
   "call-indirect-overlong",
 ]);

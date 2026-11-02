@@ -1,3 +1,8 @@
+import {
+  openWorkspaceRead,
+  WorkspaceReadContractError,
+  type WorkspaceReadStream,
+} from "./workspace-stream.js";
 import { FilesystemError } from "./protocol.js";
 import { storeIdentity } from "./file-identity.js";
 import {
@@ -16,7 +21,6 @@ import {
   type ReadFailure,
   type SnapshotPage,
   type SnapshotCursor,
-  type VersionLease,
   type VersionStat,
   type WorkspaceVfs,
 } from "./workspace-types.js";
@@ -262,32 +266,29 @@ function requireStat(entry: NamespaceEntry, cut: NamespaceCut, stat: VersionStat
   )
     contract("Lease metadata does not match the completed snapshot");
 }
+function readContract(error: unknown, entry: NamespaceEntry, cut: NamespaceCut): never {
+  if (!(error instanceof WorkspaceReadContractError)) throw error;
+  if (error.mismatch.kind === "stat") requireStat(entry, cut, error.mismatch.stat);
+  return contract("Lease returned an invalid bounded range");
+}
 async function* fileBytes(
-  lease: VersionLease,
+  stream: WorkspaceReadStream,
   scope: ExportScope,
   entry: NamespaceEntry,
   cut: NamespaceCut,
-  signal?: AbortSignal,
 ): AsyncGenerator<Uint8Array> {
-  for (let offset = 0; offset < entry.size;) {
-    const length = Math.min(WORKSPACE_EXPORT_LIMITS.chunkBytes, entry.size - offset);
-    const { value: result } = await scope.wait(() => lease.read({ offset, length }, signal));
-    if (result.kind !== "ok") refuse(result);
-    requireStat(entry, cut, result.value.stat);
-    const value = result.value;
-    if (
-      value.range.offset !== offset ||
-      value.range.length !== length ||
-      value.bytes.length !== length ||
-      value.bytes.constructor !== Uint8Array ||
-      value.bytes.byteOffset !== 0 ||
-      value.bytes.buffer.byteLength !== length ||
-      !(value.bytes.buffer instanceof ArrayBuffer) ||
-      ("resizable" in value.bytes.buffer && value.bytes.buffer.resizable)
-    )
-      contract("Lease returned an invalid bounded range");
-    yield value.bytes;
-    offset += length;
+  let delivered = 0;
+  for (;;) {
+    const { value: step } = await scope.wait(() =>
+      stream.next().catch((error) => readContract(error, entry, cut)),
+    );
+    if (step.kind === "end") {
+      if (delivered !== entry.size) contract("Lease ended early");
+      return;
+    }
+    if (step.kind !== "chunk") refuse(step);
+    delivered += step.bytes.length;
+    yield step.bytes;
   }
 }
 async function* sourceEntry(
@@ -320,17 +321,26 @@ async function* sourceEntry(
       return unexpected;
     }
   }
-  const result = await workspace.pin(entry.id, entry.version, signal);
-  if (result.kind !== "ok") refuse(result);
-  const lease = result.value;
-  const scope = new ExportScope(() => lease.close(), signal);
+  const result = await openWorkspaceRead(
+    workspace,
+    entry.id,
+    undefined,
+    entry.version,
+    signal,
+  ).catch((error) => readContract(error, entry, cut));
+  if (result.kind !== "ok") {
+    checkSignal(signal);
+    refuse(result);
+  }
+  const stream = result.value;
+  const scope = new ExportScope(() => stream.close(), signal);
   let failure: Failure | undefined;
   try {
     checkSignal(signal);
-    requireStat(entry, cut, lease.stat);
+    requireStat(entry, cut, stream.stat);
     yield {
       metadata: { ...metadata, kind: "file" },
-      bytes: fileBytes(lease, scope, entry, cut, signal),
+      bytes: fileBytes(stream, scope, entry, cut),
     };
   } catch (error) {
     failure = { error };

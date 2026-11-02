@@ -1,6 +1,10 @@
 import { Glob, YAML } from "bun";
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -31,7 +35,9 @@ for (const name of ["browser", "libc"]) {
   test(`${name} waits for paths and runs on manual dispatch or filter failure`, () => {
     const job = record(jobs[name]);
     // libc is also the single producer of the memory group fixture the browser gate consumes.
-    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm", "libc"] : "changes");
+    expect(job.needs).toEqual(
+      name === "browser" ? ["changes", "network-wasm", "libc"] : ["changes", "network-wasm"],
+    );
     const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
     expect(job.if).toBe(
       `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer}) }}`,
@@ -72,22 +78,184 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("release workflow publishes only the runtime tarball and checksum", () => {
-  const release = record(
-    YAML.parse(
-      readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
-    ),
-  );
-  expect(record(release.permissions).contents).toBe("write");
-  const steps = record(record(release.jobs).release).steps;
-  if (!Array.isArray(steps)) throw new Error("expected release steps");
-  const publish = steps
+test("browser relay inputs select the normal gate and only its parallel group installs native peers", () => {
+  for (const path of [
+    "packages/waffle/tests/network-relay-browser-runner.ts",
+    "packages/waffle/tests/network-relay-worker.ts",
+    "packages/waffle/tests/fixtures/preview1-relay.wat",
+    "packages/waffle-relay/src/tcp-client.ts",
+    "packages/waffle-relay/src/node-webtransport.ts",
+    "packages/waffle-relay/package.json",
+    "packages/waffle/tooling/workspace-safari-runner.ts",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const steps = record(jobs.browser).steps;
+  if (!Array.isArray(steps)) throw new Error("expected browser steps");
+  const native = steps
     .map(record)
-    .find((step) => step.name === "Publish the GitHub release assets");
-  expect(publish).toBeDefined();
-  expect(String(publish?.run)).toContain("gh release create");
-  expect(String(publish?.run)).toContain(".sha256");
-  expect(String(publish?.run)).not.toContain("npm publish");
+    .find(
+      (step) =>
+        step.name === "Install the declared optional native relay peer for real WebTransport tests",
+    );
+  expect(native?.if).toBe("matrix.group == 'parallel'");
+  expect(native?.run).toBe(
+    "bun run --cwd packages/waffle-relay/node_modules/@fails-components/webtransport-transport-http3-quiche install",
+  );
+});
+
+const consumerFilters = [
+  "network",
+  "coreutils",
+  "sed",
+  "findutils",
+  "grep",
+  "ripgrep",
+  "base",
+  "programs",
+  "diffutils",
+  "gh",
+  "jq",
+  "curl",
+  "awk",
+  "tar",
+  "procps",
+  "browser",
+  "libc",
+  "checksums",
+] as const;
+
+test("relay image inputs stay out of unrelated consumer gates", () => {
+  for (const path of [
+    ".github/workflows/relay-image.yml",
+    "packages/waffle-relay/scripts/relay-image-custody.ts",
+  ])
+    for (const name of consumerFilters)
+      expect(selected(name, path), `${name}: ${path}`).toBe(false);
+
+  for (const name of consumerFilters)
+    expect(selected(name, ".github/workflows/ci.yml"), name).toBe(true);
+});
+
+test("shared workflow inputs select the gates that consume them", () => {
+  const optimizerConsumers = new Set([
+    "coreutils",
+    "findutils",
+    "programs",
+    "diffutils",
+    "jq",
+    "awk",
+    "tar",
+    "checksums",
+  ]);
+  for (const name of optimizerConsumers)
+    expect(selected(name, ".github/actions/program-optimizer/action.yml"), name).toBe(true);
+
+  for (const name of consumerFilters.filter((name) => !optimizerConsumers.has(name)))
+    expect(selected(name, ".github/actions/program-optimizer/action.yml"), name).toBe(false);
+
+  expect(selected("findutils", ".github/workflows/findutils-xargs.yml")).toBe(true);
+  expect(selected("coreutils", ".github/workflows/findutils-xargs.yml")).toBe(true);
+  expect(selected("coreutils", ".github/workflows/coreutils-echo.yml")).toBe(true);
+  for (const name of consumerFilters.filter((name) => name !== "coreutils" && name !== "findutils"))
+    expect(selected(name, ".github/workflows/findutils-xargs.yml"), name).toBe(false);
+  for (const name of consumerFilters.filter((name) => name !== "coreutils"))
+    expect(selected(name, ".github/workflows/coreutils-echo.yml"), name).toBe(false);
+});
+
+const release = record(
+  YAML.parse(
+    readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+  ),
+);
+const releaseStepValues = record(record(release.jobs).release).steps;
+if (!Array.isArray(releaseStepValues)) throw new Error("expected release steps");
+const releaseSteps = releaseStepValues.map(record);
+
+function releaseStep(name: string): string {
+  const step = releaseSteps.find((entry) => entry.name === name);
+  if (typeof step?.run !== "string") throw new Error(`missing release step: ${name}`);
+  return step.run;
+}
+
+test("release workflow stages both archives and checksums as one draft", () => {
+  expect(record(release.permissions).contents).toBe("write");
+  expect(releaseStep("Pack the prepared runtime package")).toBe(
+    "bun run --cwd packages/waffle pack",
+  );
+  expect(releaseStep("Pack the prepared relay package")).toBe(
+    "bun pm pack --cwd packages/waffle-relay --destination dist",
+  );
+  const command = releaseStep("Publish the GitHub release assets").replace(/\\\r?\n\s*/g, " ");
+  expect(command).toMatch(/gh release create[^\n]*\s--draft(?:\s|$)/);
+  expect(command).toContain("--verify-tag");
+  for (const asset of ["runtime", "relay"]) {
+    expect(command).toContain(`\${{ steps.archives.outputs.${asset} }}`);
+    expect(command).toContain(`\${{ steps.archives.outputs.${asset} }}.sha256`);
+  }
+  expect(command).not.toContain("npm publish");
+});
+
+test("release guard accepts only a matching tag and package versions", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "waffle-release-guard-"));
+  const manifest = (name: string, version: string) => {
+    const directory = join(root, "packages", name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ version }));
+  };
+  const run = (tag: string) =>
+    spawnSync(
+      "bash",
+      ["-eo", "pipefail", "-c", releaseStep("Verify the release tag and package version")],
+      {
+        cwd: root,
+        env: { ...process.env, RELEASE_TAG: tag },
+      },
+    ).status;
+  try {
+    manifest("waffle", "0.0.108");
+    manifest("waffle-relay", "0.0.108");
+    expect(run("waffle-v0.0.108")).toBe(0);
+    expect(run("waffle-v0.0.109")).not.toBe(0);
+    manifest("waffle-relay", "0.0.0");
+    expect(run("waffle-v0.0.108")).not.toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release checksum step requires both archives and writes separate checksums", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "waffle-release-assets-"));
+  const output = join(root, "output");
+  const run = () =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", releaseStep("Write the archive checksums")], {
+      cwd: root,
+      env: { ...process.env, GITHUB_OUTPUT: output },
+    }).status;
+  try {
+    for (const name of ["waffle", "waffle-relay"]) {
+      const directory = join(root, "packages", name, "dist");
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(root, "packages", name, "package.json"),
+        JSON.stringify({ version: "1.2.3" }),
+      );
+    }
+    writeFileSync(join(root, "packages/waffle/dist/waffle-1.2.3.tgz"), "runtime");
+    expect(run()).not.toBe(0);
+    writeFileSync(join(root, "packages/waffle-relay/dist/waffle-relay-1.2.3.tgz"), "relay");
+    expect(run()).toBe(0);
+    for (const name of ["waffle", "waffle-relay"]) {
+      const directory = join(root, "packages", name, "dist");
+      const checksum = `${name}-1.2.3.tgz.sha256`;
+      const archive = `${name}-1.2.3.tgz`;
+      const digest = createHash("sha256")
+        .update(readFileSync(join(directory, archive)))
+        .digest("hex");
+      expect(readFileSync(join(directory, checksum), "utf8")).toBe(`${digest}  ${archive}\n`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("browser selects runners, shared controls and guest fixtures", () => {
@@ -133,10 +301,18 @@ test("browser failure retains structured recovery evidence before full protocol"
   const protocolUpload = artifactStep(steps, browserProtocolPath);
   expect(recoveryUpload.if).toBe("failure()");
   expect(record(recoveryUpload.with).name).toBe(
-    "browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}",
+    "browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   expect(steps.indexOf(recoveryUpload)).toBeLessThan(steps.indexOf(protocolUpload));
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
+});
+
+test("the browser suite runs its two ordered groups on separate runners", () => {
+  const browserTest = stepsFor("browser").find(
+    (step) =>
+      step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
+  );
+  expect(record(browserTest?.env).WAFFLE_BROWSER_GROUP).toBe("${{ matrix.group }}");
 });
 
 test("missing recovery report does not replace the browser failure", () => {
@@ -324,6 +500,9 @@ test("programs selects every consumed tool, workspace dependency, installer and 
     "tools/program-package.ts",
     "scripts/program-release.ts",
     "scripts/program-release.test.ts",
+    "scripts/program-release-fixtures.ts",
+    "scripts/program-rebind.ts",
+    "scripts/program-rebind.test.ts",
     "scripts/tsconfig.json",
     "tools/program-notices.ts",
     "packages/waffle/programs/index.ts",
@@ -341,7 +520,11 @@ test("programs selects every consumed tool, workspace dependency, installer and 
 
 test("programs normal CI runs the release closure test from the folded source checkpoint", () => {
   expect(
-    stepsFor("programs").some((step) => step.run === "bun test scripts/program-release.test.ts"),
+    stepsFor("programs").some(
+      (step) =>
+        step.run ===
+        "bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts",
+    ),
   ).toBe(true);
 });
 
@@ -807,4 +990,380 @@ test("gh restores the exact network asset and does not set up native compilers",
     record(steps.find((step) => step.uses === "actions/setup-node@v4")?.with)["node-version"],
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
+});
+
+test("awk has one bounded leaf using the normal finalizer and verified network bytes", () => {
+  const job = record(jobs.awk);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true') }}",
+  );
+  expect(record(changes.outputs).awk).toBe("${{ steps.paths.outputs.awk }}");
+  expect(job["timeout-minutes"]).toBe(15);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  const steps = stepsFor("awk");
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  const optimizer = steps.findIndex((step) => step.uses === "./.github/actions/program-optimizer");
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(install).toBeGreaterThan(verify);
+  expect(optimizer).toBeGreaterThanOrEqual(0);
+  const producer = steps.find((step) => step.run === "bun run programs:awk");
+  expect(producer).toBeDefined();
+  expect(steps.indexOf(record(producer))).toBeGreaterThan(optimizer);
+  expect(record(producer?.env).AWK_SCRATCH_ROOT).toBe("${{ runner.temp }}");
+  const network = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  expect(record(steps[restore]?.with).key).toBe(record(network?.with).key);
+  expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
+  const commands = steps.map((step) => step.run).join("\n");
+  expect(commands).not.toMatch(
+    /cargo\s|programs:(?:integration|check|prepare|pack|packed)|build:network/,
+  );
+  expect(steps.filter((step) => step.run === "bun run programs:awk")).toHaveLength(1);
+});
+
+test("awk selects its source and shared transformations without selecting unrelated guests", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".github/actions/program-optimizer/action.yml",
+    "package.json",
+    "bun.lock",
+    "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
+    "tools/program-package.ts",
+    "tools/program-notices.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/patches/wasi-libc/preopen-scan.patch",
+    "packages/base/src/index.ts",
+    "packages/awk/scripts/build-awk.ts",
+    "packages/awk/tests/awk-wasi.test.ts",
+  ])
+    expect(selected("awk", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "packages/coreutils/src/lib.rs",
+    "packages/diffutils/scripts/build-diffutils.ts",
+    "packages/jq/src/index.ts",
+    "packages/curl/src/index.ts",
+    "docs/bun-patches.md",
+    "site/package.json",
+  ])
+    expect(selected("awk", path), path).toBe(false);
+});
+
+test("tar scratch path is resolved by a runner step, not job-context evaluation", () => {
+  const job = record(jobs.tar);
+  expect(record(job.env).TAR_SCRATCH_ROOT).toBeUndefined();
+  const steps = stepsFor("tar");
+  const scratch = steps.find((step) => step.name === "Set run-owned tar scratch root");
+  const build = steps.find((step) => step.name === "Build matching native and WASI tar");
+  expect(scratch).toBeDefined();
+  expect(build).toBeDefined();
+  expect(String(scratch?.run)).toContain("TAR_SCRATCH_ROOT=%s");
+  expect(String(scratch?.run)).toContain('"$RUNNER_TEMP"');
+  expect(String(scratch?.run)).toContain('"$GITHUB_ENV"');
+  expect(steps.indexOf(record(scratch))).toBeLessThan(steps.indexOf(record(build)));
+});
+
+test("procps selects its exact inputs without selecting native work for package-only changes", () => {
+  const job = record(jobs.procps);
+  expect(record(changes.outputs).procps).toBe("${{ steps.paths.outputs.procps }}");
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}",
+  );
+  expect(filters.procps).toEqual([
+    ".github/workflows/ci.yml",
+    "package.json",
+    "bun.lock",
+    "packages/waffle/**",
+    "packages/procps/**",
+  ]);
+  for (const path of ["packages/procps/src/index.ts", "packages/procps/tests/oracle.test.ts"])
+    for (const name of [
+      "programs",
+      "coreutils",
+      "findutils",
+      "network",
+      "browser",
+      "libc",
+      "jq",
+      "diffutils",
+    ])
+      expect(selected(name, path), `${name}: ${path}`).toBe(false);
+  expect(selected("procps", "packages/procps/src/index.ts")).toBe(true);
+  expect(selected("procps", "packages/gh/src/index.ts")).toBe(false);
+});
+
+test("procps runs pure and runtime controls once using verified network bytes without a producer", () => {
+  const steps = stepsFor("procps");
+  const runs = steps.map((step) => String(step.run ?? ""));
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = runs.indexOf("bun run --cwd packages/waffle tooling/build-network.ts --verify");
+  const install = runs.indexOf("bun install --frozen-lockfile --ignore-scripts");
+  const prepare = runs.indexOf("bun run prepare:package");
+  const execute = runs.indexOf("bun run programs:procps");
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(install).toBeGreaterThan(verify);
+  expect(prepare).toBeGreaterThan(install);
+  expect(execute).toBeGreaterThan(prepare);
+  expect(runs.filter((run) => run === "bun run prepare:package")).toHaveLength(1);
+  expect(runs.filter((run) => run === "bun run programs:procps")).toHaveLength(1);
+  const network = stepsFor("network-wasm").find((step) => step.id === "network-artifact");
+  expect(record(steps[restore]?.with).key).toBe(record(network?.with).key);
+  expect(record(steps[restore]?.with)["fail-on-cache-miss"]).toBe(true);
+  expect(runs).toContain(
+    'ln -s "$GITHUB_WORKSPACE/packages/waffle/node_modules/@types" packages/procps/node_modules/@types',
+  );
+  expect(
+    steps.some((step) =>
+      /cargo|rust-toolchain|wasi-sdk|wasmtime|build:network/.test(
+        String(step.uses ?? "") + " " + String(step.run ?? ""),
+      ),
+    ),
+  ).toBe(false);
+  const root = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8"));
+  expect(root.scripts["programs:procps:pure"]).toBe(
+    "bun run --cwd packages/procps test:pure && bun run --cwd packages/procps typecheck && bun run --cwd packages/procps size",
+  );
+  expect(root.scripts["programs:procps"]).toBe(
+    "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands",
+  );
+});
+
+test("checksums has a bounded leaf using the existing producer route", () => {
+  const job = record(jobs["coreutils-checksums"]);
+  expect(job.needs).toEqual(["changes", "network-wasm"]);
+  expect(job.if).toBe(
+    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}",
+  );
+  expect(record(changes.outputs).checksums).toBe("${{ steps.paths.outputs.checksums }}");
+  expect(job["timeout-minutes"]).toBe(30);
+  expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+  expect(record(job.env).WASI_LIBC_JOBS).toBe("2");
+  expect(record(job.env).GNU_CHECKSUM_ORACLE_ROOT).toBe(
+    "${{ github.workspace }}/.build/gnu-checksum-native-oracle",
+  );
+
+  const steps = stepsFor("coreutils-checksums");
+  const restore = steps.findIndex((step) => step.id === "network-artifact");
+  const verify = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
+  );
+  const install = steps.findIndex(
+    (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+  );
+  const rust = steps.findIndex((step) => step.uses === "dtolnay/rust-toolchain@stable");
+  const optimizer = steps.findIndex((step) => step.uses === "./.github/actions/program-optimizer");
+  const oracle = steps.findIndex(
+    (step) => step.name === "Verify the pinned GNU 9.12 checksum oracle",
+  );
+  const producer = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/coreutils build:checksums",
+  );
+  const readback = steps.findIndex(
+    (step) => step.name === "Read back the exact admitted checksum guests",
+  );
+  const acceptance = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/coreutils test:checksums:wasi",
+  );
+  expect(restore).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(restore);
+  expect(rust).toBeGreaterThanOrEqual(0);
+  expect(record(steps[rust]?.with).toolchain).toBe("1.98.1");
+  expect(record(steps[rust]?.with).targets).toBe("wasm32-wasip1");
+  expect(optimizer).toBeGreaterThan(verify);
+  expect(install).toBeGreaterThan(verify);
+  expect(oracle).toBeGreaterThan(install);
+  expect(producer).toBeGreaterThan(optimizer);
+  expect(producer).toBeGreaterThan(oracle);
+  expect(readback).toBeGreaterThan(producer);
+  expect(acceptance).toBeGreaterThan(readback);
+  expect(
+    steps.filter((step) => step.run === "bun run --cwd packages/coreutils build:checksums"),
+  ).toHaveLength(1);
+  expect(record(steps[acceptance]?.env).CHECKSUM_ARTIFACTS).toBe(
+    "${{ github.workspace }}/.build/checksum-artifact",
+  );
+  expect(String(steps[readback]?.run)).toContain("packages/coreutils/scripts/checksum-artifact.ts");
+  expect(String(steps[readback]?.run)).toContain("$GITHUB_WORKSPACE/.build/checksum-artifact");
+  expect(String(steps[readback]?.run)).not.toContain("build-coreutils");
+  expect(record(steps[readback]?.env).WASI_SDK_PATH).toBe(
+    "${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux",
+  );
+
+  const commands = steps.map((step) => String(step.run ?? "")).join("\n");
+  expect(commands).not.toMatch(
+    /build:network|program-release|programs:(?:integration|check|prepare|pack|packed)/,
+  );
+  expect(commands).not.toContain("build-date");
+  expect(commands).not.toContain("test:checksums:oracle");
+  expect(steps[oracle]?.run).toBe(
+    "node packages/coreutils/scripts/build-native-checksum-oracle.ts --verify-only",
+  );
+});
+
+test("checksums fetches pinned Cargo sources before preparing the checksum leaf", () => {
+  const steps = stepsFor("coreutils-checksums");
+  const cache = steps.findIndex((step) => step.id === "checksum-cache");
+  const rust = steps.findIndex((step) => step.uses === "dtolnay/rust-toolchain@stable");
+  const fetches = steps.filter((step) => step.run === "cargo fetch --locked");
+  expect(fetches).toHaveLength(1);
+  const fetch = fetches[0];
+  expect(fetch?.if).toBeUndefined();
+  const fetched = steps.indexOf(record(fetch));
+  const producer = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/coreutils build:checksums",
+  );
+  expect(cache).toBeGreaterThanOrEqual(0);
+  expect(fetched).toBeGreaterThan(cache);
+  expect(fetched).toBeGreaterThan(rust);
+  expect(producer).toBeGreaterThan(fetched);
+  for (const path of ["Cargo.toml", "Cargo.lock"])
+    expect(selected("checksums", path), path).toBe(true);
+});
+
+test("checksums caches the pinned toolchain, Cargo inputs and actual build outputs", () => {
+  const steps = stepsFor("coreutils-checksums");
+  const cache = steps.find((step) => step.id === "checksum-cache");
+  expect(cache).toBeDefined();
+  expect(cache?.uses).toBe("actions/cache@v4");
+  expect(steps.find((step) => step.id === "bun-cache")?.uses).toBe("actions/cache@v4");
+  expect(steps.find((step) => step.id === "sdk")?.uses).toBe("actions/cache@v4");
+  for (const path of [
+    "~/.rustup/toolchains",
+    "~/.cargo/registry",
+    "~/.cargo/git",
+    ".build/coreutils-checksums",
+    ".build/program-locales",
+    ".build/wasi-libc",
+    "packages/coreutils/.sources",
+  ])
+    expect(String(record(cache?.with).path)).toContain(path);
+  const key = String(record(cache?.with).key);
+  expect(key).toContain("packages/coreutils/crates/checksums/Cargo.lock");
+  expect(key).toContain("packages/coreutils/crates/checksums/patches/**");
+  expect(key).toContain("packages/coreutils/scripts/build-checksums.ts");
+  expect(key).toContain("tools/program-locales/**");
+  expect(key).toContain("packages/waffle/patches/wasi-libc/**");
+  expect(record(cache?.with)["restore-keys"]).toBe(
+    "${{ runner.os }}-${{ runner.arch }}-program-coreutils-checksums-v1-",
+  );
+  const discardIndex = steps.findIndex(
+    (step) => step.name === "Discard a generated source restored from a different checksum recipe",
+  );
+  expect(discardIndex).toBeGreaterThanOrEqual(0);
+  const discard = steps[discardIndex];
+  expect(discard?.if).toBe("steps.checksum-cache.outputs.cache-hit != 'true'");
+  expect(discard?.run).toBe("rm -rf packages/coreutils/.sources/checksums");
+  expect(discardIndex).toBeLessThan(
+    steps.findIndex((step) => step.run === "bun run --cwd packages/coreutils build:checksums"),
+  );
+  const retained = steps.find(
+    (step) => step.name === "Retain the exact checksum-only producer closure",
+  );
+  expect(retained?.uses).toBe("actions/upload-artifact@v4");
+  expect(String(record(retained?.with).path)).toContain(".build/checksum-artifact");
+  expect(String(record(retained?.with).path)).toContain(
+    ".build/gnu-checksum-native-oracle/metadata.json",
+  );
+  const native = steps.find((step) => step.id === "checksum-native-oracle");
+  expect(native?.uses).toBe("actions/cache@v4");
+  expect(record(native?.with).path).toBe(".build/gnu-checksum-native-oracle");
+  expect(String(record(native?.with).key)).toContain("steps.checksum-oracle-identity.outputs.key");
+  expect(String(record(native?.with).key)).toContain(
+    "steps.checksum-oracle-identity.outputs.image",
+  );
+  expect(record(native?.with)["restore-keys"]).toBeUndefined();
+  const nativeBuild = steps.find(
+    (step) => step.name === "Build the nine native GNU oracle programs on cache miss",
+  );
+  expect(nativeBuild?.if).toBe("steps.checksum-native-oracle.outputs.cache-hit != 'true'");
+  expect(nativeBuild?.run).toBe("node packages/coreutils/scripts/build-native-checksum-oracle.ts");
+});
+
+test("checksums selects its compiler, locale, libc, runtime and leaf inputs without unrelated guests", () => {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".github/actions/program-optimizer/action.yml",
+    "package.json",
+    "bun.lock",
+    "rust-toolchain.toml",
+    "tools/program-build-tools.ts",
+    "tools/program-optimize.ts",
+    "tools/program-derivation.ts",
+    "tools/program-locales/prepare.ts",
+    "tools/family-acceptance.ts",
+    "tools/tsconfig.programs.json",
+    "packages/waffle/runtime.ts",
+    "packages/waffle/core/wasi.ts",
+    "packages/waffle/fs/index.ts",
+    "packages/waffle/proc/worker-client.ts",
+    "packages/waffle/interrupt/check.ts",
+    "packages/waffle/browser/preview1-worker.ts",
+    "packages/waffle/programs/collection.ts",
+    "packages/waffle/scripts/build-wasi-libc.sh",
+    "packages/waffle/patches/wasi-libc/preopen-scan.patch",
+    "packages/coreutils/src/index.ts",
+    "packages/coreutils/crates/checksums/src/bin/sha256sum.rs",
+    "packages/coreutils/crates/checksums/Cargo.lock",
+    "packages/coreutils/scripts/build-checksums.ts",
+    "packages/coreutils/scripts/checksum-artifact.ts",
+    "packages/coreutils/scripts/checksum-oracle.ts",
+    "packages/coreutils/scripts/build-native-checksum-oracle.ts",
+    "packages/coreutils/scripts/build-native-date-oracle.ts",
+    "packages/coreutils/scripts/gnu-date-source.json",
+    "packages/coreutils/scripts/checksum-source.test.ts",
+    "packages/coreutils/scripts/checksum-parser.test.ts",
+    "packages/coreutils/scripts/prepare-checksum-source.ts",
+    "packages/coreutils/tests/checksums-wasi.test.ts",
+    "packages/coreutils/fixtures/checksums.json",
+    "packages/coreutils/provenance/checksums.source.json",
+  ])
+    expect(selected("checksums", path), path).toBe(true);
+  for (const path of [
+    "packages/waffle/browser/net/module.ts",
+    "packages/coreutils/scripts/build-date.ts",
+    "packages/coreutils/scripts/date-source.test.ts",
+    "packages/coreutils/crates/date/src/main.rs",
+    "packages/findutils/src/index.ts",
+    "packages/grep/src/index.ts",
+    "packages/sed/src/index.ts",
+    "packages/ripgrep/src/index.ts",
+    "packages/jq/src/index.ts",
+    "packages/diffutils/src/index.ts",
+    "site/src/pages/index.astro",
+    "docs/development.md",
+  ])
+    expect(selected("checksums", path), path).toBe(false);
+});
+
+test("procps CLI checks use package-local input paths and explicit configuration", () => {
+  const steps = stepsFor("procps");
+  for (const check of [
+    {
+      name: "Lint procps",
+      run: "../waffle/node_modules/.bin/oxlint --config ../waffle/.oxlintrc.json --deny-warnings --report-unused-disable-directives src tests scripts",
+    },
+    {
+      name: "Check procps formatting",
+      run: "../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json",
+    },
+  ]) {
+    const step = steps.find((entry) => entry.name === check.name);
+    expect(step).toBeDefined();
+    expect(step?.["working-directory"]).toBe("packages/procps");
+    expect(step?.run).toBe(check.run);
+  }
 });

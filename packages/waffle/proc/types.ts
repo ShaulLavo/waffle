@@ -4,6 +4,7 @@ import { objectFreeze } from "./intrinsics.ts";
 import type { StartFailure } from "./start-errno.ts";
 import type { ControlCells } from "./control.js";
 import type { OutcomeWord } from "./outcome.js";
+import type { ResolvedCommand } from "./registry.js";
 import type { DescriptorTable } from "../core/descriptors.js";
 
 export const Signal = objectFreeze({
@@ -104,15 +105,11 @@ export interface ProcessHandle {
   /** Physical teardown only: revoked shared buffers are never reused, even after this returns. */
   terminate(): void | Promise<void>;
 }
-export interface ProcessContext {
+export interface ProcessLifecycle {
   readonly pid: number;
   readonly parentPid: number;
   readonly job: number;
   readonly request: Readonly<SpawnRequest>;
-  readonly module: WebAssembly.Module;
-  readonly adapter: string;
-  /** This admitted module has injected interruption imports, rather than cooperative guest checkpoints. */
-  readonly interruptible: boolean;
   readonly descriptors: DescriptorTable;
   /** Wake hint only; signal identity and pending delivery live in signalState. */
   readonly interrupt: ControlCells;
@@ -130,6 +127,14 @@ export interface ProcessContext {
   startFailed(error: unknown): void;
   defaultSignal(signal?: number): void;
   registerRevocation(hook: () => void): () => void;
+}
+export interface ProcessContext extends ProcessLifecycle {
+  readonly module: WebAssembly.Module;
+  readonly adapter: string;
+  readonly interruptible: boolean;
+}
+export interface CommandProcessContext extends ProcessLifecycle {
+  readonly command: ResolvedCommand;
 }
 export interface ChildExitEvent {
   readonly pid: number;

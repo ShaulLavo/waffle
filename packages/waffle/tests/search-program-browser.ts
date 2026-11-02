@@ -212,21 +212,25 @@ export async function searchProgramBrowserCases() {
   function observe(pkg: ProgramPackage): ProgramPackage {
     return {
       ...pkg,
-      programs: pkg.programs.map((program) => ({
-        ...program,
-        launch: async (context, service, original) => {
-          observations.push({
-            pid: context.pid,
-            module: context.module,
-            context,
-            fallback: false,
-            transport: false,
-          });
-          check(context.module instanceof WebAssembly.Module, "real module was not admitted");
-          check(program.launch, "missing opt-in launch hook");
-          return program.launch(context, service, original);
-        },
-      })),
+      programs: pkg.programs.map((program) =>
+        program.command
+          ? program
+          : {
+              ...program,
+              launch: async (context, service, original) => {
+                observations.push({
+                  pid: context.pid,
+                  module: context.module,
+                  context,
+                  fallback: false,
+                  transport: false,
+                });
+                check(context.module instanceof WebAssembly.Module, "real module was not admitted");
+                check(program.launch, "missing opt-in launch hook");
+                return program.launch(context, service, original);
+              },
+            },
+      ),
     };
   }
   let queryId = 0;

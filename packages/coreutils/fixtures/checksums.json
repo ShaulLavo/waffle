@@ -1,0 +1,678 @@
+{
+  "schema": 1,
+  "upstreamRevision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/tmp/spec",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "utilities": {
+    "b2sum": {
+      "path": "/usr/bin/b2sum",
+      "version": "b2sum (GNU coreutils) 9.12",
+      "sha256": "0aa519fe5fb29a693f3b78ea995526e7de1e4964fb07fc6658445b4429e0c267"
+    },
+    "cksum": {
+      "path": "/usr/bin/cksum",
+      "version": "cksum (GNU coreutils) 9.12",
+      "sha256": "c9d9a20995b96a6d4768ddb46a2c9fe273c1499d3348fa06ec7fe1c8e87f4834"
+    },
+    "md5sum": {
+      "path": "/usr/bin/md5sum",
+      "version": "md5sum (GNU coreutils) 9.12",
+      "sha256": "b59ae1d8a6e62c0635e2df8817e9afc4633e62600f5c09cffccd32589ad70f21"
+    },
+    "sha1sum": {
+      "path": "/usr/bin/sha1sum",
+      "version": "sha1sum (GNU coreutils) 9.12",
+      "sha256": "fd66fdc485eb991f0ec4079679d00f3ead90c31458cddde598637cc8cb53efa0"
+    },
+    "sha224sum": {
+      "path": "/usr/bin/sha224sum",
+      "version": "sha224sum (GNU coreutils) 9.12",
+      "sha256": "3223a2acc04acb5e52bc36955e981885c47f6ceeac04b69f20b63fb9cb8aaddd"
+    },
+    "sha256sum": {
+      "path": "/usr/bin/sha256sum",
+      "version": "sha256sum (GNU coreutils) 9.12",
+      "sha256": "e0a612dbb527eccb83bdb1b5aacfc23a99e40054e1f60e63ce6be779eefc2ea6"
+    },
+    "sha384sum": {
+      "path": "/usr/bin/sha384sum",
+      "version": "sha384sum (GNU coreutils) 9.12",
+      "sha256": "a879ce65e30dfc5c6f69ab4b614c550ccffb3e5c8132913d1f8d2e0f5dbbb2df"
+    },
+    "sha512sum": {
+      "path": "/usr/bin/sha512sum",
+      "version": "sha512sum (GNU coreutils) 9.12",
+      "sha256": "8c706dfb557a793a024e48dce985637e9f1291de7e8fdd3dd52bb3a02a401513"
+    },
+    "sum": {
+      "path": "/usr/bin/sum",
+      "version": "sum (GNU coreutils) 9.12",
+      "sha256": "ded5e3b7d371324657980fbd2f07c3e10fd9e49e537cec75c6aab4f1294142b4"
+    }
+  },
+  "cases": [
+    {
+      "name": "b2sum reads stdin",
+      "utility": "b2sum",
+      "args": [
+        "b2sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "N2NmOGEyZWUwM2Y4ZDY2MWRlY2EzYjcyNTZkN2M2YTY0ODEzNjhlODdhODJlZTQ1MWE0YjBjNjNlM2IxOTY3MWRmYmUzYWZiYWU3NGI2MzQyYjEyOTBlNmRiY2I0MDY5NzllMTgzNGFhNWQ4ZDg4ZmE2NzRkOTMyOGIzMGE2MzkgIC0K",
+      "stderrPresent": false
+    },
+    {
+      "name": "b2sum reads a relative file",
+      "utility": "b2sum",
+      "args": [
+        "b2sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "N2NmOGEyZWUwM2Y4ZDY2MWRlY2EzYjcyNTZkN2M2YTY0ODEzNjhlODdhODJlZTQ1MWE0YjBjNjNlM2IxOTY3MWRmYmUzYWZiYWU3NGI2MzQyYjEyOTBlNmRiY2I0MDY5NzllMTgzNGFhNWQ4ZDg4ZmE2NzRkOTMyOGIzMGE2MzkgIGlucHV0Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cksum reads stdin",
+      "utility": "cksum",
+      "args": [
+        "cksum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "MzUwOTkzMDU1NyAxNgo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cksum reads a relative file",
+      "utility": "cksum",
+      "args": [
+        "cksum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "MzUwOTkzMDU1NyAxNiBpbnB1dAo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "md5sum reads stdin",
+      "utility": "md5sum",
+      "args": [
+        "md5sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "MDE1YTdlZjU2YzZiN2E1ODIyMTdkYTI2MTNmNDQxZTQgIC0K",
+      "stderrPresent": false
+    },
+    {
+      "name": "md5sum reads a relative file",
+      "utility": "md5sum",
+      "args": [
+        "md5sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "MDE1YTdlZjU2YzZiN2E1ODIyMTdkYTI2MTNmNDQxZTQgIGlucHV0Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha1sum reads stdin",
+      "utility": "sha1sum",
+      "args": [
+        "sha1sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "MzNmYTE4OTQ0Njg1MGUzNzA5YTA1ZmZjMDgxMDJlMDJhNDE4YTIxNiAgLQo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha1sum reads a relative file",
+      "utility": "sha1sum",
+      "args": [
+        "sha1sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "MzNmYTE4OTQ0Njg1MGUzNzA5YTA1ZmZjMDgxMDJlMDJhNDE4YTIxNiAgaW5wdXQK",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha224sum reads stdin",
+      "utility": "sha224sum",
+      "args": [
+        "sha224sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "OGE4Mjk2NGFkZDVmYThiY2ExYWM1Mzk1NGI0NjExMmI5OTY0MmNkYTk2NzQ2MTFjZWJlZTY5ZDIgIC0K",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha224sum reads a relative file",
+      "utility": "sha224sum",
+      "args": [
+        "sha224sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "OGE4Mjk2NGFkZDVmYThiY2ExYWM1Mzk1NGI0NjExMmI5OTY0MmNkYTk2NzQ2MTFjZWJlZTY5ZDIgIGlucHV0Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha256sum reads stdin",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "YzE5Y2EwM2Q1ZDU2MDQwMDNmMGIwYjgyNzA2MGQ4ODAwNmNmNmE1OTdhN2IxY2I1Nzg3YjE2NmU1Yjk2MzNmMiAgLQo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha256sum reads a relative file",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "YzE5Y2EwM2Q1ZDU2MDQwMDNmMGIwYjgyNzA2MGQ4ODAwNmNmNmE1OTdhN2IxY2I1Nzg3YjE2NmU1Yjk2MzNmMiAgaW5wdXQK",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha384sum reads stdin",
+      "utility": "sha384sum",
+      "args": [
+        "sha384sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "NzE2NmJjMGY1YTRlZTk4ZWRiMjFmNGEwZjYzYjVkYjgxMzQ0ZDdmNjU0OGVjYmM0ZmVhZWY3ODUxNjFmZGVhNTE4MWVlMjNlYzYyZGU3ZDY1M2JlOTc2MTJmM2QxMzAzICAtCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha384sum reads a relative file",
+      "utility": "sha384sum",
+      "args": [
+        "sha384sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "NzE2NmJjMGY1YTRlZTk4ZWRiMjFmNGEwZjYzYjVkYjgxMzQ0ZDdmNjU0OGVjYmM0ZmVhZWY3ODUxNjFmZGVhNTE4MWVlMjNlYzYyZGU3ZDY1M2JlOTc2MTJmM2QxMzAzICBpbnB1dAo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha512sum reads stdin",
+      "utility": "sha512sum",
+      "args": [
+        "sha512sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "YjY1Njk1OTIwNWM4MmYyM2E2ZTI3MTk0ZGQyYTZkMTQ4NzUxYTY4OTdjNDcwYjkwZjM2MGYyY2NkNWZiOTcyNjhiMTk2MDVkN2NmZjkyMDlmMjFkNmZiOGE4OWZjY2QyNDVhZmNhOTE4YWJkY2YyNDNlYTgxNjNhYzgxNzY3YzUgIC0K",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha512sum reads a relative file",
+      "utility": "sha512sum",
+      "args": [
+        "sha512sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "YjY1Njk1OTIwNWM4MmYyM2E2ZTI3MTk0ZGQyYTZkMTQ4NzUxYTY4OTdjNDcwYjkwZjM2MGYyY2NkNWZiOTcyNjhiMTk2MDVkN2NmZjkyMDlmMjFkNmZiOGE4OWZjY2QyNDVhZmNhOTE4YWJkY2YyNDNlYTgxNjNhYzgxNzY3YzUgIGlucHV0Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sum reads stdin",
+      "utility": "sum",
+      "args": [
+        "sum"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "NjE5NDYgICAgIDEK",
+      "stderrPresent": false
+    },
+    {
+      "name": "sum reads a relative file",
+      "utility": "sum",
+      "args": [
+        "sum",
+        "input"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "NjE5NDYgICAgIDEgaW5wdXQK",
+      "stderrPresent": false
+    },
+    {
+      "name": "b2sum verifies a matching file",
+      "utility": "b2sum",
+      "args": [
+        "b2sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "N2NmOGEyZWUwM2Y4ZDY2MWRlY2EzYjcyNTZkN2M2YTY0ODEzNjhlODdhODJlZTQ1MWE0YjBjNjNlM2IxOTY3MWRmYmUzYWZiYWU3NGI2MzQyYjEyOTBlNmRiY2I0MDY5NzllMTgzNGFhNWQ4ZDg4ZmE2NzRkOTMyOGIzMGE2MzkgIGlucHV0Cg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "md5sum verifies a matching file",
+      "utility": "md5sum",
+      "args": [
+        "md5sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "MDE1YTdlZjU2YzZiN2E1ODIyMTdkYTI2MTNmNDQxZTQgIGlucHV0Cg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha1sum verifies a matching file",
+      "utility": "sha1sum",
+      "args": [
+        "sha1sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "MzNmYTE4OTQ0Njg1MGUzNzA5YTA1ZmZjMDgxMDJlMDJhNDE4YTIxNiAgaW5wdXQK"
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha224sum verifies a matching file",
+      "utility": "sha224sum",
+      "args": [
+        "sha224sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "OGE4Mjk2NGFkZDVmYThiY2ExYWM1Mzk1NGI0NjExMmI5OTY0MmNkYTk2NzQ2MTFjZWJlZTY5ZDIgIGlucHV0Cg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha256sum verifies a matching file",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "YzE5Y2EwM2Q1ZDU2MDQwMDNmMGIwYjgyNzA2MGQ4ODAwNmNmNmE1OTdhN2IxY2I1Nzg3YjE2NmU1Yjk2MzNmMiAgaW5wdXQK"
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha384sum verifies a matching file",
+      "utility": "sha384sum",
+      "args": [
+        "sha384sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "NzE2NmJjMGY1YTRlZTk4ZWRiMjFmNGEwZjYzYjVkYjgxMzQ0ZDdmNjU0OGVjYmM0ZmVhZWY3ODUxNjFmZGVhNTE4MWVlMjNlYzYyZGU3ZDY1M2JlOTc2MTJmM2QxMzAzICBpbnB1dAo="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha512sum verifies a matching file",
+      "utility": "sha512sum",
+      "args": [
+        "sha512sum",
+        "--check",
+        "expected"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        },
+        {
+          "path": "expected",
+          "contentBase64": "YjY1Njk1OTIwNWM4MmYyM2E2ZTI3MTk0ZGQyYTZkMTQ4NzUxYTY4OTdjNDcwYjkwZjM2MGYyY2NkNWZiOTcyNjhiMTk2MDVkN2NmZjkyMDlmMjFkNmZiOGE4OWZjY2QyNDVhZmNhOTE4YWJkY2YyNDNlYTgxNjNhYzgxNzY3YzUgIGlucHV0Cg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha256sum checks a list from stdin",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "-"
+      ],
+      "inputBase64": "YzE5Y2EwM2Q1ZDU2MDQwMDNmMGIwYjgyNzA2MGQ4ODAwNmNmNmE1OTdhN2IxY2I1Nzg3YjE2NmU1Yjk2MzNmMiAgaW5wdXQK",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "aW5wdXQ6IE9LCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha256sum rejects a mismatching file",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "-"
+      ],
+      "inputBase64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCAgaW5wdXQK",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 1,
+      "stdoutBase64": "aW5wdXQ6IEZBSUxFRAo=",
+      "stderrPresent": true
+    },
+    {
+      "name": "sha256sum reports malformed verification lines",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "-"
+      ],
+      "inputBase64": "bm90IGEgY2hlY2tzdW0K",
+      "files": [],
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "sha256sum reports a missing data file",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "missing"
+      ],
+      "inputBase64": "",
+      "files": [],
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "sha256sum reports a missing checksum list",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "missing"
+      ],
+      "inputBase64": "",
+      "files": [],
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "sha256sum reports a missing verification target",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "-"
+      ],
+      "inputBase64": "YzE5Y2EwM2Q1ZDU2MDQwMDNmMGIwYjgyNzA2MGQ4ODAwNmNmNmE1OTdhN2IxY2I1Nzg3YjE2NmU1Yjk2MzNmMiAgbWlzc2luZwo=",
+      "files": [],
+      "status": 1,
+      "stdoutBase64": "bWlzc2luZzogRkFJTEVEIG9wZW4gb3IgcmVhZAo=",
+      "stderrPresent": true
+    },
+    {
+      "name": "sha256sum suppresses successful verification output",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--check",
+        "--status",
+        "-"
+      ],
+      "inputBase64": "YzE5Y2EwM2Q1ZDU2MDQwMDNmMGIwYjgyNzA2MGQ4ODAwNmNmNmE1OTdhN2IxY2I1Nzg3YjE2NmU1Yjk2MzNmMiAgaW5wdXQK",
+      "files": [
+        {
+          "path": "input",
+          "contentBase64": "V2FmZmxlIGNoZWNrc3VtCg=="
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "",
+      "stderrPresent": false
+    },
+    {
+      "name": "sha256sum rejects invalid options",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "--not-an-option"
+      ],
+      "inputBase64": "",
+      "files": [],
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "sha256sum preserves binary file bytes",
+      "utility": "sha256sum",
+      "args": [
+        "sha256sum",
+        "binary"
+      ],
+      "inputBase64": "",
+      "files": [
+        {
+          "path": "binary",
+          "contentBase64": "AP8NCoAA"
+        }
+      ],
+      "status": 0,
+      "stdoutBase64": "YzFlYWZlOWNjYzhhYTExNTY3ZWQ2NjNkODMwY2I2ODVkZDFhMjE2ZTY4N2Q4NWNhYjQyNmMxZjYwOWNlNTgyNiAgYmluYXJ5Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "sum supports System V sums",
+      "utility": "sum",
+      "args": [
+        "sum",
+        "-s"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "MTQ5MCAxCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "b2sum supports digest lengths",
+      "utility": "b2sum",
+      "args": [
+        "b2sum",
+        "--length=128"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "ZjhlNjc4ZTE3MjM4OTY4YTM1ZjE4ODQxMDEwOGFkYWIgIC0K",
+      "stderrPresent": false
+    },
+    {
+      "name": "cksum supports SHA256 selection",
+      "utility": "cksum",
+      "args": [
+        "cksum",
+        "--algorithm=sha256"
+      ],
+      "inputBase64": "V2FmZmxlIGNoZWNrc3VtCg==",
+      "files": [],
+      "status": 0,
+      "stdoutBase64": "U0hBMjU2ICgtKSA9IGMxOWNhMDNkNWQ1NjA0MDAzZjBiMGI4MjcwNjBkODgwMDZjZjZhNTk3YTdiMWNiNTc4N2IxNjZlNWI5NjMzZjIK",
+      "stderrPresent": false
+    }
+  ],
+  "stream": {
+    "status": 0,
+    "stdoutBase64": "ZmJiYWIyODlmN2Y5NGIyNTczNmM1OGJlNDZhOTk0YzQ0MWZkMDI1NTJjYzYwMjIzNTJlM2Q4NmQyZmFiN2M4MyAgLQo=",
+    "stderrPresent": false
+  }
+}

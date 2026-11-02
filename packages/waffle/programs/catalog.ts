@@ -1,6 +1,9 @@
 import type { PackageProgram, ProgramPackage } from "./index.js";
 
-export interface ProgramCatalog extends ProgramPackage {
+export interface ProgramCatalog<
+  Programs extends readonly PackageProgram[] = readonly PackageProgram[],
+> extends ProgramPackage {
+  readonly programs: Programs;
   pick(...names: string[]): ProgramPackage;
 }
 
@@ -12,7 +15,9 @@ export function packageIdentity(pkg: ProgramPackage): object {
 }
 
 /** A selection retains each definition and its package's payload ownership. */
-export function defineProgramPackage(pkg: ProgramPackage): ProgramCatalog {
+export function defineProgramPackage<Package extends ProgramPackage>(
+  pkg: Package,
+): ProgramCatalog<Package["programs"]> {
   const identity = packageIdentity(pkg);
   const catalog = Object.freeze({
     ...pkg,

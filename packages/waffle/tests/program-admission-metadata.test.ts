@@ -28,6 +28,7 @@ test("low-level cooperative module registration resolves explicit non-instrument
   const registry = new ExecutableRegistry();
   registry.register("cooperative", { module, adapter: "preview1" });
   expect(await registry.resolve("cooperative")).toEqual({
+    kind: "module",
     module,
     adapter: "preview1",
     interruptible: false,
@@ -52,9 +53,14 @@ test("shared compilation preserves immutable admission metadata per registered p
     registry.resolve("cooperative"),
     registry.resolve("engine"),
   ]);
-  expect(source).toEqual({ module, adapter: "preview1", interruptible: true });
-  expect(cooperative).toEqual({ module, adapter: "preview1", interruptible: false });
-  expect(engine).toEqual({ module, adapter: "bun:quickjs", interruptible: false });
+  expect(source).toEqual({ kind: "module", module, adapter: "preview1", interruptible: true });
+  expect(cooperative).toEqual({
+    kind: "module",
+    module,
+    adapter: "preview1",
+    interruptible: false,
+  });
+  expect(engine).toEqual({ kind: "module", module, adapter: "bun:quickjs", interruptible: false });
   expect(loads).toBe(1);
 });
 
@@ -69,8 +75,14 @@ test("pending resolution retains admission and adapter when its name is replaced
   const admitted = registry.resolve("program");
   registry.register("program", { module, adapter: "bun:jsc", interruptible: false });
   compilation.resolve(module);
-  expect(await admitted).toEqual({ module, adapter: "preview1", interruptible: true });
+  expect(await admitted).toEqual({
+    kind: "module",
+    module,
+    adapter: "preview1",
+    interruptible: true,
+  });
   expect(await registry.resolve("program")).toEqual({
+    kind: "module",
     module,
     adapter: "bun:jsc",
     interruptible: false,

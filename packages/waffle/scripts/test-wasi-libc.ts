@@ -32,6 +32,15 @@ async function run(command: string[], env: NodeJS.ProcessEnv = process.env): Pro
 async function buildFixtures(): Promise<void> {
   const sysroot = process.env.WASI_LIBC_SYSROOT_CACHE ?? join(root, "sysroot");
   if (!existsSync(sysroot)) await run(["bash", join(repo, "scripts/build-wasi-libc.sh"), sysroot]);
+  await run([
+    join(sdk, "bin/clang"),
+    "--target=wasm32-wasip1",
+    `--sysroot=${sysroot}`,
+    "-O2",
+    join(repo, "tests/fixtures/preview1-socket.c"),
+    "-o",
+    join(root, "socket.wasm"),
+  ]);
   for (const flavor of ["patched", "stock"]) {
     for (const start of [false, true]) {
       const file = join(root, `${flavor}${start ? "-start" : ""}.wasm`);
@@ -57,11 +66,17 @@ async function buildFixtures(): Promise<void> {
 
 const cache = process.env.WASI_LIBC_FIXTURE_CACHE;
 const fixtures = cache && existsSync(cache) ? cache : root;
-const fixtureNames = ["patched.wasm", "patched-start.wasm", "stock.wasm", "stock-start.wasm"];
+const fixtureNames = [
+  "patched.wasm",
+  "patched-start.wasm",
+  "stock.wasm",
+  "stock-start.wasm",
+  "socket.wasm",
+];
 try {
   if (fixtures === root) await buildFixtures();
   else console.log(`Using cached wasi-libc fixtures: ${fixtures}`);
-  await run(["bun", "test", "./tests/wasi-libc.test.ts"], {
+  await run(["bun", "test", "./tests/wasi-libc.test.ts", "./tests/preview1-socket-libc.test.ts"], {
     ...process.env,
     WAFFLE_LIBC_FIXTURES: fixtures,
   });

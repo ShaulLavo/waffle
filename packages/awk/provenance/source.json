@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "package": "waffle-awk",
+  "upstream": {
+    "name": "The One True Awk",
+    "version": "20260426",
+    "repository": "https://github.com/onetrueawk/awk",
+    "revision": "5739fd79bcfc75ba7526773d0cf634521f8aca3c",
+    "archiveSha256": "14b636bec87f5817012d883b9b318e808eee28881a7b4388f92ef6b5f940d7ef",
+    "licensePath": "LICENSE",
+    "licenseSha256": "200230e6fbeee50b17faec485fe3018dac0d224e02ef5eda6ed65e4c809d933b"
+  },
+  "localFiles": {
+    "patch": {
+      "path": "patches/wasi-unsupported-ops.patch",
+      "sha256": "f86abb28d347886ff591e4e4a6569cdeea86c1010cc3c67f9d33807e92b0825c"
+    },
+    "sharedBuildTools": {
+      "path": "../../../tools/program-build-tools.ts",
+      "purpose": "pinned wasi-sdk, patched wasi-libc, Wasm memory cap and name-section verification"
+    }
+  },
+  "adaptation": {
+    "supported": "The upstream evaluator, parser, CLI, stdin and file processing are compiled unchanged apart from explicit WASI host-operation guards.",
+    "rejected": "system() and input/output command pipes fail with diagnostics because Waffle has no host process API for them.",
+    "notClaimed": "This package does not claim complete POSIX, GNU awk, locale, or host-process parity."
+  }
+}

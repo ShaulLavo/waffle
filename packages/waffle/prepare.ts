@@ -11,6 +11,8 @@ const { buildNodeModules } = await import("./build");
 await buildNodeModules(root);
 const required = [
   "dist/index.js",
+  "tooling/program/program-build-tools.ts",
+  "dist/tooling/program/program-build-tools.js",
   "dist/browser/net/network.wasm",
   "dist/core/index.js",
   "dist/core/memory-views.js",

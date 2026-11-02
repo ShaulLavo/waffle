@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "name": "The One True Awk",
+    "version": "20260426",
+    "repository": "https://github.com/onetrueawk/awk",
+    "revision": "5739fd79bcfc75ba7526773d0cf634521f8aca3c",
+    "archive": "https://codeload.github.com/onetrueawk/awk/tar.gz/5739fd79bcfc75ba7526773d0cf634521f8aca3c",
+    "archiveSha256": "14b636bec87f5817012d883b9b318e808eee28881a7b4388f92ef6b5f940d7ef",
+    "license": "Lucent Technologies permissive license",
+    "licensePath": "LICENSE",
+    "licenseSha256": "200230e6fbeee50b17faec485fe3018dac0d224e02ef5eda6ed65e4c809d933b",
+    "fixesSha256": "7a698e0161e40c5806b78824007738ce9df9aa6cc883957804ed68173e0edd87"
+  },
+  "localAdaptation": "The evaluator and CLI remain upstream. The WASI-only patch initializes libc cwd from PWD, omits native SIGFPE and close-on-exec setup that WASI cannot provide, and rejects system() and command pipes explicitly. Native builds use the same archive and patch with WASI guards inactive."
+}

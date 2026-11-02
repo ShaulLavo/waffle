@@ -138,6 +138,7 @@ interface ProbeData {
   process: WorkerProcessTransport;
   context: TerminalContext;
   input: SharedArrayBuffer;
+  readReceipt: SharedArrayBuffer;
   barrier: SharedArrayBuffer;
   admissionOffset: number;
   module: string;
@@ -223,7 +224,13 @@ async function probe() {
       ...base,
       tryRead(turn: Parameters<typeof base.tryRead>[0], chunks: readonly Uint8Array[]) {
         if (data.pause === "session") pause();
-        return base.tryRead(turn, chunks);
+        const count = base.tryRead(turn, chunks);
+        const receipt = new Int32Array(data.readReceipt);
+        Atomics.store(receipt, 1, count);
+        Atomics.store(receipt, 2, chunks[0]?.[0] ?? -1);
+        Atomics.store(receipt, 0, 1);
+        Atomics.notify(receipt, 0);
+        return count;
       },
     },
   });
@@ -247,6 +254,7 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
 
 function start(f: ReturnType<typeof fixture>, pause: Pause) {
   const barrier = new Int32Array(new SharedArrayBuffer(4));
+  const readReceipt = new SharedArrayBuffer(12);
   const worker = new Worker(
     `(${probe.toString()})().catch(error=>{require('node:worker_threads').parentPort.postMessage({phase:'error',error:String(error)})})`,
     {
@@ -255,6 +263,7 @@ function start(f: ReturnType<typeof fixture>, pause: Pause) {
         process: f.process,
         context: f.context,
         input: f.input.buffer,
+        readReceipt,
         barrier: barrier.buffer,
         pause,
         admissionOffset: f.state.terminalAdmission.byteOffset,
@@ -278,6 +287,7 @@ function start(f: ReturnType<typeof fixture>, pause: Pause) {
   worker.once("exit", (code) => receive({ phase: "exit", code }));
   return {
     worker,
+    readReceipt,
     next: () =>
       bounded(
         queue.length
@@ -477,7 +487,14 @@ async function finishInterrupted(
     expect(controlLoad(f.state.terminalStopped)).toBe(0);
     whileFenced();
     holder.release();
-    expect(await holder.next()).toMatchObject({ phase: "done", count: 1 });
+    const message = await holder.next();
+    const receipt = new Int32Array(holder.readReceipt);
+    expect(Atomics.load(receipt, 0)).toBe(1);
+    expect(Atomics.load(receipt, 1)).toBe(1);
+    expect(Atomics.load(receipt, 2)).toBe(65);
+    if (message && typeof message === "object" && "phase" in message && message.phase === "done")
+      expect(message).toMatchObject({ phase: "done", count: 1 });
+    else expect(message).toEqual({ phase: "exit", code: 1 });
     await bounded(retired.promise);
   } finally {
     unsubscribe();

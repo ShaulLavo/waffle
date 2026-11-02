@@ -13,6 +13,7 @@ import {
 import {
   CONN_BASE,
   AGAIN,
+  BADF,
   FETCH_WINDOW,
   type FetchHead,
   Kind,
@@ -23,6 +24,7 @@ import {
   ERROR,
   UNSUPPORTED,
   OK,
+  TCP_PENDING,
   type SocketAddr,
   type TcpRequest,
 } from "./protocol.js";
@@ -38,6 +40,8 @@ import {
 import { EBADF, ECANCELED, ENOBUFS, ENOTCAPABLE } from "./unix-status.js";
 import { RingWriter } from "./ring.js";
 import { TCP_INVALID } from "./tcp-status.js";
+import type { NetConnect } from "./outbound.js";
+import { OutboundSocket } from "./outbound-socket.js";
 import {
   acceptedAddress,
   loopbackAddress,
@@ -47,6 +51,7 @@ import {
   type RuntimeNetworkLookupResult,
 } from "./address.js";
 import { NetNamespace, LoopbackSocket, tcpReply } from "./namespace.js";
+import { readNetFetchResponseMetadata } from "./transport.js";
 export { NetNamespace } from "./namespace.js";
 
 const encoder = new TextEncoder();
@@ -92,6 +97,12 @@ export interface ConnectionSink {
 
 /** External network policy. Honor manual redirects and return already-decoded Fetch bodies. */
 export type NetFetch = (url: string, options: RequestInit) => Promise<Response>;
+export type {
+  NetConnect,
+  NetConnectErrorCode,
+  NetOutboundStream,
+  NetOutboundTarget,
+} from "./outbound.js";
 
 /** The helper invokes the runtime's name policy on its responsive I/O thread. */
 export type NetLookup = (
@@ -119,6 +130,7 @@ export class NetHelper {
   private nextConn = CONN_BASE;
   private disposed = false;
   private sockets = new Map<number, LoopbackSocket>();
+  private outbound = new Map<number, OutboundSocket>();
   private pending = new Map<number, Set<number>>();
   private pathListeners = new Map<number, PathBinding>();
   /** Abstract listener handle -> name. The namespace holds the binding; nothing to unlink. */
@@ -135,7 +147,10 @@ export class NetHelper {
     private assertOwnerLive: () => void = () => {},
     private lookupRequest: NetLookup = lookupAddress,
     private paths?: HelperPaths,
+    private connectRequest?: NetConnect,
   ) {
+    if (connectRequest !== undefined && typeof connectRequest !== "function")
+      throw new TypeError("Network connect policy must be a function");
     this.ring = new RingWriter(sab);
   }
 
@@ -164,9 +179,11 @@ export class NetHelper {
         return;
       case "tcp-read":
         this.sockets.get(req.id)?.consumed(req.bytes);
+        this.outbound.get(req.id)?.consumed(req.bytes);
         return;
       case "shutdown":
         if (this.sockets.has(req.id)) this.sockets.get(req.id)!.shutdown();
+        else if (this.outbound.has(req.id)) this.outbound.get(req.id)!.shutdown();
         else this.close(req.id);
         return;
       case "write":
@@ -182,6 +199,7 @@ export class NetHelper {
     this.ring.dispose();
     this.namespace.release(this);
     const sockets = Array.from(this.sockets.values());
+    const outbound = Array.from(this.outbound.values());
     const fetches = Array.from(this.fetches.values());
     const connections = Array.from(this.connections.values());
     const ports = Array.from(this.listeners.values());
@@ -190,6 +208,7 @@ export class NetHelper {
     this.abstractListeners.clear();
     this.pathOperations.clear();
     this.sockets.clear();
+    this.outbound.clear();
     this.pending.clear();
     this.fetches.clear();
     this.lookups.clear();
@@ -205,6 +224,7 @@ export class NetHelper {
       }
     };
     for (const socket of sockets) attempt(() => socket.close());
+    for (const socket of outbound) attempt(() => socket.reset());
     for (const job of fetches) {
       attempt(() => job.controller.abort());
       job.wake?.();
@@ -544,6 +564,7 @@ export class NetHelper {
       this.pathListeners.has(id) ||
       this.abstractListeners.has(id) ||
       this.sockets.has(id) ||
+      this.outbound.has(id) ||
       this.listeners.has(id) ||
       this.connections.has(id)
     );
@@ -687,6 +708,11 @@ export class NetHelper {
   }
 
   private executeTcp(req: Exclude<TcpRequest, UnixRequest>): [number, number] {
+    if (req.type === "tcp-ready") {
+      const socket = this.sockets.get(req.id) ?? this.outbound.get(req.id);
+      if (socket) return [Number(socket.writableNow()), 0];
+      return [this.connections.has(req.id) ? 1 : BADF, 0];
+    }
     if (req.type !== "tcp-write" && this.claimed(req.id)) return [TCP_INVALID, 0];
     if (req.type === "tcp-listen") {
       const port = this.listen(req.id, req.port, req.host, true);
@@ -695,16 +721,29 @@ export class NetHelper {
     if (req.type === "tcp-write") {
       const socket = this.sockets.get(req.id);
       if (socket) return [socket.write(req.data), 0];
+      const outbound = this.outbound.get(req.id);
+      if (outbound) return [outbound.write(req.data), 0];
       const sink = this.connections.get(req.id);
       if (!sink) return [ERROR, 0];
       sink.data(req.data);
       return [req.data.length, 0];
     }
     if (!this.live()) return [ERROR, 0];
-    const connected = this.namespace.connect(req.port, this.socketSink(req.id), req.host);
-    if (typeof connected === "number") return [connected, 0];
-    this.sockets.set(req.id, connected.socket);
-    return [0, connected.port];
+    const loopback = tcpAddress(req.host);
+    if (loopback) {
+      const connected = this.namespace.connect(req.port, this.socketSink(req.id), req.host);
+      if (typeof connected === "number") return [connected, 0];
+      this.sockets.set(req.id, connected.socket);
+      return [0, connected.port];
+    }
+    if (!this.connectRequest) return [UNSUPPORTED, 0];
+    if (!Number.isInteger(req.port) || req.port < 1 || req.port > 65535) return [TCP_INVALID, 0];
+    const socket = new OutboundSocket(req.id, { host: req.host, port: req.port }, this.ring, () => {
+      if (this.outbound.get(req.id) === socket) this.outbound.delete(req.id);
+    });
+    this.outbound.set(req.id, socket);
+    socket.start(this.connectRequest);
+    return [TCP_PENDING, 0];
   }
 
   // ---------- fetch ----------
@@ -808,12 +847,14 @@ export class NetHelper {
       await response.body?.cancel();
       throw new TypeError("Network policy hides the redirect destination");
     }
+    const metadata = readNetFetchResponseMetadata(response);
+    const targetURL = (metadata?.targetURL ?? response.url) || req.url;
     return {
       head: {
         status: response.status,
         statusText: response.statusText,
-        url: response.url || req.url,
-        redirected: response.redirected,
+        url: targetURL,
+        redirected: metadata?.redirected ?? response.redirected,
         headers: Array.from(response.headers),
       },
       body: response.body,
@@ -973,6 +1014,11 @@ export class NetHelper {
       socket.close();
       return;
     }
+    const outbound = this.outbound.get(id);
+    if (outbound) {
+      outbound.close();
+      return;
+    }
     const job = this.fetches.get(id);
     if (job) {
       this.fetches.delete(id);
@@ -1025,6 +1071,8 @@ function snapshotRequest(req: NetRequest): NetRequest {
       return { type, id, reply: req.reply, port: req.port, host: req.host };
     case "tcp-write":
       return { type, id, reply: req.reply, data: req.data };
+    case "tcp-ready":
+      return { type, id, reply: req.reply };
     case "unix-listen":
       return {
         type,

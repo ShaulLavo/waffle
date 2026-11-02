@@ -1,0 +1,6 @@
+waffle-curl is an original TypeScript adapter, copyright 2026 Waffle contributors,
+licensed under MIT. See LICENSE. It does not bundle libcurl or upstream curl code.
+
+The command-line subset is informed by the installed native curl help and owned
+local fixture comparisons. Fetch, Headers, Blob, AbortController and Web streams
+are supplied by the application environment. No runtime or interpreter is bundled.

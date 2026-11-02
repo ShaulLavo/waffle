@@ -127,6 +127,9 @@ export class LoopbackSocket {
     this.peer?.wakeWriters();
     this.peer?.sink?.writable?.();
   }
+  writableNow(): boolean {
+    return !this.closed && !!this.module.call("net_writable", this.id);
+  }
   writable(): Promise<void> {
     if (this.closed || this.module.call("net_writable", this.id)) return Promise.resolve();
     return new Promise((resolve) => this.writers.add(resolve));

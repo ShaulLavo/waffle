@@ -37,7 +37,22 @@ const integer = (value: number): number[] => {
 const text = (value: string) =>
   integer(value.length).concat(Array.from(new TextEncoder().encode(value)));
 const section = (kind: number, bytes: number[]) => [kind].concat(integer(bytes.length), bytes);
+const signatures = (...items: number[][]) => section(1, [items.length].concat(...items));
+const signature = (params: number[], results: number[]) =>
+  [0x60].concat(params.length, params, results.length, results);
 const custom = (name: string, bytes: number[]) => section(0, text(name).concat(bytes));
+const standardEhControl = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x09, 0x02, 0x60, 0x01, 0x7f, 0x00, 0x60,
+  0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x01, 0x0d, 0x03, 0x01, 0x00, 0x00, 0x07, 0x07, 0x01, 0x03,
+  0x72, 0x75, 0x6e, 0x00, 0x00, 0x0a, 0x14, 0x01, 0x12, 0x00, 0x02, 0x7f, 0x1f, 0x40, 0x01, 0x00,
+  0x00, 0x00, 0x41, 0x07, 0x08, 0x00, 0x0b, 0x41, 0x00, 0x0b, 0x0b, 0x00, 0x1b, 0x04, 0x6e, 0x61,
+  0x6d, 0x65, 0x03, 0x0b, 0x01, 0x00, 0x01, 0x00, 0x06, 0x63, 0x61, 0x75, 0x67, 0x68, 0x74, 0x0b,
+  0x07, 0x01, 0x00, 0x04, 0x65, 0x78, 0x69, 0x74,
+]);
+const standardEhFeatures = custom("target_features", [1, 0x2b].concat(text("exception-handling")));
+const withStandardEhFeatures = new Uint8Array(
+  Array.from(standardEhControl).concat(standardEhFeatures),
+);
 
 function guest(extra: number[] = []) {
   return new Uint8Array(
@@ -102,6 +117,7 @@ test("policy covers every program family and leaves non-Wasm packages explicit",
       programOptimizationFlags.indexOf("-Oz"),
   );
   assert.ok(programOptimizationFlags.includes("-g"));
+  assert.ok(programOptimizationFlags.includes("--enable-exception-handling"));
   assert.ok(
     !Array.from(programOptimizationFlags, String).some((flag) =>
       /fast-math|closed-world|no-validation|all-features|strip-debug|strip-target-features|strip-producers/.test(
@@ -262,6 +278,102 @@ test("dynamic linking and target feature metadata survive optimization", () => {
   });
 });
 
+test("standard EH optimization preserves tags, target features and nonlocal exits", () => {
+  fixture((source, destination) => {
+    writeFileSync(source, withStandardEhFeatures);
+    const before = new WebAssembly.Module(withStandardEhFeatures);
+    optimizeProgram({
+      source,
+      destination,
+      verify: (path) => {
+        const module = new WebAssembly.Module(readFileSync(path));
+        const instance = new WebAssembly.Instance(module);
+        const run = instance.exports.run;
+        assert.ok(typeof run === "function");
+        assert.equal(run(), 7);
+      },
+    });
+    const output = readFileSync(destination);
+    const after = new WebAssembly.Module(output);
+    assert.deepEqual(WebAssembly.Module.imports(after), WebAssembly.Module.imports(before));
+    assert.deepEqual(WebAssembly.Module.exports(after), WebAssembly.Module.exports(before));
+    const features = WebAssembly.Module.customSections(after, "target_features");
+    assert.equal(features.length, 1);
+    assert.ok(new TextDecoder().decode(features[0]).includes("exception-handling"));
+    assert.equal(WebAssembly.Module.customSections(after, "name").length, 1);
+    assert.deepEqual(readFileSync(source), Buffer.from(withStandardEhFeatures));
+  });
+});
+
+test("malformed standard EH declarations and instructions fail before invoking the tool", () => {
+  const malformed = [
+    new Uint8Array(
+      [0, 97, 115, 109, 1, 0, 0, 0].concat(signatures(signature([], [])), section(13, [1, 1, 0])),
+    ),
+    withStandardEhFeatures.subarray(0, -1),
+    changedEhControl(27, 2),
+    changedEhControl(48, 1),
+  ];
+  for (const input of malformed) rejectMalformedEh(input);
+});
+
+function changedEhControl(offset: number, byte: number) {
+  const changed = Buffer.from(standardEhControl);
+  changed[offset] = byte;
+  return changed;
+}
+
+function rejectMalformedEh(input: Uint8Array) {
+  assert.equal(WebAssembly.validate(input), false, "Malformed EH fixture must be invalid");
+  fixture((source, destination) => {
+    writeFileSync(source, input);
+    const execute = () => assert.fail("invalid EH reached Binaryen");
+    assert.throws(
+      () => optimizeProgram({ source, destination, verify }, { execute }),
+      WebAssembly.CompileError,
+    );
+    assert.equal(readFileSync(destination, "utf8"), "accepted destination");
+    assert.deepEqual(readFileSync(source), Buffer.from(input));
+  });
+}
+
+test("standard EH catch_all_ref and throw_ref preserve the original exception", () => {
+  fixture((source, destination) => {
+    const code = [0, 0x02, 0x69, 0x1f, 0x40, 1, 3, 0, 0x10, 0, 0x0b, 0x00, 0x0b, 0x0a, 0x0b];
+    const bytes = new Uint8Array(
+      [0, 97, 115, 109, 1, 0, 0, 0].concat(
+        signatures(signature([], [])),
+        section(2, [1].concat(text("env"), text("raise"), [0, 0])),
+        section(3, [1, 0]),
+        section(7, [1].concat(text("run"), [0, 1])),
+        section(10, [1].concat(integer(code.length), code)),
+        standardEhFeatures,
+      ),
+    );
+    writeFileSync(source, bytes);
+    const original = new Error("original exception through optimized EH");
+    const check = (path: string) => checkOriginalException(path, original);
+    check(source);
+    optimizeProgram({ source, destination, verify: check });
+    check(destination);
+  });
+});
+
+function checkOriginalException(path: string, original: Error) {
+  const raise = () => {
+    throw original;
+  };
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(path)), {
+    env: { raise },
+  });
+  const run = instance.exports.run;
+  assert.ok(typeof run === "function");
+  assert.throws(
+    () => run(),
+    (error: unknown) => error === original,
+  );
+}
+
 test("optimizer preserves target features Binaryen does not model", () => {
   fixture((source, destination) => {
     writeFileSync(
@@ -296,6 +408,7 @@ test("provisioning action pins the same archive, executable and version as the h
 
 for (const [feature, prefix, expected] of [
   ["threads", 0x2b, /Unsupported program target feature/],
+  ["future-unknown-feature", 0x2b, /Unsupported program target feature/],
   ["mutable-globals", 0x2d, /Optimizer changed target feature/],
 ] as const) {
   test(`unsupported or contradicted feature ${prefix}:${feature} leaves accepted output intact`, () => {

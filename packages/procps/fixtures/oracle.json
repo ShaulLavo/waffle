@@ -1,0 +1,1338 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-30T14:51:07.834Z",
+  "native": {
+    "family": "procps-ng",
+    "version": "4.0.7",
+    "platform": "linux",
+    "architecture": "x64",
+    "versions": {
+      "ps": {
+        "program": "ps",
+        "argv": [
+          "--version"
+        ],
+        "commandPid": 2542999,
+        "status": 0,
+        "signal": null,
+        "stdout": "ps from procps-ng 4.0.7\n",
+        "stderr": "",
+        "timedOut": false,
+        "outputTruncated": false
+      },
+      "pgrep": {
+        "program": "pgrep",
+        "argv": [
+          "--version"
+        ],
+        "commandPid": 2543000,
+        "status": 0,
+        "signal": null,
+        "stdout": "pgrep from procps-ng 4.0.7\n",
+        "stderr": "",
+        "timedOut": false,
+        "outputTruncated": false
+      },
+      "pkill": {
+        "program": "pkill",
+        "argv": [
+          "--version"
+        ],
+        "commandPid": 2543001,
+        "status": 0,
+        "signal": null,
+        "stdout": "pkill from procps-ng 4.0.7\n",
+        "stderr": "",
+        "timedOut": false,
+        "outputTruncated": false
+      }
+    }
+  },
+  "controlledInput": {
+    "collectorPid": 2542988,
+    "fixtureDirectory": "/work/tmp/waffle-procps-bjWmYT",
+    "fixtureToken": "bjWmYT",
+    "sleepSeconds": 120,
+    "fixtures": [
+      {
+        "label": "alpha",
+        "name": "wf-a-bjWmYT",
+        "path": "/work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT",
+        "pid": 2543002,
+        "argv": [
+          "/work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT",
+          "120"
+        ],
+        "exitCode": null,
+        "signalCode": "SIGTERM"
+      },
+      {
+        "label": "beta",
+        "name": "wf-b-bjWmYT",
+        "path": "/work/tmp/waffle-procps-bjWmYT/wf-b-bjWmYT",
+        "pid": 2543037,
+        "argv": [
+          "/work/tmp/waffle-procps-bjWmYT/wf-b-bjWmYT",
+          "120"
+        ],
+        "exitCode": null,
+        "signalCode": "SIGTERM"
+      },
+      {
+        "label": "gamma",
+        "name": "wf-g-bjWmYT",
+        "path": "/work/tmp/waffle-procps-bjWmYT/wf-g-bjWmYT",
+        "pid": 2543038,
+        "argv": [
+          "/work/tmp/waffle-procps-bjWmYT/wf-g-bjWmYT",
+          "120"
+        ],
+        "exitCode": null,
+        "signalCode": "SIGTERM"
+      },
+      {
+        "label": "delta",
+        "name": "wf-d-bjWmYT",
+        "path": "/work/tmp/waffle-procps-bjWmYT/wf-d-bjWmYT",
+        "pid": 2543500,
+        "argv": [
+          "/work/tmp/waffle-procps-bjWmYT/wf-d-bjWmYT",
+          "120"
+        ],
+        "exitCode": null,
+        "signalCode": "SIGTERM"
+      }
+    ]
+  },
+  "normalization": {
+    "rawFields": "argv, stdout and stderr retain the exact observed bytes after UTF-8 decoding; normalized fields are additional, not replacements.",
+    "placeholders": {
+      "$FIXTURE_DIR": "The run-specific temporary directory.",
+      "$FIXTURE_TOKEN": "The random mkdtemp suffix, also embedded in fixture process names.",
+      "$TRUNCATED_FIXTURE_PATH": "A ps-truncated fixture path that retains only part of the random token.",
+      "$COLLECTOR_PID": "The collector's live PID.",
+      "$COMMAND_PID": "The native probe's own PID when ps --ppid observes it.",
+      "$ALPHA_PID": "The first controlled child.",
+      "$BETA_PID": "The second controlled child.",
+      "$GAMMA_PID": "The third controlled child.",
+      "$DELTA_PID": "The fourth controlled child and sole SIGTERM target.",
+      "$UID": "The fixture UID name in ps -f rows.",
+      "$CPU_PERCENT": "The dynamic ps -f C column.",
+      "$START_TIME": "The dynamic ps -f STIME column.",
+      "$TTY": "The controlling terminal field, observed as ? in this run.",
+      "$CPU_TIME": "Cumulative CPU time.",
+      "$STATE": "Native process state.",
+      "$ELAPSED": "Elapsed wall-clock time.",
+      "$RSS_KIB": "Resident memory in KiB."
+    },
+    "whitespace": "Plain normalization preserves whitespace. ps-full and ps-stats normalization also collapses whitespace between columns; raw stdout remains authoritative for spacing.",
+    "ordering": "Oldest and newest expectations use controlled spawn order with 1.1 second pauses; no timestamps are invented."
+  },
+  "safety": {
+    "fixtureSelection": "Every match pattern is unique to this run. Every pkill selection is constrained with -P to the collector PID.",
+    "preflight": "Immediately before every pkill, pgrep runs the same selection without a signal option. Selected PIDs must be recorded fixtures, be direct collector children according to /proc, and be a subset of ownedFixturePids.",
+    "signals": "All match and parser probes use signal zero except one SIGTERM sent to the recorded delta fixture. Invalid-signal probes send nothing.",
+    "commandLimits": {
+      "timeoutMs": 5000,
+      "outputBytesPerStream": 65536
+    }
+  },
+  "cases": [
+    {
+      "id": "ps.output.explicit-columns",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037,2543038,2543500",
+        "-o",
+        "pid,ppid,comm,args"
+      ],
+      "commandPid": 2543501,
+      "status": 0,
+      "signal": null,
+      "stdout": "    PID    PPID COMMAND         COMMAND\n2543002 2542988 wf-a-bjWmYT     /work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT 120\n2543037 2542988 wf-b-bjWmYT     /work/tmp/waffle-procps-bjWmYT/wf-b-bjWmYT 120\n2543038 2542988 wf-g-bjWmYT     /work/tmp/waffle-procps-bjWmYT/wf-g-bjWmYT 120\n2543500 2542988 wf-d-bjWmYT     /work/tmp/waffle-procps-bjWmYT/wf-d-bjWmYT 120\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID,$GAMMA_PID,$DELTA_PID",
+        "-o",
+        "pid,ppid,comm,args"
+      ],
+      "normalizedStdout": "    PID    PPID COMMAND         COMMAND\n$ALPHA_PID $COLLECTOR_PID wf-a-$FIXTURE_TOKEN     $FIXTURE_DIR/wf-a-$FIXTURE_TOKEN 120\n$BETA_PID $COLLECTOR_PID wf-b-$FIXTURE_TOKEN     $FIXTURE_DIR/wf-b-$FIXTURE_TOKEN 120\n$GAMMA_PID $COLLECTOR_PID wf-g-$FIXTURE_TOKEN     $FIXTURE_DIR/wf-g-$FIXTURE_TOKEN 120\n$DELTA_PID $COLLECTOR_PID wf-d-$FIXTURE_TOKEN     $FIXTURE_DIR/wf-d-$FIXTURE_TOKEN 120\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.selection.parent",
+      "program": "ps",
+      "argv": [
+        "--ppid",
+        "2542988",
+        "-o",
+        "pid=,ppid=,comm="
+      ],
+      "commandPid": 2543502,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 2542988 wf-a-bjWmYT\n2543037 2542988 wf-b-bjWmYT\n2543038 2542988 wf-g-bjWmYT\n2543500 2542988 wf-d-bjWmYT\n2543502 2542988 ps\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "--ppid",
+        "$COLLECTOR_PID",
+        "-o",
+        "pid=,ppid=,comm="
+      ],
+      "normalizedStdout": "$ALPHA_PID $COLLECTOR_PID wf-a-$FIXTURE_TOKEN\n$BETA_PID $COLLECTOR_PID wf-b-$FIXTURE_TOKEN\n$GAMMA_PID $COLLECTOR_PID wf-g-$FIXTURE_TOKEN\n$DELTA_PID $COLLECTOR_PID wf-d-$FIXTURE_TOKEN\n$COMMAND_PID $COLLECTOR_PID ps\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.selection.command-names",
+      "program": "ps",
+      "argv": [
+        "-C",
+        "wf-a-bjWmYT,wf-b-bjWmYT",
+        "-o",
+        "pid=,comm="
+      ],
+      "commandPid": 2543503,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 wf-a-bjWmYT\n2543037 wf-b-bjWmYT\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha",
+        "beta"
+      ],
+      "normalizedArgv": [
+        "-C",
+        "wf-a-$FIXTURE_TOKEN,wf-b-$FIXTURE_TOKEN",
+        "-o",
+        "pid=,comm="
+      ],
+      "normalizedStdout": "$ALPHA_PID wf-a-$FIXTURE_TOKEN\n$BETA_PID wf-b-$FIXTURE_TOKEN\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.sort.pid-ascending",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037,2543038,2543500",
+        "-o",
+        "pid=,comm=",
+        "--sort=pid"
+      ],
+      "commandPid": 2543504,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 wf-a-bjWmYT\n2543037 wf-b-bjWmYT\n2543038 wf-g-bjWmYT\n2543500 wf-d-bjWmYT\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID,$GAMMA_PID,$DELTA_PID",
+        "-o",
+        "pid=,comm=",
+        "--sort=pid"
+      ],
+      "normalizedStdout": "$ALPHA_PID wf-a-$FIXTURE_TOKEN\n$BETA_PID wf-b-$FIXTURE_TOKEN\n$GAMMA_PID wf-g-$FIXTURE_TOKEN\n$DELTA_PID wf-d-$FIXTURE_TOKEN\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.sort.pid-descending",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037,2543038,2543500",
+        "-o",
+        "pid=,comm=",
+        "--sort=-pid"
+      ],
+      "commandPid": 2543505,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543500 wf-d-bjWmYT\n2543038 wf-g-bjWmYT\n2543037 wf-b-bjWmYT\n2543002 wf-a-bjWmYT\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID,$GAMMA_PID,$DELTA_PID",
+        "-o",
+        "pid=,comm=",
+        "--sort=-pid"
+      ],
+      "normalizedStdout": "$DELTA_PID wf-d-$FIXTURE_TOKEN\n$GAMMA_PID wf-g-$FIXTURE_TOKEN\n$BETA_PID wf-b-$FIXTURE_TOKEN\n$ALPHA_PID wf-a-$FIXTURE_TOKEN\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.sort.command-name",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037,2543038,2543500",
+        "-o",
+        "pid=,comm=",
+        "--sort=comm"
+      ],
+      "commandPid": 2543506,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 wf-a-bjWmYT\n2543037 wf-b-bjWmYT\n2543500 wf-d-bjWmYT\n2543038 wf-g-bjWmYT\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID,$GAMMA_PID,$DELTA_PID",
+        "-o",
+        "pid=,comm=",
+        "--sort=comm"
+      ],
+      "normalizedStdout": "$ALPHA_PID wf-a-$FIXTURE_TOKEN\n$BETA_PID wf-b-$FIXTURE_TOKEN\n$DELTA_PID wf-d-$FIXTURE_TOKEN\n$GAMMA_PID wf-g-$FIXTURE_TOKEN\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.output.full-format",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037",
+        "-f"
+      ],
+      "commandPid": 2543507,
+      "status": 0,
+      "signal": null,
+      "stdout": "UID          PID    PPID  C STIME TTY          TIME CMD\nshaul    2543002 2542988  0 14:51 ?        00:00:00 /work/tmp/waffle-procps-bjWm\nshaul    2543037 2542988  0 14:51 ?        00:00:00 /work/tmp/waffle-procps-bjWm\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID",
+        "-f"
+      ],
+      "normalizedStdout": "UID          PID    PPID  C STIME TTY          TIME CMD\n$UID $ALPHA_PID $COLLECTOR_PID $CPU_PERCENT $START_TIME $TTY $CPU_TIME $TRUNCATED_FIXTURE_PATH\n$UID $BETA_PID $COLLECTOR_PID $CPU_PERCENT $START_TIME $TTY $CPU_TIME $TRUNCATED_FIXTURE_PATH\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.output.no-headers",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037",
+        "-f",
+        "--no-headers"
+      ],
+      "commandPid": 2543508,
+      "status": 0,
+      "signal": null,
+      "stdout": "shaul    2543002 2542988  0 14:51 ?        00:00:00 /work/tmp/waffle-procps-bjWm\nshaul    2543037 2542988  0 14:51 ?        00:00:00 /work/tmp/waffle-procps-bjWm\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID",
+        "-f",
+        "--no-headers"
+      ],
+      "normalizedStdout": "shaul    $ALPHA_PID $COLLECTOR_PID  0 14:51 ?        00:00:00 $TRUNCATED_FIXTURE_PATH\n$UID $BETA_PID $COLLECTOR_PID $CPU_PERCENT $START_TIME $TTY $CPU_TIME $TRUNCATED_FIXTURE_PATH\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.output.forest",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002,2543037,2543038,2543500",
+        "--forest",
+        "-o",
+        "pid=,ppid=,comm="
+      ],
+      "commandPid": 2543509,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543500 2542988 wf-d-bjWmYT\n2543038 2542988 wf-g-bjWmYT\n2543037 2542988 wf-b-bjWmYT\n2543002 2542988 wf-a-bjWmYT\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID,$BETA_PID,$GAMMA_PID,$DELTA_PID",
+        "--forest",
+        "-o",
+        "pid=,ppid=,comm="
+      ],
+      "normalizedStdout": "$DELTA_PID $COLLECTOR_PID wf-d-$FIXTURE_TOKEN\n$GAMMA_PID $COLLECTOR_PID wf-g-$FIXTURE_TOKEN\n$BETA_PID $COLLECTOR_PID wf-b-$FIXTURE_TOKEN\n$ALPHA_PID $COLLECTOR_PID wf-a-$FIXTURE_TOKEN\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.output.wide",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002",
+        "-w",
+        "-o",
+        "pid=,args="
+      ],
+      "commandPid": 2543510,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 /work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT 120\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID",
+        "-w",
+        "-o",
+        "pid=,args="
+      ],
+      "normalizedStdout": "$ALPHA_PID $FIXTURE_DIR/wf-a-$FIXTURE_TOKEN 120\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.output.fixed-width",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002",
+        "--width",
+        "24",
+        "-o",
+        "pid=,args="
+      ],
+      "commandPid": 2543511,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 /work/tmp/waffle\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID",
+        "--width",
+        "24",
+        "-o",
+        "pid=,args="
+      ],
+      "normalizedStdout": "$ALPHA_PID /work/tmp/waffle\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.output.native-stat-fields",
+      "program": "ps",
+      "argv": [
+        "-p",
+        "2543002",
+        "-o",
+        "pid,ppid,stat,etime,time,rss,tty,comm,args"
+      ],
+      "commandPid": 2543512,
+      "status": 0,
+      "signal": null,
+      "stdout": "    PID    PPID STAT     ELAPSED     TIME   RSS TT       COMMAND         COMMAND\n2543002 2542988 S          00:02 00:00:00  2468 ?        wf-a-bjWmYT     /work/t\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-p",
+        "$ALPHA_PID",
+        "-o",
+        "pid,ppid,stat,etime,time,rss,tty,comm,args"
+      ],
+      "normalizedStdout": "    PID    PPID STAT     ELAPSED     TIME   RSS TT       COMMAND         COMMAND\n$ALPHA_PID $COLLECTOR_PID $STATE $ELAPSED $CPU_TIME $RSS_KIB $TTY wf-a-$FIXTURE_TOKEN /work/t\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.selection.no-match",
+      "program": "ps",
+      "argv": [
+        "-C",
+        "wf-z-bjWmYT",
+        "-o",
+        "pid=,comm="
+      ],
+      "commandPid": 2543513,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "normalizedArgv": [
+        "-C",
+        "wf-z-$FIXTURE_TOKEN",
+        "-o",
+        "pid=,comm="
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "ps.parser.invalid-option",
+      "program": "ps",
+      "argv": [
+        "--not-a-real-procps-option"
+      ],
+      "commandPid": 2543514,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "error: unknown gnu long option\n\nUsage:\n ps [options]\n\n Try 'ps --help <simple|list|output|threads|misc|all>'\n  or 'ps --help <s|l|o|t|m|a>'\n for additional help text.\n\nFor more details see ps(1).\n",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "normalizedArgv": [
+        "--not-a-real-procps-option"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "error: unknown gnu long option\n\nUsage:\n ps [options]\n\n Try 'ps --help <simple|list|output|threads|misc|all>'\n  or 'ps --help <s|l|o|t|m|a>'\n for additional help text.\n\nFor more details see ps(1).\n"
+    },
+    {
+      "id": "pgrep.match.process-name",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "^wf-[ab]-bjWmYT$"
+      ],
+      "commandPid": 2543515,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002\n2543037\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha",
+        "beta"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "^wf-[ab]-$FIXTURE_TOKEN$"
+      ],
+      "normalizedStdout": "$ALPHA_PID\n$BETA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.match.full-command",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543516,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002\n2543037\n2543038\n2543500\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "$ALPHA_PID\n$BETA_PID\n$GAMMA_PID\n$DELTA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.match.exact-name",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-x",
+        "wf-a-bjWmYT"
+      ],
+      "commandPid": 2543517,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-x",
+        "wf-a-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "$ALPHA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.match.exact-full-command",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-f",
+        "-x",
+        "/work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT 120"
+      ],
+      "commandPid": 2543518,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-f",
+        "-x",
+        "$FIXTURE_DIR/wf-a-$FIXTURE_TOKEN 120"
+      ],
+      "normalizedStdout": "$ALPHA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.match.full-path-is-not-name",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "/work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT"
+      ],
+      "commandPid": 2543519,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "pgrep: pattern that searches for process name longer than 15 characters will result in zero matches\nTry `pgrep -f' option to match against the complete command line.\n",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "expectedFixtures": [],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "$FIXTURE_DIR/wf-a-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "pgrep: pattern that searches for process name longer than 15 characters will result in zero matches\nTry `pgrep -f' option to match against the complete command line.\n"
+    },
+    {
+      "id": "pgrep.match.exact-rejects-prefix",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-x",
+        "wf-a-bjWmY"
+      ],
+      "commandPid": 2543520,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "expectedFixtures": [],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-x",
+        "wf-a-bjWmY"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.list.names",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-l",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543521,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 wf-a-bjWmYT\n2543037 wf-b-bjWmYT\n2543038 wf-g-bjWmYT\n2543500 wf-d-bjWmYT\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-l",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "$ALPHA_PID wf-a-$FIXTURE_TOKEN\n$BETA_PID wf-b-$FIXTURE_TOKEN\n$GAMMA_PID wf-g-$FIXTURE_TOKEN\n$DELTA_PID wf-d-$FIXTURE_TOKEN\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.list.full-commands",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-a",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543522,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002 /work/tmp/waffle-procps-bjWmYT/wf-a-bjWmYT 120\n2543037 /work/tmp/waffle-procps-bjWmYT/wf-b-bjWmYT 120\n2543038 /work/tmp/waffle-procps-bjWmYT/wf-g-bjWmYT 120\n2543500 /work/tmp/waffle-procps-bjWmYT/wf-d-bjWmYT 120\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-a",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "$ALPHA_PID $FIXTURE_DIR/wf-a-$FIXTURE_TOKEN 120\n$BETA_PID $FIXTURE_DIR/wf-b-$FIXTURE_TOKEN 120\n$GAMMA_PID $FIXTURE_DIR/wf-g-$FIXTURE_TOKEN 120\n$DELTA_PID $FIXTURE_DIR/wf-d-$FIXTURE_TOKEN 120\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.count.matches",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-c",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543533,
+      "status": 0,
+      "signal": null,
+      "stdout": "4\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-c",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "4\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.select.oldest",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-o",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543534,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-o",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "$ALPHA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.select.newest",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-n",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543535,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543500\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "delta"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-n",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "$DELTA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.match.case-insensitive",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-i",
+        "-x",
+        "WF-A-BJWMYT"
+      ],
+      "commandPid": 2543536,
+      "status": 0,
+      "signal": null,
+      "stdout": "2543002\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "expectedFixtures": [
+        "alpha"
+      ],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-i",
+        "-x",
+        "WF-A-BJWMYT"
+      ],
+      "normalizedStdout": "$ALPHA_PID\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.match.no-match",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-x",
+        "wf-z-bjWmYT"
+      ],
+      "commandPid": 2543540,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "expectedFixtures": [],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-x",
+        "wf-z-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.count.no-match",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-c",
+        "-x",
+        "wf-z-bjWmYT"
+      ],
+      "commandPid": 2543541,
+      "status": 1,
+      "signal": null,
+      "stdout": "0\n",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-c",
+        "-x",
+        "wf-z-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "0\n",
+      "normalizedStderr": ""
+    },
+    {
+      "id": "pgrep.parser.invalid-regex",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-f",
+        "["
+      ],
+      "commandPid": 2543545,
+      "status": 2,
+      "signal": null,
+      "stdout": "",
+      "stderr": "pgrep: regex error: Invalid regular expression\n",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 2,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-f",
+        "["
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "pgrep: regex error: Invalid regular expression\n"
+    },
+    {
+      "id": "pkill.signal-zero.exact-name",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "-0",
+        "-x",
+        "wf-a-bjWmYT"
+      ],
+      "commandPid": 2543548,
+      "status": 0,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-0",
+        "-x",
+        "wf-a-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "-x",
+          "wf-a-bjWmYT"
+        ],
+        "selectorStatus": 0,
+        "selectedPids": [
+          2543002
+        ],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      }
+    },
+    {
+      "id": "pkill.signal-zero.full-command",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "-0",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543550,
+      "status": 0,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-0",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "-f",
+          "^/work/tmp/waffle-procps-bjWmYT/"
+        ],
+        "selectorStatus": 0,
+        "selectedPids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      }
+    },
+    {
+      "id": "pkill.signal-zero.newest",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "-0",
+        "--newest",
+        "-f",
+        "^/work/tmp/waffle-procps-bjWmYT/"
+      ],
+      "commandPid": 2543552,
+      "status": 0,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-0",
+        "--newest",
+        "-f",
+        "^$FIXTURE_DIR/"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "--newest",
+          "-f",
+          "^/work/tmp/waffle-procps-bjWmYT/"
+        ],
+        "selectorStatus": 0,
+        "selectedPids": [
+          2543500
+        ],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      }
+    },
+    {
+      "id": "pkill.match.no-match",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "-0",
+        "-x",
+        "wf-z-bjWmYT"
+      ],
+      "commandPid": 2543554,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-0",
+        "-x",
+        "wf-z-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "-x",
+          "wf-z-bjWmYT"
+        ],
+        "selectorStatus": 1,
+        "selectedPids": [],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      }
+    },
+    {
+      "id": "pkill.parser.invalid-regex",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "-0",
+        "-f",
+        "["
+      ],
+      "commandPid": 2543556,
+      "status": 2,
+      "signal": null,
+      "stdout": "",
+      "stderr": "pkill: regex error: Invalid regular expression\n",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 2,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-0",
+        "-f",
+        "["
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "pkill: regex error: Invalid regular expression\n",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "-f",
+          "["
+        ],
+        "selectorStatus": 2,
+        "selectedPids": [],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      }
+    },
+    {
+      "id": "pkill.parser.invalid-signal",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "--signal",
+        "NOT_A_SIGNAL",
+        "-x",
+        "wf-a-bjWmYT"
+      ],
+      "commandPid": 2543558,
+      "status": 2,
+      "signal": null,
+      "stdout": "",
+      "stderr": "Unknown signal \"NOT_A_SIGNAL\".\nUsage:\n pkill [options] <pattern>\n\nOptions:\n -<sig>                    signal to send (either number or name)\n -H, --require-handler     match only if signal handler is present\n -q, --queue <value>       integer value to be sent with the signal\n -e, --echo                display what is killed\n -m, --mrelease            release process memory immediately after kill\n -c, --count               count of matching processes\n -f, --full                use full command line to match\n -g, --pgroup <PGID,...>   match listed process group IDs\n -G, --group <GID,...>     match real group IDs\n -i, --ignore-case         match case insensitively\n -n, --newest              select most recently started\n -o, --oldest              select least recently started\n -O, --older <seconds>     select where older than seconds\n -p, --pid <PID,...>       match process PIDs\n -P, --parent <PPID,...>   match only child processes of the given parent\n -s, --session <SID,...>   match session IDs\n     --signal <sig>        signal to send (either number or name)\n -t, --terminal <tty,...>  match by controlling terminal\n -u, --euid <ID,...>       match by effective IDs\n -U, --uid <ID,...>        match by real IDs\n -x, --exact               match exactly with the command name\n -F, --pidfile <file>      read PIDs from file\n -L, --logpidfile          fail if PID file is not locked\n -r, --runstates <state>   match runstates [D,S,Z,...]\n -A, --ignore-ancestors    exclude our ancestors from results\n -Q, --shell-quote         output the command line in shell-quoted form\n --cgroup <grp,...>        match by cgroup v2 names\n --ns <PID>                match the processes that belong to the same\n                           namespace as <pid>\n --nslist <ns,...>         list which namespaces will be considered for\n                           the --ns option.\n                           Available namespaces: ipc, mnt, net, pid, user, uts\n  --env <name=val,...>     match on environment variable\n\n -h, --help     display this help and exit\n -V, --version  output version information and exit\n\nFor more details see pgrep(1).\n",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 2,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "--signal",
+        "NOT_A_SIGNAL",
+        "-x",
+        "wf-a-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "Unknown signal \"NOT_A_SIGNAL\".\nUsage:\n pkill [options] <pattern>\n\nOptions:\n -<sig>                    signal to send (either number or name)\n -H, --require-handler     match only if signal handler is present\n -q, --queue <value>       integer value to be sent with the signal\n -e, --echo                display what is killed\n -m, --mrelease            release process memory immediately after kill\n -c, --count               count of matching processes\n -f, --full                use full command line to match\n -g, --pgroup <PGID,...>   match listed process group IDs\n -G, --group <GID,...>     match real group IDs\n -i, --ignore-case         match case insensitively\n -n, --newest              select most recently started\n -o, --oldest              select least recently started\n -O, --older <seconds>     select where older than seconds\n -p, --pid <PID,...>       match process PIDs\n -P, --parent <PPID,...>   match only child processes of the given parent\n -s, --session <SID,...>   match session IDs\n     --signal <sig>        signal to send (either number or name)\n -t, --terminal <tty,...>  match by controlling terminal\n -u, --euid <ID,...>       match by effective IDs\n -U, --uid <ID,...>        match by real IDs\n -x, --exact               match exactly with the command name\n -F, --pidfile <file>      read PIDs from file\n -L, --logpidfile          fail if PID file is not locked\n -r, --runstates <state>   match runstates [D,S,Z,...]\n -A, --ignore-ancestors    exclude our ancestors from results\n -Q, --shell-quote         output the command line in shell-quoted form\n --cgroup <grp,...>        match by cgroup v2 names\n --ns <PID>                match the processes that belong to the same\n                           namespace as <pid>\n --nslist <ns,...>         list which namespaces will be considered for\n                           the --ns option.\n                           Available namespaces: ipc, mnt, net, pid, user, uts\n  --env <name=val,...>     match on environment variable\n\n -h, --help     display this help and exit\n -V, --version  output version information and exit\n\nFor more details see pgrep(1).\n",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "-x",
+          "wf-a-bjWmYT"
+        ],
+        "selectorStatus": 0,
+        "selectedPids": [
+          2543002
+        ],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      }
+    },
+    {
+      "id": "pkill.signal.term-one-owned-child",
+      "program": "pkill",
+      "argv": [
+        "-P",
+        "2542988",
+        "-TERM",
+        "-x",
+        "wf-d-bjWmYT"
+      ],
+      "commandPid": 2543560,
+      "status": 0,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 0,
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-TERM",
+        "-x",
+        "wf-d-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": "",
+      "safety": {
+        "selectorArgv": [
+          "-P",
+          "2542988",
+          "-x",
+          "wf-d-bjWmYT"
+        ],
+        "selectorStatus": 0,
+        "selectedPids": [
+          2543500
+        ],
+        "ownedFixturePids": [
+          2543002,
+          2543037,
+          2543038,
+          2543500
+        ],
+        "subsetVerified": true,
+        "parentVerified": true
+      },
+      "postCondition": "delta exitCode=null signalCode=SIGTERM"
+    },
+    {
+      "id": "pgrep.match.after-owned-termination",
+      "program": "pgrep",
+      "argv": [
+        "-P",
+        "2542988",
+        "-x",
+        "wf-d-bjWmYT"
+      ],
+      "commandPid": 2543561,
+      "status": 1,
+      "signal": null,
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "outputTruncated": false,
+      "expectedStatus": 1,
+      "expectedFixtures": [],
+      "normalizedArgv": [
+        "-P",
+        "$COLLECTOR_PID",
+        "-x",
+        "wf-d-$FIXTURE_TOKEN"
+      ],
+      "normalizedStdout": "",
+      "normalizedStderr": ""
+    }
+  ],
+  "cleanup": {
+    "terminatedPids": [
+      2543002,
+      2543037,
+      2543038
+    ],
+    "killedPids": [],
+    "remainingOwnedPids": [],
+    "remainingProcPids": [],
+    "fixtureDirectoryRemoved": true
+  },
+  "failures": []
+}

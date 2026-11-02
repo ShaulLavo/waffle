@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "5739fd79bcfc75ba7526773d0cf634521f8aca3c",
+  "archiveSha256": "14b636bec87f5817012d883b9b318e808eee28881a7b4388f92ef6b5f940d7ef",
+  "patchSha256": "f86abb28d347886ff591e4e4a6569cdeea86c1010cc3c67f9d33807e92b0825c",
+  "wasiTarget": "wasm32-wasip1",
+  "wasiSdk": "34.0",
+  "wasiLibc": "2e6fb9d8ee0c",
+  "maxMemoryBytes": 268435456,
+  "exceptionHandling": "standard Wasm EH from wasi-sdk sjlj and exact-input libsetjmp.a",
+  "compiler": "wasi-sdk clang with the shared Waffle patched wasi-libc sysroot",
+  "oracle": "native cc build from the same source archive and patch"
+}

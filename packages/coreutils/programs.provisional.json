@@ -22,6 +22,15 @@
     "uniq": { "path": "/usr/bin/uniq", "aliases": ["/bin/uniq"], "execution": "wasi" },
     "wc": { "path": "/usr/bin/wc", "aliases": ["/bin/wc"], "execution": "wasi-scalar", "crate": "crates/wc" },
     "which": { "path": "/usr/bin/which", "aliases": ["/bin/which"], "execution": "wasi" },
-    "clear": { "path": "/usr/bin/clear", "aliases": ["/bin/clear"], "execution": "wasi", "crate": "crates/clear" }
+    "clear": { "path": "/usr/bin/clear", "aliases": ["/bin/clear"], "execution": "wasi", "crate": "crates/clear" },
+    "b2sum": { "path": "/usr/bin/b2sum", "aliases": ["/bin/b2sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "cksum": { "path": "/usr/bin/cksum", "aliases": ["/bin/cksum"], "execution": "wasi", "crate": "crates/checksums" },
+    "md5sum": { "path": "/usr/bin/md5sum", "aliases": ["/bin/md5sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "sha1sum": { "path": "/usr/bin/sha1sum", "aliases": ["/bin/sha1sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "sha224sum": { "path": "/usr/bin/sha224sum", "aliases": ["/bin/sha224sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "sha256sum": { "path": "/usr/bin/sha256sum", "aliases": ["/bin/sha256sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "sha384sum": { "path": "/usr/bin/sha384sum", "aliases": ["/bin/sha384sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "sha512sum": { "path": "/usr/bin/sha512sum", "aliases": ["/bin/sha512sum"], "execution": "wasi", "crate": "crates/checksums" },
+    "sum": { "path": "/usr/bin/sum", "aliases": ["/bin/sum"], "execution": "wasi", "crate": "crates/checksums" }
   }
 }

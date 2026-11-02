@@ -446,10 +446,17 @@ for (const resource of ["cursor", "lease"] as const) {
       void work.then(() => {
         done = true;
       });
-      await closed.promise;
+      // A stream owns the wrapped read too, not only the underlying service ticket.
+      // Cursor close still starts immediately; lease close joins the accepted read first.
+      if (resource === "cursor") await closed.promise;
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(done).toBe(false);
+      if (resource === "lease") {
+        expect(closes).toBe(0);
+        expect(value.service.resources().readerLeases).toBe(1);
+      }
       gate.resolve();
+      await closed.promise;
       expect(await work).toEqual({ kind: "error", error: false });
       expect(closes).toBe(1);
       released(value);
@@ -1674,3 +1681,29 @@ test("R68 each provider target is observed once before retention admission", asy
     await value.close();
   }
 });
+
+for (const phase of ["opening", "pull"]) {
+  test(`export maps malformed ${phase} lease metadata to its contract refusal`, async () => {
+    const value = fixture();
+    const observed = observe(value.workspace, {
+      pinStat(stat) {
+        if (phase !== "opening") return stat;
+        return Object.defineProperty({ ...stat }, "cut", { value: undefined });
+      },
+      async read(result) {
+        if (phase !== "pull" || result.kind !== "ok") return result;
+        return {
+          kind: "ok",
+          value: Object.defineProperty({ ...result.value }, "range", { value: null }),
+        };
+      },
+    });
+    try {
+      expect(refusal(await rejected(observed.workspace)).kind).toBe("contract");
+      expect(observed.counts.closed).toBe(1);
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
