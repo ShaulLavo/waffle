@@ -76,12 +76,16 @@ type State =
   | "done";
 
 const NO_BODY = new Set([204, 304]);
+const MAX_HEAD_BYTES = 64 * 1024;
+const MAX_CHUNK_LINE_BYTES = 8 * 1024;
+const MAX_TRAILER_BYTES = 64 * 1024;
 
 /** Incremental HTTP/1.1 response parser. Feed it with `push`, then `end` when the connection closes. */
 export class ResponseParser {
-  private pending: Uint8Array = new Uint8Array(0);
+  private pending = new PendingBytes();
   private state: State = "head";
   private remaining = 0;
+  private trailerBytes = 0;
 
   constructor(
     private sink: ResponseSink,
@@ -95,9 +99,11 @@ export class ResponseParser {
 
   push(bytes: Uint8Array): void {
     if (this.state === "done") return;
-    this.pending = concat(this.pending, bytes);
     try {
+      this.pending.append(bytes);
       this.process();
+      // A partial push must not retain a caller-owned backing, including fixed buffers.
+      this.pending.ensureOwned();
     } catch (err) {
       this.fail(err instanceof Error ? err.message : String(err));
     }
@@ -144,10 +150,10 @@ export class ResponseParser {
   }
 
   private parseHead(): boolean {
-    const end = indexOfCrlfCrlf(this.pending);
+    const end = this.pending.findHeadEnd(MAX_HEAD_BYTES);
     if (end < 0) return false;
-    const text = decoder.decode(this.pending.subarray(0, end));
-    this.pending = this.pending.subarray(end + 4);
+    const text = decoder.decode(this.pending.copyPrefix(end));
+    this.pending.consume(end + 4);
     const [statusLine = "", ...headerLines] = text.split("\r\n");
     const match = /^HTTP\/1\.[01] (\d{3})(?: (.*))?$/.exec(statusLine);
     if (!match)
@@ -170,7 +176,7 @@ export class ResponseParser {
     if (status >= 100 && status < 200 && status !== 101) return true;
     this.sink.head({ status, statusText: match[2] ?? "", headers });
     this.state = this.bodyFraming(status, headers);
-    if (this.state === "done") this.sink.end();
+    if (this.state === "done") this.finish();
     return true;
   }
 
@@ -191,8 +197,8 @@ export class ResponseParser {
     if (this.pending.length === 0) return false;
     const bounded = this.state !== "close";
     const count = bounded ? Math.min(this.remaining, this.pending.length) : this.pending.length;
-    this.sink.data(this.pending.slice(0, count));
-    this.pending = this.pending.subarray(count);
+    this.sink.data(this.pending.copyBody(count));
+    this.pending.consume(count);
     if (!bounded) return false;
     this.remaining -= count;
     if (this.remaining > 0) return false;
@@ -202,12 +208,14 @@ export class ResponseParser {
   }
 
   private parseChunkSize(): boolean {
-    const eol = indexOfCrlf(this.pending);
+    const eol = this.pending.findLineEnd(MAX_CHUNK_LINE_BYTES, "chunk-size");
     if (eol < 0) return false;
-    const line = decoder.decode(this.pending.subarray(0, eol));
-    this.pending = this.pending.subarray(eol + 2);
-    const size = Number.parseInt(line.split(";")[0]!.trim(), 16);
-    if (Number.isNaN(size)) throw new Error(`bad chunk size: ${JSON.stringify(line.slice(0, 40))}`);
+    const line = decoder.decode(this.pending.copyPrefix(eol));
+    this.pending.consume(eol + 2);
+    const token = line.split(";", 1)[0]!.trim();
+    const size = /^[0-9a-f]+$/i.test(token) ? Number.parseInt(token, 16) : NaN;
+    if (!Number.isSafeInteger(size))
+      throw new Error(`bad chunk size: ${JSON.stringify(line.slice(0, 40))}`);
     this.remaining = size;
     this.state = size === 0 ? "trailers" : "chunk-data";
     return true;
@@ -215,52 +223,229 @@ export class ResponseParser {
 
   private skipCrlf(): boolean {
     if (this.pending.length < 2) return false;
-    this.pending = this.pending.subarray(2);
+    if (this.pending.byteAt(0) !== 13 || this.pending.byteAt(1) !== 10)
+      throw new Error("bad chunk terminator: expected CRLF");
+    this.pending.consume(2);
     this.state = "chunk-size";
     return true;
   }
 
   private skipTrailers(): boolean {
-    const eol = indexOfCrlf(this.pending);
+    const eol = this.pending.findLineEnd(MAX_TRAILER_BYTES - this.trailerBytes, "trailers");
     if (eol < 0) return false;
-    this.pending = this.pending.subarray(eol + 2);
+    this.trailerBytes += eol + 2;
+    this.pending.consume(eol + 2);
     if (eol === 0) this.finish();
     return true;
   }
 
   private finish(): void {
     this.state = "done";
+    this.pending.clear();
     this.sink.end();
   }
 
   private fail(message: string): void {
     this.state = "done";
+    this.pending.clear();
     this.sink.error(message);
   }
 }
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  // Pending bytes must be fixed and unshared, including while waiting for a partial line.
-  if (a.length === 0)
-    return Reflect.get(b.buffer, "resizable") ||
-      Object.prototype.toString.call(b.buffer) === "[object SharedArrayBuffer]"
-      ? new Uint8Array(b)
-      : b;
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a);
-  out.set(b, a.length);
-  return out;
-}
+class PendingBytes {
+  private chunks: Uint8Array[] = [];
+  private head = 0;
+  private offset = 0;
+  private total = 0;
+  private direct = false;
+  private scanMode: "line" | "head" | undefined;
+  private scanChunk = 0;
+  private scanOffset = 0;
+  private scanAbsolute = 0;
+  private scanMatch = 0;
 
-function indexOfCrlf(bytes: Uint8Array): number {
-  for (let i = 0; i + 1 < bytes.length; i++) if (bytes[i] === 13 && bytes[i + 1] === 10) return i;
-  return -1;
-}
-
-function indexOfCrlfCrlf(bytes: Uint8Array): number {
-  for (let i = 0; i + 3 < bytes.length; i++) {
-    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10)
-      return i;
+  get length(): number {
+    return this.total;
   }
-  return -1;
+
+  append(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    const first = this.total === 0;
+    if (first) {
+      this.chunks = [];
+      this.head = 0;
+      this.offset = 0;
+      this.direct = !isSpecialBacking(bytes.buffer);
+    }
+    this.chunks.push(first && this.direct ? bytes : new Uint8Array(bytes));
+    this.total += bytes.length;
+  }
+
+  ensureOwned(): void {
+    if (this.total === 0) return;
+    if (this.offset !== 0) this.compactHead();
+    if (!this.direct) return;
+    this.chunks[this.head] = new Uint8Array(this.chunks[this.head]!);
+    this.direct = false;
+  }
+
+  copyPrefix(count: number): Uint8Array {
+    if (count === 0) return new Uint8Array(0);
+    const first = this.chunks[this.head]!;
+    if (this.offset + count <= first.length && this.head + 1 === this.chunks.length)
+      return first.subarray(this.offset, this.offset + count);
+    const out = new Uint8Array(count);
+    this.writePrefix(out);
+    return out;
+  }
+
+  copyBody(count: number): Uint8Array<ArrayBuffer> {
+    const out = new Uint8Array(count);
+    this.writePrefix(out);
+    return out;
+  }
+
+  private writePrefix(out: Uint8Array): void {
+    const count = out.length;
+    let copied = 0;
+    let chunkIndex = this.head;
+    let chunkOffset = this.offset;
+    while (copied < count) {
+      const chunk = this.chunks[chunkIndex]!;
+      const available = Math.min(chunk.length - chunkOffset, count - copied);
+      out.set(chunk.subarray(chunkOffset, chunkOffset + available), copied);
+      copied += available;
+      chunkIndex++;
+      chunkOffset = 0;
+    }
+  }
+
+  consume(count: number): void {
+    if (count < 0 || count > this.total) throw new RangeError("pending consume exceeds length");
+    let remaining = count;
+    while (remaining > 0) {
+      const chunk = this.chunks[this.head]!;
+      const available = chunk.length - this.offset;
+      if (remaining < available) {
+        this.offset += remaining;
+        remaining = 0;
+      } else {
+        remaining -= available;
+        this.chunks[this.head] = EMPTY_CHUNK;
+        this.head++;
+        this.offset = 0;
+      }
+    }
+    this.total -= count;
+    this.resetScan();
+    if (this.total === 0) this.clear();
+  }
+
+  byteAt(index: number): number {
+    if (index < 0 || index >= this.total) throw new RangeError("pending index exceeds length");
+    let chunkIndex = this.head;
+    let chunkOffset = this.offset + index;
+    while (chunkOffset >= this.chunks[chunkIndex]!.length) {
+      chunkOffset -= this.chunks[chunkIndex]!.length;
+      chunkIndex++;
+    }
+    return this.chunks[chunkIndex]![chunkOffset]!;
+  }
+
+  findLineEnd(limit: number, state: "chunk-size" | "trailers"): number {
+    return this.find("line", limit, state);
+  }
+
+  findHeadEnd(limit: number): number {
+    return this.find("head", limit, "head");
+  }
+
+  clear(): void {
+    this.chunks = [];
+    this.head = 0;
+    this.offset = 0;
+    this.total = 0;
+    this.direct = false;
+    this.resetScan();
+  }
+
+  private find(mode: "line" | "head", limit: number, state: string): number {
+    if (this.scanMode !== mode) {
+      this.scanMode = mode;
+      this.scanChunk = this.head;
+      this.scanOffset = this.offset;
+      this.scanAbsolute = 0;
+      this.scanMatch = 0;
+    }
+    const end = Math.min(this.total, Math.max(0, limit));
+    let chunkIndex = this.scanChunk;
+    let chunkOffset = this.scanOffset;
+    let absolute = this.scanAbsolute;
+    let match = this.scanMatch;
+    while (absolute < end) {
+      const chunk = this.chunks[chunkIndex];
+      if (!chunk) break;
+      if (chunkOffset === chunk.length) {
+        chunkIndex++;
+        chunkOffset = 0;
+        continue;
+      }
+      const byte = chunk[chunkOffset++]!;
+      const at = absolute++;
+      if (mode === "line") {
+        if (byte === 13) match = 1;
+        else if (byte === 10 && match === 1) {
+          this.saveScan(chunkIndex, chunkOffset, absolute, 0);
+          return at - 1;
+        } else match = 0;
+      } else {
+        if (match === 0) match = byte === 13 ? 1 : 0;
+        else if (match === 1) match = byte === 10 ? 2 : byte === 13 ? 1 : 0;
+        else if (match === 2) match = byte === 13 ? 3 : 0;
+        else if (byte === 10) {
+          this.saveScan(chunkIndex, chunkOffset, absolute, 0);
+          return at - 3;
+        } else match = byte === 13 ? 1 : 0;
+      }
+    }
+    this.saveScan(chunkIndex, chunkOffset, absolute, match);
+    if (this.total > limit) throw new Error(`${state} metadata limit exceeded`);
+    return -1;
+  }
+
+  private saveScan(chunk: number, offset: number, absolute: number, match: number): void {
+    this.scanChunk = chunk;
+    this.scanOffset = offset;
+    this.scanAbsolute = absolute;
+    this.scanMatch = match;
+  }
+
+  private resetScan(): void {
+    this.scanMode = undefined;
+    this.scanChunk = this.head;
+    this.scanOffset = this.offset;
+    this.scanAbsolute = 0;
+    this.scanMatch = 0;
+  }
+
+  private compactHead(): void {
+    const consumed = this.offset;
+    const chunk = this.chunks[this.head]!;
+    this.chunks[this.head] = new Uint8Array(chunk.subarray(consumed));
+    this.offset = 0;
+    this.direct = false;
+    if (this.scanMode !== undefined && this.scanChunk === this.head) {
+      this.scanOffset -= consumed;
+    }
+  }
+}
+
+const EMPTY_CHUNK = new Uint8Array(0);
+
+function isSpecialBacking(buffer: ArrayBufferLike): boolean {
+  return (
+    Reflect.get(buffer, "resizable") ||
+    Reflect.get(buffer, "growable") ||
+    Object.prototype.toString.call(buffer) === "[object SharedArrayBuffer]"
+  );
 }

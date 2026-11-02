@@ -38,8 +38,15 @@ test("ring keeps records in order across the wrap point and waits when full", as
   expect(reader.drain()).toEqual([]);
 });
 
-function parse(chunks: string[], isHead = false) {
-  const out = { head: null as ResponseHead | null, body: "", ended: false, error: "" };
+type ParserOutput = {
+  head: ResponseHead | null;
+  body: string;
+  ended: boolean;
+  error: string;
+};
+
+function parseInput(chunks: Iterable<Uint8Array>, isHead = false) {
+  const out: ParserOutput = { head: null, body: "", ended: false, error: "" };
   const parser = new ResponseParser(
     {
       head: (h) => (out.head = h),
@@ -51,9 +58,47 @@ function parse(chunks: string[], isHead = false) {
     },
     isHead,
   );
-  for (const c of chunks) parser.push(encode(c));
+  for (const c of chunks) parser.push(c);
   return { out, parser };
 }
+
+function parse(chunks: string[], isHead = false) {
+  return parseInput(chunks.map(encode), isHead);
+}
+
+function parseBytes(bytes: Uint8Array, isHead = false) {
+  return parseInput(
+    Array.from({ length: bytes.length }, (_, i) => bytes.subarray(i, i + 1)),
+    isHead,
+  );
+}
+
+function characterizeFragmentedMetadata(size: number, chunked: boolean) {
+  const start = performance.now();
+  const body = chunked ? "1;" + "x".repeat(size - 5) + "\r\na\r\n0\r\n\r\n" : "";
+  const raw = chunked
+    ? encode("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + body)
+    : encode(
+        "HTTP/1.1 200 OK\r\nX-Pad: " + "x".repeat(size - 41) + "\r\nContent-Length: 0\r\n\r\n",
+      );
+  const { out } = parseBytes(raw);
+  return {
+    bytes: raw.length,
+    elapsedMs: performance.now() - start,
+    ended: out.ended,
+    error: out.error,
+  };
+}
+
+test("response parser characterization records fragmented metadata cost", () => {
+  const samples = [128, 1024, 4096].flatMap((size) => [
+    characterizeFragmentedMetadata(size, false),
+    characterizeFragmentedMetadata(size, true),
+  ]);
+  console.info("http1 fragmented metadata characterization", samples);
+  expect(samples.every((sample) => sample.ended && sample.error === "")).toBe(true);
+  expect(samples.every((sample) => sample.elapsedMs >= 0)).toBe(true);
+});
 
 test("network notification accessor exposes only helper GEN0", async () => {
   const { NetHost } = await import("../browser/net/host");
@@ -108,6 +153,55 @@ test("response parser: chunked with trailers, 100 Continue, until-close, HEAD", 
   const broken = parse(["HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc"]);
   broken.parser.end();
   expect(broken.out.error).toContain("mid-response");
+});
+
+test("response parser keeps fragmented metadata linear and preserves body delivery", () => {
+  const head = parseBytes(
+    encode(
+      "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nX-Name: 日本語\r\nContent-Length: 5\r\n\r\nhello",
+    ),
+  );
+  expect(head.out.head).toEqual({
+    status: 200,
+    statusText: "OK",
+    headers: [
+      ["x-name", "日本語"],
+      ["content-length", "5"],
+    ],
+  });
+  expect(head.out.body).toBe("hello");
+  expect(head.out.ended).toBe(true);
+
+  const body = "b".repeat(32 * 1024);
+  const first = encode(
+    `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n${body.length.toString(16)}\r\n${body}\r`,
+  );
+  const fragmented = new ResponseParser({
+    head: () => {},
+    data: (bytes) => {
+      expect(decode(bytes)).toBe(body);
+    },
+    end: () => {},
+    error: (message) => {
+      throw new Error(message);
+    },
+  });
+  fragmented.push(first);
+  fragmented.push(encode("\n0\r\n\r\n"));
+  expect(fragmented.done).toBe(true);
+});
+
+test("response parser retains metadata ceilings and framing errors", () => {
+  const oversizedHead = parse(["HTTP/1.1 200 OK\r\nX-Pad: " + "x".repeat(64 * 1024) + "\r\n\r\n"]);
+  expect(oversizedHead.out.error).toBe("head metadata limit exceeded");
+
+  const oversizedChunk = parse([
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;" + "x".repeat(8 * 1024) + "\r\n",
+  ]);
+  expect(oversizedChunk.out.error).toBe("chunk-size metadata limit exceeded");
+
+  const badTerminator = parse(["HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\naXX"]);
+  expect(badTerminator.out.error).toBe("bad chunk terminator: expected CRLF");
 });
 
 test("request serialization sets host, length and connection: close", () => {
