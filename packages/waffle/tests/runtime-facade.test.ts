@@ -628,6 +628,8 @@ test("source admission snapshots borrowed bytes before the lazy loader starts", 
 });
 
 test("runtime-owned source admission avoids a second byte snapshot", async () => {
+  const publicLoader = await import("../interrupt/loader.js");
+  expect("compileInterruptibleOwned" in publicLoader).toBe(false);
   const source = bytes.slice();
   const loaderSource = new Uint8Array(Array.from(bytes).concat([0, 2, 1, 102]));
   const Bytes = Uint8Array;

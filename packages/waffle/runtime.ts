@@ -444,7 +444,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // Function loaders need a private snapshot before an asynchronous import can yield;
         // direct sources were copied at registration and are already fixed and unshared.
         const snapshot = typeof ownedSource === "function" ? new Uint8Array(bytes) : ownedSource;
-        const { compileInterruptibleOwned, programStage } = await import("./interrupt/loader.js");
+        const { compileInterruptibleOwned, programStage } =
+          await import("./interrupt/loader-internal.js");
         if (sourceStart !== undefined && sourceEnd !== undefined)
           programStage("source", sourceStart, { bytes: snapshot.byteLength }, sourceEnd);
         const compiled = await compileInterruptibleOwned(snapshot);
