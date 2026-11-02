@@ -208,6 +208,8 @@ test("WAF-001 shared guest decoding snapshots fixed unshared bytes", () => {
       expect(wasi.descriptors.close(fd)).toBe(true);
       expect(backings.length).toBeGreaterThan(0);
       expect(backings.every((backing) => backing instanceof ArrayBuffer)).toBe(true);
+      if (typeof SharedArrayBuffer !== "undefined")
+        expect(backings.every((backing) => !(backing instanceof SharedArrayBuffer))).toBe(true);
       memory.grow(1);
       const grownEnd = memory.buffer.byteLength;
       new Uint8Array(memory.buffer).set(path, grownEnd - path.length);

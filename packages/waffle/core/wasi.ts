@@ -1089,6 +1089,7 @@ export class Wasi {
         if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
+        fdOut >>>= 0;
         const name = this.str(ptr, len);
         const alias = resolveDescriptorPath(
           this.descriptors,
@@ -1103,9 +1104,12 @@ export class Wasi {
         );
         if (typeof alias === "number") return alias;
         if (alias !== undefined && !("resolved" in alias)) {
-          if ("device" in alias)
+          if ("device" in alias) {
+            if (fdOut + 4 > this.bytes().length) return EFAULT;
             return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
+          }
           if (!this.descriptors.get(alias.source)) return ENOENT;
+          if (fdOut + 4 > this.bytes().length) return EFAULT;
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
         const path =
