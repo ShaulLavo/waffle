@@ -12,6 +12,8 @@ import {
   type AdmittedModuleStore,
 } from "./admitted-store.js";
 
+const compileOwned = Symbol("compile owned runtime source");
+
 /** Process-independent module promises. Instances get fresh countdown globals and imports.
  * Registries retain resolved modules separately for their lifetime. Persistence holds bytes only.
  */
@@ -26,8 +28,11 @@ export class InterruptModuleCache {
   }
 
   async compile(source: Uint8Array): Promise<WebAssembly.Module> {
-    // Hash and rewrite one owned snapshot, even if the caller mutates a borrowed view.
-    const bytes = new Uint8Array(source);
+    return this[compileOwned](new Uint8Array(source));
+  }
+
+  async [compileOwned](bytes: Uint8Array<ArrayBuffer>): Promise<WebAssembly.Module> {
+    // Hash and rewrite the fixed runtime-owned snapshot without another copy.
     const start = programTime();
     const hash = await sha256Hex(bytes);
     programStage("digest", start, { bytes: bytes.length });
@@ -172,6 +177,14 @@ let modules: InterruptModuleCache | undefined;
 export function compileInterruptible(bytes: Uint8Array): Promise<WebAssembly.Module> {
   modules ??= new InterruptModuleCache(16, cacheStorageAdmittedStore());
   return modules.compile(bytes);
+}
+
+/** Internal runtime path for a fixed, unshared source snapshot. */
+export function compileInterruptibleOwned(
+  bytes: Uint8Array<ArrayBuffer>,
+): Promise<WebAssembly.Module> {
+  modules ??= new InterruptModuleCache(16, cacheStorageAdmittedStore());
+  return modules[compileOwned](bytes);
 }
 
 export { programStage } from "./admitted-store.js";
