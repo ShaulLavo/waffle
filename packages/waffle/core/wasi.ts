@@ -482,7 +482,11 @@ export class Wasi {
   }
 
   private str(ptr: number, len: number): string {
-    return decoder.decode(this.bytes().slice(ptr, ptr + len));
+    ptr >>>= 0;
+    len >>>= 0;
+    const bytes = this.bytes();
+    if (ptr > bytes.length || len > bytes.length - ptr) throw new FilesystemError(EFAULT);
+    return decoder.decode(bytes.slice(ptr, ptr + len));
   }
 
   private iovecs(ptr: number, count: number): Uint8Array[] {
@@ -1007,6 +1011,7 @@ export class Wasi {
         if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
+        fdOut >>>= 0;
         const name = this.str(ptr, len);
         const alias = resolveDescriptorPath(
           this.descriptors,
@@ -1021,9 +1026,12 @@ export class Wasi {
         );
         if (typeof alias === "number") return alias;
         if (alias !== undefined && !("resolved" in alias)) {
-          if ("device" in alias)
+          if ("device" in alias) {
+            if (fdOut + 4 > this.bytes().length) return EFAULT;
             return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
+          }
           if (!this.descriptors.get(alias.source)) return ENOENT;
+          if (fdOut + 4 > this.bytes().length) return EFAULT;
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
         const path =
@@ -1040,11 +1048,13 @@ export class Wasi {
         if (node === undefined) {
           if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
           if (oflags & O_DIRECTORY) return EINVAL;
+          if (fdOut + 4 > this.bytes().length) return EFAULT;
           const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
           if (typeof result !== "number") return result.error;
           node = result;
         }
         if (this.opts.fs.stat(node).kind === "socket") return 60;
+        if (fdOut + 4 > this.bytes().length) return EFAULT;
         return this.writeResult(
           openInode(
             this.descriptors,
