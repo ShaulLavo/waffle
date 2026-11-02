@@ -47,7 +47,7 @@ jobs:
           base: ${{ github.ref }}
           filters: |
             network:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "packages/waffle/Cargo.toml"
               - "packages/waffle/Cargo.lock"
               - "packages/waffle/rust-toolchain.toml"
@@ -69,7 +69,10 @@ jobs:
               - "packages/waffle/tests/node-exports.test.ts"
               - "packages/waffle/tests/runtime-size.test.ts"
             coreutils:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/findutils-xargs.yml"
+              - ".github/workflows/coreutils-echo.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "packages/waffle/**"
               - "packages/coreutils/**"
               - "package.json"
@@ -135,11 +138,13 @@ jobs:
               - "packages/coreutils/provenance/checksums.source.json"
             sed:
               - "tools/program-locales/**"
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "packages/waffle/**"
               - "packages/sed/**"
             findutils:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/findutils-xargs.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "packages/waffle/**"
               - "packages/findutils/**"
               - "package.json"
@@ -159,19 +164,20 @@ jobs:
               - "packages/grep/tests/fixtures/grep-usage-cases.json"
               - "packages/ripgrep/tests/helpers/rg-fixtures.ts"
             grep:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "packages/waffle/**"
               - "packages/grep/**"
             ripgrep:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "packages/waffle/**"
               - "packages/ripgrep/**"
             base:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "packages/waffle/**"
               - "packages/base/**"
             programs:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
               - "Cargo.toml"
@@ -192,7 +198,8 @@ jobs:
               - "packages/git/**"
               - "packages/tar/**"
             diffutils:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
               - "tools/program-build-tools.ts"
@@ -205,7 +212,7 @@ jobs:
               - "packages/base/**"
               - "packages/diffutils/**"
             gh:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "package.json"
               - "bun.lock"
               - "tools/program-package.ts"
@@ -213,7 +220,8 @@ jobs:
               - "packages/waffle/**"
               - "packages/gh/**"
             jq:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
               - "rust-toolchain.toml"
@@ -227,14 +235,15 @@ jobs:
               - "packages/base/**"
               - "packages/jq/**"
             curl:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "package.json"
               - "bun.lock"
               - "tools/program-package.ts"
               - "tools/tsconfig.programs.json"
               - "packages/curl/**"
             awk:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
               - "tools/program-build-tools.ts"
@@ -248,7 +257,8 @@ jobs:
               - "packages/base/**"
               - "packages/awk/**"
             tar:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
+              - ".github/actions/program-optimizer/action.yml"
               - "package.json"
               - "bun.lock"
               - "rust-toolchain.toml"
@@ -268,7 +278,7 @@ jobs:
               - "packages/waffle/**"
               - "packages/procps/**"
             browser:
-              - ".github/**"
+              - ".github/workflows/ci.yml"
               - "packages/waffle/Cargo.toml"
               - "packages/waffle/Cargo.lock"
               - "packages/waffle/rust-toolchain.toml"
@@ -300,7 +310,7 @@ jobs:
               - "packages/waffle/tooling/workspace-safari-runner.ts"
               - "packages/waffle/tests/**"
             libc:
-              - '.github/**'
+              - '.github/workflows/ci.yml'
               - 'packages/waffle/patches/**'
               - 'packages/waffle/scripts/build-wasi-libc.sh'
               - 'packages/waffle/scripts/test-wasi-libc.ts'
