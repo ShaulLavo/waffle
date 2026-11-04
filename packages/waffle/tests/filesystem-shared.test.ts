@@ -1,5 +1,5 @@
 import { SLOT_WORDS } from "../fs/shared.js";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_SHARED_MAX_BYTES, PAGE } from "../fs/protocol";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
 
@@ -188,4 +188,49 @@ test("stat rejects a metadata slot reused while waiting for its file lock", () =
   expect(state.stat(0)).toBeUndefined();
   expect(state.fileSlot(32767)).toBe(slot);
   expect(state.stat(32767)).toMatchObject({ ino: 2, mtime: 2 });
+});
+
+test.each([0, 127])("a freed handle %i lookup skips unrelated resident nodes", (handle) => {
+  const state = new SharedFilesystemState();
+  for (let index = 0; index < 256; index++)
+    state.register(index, { kind: "file", ino: index + 1, nlink: 1, size: 0, mtime: 1 });
+  const observer = new SharedFilesystemState(state.buffer);
+  state.unlink(handle);
+  const loads = spyOn(Atomics, "load");
+  try {
+    expect(observer.revision(handle)).toBeUndefined();
+    expect(loads.mock.calls.filter(([array]) => Object.is(array, observer.slots))).toHaveLength(1);
+  } finally {
+    loads.mockRestore();
+  }
+});
+
+test("reusing collision tombstones preserves live slots and reincarnated handles", () => {
+  const state = new SharedFilesystemState();
+  const stride = state.slots.length / SLOT_WORDS - 1;
+  const register = (handle: number) =>
+    state.register(handle, { kind: "file", ino: handle + 1, nlink: 1, size: 0, mtime: 1 });
+  register(0);
+  register(stride);
+  register(stride * 2);
+  const liveSlot = state.fileSlot(stride * 2);
+  state.unlink(stride);
+  register(stride * 2);
+  expect(state.fileSlot(stride * 2)).toBe(liveSlot);
+  expect(state.resources().files).toBe(2);
+  state.unlink(0);
+  register(stride);
+  expect(state.fileSlot(stride)).toBe(1);
+  expect(state.fileSlot(stride * 2)).toBe(liveSlot);
+  const previous = state.revision(stride * 2)!;
+  state.unlink(stride * 2);
+  expect(state.revision(stride * 2)).toBeUndefined();
+  register(stride * 2);
+  expect(state.fileSlot(stride * 2)).toBe(2);
+  expect(state.revision(stride * 2)).toBeGreaterThan(previous);
+  register(stride * 2);
+  expect(state.resources().files).toBe(2);
+  state.unlink(stride);
+  state.unlink(stride * 2);
+  expect(state.registeredHandles()).toEqual([]);
 });
