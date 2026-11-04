@@ -13,7 +13,6 @@ import {
   type RuntimeReservations,
   type ProcessPlan,
 } from "../memory/reservations.js";
-import { sharedMemoryProfile } from "../memory/profile.js";
 import {
   CONTROL_GRANT_BYTES,
   CONTROL_GRANT_STATE_BYTES,
@@ -399,17 +398,18 @@ for (const dispose of [false, true])
   test(`service safety before native stop survives ${dispose ? "runtime disposal" : "aggregate debt"}`, () =>
     serviceDebtKeepsFilesystemOwner(dispose));
 
-test("L5 counted mobile constructor refusal refunds provisional holder and preserves contradiction cap", () => {
-  const mobile = sharedMemoryProfile({
-    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 26_2 like Mac OS X) AppleWebKit/605.1.15",
-    maxTouchPoints: 5,
+test("L5 counted bounded constructor refusal refunds provisional holder and preserves contradiction cap", () => {
+  const bounded = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(3 * 1024 ** 3),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: false },
   });
   let constructions = 0;
-  const ledger = new SharedMemoryLedger(mobile, undefined, undefined, () => {
+  const ledger = new SharedMemoryLedger(bounded, undefined, undefined, () => {
     constructions++;
     throw new RangeError("counted shared Memory refusal");
   });
-  const runtime = ledger.openRuntime(mobile);
+  const runtime = ledger.openRuntime(bounded);
   runtimes.add(runtime);
   const held = runtime.admit({
     pid: 9,
@@ -431,7 +431,7 @@ test("L5 counted mobile constructor refusal refunds provisional holder and prese
     reservedBytes: charged,
     effectiveBudgetBytes: charged,
     sharedGuests: [],
-    platform: { source: "profile", profile: "apple-mobile-webkit" },
+    platform: { kind: "bounded", source: "application" },
     contradictions: [
       { label: "guest-memory", requestedBytes: heapBytes, totalChargedBytesAfterRefund: charged },
     ],
