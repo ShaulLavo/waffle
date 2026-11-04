@@ -28,9 +28,10 @@ export interface NotificationBridge {
 /** Page-owned. No guest closure is needed to fence or physically stop the relay. */
 export function createNotificationBridge(workerUrl: string): NotificationBridge {
   const channel = new MessageChannel();
-  const state = new Int32Array(allocateSharedControl(8));
+  let state: Int32Array;
   let worker: Worker;
   try {
+    state = new Int32Array(allocateSharedControl(8));
     worker = new Worker(workerUrl, { type: "module" });
   } catch (error) {
     channel.port1.close();

@@ -25,7 +25,7 @@ const runtime = createRuntime({ sharedMemory });
 
 The application asserts the capacity; Waffle does not measure it. The factory requires a positive safe-integer budget and three boolean counted kinds, and throws `TypeError` otherwise. It freezes its result. `declareSharedMemoryPlatform({ kind: "unbounded" })` declares the unbounded policy explicitly.
 
-`createRuntime` accepts only an object issued by that factory. A literal, a spread copy, `null`, or a platform read back from an earlier snapshot is refused with `TypeError` before any backing or Worker exists. Only an omitted or `undefined` option selects the default.
+`createRuntime` accepts only an object issued by that factory. A literal, a spread copy, `null`, or a default-provenance platform read back from an earlier snapshot is refused with `TypeError` before any backing or Worker exists. Only an omitted or `undefined` option selects the default.
 
 | Policy | Default or explicit unbounded | Explicit bounded |
 | --- | --- | --- |
