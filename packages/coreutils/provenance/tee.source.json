@@ -1,0 +1,50 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "packages": {
+    "uu_tee": {
+      "version": "0.13.0",
+      "path": "src/uu/tee"
+    },
+    "uucore": {
+      "version": "0.13.0",
+      "path": "src/uucore"
+    }
+  },
+  "classification": "Unmodified pinned upstream tee with original WASI cwd and closed-stdout descriptor adapter",
+  "upstreamFiles": {
+    "src/uu/tee/Cargo.toml": "5f7a5e633b97763512e84cba67ca1745d537ff893f23032e00e66e3923ad9cfe",
+    "src/uu/tee/src/tee.rs": "52f84e2a69e9562dc7e48bb6e979f08a2f42b56121cad920491706c2ec86d6b3",
+    "src/uu/tee/src/cli.rs": "e6213ba71b0a8c626fb813c3981ad5c7bfb67f6e2b2e30e66f5883961819d86e",
+    "src/uu/tee/locales/en-US.ftl": "921b80d83673c140ee71b2d4340c181737638b8cb39cb84a047958ab201c952d",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "license": {
+    "spdx": "MIT",
+    "upstreamPath": "LICENSE",
+    "localPath": "provenance/LICENSE.uutils",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "changes": [
+    "No upstream parser, stream loop, output writer or error-mode changes.",
+    "Original WASI entry initializes cwd from PWD through the existing family helper.",
+    "When stdout is initially closed, the original WASI entry holds a real read-only cwd descriptor in fd1 so output-file opens cannot reuse stdout. The normal filesystem rejects writes to this descriptor. No synthetic write result, mode or ownership is installed.",
+    "Upstream WASI reads at most 32 KiB per iteration and writes that slice to each output before another read.",
+    "GNU tee is an independently verified test oracle only, never a runtime fallback."
+  ],
+  "oracle": {
+    "version": "tee (GNU coreutils) 9.12",
+    "sha256": "06d14ab25f2c830be4954b3a05e5f340ceceb71273258e9c28f0621d30fcb236",
+    "platform": "Linux x86_64",
+    "path": "/usr/bin/tee"
+  },
+  "unsupported": [
+    "WASI does not implement upstream native signal-ignore installation for -i. Waffle supervisor cancellation remains authoritative.",
+    "Linux splice/tee zero-copy optimization is not built on WASI.",
+    "GNU SIGPIPE process-status parity is not claimed. Closed descriptors and actual broken pipes are tested separately.",
+    "The runtime has one virtual principal and supported owner-mode bits, not Unix ownership, groups, ACLs or device files.",
+    "Diagnostics, help and version are uutils text, not GNU text.",
+    "Closed stdout diagnostics can report a directory or rights error rather than native EBADF; bytes, status and output-file effects are compared.",
+    "On a stdout error with --output-error=exit, pinned upstream completes writes of the current read slice to later outputs before returning failure. GNU stops before those writes. The runtime test verifies both results explicitly."
+  ]
+}

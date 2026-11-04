@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.105",
+  "version": "0.0.110",
   "private": true,
   "files": [
     "dist",
@@ -12,6 +12,7 @@
     "interrupt",
     "group",
     "link",
+    "memory",
     "search",
     "proc",
     "programs",
@@ -37,6 +38,11 @@
       "bun": "./index.ts",
       "browser": "./index.ts",
       "default": "./index.ts"
+    },
+    "./program-build-tools": {
+      "types": "./tooling/program/program-build-tools.ts",
+      "bun": "./tooling/program/program-build-tools.ts",
+      "node": "./dist/tooling/program/program-build-tools.js"
     },
     "./runtime": {
       "types": "./runtime.ts",
@@ -363,6 +369,13 @@
       "bun": "./browser/fs-worker.ts",
       "browser": "./browser/fs-worker.ts"
     },
+    "./browser/net/outbound": {
+      "types": "./browser/net/outbound.ts",
+      "node": "./dist/browser/net/outbound.js",
+      "bun": "./browser/net/outbound.ts",
+      "browser": "./browser/net/outbound.ts",
+      "default": "./browser/net/outbound.ts"
+    },
     "./browser/net/helper": {
       "types": "./browser/net/helper.ts",
       "node": "./dist/browser/net/helper.js",
@@ -569,6 +582,13 @@
       "bun": "./proc/command.ts",
       "browser": "./proc/command.ts",
       "default": "./proc/command.ts"
+    },
+    "./browser/preview1-network": {
+      "types": "./browser/preview1-network.ts",
+      "node": "./dist/browser/preview1-network.js",
+      "bun": "./browser/preview1-network.ts",
+      "browser": "./browser/preview1-network.ts",
+      "default": "./browser/preview1-network.ts"
     }
   },
   "scripts": {
@@ -586,14 +606,14 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check:tooling": "tsc -p tsconfig.tooling.json",
-    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts",
+    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts && bun ../../tools/waffle-family-metadata.ts",
     "unused": "knip --no-progress",
     "duplicates": "jscpd --fail-on-new-clones 0",
     "quality": "bun run check:source && bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
     "build:network": "bun tooling/build-network.ts",
     "size:network": "bun tooling/network-size.ts",
     "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked",
-    "pack": "bun pm pack --destination dist",
+    "pack": "bun tooling/check-package-metadata.ts && bun pm pack --destination dist",
     "pack:check": "bun tooling/tarball-smoke.ts"
   },
   "dependencies": {},
@@ -607,6 +627,8 @@
     "playwright": "^1.64.1",
     "playwright-core": "1.64.1",
     "typescript": "^7.0.2",
-    "vite": "8.3.4"
-  }
+    "vite": "8.3.4",
+    "wabt": "1.0.39"
+  },
+  "waffleHostInterface": 1
 }

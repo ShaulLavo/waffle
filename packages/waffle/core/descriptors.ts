@@ -15,12 +15,13 @@ export interface Readiness {
   writable: boolean;
   hangup: boolean;
   nbytes?: number;
+  error?: number;
 }
 /** Pipe and terminal services supply I/O and level-triggered readiness, never guest pointers.
  * I/O returns a byte count or negative WASI errno. Preview1 adapters may block inside read/write.
  */
 export interface Stream {
-  kind: "pipe" | "terminal" | "device";
+  kind: "pipe" | "terminal" | "device" | "socket";
   device?: "null";
   /** Supported fdflags share open-description state across duplication and endpoint transfer. */
   fdflags?: number;
@@ -32,6 +33,10 @@ export interface Stream {
   readiness(): Readiness;
   /** Shared sequence incremented and notified after readiness changes. */
   readonly notification?: Int32Array;
+  recv?(chunks: readonly Uint8Array[], waitall: boolean): number;
+  shutdown?(how: number): number;
+  /** Listener-only operation. Returns a new owned socket or negative WASI errno. */
+  accept?(flags: number): Stream | number;
   close?(): void;
   /** A process gets independent capabilities; dup within one process keeps its description. */
   forProcess?(pid: number): Stream;
@@ -47,7 +52,7 @@ function describeResource(resource: Resource, release?: () => void): OpenDescrip
   return new OpenDescription(
     resource,
     release ??
-      (resource.kind === "pipe" || resource.kind === "terminal" || resource.kind === "device"
+      (resource.kind !== "file" && resource.kind !== "directory"
         ? () => resource.close?.()
         : undefined),
   );
@@ -136,6 +141,8 @@ export class DescriptorTable {
         return 3;
       case "directory":
         return 4;
+      case "socket":
+        return 5;
       default:
         return 0;
     }
@@ -143,10 +150,20 @@ export class DescriptorTable {
   add(
     description: OpenDescription,
     rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string },
+    excluded?: number,
   ): number {
-    if (mapSize(this.entries) > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
+    const reserved =
+      excluded !== undefined &&
+      excluded >= 0 &&
+      excluded <= MAX_DESCRIPTOR &&
+      Number.isInteger(excluded) &&
+      !mapHas(this.entries, excluded)
+        ? 1
+        : 0;
+    if (mapSize(this.entries) > MAX_DESCRIPTOR - reserved)
+      throw new RangeError("descriptor table is full");
     let fd = this.next;
-    while (mapHas(this.entries, fd)) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    while (mapHas(this.entries, fd) || fd === excluded) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     this.next = fd;
     return this.addAt(fd, description, rights);
   }

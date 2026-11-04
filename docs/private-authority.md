@@ -76,6 +76,7 @@ closures and buffers carry process authority:
 
 | Enforced module                | Authority role                                                                                                              |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `browser/preview1-socket.ts` | Socket descriptions retain their handle, captured request-port hooks and descriptor flags in the guest worker. Payload copies use captured typed-array helpers. |
 | `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.       |
 | `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                          |
 | `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.       |
@@ -124,7 +125,7 @@ It contains no whole-file or wildcard suppression. The allowed cases are:
 | Owner                                      | Payload-only operation                                                                          | Why it carries no private authority                                                                                             |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `proc/pipes.ts` `length`                   | Reduce caller-supplied byte iovecs to a count                                                   | Elements are the caller's payload; the callback captures no ring or lifetime state.                                             |
-| `Ring.read` / `Ring.write`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
+| `Ring.read` / `Ring.writeEntered`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
 | Worker bootstrap `output`, `write`, `post` | Read `data.buffer` / `data.length`                                                              | Guest stdout/stderr bytes, not directory, signal or endpoint buffers.                                                           |
 | Terminal codec `import.write`              | Count/iterate terminal chunks, allocate an outbound byte array, copy payload, read byte lengths | These values are guest iovecs and fresh output bytes. The separate WeakMap of Stream provenance is private and remains checked. |
 

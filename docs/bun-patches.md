@@ -5,8 +5,10 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | Source                                                                                                                                | Class            | Revision and local change                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core/`, `fs/`, `proc/`, `interrupt/`                                                                                                 | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked.                                                                                                                                                                                                                               |
+| `proc/pipes.ts`                                                                                                                       | Original adapter | Waffle at `1722b65e81b1b37d3931d9fc1e078ee33d8b4b8d`; counted slot incarnations, append writer reuse and fenced relay-reader recovery. No external upstream implementation copied. See [Pipe slot lifetimes](#pipe-slot-lifetimes).                                                                                                                                                                                          |
 | `browser/net/`                                                                                                                        | Original adapter | Generic ring, HTTP framing, fetch and host transport, including the runtime-scoped loopback namespace and per-helper socket ownership. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle.                                                                                                                                                                               |
 | `browser/process-broker.ts`, `browser/worker.ts`                                                                                      | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned.                                                                                                                                                                                                                                                     |
+| `browser/preview1-{network-types,network,socket}.ts`, socket sections of `core/{wasi,descriptors}.ts`                                 | Original adapter | Launch-only Preview 1 sockets built on Waffle's N1 connector at `ad4afb4eb2a374a841dbfbcf7136e4c8399e63e6`. No upstream implementation copied. See [Preview 1 launch socket adapter](#preview-1-launch-socket-adapter).                                                                                                                                                                                                      |
 | `group/`, memory-group sections of `browser/{process-broker,worker}.ts`, `proc/abi.ts`, `link/{group,metadata,plan}.ts`               | Original adapter | Memory groups, written for Engines J1 on Waffle `63ddc5d`, 2026-10-29: page-side group owner, transit pins, `runtime_shm` imports, FUTEX watches and PIE member images. No upstream source copied. See [Memory group sources](#memory-group-sources).                                                                                                                                                                        |
 | `tests/fixtures/memory-group-member.c`                                                                                                | Adaptation       | The Engines shared-memory design prototype `member.c` (original Engines code, 2026-10-29, not published elsewhere). Its statics, data relocation, function-pointer table, stack probe, heap churn and atomics are kept; its heap now grows through `runtime_shm.group_grow` and a page-driven command loop replaces the Node host script.                                                                                    |
 | `proc/node-wasi.ts`                                                                                                                   | Adaptation       | bun-wasm `web/scripts/node-process.ts:188-397` at `c16ff39435cc33465b999ea06c1ee9d20b952354`; descriptor namespace, Node WASI translation, file/pipe routing and mixed polling moved without behavior redesign. Waffle-relative imports and explicit `NodeWasi*` names are local changes. Bun retains process policy, signal exit, worker controls, engine/native stdio, JSON and host APIs.                                 |
@@ -34,6 +36,8 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/program-build-tools.ts`                                                                                                        | Original adapter | WASI build/verifier helper extracted from bash-web `9ef027d7` scripts `wasi-build.ts` and `verify-wasi-guests.ts`. Waffle adds verified optimization and bounded final-program name stripping with original optimizer/derivation adapters; no external Wasm parser is copied.                                                                                                                                                |
 | `packages/awk/patches/wasi-unsupported-ops.patch`, `packages/awk/scripts/`                                                            | Adaptation       | The One True Awk 20260426 at `5739fd79bcfc75ba7526773d0cf634521f8aca3c`. Preserves the evaluator and real setjmp exit behavior. WASI-only startup and capability guards reject unavailable system commands and command pipes.                                                                                                                                                                                                |
 | `packages/tar/patches/wasi.patch`, `packages/tar/producer/`, `packages/tar/scripts/`                                                  | Adaptation       | uutils/tar at `dffa9350f78b3bfbc9b4fc70a0f0205a53a937b6`; standalone locked producer, runtime cwd adapter, `-C`, pure Rust gzip with trailer checks, rejected unsupported helpers/member filters, and explicit WASI metadata failures. Read-only candidate; create/extract are not qualified.                                                                                                                                |
+| `packages/program-support/src/{executor,io,runtime}.rs`, `src/runtime/wasi.rs`                                                        | Adaptation       | Neutral guest support from bash-web `shell/engine/src/{executor,io,runtime}.rs` and `runtime/wasi.rs` at `ed31b2bf47fe92afa4c9568868f206f35b9add27`. Public lifetime/cancellation hooks, filesystem adapter and wire decoders; original Waffle timers and read-readiness observations; shell policy stays in bash-web. See [Guest program support](#guest-program-support).                                                  |
+| `packages/waffle-relay/src/*webtransport*.ts`, `tcp-byte-channel.ts`, `tcp-target.ts`                                                 | Original adapter | Original carrier, lifetime, parser and reset adaptation around the public APIs of fails-components/webtransport revision `71d1ba5147c7733fbfd3a375116b9f58484d9f13`, exact npm pair 1.6.11. No upstream implementation is copied. See [WebTransport relay adapter](#webtransport-relay-adapter).                                                                                                                             |
 
 ## GNU diffutils
 
@@ -293,7 +297,13 @@ See [English program catalogs](program-locales.md) for coverage and build identi
 ## Program artifact finalization
 
 `tools/program-build-tools.ts` originated in bash-web `9ef027d7`, from
-`scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. Its original byte reader
+`scripts/wasi-build.ts` and `scripts/verify-wasi-guests.ts`. The supported
+`waffle/program-build-tools` export packages these canonical sources with their
+optimizer and derivation dependencies. Package preparation copies exact source
+bytes and emits Node modules; generated copies are not edited. Packaged derivations
+bind the original source hashes and Waffle build commit rather than a consumer's
+Git checkout. The libc builder and scanner patch still come only from the explicit
+`recipe.waffle` directory. Its original byte reader
 now rejects integers outside the Wasm u32 range. Waffle's original `stripWasmNames`
 removes only complete custom sections whose name is exactly `name`, retaining every
 other encoded byte. The original `stageProgram`, `program-optimize.ts` and
@@ -372,3 +382,62 @@ oracle, never a runtime fallback.
 ## Optional One True Awk
 
 `packages/awk` builds the authoritative onetrueawk/awk archive at `5739fd79bcfc75ba7526773d0cf634521f8aca3c`, SHA-256 `14b636bec87f5817012d883b9b318e808eee28881a7b4388f92ef6b5f940d7ef`. The package retains its Lucent license and upstream FIXES. The WASI-only patch initializes cwd from `PWD`, omits native signal and close-on-exec setup, and rejects unavailable system commands and command pipes. It does not change expression evaluation, parsing, field processing or nonlocal exit. Real `setjmp` and `longjmp` use the exact shared sysroot's `libsetjmp.a` and standard Wasm exception handling. Package notices retain incorporated wasi-libc notices. Native oracle fixtures use the same archive and patch with the WASI guards inactive. Build, tests, catalog and receipts are original Waffle adapters.
+
+## Guest program support
+
+`packages/program-support` owns the neutral executor, cancellation, descriptor and
+filesystem code originally extracted from bash-web. The public hooks follow
+`shell/engine/src/executor.rs`, `io.rs`, `runtime.rs` and `runtime/wasi.rs` at
+`ed31b2bf47fe92afa4c9568868f206f35b9add27`, under the retained MIT license.
+
+The directory page reader, Preview1 filestat decoder, runtime permission decoder,
+buffered source and weak endpoint behavior are reused without shell policy.
+Waffle makes the existing cancellation and event registrations public, adds a
+kind-and-id readiness notification that releases its registry borrow before waking,
+and exposes stack measurements only for tests or the opt-in `stack-observation`
+feature. `WasiAbi::with_inherited_fds` accepts the embedding's launch metadata and
+uses the existing bounded root-preopen scan. Shell process groups, access requests,
+signals and prompt imports remain in bash-web. No new guest import is introduced.
+
+Waffle's deadline registry, fused `Sleep`, poll-timeout conversion and
+non-consuming read-readiness dispatch are original additions. They extend the
+existing executor and descriptors so consumers do not copy scheduling or I/O
+internals. Runtime read observation uses one existing kind-0, zero-time
+subscription and never dispatches other waiters. No upstream implementation or
+new host ABI is copied. The existing `proc/abi.ts` zero-time read scan reports
+regular files ready without entering pending-I/O or shared-offset waits;
+positive and indefinite poll waits retain their completion semantics.
+
+[Program-support APIs](../packages/program-support/docs/api.md) lists the public
+contracts. Native public-API tests cover descriptor lifetime, allocation accounting,
+cancellation, reentrant notification, stat and directory decoding. The WASI library
+check compiles the import adapter without building any guest program.
+
+## Pipe slot lifetimes
+
+`proc/pipes.ts` extends Waffle's original ring implementation at
+`1722b65e81b1b37d3931d9fc1e078ee33d8b4b8d`. Header offset 36 holds a finite incarnation
+and a synchronous mutation count. The counter prevents delayed payload, close, revoke and
+relay operations from changing a replacement slot. Writer reuse continues cursors and old
+committed records; reader reuse waits for full relay recovery. A terminated section owner
+quarantines its slot. The registry retains append-only cells and its unchanged default cap.
+The earlier wrap/copy scheme originated in Waffle's `browser/worker.ts` SharedPipe, not an
+external source. These lifetime rules and host allocation hook are original adapters, with
+no upstream code copied or adapted.
+
+## Preview 1 launch socket adapter
+
+`browser/preview1-network.ts`, `browser/preview1-network-types.ts` and
+`browser/preview1-socket.ts` are original Waffle adapters based on the injected connector at
+`ad4afb4eb2a374a841dbfbcf7136e4c8399e63e6`. They retain the helper on the responsive owner,
+carry a ring and MessagePort to the worker, and wrap each NetHost connection in a shared
+socket description. The descriptor and WASI changes add standard Preview 1 socket operations,
+readiness and directional shutdown. The WAT and C fixtures are original test programs.
+No Bun, Node, wasi-libc or other upstream implementation was copied or adapted for this work.
+The existing wasi-libc patch remains unchanged.
+
+## WebTransport relay adapter
+
+The optional relay's WebTransport modules are original Waffle adapters. They use `main/lib/server.js`, `main/lib/session.js` and `main/lib/stream.js` from `fails-components/webtransport` revision `71d1ba5147c7733fbfd3a375116b9f58484d9f13` through the exact `@fails-components/webtransport@1.6.11` and `@fails-components/webtransport-transport-http3-quiche@1.6.11` packages. Both dependencies are BSD-3-Clause and remain outside this source tree. No native code or upstream stream implementation is copied or patched.
+
+The private reset adapter translates relay codes 1 through 4 to the dependency's `{ code }` argument and recognizes only its exact bounded reset-message forms. The endpoint owner replaces a stopped server instead of calling `updateCert`, because the pinned native binding does not implement that operation. Certificate rotation resets WebTransport streams and leaves the independently owned WebSocket service running.
