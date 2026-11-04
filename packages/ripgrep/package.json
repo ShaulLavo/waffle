@@ -26,14 +26,15 @@
     "test:build-routes": "node --test ../../tools/test-family-build-routes.ts",
     "test:source": "node --test scripts/test-rg-source.ts",
     "test:wasi": "node scripts/test-rg-wasi.ts",
-    "pack": "node ../../tools/program-package.ts pack",
-    "prepack": "node ../../tools/program-package.ts check",
+    "pack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check",
     "prepare:package": "bun run build"
+  },
+  "devDependencies": {
+    "waffle": "workspace:*"
   },
   "peerDependencies": {
     "waffle": "*"
   },
-  "devDependencies": {
-    "waffle": "workspace:*"
-  }
+  "waffleHostInterface": 1
 }

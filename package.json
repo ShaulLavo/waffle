@@ -55,5 +55,11 @@
     "waffle-curl": "workspace:*",
     "waffle-gh": "workspace:*",
     "waffle-git": "workspace:*"
-  }
+  },
+  "trustedDependencies": [
+    "bun-wasm",
+    "esbuild",
+    "waffle",
+    "@fails-components/webtransport-transport-http3-quiche"
+  ]
 }

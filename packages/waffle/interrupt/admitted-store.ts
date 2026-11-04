@@ -1,4 +1,4 @@
-import { INTERRUPT_REWRITER_REVISION } from "./rewriter-internal.js";
+import { type InterruptRewriteProfile, INTERRUPT_REWRITER_REVISION } from "./rewriter-internal.js";
 
 export const INTERRUPT_INTERVAL = 4096;
 export const INTERRUPT_POLICY = "countdown";
@@ -11,8 +11,11 @@ export const ADMITTED_STORE_LIMITS = Object.freeze({
 });
 type StoreLimits = { readonly [Key in keyof typeof ADMITTED_STORE_LIMITS]: number };
 
-export function interruptTransformId(limits: StoreLimits = ADMITTED_STORE_LIMITS): string {
-  return `interrupt-r${INTERRUPT_REWRITER_REVISION}-${INTERRUPT_POLICY}-${INTERRUPT_INTERVAL}-e${limits.maxEntries}-b${limits.maxEntryBytes}-t${limits.maxTotalBytes}`;
+export function interruptTransformId(
+  limits: StoreLimits = ADMITTED_STORE_LIMITS,
+  profile: InterruptRewriteProfile = "ordinary",
+): string {
+  return `interrupt-r${INTERRUPT_REWRITER_REVISION}-${INTERRUPT_POLICY}-${INTERRUPT_INTERVAL}-${profile}-e${limits.maxEntries}-b${limits.maxEntryBytes}-t${limits.maxTotalBytes}`;
 }
 
 export interface AdmittedEntry {
@@ -26,9 +29,13 @@ export interface AdmittedEntry {
  * No guest or process authority belongs in this store.
  */
 export interface AdmittedModuleStore {
-  open(sourceSha256: string): Promise<AdmittedEntry | undefined>;
-  put(sourceSha256: string, admitted: Uint8Array<ArrayBuffer>): Promise<void>;
-  evict(sourceSha256: string): Promise<void>;
+  open(sourceSha256: string, profile?: InterruptRewriteProfile): Promise<AdmittedEntry | undefined>;
+  put(
+    sourceSha256: string,
+    admitted: Uint8Array<ArrayBuffer>,
+    profile?: InterruptRewriteProfile,
+  ): Promise<void>;
+  evict(sourceSha256: string, profile?: InterruptRewriteProfile): Promise<void>;
 }
 
 export function programTime(): number | undefined {
@@ -73,8 +80,9 @@ export function admittedKey(
   origin: string,
   sourceSha256: string,
   limits: StoreLimits = ADMITTED_STORE_LIMITS,
+  profile: InterruptRewriteProfile = "ordinary",
 ): string {
-  return `${origin}/__waffle/admitted/${interruptTransformId(limits)}/${sourceSha256}.wasm`;
+  return `${origin}/__waffle/admitted/${interruptTransformId(limits, profile)}/${sourceSha256}.wasm`;
 }
 
 function entrySize(response: Response, limits: StoreLimits): number | undefined {
@@ -99,15 +107,15 @@ function admittedEntry(response: Response, limits: StoreLimits): AdmittedEntry |
 export class CacheStorageAdmittedStore implements AdmittedModuleStore {
   private maintenance: Promise<void> = Promise.resolve();
   private initialized: Promise<void> | undefined;
-  private readonly name: string;
+  private name(profile: InterruptRewriteProfile): string {
+    return ADMITTED_CACHE_PREFIX + interruptTransformId(this.limits, profile);
+  }
 
   constructor(
     private readonly storage: CacheStorage,
     private readonly origin: string,
     private readonly limits: StoreLimits = ADMITTED_STORE_LIMITS,
-  ) {
-    this.name = ADMITTED_CACHE_PREFIX + interruptTransformId(limits);
-  }
+  ) {}
 
   private initialize(): Promise<void> {
     return (this.initialized ??= this.removeObsolete());
@@ -116,20 +124,27 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
   private async removeObsolete(): Promise<void> {
     const names = await this.storage.keys();
     for (const name of names) {
-      if (name.startsWith(ADMITTED_CACHE_PREFIX) && name !== this.name)
+      if (
+        name.startsWith(ADMITTED_CACHE_PREFIX) &&
+        name !== this.name("ordinary") &&
+        name !== this.name("supervised-thread")
+      )
         await this.storage.delete(name);
     }
   }
 
-  async open(hash: string): Promise<AdmittedEntry | undefined> {
+  async open(
+    hash: string,
+    profile: InterruptRewriteProfile = "ordinary",
+  ): Promise<AdmittedEntry | undefined> {
     const start = programTime();
     try {
       await this.initialize();
-      const cache = await this.storage.open(this.name);
-      const response = await cache.match(admittedKey(this.origin, hash, this.limits));
+      const cache = await this.storage.open(this.name(profile));
+      const response = await cache.match(admittedKey(this.origin, hash, this.limits, profile));
       if (!response) return undefined;
       const entry = admittedEntry(response, this.limits);
-      if (!entry) await this.evict(hash);
+      if (!entry) await this.evict(hash, profile);
       return entry;
     } catch (error) {
       this.initialized = undefined;
@@ -138,20 +153,28 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
     }
   }
 
-  put(hash: string, admitted: Uint8Array<ArrayBuffer>): Promise<void> {
+  put(
+    hash: string,
+    admitted: Uint8Array<ArrayBuffer>,
+    profile: InterruptRewriteProfile = "ordinary",
+  ): Promise<void> {
     if (admitted.byteLength > this.limits.maxEntryBytes) return Promise.resolve();
-    const pending = this.maintenance.then(() => this.write(hash, admitted));
+    const pending = this.maintenance.then(() => this.write(hash, admitted, profile));
     this.maintenance = pending;
     return pending;
   }
 
-  private async write(hash: string, admitted: Uint8Array<ArrayBuffer>): Promise<void> {
+  private async write(
+    hash: string,
+    admitted: Uint8Array<ArrayBuffer>,
+    profile: InterruptRewriteProfile,
+  ): Promise<void> {
     const start = programTime();
     try {
       await this.initialize();
       const digest = await sha256Hex(admitted);
-      const cache = await this.storage.open(this.name);
-      const key = admittedKey(this.origin, hash, this.limits);
+      const cache = await this.storage.open(this.name(profile));
+      const key = admittedKey(this.origin, hash, this.limits, profile);
       await cache.put(
         key,
         new Response(admitted, {
@@ -192,17 +215,17 @@ export class CacheStorageAdmittedStore implements AdmittedModuleStore {
     }
   }
 
-  evict(hash: string): Promise<void> {
-    const pending = this.maintenance.then(() => this.remove(hash));
+  evict(hash: string, profile: InterruptRewriteProfile = "ordinary"): Promise<void> {
+    const pending = this.maintenance.then(() => this.remove(hash, profile));
     this.maintenance = pending;
     return pending;
   }
 
-  private async remove(hash: string): Promise<void> {
+  private async remove(hash: string, profile: InterruptRewriteProfile): Promise<void> {
     const start = programTime();
     try {
-      const cache = await this.storage.open(this.name);
-      await cache.delete(admittedKey(this.origin, hash, this.limits));
+      const cache = await this.storage.open(this.name(profile));
+      await cache.delete(admittedKey(this.origin, hash, this.limits, profile));
     } catch (error) {
       storeError("evict", start, error);
     }

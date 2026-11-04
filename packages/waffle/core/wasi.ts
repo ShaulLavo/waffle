@@ -28,6 +28,8 @@ import {
   RIGHT_PATH_REMOVE_DIRECTORY,
   RIGHT_PATH_UNLINK_FILE,
   RIGHT_POLL_FD_READWRITE,
+  RIGHT_SOCK_SHUTDOWN,
+  RIGHT_SOCK_ACCEPT,
 } from "./rights.js";
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
@@ -42,7 +44,14 @@ import {
   type FileStat,
   type ResolvedPath,
 } from "./filesystem.js";
-import { DescriptorTable, MAX_DESCRIPTOR, type Resource, type Stream } from "./descriptors.js";
+import {
+  DescriptorTable,
+  OpenDescription,
+  MAX_DESCRIPTOR,
+  type Readiness,
+  type Resource,
+  type Stream,
+} from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 import { GuestWatchTable, type GuestWatchReadiness } from "../fs/guest-watch.js";
 import { createNullDevice } from "./devices.js";
@@ -63,6 +72,7 @@ const ENOENT = 44;
 const ENOSYS = 52;
 const ENOTDIR = 54;
 const ENOTSUP = 58;
+const ENOTSOCK = 57;
 const ESPIPE = 70;
 const ENOTCAPABLE = 76;
 
@@ -70,6 +80,7 @@ const ENOTCAPABLE = 76;
 const FT_CHAR = 2;
 const FT_DIR = 3;
 const FT_FILE = 4;
+const FT_SOCKET = 6;
 const filetype = (kind: FileStat["kind"]) =>
   kind === "directory" ? FT_DIR : kind === "symlink" ? 7 : kind === "socket" ? 6 : FT_FILE;
 
@@ -94,6 +105,10 @@ const SUBCLOCK_ABSTIME = 1;
 const EVENTTYPE_CLOCK = 0;
 const EVENTTYPE_FD_READ = 1;
 const EVENTRWFLAGS_HANGUP = 1;
+
+function pollHangup(kind: Resource["kind"], type: number, state: Readiness): boolean {
+  return state.hangup && (kind !== "socket" || type === EVENTTYPE_FD_READ);
+}
 
 export class WasiExit extends ExecutionUnwind {
   constructor(public code: number) {
@@ -482,7 +497,11 @@ export class Wasi {
   }
 
   private str(ptr: number, len: number): string {
-    return decoder.decode(this.bytes().slice(ptr, ptr + len));
+    ptr >>>= 0;
+    len >>>= 0;
+    const bytes = this.bytes();
+    if (ptr > bytes.length || len > bytes.length - ptr) throw new FilesystemError(EFAULT);
+    return decoder.decode(bytes.slice(ptr, ptr + len));
   }
 
   private iovecs(ptr: number, count: number): Uint8Array[] {
@@ -494,6 +513,59 @@ export class Wasi {
       out.push(this.memory.range(buf, len));
     }
     return out;
+  }
+
+  private socketCall(fd: number, right: bigint, run: (socket: Stream) => number): number {
+    const entry = this.descriptors.get(fd >>> 0);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "socket") return ENOTSOCK;
+    if ((entry.rightsBase & right) !== right) return ENOTCAPABLE;
+    return run(entry.resource);
+  }
+
+  private socketAccept(socket: Stream, fd: number, flags: number, out: number): number {
+    if (!socket.accept) return EINVAL;
+    if (flags & ~FDFLAG_NONBLOCK) return EINVAL;
+    if (out + 4 > this.bytes().length) return EFAULT;
+    const entry = this.descriptors.get(fd)!;
+    if (!(entry.rightsBase & RIGHT_SOCK_ACCEPT)) return ENOTCAPABLE;
+    const accepted = socket.accept(flags);
+    if (typeof accepted === "number") return -accepted;
+    let next: number | undefined;
+    try {
+      const output = this.view();
+      if (out + 4 > output.byteLength) return EFAULT;
+      next = this.descriptors.add(
+        new OpenDescription(accepted, () => accepted.close?.()),
+        { rightsBase: entry.rightsBase & ~RIGHT_SOCK_ACCEPT, rightsInheriting: 0n },
+        this.opts.hostCallFd,
+      );
+      output.setUint32(out, next, true);
+      return SUCCESS;
+    } finally {
+      if (next === undefined) accepted.close?.();
+    }
+  }
+
+  private socketIovecs(
+    ptr: number,
+    count: number,
+    out: number,
+    flagsOut?: number,
+  ): Uint8Array[] | number {
+    ptr >>>= 0;
+    count >>>= 0;
+    out >>>= 0;
+    const size = this.bytes().length;
+    if (out + 4 > size || count * 8 > size - ptr || ptr > size) return EFAULT;
+    if (flagsOut !== undefined && (flagsOut >>> 0) + 2 > size) return EFAULT;
+    const view = this.view();
+    for (let i = 0; i < count; i++) {
+      const at = view.getUint32(ptr + i * 8, true);
+      const length = view.getUint32(ptr + i * 8 + 4, true);
+      if (at + length > size) return EFAULT;
+    }
+    return this.iovecs(ptr, count);
   }
 
   private resolve(
@@ -737,9 +809,11 @@ export class Wasi {
             ? FT_CHAR
             : entry.resource.kind === "directory"
               ? FT_DIR
-              : entry.resource.kind === "pipe"
-                ? 0
-                : FT_FILE;
+              : entry.resource.kind === "socket"
+                ? FT_SOCKET
+                : entry.resource.kind === "pipe"
+                  ? 0
+                  : FT_FILE;
         view.setUint8(ptr, filetype);
         view.setUint16(
           ptr + 2,
@@ -792,7 +866,7 @@ export class Wasi {
           resource.kind === "file" || resource.kind === "directory"
             ? this.opts.fs.stat(resource.handle)
             : null,
-          resource.kind === "pipe" ? 0 : FT_CHAR,
+          resource.kind === "pipe" ? 0 : resource.kind === "socket" ? FT_SOCKET : FT_CHAR,
         );
         return SUCCESS;
       }),
@@ -858,7 +932,11 @@ export class Wasi {
         RIGHT_FD_READ,
         (resource, iovs: number, count: number, nreadPtr: number) => {
           if (resource.kind === "directory") return EISDIR;
-          const chunks = this.iovecs(iovs, count);
+          const chunks =
+            resource.kind === "socket"
+              ? this.socketIovecs(iovs, count, nreadPtr)
+              : this.iovecs(iovs, count);
+          if (typeof chunks === "number") return chunks;
           if (resource.kind === "file")
             return this.writeResult(this.readIn(resource, chunks, null), nreadPtr);
           const result =
@@ -926,7 +1004,11 @@ export class Wasi {
           if (resource.kind === "directory") return EISDIR;
           if (resource.kind === "file")
             return this.writeResult(this.writeOut(resource, iovs, count, null), nwrittenPtr);
-          const chunks = this.iovecs(iovs, count);
+          const chunks =
+            resource.kind === "socket"
+              ? this.socketIovecs(iovs, count, nwrittenPtr)
+              : this.iovecs(iovs, count);
+          if (typeof chunks === "number") return chunks;
           const result =
             (resource.fdflags ?? 0) & FDFLAG_NONBLOCK
               ? (resource.tryWrite?.(chunks) ?? -ENOTSUP)
@@ -1007,6 +1089,7 @@ export class Wasi {
         if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
+        fdOut >>>= 0;
         const name = this.str(ptr, len);
         const alias = resolveDescriptorPath(
           this.descriptors,
@@ -1021,9 +1104,12 @@ export class Wasi {
         );
         if (typeof alias === "number") return alias;
         if (alias !== undefined && !("resolved" in alias)) {
-          if ("device" in alias)
+          if ("device" in alias) {
+            if (fdOut + 4 > this.bytes().length) return EFAULT;
             return this.openDevice(fdflags, rightsBase, rightsInheriting, oflags, fdOut);
+          }
           if (!this.descriptors.get(alias.source)) return ENOENT;
+          if (fdOut + 4 > this.bytes().length) return EFAULT;
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
         const path =
@@ -1037,14 +1123,16 @@ export class Wasi {
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
         if (node !== undefined && this.opts.fs.stat(node).kind === "symlink") return ELOOP;
+        if (node === undefined && (!(oflags & O_CREAT) || path.trailingSlash)) return ENOENT;
+        if (node === undefined && oflags & O_DIRECTORY) return EINVAL;
+        if (node !== undefined && this.opts.fs.stat(node).kind === "socket") return 60;
+        fdOut >>>= 0;
+        if (fdOut + 4 > this.bytes().length) return EFAULT;
         if (node === undefined) {
-          if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
-          if (oflags & O_DIRECTORY) return EINVAL;
           const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
           if (typeof result !== "number") return result.error;
           node = result;
         }
-        if (this.opts.fs.stat(node).kind === "socket") return 60;
         return this.writeResult(
           openInode(
             this.descriptors,
@@ -1235,15 +1323,13 @@ export class Wasi {
                         : 0,
                   }
                 : resource.readiness();
-            if (
-              (sub.type === EVENTTYPE_FD_READ ? state.readable : state.writable) ||
-              state.hangup
-            ) {
+            const hangup = pollHangup(resource.kind, sub.type, state);
+            if ((sub.type === EVENTTYPE_FD_READ ? state.readable : state.writable) || hangup) {
               ready.push({
                 ...sub,
-                error: SUCCESS,
+                error: state.error ?? SUCCESS,
                 nbytes: BigInt(sub.type === EVENTTYPE_FD_READ ? (state.nbytes ?? 0) : 0),
-                flags: state.hangup ? EVENTRWFLAGS_HANGUP : 0,
+                flags: hangup ? EVENTRWFLAGS_HANGUP : 0,
               });
             }
           }
@@ -1292,10 +1378,38 @@ export class Wasi {
         return SUCCESS;
       },
       sched_yield: () => SUCCESS,
-      sock_accept: () => ENOTSUP,
-      sock_recv: () => ENOTSUP,
+      sock_accept: (fd: number, flags: number, out: number) =>
+        this.socketCall(fd, 0n, (socket) => this.socketAccept(socket, fd >>> 0, flags, out >>> 0)),
+      sock_recv: (
+        fd: number,
+        data: number,
+        count: number,
+        flags: number,
+        out: number,
+        ro: number,
+      ) =>
+        this.socketCall(fd, RIGHT_FD_READ, (socket) => {
+          if (flags & ~2) return ENOTSUP;
+          const chunks = this.socketIovecs(data, count, out, ro);
+          if (typeof chunks === "number") return chunks;
+          const result = socket.recv!(chunks, (flags & 2) !== 0);
+          if (result < 0) return -result;
+          this.view().setUint16(ro >>> 0, 0, true);
+          return this.writeResult(result, out >>> 0);
+        }),
       sock_send: (fd: number, siData: number, siLen: number, _flags: number, retPtr: number) => {
-        if (fd !== this.opts.hostCallFd || !this.hostCall || siLen !== 5) return ENOTSUP;
+        if (fd !== this.opts.hostCallFd)
+          return this.socketCall(fd, RIGHT_FD_WRITE, (socket) => {
+            if (_flags !== 0) return ENOTSUP;
+            const chunks = this.socketIovecs(siData, siLen, retPtr);
+            if (typeof chunks === "number") return chunks;
+            const result =
+              (socket.fdflags ?? 0) & FDFLAG_NONBLOCK
+                ? socket.tryWrite!(chunks)
+                : socket.write(chunks);
+            return this.writeResult(result, retPtr >>> 0);
+          });
+        if (!this.hostCall || siLen !== 5) return ENOTSUP;
         const view = this.memory.view();
         const at = siData >>> 0;
         const words = [0, 1, 2, 3, 4].map((i) => view.getInt32(at + 4 * i, true));
@@ -1304,7 +1418,12 @@ export class Wasi {
         this.memory.view().setInt32(retPtr >>> 0, result, true);
         return SUCCESS;
       },
-      sock_shutdown: () => ENOTSUP,
+      sock_shutdown: (fd: number, how: number) =>
+        this.socketCall(fd, RIGHT_SOCK_SHUTDOWN, (socket) => {
+          if (how < 1 || how > 3) return EINVAL;
+          const result = socket.shutdown!(how);
+          return result < 0 ? -result : SUCCESS;
+        }),
     };
   }
 }

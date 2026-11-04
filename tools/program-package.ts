@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { validateProgramDerivation } from "./program-derivation.ts";
 import { stripWasmNames } from "./program-build-tools.ts";
+import { assertWaffleFamilyManifest } from "../packages/waffle/tooling/host-interface.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -153,6 +154,7 @@ export function packProgramPackage(root: string): string {
   admitProgramPackage(root);
   const manifest = record(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")));
   assert.ok(typeof manifest.name === "string" && typeof manifest.version === "string");
+  assertWaffleFamilyManifest(manifest, `${root}/package.json`);
   const archive = resolve(
     root,
     ".build",

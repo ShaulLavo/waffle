@@ -74,7 +74,13 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
   try {
     writeFileSync(
       resolve(root, "package.json"),
-      JSON.stringify({ name: "fixture", version: "0.0.0", files: ["dist"] }),
+      JSON.stringify({
+        name: "fixture",
+        version: "0.0.0",
+        waffleHostInterface: 1,
+        peerDependencies: { waffle: "*" },
+        files: ["dist"],
+      }),
     );
     writeFileSync(
       resolve(root, "package-artifacts.json"),
@@ -107,7 +113,13 @@ test("pack rejects absent guests and notices, and verifies actual archive closur
     assert.throws(() => verifyProgramTarball(root, archive), /Packed asset differs/);
     writeFileSync(
       resolve(root, "package.json"),
-      JSON.stringify({ name: "fixture", version: "0.0.0", files: ["package.json"] }),
+      JSON.stringify({
+        name: "fixture",
+        version: "0.0.0",
+        waffleHostInterface: 1,
+        peerDependencies: { waffle: "*" },
+        files: ["package.json"],
+      }),
     );
     assert.throws(() => packProgramPackage(root), /tar|Command failed/);
   } finally {
