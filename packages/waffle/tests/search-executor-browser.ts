@@ -1,7 +1,9 @@
+import { createSharedControlAllocator } from "../memory/control.js";
 import { createRuntime, type Runtime, type RuntimeSupervisor } from "../runtime.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import {
   createWorkerProcessTransport,
+  workerProcessPipeRegistry,
   WorkerProcessClient,
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
@@ -169,10 +171,14 @@ class Harness {
     });
     this.root.data = { filesystem: runtime.filesystem.createIdentity() };
     const service = await runtime.processes();
-    await service.adoptRuntimeRoot(this.root);
+    await service.adoptRuntimeRoot(this.root, { memory: [] });
     this.pipes = new WorkerPipeHost({
+      allocateShared: createSharedControlAllocator(
+        service.rootControlGrant(this.root.pid),
+        (buffer) => service.rootControlAllocated(this.root.pid, buffer),
+      ),
       transport: this.root,
-      registry: (this.root.data as { pipeRegistry: never }).pipeRegistry,
+      registry: workerProcessPipeRegistry(this.root),
       postMessage: (message) => this.notices.push(message),
       pipe: { capacity: 256, maxWriters: 4, maxReaders: 4 },
     });

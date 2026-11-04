@@ -37,7 +37,7 @@ async function spawnFromRoot(executable: string) {
     identity: runtime.identities.buffer,
   });
   transport.data = { filesystem: runtime.filesystem.createIdentity() };
-  await service.adoptRuntimeRoot(transport, { output: () => {} });
+  await service.adoptRuntimeRoot(transport, { memory: [], output: () => {} });
   const notices: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
   tables.push(descriptors);

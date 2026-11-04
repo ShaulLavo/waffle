@@ -42,6 +42,7 @@ export {
   ProxyConstructor,
   typedArrayByteLength,
   typedArraySet,
+  typedArrayFill,
   typedArraySubarray,
   mapClear,
   isInt32Array,

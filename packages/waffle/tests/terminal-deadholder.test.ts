@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { spawnSync } from "node:child_process";
@@ -449,6 +450,7 @@ async function brokerFixture(
   });
   const errors: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     registry,
     table: new ProcessTable(identities),
@@ -467,7 +469,7 @@ async function brokerFixture(
   });
   f.root.data = { filesystem: createFilesystemIdentity() };
   f.process.data = { filesystem: createFilesystemIdentity() };
-  await broker.adoptRuntimeRoot(f.root);
+  await broker.adoptRuntimeRoot(f.root, { memory: [] });
   const supervisor = await broker.ready();
   return { broker, supervisor, errors };
 }

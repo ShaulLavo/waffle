@@ -488,12 +488,12 @@ describe("generic preview1 Worker terminal output", () => {
     });
     transport.data = { filesystem: runtime.filesystem.createIdentity() };
     const bounded = destination.tryOutput;
-    await service.adoptRuntimeRoot(
-      transport,
-      bounded
+    await service.adoptRuntimeRoot(transport, {
+      memory: [],
+      ...(bounded
         ? { tryOutput: (_fd, data) => bounded.tryWrite(data) }
-        : { output: (_fd, data) => destination.output!.push(data.slice()) },
-    );
+        : { output: (_fd, data) => destination.output!.push(data.slice()) }),
+    });
     const descriptors = new DescriptorTable();
     const unused = () => -58;
     const terminal: Stream = {

@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./standalone-runtime-process.js";
 import { failWorkspaceCleanupPost } from "./publication-cleanup-failure";
 import { createFilesystemDescriptorCodec } from "../../proc/filesystem-codec";
 import {
@@ -102,11 +103,14 @@ async function start(request: {
   const connection = request.connection;
   if (request.cleanupFailure) failWorkspaceCleanupPost(connection.port);
   const req: RuntimeWorkerRequest = {
+    controlGrant: { kind: "unbounded" },
     filesystem: connection,
     args: [],
     env: {},
     module: mode === "proc" ? publicationProcModule() : publicationWasiModule(),
-    runtimeProcess: mode === "proc" ? createWorkerProcessTransport() : undefined,
+    runtimeProcess: standaloneRuntimeProcess(
+      mode === "proc" ? createWorkerProcessTransport() : undefined,
+    ),
   };
   await bootstrap(req, {
     setup() {

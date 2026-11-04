@@ -192,3 +192,14 @@ test("racing client-first and service-last releases preserves physical accountin
     namespaceRequests: 0,
   });
 }, 10000);
+
+test("reused request backing is fresh above all new logical grants", () => {
+  const f = fixture();
+  f.memory.data.grow(65_536);
+  new Uint8Array(f.memory.data)[32_768] = 123;
+  retireRequestMemory(f.memory);
+  Atomics.store(new Int32Array(f.revocation), 0, 2);
+  const next = f.pool.take(new SharedArrayBuffer(4));
+  expect(next.data).toBe(f.memory.data);
+  expect(new Uint8Array(next.data).every((byte) => byte === 0)).toBe(true);
+});

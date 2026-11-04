@@ -7,6 +7,7 @@ import {
   type RuntimeConsumer,
 } from "../index.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
+import { moduleMemoryDeclarations, parseModuleMemory } from "../memory/declarations.js";
 import {
   CONNECTION_SHARED_BYTES,
   FilesystemSection,
@@ -100,6 +101,18 @@ test("page guard uses the global stable symbol and remains held until disposal c
     release = resolve;
   });
   const runtime = create({ processHost: processHost(() => gate) });
+  const platform = runtime.sharedMemory.snapshot().platform;
+  const { declareSharedMemoryPlatform, bytes } = await import("../memory/index.js");
+  expect(() =>
+    createRuntime({
+      sharedMemory: declareSharedMemoryPlatform({
+        kind: "bounded",
+        budgetBytes: bytes(1),
+        counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+      }),
+    }),
+  ).toThrow(/live|owner|runtime/i);
+  expect(runtime.sharedMemory.snapshot().platform).toEqual(platform);
   expect(Reflect.get(globalThis, Symbol.for("waffle.runtime.owner"))).toBeDefined();
   expect(() => create()).toThrow(/live|owner|runtime/i);
   await runtime.processes();
@@ -116,6 +129,18 @@ test("page guard uses the global stable symbol and remains held until disposal c
   expect(events.slice(-3)).toEqual(["process:outcomes", "process:stop", "filesystem:stop"]);
   const next = create();
   expect(next.disposed).toBe(false);
+});
+
+test("runtime ownership is held while host option getters run", () => {
+  const runtime = createRuntime({
+    filesystem: { workerURL: "fixture", mode: "memory" },
+    get hostIdentity() {
+      expect(() => create()).toThrow(/live page runtime/);
+      return undefined;
+    },
+  });
+  runtimes.push(runtime);
+  expect(events.filter((event) => event === "filesystem:start")).toHaveLength(1);
 });
 
 test("constructor failure releases the owner guard", () => {
@@ -625,6 +650,15 @@ test("source admission snapshots borrowed bytes before the lazy loader starts", 
   source.fill(255);
   await runtime.processes();
   expect((await registry!.resolve("/snapshot")).module).toBeInstanceOf(WebAssembly.Module);
+});
+
+test("runtime-owned source admission declares the guest's memory maxima", async () => {
+  const source = new Uint8Array(Array.from(bytes).concat([5, 5, 1, 1, 1, 128, 2]));
+  const { registry } = await resolveSource(source);
+  const { module } = await registry.resolve("/snapshot");
+  if (!module) throw new Error("Program source did not resolve to a module");
+  expect(moduleMemoryDeclarations(module)).toEqual(parseModuleMemory(source));
+  expect(parseModuleMemory(source)).toHaveLength(1);
 });
 
 test("runtime-owned source admission avoids a second byte snapshot", async () => {

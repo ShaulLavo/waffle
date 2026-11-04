@@ -6,6 +6,9 @@ import { createRuntimeNetwork } from "../browser/net/runtime.js";
 import { createRuntimeTerminalCodec } from "../browser/runtime-terminals.js";
 import { RIGHTS_ALL } from "../core/rights.js";
 import { DescriptorTable } from "../core/descriptors.js";
+import { testReservations } from "./fixtures/shared-memory-platform.js";
+import { FilesystemRequestPool } from "../fs/request-memory.js";
+import { SharedMemoryLedger, declareSharedMemoryPlatform, bytes } from "../memory/reservations.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
 import {
@@ -27,7 +30,17 @@ import type { RuntimeWorkerRequest, RuntimeWorkerMessage } from "../browser/work
 import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 import { socketModule, scriptedSocket } from "./preview1-socket-support.js";
 
-for (const failure of [false, "post", "link", "host-call"] as const)
+function launchReservations(bounded: boolean) {
+  if (!bounded) return testReservations();
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(96 * 1024 ** 2),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: false },
+  });
+  return new SharedMemoryLedger(platform).openRuntime(platform);
+}
+
+for (const failure of [false, "post", "link", "host-call", "budget"] as const)
   test(`broker-owned generic launch transfers only cloneable socket data, startup failure=${failure}`, async () => {
     const originalWorker = globalThis.Worker;
     const workers: NodeWorker[] = [];
@@ -57,6 +70,8 @@ for (const failure of [false, "post", "link", "host-call"] as const)
         network.dispose();
       },
     };
+    const reservations = launchReservations(failure === "budget");
+    const pools = new WeakMap<SharedArrayBuffer, FilesystemRequestPool>();
     const filesystem = new FilesystemService(new MemoryBackend());
     const identities = new ProcessIdentityAllocator();
     const table = new ProcessTable(identities);
@@ -96,13 +111,18 @@ for (const failure of [false, "post", "link", "host-call"] as const)
       }
     }
     const broker = new BrowserProcessBroker({
+      reservations,
       identities,
       table,
       registry,
       onError: (error) => diagnostics.push(error),
       filesystem: {
-        connect(identity) {
-          const pair = connectFilesystemIdentity(identity);
+        connect(identity, headroom) {
+          const pool =
+            pools.get(identity.requestBudget) ??
+            new FilesystemRequestPool(identity.requestBudget, undefined, reservations.arenas);
+          pools.set(identity.requestBudget, pool);
+          const pair = connectFilesystemIdentity(identity, pool, undefined, headroom);
           ports.push(pair.client.port, pair.server.port);
           filesystem.connect(pair.server);
           return pair.client;
@@ -154,7 +174,7 @@ for (const failure of [false, "post", "link", "host-call"] as const)
     });
     globalThis.Worker = EmbeddingWorker as unknown as typeof Worker;
     try {
-      await broker.adoptRuntimeRoot(root, { output: (_fd, data) => output.push(data) });
+      await broker.adoptRuntimeRoot(root, { memory: [], output: (_fd, data) => output.push(data) });
       const service = await broker.ready();
       const pid = parent.spawn(parent.pid, {
         executable: "socket",
@@ -167,13 +187,21 @@ for (const failure of [false, "post", "link", "host-call"] as const)
       for (const message of notices) await broker.runtimeMessage(message, root.pid);
       await service.start(pid);
       expect(await service.waitForExit(root.pid, pid)).toMatchObject(
-        failure === "host-call"
-          ? { kind: "start-failed", error: "ENOEXEC" }
-          : failure
-            ? { kind: "start-failed", error: "EIO" }
-            : { kind: "exited", code: 0 },
+        failure === "budget"
+          ? { kind: "start-failed", error: "ENOMEM" }
+          : failure === "host-call"
+            ? { kind: "start-failed", error: "ENOEXEC" }
+            : failure
+              ? { kind: "start-failed", error: "EIO" }
+              : { kind: "exited", code: 0 },
       );
-      expect(Object.keys(requests[0]!.network!).sort()).toEqual(["port", "ring", "sockets"]);
+      if (failure === "budget") {
+        expect(requests).toEqual([]);
+        expect(workers).toEqual([]);
+        expect(connects).toBe(0);
+      } else {
+        expect(Object.keys(requests[0]!.network!).sort()).toEqual(["port", "ring", "sockets"]);
+      }
       expect(releases).toBe(1);
       if (failure === "host-call") expect(connects).toBe(0);
       if (!failure) expect(Buffer.concat(output).toString()).toBe("waffle echo\n");
@@ -186,6 +214,7 @@ for (const failure of [false, "post", "link", "host-call"] as const)
       filesystem.dispose();
       descriptors.dispose();
       ports.forEach((port) => port.close());
+      reservations.dispose();
       globalThis.Worker = originalWorker;
     }
   });

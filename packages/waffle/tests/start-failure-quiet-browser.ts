@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { createRuntimeTerminalCodec } from "../browser/runtime-terminals.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -145,6 +146,7 @@ export async function browserQuietStartFailure(
     hooks = 0,
     grandchild = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -193,7 +195,10 @@ export async function browserQuietStartFailure(
     },
   });
   try {
-    await broker.adoptRuntimeRoot(root, { output: (_fd, bytes) => output.push(bytes.slice()) });
+    await broker.adoptRuntimeRoot(root, {
+      memory: [],
+      output: (_fd, bytes) => output.push(bytes.slice()),
+    });
     const pid = parent.spawn(
       parent.pid,
       fixtureSpawnRequest({
@@ -272,6 +277,7 @@ export async function hostRootStartFailure(): Promise<void> {
     },
   });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -306,7 +312,7 @@ export async function hostRootStartFailure(): Promise<void> {
     0n,
   );
   try {
-    const root = await broker.adoptRoot({ descriptors }),
+    const root = await broker.adoptRoot({ memory: [], descriptors }),
       supervisor = await broker.ready();
     const pid = supervisor.spawn(root, fixtureSpawnRequest({ fds: [{ parent: 2, child: 2 }] }));
     const result = await supervisor.waitForExit(root, pid);

@@ -1,3 +1,10 @@
+import { allocateSharedControl } from "../memory/control.js";
+import type {
+  GroupBacking,
+  GroupMemorySource,
+  Headroom,
+  ReservationSizing,
+} from "../memory/reservations.js";
 import { ProcessErrno, ProcessError } from "../proc/errors.js";
 import { RangeAllocator } from "./ranges.js";
 import {
@@ -107,7 +114,7 @@ export interface MemoryGroupSnapshot {
   readonly pins: number;
   readonly holds: number;
   readonly watches: number;
-  /** Actual backing of the group memory, the W3 charge. */
+  /** Owner-granted logical backing, the W3 charge. Fixed reservation bytes are reported by the page ledger. */
   readonly committedBytes: number;
   /** Growth that bypassed the owner was found and charged; the group admits nothing more. */
   readonly bypassed: boolean;
@@ -196,26 +203,36 @@ export class MemoryGroupOwner {
     private readonly policy: MemoryGroupPolicy,
     private readonly budget: GroupBackingBudget,
     private readonly onEnd: (group: MemoryGroupOwner) => void,
+    private readonly source?: GroupMemorySource,
+    private readonly backing?: GroupBacking,
   ) {
     if (!budget.charge(PAGE_BYTES))
       throw new ProcessError(GroupErrno.NOMEM, "memory group budget is exhausted");
     let memory: WebAssembly.Memory;
+    let control: SharedArrayBuffer;
     try {
       // Page 0 stays reserved, so address 0 is never a member or region address.
-      memory = new WebAssembly.Memory({ initial: 1, maximum: policy.maximumPages, shared: true });
+      memory =
+        backing?.memory ??
+        new WebAssembly.Memory({ initial: 1, maximum: policy.maximumPages, shared: true });
+      control =
+        source?.control(controlBytes(policy.watches)) ??
+        allocateSharedControl(controlBytes(policy.watches));
     } catch (error) {
       budget.release(PAGE_BYTES);
       throw error;
     }
     this.memory = memory;
     const buffer = (): SharedArrayBuffer => {
+      if (this.ended) throw new ProcessError(ProcessErrno.SRCH, "memory group has ended");
+      if (backing) backing.exposed = true;
       const current = memory.buffer;
       if (!(current instanceof SharedArrayBuffer))
         throw new TypeError("group memory is not shared");
       return current;
     };
     this.handle = Object.freeze({ id, buffer });
-    this.control = new SharedArrayBuffer(controlBytes(policy.watches));
+    this.control = control;
     this.watchTable = new Int32Array(this.control);
     this.members = Array.from({ length: policy.members }, () => undefined);
   }
@@ -226,6 +243,7 @@ export class MemoryGroupOwner {
    * its owner, rather than letting accounting and release diverge.
    */
   private reconcile(): void {
+    if (this.backing?.kind === "fixed") return;
     const excess = this.memory.buffer.byteLength - this.charged;
     if (excess <= 0) return;
     this.budget.force(excess);
@@ -294,7 +312,10 @@ export class MemoryGroupOwner {
         if (member.phase !== "released") this.release(member);
       },
       failed: () => {
-        if (member.phase !== "released") member.phase = "retained";
+        if (member.phase !== "released") {
+          member.phase = "retained";
+          if (this.backing) this.source?.failed(this.backing);
+        }
       },
       settled: () => member.phase === "released",
     });
@@ -303,8 +324,8 @@ export class MemoryGroupOwner {
   private launch(member: Member): { request: MemoryGroupMemberRequest; transfer: Transferable[] } {
     if (member.phase !== "reserved" || member.port)
       throw new Error("memory group member was already launched");
+    const reply = this.source?.control(REPLY_WORDS * 4) ?? allocateSharedControl(REPLY_WORDS * 4);
     const channel = new MessageChannel();
-    const reply = new SharedArrayBuffer(REPLY_WORDS * 4);
     member.port = channel.port1;
     member.reply = new Int32Array(reply);
     member.phase = "launched";
@@ -390,6 +411,15 @@ export class MemoryGroupOwner {
     const current = this.charged / PAGE_BYTES;
     if (current + pages > this.policy.maximumPages) return undefined;
     if (!this.budget.charge(pages * PAGE_BYTES)) return undefined;
+    if (this.backing?.kind === "fixed") {
+      if (current + pages > this.backing.pages) {
+        this.budget.release(pages * PAGE_BYTES);
+        return undefined;
+      }
+      this.charged += pages * PAGE_BYTES;
+      new Uint8Array(this.memory.buffer, current * PAGE_BYTES, pages * PAGE_BYTES).fill(0);
+      return current;
+    }
     try {
       const page = this.memory.grow(pages);
       this.charged += pages * PAGE_BYTES;
@@ -573,6 +603,7 @@ export class MemoryGroupOwner {
     this.ended = true;
     this.reconcile();
     this.budget.release(this.charged);
+    if (this.backing) this.source?.retire(this.backing);
     this.onEnd(this);
   }
 }
@@ -584,23 +615,51 @@ export class MemoryGroups {
   private readonly groups = new Map<string, MemoryGroupOwner>();
   private readonly owners = new WeakMap<MemoryGroupHandle, MemoryGroupOwner>();
   private nextId = 1;
-  constructor(options?: MemoryGroupPolicyOptions) {
+  private readonly explicitMaximum: number | undefined;
+  constructor(
+    options?: MemoryGroupPolicyOptions,
+    private readonly memories?: GroupMemorySource,
+    private readonly sizing?: ReservationSizing,
+  ) {
+    this.explicitMaximum = options?.maximumPages;
     this.policy = memoryGroupPolicy(options);
     this.budget = new GroupBackingBudget(this.policy.budgetBytes);
   }
   /** Reserve before constructing a Worker. Throws ProcessError(EAGAIN/ENOMEM/ESRCH/EINVAL). */
-  admit(pid: number, directory: string, join: "new" | MemoryGroupHandle): MemberLease {
-    if (join === "new") {
-      if (this.groups.size >= this.policy.groups)
-        throw new ProcessError(ProcessErrno.AGAIN, "memory group limit reached");
-      const id = `g${this.nextId++}`;
-      const group = new MemoryGroupOwner(id, directory, this.policy, this.budget, (ended) => {
-        this.groups.delete(ended.id);
-      });
-      this.groups.set(id, group);
-      this.owners.set(group.handle, group);
-      return group.reserve(pid);
+  admit(
+    pid: number,
+    directory: string,
+    join: "new" | MemoryGroupHandle,
+    headroom: Headroom | null = null,
+  ): MemberLease {
+    if (join !== "new") return this.join(pid, directory, join);
+    if (this.groups.size >= this.policy.groups)
+      throw new ProcessError(ProcessErrno.AGAIN, "memory group limit reached");
+    const id = `g${this.nextId++}`;
+    const shape = this.sizing?.groupShape(this.explicitMaximum);
+    const backing = shape ? this.memories?.create(shape, headroom) : undefined;
+    let group: MemoryGroupOwner;
+    try {
+      group = new MemoryGroupOwner(
+        id,
+        directory,
+        this.policy,
+        this.budget,
+        (ended) => {
+          this.groups.delete(ended.id);
+        },
+        this.memories,
+        backing,
+      );
+    } catch (error) {
+      if (backing) this.memories?.retire(backing);
+      throw error;
     }
+    this.groups.set(id, group);
+    this.owners.set(group.handle, group);
+    return group.reserve(pid);
+  }
+  private join(pid: number, directory: string, join: MemoryGroupHandle): MemberLease {
     const group = this.owners.get(join);
     if (!group || !this.groups.has(group.id))
       throw new ProcessError(ProcessErrno.SRCH, "memory group has ended");

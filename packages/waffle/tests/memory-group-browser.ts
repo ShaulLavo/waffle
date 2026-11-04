@@ -148,7 +148,7 @@ async function harness() {
     while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   };
   await runtime.filesystem.writeFile("/member", source);
-  await service.adoptRuntimeRoot(root);
+  await service.adoptRuntimeRoot(root, { memory: [] });
   const supervisor: RuntimeSupervisor = await service.ready();
   await runtime.filesystem.mkdirp("/tmp");
   const launch = async (role: string, cwd = "/"): Promise<number> => {

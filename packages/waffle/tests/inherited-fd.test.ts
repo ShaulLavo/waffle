@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { expect, test } from "bun:test";
 import {
   bootstrap,
@@ -34,11 +35,12 @@ test("runtime_proc.inherited_fd snapshots root stdio and excludes the preopen", 
   let snapshot: number[] = [];
   const messages: RuntimeWorkerMessage[] = [];
   const request: RuntimeWorkerRequest = {
+    controlGrant: { kind: "unbounded" },
     module: inheritedFdModule,
     args: [],
     env: {},
     filesystem: connection.client,
-    runtimeProcess: transport,
+    runtimeProcess: standaloneRuntimeProcess(transport),
   };
   try {
     await bootstrap(

@@ -1,3 +1,4 @@
+import { declareModuleMemory } from "../memory/declarations.js";
 import type { Wasi } from "../core/wasi.js";
 import {
   invalid,
@@ -259,6 +260,7 @@ async function compile(member: LinkMemberSource, side: boolean): Promise<Compile
   let module: WebAssembly.Module;
   try {
     module = await pending;
+    declareModuleMemory(module, member.source);
   } catch (error) {
     if (code.get(key) === pending) code.delete(key);
     if (error instanceof WebAssembly.CompileError) invalid(member.id, error.message);

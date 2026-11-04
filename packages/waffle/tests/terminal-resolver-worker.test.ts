@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { expect, test } from "bun:test";
 import { Worker, MessagePort as NodeMessagePort } from "node:worker_threads";
 import {
@@ -71,11 +72,12 @@ for (const mode of ["input", "none", "pipe"] as const)
         rightsInheriting: 0n,
       }));
       const request: TerminalResolverRequest = {
+        controlGrant: { kind: "unbounded" },
         module,
         args: [],
         env: {},
         filesystem: connection.client,
-        runtimeProcess: transport,
+        runtimeProcess: standaloneRuntimeProcess(transport),
       };
       if (!(connection.client.port instanceof NodeMessagePort))
         throw Error("expected native worker port");
