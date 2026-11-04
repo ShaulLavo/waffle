@@ -1529,24 +1529,6 @@ export class BrowserProcessBroker {
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
   ): ProcessHandle {
-    const threaded = threadModuleDeclaration(options.request.module);
-    if (threaded) {
-      if (
-        !options.threaded ||
-        options.memoryGroup ||
-        options.network ||
-        options.memories?.length ||
-        !options.request.interruptible
-      )
-        throw new Error("Threaded Preview 1 requires the explicit source-admitted thread launcher");
-      return this.launchThreadWorker(context, options.threaded, threaded, options.cleanup);
-    }
-    if (
-      WebAssembly.Module.imports(options.request.module).some(
-        (entry) => entry.module === "wasi" && entry.name === "thread-spawn",
-      )
-    )
-      throw new Error("Threaded Preview 1 requires validated source bytes");
     const owner = options.network;
     let released = false;
     const network = owner && {
@@ -1558,6 +1540,14 @@ export class BrowserProcessBroker {
       },
     };
     try {
+      const threaded = threadModuleDeclaration(options.request.module);
+      if (threaded) return this.launchThreadWorker(context, options, threaded);
+      if (
+        WebAssembly.Module.imports(options.request.module).some(
+          (entry) => entry.module === "wasi" && entry.name === "thread-spawn",
+        )
+      )
+        throw new Error("Threaded Preview 1 requires validated source bytes");
       return this.launchOwnedWorker(context, { ...options, network });
     } catch (error) {
       try {
@@ -1570,10 +1560,18 @@ export class BrowserProcessBroker {
   }
   private launchThreadWorker(
     context: ProcessContext,
-    urls: ThreadLaunchOptions,
+    options: WorkerLaunchOptions,
     declaration: NonNullable<ReturnType<typeof threadModuleDeclaration>>,
-    cleanup?: () => void,
   ): ProcessHandle {
+    const { threaded: urls, cleanup } = options;
+    if (
+      !urls ||
+      options.memoryGroup ||
+      options.network ||
+      options.memories?.length ||
+      !options.request.interruptible
+    )
+      throw new Error("Threaded Preview 1 requires the explicit source-admitted thread launcher");
     if (this.suspended) throw new Error("Process broker is disposed");
     const transport = this.transport.get(context.pid);
     if (!transport || this.children.has(context.pid))

@@ -54,3 +54,11 @@ test.skipIf(!artifact)("unchanged stock C source passes thread admission", async
     kind: "function",
   });
 });
+
+for (const name of ["toString", "toLocaleString", "valueOf"]) {
+  test(`thread source refuses inherited Object method ${name}`, () => {
+    const source = guestModule({ imports: [spawn, { name, params: [] }] });
+    expect(WebAssembly.validate(source)).toBe(true);
+    expect(() => inspectThreadSource(source)).toThrow(WebAssembly.CompileError);
+  });
+}

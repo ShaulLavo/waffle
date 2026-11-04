@@ -19,6 +19,7 @@ const NativeWorker = globalThis.Worker;
 const workers: Worker[] = [];
 let serviceConstructors = 0;
 let guestConstructors = 0;
+let ordinaryConstructors = 0;
 let cleanupCalls = 0;
 let canonical: Worker | undefined;
 const readCompleted = Promise.withResolvers<void>();
@@ -37,6 +38,10 @@ globalThis.Worker = class extends NativeWorker {
     const name = String(url);
     if (name.includes("/thread/service-worker")) serviceConstructors++;
     if (name.includes("/thread/guest-bootstrap")) guestConstructors++;
+    if (selected === "network-ordinary-failure" && name.includes("/browser/preview1-worker")) {
+      ordinaryConstructors++;
+      throw new Error("ordinary constructor failed before native construction");
+    }
     if (selected?.startsWith("service-constructor") && name.includes("/thread/service-worker"))
       throw new Error("service constructor failed before native construction");
     super(url, options);
@@ -66,6 +71,47 @@ const runtime = createRuntime({
   },
 });
 const descriptors = new DescriptorTable();
+let ownedNetwork: Awaited<
+  ReturnType<typeof import("../browser/preview1-network.ts").createPreview1Network>
+>;
+let networkHelper:
+  | ReturnType<Awaited<ReturnType<typeof runtime.network>>["createHelper"]>
+  | undefined;
+let networkDisposes = 0;
+async function networkForLaunch() {
+  if (!selected?.startsWith("network-")) return;
+  const { createPreview1Network } = await import("../browser/preview1-network.ts");
+  const network = await runtime.network();
+  ownedNetwork = await createPreview1Network(
+    {
+      network: async () => ({
+        lookup: network.lookup,
+        createHelper(options) {
+          networkHelper = network.createHelper(options);
+          return networkHelper;
+        },
+      }),
+    },
+    { sockets: [{ fd: 3, socket: { listen: { host: "127.0.0.1", port: 32161 } } }] },
+  );
+  if (!ownedNetwork) throw new Error("expected real network helper");
+  return {
+    connection: ownedNetwork.connection,
+    dispose() {
+      networkDisposes++;
+      ownedNetwork?.dispose();
+    },
+  };
+}
+function helperState(): string | undefined {
+  if (!networkHelper) return;
+  try {
+    networkHelper.listenerFor(32161);
+    return "live";
+  } catch {
+    return "disposed";
+  }
+}
 function bounded<T>(promise: Promise<T>, ms: number) {
   let timer: ReturnType<typeof setTimeout>;
   const settled = promise.then(
@@ -90,6 +136,8 @@ function collectAgain(
   }
 }
 try {
+  const launchNetwork = await networkForLaunch();
+  const helperBeforeLaunch = helperState();
   runtime.registerAdapter("failure", (context, service) =>
     service.launchWorker(context, {
       workerUrl: new URL("../browser/preview1-worker.ts", import.meta.url).href,
@@ -100,6 +148,7 @@ try {
             : new URL("../thread/service-worker.ts", import.meta.url).href,
         guestWorkerUrl: new URL("../thread/guest-bootstrap.ts", import.meta.url).href,
       },
+      network: launchNetwork,
       request: {
         module: context.module,
         args: context.request.argv,
@@ -113,35 +162,50 @@ try {
       },
     }),
   );
-  runtime.registerProgram("/failure", {
-    adapter: "failure",
-    source: guestModule({
-      imports: [{ module: "wasi", name: "thread-spawn", params: [0x7f] }].concat(
-        selected === "late-read"
-          ? [
-              {
-                module: "wasi_snapshot_preview1",
-                name: "fd_read",
-                params: [0x7f, 0x7f, 0x7f, 0x7f],
-              },
-            ]
-          : [],
-      ),
-      initial:
-        selected === "late-read"
-          ? store(256, i32(91)).concat(
-              store(128, i32(256)),
-              store(132, i32(1)),
-              i32(0),
-              i32(128),
-              i32(1),
-              i32(160),
-              call(1),
-              [0x1a],
-            )
-          : [],
-    }),
+  const source = guestModule({
+    imports: (selected === "network-ordinary-failure"
+      ? []
+      : [{ module: "wasi", name: "thread-spawn", params: [0x7f] }]
+    ).concat(
+      selected?.startsWith("unsupported-")
+        ? [
+            {
+              module: "wasi_snapshot_preview1",
+              name: selected.slice("unsupported-".length),
+              params: [],
+            },
+          ]
+        : [],
+      selected === "late-read"
+        ? [
+            {
+              module: "wasi_snapshot_preview1",
+              name: "fd_read",
+              params: [0x7f, 0x7f, 0x7f, 0x7f],
+            },
+          ]
+        : [],
+    ),
+    initial:
+      selected === "late-read"
+        ? store(256, i32(91)).concat(
+            store(128, i32(256)),
+            store(132, i32(1)),
+            i32(0),
+            i32(128),
+            i32(1),
+            i32(160),
+            call(1),
+            [0x1a],
+          )
+        : [],
   });
+  runtime.registerProgram(
+    "/failure",
+    selected === "network-opaque"
+      ? { adapter: "failure", module: await WebAssembly.compile(source), cooperative: true }
+      : { adapter: "failure", source },
+  );
   await runtime.filesystem.writeFile("/failure", "registered");
   const service = await runtime.processes();
   const supervisor = await service.ready();
@@ -215,6 +279,8 @@ try {
     selected === "service-constructor" ? collectAgain(client, root.pid, pid) : undefined;
   while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
   const children = service.workerMemory();
+  const helperAfterRefusal = helperState();
+  const disposesAfterRefusal = networkDisposes;
   const disposal = await bounded(runtime.dispose(), 1800);
   const repeatedDisposal = await bounded(runtime.dispose(), 100);
   console.log(
@@ -222,6 +288,11 @@ try {
       selected,
       serviceConstructors,
       guestConstructors,
+      ordinaryConstructors,
+      networkDisposes,
+      disposesAfterRefusal,
+      helperAfterRefusal,
+      helperBeforeLaunch,
       cleanupCalls,
       exit,
       startStatus,
@@ -236,6 +307,7 @@ try {
     }),
   );
 } finally {
+  ownedNetwork?.dispose();
   canonical?.postMessage({ kind: "fixture-release-read" });
   canonical?.postMessage({ kind: "fixture-release-drain" });
   descriptors.dispose();

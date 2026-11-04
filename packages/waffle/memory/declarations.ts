@@ -253,7 +253,7 @@ export function inspectThreadSource(data: Uint8Array): ThreadModuleDeclaration |
     const parameters =
       value.module === "wasi" && value.name === "thread-spawn"
         ? [0x7f]
-        : value.module === "wasi_snapshot_preview1"
+        : value.module === "wasi_snapshot_preview1" && Object.hasOwn(threadSignatures, value.name)
           ? threadSignatures[value.name]
           : undefined;
     const results = value.name === "proc_exit" ? [] : [0x7f];

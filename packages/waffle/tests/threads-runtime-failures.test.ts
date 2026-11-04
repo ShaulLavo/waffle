@@ -83,3 +83,31 @@ test("failed no-Worker rollback retains its heap debt and does not repeat adapte
   expect(report.sharedGuests).toHaveLength(1);
   expect(report.sharedGuests[0].phase).toBe("debt");
 }, 15000);
+
+for (const name of ["toString", "toLocaleString", "valueOf", "unsupported_zero"]) {
+  test(`unsupported source ${name} is refused before threaded allocation`, async () => {
+    const report = await failureCase(`unsupported-${name}`);
+    expect(report.serviceConstructors).toBe(0);
+    expect(report.guestConstructors).toBe(0);
+    expect(report.sharedGuests).toEqual([]);
+    expect(report.exit).toMatchObject({
+      kind: "value",
+      value: { kind: "start-failed", error: "ENOEXEC" },
+    });
+  }, 15000);
+}
+for (const selected of ["network-thread", "network-opaque", "network-ordinary-failure"]) {
+  test(`${selected} releases its actual network helper exactly once on refusal`, async () => {
+    const report = await failureCase(selected);
+    expect(report.serviceConstructors).toBe(0);
+    expect(report.guestConstructors).toBe(0);
+    expect(report.ordinaryConstructors).toBe(selected === "network-ordinary-failure" ? 1 : 0);
+    expect(report.helperBeforeLaunch).toBe("live");
+    expect(report.disposesAfterRefusal).toBe(1);
+    expect(report.networkDisposes).toBe(1);
+    expect(report.helperAfterRefusal).toBe("disposed");
+    expect(report.children).toHaveLength(selected === "network-ordinary-failure" ? 1 : 0);
+    expect(report.sharedGuests).toEqual([]);
+    expect(report.disposal.kind).toBe("value");
+  }, 15000);
+}
