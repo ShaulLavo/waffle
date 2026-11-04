@@ -257,15 +257,20 @@ test("host namespace edits do not probe shared metadata for an unregistered root
 });
 
 test("a borrowing backend keeps registered parent identities and timestamps current", () => {
-  const owner = new MemoryBackend();
-  const bytes = new Uint8Array();
-  const root = owner.execute("preopen", ["/"], bytes);
-  if (typeof root !== "number") throw new Error("preopen did not return a handle");
-  const alias = new MemoryBackend(undefined, undefined, owner);
-  alias.execute("setMtime", [root, 1], bytes);
-  const previous = alias.shared.identity(root)!;
-  alias.execute("writeFile", ["/child"], bytes);
-  expect(owner.shared.stat(root)!.mtime).toBeGreaterThan(1);
-  expect(owner.shared.identity(root)!.version).toBeGreaterThan(previous.version);
-  expect(owner.identity(root)).toEqual(owner.shared.identity(root)!);
+  const clock = spyOn(Date, "now").mockReturnValue(10_000);
+  try {
+    const owner = new MemoryBackend();
+    const bytes = new Uint8Array();
+    const root = owner.execute("preopen", ["/"], bytes);
+    if (typeof root !== "number") throw new Error("preopen did not return a handle");
+    const alias = new MemoryBackend(undefined, undefined, owner);
+    alias.execute("setMtime", [root, 1], bytes);
+    const previous = alias.shared.identity(root)!;
+    alias.execute("writeFile", ["/child"], bytes);
+    expect(owner.shared.stat(root)!.mtime).toBeGreaterThan(1);
+    expect(owner.shared.identity(root)!.version).toBeGreaterThan(previous.version);
+    expect(owner.identity(root)).toEqual(owner.shared.identity(root)!);
+  } finally {
+    clock.mockRestore();
+  }
 });

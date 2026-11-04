@@ -1014,6 +1014,8 @@ export class MemoryBackend implements FilesystemBackend {
       case "setMtime":
         this.fs.setMtime(action.handle, action.mtime);
         this.shared.setMtime(action.handle, action.mtime);
+        if (this.directoryTimes.has(action.handle))
+          this.directoryTimes.set(action.handle, action.mtime);
         return;
       case "preopen":
         this.sync(this.fs.preopen(action.path));
