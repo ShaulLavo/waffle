@@ -32,6 +32,28 @@ function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 
+const guestWatchFailureDescriptionLimit = 240;
+
+function guestWatchFailureDescription(error: unknown): string {
+  try {
+    let description: string;
+    if (error instanceof Error) description = error.message;
+    else if (typeof error === "string") description = error;
+    else if (error === null || typeof error !== "object") description = String(error);
+    else description = "<non-Error thrown value>";
+    const bounded = description.replace(/[\r\n]+/g, " ").trim();
+    return (bounded || "<empty error message>").slice(0, guestWatchFailureDescriptionLimit);
+  } catch {
+    return "<unprintable thrown value>";
+  }
+}
+
+export function guestWatchFailure(stage: string, error: unknown): Error {
+  return new Error(`guest watch proof failed at ${stage}: ${guestWatchFailureDescription(error)}`, {
+    cause: error,
+  });
+}
+
 /** Ordered replies from one Worker; any failure rejects every waiter. */
 function inbox<T>(failed: (value: T) => string | undefined) {
   const items: T[] = [];
@@ -230,7 +252,7 @@ export async function guestWatchCase(
     check(diagnostics.length === 0, `broker diagnostics: ${diagnostics}`);
     return { quietWakes, directWrites, pageWrites, ...done };
   } catch (error) {
-    throw new Error(`guest watch proof failed at ${stage}`, { cause: error });
+    throw guestWatchFailure(stage, error);
   } finally {
     clearTimeout(timeout);
     const disposed = writes.take((value): value is { disposed: true } => "disposed" in value);
