@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../../memory/control.js";
 import {
   afterMicrotask,
   afterNativePromise,
@@ -728,7 +729,7 @@ export class NetHost {
   }
 
   private call(request: TcpCommand, transfer: Transferable[] = []): [number, number] {
-    const reply = new SharedArrayBuffer(12);
+    const reply = allocateSharedControl(12);
     const cells = new Int32Array(reply);
     this.send({ ...request, reply }, transfer);
     while (Atomics.load(cells, 0) === 0) Atomics.wait(cells, 0, 0);

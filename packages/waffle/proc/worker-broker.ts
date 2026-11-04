@@ -1,6 +1,6 @@
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsAdd,
   atomicsLoad,
   atomicsNotify,
@@ -84,7 +84,7 @@ export class WorkerProcessBroker {
     check: async (sender, path, cwd, active, onCancel) => {
       const supervisor = await this.ready();
       active();
-      const wake = new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+      const wake = new Int32ArrayConstructor(allocateSharedControl(4));
       const id = supervisor.accessStart(sender.pid, path, cwd, wake);
       if (id < 0) return id;
       let cancelled = false,

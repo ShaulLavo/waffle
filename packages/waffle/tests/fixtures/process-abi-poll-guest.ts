@@ -1,18 +1,19 @@
-import { controlLoad, controlWait } from "../../proc/control.js";
+import { controlWait, controlStore, controlNotify } from "../../proc/control.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { ProcessABI, type ProcessService } from "../../proc/abi.js";
 import { readOutcome } from "../../proc/outcome.js";
-import type { SignalTransport } from "../../proc/signals.js";
+import { signalPending, type SignalTransport } from "../../proc/signals.js";
 import { DescriptorTable } from "../../core/descriptors.js";
 import { MemFS } from "../../fs/memory.js";
 
-const { mode, pid, child, childOutcome, wake, signals } = workerData as {
+const { mode, pid, child, childOutcome, wake, signals, captured } = workerData as {
   mode: "signal" | "child";
   pid: number;
   child: number;
   childOutcome: BigInt64Array;
   wake: Int32Array;
   signals: SignalTransport;
+  captured?: Int32Array;
 };
 const descriptors = new DescriptorTable();
 const memory = new WebAssembly.Memory({ initial: 1 });
@@ -66,12 +67,17 @@ view.setUint32(260, mode === "child" ? child : fd, true);
 view.setBigUint64(264, 77n, true);
 try {
   const ready = abi.imports.poll!(256, 1, -1, 512);
-  parentPort!.postMessage({
+  const result = {
     phase: "done",
     ready,
-    interrupt: controlLoad(signals.interrupt, 0),
+    pending: signalPending(signals),
     code: mode === "child" ? readOutcome(childOutcome)!.code : 0,
-  });
+  };
+  if (captured) {
+    controlStore(captured, 0, 1);
+    controlNotify(captured, 0);
+  }
+  parentPort!.postMessage(result);
 } finally {
   descriptors.dispose();
 }

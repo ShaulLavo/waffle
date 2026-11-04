@@ -1367,3 +1367,20 @@ test("procps CLI checks use package-local input paths and explicit configuration
     expect(step?.run).toBe(check.run);
   }
 });
+
+test("package prepares exactly the pinned shallow-safe allocation reference before runtime tests", () => {
+  const steps = stepsFor("package");
+  const setup = steps.findIndex(
+    (step) => step.run === "bun packages/waffle/tooling/prepare-allocation-reference.ts",
+  );
+  const tests = steps.findIndex((step) => step.run === "bun run test && bun run test:ci");
+  expect(setup).toBeGreaterThanOrEqual(0);
+  expect(setup).toBeLessThan(tests);
+  const source = readFileSync(
+    new URL("./prepare-allocation-reference.ts", import.meta.url),
+    "utf8",
+  );
+  expect(source).toContain("fd1d23c223acbc854b8113fe1e37a7a183728697");
+  expect(source).toContain('"--depth=1"');
+  expect(source).not.toMatch(/--unshallow|fetch.*--all/);
+});

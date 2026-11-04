@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, spyOn, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker";
 import { DescriptorTable } from "../core/descriptors";
@@ -60,6 +61,7 @@ async function fixture() {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -86,7 +88,7 @@ async function fixture() {
     identity: identities.buffer,
   });
   transport.data = { filesystem: createFilesystemIdentity() };
-  await broker.adoptRuntimeRoot(transport);
+  await broker.adoptRuntimeRoot(transport, { memory: [] });
   const descriptors = new DescriptorTable(),
     messages: WorkerProcessMessage[] = [];
   const codec = {

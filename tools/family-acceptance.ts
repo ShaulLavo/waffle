@@ -1,9 +1,11 @@
+import { createSharedControlAllocator } from "waffle";
 import type { Runtime, GuestLauncher, RuntimeSupervisor } from "waffle";
 import { DescriptorTable } from "waffle/core/descriptors";
 import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
 import type { DescriptorBinding, ProcessExit } from "waffle/proc/types";
 import {
   createWorkerProcessTransport,
+  workerProcessPipeRegistry,
   WorkerProcessClient,
   type WorkerProcessMessage,
 } from "waffle/proc/worker-client";
@@ -310,13 +312,19 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
   transport.data = { filesystem: runtime.filesystem.createIdentity() };
   const output: Output = { stdout: [], stderr: [] };
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (fd, payload) => recordOutput(output, fd, payload),
   });
   const notices: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
   try {
     const pipes = new WorkerPipeHost({
+      allocateShared: createSharedControlAllocator(
+        service.rootControlGrant(transport.pid),
+        (buffer) => service.rootControlAllocated(transport.pid, buffer),
+      ),
       transport,
+      registry: workerProcessPipeRegistry(transport),
       postMessage: (message) => notices.push(message),
     });
     for (const fd of [0, 1, 2]) {

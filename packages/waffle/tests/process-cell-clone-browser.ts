@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { SharedFilesystem } from "../browser/shared-fs.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -63,6 +64,7 @@ export async function browserBrokerCellClone(): Promise<void> {
   );
   registry.register("clone-fixture", { adapter: "fixture", module });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     filesystem,
     identities,
     table,
@@ -95,7 +97,7 @@ export async function browserBrokerCellClone(): Promise<void> {
     while (notices.length) await broker.runtimeMessage(notices.shift()!, root.pid);
   };
   try {
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const supervisor = await broker.ready();
     let previousSlot: number | undefined;
     for (let iteration = 0; iteration < 2; iteration++) {

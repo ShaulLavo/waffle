@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import type { Readiness } from "../core/descriptors.js";
 import {
@@ -27,7 +28,6 @@ import {
   atomicsNotify,
   atomicsStore,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   BigInt64ArrayConstructor,
   Uint32ArrayConstructor,
   cryptoGetRandomValues,
@@ -498,7 +498,7 @@ function inputBuffer(input: TerminalInput | SharedArrayBuffer): InputBuffer {
 export function createTerminalInput(options: { readonly capacity?: number } = {}): TerminalInput {
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
   if (!validCapacity(capacity)) throw new RangeError("invalid terminal input capacity");
-  const input = new InputBuffer(new SharedArrayBufferConstructor(HEADER_BYTES + capacity));
+  const input = new InputBuffer(allocateSharedControl(HEADER_BYTES + capacity));
   const nonce = cryptoGetRandomValues(new Uint32ArrayConstructor(2));
   if (nonce[0] === 0 && nonce[1] === 0) nonce[0] = 1;
   typedArraySet(new Uint32ArrayConstructor(input.buffer, H.nonce * 4, 2), nonce);

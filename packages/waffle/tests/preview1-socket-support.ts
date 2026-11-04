@@ -161,6 +161,7 @@ export async function socketGuest(options: {
           module: options.module ?? (await socketModule()),
           args: options.args ?? [],
           env: {},
+          controlGrant: { kind: "unbounded" },
           filesystem: pair.client,
           network: network.connection,
         },

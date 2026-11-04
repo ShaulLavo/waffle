@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { startFixtureChild } from "./fixtures/browser-process-child.js";
 import { expect, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
@@ -71,6 +72,7 @@ test("host callback failure confirms and physically closes a worker blocked in N
     received();
   }
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -118,7 +120,7 @@ test("host callback failure confirms and physically closes a worker blocked in N
   });
   globalThis.Worker = ObservedWorker;
   try {
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const { pid, supervisor } = await startFixtureChild({ broker, parent: client, messages });
     const transport = broker.transportFor(pid)!;
     await bounded(hostFailure);

@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.js";
 import type { WalkPlan, WalkCursor, WalkPage, WalkPageOptions } from "./walk.js";
 import { FilesystemWatch, type WatchOptions } from "./watch.js";
 import { checkDirectoryPage } from "./directory-pages.js";
@@ -29,7 +30,6 @@ import { permissionsFor, type WatchFileSystem } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsLoad,
   atomicsStore,
   atomicsAdd,
@@ -457,7 +457,7 @@ export class FilesystemClient implements FileSystem {
           target: target.capabilities,
           targetKey,
           targetOwner: target.owner,
-          state: new SharedArrayBufferConstructor(8),
+          state: allocateSharedControl(8),
         };
         atomicsAdd(this.capabilities, sourceKey + 2, 1);
         atomicsStore(entries, targetKey, handle);
