@@ -85,7 +85,7 @@ const EMPTY = new Uint8Array(0);
 /** Incremental HTTP/1.1 response parser. Feed it with `push`, then `end` when the connection closes. */
 export class ResponseParser {
   private pending: Uint8Array = EMPTY;
-  /** Owned storage for unfinished metadata; `pending` views it or, within one push, the caller's bytes. */
+  /** Owned storage for unfinished metadata; within one push `pending` may view caller bytes. */
   private store: Uint8Array = EMPTY;
   /** Leading `pending` bytes already searched for the current delimiter. */
   private scanned = 0;
@@ -345,7 +345,7 @@ export class ResponseParser {
   }
 }
 
-/** Largest store a `size`-byte tail may keep, so a short line does not pin a long head's storage. */
+/** Largest store a `size`-byte tail may keep, so a short line does not pin a long head's. */
 function storeCeiling(size: number): number {
   return Math.max(size, MIN_STORE_BYTES) * 8;
 }
@@ -358,7 +358,8 @@ function isSpecialBacking(buffer: ArrayBufferLike): boolean {
 }
 
 function indexOfCrlf(bytes: Uint8Array, from: number): number {
-  for (let i = from; i + 1 < bytes.length; i++) if (bytes[i] === 13 && bytes[i + 1] === 10) return i;
+  for (let i = from; i + 1 < bytes.length; i++)
+    if (bytes[i] === 13 && bytes[i + 1] === 10) return i;
   return -1;
 }
 
