@@ -82,6 +82,12 @@ structural matches in production code:
 | Shared filesystem `lock`/`globalLock`  | Per-file and allocator locks use different cells and the global lock has a service-owned bypass. Their admitted-section and revocation invariants remain visible together. |
 | Supervisor job/start wake registration | Registration validates different authority and uses different listener maps. The callbacks deliberately use the same atomic wake protocol.                                 |
 
+The thread Runtime integration removed 12 fingerprints that no longer matched any
+clone and retained three new test-only pairs. The C thread Runtime browser, fault and
+Safari runners mirror the Rust thread proof setup, but validate a different guest ABI,
+artifact and receipt, so they keep their own assertions rather than sharing a flagged
+helper. The baseline now holds 16 entries.
+
 At adoption the scan found 461 duplicate lines, about 0.70%, and 3,198 duplicate
 tokens, about 0.61%. These figures describe the measured baseline, not a budget.
 Repeated import-scanner loops and persistence batch-copy implementations were

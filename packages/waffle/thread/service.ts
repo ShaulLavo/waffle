@@ -25,7 +25,38 @@ import {
   FilesystemTransportError,
 } from "../fs/request-memory.ts";
 import { atomicsLoad, atomicsWaitAsync } from "../proc/intrinsics.ts";
-import type { CallKey, GuestSpan, ThreadOperation, ThreadResult } from "./protocol.ts";
+import type {
+  CallKey,
+  GuestSpan,
+  ThreadDescriptorStat,
+  ThreadOperation,
+  ThreadResult,
+} from "./protocol.ts";
+
+const filetypes: Readonly<Record<Resource["kind"], number>> = {
+  file: 4,
+  directory: 3,
+  pipe: 0,
+  terminal: 2,
+  device: 2,
+  socket: 6,
+};
+const FDFLAG_APPEND = 1;
+function descriptorStat(entry: Descriptor): ThreadDescriptorStat {
+  const resource = entry.resource;
+  const flags =
+    resource.kind === "file"
+      ? ((resource.fdflags ?? 0) & ~FDFLAG_APPEND) | (resource.append ? FDFLAG_APPEND : 0)
+      : resource.kind === "directory"
+        ? 0
+        : (resource.fdflags ?? 0);
+  return {
+    filetype: filetypes[resource.kind],
+    flags,
+    rightsBase: entry.rightsBase,
+    rightsInheriting: entry.rightsInheriting,
+  };
+}
 
 interface ServiceSafetyReceipt {
   readonly directory: string;
@@ -67,11 +98,14 @@ export class ThreadService {
   ) {}
 
   submit(call: CallKey, request: ThreadOperation): Promise<ThreadResult> {
+    if (isRevoked(this.options.filesystem.connection)) this.cancelAll();
     if (this.phase !== "open") return Promise.resolve({ kind: "error", errno: 11 });
     this.admit(call);
     const tid = call.thread.tid;
     const pin = this.options.descriptors.get(request.fd);
     if (!pin) return Promise.resolve({ kind: "error", errno: 8 });
+    if (request.kind === "fdstat")
+      return Promise.resolve({ kind: "ok", value: descriptorStat(pin) });
     if (request.kind === "close") {
       try {
         this.options.descriptors.close(request.fd);
@@ -437,6 +471,7 @@ export class ThreadService {
   }
 
   private live(): void {
+    if (isRevoked(this.options.filesystem.connection)) this.cancelAll();
     if (this.phase !== "open") throw new FilesystemError(11);
   }
 

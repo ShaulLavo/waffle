@@ -1,4 +1,6 @@
-import type { Runtime } from "../index.js";
+import { parseModuleMemory } from "../memory/declarations.js";
+import type { Runtime, ProcessService } from "../index.js";
+import type { FilesystemConnection } from "../fs/protocol.js";
 import { createPreview1Network } from "../browser/preview1-network.js";
 import type { RuntimeWorkerMessage, RuntimeWorkerRequest } from "../browser/worker.js";
 import type { NetworkCommand } from "./network-browser-worker.js";
@@ -36,31 +38,53 @@ export async function preview1ListenerBrowserCases(runtime: Runtime, peer: Peer)
     sockets: [{ fd: 3, socket: { listen: { host: "127.0.0.1", port: 32161 } } }],
   });
   check(owner, "Listener binding did not create a helper");
-  const filesystem = runtime.filesystem.fork();
-  const worker = new Worker("/listener-preview1-worker.js", { type: "module" });
-  const exit = Promise.withResolvers<number>();
-  worker.onerror = (event) => {
-    event.preventDefault();
-    exit.reject(Error(event.message));
-  };
-  worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => {
-    if (data.type === "stdout") listening.resolve();
-    if (data.type === "exit") exit.resolve(data.code);
-    if (data.type === "error" || data.type === "cleanup-error")
-      exit.reject(Error(JSON.stringify(data)));
-  };
-  void exit.promise.catch(() => {});
+  let filesystem: FilesystemConnection | undefined;
+  let service: ProcessService | undefined;
+  let root: number | undefined;
+  let actor: { kind: "no-agent" } | { kind: "worker"; worker: Worker } = { kind: "no-agent" };
   let conn: number | undefined;
   try {
     const response = await fetch("/preview1-listener.wasm");
     check(response.ok, "Listener WAT fixture missing");
-    const module = await WebAssembly.compile(await response.arrayBuffer());
+    const source = new Uint8Array(await response.arrayBuffer());
+    const module = await WebAssembly.compile(source);
+    service = await runtime.processes();
+    filesystem = runtime.filesystem.fork();
+    const control = service;
+    const pid = (root = await service.adoptRoot(
+      { pid: runtime.identities.pid(), memory: parseModuleMemory(source) },
+      {
+        filesystem,
+        stop: () => {
+          if (actor.kind === "worker") return actor.worker.terminate();
+        },
+      },
+    ));
+    const controlGrant = service.rootControlGrant(pid);
+    const worker = new Worker("/listener-preview1-worker.js", { type: "module" });
+    actor = { kind: "worker", worker };
+    const exit = Promise.withResolvers<number>();
+    worker.onerror = (event) => {
+      event.preventDefault();
+      exit.reject(Error(event.message));
+    };
+    worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => {
+      if (data.type === "shared-control-allocation") {
+        control.rootControlAllocated(pid, data.buffer);
+        return;
+      }
+      if (data.type === "stdout") listening.resolve();
+      if (data.type === "exit") exit.resolve(data.code);
+      if (data.type === "error" || data.type === "cleanup-error")
+        exit.reject(Error(JSON.stringify(data)));
+    };
+    void exit.promise.catch(() => {});
     worker.postMessage(
       {
         module,
+        controlGrant,
         args: [],
         env: {},
-        controlGrant: { kind: "unbounded" },
         filesystem,
         network: owner.connection,
       } satisfies RuntimeWorkerRequest,
@@ -100,8 +124,13 @@ export async function preview1ListenerBrowserCases(runtime: Runtime, peer: Peer)
     );
   } finally {
     owner.dispose();
-    worker.terminate();
-    filesystem.port.close();
+    if (filesystem) await runtime.filesystem.quiesce(filesystem);
+    if (actor.kind === "worker") {
+      await actor.worker.terminate();
+      actor = { kind: "no-agent" };
+    }
+    if (root !== undefined) service!.rootStopped(root);
+    filesystem?.port.close();
     if (conn !== undefined && conn > 0) await peer.call({ op: "close", handle: conn });
   }
 }

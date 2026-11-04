@@ -173,6 +173,9 @@ export function cryptoRandomUUID(): string {
 }
 // Relay scheduling passes a closure over private pipe state to the native timer.
 export const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
+export const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
+export const scheduleInterval = globalThis.setInterval.bind(globalThis);
+export const cancelInterval = globalThis.clearInterval.bind(globalThis);
 
 export const SetConstructor = Set;
 export const WeakMapConstructor = WeakMap;

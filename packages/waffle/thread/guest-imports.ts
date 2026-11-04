@@ -1,5 +1,7 @@
 import type { FileStat } from "../core/filesystem.ts";
 import {
+  arrayAppend,
+  typedArrayLength,
   Uint8ArrayConstructor,
   DataViewConstructor,
   wasmMemoryBuffer,
@@ -8,6 +10,7 @@ import {
   dataViewSetUint32,
   dataViewSetBigUint64,
   typedArraySet,
+  typedArrayFill,
   cryptoGetRandomValues,
   objectCreate,
   objectHasOwn,
@@ -69,7 +72,7 @@ class GuestMemory {
       const address = dataViewGetUint32(view, at, true);
       const length = dataViewGetUint32(view, at + 4, true);
       this.span(address, length);
-      spans.push({ address, length });
+      arrayAppend(spans, { address, length });
     }
     return spans;
   }
@@ -83,8 +86,8 @@ function strings(values: readonly string[]): Strings {
   let size = 0;
   for (let i = 0; i < values.length; i++) {
     const bytes: Uint8Array = apply(encode, encoder, [`${values[i]}\0`]);
-    result.push(bytes);
-    size += bytes.length;
+    arrayAppend(result, bytes);
+    size += typedArrayLength(bytes);
   }
   return { values: result, size };
 }
@@ -93,7 +96,7 @@ function environment(env: Readonly<Record<string, string>>): Strings {
   const values: string[] = [];
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i]!;
-    values.push(`${key}=${env[key]}`);
+    arrayAppend(values, `${key}=${env[key]}`);
   }
   return strings(values);
 }
@@ -116,8 +119,8 @@ function writeStrings(
   for (let i = 0; i < values.values.length; i++) {
     const value = values.values[i]!;
     memory.u32((pointers >>> 0) + i * 4, cursor);
-    typedArraySet(memory.span(cursor, value.length), value);
-    cursor += value.length;
+    typedArraySet(memory.span(cursor, typedArrayLength(value)), value);
+    cursor += typedArrayLength(value);
   }
   return 0;
 }
@@ -196,8 +199,23 @@ function stat(options: GuestImportOptions, memory: GuestMemory, fd: number, out:
   const result = options.lane.call({ kind: "stat", fd: fd >>> 0 });
   options.lane.check();
   if (result.kind === "error") return result.errno;
-  if (typeof result.value === "number") return EIO;
+  if (typeof result.value === "number" || "filetype" in result.value) return EIO;
   writeStat(memory, out >>> 0, result.value);
+  return 0;
+}
+function fdstat(options: GuestImportOptions, memory: GuestMemory, fd: number, out: number): number {
+  memory.span(out, 24);
+  const result = options.lane.call({ kind: "fdstat", fd: fd >>> 0 });
+  options.lane.check();
+  if (result.kind === "error") return result.errno;
+  if (typeof result.value === "number" || !("filetype" in result.value)) return EIO;
+  const target = memory.span(out, 24);
+  typedArrayFill(target, 0);
+  target[0] = result.value.filetype;
+  target[2] = result.value.flags & 0xff;
+  target[3] = result.value.flags >>> 8;
+  memory.u64((out >>> 0) + 8, result.value.rightsBase);
+  memory.u64((out >>> 0) + 16, result.value.rightsInheriting);
   return 0;
 }
 function writeStat(memory: GuestMemory, out: number, value: FileStat): void {
@@ -258,6 +276,7 @@ function wasiImports(options: GuestImportOptions): Record<string, GuestFunction>
       run(() => seek(options, memory, fd, offset, whence, out)),
     fd_tell: (fd: number, out: number) =>
       run(() => numeric(options, memory, { kind: "tell", fd: fd >>> 0 }, out, 8)),
+    fd_fdstat_get: (fd: number, out: number) => run(() => fdstat(options, memory, fd, out)),
     fd_filestat_get: (fd: number, out: number) => run(() => stat(options, memory, fd, out)),
     fd_close: (fd: number) =>
       run(() => {

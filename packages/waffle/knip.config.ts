@@ -23,6 +23,7 @@ export default {
         "scripts/browser-supervisor.ts",
         "scripts/threads-fixture-producer.test.ts",
         "scripts/c-threads-fixture-producer.test.ts",
+        "tests/c-threads-packet-runner.ts",
         "tooling/check-network-rust.ts",
         "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
         "tests/search-executor-browser.ts",

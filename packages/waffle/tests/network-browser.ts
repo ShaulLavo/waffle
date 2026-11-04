@@ -1,3 +1,4 @@
+import { BrowserProcessBroker } from "../browser/process-broker.js";
 import {
   createRuntime,
   type Runtime,
@@ -399,10 +400,15 @@ async function fetchAddressCases(server: Guest, client: Guest): Promise<void> {
 
 /** Executed in a real browser by network-browser-runner.ts. */
 export async function networkBrowserCases(): Promise<string[]> {
+  let phase: "network-only" | "preview1" = "network-only";
+  let processActivations = 0;
+  const activationCount = () => processActivations;
   const runtime = createRuntime({
     filesystem: { workerURL: "/network-fs.js", mode: "memory" },
-    processHost() {
-      throw Error("Networking activated processes");
+    processHost(options) {
+      processActivations++;
+      if (phase !== "preview1") throw Error("Networking activated processes");
+      return new BrowserProcessBroker(options);
     },
   });
   const network = await runtime.network();
@@ -438,7 +444,6 @@ export async function networkBrowserCases(): Promise<string[]> {
   try {
     await Promise.all(guests.map((item) => item.ready));
     await unixCases(runtime, (scope) => make(network, 0, false, scope));
-    await preview1ListenerBrowserCases(runtime, client);
     await addressCases(server, client);
     await fetchAddressCases(server, client);
     const p = await pair(server, client, 32130);
@@ -554,7 +559,15 @@ export async function networkBrowserCases(): Promise<string[]> {
     );
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
+    check(activationCount() === 0, "Network-only cases activated process services");
+    phase = "preview1";
+    await preview1ListenerBrowserCases(runtime, client);
+    check(
+      activationCount() === 1,
+      "Intentional Preview 1 phase did not use the one real process owner",
+    );
     return [
+      "network-only phase completes with zero process activation; final Preview 1 phase uses one real broker and the same ledger",
       "Preview 1 loopback listener accepts a same-runtime Bun-shaped peer, pending poll, NONBLOCK, duplex and half-close through the normal worker",
       "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied; abstract name served by an unscoped worker without a node",
       "runtime-owned IPv4 localhost lookup before any helper or worker exists",

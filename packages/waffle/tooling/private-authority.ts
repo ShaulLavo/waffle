@@ -45,6 +45,9 @@ const trustedModules: Readonly<Record<string, string>> = {
   "fs/indexeddb.ts": "Storage backend used by the dedicated filesystem service.",
   "fs/opfs.ts": "Storage backend used by the dedicated filesystem service.",
   "fs/storage.ts": "Storage interface for the dedicated filesystem service.",
+  "thread/runtime-owner.ts": "Page-only aggregate ledger and Worker lifecycle owner.",
+  "thread/service-worker.ts": "Dedicated canonical service Worker, never a guest realm.",
+  "thread/service.ts": "Canonical asynchronous service, never imported by guest bootstrap.",
   "core/memory-views.ts":
     "Guest-owned WebAssembly memory view helpers; no private runtime buffers.",
 };
@@ -134,6 +137,12 @@ export const enforcedModules = [
   "proc/intrinsics/core.ts",
   "proc/intrinsics/host.ts",
   "proc/errors.ts",
+  "thread/guest-bootstrap.ts",
+  "thread/guest-worker.ts",
+  "thread/guest-imports.ts",
+  "thread/entry.ts",
+  "thread/lane.ts",
+  "thread/protocol.ts",
   "browser/worker.ts",
   "browser/worker-memory.ts",
   "browser/preview1-socket.ts",
@@ -167,7 +176,12 @@ export const enforcedModules = [
   "proc/worker-pipes.ts",
 ];
 
-const roots = ["browser/worker.ts", "proc/worker-client.ts", "proc/worker-pipes.ts"];
+const roots = [
+  "thread/guest-bootstrap.ts",
+  "browser/worker.ts",
+  "proc/worker-client.ts",
+  "proc/worker-pipes.ts",
+];
 const views = new Set([
   "Int8Array",
   "Uint8Array",

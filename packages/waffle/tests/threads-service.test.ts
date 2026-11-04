@@ -265,3 +265,41 @@ test("an async offset lease commits once and duplicate release cannot unlock its
     await value.dispose();
   }
 });
+
+test("a completed file read cannot publish after actual filesystem revocation", async () => {
+  const { revokeFilesystem } = await import("../fs/protocol.ts");
+  const value = await serviceFixture("cold");
+  const completed = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const submit = value.client.submit.bind(value.client);
+  value.client.submit = (name, args, data) => {
+    const completion = submit(name, args, data);
+    const read = completion.value.bind(completion);
+    completion.value = async () => {
+      const result = await read();
+      completed.resolve();
+      await release.promise;
+      return result;
+    };
+    return completion;
+  };
+  try {
+    new Uint8Array(value.memory.buffer)[256] = 91;
+    const pending = value.service.submit(value.call(), {
+      kind: "read",
+      fd: value.fd,
+      spans: [{ address: 256, length: 1 }],
+    });
+    await value.event("held");
+    value.send({ kind: "release" });
+    await completed.promise;
+    revokeFilesystem(value.client.connection);
+    release.resolve();
+    expect(await pending).toEqual({ kind: "error", errno: 11 });
+    expect(new Uint8Array(value.memory.buffer)[256]).toBe(91);
+    expect(value.resource.offset).toBe(1);
+  } finally {
+    release.resolve();
+    await value.dispose();
+  }
+});

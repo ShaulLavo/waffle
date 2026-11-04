@@ -480,7 +480,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           await import("./interrupt/loader-internal.js");
         if (sourceStart !== undefined && sourceEnd !== undefined)
           programStage("source", sourceStart, { bytes: snapshot.byteLength }, sourceEnd);
-        const compiled = await compileInterruptibleOwned(snapshot);
+        const { inspectThreadSource, declareThreadModule } =
+          await import("./memory/declarations.js");
+        const threaded = inspectThreadSource(snapshot);
+        const compiled = await compileInterruptibleOwned(
+          snapshot,
+          threaded ? "supervised-thread" : "ordinary",
+        );
+        if (threaded) declareThreadModule(compiled, threaded);
         assertLive();
         onLoad?.({ kind: "loaded" });
         return compiled;
