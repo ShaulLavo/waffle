@@ -322,3 +322,98 @@ test("WAF-003 a complete fixed Buffer retains decoder backing identity", () => {
     expect(f.parser.done).toBe(true);
   });
 });
+
+function pushBytewise(f: Fixture, text: string) {
+  const bytes = encoder.encode(text);
+  for (let offset = 0; offset < bytes.length; offset++)
+    f.parser.push(bytes.subarray(offset, offset + 1));
+}
+
+test("WAF-003 one-byte fragments keep interim, Unicode head, chunk framing and trailers", () => {
+  const f = fixture();
+  pushBytewise(
+    f,
+    "HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n" +
+      "HTTP/1.1 200 Ça va\r\nTransfer-Encoding: chunked\r\nX-Name: 日本語\r\n\r\n" +
+      "3;note=é\r\nabc\r\n2\r\nde\r\n0\r\nX-Trailer: 語\r\n\r\n",
+  );
+  expect(f.errors).toEqual([]);
+  expect(f.heads).toEqual([
+    {
+      status: 200,
+      statusText: "Ça va",
+      headers: [
+        ["transfer-encoding", "chunked"],
+        ["x-name", "日本語"],
+      ],
+    },
+  ]);
+  expect(f.chunks.map((bytes) => decoder.decode(bytes))).toEqual(["a", "b", "c", "d", "e"]);
+  expect(f.ended).toBe(1);
+});
+
+for (const framing of ["length", "close"]) {
+  test(`WAF-003 one-byte fragments deliver a ${framing} body in order`, () => {
+    const f = fixture();
+    const header = framing === "length" ? "Content-Length: 5\r\n" : "";
+    pushBytewise(f, "HTTP/1.1 200 OK\r\n" + header + "\r\nhello");
+    f.parser.end();
+    expect(f.errors).toEqual([]);
+    expect(f.chunks.map((bytes) => decoder.decode(bytes)).join("")).toBe("hello");
+    expect(f.ended).toBe(1);
+  });
+}
+
+for (const item of metadataCases) {
+  test(`WAF-003 rejects one-byte fragments past the ${item.name} ceiling`, () => {
+    const f = fixture();
+    push(f, item.prefix);
+    pushBytewise(f, "a".repeat(item.limit));
+    expect(f.errors).toEqual([]);
+    pushBytewise(f, "a");
+    failed(f, item.name);
+  });
+}
+
+/** Bytes the parser allocates or copies into new arrays while `run` executes. */
+function allocatedBytes(run: () => void): number {
+  const Native = globalThis.Uint8Array;
+  let total = 0;
+  globalThis.Uint8Array = new Proxy(Native, {
+    construct(target, args, newTarget) {
+      const source = args[0];
+      if (typeof source === "number") total += source;
+      else if (ArrayBuffer.isView(source)) total += source.byteLength;
+      return Reflect.construct(target, args, newTarget);
+    },
+  });
+  try {
+    run();
+    return total;
+  } finally {
+    globalThis.Uint8Array = Native;
+  }
+}
+
+const fragmentedMetadata = [
+  { name: "head", prefix: "", value: head(HEAD_LIMIT / 2) },
+  { name: "chunk-size", prefix: chunked, value: "0;" + "a".repeat(LINE_LIMIT / 2) + "\r\n" },
+  {
+    name: "trailers",
+    prefix: chunked + "0\r\n",
+    value: "X: " + "a".repeat(TRAILER_LIMIT / 2) + "\r\n\r\n",
+  },
+];
+
+for (const item of fragmentedMetadata) {
+  test(`WAF-003 one-byte ${item.name} fragments copy a bounded multiple of their length`, () => {
+    const f = fixture();
+    push(f, item.prefix);
+    // Rebuilding the retained prefix for every fragment copies quadratically many bytes.
+    const copied = allocatedBytes(() => pushBytewise(f, item.value));
+    expect(f.errors).toEqual([]);
+    expect(copied).toBeLessThanOrEqual(item.value.length * 8);
+    if (item.name === "chunk-size") push(f, "\r\n");
+    expect(f.ended).toBe(1);
+  });
+}

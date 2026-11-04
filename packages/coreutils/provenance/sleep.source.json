@@ -1,0 +1,47 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "packages": {
+    "uu_sleep": {
+      "version": "0.13.0",
+      "path": "src/uu/sleep"
+    },
+    "uucore": {
+      "version": "0.13.0",
+      "path": "src/uucore"
+    }
+  },
+  "classification": "Unmodified pinned upstream sleep and duration parser with original isolated entry",
+  "upstreamFiles": {
+    "src/uu/sleep/Cargo.toml": "15e422384e63a8847fb908f28b0c515b1e35ac37632d5618aa30944ca2be2c35",
+    "src/uu/sleep/src/sleep.rs": "56d45014d3e9e7225c0b0ec789dbceb6428912310c0db11ca3fc3338a09743e1",
+    "src/uu/sleep/locales/en-US.ftl": "3916c80c307332f7a70a275256b00c3aa3af458b4736d1b45f89ab98656ff6d9",
+    "src/uucore/src/lib/features/parser/parse_time.rs": "768ca2097b8c292c485501d34351014f2f316129091c3f45cf7db9de39b1ee62",
+    "src/uucore/src/lib/features/parser/num_parser.rs": "701d3ac2346efad5e60fb428d39f4115f85c7cebb07054af643508eba5502510",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "license": {
+    "spdx": "MIT",
+    "upstreamPath": "LICENSE",
+    "localPath": "provenance/LICENSE.uutils",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "changes": [
+    "No upstream evaluator, duration parser, timer, or signal implementation changes.",
+    "The entry invokes uucore::bin!(uu_sleep), retaining upstream argument handling, error reporting, and std::thread::sleep.",
+    "WASI std sleep uses the existing clock and poll transport. No Node timer implements the command.",
+    "GNU sleep is a bounded test oracle only. Diagnostic wording, help, and version remain uutils."
+  ],
+  "oracle": {
+    "path": "/usr/bin/sleep",
+    "version": "sleep (GNU coreutils) 9.12",
+    "sha256": "cf9cdc41dbdbdc37c05b62b6713523e773d63f098b4455ec0a8d84b0009db57b",
+    "platform": "Linux x86_64",
+    "environment": {
+      "LC_ALL": "C",
+      "LANG": "C",
+      "LANGUAGE": "en_US",
+      "TZ": "UTC0"
+    }
+  }
+}

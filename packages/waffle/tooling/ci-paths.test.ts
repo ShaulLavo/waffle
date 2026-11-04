@@ -103,6 +103,65 @@ test("browser relay inputs select the normal gate and only its parallel group in
   );
 });
 
+const consumerFilters = [
+  "network",
+  "coreutils",
+  "sed",
+  "findutils",
+  "grep",
+  "ripgrep",
+  "base",
+  "programs",
+  "diffutils",
+  "gh",
+  "jq",
+  "curl",
+  "awk",
+  "tar",
+  "procps",
+  "browser",
+  "libc",
+  "checksums",
+] as const;
+
+test("relay image inputs stay out of unrelated consumer gates", () => {
+  for (const path of [
+    ".github/workflows/relay-image.yml",
+    "packages/waffle-relay/scripts/relay-image-custody.ts",
+  ])
+    for (const name of consumerFilters)
+      expect(selected(name, path), `${name}: ${path}`).toBe(false);
+
+  for (const name of consumerFilters)
+    expect(selected(name, ".github/workflows/ci.yml"), name).toBe(true);
+});
+
+test("shared workflow inputs select the gates that consume them", () => {
+  const optimizerConsumers = new Set([
+    "coreutils",
+    "findutils",
+    "programs",
+    "diffutils",
+    "jq",
+    "awk",
+    "tar",
+    "checksums",
+  ]);
+  for (const name of optimizerConsumers)
+    expect(selected(name, ".github/actions/program-optimizer/action.yml"), name).toBe(true);
+
+  for (const name of consumerFilters.filter((name) => !optimizerConsumers.has(name)))
+    expect(selected(name, ".github/actions/program-optimizer/action.yml"), name).toBe(false);
+
+  expect(selected("findutils", ".github/workflows/findutils-xargs.yml")).toBe(true);
+  expect(selected("coreutils", ".github/workflows/findutils-xargs.yml")).toBe(true);
+  expect(selected("coreutils", ".github/workflows/coreutils-echo.yml")).toBe(true);
+  for (const name of consumerFilters.filter((name) => name !== "coreutils" && name !== "findutils"))
+    expect(selected(name, ".github/workflows/findutils-xargs.yml"), name).toBe(false);
+  for (const name of consumerFilters.filter((name) => name !== "coreutils"))
+    expect(selected(name, ".github/workflows/coreutils-echo.yml"), name).toBe(false);
+});
+
 const release = record(
   YAML.parse(
     readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),

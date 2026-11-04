@@ -1,0 +1,21 @@
+[package]
+name = "waffle-tee"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+uu_tee = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[[bin]]
+name = "tee"
+path = "src/main.rs"
+
+[package.metadata.cargo-machete]
+ignored = ["uu_tee", "uucore"]
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["stdio", "fs"] }
