@@ -83,11 +83,11 @@ try {
   );
   const client = await bundle("packages/waffle-relay/src/index.ts");
   assert.ok(
-    !client.initialInputs.some((input) => input.endsWith("tcp-websocket.ts")),
+    !client.initialInputs.some((input) => /tcp-(websocket|webtransport)\.ts$/.test(input)),
     "TCP carrier entered the eager client graph",
   );
   assert.ok(
-    !client.allInputs.some((input) => /node-websocket|tcp-server/.test(input)),
+    !client.allInputs.some((input) => /node-websocket|node-webtransport|tcp-server/.test(input)),
     "Node TCP implementation entered the browser graph",
   );
   const worker = await bundle("packages/waffle-relay/src/worker.ts");

@@ -1,0 +1,38 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "07763857f6b9a547742a994b58aef0ccd036198b",
+  "packages": {
+    "uu_du": {
+      "version": "0.13.0",
+      "path": "src/uu/du"
+    },
+    "uucore": {
+      "version": "0.13.0",
+      "path": "src/uucore"
+    }
+  },
+  "classification": "unmodified pinned upstream implementation with original isolated entry and cwd adapter; not admitted as a WASI guest",
+  "upstreamFiles": {
+    "src/uu/du/Cargo.toml": "dfc607f7b55d06322c6a1b0b8f30c81d000cf4e5b9c8a45f3fa7f592f45f7eed",
+    "src/uu/du/src/du.rs": "e24b7c0a7cc84b4aa72cc9e9c01e5d961ca9e8ea580cffe783635cef295f1c1b",
+    "src/uu/du/src/main.rs": "e46c6bf414b8d24c602b876351c073ae50aa1b536b86d3a268c62b52c8319f47",
+    "src/uu/du/locales/en-US.ftl": "4f9eb6825d99f4bbdf5471e0953339dcf97c8ddca3263fb2581b3884faeb4c2d",
+    "LICENSE": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "license": {
+    "spdx": "MIT",
+    "upstreamPath": "LICENSE",
+    "localPath": "crates/du/LICENSE",
+    "sha256": "29953405eaa3dcc41c37d1621d55b6a47eee93e05613e439e73295029740b10c"
+  },
+  "nativeOracle": {
+    "path": "/usr/bin/du",
+    "version": "du (GNU coreutils) 9.12",
+    "sha256": "dfda6404439567fd4636c0890c4c907f330aeaf430fb23e05e192e8159d1e33e"
+  },
+  "changes": [
+    "No upstream implementation, target guards, allocation metadata or thread behavior changed.",
+    "Original entry delegates to upstream and reuses the existing cwd helper.",
+    "WASI build remains a capability probe, not a supported catalog entry."
+  ]
+}

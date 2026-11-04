@@ -76,6 +76,7 @@ closures and buffers carry process authority:
 
 | Enforced module                | Authority role                                                                                                              |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `browser/preview1-socket.ts` | Socket descriptions retain their handle, captured request-port hooks and descriptor flags in the guest worker. Payload copies use captured typed-array helpers. |
 | `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.       |
 | `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                          |
 | `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.       |

@@ -1,0 +1,11 @@
+{
+  "name": "waffle-relay-native-container",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@fails-components/webtransport": "1.6.11",
+    "@fails-components/webtransport-transport-http3-quiche": "1.6.11",
+    "waffle": "file:assets/waffle.tgz",
+    "waffle-relay": "file:assets/relay.tgz"
+  }
+}

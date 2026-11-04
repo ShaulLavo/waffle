@@ -140,7 +140,7 @@ async function openRaw(endpoint: string, token: string, fragmented = false): Pro
   ws.once("close", () => raw.delete(ws));
   await once(ws, "open");
   const reply = once(ws, "message");
-  const header = JSON.stringify({ v: 1, token, ...target });
+  const header = JSON.stringify({ v: 1, token, ...target, window: 262144 });
   if (fragmented) {
     ws.send(header.slice(0, 5), { fin: false });
     ws.send(header.slice(5), { fin: true });

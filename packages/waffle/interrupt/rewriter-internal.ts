@@ -1,5 +1,5 @@
 // Bump on every edit. interrupt-transform-pin.test.ts binds this revision to the implementation.
-export const INTERRUPT_REWRITER_REVISION = 2;
+export const INTERRUPT_REWRITER_REVISION = 4;
 
 /**
  * Fail-closed core-Wasm interrupt instrumentation. Supported features are MVP,
@@ -15,7 +15,11 @@ export const INTERRUPT_REWRITER_REVISION = 2;
  * Relocation/linking/dynamic-linking metadata is instead refused, not silently
  * turned from an object/shared library into an executable module.
  */
+export type InterruptRewriteProfile = "ordinary" | "supervised-thread";
+
 export interface InterruptRewriteOptions {
+  /** Only supervised threads replace native Wasm waits with tracked host waits. */
+  profile?: InterruptRewriteProfile;
   /** Positive i32 countdown; production uses 4096. */
   interval?: number;
   /** Benchmark baseline: always check at entries, countdown at loop headers. */
@@ -201,8 +205,13 @@ function functionSignatureMatches(
 interface ImportSummary {
   readonly importedFunctions: number;
   readonly memories: number;
+  readonly sharedEnvMemories: number;
   readonly globals: number;
   readonly tags: number;
+}
+function readSharedEnvMemory(reader: Reader, namespace: string, name: string): number {
+  const flags = limits(reader, true);
+  return namespace === "env" && name === "memory" && flags === 3 ? 1 : 0;
 }
 function validateImports(
   reader: Reader,
@@ -211,6 +220,7 @@ function validateImports(
 ): ImportSummary {
   let importedFunctions = 0;
   let memories = 0;
+  let sharedEnvMemories = 0;
   let globals = 0;
   let tags = 0;
   for (let i = 0; i < count; i++) {
@@ -237,7 +247,7 @@ function validateImports(
         limits(reader, false);
         break;
       case 2:
-        limits(reader, true);
+        sharedEnvMemories += readSharedEnvMemory(reader, namespace, name);
         memories++;
         break;
       case 3:
@@ -253,7 +263,7 @@ function validateImports(
         fail("unsupported import kind");
     }
   }
-  return { importedFunctions, memories, globals, tags };
+  return { importedFunctions, memories, sharedEnvMemories, globals, tags };
 }
 function tagType(reader: Reader, functionTypes: readonly FunctionSignature[]): void {
   if (reader.byte() !== 0) fail("unsupported tag attribute");
@@ -293,13 +303,14 @@ function blockType(reader: Reader): void {
   if (type >= 0 || [-64, -1, -2, -3, -4, -5, -16, -17, -23].includes(type)) return;
   fail("unsupported block type (GC or typed reference)");
 }
-function limits(reader: Reader, memory: boolean): void {
+function limits(reader: Reader, memory: boolean): number {
   const flags = reader.u32();
   // Threads are supported only for memories. No memory64, table64, custom
   // pages, shared-everything tables, or future limits flags.
   if (flags > (memory ? 3 : 1)) fail("unsupported memory64/table64/shared-table limits");
   reader.u32();
   if (flags & 1) reader.u32();
+  return flags;
 }
 function memoryIndex(reader: Reader): void {
   if (reader.u32() !== 0) fail("multi-memory is unsupported");
@@ -378,9 +389,14 @@ interface InstructionContext {
   importedFunctions: number;
   tags: number;
   checkpoint: Uint8Array;
+  addedImports: number;
+  waits: { wait32: number; wait64: number } | null;
 }
-function shifted(index: number, importedFunctions: number): number {
-  return index < importedFunctions ? index : index + 1;
+function shifted(
+  index: number,
+  context: Pick<InstructionContext, "importedFunctions" | "addedImports">,
+): number {
+  return index < context.importedFunctions ? index : index + context.addedImports;
 }
 
 /** Parse one complete expression. Validation has already checked its typing. */
@@ -451,7 +467,7 @@ function instructions(
         const index = reader.u32();
         flush(start);
         writer.byte(opcode);
-        writer.u32(shifted(index, context.importedFunctions));
+        writer.u32(shifted(index, context));
         copiedFrom = reader.position;
         break;
       }
@@ -534,16 +550,9 @@ function instructions(
         }
         break;
       }
-      case 0xfe: {
-        const sub = reader.u32();
-        if (sub === 1 || sub === 2) fail("atomic.wait is unbounded and unsupported");
-        if (sub === 3) {
-          if (reader.byte() !== 0) fail("unknown atomic.fence flags");
-        } else if (sub === 0 || (sub >= 0x10 && sub <= 0x4e)) {
-          memoryArgument(reader);
-        } else fail(`unsupported atomic opcode 0xfe:${sub}`);
+      case 0xfe:
+        copiedFrom = atomicInstruction(reader, writer, context, start, copiedFrom);
         break;
-      }
       // Exact no-immediate core instructions. Numeric 0x45..0xc4 is the
       // contiguous MVP + sign-extension range; no proposal prefixes live here.
       case 0x00:
@@ -563,6 +572,33 @@ function instructions(
         }
     }
   }
+}
+
+function atomicInstruction(
+  reader: Reader,
+  writer: Writer,
+  context: InstructionContext,
+  start: number,
+  copiedFrom: number,
+): number {
+  const sub = reader.u32();
+  if (sub === 1 || sub === 2) {
+    if (!context.waits) fail("atomic.wait is unbounded and unsupported");
+    if (reader.u32() !== (sub === 1 ? 2 : 3)) fail("invalid atomic.wait alignment");
+    const offset = reader.u32();
+    writer.bytes(reader.bytes.subarray(copiedFrom, start));
+    writer.byte(0x41);
+    writer.i32(offset | 0);
+    writer.byte(0x10);
+    writer.u32(sub === 1 ? context.waits.wait32 : context.waits.wait64);
+    return reader.position;
+  }
+  if (sub === 3) {
+    if (reader.byte() !== 0) fail("unknown atomic.fence flags");
+  } else if (sub === 0 || (sub >= 0x10 && sub <= 0x4e)) {
+    memoryArgument(reader);
+  } else fail(`unsupported atomic opcode 0xfe:${sub}`);
+  return copiedFrom;
 }
 
 function checkpoint(global: number, hostFunction: number, interval: number): Uint8Array {
@@ -598,16 +634,109 @@ function hostCheck(hostFunction: number): Uint8Array {
   return writer.finish();
 }
 
-/** Rewrite a private synchronous snapshot without copying it again. */
-export function rewriteInterruptsOwned(
-  bytes: Uint8Array<ArrayBuffer>,
-  options: InterruptRewriteOptions = {},
-): Uint8Array<ArrayBuffer> {
+function appendFunctionImport(writer: Writer, name: string, type: number): void {
+  writer.name("runtime_proc");
+  writer.name(name);
+  writer.byte(0);
+  writer.u32(type);
+}
+
+function appendWaitWrapper(code: Writer, hostFunction: number): void {
+  const writer = new Writer();
+  writer.bytes(new Uint8Array([1, 1, 0x7f])); // one i32 result local
+  for (let index = 0; index < 4; index++) {
+    writer.byte(0x20);
+    writer.u32(index);
+  }
+  writer.byte(0x10);
+  writer.u32(hostFunction);
+  writer.bytes(
+    new Uint8Array([
+      0x22,
+      4,
+      0x41,
+      0,
+      0x48, // local.tee result; i32.const 0; i32.lt_s
+      0x04,
+      0x40,
+      0x00,
+      0x0b, // if void; unreachable; end
+      0x20,
+      4,
+      0x0b,
+    ]),
+  );
+  const body = writer.finish();
+  code.u32(body.length);
+  code.bytes(body);
+}
+
+function rewriteSettings(options: InterruptRewriteOptions) {
+  const profile = options.profile ?? "ordinary";
+  if (profile !== "ordinary" && profile !== "supervised-thread") fail("unknown rewrite profile");
+  const supervised = profile === "supervised-thread";
+  const addedImports = supervised ? 3 : 1;
   const interval = options.interval ?? 4096;
   const policy = options.policy ?? "countdown";
   if (!Number.isInteger(interval) || interval < 1 || interval > 0x7fffffff)
     fail("interval must be a positive i32");
   if (policy !== "countdown" && policy !== "entry") fail("unknown checkpoint policy");
+  return { interval, policy, supervised, addedImports };
+}
+
+function valueTypes(reader: Reader): number[] {
+  const count = reader.u32();
+  const values: number[] = [];
+  for (let index = 0; index < count; index++) values.push(valueType(reader));
+  return values;
+}
+
+function rewriteTypeSection(reader: Reader, supervised: boolean) {
+  const count = reader.u32();
+  const start = reader.position;
+  const functionTypes: FunctionSignature[] = [];
+  for (let index = 0; index < count; index++) {
+    if (reader.byte() !== 0x60) fail("unsupported GC recursive/subtype definition");
+    functionTypes.push({ params: valueTypes(reader), results: valueTypes(reader) });
+  }
+  reader.done();
+  const writer = new Writer();
+  writer.u32(count + (supervised ? 3 : 1));
+  writer.bytes(reader.bytes.subarray(start));
+  writer.bytes(new Uint8Array([0x60, 0, 1, 0x7f]));
+  if (supervised) {
+    writer.bytes(new Uint8Array([0x60, 4, 0x7f, 0x7f, 0x7e, 0x7f, 1, 0x7f]));
+    writer.bytes(new Uint8Array([0x60, 4, 0x7f, 0x7e, 0x7e, 0x7f, 1, 0x7f]));
+  }
+  return { bytes: writer.finish(), functionTypes };
+}
+
+function rewriteImportSection(
+  reader: Reader,
+  functionTypes: readonly FunctionSignature[],
+  supervised: boolean,
+) {
+  const count = reader.u32();
+  const start = reader.position;
+  const summary = validateImports(reader, count, functionTypes);
+  reader.done();
+  const writer = new Writer();
+  writer.u32(count + (supervised ? 3 : 1));
+  writer.bytes(reader.bytes.subarray(start));
+  appendFunctionImport(writer, FATAL_IMPORT_NAME, functionTypes.length);
+  if (supervised) {
+    appendFunctionImport(writer, "__waffle_wait32", functionTypes.length + 1);
+    appendFunctionImport(writer, "__waffle_wait64", functionTypes.length + 2);
+  }
+  return { ...summary, bytes: writer.finish() };
+}
+
+/** Rewrite a private synchronous snapshot without copying it again. */
+export function rewriteInterruptsOwned(
+  bytes: Uint8Array<ArrayBuffer>,
+  options: InterruptRewriteOptions = {},
+): Uint8Array<ArrayBuffer> {
+  const { interval, policy, supervised, addedImports } = rewriteSettings(options);
   if (!WebAssembly.validate(bytes)) fail("original module is not valid WebAssembly");
   const reader = new Reader(bytes);
   const header = reader.take(8);
@@ -640,49 +769,29 @@ export function rewriteInterruptsOwned(
   let globals = 0;
   let memories = 0;
 
-  const typeReader = get(1);
-  const typeCount = typeReader.u32();
-  const typeStart = typeReader.position;
-  const functionTypes: FunctionSignature[] = [];
-  for (let i = 0; i < typeCount; i++) {
-    if (typeReader.byte() !== 0x60) fail("unsupported GC recursive/subtype definition");
-    const params: number[] = [];
-    const results: number[] = [];
-    for (let vector = 0; vector < 2; vector++) {
-      const count = typeReader.u32();
-      const values = vector === 0 ? params : results;
-      for (let j = 0; j < count; j++) values.push(valueType(typeReader));
-    }
-    functionTypes.push({ params, results });
-  }
-  typeReader.done();
-  const typeWriter = new Writer();
-  typeWriter.u32(typeCount + 1);
-  typeWriter.bytes(typeReader.bytes.subarray(typeStart));
-  typeWriter.bytes(new Uint8Array([0x60, 0, 1, 0x7f]));
-  sections.set(1, typeWriter.finish());
-
-  const importReader = get(2);
-  const importCount = importReader.u32();
-  const importStart = importReader.position;
-  const importSummary = validateImports(importReader, importCount, functionTypes);
+  const types = rewriteTypeSection(get(1), supervised);
+  const functionTypes = types.functionTypes;
+  const typeCount = functionTypes.length;
+  sections.set(1, types.bytes);
+  const importSummary = rewriteImportSection(get(2), functionTypes, supervised);
   importedFunctions = importSummary.importedFunctions;
   memories += importSummary.memories;
   globals += importSummary.globals;
-  importReader.done();
-  const importWriter = new Writer();
-  importWriter.u32(importCount + 1);
-  importWriter.bytes(importReader.bytes.subarray(importStart));
-  importWriter.name("runtime_proc");
-  importWriter.name(FATAL_IMPORT_NAME);
-  importWriter.byte(0);
-  importWriter.u32(typeCount);
-  sections.set(2, importWriter.finish());
+  sections.set(2, importSummary.bytes);
 
   const functionReader = get(3);
   const functionCount = functionReader.u32();
+  const functionStart = functionReader.position;
   for (let i = 0; i < functionCount; i++) functionReader.u32();
   functionReader.done();
+  if (supervised) {
+    const writer = new Writer();
+    writer.u32(functionCount + 2);
+    writer.bytes(functionReader.bytes.subarray(functionStart));
+    writer.u32(typeCount + 1);
+    writer.u32(typeCount + 2);
+    sections.set(3, writer.finish());
+  }
 
   const tableReader = get(4);
   const tables = tableReader.u32();
@@ -697,6 +806,8 @@ export function rewriteInterruptsOwned(
   if (memories > 1) fail("multi-memory is unsupported");
   for (let i = 0; i < memoryCount; i++) limits(memoryReader, true);
   memoryReader.done();
+  if (supervised && (importSummary.sharedEnvMemories !== 1 || memoryCount !== 0))
+    fail("supervised threads require one imported shared env.memory with a maximum");
 
   const tags = importSummary.tags + tagSection(get(13), functionTypes);
 
@@ -705,6 +816,13 @@ export function rewriteInterruptsOwned(
   globals += definedGlobals;
   const context: InstructionContext = {
     importedFunctions,
+    addedImports,
+    waits: supervised
+      ? {
+          wait32: importedFunctions + addedImports + functionCount,
+          wait64: importedFunctions + addedImports + functionCount + 1,
+        }
+      : null,
     tags,
     checkpoint: checkpoint(globals, importedFunctions, interval),
   };
@@ -737,7 +855,7 @@ export function rewriteInterruptsOwned(
     exportWriter.bytes(exportReader.bytes.subarray(start, exportReader.position));
     const index = exportReader.u32();
     if (kind === 4 && index >= tags) fail("invalid exported tag index");
-    exportWriter.u32(kind === 0 ? shifted(index, importedFunctions) : index);
+    exportWriter.u32(kind === 0 ? shifted(index, context) : index);
   }
   exportReader.done();
   if (sections.has(7)) sections.set(7, exportWriter.finish());
@@ -745,7 +863,7 @@ export function rewriteInterruptsOwned(
   if (start) {
     const reader = new Reader(start);
     const writer = new Writer();
-    writer.u32(shifted(reader.u32(), importedFunctions));
+    writer.u32(shifted(reader.u32(), context));
     reader.done();
     sections.set(8, writer.finish());
   }
@@ -773,7 +891,7 @@ export function rewriteInterruptsOwned(
     const count = elementReader.u32();
     elementWriter.u32(count);
     for (let j = 0; j < count; j++) {
-      if (flags < 4) elementWriter.u32(shifted(elementReader.u32(), importedFunctions));
+      if (flags < 4) elementWriter.u32(shifted(elementReader.u32(), context));
       else instructions(elementReader, elementWriter, context, true);
     }
   }
@@ -784,7 +902,7 @@ export function rewriteInterruptsOwned(
   const codeWriter = new Writer(sections.get(10)?.length);
   const bodies = codeReader.u32();
   if (bodies !== functionCount) fail("function/code count mismatch");
-  codeWriter.u32(bodies);
+  codeWriter.u32(bodies + (supervised ? 2 : 0));
   const entry = policy === "entry" ? hostCheck(importedFunctions) : context.checkpoint;
   for (let i = 0; i < bodies; i++) {
     const body = new Reader(codeReader.take(codeReader.u32()));
@@ -803,7 +921,11 @@ export function rewriteInterruptsOwned(
     codeWriter.bytes(result);
   }
   codeReader.done();
-  if (sections.has(10)) sections.set(10, codeWriter.finish());
+  if (supervised) {
+    appendWaitWrapper(codeWriter, importedFunctions + 1);
+    appendWaitWrapper(codeWriter, importedFunctions + 2);
+  }
+  if (sections.has(10) || supervised) sections.set(10, codeWriter.finish());
 
   const dataReader = get(11);
   const dataWriter = new Writer();

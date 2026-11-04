@@ -67,6 +67,61 @@ export function shareFileResource(
   return shared;
 }
 
+export interface AsyncFileOffsetLease {
+  readonly position: number;
+  readonly append: boolean;
+  commit(nextOffset: number): void;
+  release(): void;
+}
+export type OffsetClaim =
+  | { kind: "acquired"; lease: AsyncFileOffsetLease }
+  | { kind: "busy"; word: Int32Array; observed: number }
+  | { kind: "failed"; errno: number };
+
+/** The operation owner must drain leases before filesystem quiescence can reap this identity. */
+export function claimFileOffset(resource: FileResource): OffsetClaim {
+  const state = offsets.get(resource);
+  if (!state) throw new Error("async file offsets require a shared description");
+  const { cells, identity, section } = state;
+  try {
+    section.enter();
+  } catch (error) {
+    if (error instanceof FilesystemError) return { kind: "failed", errno: error.errno };
+    throw error;
+  }
+  try {
+    const owner = Atomics.compareExchange(cells, 0, 0, identity.owner);
+    if (owner === 0) return { kind: "acquired", lease: offsetLease(resource, state) };
+    if (Atomics.load(new Int32Array(identity.ownerStates), owner) === 2)
+      Atomics.compareExchange(cells, 0, owner, 0);
+    return { kind: "busy", word: cells, observed: owner };
+  } finally {
+    section.exit();
+  }
+}
+
+function offsetLease(
+  resource: FileResource,
+  { cells, identity }: SharedOffset,
+): AsyncFileOffsetLease {
+  let phase: "held" | "committed" | "released" = "held";
+  return {
+    position: resource.offset,
+    append: resource.append,
+    commit(nextOffset) {
+      if (phase !== "held") throw new Error("file offset lease is not uncommitted");
+      resource.offset = nextOffset;
+      phase = "committed";
+    },
+    release() {
+      if (phase === "released") return;
+      phase = "released";
+      Atomics.compareExchange(cells, 0, identity.owner, 0);
+      Atomics.notify(cells, 0);
+    },
+  };
+}
+
 /** Serialize offset selection, I/O and advancement. Positioned I/O need not enter this lock.
  * The section admits before checking revocation, so kill waits for release. A crashed owner's
  * lock is recoverable only after its controller has published the proven-reaped state. */

@@ -1,12 +1,27 @@
 #!/usr/bin/env node
 import { createNodeRelayServer } from "./node.js";
-import { serveConfig } from "./cli-config.js";
+import { serveConfig, tcpStartup } from "./cli-config.js";
 import { mintRelayToken } from "./token.js";
 
 async function main(): Promise<void> {
   const config = await serveConfig(process.argv.slice(2));
-  const relay = createNodeRelayServer(config.options);
+  const relay =
+    config.options.tcp && "webtransport" in config.options.tcp
+      ? (await import("./node-webtransport.js")).createNodeWebTransportRelayServer({
+          ...config.options,
+          tcp: config.options.tcp,
+        })
+      : createNodeRelayServer(config.options);
+  void relay.tcp?.failure?.then((failure) => {
+    if (failure.manualActionRequired) return;
+    void relay
+      .close()
+      .finally(() => process.exit(1))
+      .catch(() => {});
+  });
+  let stopping = false;
   const stop = () => {
+    stopping = true;
     void relay.close().catch(() => {
       process.exitCode = 1;
     });
@@ -14,6 +29,8 @@ async function main(): Promise<void> {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
+    await tcpStartup(relay.tcp);
+    if (stopping) return;
     await new Promise<void>((resolve, reject) => {
       relay.server.once("error", reject);
       relay.server.listen(config.listen.port, config.listen.host, () => {

@@ -1,0 +1,22 @@
+[package]
+name = "waffle-df"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+# Kept outside the family workspace until Waffle owns real filesystem usage queries.
+[workspace]
+resolver = "3"
+
+[dependencies]
+uu_df = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[package.metadata.cargo-machete]
+ignored = ["uu_df", "uucore"]
+
+[[bin]]
+name = "df"
+path = "src/main.rs"

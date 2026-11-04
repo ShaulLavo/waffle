@@ -11,7 +11,13 @@ import {
 } from "../src/tcp-protocol.js";
 
 test("incremental length, UTF-8 header and first payload across every split", () => {
-  const request = { v: 1, token: "test-token", host: "bücher.example", port: 80 } as const;
+  const request = {
+    v: 1,
+    token: "test-token",
+    host: "bücher.example",
+    port: 80,
+    window: 262144,
+  } as const;
   const header = encodeOpenHeader(request);
   const bytes = new Uint8Array(header.length + 3);
   bytes.set(header);
@@ -38,18 +44,18 @@ test("rejects malformed lengths before allocating, malformed UTF-8/JSON and repl
   expect(() => parseOpen("x".repeat(8193))).toThrow();
 });
 test("strict phase, credit accounting, directional FIN and one terminal transition", () => {
-  const state = new TcpState(10);
+  const state = new TcpState(16384);
   expect(() => state.receive(parseFrame(frameData(new Uint8Array([1]))))).toThrow();
-  state.open();
-  state.send(10);
+  state.open(16384);
+  state.send(16384);
   expect(state.sendCredit).toBe(0);
   expect(() => state.send(1)).toThrow();
-  expect(() => state.receive({ kind: "credit", bytes: 11 })).toThrow();
-  state.receive(parseFrame(frameCredit(10)));
-  expect(state.sendCredit).toBe(10);
+  expect(() => state.receive({ kind: "credit", bytes: 16385 })).toThrow();
+  state.receive(parseFrame(frameCredit(16384)));
+  expect(state.sendCredit).toBe(16384);
   expect(() => state.receive(parseFrame(frameCredit(1)))).toThrow();
   expect(() => state.receive(parseFrame(frameCredit(0)))).toThrow();
-  state.receive({ kind: "data", bytes: new Uint8Array(10) });
+  state.receive({ kind: "data", bytes: new Uint8Array(16384) });
   expect(state.receiveCredit).toBe(0);
   expect(() => state.receive({ kind: "data", bytes: new Uint8Array(1) })).toThrow();
   state.receive({ kind: "fin" });
@@ -58,11 +64,12 @@ test("strict phase, credit accounting, directional FIN and one terminal transiti
   expect(() => state.receive({ kind: "fin" })).toThrow();
   expect(() => state.receive({ kind: "data", bytes: new Uint8Array(1) })).toThrow();
   expect(() => state.fin()).toThrow();
-  state.consumed(10);
+  state.consumed(16384);
+  state.creditHanded(16384);
   expect(state.drained).toBe(true);
   expect(state.close()).toBe(true);
   expect(state.close()).toBe(false);
-  expect(() => state.open()).toThrow();
+  expect(() => state.open(16384)).toThrow();
 });
 test("rejects invalid frames and oversized data", () => {
   for (const bytes of [[], [3], [0], [1, 2], [2, 1], Array.from({ length: 65538 }, () => 0)])

@@ -46,14 +46,34 @@ export interface TcpStream {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;
   readonly remote: TcpRemote;
-  readonly counters: { readonly receiveQueuedBytes: number; readonly sendOutstandingBytes: number };
+  readonly counters: TcpFlowCounters;
+}
+export interface TcpFlowCounters {
+  readonly receiveQueuedBytes: number;
+  readonly sendOutstandingBytes: number;
+  readonly payloadHandedToCarrier: number;
+  readonly payloadReceived: number;
+  readonly consumerReleased: number;
+  readonly creditHandedToCarrier: number;
+  readonly creditApplied: number;
+  readonly creditPending: number;
+  readonly receiveCredit: number;
+  readonly sendCredit: number;
+  readonly dataMetadataUpperBound: number;
+  readonly creditMetadataUpperBound: number;
+  readonly creditPendingSlotBytes: number;
+  readonly encodedSlotBytes: number;
+  readonly writeInFlight: TcpFrame["kind"] | null;
+  readonly discardedBytes: number;
+  readonly failedReceiveBytes: number;
 }
 export interface OpenRequest extends TcpTarget {
   readonly v: 1;
   readonly token: string;
+  readonly window: number;
 }
 export type OpenReply =
-  | { readonly v: 1; readonly ok: true; readonly remote: TcpRemote }
+  | { readonly v: 1; readonly ok: true; readonly remote: TcpRemote; readonly window: number }
   | { readonly v: 1; readonly ok: false; readonly code: TcpErrorCode };
 
 export function record(value: unknown): value is Record<string, unknown> {
@@ -79,7 +99,13 @@ export function parseOpen(text: string, maximum = MAX_OPEN_BYTES): OpenRequest {
     typeof value.port !== "number"
   )
     throw new TcpFailure("protocol");
-  return { v: 1, token: value.token, host: value.host, port: value.port };
+  return {
+    v: 1,
+    token: value.token,
+    host: value.host,
+    port: value.port,
+    window: checkedWindow(value.window),
+  };
 }
 const codes = new Set<TcpErrorCode>([
   "relay-auth",
@@ -112,6 +138,7 @@ export function parseReply(text: string): OpenReply {
     v: 1,
     ok: true,
     remote: { address: remote.address, port: remote.port, family: remote.family },
+    window: checkedWindow(value.window),
   };
 }
 export function connectError(code: TcpErrorCode): RelayConnectError {
@@ -199,19 +226,34 @@ export function parseFrame(frame: Uint8Array): TcpFrame {
   throw new TcpFailure("protocol");
 }
 
-/** One source of phase and credit truth for either side and future carriers. */
+export function checkedWindow(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 16384 ||
+    value > WINDOW_BYTES
+  )
+    throw new TcpFailure("protocol");
+  return value;
+}
+
 export class TcpState {
   phase: "opening" | "open" | "closed" = "opening";
   localFin = false;
   remoteFin = false;
-  sendCredit: number;
-  receiveCredit: number;
-  constructor(readonly windowBytes = WINDOW_BYTES) {
-    this.sendCredit = windowBytes;
-    this.receiveCredit = windowBytes;
+  sendWindow = 0;
+  handed = 0;
+  received = 0;
+  consumedBytes = 0;
+  creditHandedBytes = 0;
+  creditApplied = 0;
+  reserved = 0;
+  constructor(readonly receiveWindow = WINDOW_BYTES) {
+    checkedWindow(receiveWindow);
   }
-  open(): void {
+  open(sendWindow: number): void {
     if (this.phase !== "opening") throw new TcpFailure("protocol");
+    this.sendWindow = checkedWindow(sendWindow);
     this.phase = "open";
   }
   close(): boolean {
@@ -219,12 +261,48 @@ export class TcpState {
     this.phase = "closed";
     return true;
   }
+  get sendCredit(): number {
+    return this.sendWindow - (this.handed - this.creditApplied);
+  }
+  get receiveCredit(): number {
+    return this.receiveWindow - (this.received - this.creditHandedBytes) - this.reserved;
+  }
+  get queued(): number {
+    return this.received - this.consumedBytes;
+  }
+  get pendingCredit(): number {
+    return this.consumedBytes - this.creditHandedBytes;
+  }
+  get dueCredit(): number {
+    const pending = this.pendingCredit;
+    return pending >= Math.ceil(this.receiveWindow / 4) || (this.remoteFin && !this.queued)
+      ? pending
+      : 0;
+  }
+  reserveData(bytes: number): void {
+    if (
+      this.phase !== "open" ||
+      this.remoteFin ||
+      !Number.isInteger(bytes) ||
+      bytes < 1 ||
+      bytes > MAX_DATA_BYTES ||
+      bytes > this.receiveCredit
+    )
+      throw new TcpFailure("protocol");
+    this.reserved += bytes;
+  }
+  dataReceived(bytes: number): void {
+    if (this.phase !== "open" || !Number.isInteger(bytes) || bytes < 1 || bytes > this.reserved)
+      throw new TcpFailure("protocol");
+    this.reserved -= bytes;
+    this.received = addTotal(this.received, bytes);
+  }
   receive(frame: TcpFrame): void {
     if (this.phase !== "open") throw new TcpFailure("protocol");
     if (frame.kind === "credit") {
-      if (!frame.bytes || frame.bytes > this.windowBytes - this.sendCredit)
+      if (!frame.bytes || frame.bytes > this.handed - this.creditApplied)
         throw new TcpFailure("protocol");
-      this.sendCredit += frame.bytes;
+      this.creditApplied = addTotal(this.creditApplied, frame.bytes);
       return;
     }
     if (this.remoteFin) throw new TcpFailure("protocol");
@@ -232,18 +310,23 @@ export class TcpState {
       this.remoteFin = true;
       return;
     }
-    if (frame.bytes.length > this.receiveCredit) throw new TcpFailure("protocol");
-    this.receiveCredit -= frame.bytes.length;
+    this.reserveData(frame.bytes.length);
+    this.dataReceived(frame.bytes.length);
   }
   send(bytes: number): void {
     if (this.phase !== "open" || this.localFin || bytes <= 0 || bytes > this.sendCredit)
       throw new TcpFailure("protocol");
-    this.sendCredit -= bytes;
+    this.handed = addTotal(this.handed, bytes);
   }
   consumed(bytes: number): void {
-    if (this.phase !== "open" || bytes <= 0 || bytes > this.windowBytes - this.receiveCredit)
+    if (this.phase !== "open" || bytes <= 0 || bytes > this.queued)
       throw new TcpFailure("protocol");
-    this.receiveCredit += bytes;
+    this.consumedBytes = addTotal(this.consumedBytes, bytes);
+  }
+  creditHanded(bytes: number): void {
+    if (this.phase !== "open" || bytes <= 0 || bytes > this.pendingCredit)
+      throw new TcpFailure("protocol");
+    this.creditHandedBytes = addTotal(this.creditHandedBytes, bytes);
   }
   fin(): void {
     if (this.phase !== "open" || this.localFin) throw new TcpFailure("protocol");
@@ -253,8 +336,15 @@ export class TcpState {
     return (
       this.localFin &&
       this.remoteFin &&
-      this.sendCredit === this.windowBytes &&
-      this.receiveCredit === this.windowBytes
+      this.handed === this.creditApplied &&
+      this.received === this.consumedBytes &&
+      !this.pendingCredit &&
+      !this.reserved
     );
   }
+}
+function addTotal(total: number, bytes: number): number {
+  const next = total + bytes;
+  if (!Number.isSafeInteger(next)) throw new TcpFailure("limit");
+  return next;
 }
