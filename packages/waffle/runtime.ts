@@ -441,12 +441,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         const sourceEnd = sourceTime();
         if (!(bytes instanceof Uint8Array))
           throw new TypeError("Program source loader must return Wasm bytes");
-        // Own source bytes before an asynchronous import can yield to a mutating caller.
-        const snapshot = new Uint8Array(bytes);
-        const { compileInterruptible, programStage } = await import("./interrupt/loader.js");
+        // Function loaders need a private snapshot before an asynchronous import can yield;
+        // direct sources were copied at registration and are already fixed and unshared.
+        const snapshot = typeof ownedSource === "function" ? new Uint8Array(bytes) : ownedSource;
+        const { compileInterruptibleOwned, programStage } =
+          await import("./interrupt/loader-internal.js");
         if (sourceStart !== undefined && sourceEnd !== undefined)
           programStage("source", sourceStart, { bytes: snapshot.byteLength }, sourceEnd);
-        const compiled = await compileInterruptible(snapshot);
+        const compiled = await compileInterruptibleOwned(snapshot);
         assertLive();
         onLoad?.({ kind: "loaded" });
         return compiled;

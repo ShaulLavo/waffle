@@ -627,6 +627,78 @@ test("source admission snapshots borrowed bytes before the lazy loader starts", 
   expect((await registry!.resolve("/snapshot")).module).toBeInstanceOf(WebAssembly.Module);
 });
 
+test("runtime-owned source admission avoids a second byte snapshot", async () => {
+  const publicLoader = await import("../interrupt/loader.js");
+  expect("compileInterruptibleOwned" in publicLoader).toBe(false);
+  const source = bytes.slice();
+  const loaderSource = new Uint8Array(Array.from(bytes).concat([0, 2, 1, 102]));
+  const Bytes = Uint8Array;
+  let copies = 0;
+  let directOwned: Uint8Array | undefined;
+  let directSourceCopies = 0;
+  let loaderSourceCopies = 0;
+  let releaseLoader!: () => void;
+  let enterLoader!: () => void;
+  const loaderEntered = new Promise<void>((resolve) => {
+    enterLoader = resolve;
+  });
+  const loaderReady = new Promise<Uint8Array>((resolve) => {
+    releaseLoader = () => {
+      resolve(loaderSource);
+      queueMicrotask(() => loaderSource.fill(255));
+    };
+  });
+  const previous = globalThis.Uint8Array;
+  globalThis.Uint8Array = new Proxy(Bytes, {
+    construct(target, args) {
+      const result = Reflect.construct(target, args, target);
+      if (args[0] instanceof Bytes) copies++;
+      if (args[0] === source) {
+        directSourceCopies++;
+        directOwned = result;
+      }
+      if (args[0] === directOwned) directSourceCopies++;
+      if (args[0] === loaderSource) loaderSourceCopies++;
+      return result;
+    },
+  });
+  try {
+    let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+    const factory = processHost();
+    const runtime = create({
+      processHost: (options) => {
+        registry = options.registry;
+        return factory(options);
+      },
+    });
+    runtime.registerAdapter("test", () => ({ terminate() {} }));
+    const removeSnapshot = runtime.registerProgram("/snapshot", { adapter: "test", source });
+    const registrationCopies = copies;
+    await runtime.processes();
+    await registry!.resolve("/snapshot");
+    const directCopies = directSourceCopies;
+    removeSnapshot();
+    runtime.registerProgram("/snapshot", {
+      adapter: "test",
+      source: () => {
+        enterLoader();
+        return loaderReady;
+      },
+    });
+    const first = registry!.resolve("/snapshot");
+    const second = registry!.resolve("/snapshot");
+    await loaderEntered;
+    releaseLoader();
+    const [firstResolved, secondResolved] = await Promise.all([first, second]);
+    expect(firstResolved.module).toBe(secondResolved.module);
+    expect(registrationCopies).toBe(1);
+    expect(directCopies).toBe(1);
+    expect(loaderSourceCopies).toBe(1);
+  } finally {
+    globalThis.Uint8Array = previous;
+  }
+});
+
 test("disposal blocks previously borrowed capabilities and never activates unused processes", async () => {
   const runtime = create({
     processHost: () => {

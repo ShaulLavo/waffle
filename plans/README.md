@@ -13,3 +13,5 @@ Approved, scheduled later (owner, 2026-11-02; don't start until the current fini
 WASI guest open a window and draw with WebGPU: [windows, input and a winit backend](guest-windows.md),
 the [WebGPU bridge](gpu-bridge.md) and a [wgpu backend](wgpu-backend.md). It also records where
 the guest Rust crates live (outside this repository) and what Horizon, the first consumer, needs.
+
+Approved, preserved for later (owner, 2026-11-04): [Vite 8 in the playground](vite8-playground.md).
