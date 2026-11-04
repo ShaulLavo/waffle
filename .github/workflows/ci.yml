@@ -1055,7 +1055,8 @@ jobs:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm, libc]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
-    runs-on: ubuntu-latest
+    # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
+    runs-on: ubuntu-24.04
     # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
     strategy:
       fail-fast: false
@@ -1087,10 +1088,18 @@ jobs:
       - name: Install the declared optional native relay peer for real WebTransport tests
         if: matrix.group == 'parallel'
         run: bun run --cwd packages/waffle-relay/node_modules/@fails-components/webtransport-transport-http3-quiche install
+      # Browser directories are named by revision only, so the key carries the OS release too.
+      - name: Resolve the Playwright browser cache key
+        id: playwright-cache
+        run: |
+          browsers=$(bun --no-install -e 'const { createRequire } = require("node:module"); const { dirname, join } = require("node:path"); const local = createRequire(require.resolve("playwright/package.json")); console.log(join(dirname(local.resolve("playwright-core/package.json")), "browsers.json"))')
+          test -s "$browsers"
+          . /etc/os-release
+          echo "key=${RUNNER_OS:?}-${RUNNER_ARCH:?}-${ID:?}${VERSION_ID:?}-playwright-v1-$(sha256sum "$browsers" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('node_modules/playwright-core/browsers.json') }}
+          key: ${{ steps.playwright-cache.outputs.key }}
       - name: Use Ubuntu HTTPS archives for browser dependencies
         run: |
           sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
