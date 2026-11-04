@@ -30,7 +30,7 @@ for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
   ["normal", "ios"],
-])
+] as const)
   test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match ledger-free main, ${mode}, ${agent} user agent`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "waffle-parity-reference-"));
     try {
