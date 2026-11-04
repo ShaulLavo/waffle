@@ -121,7 +121,10 @@ export class MemoryBackend implements FilesystemBackend {
   }
   identity(handle: FileHandle, revoked?: () => boolean): FileIdentity {
     const node = this.fs.nodeForHandle(handle);
-    return this.shared.identity(handle, revoked) ?? this.ensureIdentity(node);
+    const shared = this.mayHaveSharedMetadata(handle, node)
+      ? this.shared.identity(handle, revoked)
+      : undefined;
+    return shared ?? this.ensureIdentity(node);
   }
   ensureIdentity(node: Node): FileIdentity {
     return (node.identity ??= this.shared.identities.create());
@@ -147,6 +150,7 @@ export class MemoryBackend implements FilesystemBackend {
       this.shared = startupRoot.shared;
       this.startupRoot = startupRoot.startupRoot;
       this.sharedPhase = startupRoot.sharedPhase;
+      this.directoryTimes = startupRoot.directoryTimes;
       return;
     }
     this.watchOwner = {};
@@ -179,6 +183,10 @@ export class MemoryBackend implements FilesystemBackend {
   private readonly startupRoot?: SharedFilesystemState;
   private sharedPhase: "standalone" | "imported" | "attached" = "standalone";
   private directoryTimes = new Map<FileHandle, number>();
+  private mayHaveSharedMetadata(handle: FileHandle, node: Node): boolean {
+    // Non-file metadata enters the shared table only through sync, which records it here.
+    return node.kind === "file" || this.directoryTimes.has(handle);
+  }
   attachShared(
     buffer: SharedArrayBuffer,
     maxBytes?: number,
@@ -835,7 +843,7 @@ export class MemoryBackend implements FilesystemBackend {
     for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
     for (const parent of action.plan.parents) {
       const handle = this.fs.handleForNode(parent);
-      if (this.shared.stat(handle)) this.sync(handle);
+      if (this.directoryTimes.has(handle) && this.shared.stat(handle)) this.sync(handle);
     }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
@@ -976,7 +984,7 @@ export class MemoryBackend implements FilesystemBackend {
       for (const { node, handle, identity } of plan.identities) {
         node.identity = identity;
         this.identityChanged(node);
-        this.shared.updateIdentity(handle, identity);
+        if (this.mayHaveSharedMetadata(handle, node)) this.shared.updateIdentity(handle, identity);
       }
       if (this.watchOwner.observer) this.watchOwner.observer.committed(plan);
       else this.shared.watch.effects(plan.changes);

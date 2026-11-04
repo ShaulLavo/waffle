@@ -234,3 +234,38 @@ test("reusing collision tombstones preserves live slots and reincarnated handles
   state.unlink(stride * 2);
   expect(state.registeredHandles()).toEqual([]);
 });
+
+test("host namespace edits do not probe shared metadata for an unregistered root", () => {
+  const backend = new MemoryBackend();
+  const bytes = new Uint8Array();
+  for (let index = 0; index < 16; index++) backend.execute("writeFile", [`/node-${index}`], bytes);
+  const root = backend.fs.handleForNode(backend.fs.root);
+  expect(backend.shared.stat(root)).toBeUndefined();
+  const identity = spyOn(backend.shared, "identity");
+  const stat = spyOn(backend.shared, "stat");
+  const update = spyOn(backend.shared, "updateIdentity");
+  try {
+    expect(backend.execute("remove", ["/node-0"], bytes)).toBe(true);
+    expect(identity.mock.calls.some(([handle]) => handle === root)).toBe(false);
+    expect(stat.mock.calls.some(([handle]) => handle === root)).toBe(false);
+    expect(update.mock.calls.some(([handle]) => handle === root)).toBe(false);
+  } finally {
+    identity.mockRestore();
+    stat.mockRestore();
+    update.mockRestore();
+  }
+});
+
+test("a borrowing backend keeps registered parent identities and timestamps current", () => {
+  const owner = new MemoryBackend();
+  const bytes = new Uint8Array();
+  const root = owner.execute("preopen", ["/"], bytes);
+  if (typeof root !== "number") throw new Error("preopen did not return a handle");
+  const alias = new MemoryBackend(undefined, undefined, owner);
+  alias.execute("setMtime", [root, 1], bytes);
+  const previous = alias.shared.identity(root)!;
+  alias.execute("writeFile", ["/child"], bytes);
+  expect(owner.shared.stat(root)!.mtime).toBeGreaterThan(1);
+  expect(owner.shared.identity(root)!.version).toBeGreaterThan(previous.version);
+  expect(owner.identity(root)).toEqual(owner.shared.identity(root)!);
+});
