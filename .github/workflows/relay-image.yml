@@ -179,7 +179,7 @@ jobs:
           curl --fail --silent --show-error --location --header "Authorization: Bearer $token" \
             "https://ghcr.io/v2/shaullavo/waffle-relay/blobs/$config" --output image/published-config.json
           REGISTRY_PULL_TOKEN="$token" node packages/waffle-relay/scripts/relay-image-custody.ts published image "$reference"
-          printf 'Published and anonymously pulled %s.\n\nVariant %s, exact Origin, deny-all TCP checkpoint.\n' "$reference" "$IMAGE_VARIANT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Published and anonymously pulled %s.\n\nVariant %s, exact Origin, embedded relay.json TCP allowlist.\n' "$reference" "$IMAGE_VARIANT" >> "$GITHUB_STEP_SUMMARY"
           cat image/published-manifest.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
