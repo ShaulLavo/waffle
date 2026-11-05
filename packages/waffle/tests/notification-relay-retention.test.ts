@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 const collectingRelay = new URL("./fixtures/notification-collecting-worker.ts", import.meta.url)
   .href;
+const relay = new URL("../browser/notification-worker.ts", import.meta.url).href;
 
 /** Arms the real relay on `words` and resolves once it replies. */
 async function armRelay(url: string, words: readonly Int32Array[]) {
@@ -59,3 +60,46 @@ test("the relay keeps forwarding every armed word while full collections run", a
   }
   expect(lost).toEqual([]);
 }, 30000);
+
+test("an idle relay with retained waits publishes nothing until a word changes", async () => {
+  const words = [0, 1, 2].map(() => new Int32Array(new SharedArrayBuffer(4)));
+  const { worker, channel, state } = await armRelay(relay, words);
+  try {
+    const before = Atomics.load(state, 0);
+    await pause(200);
+    expect(Atomics.load(state, 0)).toBe(before);
+    expect(await forwarded(state, words[1]!)).toBe(true);
+    const after = Atomics.load(state, 0);
+    await pause(200);
+    expect(Atomics.load(state, 0)).toBe(after);
+  } finally {
+    channel.port2.close();
+    worker.terminate();
+  }
+});
+
+test("a fenced relay stops publishing and disposes while its waits are pending", async () => {
+  const words = [0, 1, 2].map(() => new Int32Array(new SharedArrayBuffer(4)));
+  const { worker, channel, state } = await armRelay(relay, words);
+  const disposed = new Promise<unknown>((resolve) => {
+    worker.onmessage = ({ data }) => resolve(data);
+  });
+  try {
+    // The page's dispose order (notification-relay.ts): fence, bump, then tell the relay.
+    Atomics.store(state, 1, 1);
+    Atomics.add(state, 0, 1);
+    Atomics.notify(state, 0);
+    const fenced = Atomics.load(state, 0);
+    for (const word of words) {
+      Atomics.add(word, 0, 1);
+      Atomics.notify(word, 0);
+    }
+    await pause(100);
+    expect(Atomics.load(state, 0)).toBe(fenced);
+    channel.port2.postMessage({ type: "dispose" });
+    expect(await disposed).toBe("disposed");
+  } finally {
+    channel.port2.close();
+    worker.terminate();
+  }
+});

@@ -9,8 +9,9 @@ import type {
 // iOS Safari 26.5 was seen to stop resolving every pending wait of an idle relay, so a guest
 // asleep in its poll woke only at its own timeout. Keep each armed word's observer and its
 // pending wait reachable from this module, not only from the engine's waiter list. One slot per
-// armed word, reused for every wait: no allocation beyond the waits themselves.
-const observers: Promise<void>[] = [];
+// armed word, reused for every wait: no allocation beyond the waits themselves. A slot empties
+// when its wait settles or its observer ends, and every slot empties on dispose.
+const observers: (Promise<void> | undefined)[] = [];
 const pendingWaits: (Promise<string> | undefined)[] = [];
 
 function publish(state: Int32Array): void {
@@ -25,8 +26,11 @@ async function observe(word: NotificationWord, state: Int32Array, slot: number):
     const waiting = atomicsWaitAsync(word.cells, word.index, seen);
     if (waiting.async) {
       pendingWaits[slot] = waiting.value;
-      await waiting.value;
-      pendingWaits[slot] = undefined;
+      try {
+        await waiting.value;
+      } finally {
+        pendingWaits[slot] = undefined;
+      }
     }
     seen = Atomics.load(word.cells, word.index);
     publish(state);
@@ -44,6 +48,8 @@ async function observeSafely(
   } catch (error) {
     reply({ type: "error", message: String(error) });
     globalThis.postMessage("failed");
+  } finally {
+    observers[slot] = undefined;
   }
 }
 
@@ -64,6 +70,8 @@ function connect({ port, state }: NotificationConnection): void {
   const reply = (value: NotificationRelayReply) => port.postMessage(value);
   port.onmessage = ({ data }: MessageEvent<NotificationRelayRequest>) => {
     if (data.type === "dispose") {
+      observers.length = 0;
+      pendingWaits.length = 0;
       port.close();
       globalThis.postMessage("disposed");
       return;
