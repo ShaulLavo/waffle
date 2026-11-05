@@ -6,17 +6,28 @@ import type {
   NotificationWord,
 } from "./notification-relay.js";
 
+// iOS Safari 26.5 was seen to stop resolving every pending wait of an idle relay, so a guest
+// asleep in its poll woke only at its own timeout. Keep each armed word's observer and its
+// pending wait reachable from this module, not only from the engine's waiter list. One slot per
+// armed word, reused for every wait: no allocation beyond the waits themselves.
+const observers: Promise<void>[] = [];
+const pendingWaits: (Promise<string> | undefined)[] = [];
+
 function publish(state: Int32Array): void {
   if (Atomics.load(state, 1)) return;
   Atomics.add(state, 0, 1);
   Atomics.notify(state, 0);
 }
 
-async function observe(word: NotificationWord, state: Int32Array): Promise<void> {
+async function observe(word: NotificationWord, state: Int32Array, slot: number): Promise<void> {
   let seen = Atomics.load(word.cells, word.index);
   while (!Atomics.load(state, 1)) {
     const waiting = atomicsWaitAsync(word.cells, word.index, seen);
-    if (waiting.async) await waiting.value;
+    if (waiting.async) {
+      pendingWaits[slot] = waiting.value;
+      await waiting.value;
+      pendingWaits[slot] = undefined;
+    }
     seen = Atomics.load(word.cells, word.index);
     publish(state);
   }
@@ -26,9 +37,10 @@ async function observeSafely(
   word: NotificationWord,
   state: Int32Array,
   reply: (value: NotificationRelayReply) => void,
+  slot: number,
 ): Promise<void> {
   try {
-    await observe(word, state);
+    await observe(word, state, slot);
   } catch (error) {
     reply({ type: "error", message: String(error) });
     globalThis.postMessage("failed");
@@ -42,7 +54,8 @@ function arm(
 ): void {
   if (typeof atomicsWaitAsync !== "function")
     throw new Error("notification relay requires Atomics.waitAsync");
-  for (const word of words) void observeSafely(word, state, reply);
+  for (let slot = 0; slot < words.length; slot++)
+    observers[slot] = observeSafely(words[slot]!, state, reply, slot);
   reply({ type: "armed" });
 }
 
