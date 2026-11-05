@@ -27,7 +27,7 @@ const config = await serveConfig(["serve", "--config", "/app/relay.json"], {
   WAFFLE_RELAY_TOKEN_SECRET: secret,
 });
 const origin = "https://waffle-network.sprockt.dev";
-const target = { host: "waffle-relay-public.sprockt.dev", port: 80 };
+const target = { host: "example.com", port: 80 };
 assert.deepEqual(config.options.allowedOrigins, [origin]);
 assert.deepEqual(config.options.tcp.destinations, [target]);
 assert.equal(config.options.tcp.issuer, undefined);

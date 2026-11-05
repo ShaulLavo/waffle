@@ -215,7 +215,7 @@ Do not substitute an earlier local image digest for this workflow's resulting di
 
 The embedded configuration is only a narrow checkpoint. It accepts the exact demo Origin
 `https://waffle-network.sprockt.dev`, allows exactly one TCP destination,
-`waffle-relay-public.sprockt.dev` port 80, has no HTTP destinations, and disables the network
+`example.com` port 80, has no HTTP destinations, and disables the network
 issuer and native WebTransport. Every connection still needs a valid, unexpired token. Inject
 `WAFFLE_RELAY_TOKEN_SECRET` through the deployment's protected secret binding. A healthy
 deployment is not proof of outside TCP, a complete demo, a Bun query, or physical-device
