@@ -213,8 +213,10 @@ matches the qualified image. A private package or a denied push fails publicatio
 The receipt artifact records the actual registry manifest, source commit and image config.
 Do not substitute an earlier local image digest for this workflow's resulting digest.
 
-The embedded configuration is only a safe checkpoint. It accepts the exact demo Origin
-`https://waffle-network.sprockt.dev`, has no TCP or HTTP destinations, and disables the network
-issuer and native WebTransport. Inject `WAFFLE_RELAY_TOKEN_SECRET` through the deployment's
-protected secret binding. A healthy deny-all deployment is not proof of outside TCP,
-a complete demo, a Bun query, or physical-device acceptance.
+The embedded configuration is only a narrow checkpoint. It accepts the exact demo Origin
+`https://waffle-network.sprockt.dev`, allows exactly one TCP destination,
+`waffle-relay-public.sprockt.dev` port 80, has no HTTP destinations, and disables the network
+issuer and native WebTransport. Every connection still needs a valid, unexpired token. Inject
+`WAFFLE_RELAY_TOKEN_SECRET` through the deployment's protected secret binding. A healthy
+deployment is not proof of outside TCP, a complete demo, a Bun query, or physical-device
+acceptance.

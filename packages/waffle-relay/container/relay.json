@@ -5,7 +5,7 @@
   },
   "allowedOrigins": ["https://waffle-network.sprockt.dev"],
   "tcp": {
-    "destinations": [],
+    "destinations": [{ "host": "waffle-relay-public.sprockt.dev", "port": 80 }],
     "limits": {
       "maxConnections": 16,
       "maxConnectionsPerSubject": 4,

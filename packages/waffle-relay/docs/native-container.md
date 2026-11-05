@@ -1,6 +1,6 @@
 # Prepare a native relay container
 
-This is a separate Linux x64 preparation path. The existing WebSocket-only image and its release pins remain the default. Its policy remains deny-all for HTTP and TCP, with no network token issuer. The native context pins a separate Node 26.12.1 Trixie slim base. The existing Bookworm WS base cannot load this exact prebuild because it lacks GLIBC_2.38.
+This is a separate Linux x64 preparation path. The existing WebSocket-only image and its release pins remain the default. The native image's policy remains deny-all for HTTP and TCP, with no network token issuer. The native context pins a separate Node 26.12.1 Trixie slim base. The existing Bookworm WS base cannot load this exact prebuild because it lacks GLIBC_2.38.
 
 ## Supply exact qualified inputs
 

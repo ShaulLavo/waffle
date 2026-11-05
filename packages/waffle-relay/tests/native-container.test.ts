@@ -20,11 +20,15 @@ const native = resolve(import.meta.dirname, "../container/native");
 const read = (path: string) => readFile(join(native, path), "utf8");
 
 describe("native container preparation", () => {
-  test("adds only a separate listener while keeping the WS deny-all policy", async () => {
+  test("adds only a separate listener and keeps its own deny-all TCP policy", async () => {
     const ordinary = JSON.parse(await readFile(join(native, "../relay.json"), "utf8"));
     const selected = JSON.parse(await read("relay.json"));
     const { webtransport, ...tcp } = selected.tcp;
-    expect({ ...selected, tcp }).toEqual(ordinary);
+    // The WS image selects one exact destination; the native image does not inherit it.
+    expect(tcp.destinations).toEqual([]);
+    expect({ ...selected, tcp: { ...tcp, destinations: ordinary.tcp.destinations } }).toEqual(
+      ordinary,
+    );
     expect(webtransport).toEqual({
       bind: { host: "0.0.0.0", port: 4433 },
       advertisedUrl: "https://waffle-relay-public.sprockt.dev:4433/v1/tcp/wt",
