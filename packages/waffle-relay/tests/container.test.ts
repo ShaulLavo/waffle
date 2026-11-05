@@ -8,7 +8,7 @@ import { resolveDestination, tcpPolicy } from "../src/tcp-policy.js";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const configPath = fileURLToPath(new URL("../container/relay.json", import.meta.url));
-const target = { host: "waffle-relay-public.sprockt.dev", port: 80 };
+const target = { host: "example.com", port: 80 };
 const workflow = read("../../../.github/workflows/relay-image.yml");
 const dockerfile = read("../container/Dockerfile");
 
