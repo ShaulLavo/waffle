@@ -6,7 +6,7 @@ import type {
   NotificationWord,
 } from "./notification-relay.js";
 
-// iOS Safari 26.5 was seen to stop resolving every pending wait of an idle relay, so a guest
+// iOS Safari 26.5 was seen to stop forwarding notifications from an idle relay, so a guest
 // asleep in its poll woke only at its own timeout. Keep each armed word's observer and its
 // pending wait reachable from this module, not only from the engine's waiter list. One slot per
 // armed word, reused for every wait: no allocation beyond the waits themselves. A slot empties
@@ -20,17 +20,24 @@ function publish(state: Int32Array): void {
   Atomics.notify(state, 0);
 }
 
+function clearRoot<T>(roots: (T | undefined)[], slot: number): void {
+  if (slot < roots.length) roots[slot] = undefined;
+}
+
 async function observe(word: NotificationWord, state: Int32Array, slot: number): Promise<void> {
   let seen = Atomics.load(word.cells, word.index);
   while (!Atomics.load(state, 1)) {
     const waiting = atomicsWaitAsync(word.cells, word.index, seen);
-    if (waiting.async) {
-      pendingWaits[slot] = waiting.value;
-      try {
-        await waiting.value;
-      } finally {
-        pendingWaits[slot] = undefined;
-      }
+    if (!waiting.async) {
+      seen = Atomics.load(word.cells, word.index);
+      publish(state);
+      continue;
+    }
+    pendingWaits[slot] = waiting.value;
+    try {
+      await waiting.value;
+    } finally {
+      clearRoot(pendingWaits, slot);
     }
     seen = Atomics.load(word.cells, word.index);
     publish(state);
@@ -49,7 +56,7 @@ async function observeSafely(
     reply({ type: "error", message: String(error) });
     globalThis.postMessage("failed");
   } finally {
-    observers[slot] = undefined;
+    clearRoot(observers, slot);
   }
 }
 

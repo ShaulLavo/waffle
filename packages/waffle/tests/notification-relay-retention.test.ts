@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { controlledNotificationRelay } from "./fixtures/notification-controlled-relay.js";
 
 const collectingRelay = new URL("./fixtures/notification-collecting-worker.ts", import.meta.url)
   .href;
@@ -103,3 +104,30 @@ test("a fenced relay stops publishing and disposes while its waits are pending",
     worker.terminate();
   }
 });
+
+test.each(["resolve", "reject"])(
+  "late wait %s cannot restore disposed relay roots",
+  async (outcome) => {
+    const relay = await controlledNotificationRelay();
+    try {
+      expect(relay.waits).toHaveLength(3);
+      expect(
+        relay.inspect("pendingWaits.every((wait, slot) => wait === waits[slot].promise)"),
+      ).toBe(true);
+      expect(relay.inspect("observers.filter(Boolean).length")).toBe(3);
+      relay.dispose();
+      const fenced = Atomics.load(relay.state, 0);
+      expect(relay.inspect("[observers.length, pendingWaits.length].join(',')")).toBe("0,0");
+      expect(relay.notices).toEqual(["disposed"]);
+      if (outcome === "reject") relay.waits[0]!.reject(new Error("late wait rejection"));
+      else relay.waits[0]!.resolve("ok");
+      for (const wait of relay.waits.slice(1)) wait.resolve("ok");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(relay.inspect("[observers.length, pendingWaits.length].join(',')")).toBe("0,0");
+      expect(Atomics.load(relay.state, 0)).toBe(fenced);
+      expect(relay.waits).toHaveLength(3);
+    } finally {
+      await relay.close();
+    }
+  },
+);
