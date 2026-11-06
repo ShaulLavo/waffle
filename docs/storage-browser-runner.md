@@ -82,3 +82,31 @@ bound without fallback. Omit it to retain storage's environment behavior. A cons
 and `run` budgets of 120,000 milliseconds. The original absolute deadline still wins, including
 report draining and finish retirement. Confirmed teardown runs after the execution clock stops.
 These test-only exports do not load through the production runtime.
+
+## Drive a case from the host
+
+The Bun entry `waffle/testing/page-runner` exports `SuiteCase`, `HostCase`, and
+`HostVerdict`. Add an optional `drive(host)` callback to a case descriptor. It runs
+original setup and assertions after receiver admission, under `budgets.case`.
+Return compact serializable evidence. Use `host.script(source)` for synchronous
+JSON observations or void mutations and `host.task(source)` for asynchronous void
+work. `host.sleep(ms)`, `host.signal`, and `host.remainingMs()` share the original
+setup/body deadline. Task completion uses ordered reports, not a long WebDriver
+request. Scripts return complete values up to the 4 MiB WebDriver response limit.
+
+The page entry exports `HostPageRun`. Supply
+`run: { kind: "host", teardown: async (request, verdict) => { /* original hook */ } }`.
+The page runs that hook once after the bound verdict, including setup failure.
+`budgets.teardown` is a separate hook window. `budgets.caseDocument` bounds the
+whole host case document. List and finish keep `budgets.group`. Omitted additions
+preserve page-driven behavior. Host callbacks and commands are revoked and joined
+before scratch deletion. Unsettled callbacks retain scratch and force exit 2 even
+if the browser session was deleted. Failure evidence is saved beside the result
+as `.diagnostics.json` before scratch removal.
+
+A known reporting failure revokes ordinary host commands immediately. Document,
+heartbeat, and enclosing run deadlines are checked at admission and dispatch, not
+only by a timer. After interruption, a still-bound, certain page receives at most
+one cleanup verdict under a fresh bound, and its original teardown is awaited.
+An unconfirmed in-flight command or teardown requires session containment instead
+of navigating away and treating cleanup as complete.

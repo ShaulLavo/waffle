@@ -7,8 +7,11 @@ import {
   ownedDatabase,
   type SuiteAdapter,
   type RunOptions,
+  type HostCase,
+  type HostVerdict,
+  type SuiteCase,
 } from "waffle/testing/page-runner";
-import { isHostedPage } from "waffle/testing/page-runner/page";
+import { isHostedPage, type HostPageRun, type PageSuite } from "waffle/testing/page-runner/page";
 import { Collector, type CollectorPolicy } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
 import { serveCollector } from "./suite-host.js";
@@ -630,3 +633,29 @@ test("scratch deletion failure remains unconfirmed after consumers stop", () =>
       if (locked) await chmod(locked, 0o700);
     }
   }));
+
+test("public entries expose authoritative host domain types without widening driver access", async () => {
+  const item: SuiteCase<null> = {
+    id: "typed-host",
+    label: "typed",
+    request: () => null,
+    drive: async (host: HostCase) => {
+      host.signal.throwIfAborted();
+      await host.script("return null");
+      await host.task("await Promise.resolve()");
+      await host.sleep(0);
+      return { remaining: host.remainingMs() };
+    },
+  };
+  const run: HostPageRun<null> = {
+    kind: "host",
+    teardown: async (_request, body: HostVerdict) => body.status,
+  };
+  const suite: PageSuite<null> = {
+    list: async () => [item.id],
+    run,
+    finish: async (ledger) => ledger.slice(),
+  };
+  expect(await suite.list()).toEqual(["typed-host"]);
+  expect(typeof item.drive).toBe("function");
+});

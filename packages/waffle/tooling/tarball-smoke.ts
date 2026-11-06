@@ -183,8 +183,8 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver } from "waffle/testing/page-runner";
-import { isHostedPage, startPage, cleanupStorage, type PageSuite } from "waffle/testing/page-runner/page";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
+import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
   inventory: () => [{ id: "consumer", label: "default", request: run => ({ databaseName: \`consumer-\${run}\` }) }],
@@ -196,6 +196,28 @@ const adapter: SuiteAdapter<{ databaseName: string }> = {
   page: { path: "/current/", script: "/current/page.js" }, resultWaitMs: 90_000,
   budgets: () => ({ hello: 20_000, heartbeat: 10_000, case: 120_000, group: 120_000, run: 120_000 }),
 };
+const hostCase: SuiteCase<{ databaseName: string }> = {
+  id: "host", label: "host case", request: run => ({ databaseName: run }),
+  drive: async (host: HostCase) => {
+    host.signal.throwIfAborted();
+    const remaining = host.remainingMs();
+    await host.script("window.fixture = 1;");
+    await host.task("await Promise.resolve();");
+    await host.sleep(1);
+    return { remaining };
+  },
+};
+const hostAdapter: SuiteAdapter<{ databaseName: string }> = {
+  ...adapter, inventory: () => [hostCase],
+  budgets: () => ({ hello: 20_000, heartbeat: 10_000, case: 60_000, teardown: 60_000, caseDocument: 150_000, group: 90_000, run: 2_160_000 }),
+};
+const hostRun: HostPageRun<{ databaseName: string }> = {
+  kind: "host", teardown: async (request, verdict: HostVerdict) => ({ name: request.databaseName, status: verdict.status }),
+};
+const hostSuite: PageSuite<{ databaseName: string }> = {
+  list: async () => ({ ids: [hostCase.id] }), run: hostRun, finish: async ledger => ledger.slice(),
+};
+export { hostAdapter, hostSuite };
 const options: NativeOptions = { startedAt: performance.now(), port: 4186 };
 const suite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: ["consumer"] }),
