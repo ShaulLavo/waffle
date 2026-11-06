@@ -20,9 +20,15 @@ interface Payload {
   readonly offset: number;
   readonly length: number;
 }
+interface CompletionBuffers {
+  readonly commands: RecordRing;
+  readonly replies: RecordRing;
+  readonly arena?: Uint8Array;
+}
 interface Ready {
   readonly kind: "ready";
-  readonly ring: RecordRing;
+  readonly commands: RecordRing;
+  readonly replies: RecordRing;
   readonly pending: Map<number, { cancel(): void }>;
   readonly arena: Uint8Array;
   readonly payloads: (Payload | undefined)[];
@@ -34,11 +40,13 @@ interface Ready {
 export class CompletionOwner {
   #state: Ready | { readonly kind: "terminal"; readonly reason: number };
   #lastToken = 0;
-  constructor(ring: RecordRing, arena: Uint8Array = new Uint8Array(0)) {
-    if (ring.recordHeaderBytes !== 16) throw new RangeError("Expected completion ring");
+  constructor({ commands, replies, arena = new Uint8Array(0) }: CompletionBuffers) {
+    if (commands.recordHeaderBytes !== 8 || replies.recordHeaderBytes !== 16)
+      throw new RangeError("Expected command and completion rings");
     this.#state = {
       kind: "ready",
-      ring,
+      commands,
+      replies,
       pending: new Map(),
       arena,
       payloads: Array.from({ length: 64 }, () => undefined),
@@ -61,6 +69,7 @@ export class CompletionOwner {
       : 0;
   }
   onRetire(retire: () => void): void {
+    this.#synchronize();
     if (this.#state.kind === "terminal") {
       retire();
       return;
@@ -80,7 +89,10 @@ export class CompletionOwner {
     const state = this.#state;
     if (state.kind === "terminal") return false;
     try {
-      return this.#publish(state, completionBytes(name, token, status, value, state.ring.capacity));
+      return this.#publish(
+        state,
+        completionBytes(name, token, status, value, state.replies.capacity),
+      );
     } catch (error) {
       this.terminate(
         error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
@@ -150,10 +162,12 @@ export class CompletionOwner {
       throw new RangeError("Invalid terminal reason");
     // Select the local state before any wake. A closed record is best effort and
     // always last; ring termination is the authoritative, immutable OOB result.
-    const selected = state.ring.terminal()?.reason ?? reason;
+    const selected =
+      state.replies.terminal()?.reason ?? state.commands.terminal()?.reason ?? reason;
     this.#state = { kind: "terminal", reason: selected };
-    publishClosed(state.ring, selected);
-    state.ring.terminate(selected);
+    state.commands.terminate(selected);
+    publishClosed(state.replies, selected);
+    state.replies.terminate(selected);
     for (const pending of state.pending.values()) pending.cancel();
     state.pending.clear();
     state.payloads.length = 0;
@@ -164,11 +178,11 @@ export class CompletionOwner {
   }
   #synchronize(): void {
     if (this.#state.kind === "terminal") return;
-    const terminal = this.#state.ring.terminal();
+    const terminal = this.#state.replies.terminal() ?? this.#state.commands.terminal();
     if (terminal) this.terminate(terminal.reason);
   }
   #publish(state: Ready, bytes: Uint8Array): boolean {
-    const acquired = state.ring.tryAcquireWriter();
+    const acquired = state.replies.tryAcquireWriter();
     if (acquired.kind === "terminal") {
       this.terminate(acquired.reason);
       return false;

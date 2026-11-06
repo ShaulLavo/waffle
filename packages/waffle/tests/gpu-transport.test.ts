@@ -47,6 +47,17 @@ function largeCommand(labelLength = 2048): Uint8Array {
   });
 }
 
+function consumeRecord(read: ReturnType<LogicalReader["read"]>, source: Uint8Array): number {
+  if (read.kind !== "record") return 0;
+  try {
+    expect(read.record.bytes).toEqual(source);
+    expect(decodeCall(read.record.bytes).layout.name).toBe("device.create_command_encoder");
+  } finally {
+    read.record.release();
+  }
+  return 1;
+}
+
 describe("logical GPU transport over the real RecordRing", () => {
   test("large logical publication progresses incrementally through a tiny full ring while holding its lease", () => {
     const commands = ring(64);
@@ -61,12 +72,7 @@ describe("logical GPU transport over the real RecordRing", () => {
       expect(commands.tryAcquireWriter().kind).toBe("busy");
       for (; steps < 10000; steps++) {
         const read = reader.read();
-        if (read.kind === "record") {
-          expect(read.record.bytes).toEqual(source);
-          expect(decodeCall(read.record.bytes).layout.name).toBe("device.create_command_encoder");
-          read.record.release();
-          records++;
-        }
+        records += consumeRecord(read, source);
         const progress = append.advance();
         if (progress === "done" && records) break;
       }
