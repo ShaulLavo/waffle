@@ -1,6 +1,10 @@
-import { HostConsumers, HostDrive } from "./host-drive.js";
-import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { writeResult } from "./result-file.js";
+export { writeResult } from "./result-file.js";
+import { dispatchReports } from "./collector-fetch.js";
+import { HostDrive } from "./host-drive.js";
+import { HostConsumers } from "./owned-consumers.js";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import {
   Collector,
@@ -70,8 +74,14 @@ export function serveCollector(
     async fetch(request) {
       const url = new URL(request.url);
       try {
-        if (request.method === "POST") return await acceptPost(collector, request, url.pathname);
-        if (url.pathname === "/retire") return retirementCommand(collector, url);
+        const report = await dispatchReports(request, {
+          receive: (body) => collector.receive(body),
+          heartbeat: (body) => collector.heartbeat(body),
+          retirement: (url) => retirementCommand(collector, url),
+          fail: (category, detail) => collector.fail(category, detail),
+        });
+        if (report) return report;
+        if (request.method === "POST") throw new Error("Unknown collector endpoint");
         if (url.pathname === "/report" || url.pathname === "/heartbeat")
           return new Response("Method not allowed", { status: 405, headers });
         if (url.pathname === "/favicon.ico") return new Response(null, { status: 204, headers });
@@ -98,14 +108,7 @@ export function serveCollector(
   });
   return { server, configurations, origin: `http://127.0.0.1:${server.port}` };
 }
-async function acceptPost(collector: Collector, request: Request, path: string): Promise<Response> {
-  const body: unknown = await bounded(request.json(), 2000, "collector request body");
-  if (path === "/report") return Response.json(collector.receive(body), { headers });
-  if (path !== "/heartbeat") throw new Error("Unknown collector endpoint");
-  collector.heartbeat(body);
-  return Response.json(true, { headers });
-}
-function retirementCommand(collector: Collector, url: URL): Response {
+function retirementCommand(collector: Collector, url: URL): boolean {
   const state = collector.active;
   if (
     url.searchParams.get("run") !== collector.run ||
@@ -113,7 +116,7 @@ function retirementCommand(collector: Collector, url: URL): Response {
     url.searchParams.get("doc") !== state.doc
   )
     throw new Error("Unbound retirement poll");
-  return Response.json(state.retiring, { headers });
+  return state.retiring;
 }
 function pageResponse(configuration: unknown, script: string): Response {
   if (!configuration) return new Response("Unknown document token", { status: 404, headers });
@@ -669,17 +672,6 @@ export async function retireDocument(
     await Bun.sleep(25);
   }
   throw new Error("Retirement barrier missing final report acknowledgement");
-}
-
-export async function writeResult(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    await Bun.write(temporary, `${JSON.stringify(value, null, 2)}\n`);
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
 }
 
 async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

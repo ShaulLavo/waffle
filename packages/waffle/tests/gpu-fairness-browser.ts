@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import type { Page } from "playwright";
 import { invoke, pixels, assertTrianglePixels, assertRetired } from "./gpu-browser-shared.js";
 import {
@@ -253,7 +254,7 @@ async function isolatedCase<T>(source: Page, url: string, action: (page: Page) =
   const context = await browser.newContext({ viewport: { width: 320, height: 240 } });
   try {
     const page = await context.newPage();
-    await page.goto(url);
+    await navigateTestPage(page, url);
     return await action(page);
   } finally {
     await context.close();

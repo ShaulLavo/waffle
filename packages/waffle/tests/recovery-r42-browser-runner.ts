@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import type { BrowserContext, Page } from "playwright";
@@ -85,14 +86,14 @@ async function open(state: State): Promise<Page> {
       state.workerClosed[index] = true;
     });
   });
-  await page.goto(state.origin);
+  await navigateTestPage(page, state.origin);
   assert.equal(await page.opener(), null);
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   return page;
 }
 async function contain(state: State): Promise<unknown> {
   const audit = await state.context.newPage();
-  await audit.goto(state.origin);
+  await navigateTestPage(audit, state.origin);
   await Promise.all(state.pages.map((page) => page.close()));
   await until(async () => state.workerClosed.every(Boolean), "owned worker close events");
   await until(async () => {

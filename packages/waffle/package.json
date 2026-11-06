@@ -617,6 +617,17 @@
     "./testing/page-runner/playwright": {
       "types": "./tests/page-runner/playwright-driver.ts",
       "bun": "./tests/page-runner/playwright-driver.ts"
+    },
+    "./testing/page-runner/framework": {
+      "types": "./tests/page-runner/framework.ts",
+      "bun": "./tests/page-runner/framework.ts",
+      "node": "./dist/tests/page-runner/framework.js"
+    },
+    "./testing/page-runner/framework-page": {
+      "types": "./tests/page-runner/framework-page.ts",
+      "bun": "./tests/page-runner/framework-page.ts",
+      "browser": "./tests/page-runner/framework-page.ts",
+      "node": "./dist/tests/page-runner/framework-page.js"
     }
   },
   "scripts": {
@@ -651,6 +662,8 @@
   "devDependencies": {
     "@astrojs/compiler-rs": "0.5.2",
     "@types/bun": "^1.4.3",
+    "@vitest/browser": "5.0.2",
+    "@vitest/browser-webdriverio": "5.0.0",
     "jscpd": "5.4.1",
     "knip": "6.41.0",
     "oxfmt": "0.73.0",
@@ -658,8 +671,11 @@
     "playwright": "^1.64.1",
     "playwright-core": "1.64.1",
     "typescript": "^7.0.2",
+    "undici": "6.29.1",
     "vite": "8.3.4",
-    "wabt": "1.0.39"
+    "vitest": "5.0.2",
+    "wabt": "1.0.39",
+    "webdriverio": "9.29.1"
   },
   "waffleHostInterface": 1
 }

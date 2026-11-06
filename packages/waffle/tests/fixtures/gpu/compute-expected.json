@@ -1,0 +1,187 @@
+{
+  "note": "Independent hand-transcribed little-endian compute records, written before selecting or generating compute layouts. Record padding is zero; C pointer/size pairs use one byte span.",
+  "vectors": [
+    {
+      "name": "automatic compute layout and omitted entry point",
+      "command": "device.create_compute_pipeline",
+      "input": {
+        "result": {
+          "id": 5,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "layout": null,
+          "compute": {
+            "next_in_chain": [],
+            "module": {
+              "id": 4,
+              "generation": 1
+            },
+            "entry_point": null,
+            "constants": []
+          }
+        }
+      },
+      "hex": "22000000 40000000 05000000 01000000 03000000 01000000 00000000 00000000 00000000 00000000 00000000 04000000 01000000 ffffffff 00000000 00000000"
+    },
+    {
+      "name": "optional compute pass descriptor",
+      "command": "command_encoder.begin_compute_pass",
+      "input": {
+        "result": {
+          "id": 7,
+          "generation": 1
+        },
+        "descriptor": null
+      },
+      "hex": "23000000 18000000 07000000 01000000 00000000 00000000"
+    },
+    {
+      "name": "UTF-8 marker",
+      "command": "compute_pass_encoder.insert_debug_marker",
+      "input": {
+        "marker_label": "\u03bb"
+      },
+      "hex": "24000000 10000000 02000000 cebb0000"
+    },
+    {
+      "name": "pop debug group",
+      "command": "compute_pass_encoder.pop_debug_group",
+      "input": {},
+      "hex": "25000000 08000000"
+    },
+    {
+      "name": "push debug group",
+      "command": "compute_pass_encoder.push_debug_group",
+      "input": {
+        "group_label": "go"
+      },
+      "hex": "26000000 10000000 02000000 676f0000"
+    },
+    {
+      "name": "compute pipeline handle",
+      "command": "compute_pass_encoder.set_pipeline",
+      "input": {
+        "pipeline": {
+          "id": 5,
+          "generation": 1
+        }
+      },
+      "hex": "27000000 10000000 05000000 01000000"
+    },
+    {
+      "name": "compute dynamic offsets",
+      "command": "compute_pass_encoder.set_bind_group",
+      "input": {
+        "group_index": 2,
+        "group": {
+          "id": 9,
+          "generation": 1
+        },
+        "dynamic_offsets": [256, 512]
+      },
+      "hex": "28000000 20000000 02000000 09000000 01000000 02000000 00010000 00020000"
+    },
+    {
+      "name": "compute null group",
+      "command": "compute_pass_encoder.set_bind_group",
+      "input": {
+        "group_index": 0,
+        "group": null,
+        "dynamic_offsets": []
+      },
+      "hex": "28000000 18000000 00000000 00000000 00000000 00000000"
+    },
+    {
+      "name": "immediate byte span without usize",
+      "command": "compute_pass_encoder.set_immediates",
+      "input": {
+        "offset": 4,
+        "data": [1, 2, 3, 4, 5]
+      },
+      "hex": "29000000 18000000 04000000 05000000 01020304 05000000"
+    },
+    {
+      "name": "direct workgroup counts",
+      "command": "compute_pass_encoder.dispatch_workgroups",
+      "input": {
+        "workgroupCountX": 2,
+        "workgroupCountY": 3,
+        "workgroupCountZ": 4
+      },
+      "hex": "2a000000 18000000 02000000 03000000 04000000 00000000"
+    },
+    {
+      "name": "indirect u64 offset",
+      "command": "compute_pass_encoder.dispatch_workgroups_indirect",
+      "input": {
+        "indirect_buffer": {
+          "id": 10,
+          "generation": 1
+        },
+        "indirect_offset": 4294967296
+      },
+      "hex": "2b000000 18000000 0a000000 01000000 0000000001000000"
+    },
+    {
+      "name": "compute end",
+      "command": "compute_pass_encoder.end",
+      "input": {},
+      "hex": "2c000000 08000000"
+    },
+    {
+      "name": "compute label",
+      "command": "compute_pass_encoder.set_label",
+      "input": {
+        "label": "x"
+      },
+      "hex": "2d000000 10000000 01000000 78000000"
+    }
+  ],
+  "structs": [
+    {
+      "name": "aligned signed override double",
+      "struct": "compute_state",
+      "input": {
+        "next_in_chain": [],
+        "module": {
+          "id": 4,
+          "generation": 1
+        },
+        "entry_point": null,
+        "constants": [
+          {
+            "next_in_chain": [],
+            "key": "k",
+            "value": -2.5
+          }
+        ]
+      },
+      "hex": "00000000 04000000 01000000 ffffffff 01000000 00000000 01000000 6b000000 00000000000004c0"
+    },
+    {
+      "name": "pass timestamps preserve undefined index",
+      "struct": "compute_pass_descriptor",
+      "input": {
+        "next_in_chain": [],
+        "label": "",
+        "timestamp_writes": {
+          "next_in_chain": [],
+          "query_set": {
+            "id": 11,
+            "generation": 1
+          },
+          "beginning_of_pass_write_index": 4294967295,
+          "end_of_pass_write_index": 0
+        }
+      },
+      "hex": "00000000 00000000 01000000 00000000 0b000000 01000000 ffffffff 00000000"
+    }
+  ]
+}

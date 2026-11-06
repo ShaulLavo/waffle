@@ -483,6 +483,14 @@ is copied. Independent scene byte vectors extend the generation freshness inputs
 controls exercise the generated stream against Chromium WebGPU; they do not substitute for the
 compiled guest scene or complete G1.
 
+The compute extension derives synchronous pipeline creation, compute-pass descriptors and the
+complete ordinary compute-pass command inventory from the same YAML pin. Its original adapters
+reuse constant records, automatic layouts, timestamp sentinels and checked numeric conversion.
+Immediate data replaces the C pointer and size with one byte span. Browser names, immediate
+layout size and WGSL immediate-address-space controls were checked against the same pinned
+`spec/index.bs` and `wgsl/index.bs`. Independent compute vectors are freshness inputs. Native
+shader-written readback controls are trusted host observations, not guest G2 mapping support.
+
 ## GPU method coverage classification
 
 `packages/waffle/browser/gpu/method-coverage.json` mechanically derives method and global function
