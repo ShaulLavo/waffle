@@ -395,7 +395,7 @@ async function main() {
         url,
         names,
         chromiumArgs: swiftShaderArgs,
-        playwright: (await import("playwright/package.json")).version,
+        playwright: (await import("playwright/package.json")).default.version,
       }),
     );
     for (const engine of names) reports.push(await runEngine({ runner, engine, url, bitmapOnly }));
