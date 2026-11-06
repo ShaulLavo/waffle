@@ -19,6 +19,10 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        "tests/page-runner/*-page.ts",
+        "tests/page-runner/storage-control-worker.ts",
+        "tests/page-runner/aggregate-error-fixture.ts",
+        "tests/page-runner/browser-controls-runner.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/fixtures/gpu/qualification-worker.ts",
         "tests/installer-symlinks-metadata-types.ts",

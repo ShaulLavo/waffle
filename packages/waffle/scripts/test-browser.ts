@@ -25,6 +25,7 @@ const serial = runners
     [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/memory-group-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/fs-socket-browser-runner.ts", engines: ["firefox"] }]],
+    [[{ runner: "tests/page-runner/browser-controls-runner.ts", engines: ["chromium", "webkit"] }]],
   );
 // CI runs the two groups on separate runners; each keeps its own order.
 const group = process.env.WAFFLE_BROWSER_GROUP;
