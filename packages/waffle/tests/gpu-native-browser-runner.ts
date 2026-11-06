@@ -1,5 +1,20 @@
+import type { Page } from "playwright";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
-import { nativeControlRoutes, runNativeControls } from "./gpu-native-controls.js";
+import {
+  nativeControlRoutes,
+  runNativeControls,
+  type NativeControlInvocation,
+} from "./gpu-native-controls.js";
+
+function invokeNativeControl(page: Page, invocation: NativeControlInvocation): Promise<unknown> {
+  return page.evaluate(async ({ path, entry, control }) => {
+    const module: unknown = await import(path);
+    if (!module || typeof module !== "object") throw new Error(`Missing native module: ${path}`);
+    const run: unknown = Reflect.get(module, entry);
+    if (typeof run !== "function") throw new Error(`Missing native control entry: ${entry}`);
+    return run(control);
+  }, invocation);
+}
 
 export async function runNativeBrowser(engines: readonly string[]): Promise<void> {
   if (engines.length !== 1 || engines[0] !== "chromium")
@@ -12,16 +27,7 @@ export async function runNativeBrowser(engines: readonly string[]): Promise<void
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
     await page.goto(url);
-    const count = await runNativeControls((invocation) =>
-      page.evaluate(async ({ path, entry, control }) => {
-        const module: unknown = await import(path);
-        if (!module || typeof module !== "object")
-          throw new Error(`Missing native module: ${path}`);
-        const run: unknown = Reflect.get(module, entry);
-        if (typeof run !== "function") throw new Error(`Missing native control entry: ${entry}`);
-        return run(control);
-      }, invocation),
-    );
+    const count = await runNativeControls((invocation) => invokeNativeControl(page, invocation));
     console.log(
       JSON.stringify({
         phase: "native-complete",

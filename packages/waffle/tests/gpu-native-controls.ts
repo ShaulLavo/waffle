@@ -34,8 +34,8 @@ const suites = [
   },
 ];
 
-type Invocation = { path: string; entry: string; control: string };
-type Invoke = (invocation: Invocation) => Promise<unknown>;
+export type NativeControlInvocation = { path: string; entry: string; control: string };
+type Invoke = (invocation: NativeControlInvocation) => Promise<unknown>;
 
 export async function nativeControlRoutes(): Promise<Record<string, Blob | string>> {
   const routes: Record<string, Blob | string> = {};
