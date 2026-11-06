@@ -189,17 +189,19 @@ export function createGraphicsGuest(
         }),
       close: (id: number) => invoke(() => close(id)),
     };
+  const retireConnection = (entry: GuestGpuConnection, id: number): void => {
+    if (entry.closed) return;
+    try {
+      close(id);
+    } catch {
+      /* Continue retiring the remaining connections. */
+    }
+  };
   return {
     imports,
     dispose() {
       try {
-        mapForEach(connections, (entry, id) => {
-          try {
-            if (!entry.closed) close(id);
-          } catch {
-            /* Continue retiring the remaining connections. */
-          }
-        });
+        mapForEach(connections, retireConnection);
       } finally {
         reflectApply(closeMethod, port, []);
       }
