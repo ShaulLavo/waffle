@@ -89,32 +89,31 @@ export function storageWorker(): void {
 }
 
 type StorageReply<T> = { allocation?: StorageEntry; error?: string; result: T };
-function storageReply<T>(
-  data: StorageReply<T>,
-  worker: Worker,
-  allocate: ((entry: StorageEntry) => Promise<void>) | undefined,
-  finish: () => void,
-  resolve: (value: T | PromiseLike<T>) => void,
-  reject: (reason?: unknown) => void,
-): void {
-  if (data.allocation && allocate) {
-    void allocate(data.allocation).then(
-      () => worker.postMessage({ kind: "allocation-ack" }),
-      (error: unknown) => {
-        finish();
-        reject(error);
-      },
-    );
-    return;
-  }
-  finish();
-  if (data.error) reject(new Error(data.error));
-  else resolve(data.result);
-}
 export function storageCase<T>(
   request: WorkerRequest,
   allocate?: (entry: StorageEntry) => Promise<void>,
 ): Promise<T> {
+  function storageReply(
+    data: StorageReply<T>,
+    worker: Worker,
+    allocate: ((entry: StorageEntry) => Promise<void>) | undefined,
+    finish: () => void,
+    resolve: (value: T | PromiseLike<T>) => void,
+    reject: (reason?: unknown) => void,
+  ): void {
+    const acknowledged = () => worker.postMessage({ kind: "allocation-ack" });
+    const failed = (error: unknown) => {
+      finish();
+      reject(error);
+    };
+    if (data.allocation && allocate) {
+      void allocate(data.allocation).then(acknowledged, failed);
+      return;
+    }
+    finish();
+    if (data.error) reject(new Error(data.error));
+    else resolve(data.result);
+  }
   return new Promise<T>((resolve, reject) => {
     const worker = new Worker("/worker.js", { type: "module" });
     const timeout = setTimeout(() => {
