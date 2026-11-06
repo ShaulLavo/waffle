@@ -3747,7 +3747,7 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "356b06fa1aa769ccec7fde38436ef9d03e63cefe5d629c2cf514970447eafadc",
+  "browser/gpu/stream.json": "b80fa7645e8fcdc306c34084134777fde922802600cab23225186eee88c2dacb",
   "tooling/gpu-stream.ts": "6b60fe39eb416a421af3dcd152d1e1cd0eda490db1f1da7a2d5064e0f3f530fc",
   "tooling/gpu-stream-model.ts": "06fab05be7dbf25de664b1d651c669a492ce840eb655798d9691edd0a6c1f0c1",
   "tooling/gpu-stream-layout.ts":
