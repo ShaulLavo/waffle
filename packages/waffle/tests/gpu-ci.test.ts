@@ -25,6 +25,9 @@ test("GPU compiler restoration and installation include a fixture-only cache mis
 test("GPU source freshness covers schema, generated C layouts and the handwritten fixture", () => {
   for (const input of [
     "triangle.c",
+    "scene.c",
+    "scene_encode.h",
+    "gpu_fixture.h",
     "gpu_encode.h",
     "waffle_gpu_stream.h",
     "webgpu.yml",
@@ -85,6 +88,8 @@ test("the producer runs only the compiled fixture suites with its verified artif
   expect(step).toContain("compiled Preview 1 C fixture");
   expect(step).toContain("compiled C completion handling");
   expect(step).toContain("bounded frame-mode wire controls");
+  expect(step).toContain("gpu-scene-fixture.test.ts");
+  expect(step).toContain("compiled textured depth scene");
   expect(step).toContain("--reporter=junit");
   expect(step).toContain("assert");
   expect(step).toContain("skipped");
@@ -106,11 +111,12 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
     "compiled Preview 1 C fixture",
     "compiled C completion handling, not GPU acceptance",
     "bounded frame-mode wire controls, not native GPU acceptance",
+    "compiled textured depth scene, protocol assertions",
   ];
   const passing = suites
     .map(
       (name, index) =>
-        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 15 : 1)}</testsuite>`,
+        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 24 : 1)}</testsuite>`,
     )
     .join("");
   const root = mkdtempSync(join(tmpdir(), "gpu-ci-report-"));
