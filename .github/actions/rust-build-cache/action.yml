@@ -1,0 +1,21 @@
+name: Rust object cache
+description: Restore compiler objects independently of Cargo build artifacts
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
+    - uses: actions/cache@v4
+      id: objects
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: rust-objects-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+        restore-keys: |
+          rust-objects-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+          rust-objects-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
+    - uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
+      with:
+        version: v0.19.0
+        disable_annotations: true
+    - shell: bash
+      run: echo "sccache objects restored from ${{ steps.objects.outputs.cache-matched-key }} (exact hit=${{ steps.objects.outputs.cache-hit }})"
