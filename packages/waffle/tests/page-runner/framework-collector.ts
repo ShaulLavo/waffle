@@ -32,7 +32,8 @@ function task(value: unknown): value is FrameworkTask {
     typeof value.id === "string" &&
     !!value.id &&
     (value.parentId === null || typeof value.parentId === "string") &&
-    ["test", "suite", "file"].includes(String(value.type)) &&
+    typeof value.type === "string" &&
+    ["test", "suite", "file"].includes(value.type) &&
     typeof value.file === "string" &&
     typeof value.fullName === "string" &&
     typeof value.mode === "string" &&
@@ -46,7 +47,8 @@ function update(value: unknown): value is FrameworkUpdate {
   return (
     record(value) &&
     typeof value.id === "string" &&
-    ["run", "pass", "fail", "skip", "todo"].includes(String(value.state)) &&
+    typeof value.state === "string" &&
+    ["run", "pass", "fail", "skip", "todo"].includes(value.state) &&
     Array.isArray(value.errors) &&
     value.errors.every(jsonValue) &&
     jsonValue(value.hooks) &&
@@ -55,14 +57,14 @@ function update(value: unknown): value is FrameworkUpdate {
   );
 }
 function frameworkEvent(value: unknown): value is FrameworkEvent {
-  if (!record(value)) return false;
+  if (!record(value) || typeof value.kind !== "string") return false;
   if (value.kind === "collected") return Array.isArray(value.tasks) && value.tasks.every(task);
   if (value.kind === "task-started") return typeof value.id === "string";
   if (value.kind === "task-update" || value.kind === "case-settled")
     return Array.isArray(value.updates) && value.updates.every(update);
   if (value.kind === "error") return jsonValue(value.error) && typeof value.source === "string";
   return ["execution-flushed", "tester-cleanup-settled", "cleanup-response-received"].includes(
-    String(value.kind),
+    value.kind,
   );
 }
 export class FrameworkCollector {

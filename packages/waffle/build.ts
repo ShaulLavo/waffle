@@ -303,6 +303,27 @@ export async function buildNodeModules(
       else await emit(path);
     }
   }
+  async function emitFrameworkClosure(): Promise<void> {
+    const pending = ["tests/page-runner/framework.ts", "tests/page-runner/framework-page.ts"];
+    const emitted = new Set<string>();
+    while (pending.length) {
+      const path = pending.pop();
+      if (path === undefined) break;
+      if (emitted.has(path)) continue;
+      emitted.add(path);
+      await emit(path);
+      const imports = transpiler
+        .scanImports(await Bun.file(join(root, path)).text())
+        .filter((entry) => entry.path.startsWith("."));
+      for (const entry of imports) {
+        const target = relative(
+          root,
+          resolve(dirname(join(root, path)), entry.path.replace(/\.js$/, ".ts")),
+        );
+        pending.push(target);
+      }
+    }
+  }
   for (const directory of [
     "core",
     "fs",
@@ -329,24 +350,7 @@ export async function buildNodeModules(
     );
   }
   if (existsSync(join(root, "tests/page-runner/framework.ts"))) {
-    const pending = ["tests/page-runner/framework.ts", "tests/page-runner/framework-page.ts"];
-    const emitted = new Set<string>();
-    while (pending.length) {
-      const path = pending.pop();
-      if (path === undefined) break;
-      if (emitted.has(path)) continue;
-      emitted.add(path);
-      await emit(path);
-      const imports = transpiler.scanImports(await Bun.file(join(root, path)).text());
-      for (const entry of imports) {
-        if (!entry.path.startsWith(".")) continue;
-        const target = relative(
-          root,
-          resolve(dirname(join(root, path)), entry.path.replace(/\.js$/, ".ts")),
-        );
-        pending.push(target);
-      }
-    }
+    await emitFrameworkClosure();
     const bootstrap = await Bun.build({
       entrypoints: [join(root, "tests/page-runner/framework-bootstrap-main.ts")],
       target: "browser",

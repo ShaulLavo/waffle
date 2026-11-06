@@ -433,7 +433,7 @@ export class PageFrameworkHost implements FrameworkHost {
     }
     if (this.retirementStarted !== null && performance.now() - this.retirementStarted >= 5000)
       this.fault("retirement-timeout", "Final document barrier exceeded 5000 ms");
-    if (this.retired || this.fileStarted === null || this.monitorBusy) return;
+    if (this.retired || this.fileStarted === null) return;
     if (!this.bound && performance.now() - this.fileStarted > 60000)
       this.fault("startup", "Paired admission exceeded 60000 ms");
     if (
@@ -445,6 +445,7 @@ export class PageFrameworkHost implements FrameworkHost {
       )
     )
       this.fault("heartbeat", "Document heartbeat gap exceeded 10000 ms");
+    if (this.monitorBusy || this.controller.signal.aborted) return;
     this.monitorBusy = true;
     void this.queue
       .run(() => this.main(() => (this.bound ? this.probe() : this.admission())))

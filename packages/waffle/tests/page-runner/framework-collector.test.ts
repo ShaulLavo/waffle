@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { FrameworkCollector } from "./framework-collector.js";
+import { dispatchReports } from "./collector-fetch.js";
 import type { FrameworkEvent, FrameworkTask, FrameworkUpdate } from "./framework-types.js";
 
 function fixture() {
@@ -149,3 +150,50 @@ test("identical retries acknowledge once, conflicts and post-cutoff traffic cann
   expect(() => collector.receive(message)).toThrow("retired");
   expect(collector.failures).toHaveLength(1);
 });
+
+function malformedEvent(field: string, value: unknown, f: ReturnType<typeof fixture>): unknown {
+  if (field === "task-type")
+    return {
+      kind: "collected",
+      tasks: f.actual.map((task) => (task.type === "suite" ? { ...task, type: value } : task)),
+    };
+  f.send({ kind: "collected", tasks: f.actual });
+  if (field === "event-kind") return { kind: value };
+  f.send({ kind: "task-started", id: "actual-case" });
+  return {
+    kind: "case-settled",
+    updates: [{ id: "actual-case", state: value, errors: [], hooks: null, retryCount: 0 }],
+  };
+}
+for (const [field, label] of Object.entries({
+  "task-type": "suite",
+  "event-kind": "execution-flushed",
+  "terminal-state": "skip",
+})) {
+  for (const value of [[label], { value: label }]) {
+    test(`non-string ${field} ${JSON.stringify(value)} is a sticky collector failure`, async () => {
+      const f = fixture();
+      const event = malformedEvent(field, value, f);
+      const messages = f.tester.messages.length;
+      const response = await dispatchReports(
+        new Request("http://fixture/report", {
+          method: "POST",
+          body: JSON.stringify({
+            run: f.collector.run,
+            token: f.tester.token,
+            doc: f.tester.doc,
+            seq: messages,
+            kind: "event",
+            event,
+          }),
+        }),
+        f.collector,
+      );
+      expect(response?.status).toBe(409);
+      expect(f.collector.failures).toHaveLength(1);
+      expect(f.collector.failures[0]?.category).toBe("collector");
+      expect(f.tester.messages).toHaveLength(messages);
+      expect(f.collector.cases[0]?.outcome).toBeNull();
+    });
+  }
+}

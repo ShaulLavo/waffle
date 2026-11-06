@@ -2,7 +2,11 @@ import { tmpdir } from "node:os";
 import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { createFrameworkHost, type FrameworkOptions } from "waffle/testing/page-runner/framework";
+import {
+  createFrameworkHost,
+  createFrameworkControl,
+  type FrameworkOptions,
+} from "waffle/testing/page-runner/framework";
 const options = (resultPath: string): FrameworkOptions => ({
   suite: "framework-unit",
   native: { udid: "not-launched" },
@@ -136,3 +140,89 @@ test(
   () => fixture(unjoinedControl),
   18000,
 );
+
+async function startupWatchdog(root: string, occupied: boolean): Promise<void> {
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  let closed = false,
+    deletes = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      await request.text();
+      if (request.method === "DELETE") deletes++;
+      const value =
+        path === "/session"
+          ? {
+              sessionId: "owned",
+              capabilities: {
+                browserName: "Safari",
+                browserVersion: "control",
+                platformName: "iOS",
+                "safari:useSimulator": true,
+                "safari:deviceUDID": "not-launched",
+              },
+            }
+          : path.endsWith("/window")
+            ? "owned-window"
+            : null;
+      return Response.json({ value });
+    },
+  });
+  const host = createFrameworkControl(
+    options(join(root, "result.json")),
+    `http://127.0.0.1:${server.port}/`,
+  );
+  host.mount({ stack: [], use() {} });
+  const running = host.run(async (registerClose) => {
+    registerClose(async () => {
+      closed = true;
+      release.resolve();
+    });
+    await host.attach({
+      connect: async () => ({}),
+      detach: () => host.detach(),
+      frames: { isTestFrame: () => false, main: async () => {}, tester: async () => {} },
+    });
+    if (occupied)
+      await host.provider("test-frame", async () => {
+        entered.resolve();
+        await release.promise;
+      });
+    else entered.resolve();
+    await release.promise;
+    return { status: "interrupted", errors: ["owned watchdog control"] };
+  });
+  let detected = false;
+  try {
+    await entered.promise;
+    await Bun.sleep(60);
+    const clock = spyOn(performance, "now").mockReturnValue(performance.now() + 61000);
+    try {
+      await Bun.sleep(75);
+      detected = closed;
+    } finally {
+      clock.mockRestore();
+    }
+  } finally {
+    release.resolve();
+    try {
+      const result = await host.abort("watchdog control cleanup");
+      await running;
+      expect(result.cleanup.callbacks.status).toBe("confirmed");
+      expect(result.cleanup.context.status).toBe("confirmed");
+      expect(result.cleanup.scratch.status).toBe("confirmed");
+      expect(deletes).toBe(1);
+      expect(result.failures.some((failure) => failure.category === "startup")).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  }
+  expect(detected).toBe(true);
+}
+for (const occupied of [false, true]) {
+  test(`startup watchdog enforces its bound with ${occupied ? "occupied" : "available"} queue`, () =>
+    fixture((root) => startupWatchdog(root, occupied)));
+}
