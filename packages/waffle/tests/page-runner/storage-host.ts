@@ -6,7 +6,7 @@ import { browserBundle } from "../browser-runner-lifecycle.js";
 import { storageWorker, type WorkerRequest } from "./storage-worker.js";
 import { Collector, ObservationClosed, type DocumentState, type Group } from "./collector.js";
 import { bounded, type CleanupStep, type Driver, type DriverCleanup } from "./driver.js";
-import { exactInventory, record, storageBudgets, type Budgets } from "./protocol.js";
+import { record, storageBudgets, type Budgets } from "./protocol.js";
 export function storageInventory(): { backend: "indexeddb" | "opfs"; label: string; id: string }[] {
   return storageTests("/fs-worker.js", "/open-fs-worker.js")
     .map<{ backend: "indexeddb" | "opfs"; label: string; id: string }>(({ label }) => ({
@@ -128,10 +128,6 @@ export async function runStorage(
   );
   const selected = selectedCases.map((item) => item.id),
     run = crypto.randomUUID();
-  exactInventory(
-    selected,
-    selectedCases.map((item) => item.id),
-  );
   const collector = new Collector(run, required, selected);
   const controller = new AbortController();
   const budgets = options.budgets ?? {
