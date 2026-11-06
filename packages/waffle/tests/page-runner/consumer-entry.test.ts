@@ -479,16 +479,29 @@ for (const failure of ["reject", "hang"] as const) {
       expect(result.cleanup.scratch.status).toBe("unconfirmed");
     }));
 }
+function interruptAdded(
+  signal: "SIGINT" | "SIGTERM",
+  before: ReturnType<typeof process.listeners>,
+): number {
+  let called = 0;
+  for (const listener of process.listeners(signal)) {
+    if (before.includes(listener)) continue;
+    listener(signal);
+    called++;
+  }
+  return called;
+}
 test("signals during bounded teardown neither resurrect dispatch nor invent execution expiry", () =>
   fixture(async (root) => {
     const d = driver(),
       a = adapter(),
       controller = new AbortController();
     const original = d.stop.bind(d);
+    const before = { SIGINT: process.listeners("SIGINT"), SIGTERM: process.listeners("SIGTERM") };
     d.stop = async () => {
       controller.abort("during teardown");
-      expect(process.emit("SIGINT")).toBe(true);
-      expect(process.emit("SIGTERM")).toBe(true);
+      expect(interruptAdded("SIGINT", before.SIGINT)).toBe(1);
+      expect(interruptAdded("SIGTERM", before.SIGTERM)).toBe(1);
       await Bun.sleep(40);
       return original();
     };

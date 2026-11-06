@@ -269,7 +269,7 @@ export async function runPageSuite<R>(
     collector.fail("interrupted", "Run interrupted");
     controller.abort("interrupted");
   };
-  const stop = (): Promise<void> => (cleaning ??= teardown());
+  const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
     controller.abort("execution stopped");
     const cleanupMs = options.cleanupTimeoutMs ?? 12_000;
