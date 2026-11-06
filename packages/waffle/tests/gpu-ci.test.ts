@@ -129,3 +129,17 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the GPU producer installs pinned generator tools before a cache-miss build", () => {
+  const installation = producer.indexOf("run: bun install --frozen-lockfile --ignore-scripts");
+  const build = producer.indexOf("name: Build the compiled GPU guest once");
+  expect(installation).toBeGreaterThan(producer.indexOf("Verify exact-input network artifact"));
+  expect(installation).toBeLessThan(build);
+  const precedingStep = producer
+    .slice(0, installation)
+    .split(/(?=      - )/)
+    .at(-1);
+  expect(precedingStep).toBeDefined();
+  expect(precedingStep).not.toContain("if:");
+  expect(producer.slice(0, installation)).toContain("path: ~/.bun/install/cache");
+});
