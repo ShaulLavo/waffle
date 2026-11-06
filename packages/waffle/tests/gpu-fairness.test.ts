@@ -66,7 +66,16 @@ function measured(): FairnessSnapshot {
     epoch: 1,
     armed: true,
     overflow: false,
-    blobs: [{ connection: 1, bytes: 4800184, draws: 200000, start: 10, end: 210 }],
+    blobs: [
+      {
+        connection: 1,
+        commandRingBytes: 4 * 1024 * 1024,
+        bytes: 4800184,
+        draws: 200000,
+        start: 10,
+        end: 210,
+      },
+    ],
     records: {},
     native: {},
     queue: [],
@@ -129,6 +138,11 @@ test("fairness rejects stale, missing, truncated and noninterleaved evidence", (
     { ...normal, overflow: true },
     { ...normal, epoch: 0 },
     { ...normal, blobs: [] },
+    { ...normal, blobs: normal.blobs.concat(normal.blobs) },
+    {
+      ...normal,
+      blobs: normal.blobs.map((blob) => ({ ...blob, commandRingBytes: 8 * 1024 * 1024 })),
+    },
     { ...normal, slices: normal.slices.slice(1) },
     {
       ...normal,

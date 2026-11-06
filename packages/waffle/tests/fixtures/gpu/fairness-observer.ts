@@ -35,6 +35,7 @@ interface ConnectionTrace {
   cursor: Cursor | undefined;
   records: number;
   draws: number;
+  commandRingBytes: number;
   largeBlob: { bytes: number; draws: number; start: number; end: number | null } | undefined;
 }
 interface QueueCompletion {
@@ -53,6 +54,7 @@ export interface FairnessSnapshot {
   readonly presents: readonly { connection: number; at: number; otherLargeDraws: number[] }[];
   readonly blobs: readonly {
     connection: number;
+    commandRingBytes: number;
     bytes: number;
     draws: number;
     start: number;
@@ -85,7 +87,11 @@ export class FairnessObserver {
   #traces: ConnectionTrace[] = [];
   #connections = new WeakMap<GpuReplay, ConnectionTrace>();
   #slices: FairnessSlice[] = [];
-  #blobs: { connection: number; blob: NonNullable<ConnectionTrace["largeBlob"]> }[] = [];
+  #blobs: {
+    connection: number;
+    commandRingBytes: number;
+    blob: NonNullable<ConnectionTrace["largeBlob"]>;
+  }[] = [];
   #records: Record<string, Aggregate> = {};
   #native: Record<string, Aggregate> = {};
   #queue: QueueCompletion[] = [];
@@ -111,6 +117,7 @@ export class FairnessObserver {
       cursor: undefined,
       records: 0,
       draws: 0,
+      commandRingBytes: 0,
       largeBlob: undefined,
     };
     this.#connections.set(replay, trace);
@@ -193,11 +200,16 @@ export class FairnessObserver {
       this.#overflow = true;
       return;
     }
-    this.#blobs.push({ connection: trace.id, blob: trace.largeBlob });
+    this.#blobs.push({
+      connection: trace.id,
+      commandRingBytes: trace.commandRingBytes,
+      blob: trace.largeBlob,
+    });
   }
   slice<T extends { bytes: number; kind: string }>(connection: GpuConnection, action: () => T): T {
     const trace = this.trace(connection.replay),
       start = this.now();
+    trace.commandRingBytes = connection.commands.capacity;
     const active = (this.#active = {
       trace,
       records: trace.records,
@@ -307,7 +319,11 @@ export class FairnessObserver {
       native: structuredClone(this.#native),
       queue: structuredClone(this.#queue),
       presents: structuredClone(this.#presents),
-      blobs: this.#blobs.map(({ connection, blob }) => ({ connection, ...blob })),
+      blobs: this.#blobs.map(({ connection, commandRingBytes, blob }) => ({
+        connection,
+        commandRingBytes,
+        ...blob,
+      })),
     };
   }
 }
@@ -363,7 +379,8 @@ export function fairnessMeasurements(snapshot: FairnessSnapshot) {
     snapshot.blobs.length !== 1 ||
     !blob ||
     blob.draws !== 200000 ||
-    blob.bytes <= 4 * 1024 * 1024 ||
+    blob.commandRingBytes !== 4 * 1024 * 1024 ||
+    blob.bytes <= blob.commandRingBytes ||
     blob.end === null
   )
     throw new Error("Expected one completed 200000-draw logical blob larger than its ring");
@@ -406,6 +423,7 @@ export function fairnessMeasurements(snapshot: FairnessSnapshot) {
     }));
   return {
     logicalBytes: blob.bytes,
+    commandRingBytes: blob.commandRingBytes,
     draws: drawn,
     replaySlices: slices.length,
     drawSlices: drawSlices.length,
