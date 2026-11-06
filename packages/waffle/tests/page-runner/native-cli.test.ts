@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ test("native CLI rejects relative result paths before allocating anything", asyn
   expect(await storageNativeMain(["chromium"])).toBe(3);
 });
 test("native precondition and result write failures have distinct exits without native operations", async () => {
-  const root = await mkdtemp("/work/tmp/pr-native-cli-");
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-native-cli-"));
   const previous = process.env.IOS_UDID;
   delete process.env.IOS_UDID;
   try {

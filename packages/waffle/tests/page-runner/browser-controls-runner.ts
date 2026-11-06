@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { Collector } from "./collector.js";
@@ -49,6 +50,7 @@ async function reporterControl(
   const workerTimeout = mode === "worker-timeout";
   const result = await runStorage((scratch) => new PlaywrightDriver(engine, scratch), {
     resultPath: join(root, `${mode}.json`),
+    scratchRoot: process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(),
     filter: "IndexedDB persists format",
     assets: { "/page.js": page, "/worker.js": `(${hangWorker.toString()})();` },
     budgets: workerTimeout
@@ -91,7 +93,7 @@ async function storageControl(
     "/page.js": page,
     "/control-worker.js": await browserBundle(join(import.meta.dir, "storage-control-worker.ts")),
   });
-  const scratch = await mkdtemp("/work/tmp/prb-");
+  const scratch = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "prb-"));
   const driver = new PlaywrightDriver(engine, scratch);
   await withStorageCleanup(
     async () => {
@@ -156,7 +158,7 @@ async function main(): Promise<void> {
   if (resultIndex < 0 || !resultPath || !isAbsolute(resultPath))
     throw new Error("Use chromium webkit --result /absolute/control-results.json");
   const results: { engine: string; control: string; status: string; error?: string }[] = [];
-  const root = await mkdtemp("/work/tmp/pr-results-");
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
   await mkdir(root, { recursive: true });
   try {
     for (const engine of args.slice(0, resultIndex)) {
