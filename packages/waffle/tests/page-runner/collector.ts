@@ -1,8 +1,8 @@
 import {
   exactInventory,
-  listIds,
   parseMessage,
   record,
+  resultByteLimit,
   type Body,
   type Budgets,
   type Failure,
@@ -10,6 +10,12 @@ import {
   type Outcome,
 } from "./protocol.js";
 import type { StorageEntry } from "../storage-allocation.js";
+export type CollectorPolicy = {
+  listIds(value: unknown): string[];
+  allocation?: (entry: StorageEntry, runningCaseIds: readonly string[], run: string) => void;
+  requireResult?: boolean;
+  check(caseId: string, result: unknown): void;
+};
 export class ObservationClosed extends Error {}
 export class ReportRejected extends Error {}
 export type Group = { id: string; role: "list" | "case" | "finish"; caseIds: string[] };
@@ -31,6 +37,7 @@ export type DocumentState = {
 };
 export class Collector {
   readonly outcomes: Record<string, Outcome> = {};
+  readonly results: Record<string, unknown> = {};
   readonly failures: Failure[] = [];
   readonly ledger: StorageEntry[] = [];
   readonly documents: DocumentState[] = [];
@@ -41,6 +48,7 @@ export class Collector {
     readonly run: string,
     readonly required: string[],
     readonly selected: string[],
+    readonly policy: CollectorPolicy,
     readonly now = () => performance.now(),
   ) {
     exactInventory(required, required);
@@ -136,7 +144,7 @@ export class Collector {
         return;
       case "list":
         if (state.group.role !== "list" || state.listed) this.violation("Unexpected list", state);
-        exactInventory(this.required, listIds(body.cases));
+        exactInventory(this.required, this.policy.listIds(body.cases));
         state.listed = true;
         return;
       case "allocation":
@@ -192,47 +200,34 @@ export class Collector {
       state.complete
     )
       this.violation(`Case end before start or duplicate terminal: ${body.caseId}`, state);
-    this.outcomes[body.caseId] =
-      body.status === "pass"
-        ? { status: "pass", provisional: true }
-        : { status: "fail", detail: body.error ?? "test failure" };
+    if (body.status === "fail") {
+      this.outcomes[body.caseId] = { status: "fail", detail: body.error ?? "test failure" };
+      return;
+    }
+    if (this.policy.requireResult && !("result" in body))
+      this.violation("Missing required command result", state);
+    if ("result" in body) {
+      const snapshot = JSON.stringify(body.result);
+      if (snapshot === undefined || new TextEncoder().encode(snapshot).byteLength > resultByteLimit)
+        this.violation("Invalid or oversized result snapshot", state);
+      this.results[body.caseId] = body.result;
+    }
+    try {
+      this.policy.check(body.caseId, body.result);
+      this.outcomes[body.caseId] = { status: "pass", provisional: true };
+    } catch (error) {
+      this.outcomes[body.caseId] = { status: "fail", detail: `Host assertion: ${String(error)}` };
+    }
   }
+
   private allocate(state: DocumentState, entry: StorageEntry): void {
-    const backendPrefix = entry.kind === "indexeddb" ? "indexeddb:" : "opfs:";
-    const id = state.group.caseIds.find(
-      (caseId) => caseId.startsWith(backendPrefix) && this.outcomes[caseId]?.status === "running",
-    );
-    if (!id || this.outcomes[id]?.status !== "running")
-      this.violation("Allocation outside running storage case", state);
-    const logical = this.logicalAllocation(entry, state);
-    const backend = id.startsWith("indexeddb:") ? "storage" : "opfs";
-    const expectedKind = backend === "storage" ? "indexeddb" : "opfs-directory";
-    if (
-      entry.kind !== expectedKind ||
-      typeof logical !== "string" ||
-      !logical.startsWith(`bun-wasm-${backend}-test-${this.run}-`)
-    )
-      this.violation("Allocation not owned by this run and backend", state);
+    if (!this.policy.allocation) this.violation("Suite declares no durable allocations", state);
+    const running = state.group.caseIds.filter((id) => this.outcomes[id]?.status === "running");
+    if (state.group.role !== "case" || !running.length)
+      this.violation("Allocation outside running case", state);
+    this.policy.allocation(entry, running, this.run);
     if (!this.ledger.some((saved) => saved.kind === entry.kind && saved.name === entry.name))
       this.ledger.push(entry);
-  }
-  private logicalAllocation(entry: StorageEntry, state: DocumentState): unknown {
-    if (entry.kind === "indexeddb") return entry.name;
-    if (!entry.name.startsWith("bun-wasm-")) this.violation("Invalid OPFS directory prefix", state);
-    let logical: unknown;
-    try {
-      logical = JSON.parse(atob(entry.name.slice(9).replaceAll("-", "+").replaceAll("_", "/")));
-    } catch {
-      this.violation("Invalid encoded OPFS allocation", state);
-    }
-    if (typeof logical !== "string") this.violation("Invalid OPFS logical name", state);
-    const encoded = btoa(JSON.stringify(logical))
-      .replaceAll("+", "-")
-      .replaceAll("/", "_")
-      .replaceAll("=", "");
-    if (entry.name !== `bun-wasm-${encoded}`)
-      this.violation("Noncanonical OPFS directory name", state);
-    return logical;
   }
   private finish(state: DocumentState, remaining: StorageEntry[]): void {
     const casesSettled = this.selected.every((id) =>

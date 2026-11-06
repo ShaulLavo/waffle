@@ -22,6 +22,8 @@ export default {
         "tests/page-runner/*-page.ts",
         "tests/page-runner/storage-control-worker.ts",
         "tests/page-runner/aggregate-error-fixture.ts",
+        "tests/page-runner/command-fixtures.ts",
+        "tests/page-runner/storage-page-control-worker.ts",
         "tests/page-runner/browser-controls-runner.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",

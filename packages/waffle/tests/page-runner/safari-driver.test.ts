@@ -1,8 +1,9 @@
+import { storagePolicy } from "./storage-policy.js";
 import { expect, test } from "bun:test";
 import { associateListener, nativeCapabilities, SafariDriver } from "./safari-driver.js";
 import { parseSession } from "./driver.js";
 import { Collector } from "./collector.js";
-import { probeDocument } from "./storage-host.js";
+import { probeDocument } from "./suite-host.js";
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const capabilities = {
   browserName: "Safari",
@@ -82,7 +83,7 @@ test("structured script-timeout code survives HTTP transport and stops later dis
     const driver = new SafariDriver(udid, "unused-no-native-start");
     Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
     Reflect.set(driver, "session", "fixture-session");
-    const collector = new Collector("run", [], []);
+    const collector = new Collector("run", [], [], storagePolicy);
     const state = collector.expect(
       { id: "list", role: "list", caseIds: [] },
       "token",
