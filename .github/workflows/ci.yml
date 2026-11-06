@@ -176,6 +176,7 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
             programs:
+              - ".github/actions/rust-build-cache/action.yml"
               - ".github/workflows/ci.yml"
               - ".github/actions/program-optimizer/action.yml"
               - "package.json"
