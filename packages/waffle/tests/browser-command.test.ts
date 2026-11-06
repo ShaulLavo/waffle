@@ -189,7 +189,7 @@ for (const mode of ["success", "failure", "interrupted"] as const)
 import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
 writeFileSync(process.env.PROBE + "/state.json", JSON.stringify({
   tmp: process.env.TMPDIR, scratch: process.env.SCRATCH,
-  owned: process.env.STORAGE_SCRATCH_ROOT, shm: process.env.WAFFLE_BROWSER_SHM_ROOT,
+  owned: process.env.STORAGE_SCRATCH_ROOT, gpu: process.env.GPU_SCRATCH_ROOT, shm: process.env.WAFFLE_BROWSER_SHM_ROOT,
 }));
 const lifecycle = new BrowserRunnerLifecycle(5000);
 try {
@@ -236,6 +236,7 @@ try {
         if (typeof state.owned !== "string" || typeof state.shm !== "string")
           throw Error("Invalid supervisor ownership report");
         expect(state.owned.startsWith(root + "/wb-")).toBe(true);
+        expect(state).toMatchObject({ gpu: state.owned });
         expect(state.shm.startsWith("/dev/shm/wb-")).toBe(true);
         expect(existsSync(state.owned)).toBe(false);
         expect(existsSync(state.shm)).toBe(false);
