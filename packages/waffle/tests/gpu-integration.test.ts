@@ -11,7 +11,7 @@ import { completionBytes } from "../browser/gpu/codec.js";
 import { createDisplayOwner } from "../browser/display/owner.js";
 import { GpuService } from "../browser/gpu/service.js";
 import type { GraphicsOpen } from "../browser/display/protocol.js";
-import { command, handle, ROOT, settle } from "./fixtures/gpu/core-fixture.js";
+import { command, deferred, handle, ROOT, settle } from "./fixtures/gpu/core-fixture.js";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -266,4 +266,126 @@ test("revoked launch refuses a new open before any buffer allocation", () => {
   Atomics.store(new Int32Array(rig.revocation), 0, 1);
   expect(rig.invoke("open", 0, 0)).toBe(-64);
   expect(rig.receipts).toEqual([]);
+});
+
+async function nativeServiceReply(open: GraphicsOpen): Promise<void> {
+  const replies = new RecordRing(open.replies, 16);
+  const scratch = new Uint8Array(4096);
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const result = replies.readInto(scratch);
+    if (result.kind === "record") return;
+    if (result.kind === "terminal") throw new Error("Native service setup terminated");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Native service setup reply missing");
+}
+
+async function trackedNativeDevice(destroy: () => unknown = () => undefined) {
+  const lost = deferred<unknown>();
+  const destroyed = deferred<void>();
+  let destroyCalls = 0;
+  const device = {
+    lost: lost.promise,
+    addEventListener() {},
+    removeEventListener() {},
+    destroy() {
+      expect(this).toBe(device);
+      destroyCalls++;
+      const result = destroy();
+      destroyed.resolve();
+      return result;
+    },
+  };
+  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      gpu: {
+        async requestAdapter() {
+          return {
+            async requestDevice() {
+              return device;
+            },
+          };
+        },
+      },
+    },
+  });
+  cleanups.push(() => {
+    if (original) Object.defineProperty(globalThis, "navigator", original);
+    else Reflect.deleteProperty(globalThis, "navigator");
+  });
+  const service = new GpuService(() => {});
+  cleanups.push(() => service.dispose());
+  cleanups.push(() => lost.resolve({ reason: "destroyed" }));
+  const open = openRecord();
+  service.receive({ type: "open", grant: 1, open, surfaces: [] });
+  const ring = new RecordRing(open.commands, 8);
+  const writer = ring.tryAcquireWriter();
+  if (writer.kind !== "acquired") throw new Error("Missing native device writer");
+  writer.writer.tryWrite(
+    command("instance.request_adapter", {
+      result: handle(2),
+      token: 1,
+      receiver: ROOT,
+      options: null,
+    }),
+  );
+  writer.writer.release();
+  await nativeServiceReply(open);
+  const deviceWriter = ring.tryAcquireWriter();
+  if (deviceWriter.kind !== "acquired") throw new Error("Missing request-device writer");
+  deviceWriter.writer.tryWrite(
+    command("adapter.request_device", {
+      result: handle(3),
+      token: 2,
+      receiver: handle(2),
+      descriptor: null,
+    }),
+  );
+  deviceWriter.writer.release();
+  await nativeServiceReply(open);
+  return { service, ring, device, lost, destroyed, destroyCalls: () => destroyCalls };
+}
+
+for (const mode of ["revoke", "guest-destroy"]) {
+  test(`native device ownership retires on ${mode} before its loss promise settles`, async () => {
+    const rig = await trackedNativeDevice();
+    expect(rig.service.snapshot().devicesLive).toBe(1);
+    if (mode === "revoke") rig.service.receive({ type: "revoke", grant: 1 });
+    else {
+      const writer = rig.ring.tryAcquireWriter();
+      if (writer.kind !== "acquired") throw new Error("Missing destroy writer");
+      writer.writer.tryWrite(command("device.destroy", { receiver: handle(3) }));
+      writer.writer.release();
+      await rig.destroyed.promise;
+    }
+    expect(rig.destroyCalls()).toBe(1);
+    expect(rig.service.snapshot().devicesLive).toBe(0);
+    rig.lost.resolve({ reason: "destroyed" });
+    await settle();
+    expect(rig.service.snapshot().devicesLive).toBe(0);
+  });
+}
+
+test("native device destruction preserves failures without claiming successful retirement", async () => {
+  const failure = new Error("native destroy failure");
+  const rig = await trackedNativeDevice(() => {
+    throw failure;
+  });
+  expect(() => Reflect.apply(rig.device.destroy, rig.device, [])).toThrow(failure);
+  expect(rig.service.snapshot().devicesLive).toBe(1);
+  rig.lost.resolve({ reason: "unknown" });
+  await settle();
+  expect(rig.service.snapshot().devicesLive).toBe(0);
+});
+
+test("native device destruction preserves its result and repeated calls", async () => {
+  const rig = await trackedNativeDevice(() => false);
+  expect(Reflect.apply(rig.device.destroy, rig.device, [])).toBe(false);
+  expect(rig.service.snapshot().devicesLive).toBe(0);
+  expect(Reflect.apply(rig.device.destroy, rig.device, [])).toBe(false);
+  expect(rig.destroyCalls()).toBe(2);
+  expect(rig.service.snapshot().devicesLive).toBe(0);
 });
