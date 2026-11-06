@@ -137,10 +137,17 @@ export class DescriptorLowering {
     return descriptor;
   }
   #member(struct: string, name: string, type: string, value: WireValue): unknown {
-    if (struct === "render_pipeline_descriptor" && name === "layout" && value === null)
+    if (
+      (struct === "render_pipeline_descriptor" || struct === "compute_pipeline_descriptor") &&
+      name === "layout" &&
+      value === null
+    )
       return "auto";
     if (struct === "texture_view_descriptor" && name === "usage" && value === 0n) return undefined;
-    if ((struct === "vertex_state" || struct === "fragment_state") && name === "constants")
+    if (
+      (struct === "vertex_state" || struct === "fragment_state" || struct === "compute_state") &&
+      name === "constants"
+    )
       return this.#constants(value);
     if (struct === "render_pass_descriptor" && name === "color_attachments")
       return this.#attachments(value);

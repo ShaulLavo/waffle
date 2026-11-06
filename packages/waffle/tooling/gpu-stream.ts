@@ -28,6 +28,7 @@ const fixedInputs = [
   "tests/fixtures/gpu/expected.json",
   "tests/fixtures/gpu/enums.json",
   "tests/fixtures/gpu/scene-expected.json",
+  "tests/fixtures/gpu/compute-expected.json",
 ];
 
 export function sha256(bytes: string | Uint8Array): string {
@@ -77,10 +78,16 @@ function lowering(value: unknown): Lowering {
         descriptor: text(entry.descriptor),
       };
     case "write-buffer":
-    case "write-texture": {
+    case "write-texture":
+    case "set-immediates": {
       const span = record(entry.span);
-      const size = entry.kind === "write-buffer" ? "size" : "data_size";
-      const member = entry.kind === "write-buffer" ? "writeBuffer" : "writeTexture";
+      const size = entry.kind === "write-texture" ? "data_size" : "size";
+      const member =
+        entry.kind === "set-immediates"
+          ? "setImmediates"
+          : entry.kind === "write-buffer"
+            ? "writeBuffer"
+            : "writeTexture";
       if (span.pointer !== "data" || span.size !== size || entry.member !== member) break;
       return { kind: entry.kind, member, span: { pointer: "data", size } };
     }
@@ -227,7 +234,12 @@ function compileCall(
 }
 
 function spanArguments(args: Field[], adapter: Lowering): Field[] {
-  if (adapter.kind !== "write-buffer" && adapter.kind !== "write-texture") return args;
+  if (
+    adapter.kind !== "write-buffer" &&
+    adapter.kind !== "write-texture" &&
+    adapter.kind !== "set-immediates"
+  )
+    return args;
   const index = args.findIndex((arg) => arg.name === adapter.span.pointer);
   const pointer = args[index];
   const size = args[index + 1];

@@ -169,7 +169,7 @@ export class GpuReplay {
   }
   #nested(cursor: Cursor, blob: Blob): ReplayStep {
     if (blob.offset === blob.bytes.byteLength) {
-      if (blob.pass) throw new GpuProtocolError("Unclosed render pass");
+      if (blob.pass) throw new GpuProtocolError("Unclosed command pass");
       cursor.blob = undefined;
       const length = recordHeader(cursor.record.bytes, cursor.offset).length;
       this.#advance(cursor, length);
@@ -183,9 +183,16 @@ export class GpuReplay {
     const receiver = blob.pass ?? blob.encoder;
     this.#execute(call, receiver);
     if (!this.#live) return { kind: "terminal" };
-    if (call.layout.name === "command_encoder.begin_render_pass")
+    if (
+      call.layout.name === "command_encoder.begin_render_pass" ||
+      call.layout.name === "command_encoder.begin_compute_pass"
+    )
       blob.pass = wireHandle(call.fields.result);
-    if (call.layout.name === "render_pass_encoder.end") blob.pass = undefined;
+    if (
+      call.layout.name === "render_pass_encoder.end" ||
+      call.layout.name === "compute_pass_encoder.end"
+    )
+      blob.pass = undefined;
     if (call.layout.name === "command_encoder.finish") {
       blob.finished = true;
       this.#finished.set(blob.encoder.id, blob.encoder.generation);
@@ -315,6 +322,9 @@ export class GpuReplay {
           ]),
         );
         return false;
+      case "set-immediates":
+        nativeCall(receiver, layout.lowering.member, [fields.offset, wireBytes(fields.data)]);
+        return false;
       case "write-buffer":
         nativeCall(receiver, layout.lowering.member, [
           this.#lower.value("object.buffer", fields.buffer ?? null),
@@ -383,6 +393,37 @@ export class GpuReplay {
           ]),
         );
         return;
+      case "compute_pass_encoder.set_pipeline":
+        nativeCall(receiver, "setPipeline", [
+          this.#lower.value("object.compute_pipeline", fields.pipeline ?? null),
+        ]);
+        return;
+      case "compute_pass_encoder.dispatch_workgroups":
+        nativeCall(receiver, "dispatchWorkgroups", [
+          fields.workgroupCountX,
+          fields.workgroupCountY,
+          fields.workgroupCountZ,
+        ]);
+        return;
+      case "compute_pass_encoder.dispatch_workgroups_indirect":
+        nativeCall(receiver, "dispatchWorkgroupsIndirect", [
+          this.#lower.value("object.buffer", fields.indirect_buffer ?? null),
+          this.#lower.value("uint64", fields.indirect_offset ?? null),
+        ]);
+        return;
+      case "compute_pass_encoder.push_debug_group":
+        nativeCall(receiver, "pushDebugGroup", [fields.group_label]);
+        return;
+      case "compute_pass_encoder.insert_debug_marker":
+        nativeCall(receiver, "insertDebugMarker", [fields.marker_label]);
+        return;
+      case "compute_pass_encoder.pop_debug_group":
+        nativeCall(receiver, "popDebugGroup", []);
+        return;
+      case "compute_pass_encoder.set_label":
+        if (!Reflect.set(receiver, "label", fields.label))
+          throw new GpuCallError("Native label assignment failed");
+        return;
       case "render_pass_encoder.set_pipeline":
         nativeCall(receiver, "setPipeline", [
           this.#lower.value("object.render_pipeline", fields.pipeline ?? null),
@@ -396,6 +437,7 @@ export class GpuReplay {
           fields.first_instance,
         ]);
         return;
+      case "compute_pass_encoder.set_bind_group":
       case "render_pass_encoder.set_bind_group":
         nativeCall(receiver, "setBindGroup", [
           fields.group_index,
@@ -418,6 +460,7 @@ export class GpuReplay {
           fields.first_instance,
         ]);
         return;
+      case "compute_pass_encoder.end":
       case "render_pass_encoder.end":
         nativeCall(receiver, "end", []);
         return;
