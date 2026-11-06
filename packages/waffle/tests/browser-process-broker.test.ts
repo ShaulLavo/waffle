@@ -3725,6 +3725,7 @@ for (const threaded of [false, true]) {
       connection: {
         port: channel.port1,
         gpu: true,
+        revocation: new SharedArrayBuffer(64),
         surfaces: [],
         commandBytes: 4096,
         completionBytes: 4096,

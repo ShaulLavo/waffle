@@ -3,6 +3,8 @@ import type { GraphicsConnection, GraphicsOpen } from "../display/protocol.js";
 import { createDisplayImports, guestOutput, guestSpan } from "../display/guest.js";
 import {
   atomicsLoad,
+  atomicsStore,
+  atomicsNotify,
   atomicsWait,
   dataViewSetUint32,
   Int32ArrayConstructor,
@@ -39,6 +41,7 @@ export function createGraphicsGuest(
   live: () => void,
 ) {
   const port = connection.port;
+  const revocation = new Int32ArrayConstructor(connection.revocation);
   const sendMethod = port.postMessage,
     closeMethod = port.close;
   const send = (message: unknown) => reflectApply(sendMethod, port, [message]);
@@ -47,9 +50,17 @@ export function createGraphicsGuest(
   const terminal = (entry: GuestGpuConnection) =>
     entry.replies.terminal()?.reason ?? entry.commands.terminal()?.reason;
   const errno = (reason: number | undefined) => (reason === GPU_TERMINAL.resource ? -48 : -64);
+  const synchronize = (entry: GuestGpuConnection): void => {
+    if (!atomicsLoad(revocation, 0)) return;
+    const reason = entry.commands.terminate(GPU_TERMINAL.revoked).reason;
+    entry.replies.terminate(reason);
+    atomicsStore(entry.control, 0, reason === GPU_TERMINAL.resource ? -48 : -64);
+    atomicsNotify(entry.control, 0);
+  };
   const get = (id: number): GuestGpuConnection => {
     const entry = mapGet(connections, id);
     if (!entry) throw new ProcessError(id > 0 && id < next ? 64 : 8, "Unknown GPU connection");
+    synchronize(entry);
     return entry;
   };
   const close = (id: number): number => {
@@ -65,6 +76,7 @@ export function createGraphicsGuest(
   const open = (flags: number, ptr: number): number => {
     const output = guestOutput(memory, ptr, 4);
     if (flags !== 0) return -28;
+    if (atomicsLoad(revocation, 0)) return -64;
     if (mapSize(connections) >= 8 || next > 0xffffffff) return -33;
     // Admission happens before each fixed backing is constructed. Failed partial opens
     // deliberately consume the incarnation's monotonic control grant.
@@ -91,6 +103,7 @@ export function createGraphicsGuest(
     }
     while (atomicsLoad(entry.control, 0) === 0) {
       live();
+      synchronize(entry);
       atomicsWait(entry.control, 0, 0, 10);
     }
     live();
@@ -109,6 +122,7 @@ export function createGraphicsGuest(
     const append = new LogicalAppend(entry.commands, bytes);
     for (;;) {
       live();
+      synchronize(entry);
       const seen = entry.commands.sequence();
       const result = append.advance();
       if (result === "done") return 0;
@@ -129,6 +143,7 @@ export function createGraphicsGuest(
     const deadline = ns < 0n ? Infinity : now() + Number(ns) / 1e6;
     for (;;) {
       live();
+      synchronize(entry);
       const seen = entry.replies.sequence();
       const result = drainReplies(entry, destination);
       if (result !== 0) {

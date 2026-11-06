@@ -2,6 +2,8 @@
 export interface GraphicsConnection {
   readonly port: MessagePort;
   readonly gpu: boolean;
+  /** Launch-wide revocation remains observable before any open message is delivered. */
+  readonly revocation: SharedArrayBuffer;
   readonly surfaces: readonly { readonly id: number; readonly info: SharedArrayBuffer }[];
   readonly commandBytes: number;
   readonly completionBytes: number;

@@ -57,6 +57,7 @@ host.onmessage = async ({ data }) => {
         if (data.env.GPU_POISON !== "1") return;
         const buffers = receipts.concat(
           data.graphics?.surfaces.map((surface) => surface.info) ?? [],
+          data.graphics ? [data.graphics.revocation] : [],
         );
         poison = poisonProcessIntrinsics(buffers);
       },

@@ -37,9 +37,11 @@ export function createDisplayImports(
   live: () => void,
 ) {
   const surfaces = connection.surfaces;
+  const revocation = new Int32ArrayConstructor(connection.revocation);
   return {
     surfaces(ptr: number, capacity: number): number {
       live();
+      if (atomicsLoad(revocation, 0)) return -64;
       try {
         const output = guestOutput(memory, ptr, capacity >>> 0);
         if (capacity >>> 0 >= surfaces.length * 4)
@@ -52,6 +54,7 @@ export function createDisplayImports(
     },
     surface_info(id: number, ptr: number): number {
       live();
+      if (atomicsLoad(revocation, 0)) return -64;
       try {
         const output = guestOutput(memory, ptr, 16);
         for (let index = 0; index < surfaces.length; index++) {

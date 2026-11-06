@@ -184,7 +184,11 @@ the callbacks retain private wait ownership. No payload exception is added for e
 `GraphicsConnection`, `GraphicsGrant`, `GraphicsOpen`, `GuestGpuConnection`, `RecordRing`,
 `RingWriter`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
 native send/close methods are captured before executor hooks or guest execution. Fixed GPU
-controls use the installed shared-control allocator before construction. Views, ring copies,
+controls use the installed shared-control allocator before construction. Each launch also borrows
+a fixed 64-byte revocation cell allocated and counted by the page owner. Guest imports capture
+its view before executor hooks. A revoke is observable even before an open message reaches the
+page. Open then settles its own controls without requiring a port reply. The cell stays owned
+through physical process cleanup and follows the existing conservative ledger lifetime. Views, ring copies,
 collection access and waits use the existing reviewed intrinsic captures. No payload exception
 is added for GPU control buffers.
 

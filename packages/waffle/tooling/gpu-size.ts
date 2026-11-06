@@ -1,9 +1,9 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// G0.2 baseline on Bun 1.4.4: display 3,006 B, guest 4,837 B, service 22,382 B gzip.
+// G0.2 baseline on Bun 1.4.4: display 3,051 B, guest 4,924 B, service 22,382 B gzip.
 // Each gate allows 12% headroom; the existing core budget is unchanged.
-export const GPU_BUDGETS = { display: 3367, guest: 5418, service: 25068 };
+export const GPU_BUDGETS = { display: 3418, guest: 5515, service: 25068 };
 const entries = {
   display: "browser/display/owner.ts",
   guest: "browser/gpu/guest.ts",

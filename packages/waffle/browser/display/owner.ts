@@ -32,6 +32,7 @@ interface SurfaceOwner {
 interface GrantOwner {
   readonly id: GrantId;
   readonly port: MessagePort;
+  readonly revocation: Int32Array;
   readonly surfaces: readonly SurfaceOwner[];
   readonly opens: Map<number, GraphicsOpen>;
   state: "live" | "revoking" | "retired";
@@ -68,6 +69,8 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
   const finish = (grant: GrantOwner) => {
     if (grant.state === "retired") return;
     grant.state = "retired";
+    Atomics.store(grant.revocation, 0, 1);
+    Atomics.notify(grant.revocation, 0);
     for (const surface of grant.surfaces)
       if (surface.holder === grant.id) surface.holder = undefined;
     grant.port.close();
@@ -148,6 +151,8 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
   const revoke = (grant: GrantOwner) => {
     if (grant.state !== "live") return;
     grant.state = "revoking";
+    Atomics.store(grant.revocation, 0, 1);
+    Atomics.notify(grant.revocation, 0);
     for (const open of grant.opens.values()) settleOpen(open, -64, 4);
     for (const surface of grant.surfaces)
       if (surface.holder === grant.id) surface.holder = undefined;
@@ -245,6 +250,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       });
       if (new Set(selected).size !== selected.length) throw new Error("Duplicate surface");
       const id = grantId(nextGrant++);
+      const revocation = allocateSharedControl(64);
       const channel = new MessageChannel();
       let retire!: () => void;
       const retired = new Promise<void>((resolve) => {
@@ -253,6 +259,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       const grant: GrantOwner = {
         id,
         port: channel.port1,
+        revocation: new Int32Array(revocation),
         surfaces: selected,
         state: "live",
         opens: new Map(),
@@ -287,6 +294,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       const connection: GraphicsConnection = {
         port: channel.port2,
         gpu,
+        revocation,
         surfaces: selected.map((surface) => ({ id: surface.surface.id, info: surface.info })),
         commandBytes,
         completionBytes,
@@ -332,15 +340,15 @@ function validOpen(
     "control" in data &&
     data.control instanceof SharedArrayBuffer &&
     data.control.byteLength === 64 &&
-    !data.control.growable &&
+    Reflect.get(data.control, "growable") !== true &&
     "commands" in data &&
     data.commands instanceof SharedArrayBuffer &&
     data.commands.byteLength === commandBytes + 64 &&
-    !data.commands.growable &&
+    Reflect.get(data.commands, "growable") !== true &&
     "replies" in data &&
     data.replies instanceof SharedArrayBuffer &&
     data.replies.byteLength === completionBytes + 64 &&
-    !data.replies.growable &&
+    Reflect.get(data.replies, "growable") !== true &&
     data.commands !== data.replies
   );
 }

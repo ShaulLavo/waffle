@@ -26,7 +26,9 @@ function openRecord(id = 1): GraphicsOpen {
     replies: new SharedArrayBuffer(64 + 4096),
   };
 }
-function guest(options: { gpu?: boolean; limit?: number; failPost?: boolean } = {}) {
+function guest(
+  options: { gpu?: boolean; limit?: number; failPost?: boolean; revokeOnPost?: boolean } = {},
+) {
   const receipts: SharedArrayBuffer[] = [];
   const grant: SharedControlGrant = {
     kind: "bounded",
@@ -38,12 +40,17 @@ function guest(options: { gpu?: boolean; limit?: number; failPost?: boolean } = 
       createSharedControlAllocator(grant, (buffer) => receipts.push(buffer)),
     ),
   );
+  const revocation = new SharedArrayBuffer(64);
   let opened: GraphicsOpen | undefined;
   const port = {
     postMessage(message: GraphicsOpen | { type: "close"; id: number }) {
       if (options.failPost) throw new Error("post failure");
       if (message.type === "open") {
         opened = message;
+        if (options.revokeOnPost) {
+          Atomics.store(new Int32Array(revocation), 0, 1);
+          return;
+        }
         Atomics.store(new Int32Array(message.control), 0, 1);
       }
     },
@@ -51,7 +58,14 @@ function guest(options: { gpu?: boolean; limit?: number; failPost?: boolean } = 
   } as unknown as MessagePort;
   const memory = new WebAssembly.Memory({ initial: 1 });
   const imports = createGraphicsGuest(
-    { port, surfaces: [], gpu: options.gpu ?? true, commandBytes: 4096, completionBytes: 4096 },
+    {
+      port,
+      revocation,
+      surfaces: [],
+      gpu: options.gpu ?? true,
+      commandBytes: 4096,
+      completionBytes: 4096,
+    },
     () => memory,
     () => {},
   );
@@ -62,7 +76,7 @@ function guest(options: { gpu?: boolean; limit?: number; failPost?: boolean } = 
     if (typeof call !== "function") throw new Error("Missing function");
     return call(...args);
   };
-  return { memory, imports, invoke, receipts, grant, opened: () => opened };
+  return { memory, imports, invoke, receipts, grant, revocation, opened: () => opened };
 }
 test("guest shared controls are claimed before construction and fixed", () => {
   const rig = guest();
@@ -238,4 +252,18 @@ test("unknown connections return EBADF while closed connections return EPIPE", (
   rig.invoke("close", 1);
   expect(rig.invoke("payload", 1, 0, 0, 0)).toBe(-64);
   expect(rig.invoke("close", 55)).toBe(-8);
+});
+
+test("launch-wide revocation settles open even before its page message is delivered", () => {
+  const rig = guest({ revokeOnPost: true });
+  expect(rig.invoke("open", 0, 0)).toBe(-64);
+  expect(Atomics.load(new Int32Array(rig.opened()!.control), 0)).toBe(-64);
+  expect(new RecordRing(rig.opened()!.commands, 8).terminal()).toMatchObject({ reason: 4 });
+});
+
+test("revoked launch refuses a new open before any buffer allocation", () => {
+  const rig = guest();
+  Atomics.store(new Int32Array(rig.revocation), 0, 1);
+  expect(rig.invoke("open", 0, 0)).toBe(-64);
+  expect(rig.receipts).toEqual([]);
 });
