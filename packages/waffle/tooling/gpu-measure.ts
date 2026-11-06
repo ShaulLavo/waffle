@@ -162,6 +162,13 @@ export async function runGpuMeasurementBrowser(
     await runner.closeBrowser(browser);
   }
 }
+class SafariAllocationRejected extends Error {}
+function webdriverFailure(path: string, payload: Record<string, unknown>) {
+  const message = `WebDriver ${path}: ${JSON.stringify(payload)}`;
+  if (path === "/session" && qualificationRecord(payload.value).error === "session not created")
+    return new SafariAllocationRejected(message);
+  return new Error(message);
+}
 async function webdriver(
   driver: string,
   path: string,
@@ -179,9 +186,10 @@ async function webdriver(
   try {
     const response = await fetch(`${driver}${path}`, init);
     const payload = qualificationRecord(await response.json());
-    if (!response.ok) throw new Error(`WebDriver ${path}: ${JSON.stringify(payload)}`);
+    if (!response.ok) throw webdriverFailure(path, payload);
     return payload.value;
   } catch (error) {
+    if (error instanceof SafariAllocationRejected) throw error;
     throw new Error(`WebDriver ${method} ${path}: ${String(error)}`);
   }
 }
@@ -222,7 +230,10 @@ export class SafariMeasurementLifecycle extends BrowserRunnerLifecycle {
     return (this.closingSafari ??= this.stopSafari());
   }
   private async stopSafari() {
-    const session = await this.session;
+    const session = await this.session?.catch((error: unknown) => {
+      if (error instanceof SafariAllocationRejected) return undefined;
+      throw error;
+    });
     if (session) await webdriver(session.driver, session.path, undefined, "DELETE");
   }
   override close(): Promise<void> {

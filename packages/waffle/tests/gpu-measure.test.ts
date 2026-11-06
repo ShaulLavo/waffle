@@ -220,3 +220,62 @@ test("Safari capability rejection deletes only the allocated session and closes 
     server.stop(true);
   }
 });
+
+test("a definitive Safari session rejection leaves no session to clean up", async () => {
+  const deleted: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      if (request.method === "DELETE") deleted.push(new URL(request.url).pathname);
+      return Response.json(
+        { value: { error: "session not created", message: "No compatible Safari became ready" } },
+        { status: 500 },
+      );
+    },
+  });
+  const runner = new SafariMeasurementLifecycle(30_000);
+  try {
+    await expect(
+      runGpuMeasurementSafari(
+        runner,
+        `http://127.0.0.1:${server.port}`,
+        "http://127.0.0.1:1",
+        options,
+      ),
+    ).rejects.toThrow("session not created");
+    await expect(runner.close()).resolves.toBeUndefined();
+    expect(deleted).toEqual([]);
+  } finally {
+    await runner.close().catch(() => {});
+    server.stop(true);
+  }
+});
+
+test("unknown Safari allocation failures keep cleanup uncertainty visible", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() {
+      return Response.json(
+        { value: { error: "unknown error", message: "Allocation outcome unknown" } },
+        { status: 500 },
+      );
+    },
+  });
+  const runner = new SafariMeasurementLifecycle(30_000);
+  try {
+    await expect(
+      runGpuMeasurementSafari(
+        runner,
+        `http://127.0.0.1:${server.port}`,
+        "http://127.0.0.1:1",
+        options,
+      ),
+    ).rejects.toThrow("unknown error");
+    await expect(runner.close()).rejects.toThrow("cleanup failed");
+  } finally {
+    await runner.close().catch(() => {});
+    server.stop(true);
+  }
+});
