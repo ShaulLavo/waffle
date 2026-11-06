@@ -9,7 +9,6 @@ type Operation = {
   live: boolean;
   controller: AbortController;
   requests: Set<RequestLease>;
-  command: { method: string; endpoint: string } | null;
 };
 export class FrameworkQueue {
   private readonly local = new AsyncLocalStorage<Operation>();
@@ -18,11 +17,7 @@ export class FrameworkQueue {
   private readonly signals = new WeakMap<AbortSignal, RequestLease>();
   private readonly clients = new Map<
     object,
-    {
-      client: TransportEvents;
-      listener: (event: unknown) => void;
-      command: (event: unknown) => void;
-    }
+    { client: TransportEvents; listener: (event: unknown) => void }
   >();
   private readonly active = new Set<Operation>();
   constructor(
@@ -48,7 +43,6 @@ export class FrameworkQueue {
       live: true,
       controller: new AbortController(),
       requests: new Set(),
-      command: null,
     };
     this.assert(operation);
     this.active.add(operation);
@@ -84,11 +78,6 @@ export class FrameworkQueue {
       throw new Error("Unowned WebDriver request");
     }
     this.assert(operation);
-    if (this.clients.size && !this.allowed(operation.command)) {
-      this.fault("Unsupported native SDK command");
-      throw new Error("Unsupported native SDK command");
-    }
-    operation.command = null;
     const signal = AbortSignal.any([
       operation.controller.signal,
       ...(request.signal ? [request.signal] : []),
@@ -126,33 +115,8 @@ export class FrameworkQueue {
       off: (event, listener) => Reflect.apply(off, value, [event, listener]),
     };
     const listener = (event: unknown) => this.performance(event);
-    const command = (event: unknown) => {
-      const operation = this.local.getStore();
-      if (
-        !operation ||
-        !record(event) ||
-        typeof event.method !== "string" ||
-        typeof event.endpoint !== "string"
-      )
-        return;
-      operation.command = { method: event.method, endpoint: event.endpoint };
-    };
-    this.clients.set(value, { client, listener, command });
+    this.clients.set(value, { client, listener });
     client.on("request.performance", listener);
-    client.on("command", command);
-  }
-  private allowed(command: Operation["command"]): boolean {
-    if (!command) return false;
-    const path = command.endpoint.replace(/^\/session\/[^/]+/, "");
-    if (command.method === "GET")
-      return (
-        ["/context", "/window", "/window/handles", "/url"].includes(path) ||
-        /^\/element\/[^/]+\/(name|enabled)$/.test(path)
-      );
-    return (
-      command.method === "POST" &&
-      ["/url", "/element", "/elements", "/frame", "/frame/parent", "/execute/sync"].includes(path)
-    );
   }
   private performance(event: unknown): void {
     if (!record(event) || !record(event.request)) {
@@ -177,9 +141,8 @@ export class FrameworkQueue {
     await this.tail;
   }
   releaseObservers(): void {
-    for (const { client, listener, command } of this.clients.values()) {
+    for (const { client, listener } of this.clients.values()) {
       client.off("request.performance", listener);
-      client.off("command", command);
     }
     this.clients.clear();
   }

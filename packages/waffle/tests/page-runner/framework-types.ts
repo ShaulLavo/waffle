@@ -62,8 +62,8 @@ export type FrameAdapter = {
   tester(): Promise<void>;
 };
 export type TransportEvents = {
-  on(event: "request.performance" | "command", listener: (event: unknown) => void): unknown;
-  off(event: "request.performance" | "command", listener: (event: unknown) => void): unknown;
+  on(event: "request.performance", listener: (event: unknown) => void): unknown;
+  off(event: "request.performance", listener: (event: unknown) => void): unknown;
 };
 export type FrameworkTask = {
   readonly id: string;

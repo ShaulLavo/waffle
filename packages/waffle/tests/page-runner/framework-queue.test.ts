@@ -73,16 +73,13 @@ test("a previously queued operation is checked at dispatch, not just enqueue tim
 test("malformed responses caught by an SDK caller remain sticky via actual transport events", async () => {
   const { queue, faults } = fixture();
   let settle: ((event: unknown) => void) | undefined;
-  let command: ((event: unknown) => void) | undefined;
   queue.observe({
-    on(event: string, listener: (event: unknown) => void) {
-      if (event === "command") command = listener;
-      else settle = listener;
+    on(_event: string, listener: (event: unknown) => void) {
+      settle = listener;
     },
     off() {},
   });
   await queue.run(async () => {
-    command?.({ method: "POST", endpoint: "/session/owned/execute/sync" });
     const request = queue.guard({});
     settle?.({ request, success: false, error: new Error("Could not parse response") });
   });

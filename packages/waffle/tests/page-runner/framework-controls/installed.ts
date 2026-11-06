@@ -223,6 +223,7 @@ try {
       nativeConfig,
     );
     registerClose(async () => {
+      navigationEnd.reject(new Error("EXPECTED_FINITE_FAKE_ABORT"));
       await context?.close();
       for (const server of viteServers) assert.equal(server.httpServer?.listening, false);
       trace.push("context-closed");
@@ -303,6 +304,12 @@ try {
     join(directory, `result-${mode}.json`),
     JSON.stringify({ result, requests, trace }, null, 2),
   );
+  assert.ok(
+    trace.includes("nested-public-frame-bookkeeping"),
+    "Every required frame proof must execute",
+  );
+  assert.ok(trace.includes("serialized-probe"));
+  if (mode !== "malformed") assert.ok(trace.includes(`${mode}-rejection-caught`));
   assert.equal(result.exit, 2);
   assert.equal(result.fileComplete, false);
   assert.equal(result.rootBrowserSuiteComplete, false);
