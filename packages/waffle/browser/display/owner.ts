@@ -44,7 +44,7 @@ interface ServiceOwner {
 }
 export interface DisplayOwnerOptions {
   readonly workerUrl?: string | URL;
-  readonly worker?: (url: string | URL) => Worker;
+  readonly worker?: () => Worker;
   readonly commandBytes?: number;
   readonly completionBytes?: number;
 }
@@ -106,10 +106,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
   const activate = (): ServiceOwner => {
     if (service) return service;
     assertLive();
-    const url = options.workerUrl ?? new URL("../gpu/service-worker.ts", import.meta.url);
-    const worker = options.worker
-      ? options.worker(url)
-      : new Worker(url, { type: "module", name: "waffle-gpu" });
+    const worker = createGpuWorker(options);
     const owner = { worker, incarnation: serviceIncarnation(++incarnation) };
     service = owner;
     worker.onerror = () => failService(owner);
@@ -385,4 +382,14 @@ function serviceIncarnation(value: number): ServiceIncarnation {
   if (!Number.isSafeInteger(value) || value < 1)
     throw new RangeError("Service identities exhausted");
   return value as ServiceIncarnation;
+}
+
+function createGpuWorker(options: DisplayOwnerOptions): Worker {
+  if (options.worker) return options.worker();
+  if (options.workerUrl)
+    return new Worker(options.workerUrl, { type: "module", name: "waffle-gpu" });
+  return new Worker(new URL("../gpu/service-worker.ts", import.meta.url), {
+    type: "module",
+    name: "waffle-gpu",
+  });
 }

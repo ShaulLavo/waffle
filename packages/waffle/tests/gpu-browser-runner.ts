@@ -329,6 +329,24 @@ function assertRetired(value: unknown) {
     throw new Error(`GPU service retained guest resources: ${JSON.stringify(value)}`);
 }
 
+/** The CI lane requires the designated software adapter, not a silent hardware fallback. */
+export function requireIntegrationAdapter(
+  engine: "chromium" | "firefox" | "webkit",
+  capabilities: Record<string, unknown>,
+): boolean {
+  const available = requireWorkerAdapter(engine, capabilities);
+  if (engine !== "chromium") return available;
+  const adapter = capabilities.adapter;
+  if (
+    typeof adapter !== "object" ||
+    adapter === null ||
+    !("architecture" in adapter) ||
+    adapter.architecture !== "swiftshader"
+  )
+    throw new Error(`Required Chromium SwiftShader adapter missing: ${JSON.stringify(adapter)}`);
+  return available;
+}
+
 async function main() {
   const runner = new GpuQualificationLifecycle();
   try {
@@ -362,7 +380,7 @@ async function main() {
       const loading = await assertGpuLazyBrowser(page, url, lazy.outputInputs);
       await page.goto(url);
       const qualification = await qualifyGpuBrowser(page, engine);
-      const available = requireWorkerAdapter(engine, qualification.capabilities);
+      const available = requireIntegrationAdapter(engine, qualification.capabilities);
       const guest = available ? await guestCase(page) : await unsupportedCase(page, "gpu");
       await page.goto(url);
       const negative = available ? await guestCase(page, true) : undefined;
