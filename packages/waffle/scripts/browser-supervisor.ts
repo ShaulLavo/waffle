@@ -127,6 +127,7 @@ async function supervise(command: string[], graceMs: number): Promise<number> {
         TMPDIR: dispatcherTmp ?? scratch,
         STORAGE_SCRATCH_ROOT: scratch,
         PROCESS_SCRATCH_ROOT: scratch,
+        GPU_SCRATCH_ROOT: scratch,
         WAFFLE_BROWSER_SHM_ROOT: shm,
       },
       detached: true,
