@@ -96,9 +96,11 @@ static void check_message(const uint8_t *p, uint32_t length, uint32_t offset) {
 static void check_request(const uint8_t *p, uint32_t kind, uint32_t length) {
   check_message(p, length, WAFFLE_GPU_REPLY_ADAPTER_MESSAGE_OFFSET);
   uint32_t status = gpu_read_u32(p + WAFFLE_GPU_REPLY_ADAPTER_STATUS_OFFSET);
-  if (status != 1 && kind == WAFFLE_GPU_REPLY_ADAPTER)
+  uint32_t success = kind == WAFFLE_GPU_REPLY_ADAPTER
+    ? WAFFLE_GPU_ENUM_REQUEST_ADAPTER_STATUS_SUCCESS : WAFFLE_GPU_ENUM_REQUEST_DEVICE_STATUS_SUCCESS;
+  if (status != success && kind == WAFFLE_GPU_REPLY_ADAPTER)
     printf("GPU_NO_ADAPTER status=%u\n", status);
-  if (status != 1) fail("request-result", (int32_t)status);
+  if (status != success) fail("request-result", (int32_t)status);
   expect_handle(p + WAFFLE_GPU_REPLY_ADAPTER_ADAPTER_OFFSET,
                 kind == WAFFLE_GPU_REPLY_ADAPTER ? ADAPTER : DEVICE);
 }

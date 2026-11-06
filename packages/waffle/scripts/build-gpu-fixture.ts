@@ -28,6 +28,7 @@ const flags = [
   "-Wl,--initial-memory=262144",
   "-Wl,--max-memory=16777216",
   "-Wl,--export-memory",
+  "-Wl,--strip-debug",
 ];
 const inputs = [
   "scripts/build-gpu-fixture.ts",

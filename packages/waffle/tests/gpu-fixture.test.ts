@@ -278,6 +278,14 @@ test("an interrupted compiler retires its process group before removing scratch"
 describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
   test("has exactly the real custom imports and the expected WASI command imports", () => {
     const module = new WebAssembly.Module(wasm);
+    for (const section of [
+      ".debug_info",
+      ".debug_line",
+      ".debug_str",
+      ".debug_abbrev",
+      ".debug_ranges",
+    ])
+      expect(WebAssembly.Module.customSections(module, section)).toEqual([]);
     const imports = WebAssembly.Module.imports(module).map(
       (entry) => `${entry.module}.${entry.name}`,
     );
