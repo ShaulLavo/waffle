@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandAdapter, type CommandRequest } from "./command-suites.js";
+import { checkedGuestWatchControl } from "./guest-watch-controls-runner.js";
 import { FakeDriver, type FakeCommand, type FakeMode } from "./fake-driver.js";
 import { runPageSuite, type RunOptions, type SuiteAdapter } from "./suite-host.js";
 
@@ -154,6 +155,7 @@ for (const relay of [
     const actual = { early: 100, late: 100, relay };
     const result = await control(guest, { result: actual });
     expect(result.exit).toBe(1);
+    expect(() => checkedGuestWatchControl(result, "missing-relay")).not.toThrow();
     expect(result.runComplete).toBe(true);
     expect(Object.values(result.results)).toEqual([actual]);
     expect(result.failures).toEqual([]);
