@@ -8,7 +8,8 @@ export type HostPageRun<R> = {
 };
 type HookOutcome =
   | { status: "pass"; result: unknown }
-  | { status: "fail" | "timeout"; error: string };
+  | { status: "fail"; error: string }
+  | { status: "timeout"; error: string; settled: boolean };
 type Receiver = {
   phase: "admitting" | "ready" | "driving" | "teardown" | "terminal";
   verdict(value: unknown): void;
@@ -25,6 +26,17 @@ function verdict(value: unknown): HostVerdict {
     return { status: "fail", error: value.error };
   if (value.status === "pass" && "result" in value) return { status: "pass", result: value.result };
   throw new Error("Invalid host verdict");
+}
+function dispatchTask(reporter: Reporter, source: string): Promise<unknown> {
+  const result = Promise.withResolvers<unknown>();
+  reporter.clock.timeout(() => {
+    try {
+      result.resolve(new Function(`return (async () => {${source}\n})()`)());
+    } catch (error) {
+      result.reject(error);
+    }
+  }, 0);
+  return result.promise;
 }
 function receiver(
   reporter: Reporter,
@@ -46,9 +58,7 @@ function receiver(
         throw new Error("Duplicate or out-of-phase task");
       operations.add(operation);
       running = true;
-      const task = Promise.resolve().then(() =>
-        new Function(`return (async () => {${source}\n})()`)(),
-      );
+      const task = dispatchTask(reporter, source);
       void task
         .then(
           () => reportTask(operation, "pass"),
@@ -74,7 +84,7 @@ async function hook<R>(
   const until = clock.now() + ms;
   const timed = Promise.withResolvers<HookOutcome>();
   const timer = clock.timeout(
-    () => timed.resolve({ status: "timeout", error: "Page teardown timed out" }),
+    () => timed.resolve({ status: "timeout", error: "Page teardown timed out", settled: false }),
     ms,
   );
   let operation: Promise<unknown>;
@@ -85,22 +95,36 @@ async function hook<R>(
     synchronousFailure = String(error).slice(0, 16_384);
     operation = Promise.reject(error);
   }
+  const observation: { outcome: HookOutcome | null } = { outcome: null };
+  const observe = (outcome: HookOutcome): HookOutcome => {
+    observation.outcome = outcome;
+    return outcome;
+  };
   const settlement = operation.then(
-    (result): HookOutcome =>
-      clock.now() >= until
-        ? { status: "timeout", error: "Page teardown timed out" }
-        : { status: "pass", result },
-    (error: unknown): HookOutcome => ({
-      status: clock.now() >= until ? "timeout" : "fail",
-      error: String(error).slice(0, 16_384),
-    }),
+    (result) =>
+      observe(
+        clock.now() >= until
+          ? { status: "timeout", error: "Page teardown timed out", settled: true }
+          : { status: "pass", result },
+      ),
+    (error: unknown) =>
+      observe(
+        clock.now() >= until
+          ? { status: "timeout", error: String(error).slice(0, 16_384), settled: true }
+          : { status: "fail", error: String(error).slice(0, 16_384) },
+      ),
   );
   try {
-    if (clock.now() >= until)
-      return {
-        status: "timeout",
-        error: `Page teardown timed out${synchronousFailure ? `; ${synchronousFailure}` : ""}`,
-      };
+    if (clock.now() >= until) {
+      await Promise.resolve();
+      return (
+        observation.outcome ?? {
+          status: "timeout",
+          settled: false,
+          error: `Page teardown timed out${synchronousFailure ? `; ${synchronousFailure}` : ""}`,
+        }
+      );
+    }
     return await Promise.race([settlement, timed.promise]);
   } finally {
     clock.clearTimeout(timer);

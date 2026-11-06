@@ -318,6 +318,7 @@ export async function runPageSuite<R>(
     ) {
       try {
         await writeResult(`${options.resultPath}.diagnostics.json`, {
+          host: hostCases.map((host) => host.failureEvidence()),
           outcomes: collector.outcomes,
           results: collector.results,
           failures: collector.failures,
@@ -351,7 +352,7 @@ export async function runPageSuite<R>(
     cleanupOnly = false,
   ): Promise<void> {
     const operationSignal = cleanupOnly ? AbortSignal.timeout(15_000) : signal;
-    const priorFailures = cleanupOnly ? collector.failures.length : 0;
+    let priorFailures = cleanupOnly ? collector.failures.length : 0;
     if (!driver || !fixture || driver.uncertain)
       throw new Error("Driver unavailable or command completion uncertain");
     if (!cleanupOnly) checkExecution();
@@ -375,6 +376,10 @@ export async function runPageSuite<R>(
       budgets.hello,
       "navigation",
     );
+    const resultDeadline =
+      group.role === "case" && adapter.resultWaitMs !== undefined
+        ? performance.now() + adapter.resultWaitMs
+        : undefined;
     const host = item?.drive
       ? new HostDrive(driver, collector, state, consumers, budgets, started, operationSignal)
       : undefined;
@@ -392,11 +397,8 @@ export async function runPageSuite<R>(
       );
       await host.admit();
       await host.drive(item.drive);
+      priorFailures = collector.failures.length;
     }
-    const resultDeadline =
-      group.role === "case" && adapter.resultWaitMs !== undefined
-        ? performance.now() + adapter.resultWaitMs
-        : undefined;
     await awaitState(
       state,
       () => state.complete,
@@ -408,6 +410,7 @@ export async function runPageSuite<R>(
       priorFailures,
       resultDeadline,
     );
+    if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
     state.retiring = true;
     await awaitState(
       state,
@@ -419,7 +422,6 @@ export async function runPageSuite<R>(
       operationSignal,
       priorFailures,
     );
-    if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
     await retireDocument(state, collector, documentDriver, operationSignal, priorFailures);
     operationSignal.throwIfAborted();
     if (!cleanupOnly) checkDeadline();
@@ -434,6 +436,7 @@ export async function runPageSuite<R>(
       collector.runComplete ||
       hostCases.some(
         (host) =>
+          host.transport.uncertain ||
           host.uncontainedPageWork() ||
           (host.state.cutoff === null && host.state.host?.kind !== "terminal"),
       )

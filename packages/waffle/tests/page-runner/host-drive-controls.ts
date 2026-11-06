@@ -22,6 +22,7 @@ export const hostControlModes = [
   "late-init",
   "disposal-twice",
   "final-ack",
+  "sync-hook",
 ];
 function equal(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
@@ -29,12 +30,13 @@ function equal(actual: unknown, expected: unknown): void {
 }
 async function drive(host: HostCase, mode: string): Promise<unknown> {
   if (host.signal.aborted || host.remainingMs() <= 0) throw new Error("Host clock unavailable");
-  if (mode === "setup-fail") throw new Error("SETUP_FAILURE");
-  await host.task("window.__hostFixture = { value: 7, disposed: 0 }; await Promise.resolve();");
+  if (mode === "setup-fail") await host.task("throw new Error('SETUP_FAILURE');");
   if (mode === "late-init")
     await host.task(
-      "await new Promise(resolve => setTimeout(resolve, 300)); window.__lateWorker = new Worker(URL.createObjectURL(new Blob(['onmessage=()=>{}'])));",
+      "await new Promise(resolve => setTimeout(resolve, 300)); window.__hostFixture = {value:7,disposed:0}; window.__lateWorker = new Worker(URL.createObjectURL(new Blob(['onmessage=()=>{}'])));",
     );
+  else
+    await host.task("window.__hostFixture = { value: 7, disposed: 0 }; await Promise.resolve();");
   if (mode === "admission-ack") {
     if (host.remainingMs() < 120) throw new Error("Admission consumed original setup allowance");
     await host.sleep(70);
@@ -108,12 +110,11 @@ export async function hostControl(
       hello: 4000,
       heartbeat: 2000,
       case: ["separate-hook", "admission-ack", "late-init"].includes(mode) ? 150 : 4000,
-      teardown:
-        mode === "disposal-hang"
-          ? 60
-          : ["verdict-delivery", "teardown-report"].includes(mode)
-            ? 120
-            : 2000,
+      teardown: ["disposal-hang", "sync-hook"].includes(mode)
+        ? 60
+        : ["verdict-delivery", "teardown-report"].includes(mode)
+          ? 120
+          : 2000,
       caseDocument: 15_000,
       group: 5000,
       run: 30_000,
@@ -137,12 +138,7 @@ export async function hostControl(
     "disposal-fail",
     "array-mismatch",
     "thenable",
-    "admission-ack",
-    "verdict-delivery",
-    "teardown-report",
-    "late-init",
-    "disposal-twice",
-    "final-ack",
+    "sync-hook",
   ].includes(mode);
   if (result.exit !== (infra ? 2 : 4))
     throw new Error(`Host ${mode} wrong exit ${JSON.stringify(result)}`);

@@ -29,10 +29,7 @@ export type HostPhase =
   | { kind: "driving"; startedAt: number }
   | { kind: "teardown"; enteredAt: number }
   | { kind: "terminal" };
-export type PageTask =
-  | { status: "pending" }
-  | { status: "pass" }
-  | { status: "fail"; error: string };
+type PageTask = { status: "pending" } | { status: "pass" } | { status: "fail"; error: string };
 export type DocumentState = {
   group: Group;
   token: string;
@@ -286,7 +283,8 @@ export class Collector {
       state.host &&
       record(body.result) &&
       record(body.result.teardown) &&
-      body.result.teardown.status === "timeout"
+      body.result.teardown.status === "timeout" &&
+      body.result.teardown.settled === false
     )
       this.fail(
         "teardown-unconfirmed",
@@ -354,6 +352,11 @@ export class Collector {
     if (now - runStartedAt >= budgets.run) return "run-timeout";
     if (!state || state.cutoff !== null) return null;
     if (!state.doc && now - state.startedAt >= budgets.hello) return "no-hello";
+    if (
+      (state.host?.kind === "awaiting-ready" || state.host?.kind === "ready") &&
+      now - state.startedAt >= budgets.hello
+    )
+      return "no-case-ready";
     const documentMs = state.host ? (budgets.caseDocument ?? budgets.group) : budgets.group;
     if (now - state.startedAt >= documentMs) return "group-timeout";
     if (

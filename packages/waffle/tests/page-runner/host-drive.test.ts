@@ -9,7 +9,13 @@ import { record, type Body, type HostCase, type HostVerdict } from "./protocol.j
 
 class HostDriver extends FakeDriver {
   readonly verdicts: HostVerdict[] = [];
-  phase = "ready";
+  readonly receiver = { phase: "ready" };
+  get phase() {
+    return this.receiver.phase;
+  }
+  set phase(phase: string) {
+    this.receiver.phase = phase;
+  }
   config: Record<string, unknown> = {};
   effects: number[] = [];
   dispatchGate: Promise<void> | undefined;
@@ -44,7 +50,7 @@ class HostDriver extends FakeDriver {
   }
   override async script(source: string): Promise<unknown> {
     if (!source.startsWith("const identity = ")) return super.script(source);
-    const driver = this;
+    const receiver = this.receiver;
     const runner = await super.script("return window.__pageRunner || null");
     const window = {
       __suiteConfiguration: this.config,
@@ -52,25 +58,25 @@ class HostDriver extends FakeDriver {
       effects: this.effects,
       __hostCase: {
         get phase() {
-          return driver.phase;
+          return receiver.phase;
         },
         set phase(phase: string) {
-          driver.phase = phase;
+          receiver.phase = phase;
         },
-        verdict(value: HostVerdict) {
-          driver.verdicts.push(value);
-          driver.phase = "teardown";
-          void driver.terminal(value);
+        verdict: (value: HostVerdict) => {
+          this.verdicts.push(value);
+          this.phase = "teardown";
+          void this.terminal(value);
         },
-        task(operation: string) {
-          const reporting = driver.send({
+        task: (operation: string) => {
+          const reporting = this.send({
             kind: "task-end",
             caseId: "host",
             operation,
             status: "pass",
           });
-          driver.dispatchGate = reporting.then(async () => {
-            driver.completionBeforeResponse = true;
+          this.dispatchGate = reporting.then(async () => {
+            this.completionBeforeResponse = true;
             await Bun.sleep(10);
           });
         },
@@ -219,7 +225,7 @@ test("synchronous callback expiry cannot pass even before its timer tick", () =>
     const a = adapter(async () => {
       const until = performance.now() + 100;
       while (performance.now() < until) {
-        /* Deliberately occupy one synchronous callback turn. */
+        performance.now();
       }
       return true;
     });
@@ -374,3 +380,78 @@ test("a command with an expired waiter stays owned until its actual settlement",
   await pending;
   expect(await consumers.join(10)).toBe(true);
 });
+
+test("a late in-flight command cannot dispatch after checked teardown retains its scratch", () =>
+  fixture(async (root) => {
+    const release = Promise.withResolvers<void>(),
+      d = new HostDriver();
+    const delayedHandle = async () => {
+      await release.promise;
+      return "root";
+    };
+    const a = adapter(async (host) => {
+      d.handle = delayedHandle;
+      await host.script("window.effects.push(99)");
+      return true;
+    });
+    a.budgets = () => ({ ...budgets, run: 300 });
+    try {
+      const result = await runPageSuite(a, () => d, options(root));
+      const before = JSON.stringify(result);
+      expect(result.exit).toBe(2);
+      expect(result.cleanup.scratch.status).toBe("unconfirmed");
+      expect(result.cleanup.session.status).toBe("confirmed");
+      release.resolve();
+      await Bun.sleep(30);
+      expect(JSON.stringify(result)).toBe(before);
+      expect(d.effects).toEqual([]);
+      expect(d.verdicts).toEqual([]);
+    } finally {
+      release.resolve();
+      await release.promise;
+    }
+  }));
+
+test("full original matcher evidence is saved outside scratch without enlarging verdicts", () =>
+  fixture(async (root) => {
+    const actual = Array.from({ length: 196608 }, (_, i) => i % 251);
+    actual[123456] = -1;
+    const original = Object.assign(new Error("ORIGINAL_DIAGNOSTIC".repeat(2000)), { actual });
+    const result = await runPageSuite(
+      adapter(async () => {
+        throw original;
+      }),
+      () => new HostDriver(),
+      options(root),
+    );
+    expect(result.exit).toBe(1);
+    expect(result.cleanup.scratch.status).toBe("confirmed");
+    const evidence: unknown = await Bun.file(`${options(root).resultPath}.diagnostics.json`).json();
+    if (
+      !record(evidence) ||
+      !Array.isArray(evidence.host) ||
+      !record(evidence.host[0]) ||
+      !record(evidence.host[0].body)
+    )
+      throw new Error("Missing original failure evidence");
+    expect(evidence.host[0].body.message).toBe(String(original));
+    const details = evidence.host[0].body.details;
+    if (!record(details)) throw new Error("Missing matcher details");
+    expect(details.actual).toEqual(actual);
+  }));
+test("failure to persist diagnostics retains scratch and does not replace the body cause", () =>
+  fixture(async (root) => {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(`${options(root).resultPath}.diagnostics.json`);
+    const result = await runPageSuite(
+      adapter(async () => {
+        throw new Error("PRIMARY_BODY");
+      }),
+      () => new HostDriver(),
+      options(root),
+    );
+    expect(result.exit).toBe(2);
+    expect(result.cleanup.scratch.status).toBe("unconfirmed");
+    expect(JSON.stringify(result.outcomes)).toContain("PRIMARY_BODY");
+    expect(result.failures.some((failure) => failure.category === "diagnostics-write")).toBe(true);
+  }));

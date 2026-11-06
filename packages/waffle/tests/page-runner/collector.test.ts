@@ -400,3 +400,30 @@ test("host document and hook reporting clocks do not reuse the original body bud
   f.clock(150);
   expect(f.collector.deadline(b, 0)).toBe("group-timeout");
 });
+
+test("failed compact evidence is checked before terminal classification or result mutation", () => {
+  const f = fixture();
+  f.send({ kind: "case-start", caseId: first });
+  expect(() =>
+    f.send({
+      kind: "case-end",
+      caseId: first,
+      status: "fail",
+      error: "ORIGINAL",
+      result: "x".repeat(48 * 1024),
+    }),
+  ).toThrow("oversized");
+  expect(f.collector.outcomes[first]?.status).toBe("running");
+  expect(f.collector.results).toEqual({});
+});
+test("pre-start host admission remains bounded by the startup clock", () => {
+  const f = hostFixture();
+  f.clock(20);
+  expect(
+    f.collector.deadline(
+      { hello: 20, heartbeat: 100, case: 60, group: 90, caseDocument: 150, run: 2160 },
+      0,
+    ),
+  ).toBe("no-case-ready");
+  expect(f.collector.outcomes.host?.status).toBe("pending");
+});

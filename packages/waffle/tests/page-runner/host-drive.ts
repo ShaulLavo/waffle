@@ -8,7 +8,6 @@ import {
 } from "./protocol.js";
 import type { Collector, DocumentState } from "./collector.js";
 
-/** A revoked capability cannot stop arbitrary callback code. Cleanup joins its actual settlement. */
 export class HostConsumers {
   private readonly pending = new Set<Promise<void>>();
   private readonly revokers = new Set<() => void>();
@@ -68,6 +67,8 @@ export class HostDrive {
   private active = false;
   private uncertain = false;
   private delivered = false;
+  private closed = false;
+  private bodyFailure: { message: string; stack: string | null; details: unknown } | null = null;
   readonly transport: Driver;
   constructor(
     private readonly driver: Driver,
@@ -78,9 +79,13 @@ export class HostDrive {
     private readonly started: number,
     private readonly signal: AbortSignal,
   ) {
-    consumers.register(() => this.revoke());
+    consumers.register(() => {
+      this.closed = true;
+      this.revoke();
+    });
     const queue = <T>(callback: () => Promise<T>, signal: AbortSignal) =>
       abortable(this.enqueue(callback), signal);
+    const isUncertain = () => this.uncertain || driver.uncertain;
     this.transport = {
       start: (signal) => queue(() => driver.start(signal), signal),
       navigate: (url, signal) => queue(() => driver.navigate(url, signal), signal),
@@ -97,7 +102,7 @@ export class HostDrive {
         ),
       stop: () => driver.stop(),
       get uncertain() {
-        return driver.uncertain;
+        return isUncertain();
       },
     };
   }
@@ -111,6 +116,7 @@ export class HostDrive {
     return next;
   }
   private infrastructure(recovery = false): void {
+    if (this.closed) throw new Error("Host command owner stopped");
     if (!recovery) this.signal.throwIfAborted();
     if (!recovery && performance.now() - this.started >= this.budgets.run)
       throw new Error("Absolute run deadline");
@@ -182,7 +188,8 @@ try {
     return abortable(queued, signal);
   }
   private fault(error: unknown): void {
-    if (!this.uncertain) this.collector.fail("host-command", String(error), this.state);
+    if (!this.uncertain && !this.closed && this.state.cutoff === null)
+      this.collector.fail("host-command", String(error), this.state);
     this.uncertain = true;
     this.body.abort(error);
   }
@@ -239,7 +246,15 @@ try {
     if (Array.from(this.state.tasks.values()).some((task) => task.status === "pending"))
       return true;
     const result = this.collector.results[this.state.group.caseIds[0] ?? ""];
-    return record(result) && record(result.teardown) && result.teardown.status === "timeout";
+    return (
+      record(result) &&
+      record(result.teardown) &&
+      result.teardown.status === "timeout" &&
+      result.teardown.settled === false
+    );
+  }
+  failureEvidence(): unknown {
+    return { caseId: this.state.group.caseIds[0], body: this.bodyFailure };
   }
   async drive(callback: (host: HostCase) => Promise<unknown>): Promise<void> {
     const caseId = this.state.group.caseIds[0];
@@ -279,7 +294,13 @@ try {
       this.checkBody();
       verdict = { status: "pass", result: evidence };
     } catch (error) {
-      verdict = { status: "fail", error: String(error).slice(0, 16_384) };
+      const message = String(error);
+      this.bodyFailure = {
+        message,
+        stack: error instanceof Error ? (error.stack ?? null) : null,
+        details: error,
+      };
+      verdict = { status: "fail", error: message.slice(0, 16_384) };
     } finally {
       clearInterval(monitor);
       this.signal.removeEventListener("abort", stop);

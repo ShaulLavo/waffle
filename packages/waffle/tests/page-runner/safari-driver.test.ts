@@ -1,6 +1,12 @@
 import { storagePolicy } from "./storage-policy.js";
 import { expect, test } from "bun:test";
-import { associateListener, nativeCapabilities, SafariDriver } from "./safari-driver.js";
+import {
+  associateListener,
+  nativeCapabilities,
+  SafariDriver,
+  driverResponseLimit,
+  readDriverResponse,
+} from "./safari-driver.js";
 import { parseSession } from "./driver.js";
 import { Collector } from "./collector.js";
 import { probeDocument } from "./suite-host.js";
@@ -103,7 +109,6 @@ test("structured script-timeout code survives HTTP transport and stops later dis
   }
 });
 
-import { driverResponseLimit, readDriverResponse } from "./safari-driver.js";
 test("bounded WebDriver response retains every interior integer", async () => {
   const actual = Array.from({ length: 196608 }, (_, index) => index % 251);
   actual[123456] = -1;

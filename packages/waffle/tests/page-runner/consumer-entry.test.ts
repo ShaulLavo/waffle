@@ -7,8 +7,11 @@ import {
   ownedDatabase,
   type SuiteAdapter,
   type RunOptions,
+  type HostCase,
+  type HostVerdict,
+  type SuiteCase,
 } from "waffle/testing/page-runner";
-import { isHostedPage } from "waffle/testing/page-runner/page";
+import { isHostedPage, type HostPageRun, type PageSuite } from "waffle/testing/page-runner/page";
 import { Collector, type CollectorPolicy } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
 import { serveCollector } from "./suite-host.js";
@@ -631,8 +634,6 @@ test("scratch deletion failure remains unconfirmed after consumers stop", () =>
     }
   }));
 
-import type { HostCase, HostVerdict, SuiteCase } from "waffle/testing/page-runner";
-import type { HostPageRun, PageSuite } from "waffle/testing/page-runner/page";
 test("public entries expose authoritative host domain types without widening driver access", async () => {
   const item: SuiteCase<null> = {
     id: "typed-host",
