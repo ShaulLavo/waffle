@@ -152,12 +152,7 @@
           "generation": 1
         },
         "buffer_offset": 8,
-        "data": [
-          1,
-          2,
-          3,
-          4
-        ]
+        "data": [1, 2, 3, 4]
       },
       "hex": "1c000000 28000000 0a000000 01000000 04000000 01000000 0800000000000000 04000000 01020304"
     },
@@ -182,11 +177,7 @@
           },
           "aspect": 0
         },
-        "data": [
-          9,
-          8,
-          7
-        ],
+        "data": [9, 8, 7],
         "data_layout": {
           "offset": 0,
           "bytes_per_row": 4294967295,
@@ -209,10 +200,7 @@
           "id": 9,
           "generation": 1
         },
-        "dynamic_offsets": [
-          256,
-          512
-        ]
+        "dynamic_offsets": [256, 512]
       },
       "hex": "1e000000 20000000 02000000 09000000 01000000 02000000 00010000 00020000"
     },
@@ -284,6 +272,89 @@
         }
       },
       "hex": "18000000 50000000 06000000 01000000 03000000 01000000 01000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000042 00000000 3412 0000 00000000"
+    }
+  ],
+  "structs": [
+    {
+      "name": "buffer binding u64 alignment",
+      "struct": "buffer_binding_layout",
+      "input": {
+        "next_in_chain": [],
+        "type": 2,
+        "has_dynamic_offset": true,
+        "min_binding_size": 16
+      },
+      "hex": "00000000 02000000 01000000 00000000 1000000000000000"
+    },
+    {
+      "name": "C bind group resource arms and whole-size",
+      "struct": "bind_group_entry",
+      "input": {
+        "next_in_chain": [],
+        "binding": 1,
+        "buffer": {
+          "id": 4,
+          "generation": 1
+        },
+        "offset": 8,
+        "size": "WHOLE_SIZE",
+        "sampler": null,
+        "texture_view": null
+      },
+      "hex": "00000000 01000000 04000000 01000000 0800000000000000 ffffffffffffffff 0000000000000000 0000000000000000"
+    },
+    {
+      "name": "layout entry active buffer and unused arms",
+      "struct": "bind_group_layout_entry",
+      "input": {
+        "next_in_chain": [],
+        "binding": 0,
+        "visibility": 2,
+        "binding_array_size": 0,
+        "buffer": {
+          "next_in_chain": [],
+          "type": 2,
+          "has_dynamic_offset": true,
+          "min_binding_size": 16
+        },
+        "sampler": {
+          "next_in_chain": [],
+          "type": 0
+        },
+        "texture": {
+          "next_in_chain": [],
+          "sample_type": 0,
+          "view_dimension": 0,
+          "multisampled": false
+        },
+        "storage_texture": {
+          "next_in_chain": [],
+          "access": 0,
+          "format": 0,
+          "view_dimension": 0
+        }
+      },
+      "hex": "00000000 00000000 0200000000000000 00000000 00000000 02000000 01000000 1000000000000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+    },
+    {
+      "name": "render pass depth and stencil attachment",
+      "struct": "render_pass_depth_stencil_attachment",
+      "input": {
+        "next_in_chain": [],
+        "view": {
+          "id": 4,
+          "generation": 1
+        },
+        "depth_load_op": 2,
+        "depth_store_op": 1,
+        "depth_clear_value": 1,
+        "depth_read_only": false,
+        "stencil_load_op": 0,
+        "stencil_store_op": 0,
+        "stencil_clear_value": 0,
+        "stencil_read_only": false
+      },
+      "hex": "00000000 04000000 01000000 02000000 01000000 0000803f 00000000 00000000 00000000 00000000 00000000"
     }
   ]
 }

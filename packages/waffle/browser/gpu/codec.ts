@@ -38,6 +38,10 @@ export function wireNumber(value: WireValue | undefined): number {
   if (typeof value !== "number") throw new GpuProtocolError("Expected wire number");
   return value;
 }
+export function wireBytes(value: WireValue | undefined): Uint8Array {
+  if (!(value instanceof Uint8Array)) throw new GpuProtocolError("Expected wire byte span");
+  return value;
+}
 export function wireHandle(value: WireValue | undefined): Handle {
   const object = wireObject(value);
   return { id: wireNumber(object.id), generation: wireNumber(object.generation) };

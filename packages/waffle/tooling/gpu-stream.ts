@@ -204,7 +204,8 @@ function compileCall(
   if (context === "top") prefix = prefix.concat([field("receiver", `object.${receiver}`)]);
   const args = method.args ? fields(method.args) : [];
   const adapter = lowering(entry.lowering);
-  const input = chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
+  const input =
+    chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
   return {
     opcode: uint(entry.opcode, 0xfff),
     name,
@@ -225,7 +226,11 @@ function spanArguments(args: Field[], adapter: Lowering): Field[] {
   const index = args.findIndex((arg) => arg.name === adapter.span.pointer);
   const pointer = args[index];
   const size = args[index + 1];
-  if (pointer?.type !== "c_void_data_ptr" || size?.name !== adapter.span.size || size.type !== "usize")
+  if (
+    pointer?.type !== "c_void_data_ptr" ||
+    size?.name !== adapter.span.size ||
+    size.type !== "usize"
+  )
     throw new Error("Upload span must replace the pinned C data pointer and size pair");
   return args.slice(0, index).concat([field(pointer.name, "bytes")], args.slice(index + 2));
 }
@@ -574,8 +579,12 @@ function cFields(name: string, members: readonly Field[], start = 0): string[] {
   for (const [index, member] of members.entries()) {
     const prefix = `WAFFLE_GPU_${macro(name)}_${macro(member.name)}`;
     const size = fixedSize(member.type);
-    const align = size === 2 ? 2 :
-      size === 8 && !member.type.startsWith("object.") && member.type !== "handle" ? 8 : 4;
+    const align =
+      size === 2
+        ? 2
+        : size === 8 && !member.type.startsWith("object.") && member.type !== "handle"
+          ? 8
+          : 4;
     if (offset !== null) offset = Math.ceil(offset / align) * align;
     lines.push(
       `#define ${prefix}_INDEX ${index}u /* ${member.type}${member.optional ? "; optional" : ""} */`,

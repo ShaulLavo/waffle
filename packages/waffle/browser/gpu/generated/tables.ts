@@ -3748,7 +3748,7 @@ export const gpuStreamSources = {
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
   "browser/gpu/stream.json": "356b06fa1aa769ccec7fde38436ef9d03e63cefe5d629c2cf514970447eafadc",
-  "tooling/gpu-stream.ts": "e3b00544bb8f3260c98c66b84694d3535b218753e86c2b14142be1f63087a79b",
+  "tooling/gpu-stream.ts": "9df26744a140ac13624bf82a935ec7c50ee676ca7539f1981e7233ccff991b93",
   "tooling/gpu-stream-model.ts": "06fab05be7dbf25de664b1d651c669a492ce840eb655798d9691edd0a6c1f0c1",
   "tooling/gpu-stream-layout.ts":
     "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
@@ -3757,7 +3757,7 @@ export const gpuStreamSources = {
   "tests/fixtures/gpu/enums.json":
     "948cf6b35746dc22d491fb2df20a503f9a89e42e3c302a4ff956a2aee1f48fd1",
   "tests/fixtures/gpu/scene-expected.json":
-    "8b21ac106bf34ffe86c3e491af3b45bf25705f962f59c3a7c7de84c4b032bd29",
+    "0b0d409701f46eb8cdbc78ab26ea1f63b0d2c73de45f1d01c4acdebd509092a8",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {
