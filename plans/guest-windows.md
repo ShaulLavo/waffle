@@ -3,7 +3,7 @@
 Status: **Approved (owner, 2026-11-02). Scheduled later; don't start until the current finish lines are done.**
 The active GPU lane builds this plan's minimal display first: `runtime.display()`, `createSurface`,
 grants, and the `surfaces` and `surface_info` imports
-([implementation design](gpu-bridge-implementation.md#page-api)). W0 and W1 extend that code.
+([implementation design](gpu-bridge-implementation.md#modules-and-public-entry)). W0 and W1 extend that code.
 Rust crates live outside this repository
 ([where the code lives](guest-graphics.md#where-the-code-lives)).
 
