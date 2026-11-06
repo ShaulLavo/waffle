@@ -69,6 +69,9 @@ export class PreviewRouter {
     return this.servers.has(port);
   }
   register(port: number, server: PreviewServer): void {
+    if (this.servers.get(port) === server) return;
+    this.hosts.get(port)?.close();
+    this.hosts.delete(port);
     this.servers.set(port, server);
   }
   unregister(port: number, server: PreviewServer): void {
