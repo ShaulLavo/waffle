@@ -115,9 +115,9 @@ async function fixture(run: (root: string) => Promise<void>): Promise<void> {
   try {
     await run(root);
   } finally {
+    await rm(root, { recursive: true, force: true });
     expect(process.listeners("SIGINT")).toEqual(before.SIGINT);
     expect(process.listeners("SIGTERM")).toEqual(before.SIGTERM);
-    await rm(root, { recursive: true, force: true });
   }
 }
 function options(root: string) {
