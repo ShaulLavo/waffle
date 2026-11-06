@@ -432,7 +432,11 @@ export async function runPageSuite<R>(
       !fixture ||
       driver.uncertain ||
       collector.runComplete ||
-      hostCases.some((host) => host.uncontainedPageWork())
+      hostCases.some(
+        (host) =>
+          host.uncontainedPageWork() ||
+          (host.state.cutoff === null && host.state.host?.kind !== "terminal"),
+      )
     )
       return;
     collector.abandon(String(error));

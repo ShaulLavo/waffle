@@ -294,3 +294,109 @@ test("malformed reports from an observed older document keep their original grou
   ).toThrow();
   expect(f.collector.failures.map((failure) => failure.group)).toEqual(["case"]);
 });
+
+function hostFixture() {
+  let now = 0;
+  const collector = new Collector(
+    "host-run",
+    ["host"],
+    ["host"],
+    { listIds: () => ["host"], check() {} },
+    () => now,
+  );
+  const state = collector.expect(
+    { id: "host", role: "case", caseIds: ["host"], execution: "host" },
+    "token",
+    "http://runner/",
+    "root",
+  );
+  let sequence = 0;
+  const send = (body: Body) =>
+    collector.receive({ run: "host-run", doc: "doc", seq: sequence++, ...body });
+  send({ kind: "hello", token: "token", group: "host" });
+  return {
+    collector,
+    state,
+    send,
+    clock(value: number) {
+      now = value;
+    },
+  };
+}
+test("host case admission, body, task and teardown transitions stay distinct", () => {
+  const f = hostFixture();
+  f.send({ kind: "case-ready", caseId: "host" });
+  f.clock(100);
+  f.collector.beginHost(f.state, "host");
+  f.collector.registerTask(f.state, "task");
+  f.send({ kind: "task-end", caseId: "host", operation: "task", status: "pass" });
+  f.clock(200);
+  f.send({ kind: "case-teardown", caseId: "host" });
+  expect(f.state.host).toEqual({ kind: "teardown", enteredAt: 200 });
+  f.send({
+    kind: "case-end",
+    caseId: "host",
+    status: "fail",
+    error: "BODY; DISPOSAL",
+    result: { body: "BODY", teardown: "DISPOSAL" },
+  });
+  expect(f.collector.results.host).toEqual({ body: "BODY", teardown: "DISPOSAL" });
+  expect(f.collector.failures).toEqual([]);
+});
+for (const body of [
+  { kind: "case-start", caseId: "host" },
+  { kind: "case-ready", caseId: "wrong" },
+  { kind: "case-teardown", caseId: "host" },
+  { kind: "task-end", caseId: "host", operation: "unregistered", status: "pass" },
+] satisfies Body[]) {
+  test(`host rejects out-of-phase report ${body.kind} before mutation`, () => {
+    const f = hostFixture();
+    expect(() => f.send(body)).toThrow();
+    expect(f.collector.outcomes.host?.status).toBe("pending");
+    expect(f.state.host?.kind).toBe("awaiting-ready");
+    expect(f.state.tasks.size).toBe(0);
+  });
+}
+test("page-driven case cannot accept host admission", () => {
+  const f = fixture();
+  expect(() => f.send({ kind: "case-ready", caseId: first })).toThrow();
+});
+test("host task wait expiry does not retire execution or make a no-op hook containment", () => {
+  const f = hostFixture();
+  f.send({ kind: "case-ready", caseId: "host" });
+  f.collector.beginHost(f.state, "host");
+  f.collector.registerTask(f.state, "late-module");
+  f.send({ kind: "case-teardown", caseId: "host" });
+  f.send({
+    kind: "case-end",
+    caseId: "host",
+    status: "fail",
+    error: "body timeout",
+    result: { teardown: { status: "pass" } },
+  });
+  expect(f.state.tasks.get("late-module")).toEqual({ status: "pending" });
+  f.send({ kind: "task-end", caseId: "host", operation: "late-module", status: "pass" });
+  expect(f.state.tasks.get("late-module")).toEqual({ status: "pass" });
+  expect(f.collector.outcomes.host?.status).toBe("fail");
+});
+test("host document and hook reporting clocks do not reuse the original body budget", () => {
+  const f = hostFixture();
+  const b = {
+    hello: 20,
+    heartbeat: 10000,
+    case: 60,
+    teardown: 60,
+    caseDocument: 150,
+    group: 90,
+    run: 2160,
+  };
+  f.send({ kind: "case-ready", caseId: "host" });
+  f.clock(10);
+  f.collector.beginHost(f.state, "host");
+  f.clock(70);
+  f.send({ kind: "case-teardown", caseId: "host" });
+  f.clock(130);
+  expect(f.collector.deadline(b, 0)).toBeNull();
+  f.clock(150);
+  expect(f.collector.deadline(b, 0)).toBe("group-timeout");
+});

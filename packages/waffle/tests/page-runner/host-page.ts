@@ -78,9 +78,11 @@ async function hook<R>(
     ms,
   );
   let operation: Promise<unknown>;
+  let synchronousFailure = "";
   try {
     operation = Promise.resolve(run.teardown(request, body));
   } catch (error) {
+    synchronousFailure = String(error).slice(0, 16_384);
     operation = Promise.reject(error);
   }
   const settlement = operation.then(
@@ -88,10 +90,17 @@ async function hook<R>(
       clock.now() >= until
         ? { status: "timeout", error: "Page teardown timed out" }
         : { status: "pass", result },
-    (error: unknown): HookOutcome => ({ status: "fail", error: String(error).slice(0, 16_384) }),
+    (error: unknown): HookOutcome => ({
+      status: clock.now() >= until ? "timeout" : "fail",
+      error: String(error).slice(0, 16_384),
+    }),
   );
   try {
-    if (clock.now() >= until) return { status: "timeout", error: "Page teardown timed out" };
+    if (clock.now() >= until)
+      return {
+        status: "timeout",
+        error: `Page teardown timed out${synchronousFailure ? `; ${synchronousFailure}` : ""}`,
+      };
     return await Promise.race([settlement, timed.promise]);
   } finally {
     clock.clearTimeout(timer);

@@ -79,14 +79,22 @@ export class HostDrive {
     private readonly signal: AbortSignal,
   ) {
     consumers.register(() => this.revoke());
-    const queue = <T>(callback: () => Promise<T>) => this.enqueue(callback);
+    const queue = <T>(callback: () => Promise<T>, signal: AbortSignal) =>
+      abortable(this.enqueue(callback), signal);
     this.transport = {
-      start: (signal) => queue(() => driver.start(signal)),
-      navigate: (url, signal) => queue(() => driver.navigate(url, signal)),
-      handle: (signal) => queue(() => driver.handle(signal)),
-      handles: (signal) => queue(() => driver.handles(signal)),
-      url: (signal) => queue(() => driver.url(signal)),
-      script: (source, signal) => this.execute(source, false, signal),
+      start: (signal) => queue(() => driver.start(signal), signal),
+      navigate: (url, signal) => queue(() => driver.navigate(url, signal), signal),
+      handle: (signal) => queue(() => driver.handle(signal), signal),
+      handles: (signal) => queue(() => driver.handles(signal), signal),
+      url: (signal) => queue(() => driver.url(signal), signal),
+      script: (source, signal) =>
+        this.execute(
+          source,
+          false,
+          signal,
+          undefined,
+          this.signal.aborted && signal !== this.signal,
+        ),
       stop: () => driver.stop(),
       get uncertain() {
         return driver.uncertain;
@@ -102,9 +110,9 @@ export class HostDrive {
     );
     return next;
   }
-  private infrastructure(): void {
-    this.signal.throwIfAborted();
-    if (performance.now() - this.started >= this.budgets.run)
+  private infrastructure(recovery = false): void {
+    if (!recovery) this.signal.throwIfAborted();
+    if (!recovery && performance.now() - this.started >= this.budgets.run)
       throw new Error("Absolute run deadline");
     if (this.driver.uncertain || this.uncertain) throw new Error("Uncertain host dispatch");
     if (this.collector.active !== this.state || this.state.cutoff !== null)
@@ -132,22 +140,30 @@ if (!c || !r || !h || c.run !== identity.run || c.token !== identity.token ||
  !${JSON.stringify(user ? ["driving"] : ["admitting", "ready", "driving", "teardown", "terminal"])}.includes(h.phase))
  return {kind:'binding-error'};
 try {
- const value = (function(){${source}\n})();
- if (value && typeof value.then === 'function') return {kind:'expression-error', error:'Use host.task for asynchronous work'};
+ const value = new Function("h", "window", "location", ${JSON.stringify(source)})(h, window, location);
+ if (value && typeof value.then === 'function') { Promise.resolve(value).catch(() => {}); return {kind:'expression-error', error:'Use host.task for asynchronous work'}; }
  return value === undefined ? {kind:'void'} : {kind:'value', value};
 } catch (error) {return {kind:'expression-error',error:String(error).slice(0,16384)};}`;
   }
-  private execute(source: string, user: boolean, signal = this.signal): Promise<unknown> {
-    return this.enqueue(async () => {
+  private execute(
+    source: string,
+    user: boolean,
+    signal = this.signal,
+    beforeDispatch?: () => void,
+    recovery = false,
+  ): Promise<unknown> {
+    const queued = this.enqueue(async () => {
       if (user) this.checkBody();
       try {
-        this.infrastructure();
+        this.infrastructure(recovery);
         if ((await this.driver.handle(signal)) !== this.state.handle)
           throw new Error("Host window handle changed");
-        this.infrastructure();
+        this.infrastructure(recovery);
+        if (user) this.checkBody();
+        beforeDispatch?.();
         if (user) this.checkBody();
         const value = await this.driver.script(this.guard(source, user), signal);
-        this.infrastructure();
+        this.infrastructure(recovery);
         if (!record(value)) throw new Error("Malformed bound command answer");
         if (value.kind === "binding-error") throw new Error("Host document binding changed");
         if (value.kind === "expression-error" && typeof value.error === "string")
@@ -163,6 +179,7 @@ try {
         throw error;
       }
     });
+    return abortable(queued, signal);
   }
   private fault(error: unknown): void {
     if (!this.uncertain) this.collector.fail("host-command", String(error), this.state);
@@ -185,9 +202,13 @@ try {
   private async task(source: string): Promise<void> {
     this.checkBody();
     const operation = crypto.randomUUID();
-    this.collector.registerTask(this.state, operation);
     await abortable(
-      this.execute(`h.task(${JSON.stringify(operation)}, ${JSON.stringify(source)});`, true),
+      this.execute(
+        `h.task(${JSON.stringify(operation)}, ${JSON.stringify(source)});`,
+        true,
+        this.signal,
+        () => this.collector.registerTask(this.state, operation),
+      ),
       this.body.signal,
     );
     for (;;) {
@@ -243,7 +264,10 @@ try {
         signal: this.body.signal,
         remainingMs: () =>
           Math.max(0, Math.min(this.deadline, this.started + this.budgets.run) - performance.now()),
-        script: (source) => abortable(this.execute(source, true), this.body.signal),
+        script: (source) => {
+          this.checkBody();
+          return abortable(this.execute(source, true), this.body.signal);
+        },
         task: (source) => this.task(source),
         sleep: (ms) => this.sleep(ms),
       };
@@ -251,7 +275,9 @@ try {
       this.checkBody();
       const result = await abortable(returned, this.body.signal);
       this.checkBody();
-      verdict = { status: "pass", result: compact(result) };
+      const evidence = compact(result);
+      this.checkBody();
+      verdict = { status: "pass", result: evidence };
     } catch (error) {
       verdict = { status: "fail", error: String(error).slice(0, 16_384) };
     } finally {
@@ -259,6 +285,7 @@ try {
       this.signal.removeEventListener("abort", stop);
       this.revoke();
     }
+    this.collector.results[caseId] = { body: verdict, teardown: { status: "not-entered" } };
     if (this.uncontainedPageWork())
       this.collector.fail(
         "page-task-unconfirmed",
@@ -267,6 +294,16 @@ try {
       );
     if (this.delivered) throw new Error("Host verdict already delivered");
     this.delivered = true;
-    await this.execute(`h.verdict(${JSON.stringify(verdict)});`, false);
+    const deliverySignal = AbortSignal.any([this.signal, AbortSignal.timeout(5000)]);
+    if (!this.signal.aborted)
+      await this.execute(`h.verdict(${JSON.stringify(verdict)});`, false, deliverySignal);
+    else
+      await this.execute(
+        `h.verdict(${JSON.stringify(verdict)});`,
+        false,
+        AbortSignal.timeout(5000),
+        undefined,
+        true,
+      );
   }
 }

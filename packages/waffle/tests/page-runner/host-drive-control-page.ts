@@ -9,10 +9,24 @@ declare global {
 }
 const originalFetch = globalThis.fetch.bind(globalThis);
 let lostTaskAck = false;
-if (HOST_CONTROL === "retry") {
+if (["retry", "admission-ack", "teardown-report", "final-ack"].includes(HOST_CONTROL)) {
   Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const response = await originalFetch(input, init);
-    if (!lostTaskAck && String(init?.body).includes('"kind":"task-end"')) {
+    const body = String(init?.body);
+    if (HOST_CONTROL === "final-ack" && body.includes('"kind":"retire-ready"'))
+      throw new Error("Lost final ACK");
+    if (HOST_CONTROL === "teardown-report" && body.includes('"kind":"case-teardown"'))
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    if (HOST_CONTROL === "admission-ack" && !lostTaskAck && body.includes('"kind":"case-ready"')) {
+      lostTaskAck = true;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      throw new Error("Lost admission ACK");
+    }
+    if (
+      HOST_CONTROL === "retry" &&
+      !lostTaskAck &&
+      String(init?.body).includes('"kind":"task-end"')
+    ) {
       lostTaskAck = true;
       throw new Error("Synthetic lost task acknowledgement");
     }
@@ -26,7 +40,8 @@ const run: HostPageRun<Request> = {
     if (fixture) fixture.disposed++;
     if (request.mode === "disposal-fail") throw new Error("DISPOSAL_FAILURE");
     if (request.mode === "disposal-hang") await new Promise(() => {});
-    if (request.mode === "separate-hook") await new Promise((resolve) => setTimeout(resolve, 80));
+    if (["separate-hook", "verdict-delivery", "teardown-report"].includes(request.mode))
+      await new Promise((resolve) => setTimeout(resolve, 80));
     if (request.mode === "late-error")
       setTimeout(() => {
         throw new Error("LATE_PAGE_ERROR");
