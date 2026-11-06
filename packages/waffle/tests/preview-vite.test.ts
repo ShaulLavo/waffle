@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build, createServer, preview, type ViteDevServer, type PreviewServer } from "vite";
-import { createRuntime } from "../index.js";
+import { createRuntime, type Runtime } from "../index.js";
 import { PreviewRouter } from "../browser/preview.js";
 import { createPreviewServiceWorker } from "../browser/service-worker.js";
 import type { PreviewReply } from "../browser/preview-protocol.js";
@@ -143,6 +143,20 @@ async function checkMountedUpgrade(worker: ReturnType<typeof mountedWorker>, por
   }
 }
 
+type Cleanup = () => void | Promise<void>;
+
+async function cleanup(operations: readonly Cleanup[]): Promise<void> {
+  const errors: unknown[] = [];
+  for (const operation of operations) {
+    try {
+      await operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "Vite fixture cleanup failed");
+}
+
 async function closePreview(server: PreviewServer | undefined) {
   if (!server) return;
   if ("closeAllConnections" in server.httpServer) server.httpServer.closeAllConnections();
@@ -153,12 +167,7 @@ async function closePreview(server: PreviewServer | undefined) {
 
 test("stock Vite 8 dev and preview use virtual listeners through standalone, embedded and root routes", async () => {
   const root = await mkdtemp(join(process.env.NETWORK_SCRATCH_ROOT ?? tmpdir(), "waffle-vite-"));
-  const runtime = createRuntime({
-    filesystem: { workerURL: new URL("../browser/fs-worker.ts", import.meta.url), mode: "memory" },
-    processHost() {
-      throw Error("Preview activated processes");
-    },
-  });
+  let runtime: Runtime | undefined;
   const mounted = new PreviewRouter({ baseURL, prefix: "__preview" });
   const origins = new Map<number, string>();
   const roots = new PreviewRouter({
@@ -170,6 +179,15 @@ test("stock Vite 8 dev and preview use virtual listeners through standalone, emb
   let dev: ViteDevServer | undefined;
   let production: PreviewServer | undefined;
   try {
+    runtime = createRuntime({
+      filesystem: {
+        workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
+        mode: "memory",
+      },
+      processHost() {
+        throw Error("Preview activated processes");
+      },
+    });
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "index.html"),
@@ -262,11 +280,17 @@ test("stock Vite 8 dev and preview use virtual listeners through standalone, emb
       expect(bridge.errors).toEqual([]);
     }
   } finally {
-    for (const host of hosts) host.close();
-    for (const bridge of bridges) await bridge.close();
-    await closePreview(production);
-    await dev?.close();
-    await runtime.dispose();
-    await rm(root, { recursive: true, force: true });
+    const closing: Cleanup[] = hosts.map((host) => () => host.close());
+    await cleanup(
+      closing.concat(
+        bridges.map((bridge) => () => bridge.close()),
+        [
+          () => closePreview(production),
+          () => dev?.close(),
+          () => runtime?.dispose(),
+          () => rm(root, { recursive: true, force: true }),
+        ],
+      ),
+    );
   }
 }, 30_000);
