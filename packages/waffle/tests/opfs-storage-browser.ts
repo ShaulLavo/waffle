@@ -1,4 +1,4 @@
-import type { StorageAllocationHooks } from "./storage-allocation.js";
+import { withStorageCleanup, type StorageAllocationHooks } from "./storage-allocation.js";
 import { OPFS_FORMAT } from "../fs/vfs-format.js";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
@@ -1055,20 +1055,21 @@ export function opfsStorageTests(
         opened.push({ cancel, pending });
         return pending;
       };
-      try {
-        await run(name, open);
-      } finally {
-        // Failure owns queued opens too: abort pending requests before closing granted owners.
-        for (const entry of opened) entry.cancel.abort();
-        for (const entry of opened)
-          await entry.pending
-            .then(
-              (storage) => storage.close(),
-              () => {},
-            )
-            .catch(() => {});
-        await OpfsStorage.delete(name);
-      }
+      await withStorageCleanup(
+        () => run(name, open),
+        async () => {
+          // Failure owns queued opens too: abort pending requests before closing granted owners.
+          for (const entry of opened) entry.cancel.abort();
+          for (const entry of opened)
+            await entry.pending
+              .then(
+                (storage) => storage.close(),
+                () => {},
+              )
+              .catch(() => {});
+          await OpfsStorage.delete(name);
+        },
+      );
     },
   }));
 }

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { storageTests, opfsStorageTests } from "../storage-browser.js";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { storageWorker, type WorkerRequest } from "./storage-worker.js";
-import { Collector, type DocumentState, type Group } from "./collector.js";
+import { Collector, ObservationClosed, type DocumentState, type Group } from "./collector.js";
 import { bounded, type CleanupStep, type Driver, type DriverCleanup } from "./driver.js";
 import { exactInventory, record, storageBudgets, type Budgets } from "./protocol.js";
 export function storageInventory(): { backend: "indexeddb" | "opfs"; label: string; id: string }[] {
@@ -22,7 +22,7 @@ export function storageInventory(): { backend: "indexeddb" | "opfs"; label: stri
       })),
     );
 }
-export async function storageAssets(): Promise<Record<string, Blob | string>> {
+async function storageAssets(): Promise<Record<string, Blob | string>> {
   const root = resolve(import.meta.dir, "..");
   return {
     "/page.js": await browserBundle(join(import.meta.dir, "storage-page.ts")),
@@ -56,6 +56,8 @@ export function serveCollector(collector: Collector, assets: Record<string, Blob
           headers: { ...headers, "Content-Type": "application/javascript" },
         });
       } catch (error) {
+        if (error instanceof ObservationClosed)
+          return Response.json({ error: error.message }, { status: 410, headers });
         collector.fail("collector", String(error));
         return Response.json({ error: String(error) }, { status: 409, headers });
       }
@@ -95,6 +97,7 @@ export type RunOptions = {
   signal?: AbortSignal;
   budgets?: Budgets;
   assets?: Record<string, Blob | string>;
+  cleanupTimeoutMs?: number;
 };
 export type StorageResult = {
   suite: string;
@@ -107,6 +110,7 @@ export type StorageResult = {
   runComplete: boolean;
   documents: { group: string; doc: string | null; cutoff: number | null }[];
   ledger: Collector["ledger"];
+  storageRemaining: Collector["remaining"];
   cleanup: DriverCleanup & { server: CleanupStep; storage: CleanupStep; scratch: CleanupStep };
   exit: number;
 };
@@ -155,9 +159,17 @@ export async function runStorage(
   const teardown = async (): Promise<void> => {
     if (driver) {
       try {
-        driverCleanup = await bounded(driver.stop(), 12_000, "driver teardown");
+        driverCleanup = await bounded(
+          driver.stop(),
+          options.cleanupTimeoutMs ?? 12_000,
+          "driver teardown",
+        );
       } catch (error) {
         driverCleanup.session = { status: "unconfirmed", detail: String(error) };
+        driverCleanup.launcher = {
+          status: "unconfirmed",
+          detail: "Driver teardown did not return a launcher disposition",
+        };
         collector.fail("cleanup", String(error));
       }
     }
@@ -202,13 +214,19 @@ export async function runStorage(
     controller.abort("run-timeout");
   }, 100);
   const signal = controller.signal;
-  async function document(group: Group, request: WorkerRequest | null): Promise<void> {
+  async function document(
+    group: Group,
+    request: WorkerRequest | null,
+    cleanupOnly = false,
+  ): Promise<void> {
+    const operationSignal = cleanupOnly ? AbortSignal.timeout(15_000) : signal;
+    const priorFailures = cleanupOnly ? collector.failures.length : 0;
     if (!driver || !fixture || driver.uncertain)
       throw new Error("Driver unavailable or command completion uncertain");
-    signal.throwIfAborted();
+    operationSignal.throwIfAborted();
     const token = crypto.randomUUID(),
       url = `${fixture.origin}/?token=${token}`;
-    const state = collector.expect(group, token, url, await driver.handle(signal));
+    const state = collector.expect(group, token, url, await driver.handle(operationSignal));
     fixture.configurations.set(token, {
       run,
       token,
@@ -217,14 +235,32 @@ export async function runStorage(
       ledger: collector.ledger,
     });
     await bounded(
-      driver.navigate(url, AbortSignal.any([signal, AbortSignal.timeout(budgets.hello)])),
+      driver.navigate(url, AbortSignal.any([operationSignal, AbortSignal.timeout(budgets.hello)])),
       budgets.hello,
       "navigation",
     );
-    await awaitState(state, () => state.complete, collector, driver, budgets, started, signal);
+    await awaitState(
+      state,
+      () => state.complete,
+      collector,
+      driver,
+      budgets,
+      cleanupOnly ? performance.now() : started,
+      operationSignal,
+      priorFailures,
+    );
     state.retiring = true;
-    await awaitState(state, () => state.ready, collector, driver, budgets, started, signal);
-    await retireDocument(state, collector, driver, signal);
+    await awaitState(
+      state,
+      () => state.ready,
+      collector,
+      driver,
+      budgets,
+      cleanupOnly ? performance.now() : started,
+      operationSignal,
+      priorFailures,
+    );
+    await retireDocument(state, collector, driver, operationSignal, priorFailures);
     fixture.configurations.delete(token);
   }
   try {
@@ -267,8 +303,21 @@ export async function runStorage(
     };
   } catch (error) {
     collector.fail(driver?.uncertain ? "driver-lost" : "host", String(error));
+    if (driver && fixture && !driver.uncertain && !collector.runComplete) {
+      collector.abandon(String(error));
+      try {
+        await document({ id: "cleanup-finish", role: "finish", caseIds: [] }, null, true);
+      } catch (cleanupError) {
+        collector.fail("storage-cleanup", String(cleanupError));
+      }
+    }
     storage = {
-      status: collector.ledger.length ? "unconfirmed" : "not-created",
+      status:
+        collector.runComplete && collector.remaining?.length === 0
+          ? "confirmed"
+          : collector.ledger.length
+            ? "unconfirmed"
+            : "not-created",
       detail: "Run stopped; exact registered ledger retained in result",
     };
   } finally {
@@ -279,15 +328,7 @@ export async function runStorage(
     options.signal?.removeEventListener("abort", interrupted);
   }
   const cleanup = { ...driverCleanup, server, storage, scratch: scratchCleanup };
-  const unconfirmed = [cleanup.session, cleanup.launcher, server, storage, scratchCleanup].some(
-    (step) => step.status === "unconfirmed",
-  );
-  const complete =
-    collector.runComplete &&
-    selected.every(
-      (id) => collector.outcomes[id]?.status === "pass" && !collector.outcomes[id]?.provisional,
-    );
-  const exit = collector.failures.length || unconfirmed ? 2 : options.filter ? 4 : complete ? 0 : 1;
+  const exit = resultExit(collector, cleanup, options.filter);
   const result: StorageResult = {
     suite: "storage",
     run,
@@ -303,11 +344,29 @@ export async function runStorage(
       cutoff: state.cutoff,
     })),
     ledger: collector.ledger,
+    storageRemaining: collector.remaining,
     cleanup,
     exit,
   };
   await writeResult(options.resultPath, result);
   return result;
+}
+function resultExit(
+  collector: Collector,
+  cleanup: StorageResult["cleanup"],
+  filtered: string | undefined,
+): number {
+  const selected = collector.selected;
+  const { server, storage, scratch: scratchCleanup } = cleanup;
+  const unconfirmed = [cleanup.session, cleanup.launcher, server, storage, scratchCleanup].some(
+    (step) => step.status === "unconfirmed",
+  );
+  const complete =
+    collector.runComplete &&
+    selected.every(
+      (id) => collector.outcomes[id]?.status === "pass" && !collector.outcomes[id]?.provisional,
+    );
+  return collector.failures.length || unconfirmed ? 2 : filtered ? 4 : complete ? 0 : 1;
 }
 async function awaitState(
   state: DocumentState,
@@ -317,6 +376,7 @@ async function awaitState(
   budgets: Budgets,
   started: number,
   signal: AbortSignal,
+  priorFailures = 0,
 ): Promise<void> {
   while (!done()) {
     signal.throwIfAborted();
@@ -334,11 +394,23 @@ async function awaitState(
       );
       throw new Error(overdue);
     }
-    if (collector.failures.length) throw new Error("Collector has sticky failure");
+    if (collector.failures.length > priorFailures) throw new Error("Collector has sticky failure");
     await Bun.sleep(25);
   }
 }
 export async function probeDocument(
+  state: DocumentState,
+  driver: Driver,
+  signal: AbortSignal,
+): Promise<string> {
+  const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(4000)]);
+  try {
+    return await bounded(inspectDocument(state, driver, probeSignal), 4000, "document probe");
+  } catch {
+    return "driver-lost";
+  }
+}
+async function inspectDocument(
   state: DocumentState,
   driver: Driver,
   signal: AbortSignal,
@@ -358,11 +430,12 @@ export async function probeDocument(
       : "driver-lost";
   }
 }
-async function retireDocument(
+export async function retireDocument(
   state: DocumentState,
   collector: Collector,
   driver: Driver,
   signal: AbortSignal,
+  priorFailures = 0,
 ): Promise<void> {
   const classification = await probeDocument(state, driver, signal);
   if (classification !== "responsive") {
@@ -377,7 +450,8 @@ async function retireDocument(
       collector.retire(state, value.ackedThrough);
       return;
     }
-    if (collector.failures.length) throw new Error("Sticky failure before retirement");
+    if (collector.failures.length > priorFailures)
+      throw new Error("Sticky failure before retirement");
     await Bun.sleep(25);
   }
   throw new Error("Retirement barrier missing final report acknowledgement");

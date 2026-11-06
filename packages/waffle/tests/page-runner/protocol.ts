@@ -13,7 +13,8 @@ export type Outcome =
   | { status: "pending" }
   | { status: "running"; startedAt: number }
   | { status: "pass"; provisional: boolean }
-  | { status: "fail"; detail: string };
+  | { status: "fail"; detail: string }
+  | { status: "host"; detail: string };
 export type Failure = { group: string; category: string; detail: string };
 export type Budgets = {
   hello: number;
@@ -29,7 +30,7 @@ export function record(value: unknown): value is Record<string, unknown> {
 function strings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
 }
-export function storageEntry(value: unknown): value is StorageEntry {
+function storageEntry(value: unknown): value is StorageEntry {
   return (
     record(value) &&
     (value.kind === "indexeddb" || value.kind === "opfs-directory") &&

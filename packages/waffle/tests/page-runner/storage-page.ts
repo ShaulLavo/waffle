@@ -25,7 +25,7 @@ async function runPage(config: Configuration, reporter: Reporter): Promise<void>
   else
     await reporter.send({ kind: "run-complete", remaining: await cleanupStorage(config.ledger) });
   await reporter.send({ kind: "doc-complete" });
-  await retire(config, reporter);
+  await reporter.readyForRetirement();
 }
 async function runCase(
   request: Extract<WorkerRequest, { kind: "run" }>,
@@ -43,18 +43,6 @@ async function runCase(
     outcome = { kind: "case-end", caseId, status: "fail", error: String(error) };
   }
   await reporter.send(outcome);
-}
-async function retire(config: Configuration, reporter: Reporter): Promise<void> {
-  const url = `/retire?run=${encodeURIComponent(config.run)}&doc=${encodeURIComponent(reporter.observation.doc)}`;
-  while (!reporter.observation.retired) {
-    const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
-    const command: unknown = await response.json();
-    if (command === true) {
-      await reporter.send({ kind: "retire-ready" });
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
 }
 const reporter = new Reporter(window.__storageConfiguration.run);
 function pageError(message: string): void {

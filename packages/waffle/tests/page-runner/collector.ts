@@ -10,6 +10,7 @@ import {
   type Outcome,
 } from "./protocol.js";
 import type { StorageEntry } from "../storage-allocation.js";
+export class ObservationClosed extends Error {}
 export type Group = { id: string; role: "list" | "case" | "finish"; caseIds: string[] };
 export type DocumentState = {
   group: Group;
@@ -34,6 +35,7 @@ export class Collector {
   readonly documents: DocumentState[] = [];
   active: DocumentState | undefined;
   runComplete = false;
+  remaining: StorageEntry[] | null = null;
   constructor(
     readonly run: string,
     readonly required: string[],
@@ -74,6 +76,12 @@ export class Collector {
   heartbeat(value: unknown): void {
     const state = this.active;
     if (
+      record(value) &&
+      value.run === this.run &&
+      this.documents.some((old) => old.doc === value.doc && old.cutoff !== null)
+    )
+      return;
+    if (
       !record(value) ||
       value.kind !== "heartbeat" ||
       value.run !== this.run ||
@@ -97,13 +105,18 @@ export class Collector {
       return this.violation("Wrong run or no expected document", state);
     const encoded = JSON.stringify(message);
     if (state.messages[message.seq] === encoded) return { ackedThrough: message.seq };
-    if (state.cutoff !== null) return this.violation("Report after document retirement", state);
+    if (state.cutoff !== null) throw new ObservationClosed("Report after observation cutoff");
     if (state !== this.active || message.seq !== state.messages.length)
       return this.violation("Report sequence conflict or gap", state);
     if (!state.doc && message.kind !== "hello") return this.violation("Report before hello", state);
     if (state.doc && state.doc !== message.doc)
       return this.violation("Unexpected new document", state);
-    this.apply(state, message);
+    try {
+      this.apply(state, message);
+    } catch (error) {
+      this.fail("protocol", String(error), state);
+      throw error;
+    }
     state.messages.push(encoded);
     return { ackedThrough: message.seq };
   }
@@ -153,7 +166,7 @@ export class Collector {
     return (
       state.group.caseIds.length > 0 &&
       state.group.caseIds.every((id) =>
-        ["pass", "fail"].includes(this.outcomes[id]?.status ?? "pending"),
+        ["pass", "fail", "host"].includes(this.outcomes[id]?.status ?? "pending"),
       )
     );
   }
@@ -179,7 +192,10 @@ export class Collector {
         : { status: "fail", detail: body.error ?? "test failure" };
   }
   private allocate(state: DocumentState, entry: StorageEntry): void {
-    const id = state.group.caseIds[0];
+    const backendPrefix = entry.kind === "indexeddb" ? "indexeddb:" : "opfs:";
+    const id = state.group.caseIds.find(
+      (caseId) => caseId.startsWith(backendPrefix) && this.outcomes[caseId]?.status === "running",
+    );
     if (!id || this.outcomes[id]?.status !== "running")
       this.violation("Allocation outside running storage case", state);
     let logical = entry.name;
@@ -205,7 +221,7 @@ export class Collector {
   }
   private finish(state: DocumentState, remaining: StorageEntry[]): void {
     const casesSettled = this.selected.every((id) =>
-      ["pass", "fail"].includes(this.outcomes[id]?.status ?? "pending"),
+      ["pass", "fail", "host"].includes(this.outcomes[id]?.status ?? "pending"),
     );
     const retired = this.documents
       .filter((item) => item !== state)
@@ -213,8 +229,18 @@ export class Collector {
     if (state.group.role !== "finish" || state.final || !casesSettled || !retired)
       this.violation("Premature run-complete", state);
     if (remaining.length) this.fail("storage-cleanup", JSON.stringify(remaining), state);
+    this.remaining = remaining;
     state.final = true;
     this.runComplete = true;
+  }
+  abandon(detail: string): void {
+    if (this.active && this.active.cutoff === null)
+      this.active.cutoff = this.active.messages.length - 1;
+    for (const id of this.selected) {
+      const outcome = this.outcomes[id];
+      if (outcome?.status === "pending" || outcome?.status === "running")
+        this.outcomes[id] = { status: "host", detail };
+    }
   }
   retire(state: DocumentState, watermark: number): void {
     if (!state.ready || watermark !== state.messages.length - 1 || state !== this.active)

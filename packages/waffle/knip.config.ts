@@ -17,6 +17,9 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        "tests/page-runner/*-page.ts",
+        "tests/page-runner/storage-control-worker.ts",
+        "tests/page-runner/browser-controls-runner.ts",
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",
         "tests/fixtures/interrupt-dom-consumer.ts",

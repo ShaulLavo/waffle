@@ -1,6 +1,6 @@
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
-import type { Driver, DriverCleanup } from "./driver.js";
+import { bounded, type Driver, type DriverCleanup } from "./driver.js";
 /** Local runner regressions only. Not an iOS adapter or a replacement storage body. */
 export class PlaywrightDriver implements Driver {
   private lifecycle = new BrowserRunnerLifecycle();
@@ -53,7 +53,11 @@ export class PlaywrightDriver implements Driver {
   }
   async script(source: string, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
-    return this.current().evaluate((script) => new Function(script)(), source);
+    return bounded(
+      this.current().evaluate((script) => new Function(script)(), source),
+      3000,
+      "script probe",
+    );
   }
   stop(): Promise<DriverCleanup> {
     return (this.stopping ??= this.stopOnce());

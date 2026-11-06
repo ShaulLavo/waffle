@@ -82,9 +82,11 @@ export function associateListener(
 ): Association | null {
   const lines = text.trim().split("\n");
   const pids = lines.filter((line) => line.startsWith("p"));
+  const names = lines.filter((line) => line.startsWith("n"));
   if (
     pids.length !== 1 ||
-    !lines.some((line) =>
+    names.length === 0 ||
+    !names.every((line) =>
       [`n127.0.0.1:${port}`, `n*:${port}`, `n[::1]:${port}`, `nlocalhost:${port}`].includes(line),
     )
   )
@@ -312,7 +314,7 @@ export class SafariDriver implements Driver {
       return { status: "confirmed", detail: `Direct launcher ${child.pid} joined` };
     } catch {
       try {
-        child.kill("SIGKILL");
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
         await bounded(child.exited, 2000, "launcher SIGKILL join");
         return { status: "confirmed", detail: `Direct launcher ${child.pid} killed and joined` };
       } catch (error) {

@@ -1,4 +1,4 @@
-import type { StorageAllocationHooks } from "./storage-allocation.js";
+import { withStorageCleanup, type StorageAllocationHooks } from "./storage-allocation.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
@@ -1310,12 +1310,13 @@ export function storageTests(
           opened.push(backend);
           return backend;
         };
-        try {
-          await run(name, open);
-        } finally {
-          for (const backend of opened) await backend.close().catch(() => {});
-          await request(indexedDB.deleteDatabase(name));
-        }
+        await withStorageCleanup(
+          () => run(name, open),
+          async () => {
+            for (const backend of opened) await backend.close().catch(() => {});
+            await request(indexedDB.deleteDatabase(name));
+          },
+        );
       },
     }));
 }

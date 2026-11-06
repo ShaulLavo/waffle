@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { nativeCapabilities } from "./safari-driver.js";
+import { associateListener, nativeCapabilities } from "./safari-driver.js";
 import { parseSession } from "./driver.js";
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const capabilities = {
@@ -41,3 +41,20 @@ for (const mismatch of [
     expect(() => nativeCapabilities(answer, udid)).toThrow();
   });
 }
+
+test("an HTTP response or foreign listener is not a launcher/XPC association", () => {
+  const domain = "pid/100/com.apple.WebDriver.HTTPService = {\n\tpid = 321\n}";
+  const identity =
+    "321 1 501 Fri Nov 6 13:00:00 2026 /System/Library/PrivateFrameworks/WebDriver.framework/Versions/A/XPCServices/com.apple.WebDriver.HTTPService.xpc/Contents/MacOS/com.apple.WebDriver.HTTPService";
+  expect(associateListener("p321\nn127.0.0.1:456", domain, identity, 100, 456, 501)?.kind).toBe(
+    "launchd-service",
+  );
+  expect(associateListener("p321\nn127.0.0.1:456", "HTTP 200", identity, 100, 456, 501)).toBeNull();
+  expect(associateListener("p321\nn127.0.0.1:456", domain, identity, 100, 456, 999)).toBeNull();
+  expect(
+    associateListener("p321\nn127.0.0.1:456\nnforeign:456", domain, identity, 100, 456, 501),
+  ).toBeNull();
+  expect(associateListener("p100\nn127.0.0.1:456", "", "", 100, 456, 501)).toEqual({
+    kind: "launcher",
+  });
+});

@@ -1,5 +1,4 @@
-import type { Body } from "./protocol.js";
-import { record } from "./protocol.js";
+import { record, type Body } from "./protocol.js";
 export type Observation = {
   doc: string;
   ackedThrough: number;
@@ -94,6 +93,18 @@ export class Reporter {
     } catch {
     } finally {
       this.heartbeatBusy = false;
+    }
+  }
+  async readyForRetirement(): Promise<void> {
+    const url = `/retire?run=${encodeURIComponent(this.run)}&doc=${encodeURIComponent(this.observation.doc)}`;
+    while (!this.observation.retired) {
+      const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      const command: unknown = await response.json();
+      if (command === true) {
+        await this.send({ kind: "retire-ready" });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
   stop(): void {
