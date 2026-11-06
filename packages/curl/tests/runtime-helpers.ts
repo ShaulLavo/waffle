@@ -49,6 +49,7 @@ export async function shell(runtime: Runtime) {
   const stdout: Uint8Array[] = [];
   const stderr: Uint8Array[] = [];
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (fd, bytes) => (fd === 2 ? stderr : stdout).push(bytes.slice()),
   });
   const descriptors = new DescriptorTable();

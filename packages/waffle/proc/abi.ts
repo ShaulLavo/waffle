@@ -717,7 +717,7 @@ export class ProcessABI {
     if (stream.kind === "file" || stream.kind === "directory") return false;
     return sameWord(stream.notification, wake);
   }
-  private readiness(sub: Subscription): Readiness | null {
+  private readiness(sub: Subscription, timeout: number): Readiness | null {
     if (sub.kind === 7) {
       const ready = this.options.futexReady?.(sub.id);
       if (ready === undefined) throw new ProcessError(ProcessErrno.BADF, "unknown futex watch");
@@ -752,6 +752,11 @@ export class ProcessABI {
     }
     const resource = this.descriptor(sub.id, POLL).resource;
     if (resource.kind === "file") {
+      // Zero-time read observation reports regular-file readiness, not whether
+      // a previous asynchronous I/O or offset-lock acquisition has completed.
+      // Waiting polls still follow those completions before retrying the I/O.
+      if (sub.kind === 0 && timeout === 0)
+        return { readable: true, writable: false, hangup: false };
       let state: Readiness = { readable: false, writable: false, hangup: false };
       const result = withFileOffset(
         resource,
@@ -857,7 +862,7 @@ export class ProcessABI {
         if (this.pending()) return 0;
         const ready: { sub: Subscription; flags: number }[] = [];
         for (const sub of subscriptions) {
-          const state = this.readiness(sub);
+          const state = this.readiness(sub, timeout);
           if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup))
             ready.push({ sub, flags: state.hangup ? 1 : 0 });
         }

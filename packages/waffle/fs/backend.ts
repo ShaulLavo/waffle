@@ -17,7 +17,7 @@ import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "
 import type { PublicationBuffers } from "./publication-internal.js";
 import { type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
-import { FilesystemError } from "./protocol.js";
+import { FilesystemError, type FilesystemIdentity } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
 
 /** Storage boundary. 3b can add asynchronous loading/commit without changing guest transport. */
@@ -110,6 +110,8 @@ export interface WatchMutationObserver {
   beforeMutation(): void;
   committed(plan: LocalMutationPlan): void;
 }
+export type MemoryBackendSharedRoot = Pick<FilesystemIdentity, "shared" | "maxBytes" | "segments">;
+
 export class MemoryBackend implements FilesystemBackend {
   private readonly watchOwner: { observer?: WatchMutationObserver };
   installWatchObserver(observer: WatchMutationObserver): void {
@@ -119,7 +121,10 @@ export class MemoryBackend implements FilesystemBackend {
   }
   identity(handle: FileHandle, revoked?: () => boolean): FileIdentity {
     const node = this.fs.nodeForHandle(handle);
-    return this.shared.identity(handle, revoked) ?? this.ensureIdentity(node);
+    const shared = this.mayHaveSharedMetadata(handle, node)
+      ? this.shared.identity(handle, revoked)
+      : undefined;
+    return shared ?? this.ensureIdentity(node);
   }
   ensureIdentity(node: Node): FileIdentity {
     return (node.identity ??= this.shared.identities.create());
@@ -132,7 +137,10 @@ export class MemoryBackend implements FilesystemBackend {
     reservation: IdentityReservation = { workspace: crypto.randomUUID(), era: 1n },
     startupRoot?: MemoryBudget | MemoryBackend,
     watchLimits?: WatchResourceLimits,
+    sharedRoot?: MemoryBackendSharedRoot,
   ) {
+    if (sharedRoot && startupRoot)
+      throw new TypeError("an imported root cannot also own a startup root");
     if (startupRoot instanceof MemoryBackend) {
       if (watchLimits) throw new TypeError("a backend wrapper borrows its watch account");
       this.watchOwner = startupRoot.watchOwner;
@@ -141,21 +149,23 @@ export class MemoryBackend implements FilesystemBackend {
       this.workspaceId = startupRoot.workspaceId;
       this.shared = startupRoot.shared;
       this.startupRoot = startupRoot.startupRoot;
-      this.sharedAttached = startupRoot.sharedAttached;
+      this.sharedPhase = startupRoot.sharedPhase;
+      this.directoryTimes = startupRoot.directoryTimes;
       return;
     }
     this.watchOwner = {};
     this.watchAccount = new RootWatchAccount(watchLimits, startupRoot);
     this.shared = new SharedFilesystemState(
+      sharedRoot?.shared,
+      sharedRoot?.maxBytes,
       undefined,
-      undefined,
-      undefined,
-      undefined,
+      sharedRoot?.segments,
       undefined,
       undefined,
       startupRoot,
     );
     if (this.shared.startupMemoryBudget) this.startupRoot = this.shared;
+    if (sharedRoot) this.sharedPhase = "imported";
     this.fs = fs;
     this.workspaceId = reservation.workspace;
     this.shared.identities.configure(reservation);
@@ -171,17 +181,21 @@ export class MemoryBackend implements FilesystemBackend {
   }
   shared: SharedFilesystemState;
   private readonly startupRoot?: SharedFilesystemState;
-  private sharedAttached = false;
+  private sharedPhase: "standalone" | "imported" | "attached" = "standalone";
   private directoryTimes = new Map<FileHandle, number>();
+  private mayHaveSharedMetadata(handle: FileHandle, node: Node): boolean {
+    // Non-file metadata enters the shared table only through sync, which records it here.
+    return node.kind === "file" || this.directoryTimes.has(handle);
+  }
   attachShared(
     buffer: SharedArrayBuffer,
     maxBytes?: number,
     segments: readonly SharedArrayBuffer[] = [],
     publication?: PublicationBuffers,
   ): void {
-    if (this.sharedAttached || this.startupRoot) {
+    if (this.sharedPhase !== "standalone" || this.startupRoot) {
       if (
-        this.sharedAttached &&
+        this.sharedPhase === "attached" &&
         (!!this.shared.publication !== !!publication ||
           (publication && this.shared.publication?.buffers.history !== publication.history))
       )
@@ -195,7 +209,7 @@ export class MemoryBackend implements FilesystemBackend {
       const same = Atomics.load(incoming, 6) === probe;
       Atomics.store(this.shared.cells, 6, previous);
       if (!same) throw new Error("filesystem service cannot attach a second shared tree");
-      if (this.sharedAttached) return;
+      if (this.sharedPhase === "attached") return;
     }
     const previous = this.shared;
     this.shared = new SharedFilesystemState(
@@ -206,8 +220,8 @@ export class MemoryBackend implements FilesystemBackend {
       undefined,
       publication,
     );
-    this.shared.identities.copyFrom(previous.identities);
-    this.sharedAttached = true;
+    if (this.sharedPhase !== "imported") this.shared.identities.copyFrom(previous.identities);
+    this.sharedPhase = "attached";
   }
   /** revoked ends a wait for another owner's shared lock when the caller's request is cancelled. */
   readMetadata(node: Node, revoked?: () => boolean) {
@@ -829,7 +843,7 @@ export class MemoryBackend implements FilesystemBackend {
     for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
     for (const parent of action.plan.parents) {
       const handle = this.fs.handleForNode(parent);
-      if (this.shared.stat(handle)) this.sync(handle);
+      if (this.directoryTimes.has(handle) && this.shared.stat(handle)) this.sync(handle);
     }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
@@ -970,7 +984,7 @@ export class MemoryBackend implements FilesystemBackend {
       for (const { node, handle, identity } of plan.identities) {
         node.identity = identity;
         this.identityChanged(node);
-        this.shared.updateIdentity(handle, identity);
+        if (this.mayHaveSharedMetadata(handle, node)) this.shared.updateIdentity(handle, identity);
       }
       if (this.watchOwner.observer) this.watchOwner.observer.committed(plan);
       else this.shared.watch.effects(plan.changes);
@@ -1000,6 +1014,8 @@ export class MemoryBackend implements FilesystemBackend {
       case "setMtime":
         this.fs.setMtime(action.handle, action.mtime);
         this.shared.setMtime(action.handle, action.mtime);
+        if (this.directoryTimes.has(action.handle))
+          this.directoryTimes.set(action.handle, action.mtime);
         return;
       case "preopen":
         this.sync(this.fs.preopen(action.path));

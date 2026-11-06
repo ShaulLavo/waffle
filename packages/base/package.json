@@ -15,18 +15,21 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "pack": "node ../../tools/program-package.ts pack",
-    "prepack": "node ../../tools/program-package.ts check"
+    "pack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check"
   },
   "dependencies": {
-    "waffle": "workspace:*",
     "waffle-coreutils": "workspace:*",
     "waffle-findutils": "workspace:*",
     "waffle-grep": "workspace:*",
     "waffle-ripgrep": "workspace:*",
     "waffle-sed": "workspace:*"
   },
+  "devDependencies": {
+    "waffle": "workspace:*"
+  },
   "peerDependencies": {
     "waffle": "*"
-  }
+  },
+  "waffleHostInterface": 1
 }

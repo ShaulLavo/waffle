@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -34,6 +35,7 @@ for (const rejection of ["external", "unknown-sender"] as const)
       await broker?.dispose();
     });
     const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
       identities,
       table,
       registry,
@@ -57,7 +59,7 @@ for (const rejection of ["external", "unknown-sender"] as const)
     const rootFilesystem = createFilesystemIdentity(),
       childFilesystem = createFilesystemIdentity();
     root.data = { filesystem: rootFilesystem };
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const host = new WorkerPipeHost({
       transport: root,
       registry: (

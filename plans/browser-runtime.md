@@ -11,6 +11,33 @@ Waffle owns `core/`, `fs/`, `proc/`, `interrupt/` and generic `browser/` service
 guest engines, native bindings, module caches, service-worker registration policy and application
 adapters. Consumers pin one exact Waffle Git commit and use the matching package exports.
 
+## Automatic shared-memory defaults
+
+Status: Idea, deferred by the owner on November 6, 2026. Owner: Waffle runtime track.
+Automatic Apple-mobile defaults are not required target behavior. Keep the current omission
+contract: omitting `sharedMemory` selects the unbounded default on every browser, without
+reading the user agent. Explicit application declarations remain available.
+
+[PR 272](https://github.com/ShaulLavo/waffle/pull/272) is closed as superseded. Its branch
+`t3/ios-memory-budget` and head `1600eb044c388a2fb9e9df14252c6a58988b392e` are preserved.
+Automatic Apple-mobile defaults were not shipped. Accounting and admission landed separately
+in [PR 339](https://github.com/ShaulLavo/waffle/pull/339), and Runtime thread work landed in
+[PR 340](https://github.com/ShaulLavo/waffle/pull/340).
+
+There is no demonstrated failure caused by omitted `sharedMemory` reserving too much.
+The conditional Nuxt iOS runs consume Waffle 0.0.110, not PR 272 or current main, and do not
+qualify current main natively. Browser-specific defaults need a real failure, not browser sniffing
+based on assumed capacity. The separate [default-sizing measurement plan](../docs/reservation-defaults-later.md)
+does not make automatic mobile defaults required behavior.
+
+Revisit this idea only if an actual iOS or other run fails because omitted `sharedMemory`
+reserves too much. Capture the failing allocation, runtime version, browser, and reproduction.
+Then design a narrow fix against current main, with an independent review and regression tests
+before merge. Do not revive the broad draft or infer backing-memory reclamation from worker exit.
+
+Keep the process-disappearance test-observer correction on its own PR. Nuxt and its iOS SSR fetch
+TypeError remain with Engines. This decision changes no source, release, or consumer pin.
+
 ## Admission and cleanup
 
 Source bytes are instrumented before execution. A compiled module requires explicit cooperative
@@ -137,3 +164,25 @@ Next step, before choosing any fix: in the failing full-suite order, record the 
 and counter at `ready`, after the peer write, and when `watch.next()` starts waiting. That shows
 whether the commit is published before the reader waits and whether it is ever lost. Raising the
 timeout is not a fix.
+
+
+## Recovering quarantined pipe slots
+
+Status: Approved follow-up. Owner: process-lifecycle track. The pipe-reuse change deliberately
+quarantines a ring if a Worker dies while its incarnation word has active sections. The default
+pipe has 16 writer and 16 reader slots; each abandoned section can permanently cost one slot.
+The default writer exhaustion diagnostic is exactly `pipe write process limit reached: 16 slots
+are live, busy or incarnation-exhausted`. Reader exhaustion additionally names unread slots.
+No timeout or logical revoke may clear an active count.
+
+Reproduce with `bun test packages/waffle/tests/pipe-reuse-worker.test.ts --test-name-pattern
+'physically paused Bun Worker death'`. A real Bun Worker pauses in its publication CAS, the
+host revokes and terminates it without releasing the gate, and the raw epoch remains at one
+active section. The other slot continues to reclaim. The test owns Worker termination and
+controller disposal in `finally`; no native-stop redesign is included in this change.
+
+Recovery needs a trusted, exact native-stop acknowledgement associated with that slot's
+incarnation, plus proof that no admitted native copy can still finish. Browser `terminate()`
+and registry collection do not provide that proof. Add delayed-copy, stale acknowledgement,
+replaced incarnation and physical-death controls before clearing any abandoned count. Keep
+finite quarantine if no platform-independent proof is available.

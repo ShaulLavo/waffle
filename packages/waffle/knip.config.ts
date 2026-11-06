@@ -11,6 +11,8 @@ const publicIssues = Object.fromEntries(
 
 export default {
   includeEntryExports: true,
+  // The schema fixture compiles the generated C header with the host toolchain.
+  ignoreBinaries: ["cc"],
   ignoreIssues: publicIssues,
   tags: ["-@browserEntry", "-@compileFixture", "-@public"],
   workspaces: {
@@ -21,10 +23,15 @@ export default {
         "tests/page-runner/storage-control-worker.ts",
         "tests/page-runner/aggregate-error-fixture.ts",
         "tests/page-runner/browser-controls-runner.ts",
+        "tests/gpu-browser-qualification.ts",
+        "tests/fixtures/gpu/qualification-worker.ts",
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",
         "tests/fixtures/interrupt-dom-consumer.ts",
         "scripts/browser-supervisor.ts",
+        "scripts/threads-fixture-producer.test.ts",
+        "scripts/c-threads-fixture-producer.test.ts",
+        "tests/c-threads-packet-runner.ts",
         "tooling/check-network-rust.ts",
         "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
         "tests/search-executor-browser.ts",
@@ -64,7 +71,7 @@ export default {
       ],
       project: [
         "*.ts",
-        "{browser,core,fs,group,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
+        "{browser,core,fs,group,thread,proc,interrupt,search,scripts,tooling,tests}/**/*.{ts,js}",
       ],
     },
   },

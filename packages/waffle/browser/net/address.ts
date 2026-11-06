@@ -85,13 +85,36 @@ export function lookupAddress(
   return copyResults(filtered);
 }
 
+export function isPeerAddr(value: unknown, allowZeroPort = false): value is PeerAddr {
+  if (!value || typeof value !== "object") return false;
+  if (!("address" in value) || !("port" in value) || !("family" in value)) return false;
+  const port = value.port;
+  return (
+    typeof value.address === "string" &&
+    typeof port === "number" &&
+    Number.isInteger(port) &&
+    port >= (allowZeroPort ? 0 : 1) &&
+    port <= 65535 &&
+    (value.family === "IPv4" || value.family === "IPv6")
+  );
+}
+
 export function tcpAddress(host: string): TcpAddress | undefined {
-  if (host === "localhost" || host === "127.0.0.1") return { address: "127.0.0.1", family: "IPv4" };
-  if (host === "0.0.0.0") return { address: host, family: "IPv4" };
-  if (!/^[\da-f:]+$/i.test(host)) return undefined;
+  const normalized = host.toLowerCase();
+  if (normalized === "localhost" || normalized === "localhost.")
+    return { address: "127.0.0.1", family: "IPv4" };
+  const literal =
+    normalized.startsWith("[") && normalized.endsWith("]") ? normalized.slice(1, -1) : normalized;
+  if (!/^[\da-fx:.]+$/.test(literal)) return undefined;
   try {
-    const address = new URL(`http://[${host}]/`).hostname.slice(1, -1);
-    if (address === "::" || address === "::1") return { address, family: "IPv6" };
+    const ipv6 = literal.includes(":");
+    const address = new URL(`http://${ipv6 ? `[${literal}]` : literal}/`).hostname;
+    if (address === "0.0.0.0") return { address, family: "IPv4" };
+    if (address.startsWith("127.")) return { address: "127.0.0.1", family: "IPv4" };
+    if (address === "[::]" || address === "[::1]")
+      return { address: address.slice(1, -1), family: "IPv6" };
+    if (/^\[::ffff:7f[\da-f]{2}:[\da-f]{1,4}\]$/.test(address))
+      return { address: "::1", family: "IPv6" };
   } catch {
     return undefined;
   }

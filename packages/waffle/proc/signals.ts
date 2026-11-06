@@ -1,9 +1,9 @@
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   isInstance,
   isSharedArrayBuffer,
   isInt32Array,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   objectFreeze,
   typedArrayBuffer,
   typedArrayLength,
@@ -30,7 +30,7 @@ export function createSignalState(source?: ControlCells | SharedArrayBuffer): Co
     ? source
     : isInt32Array(source)
       ? source
-      : new Int32ArrayConstructor(source ?? new SharedArrayBufferConstructor(65 * 4));
+      : new Int32ArrayConstructor(source ?? allocateSharedControl(65 * 4));
   if (
     !isSharedArrayBuffer(isInstance(state, TaggedCells) ? state.buffer : typedArrayBuffer(state)) ||
     (isInstance(state, TaggedCells) ? state.length : typedArrayLength(state)) !== 65

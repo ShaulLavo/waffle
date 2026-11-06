@@ -423,7 +423,8 @@ export class SharedFilesystemState {
       const key = Atomics.load(this.slots, this.at(slot, HANDLE));
       if (key === handle + 1) return slot;
       if (key <= 0 && !available) available = slot;
-      if (key === 0) return create ? available : 0;
+      // A matching tombstone ends this handle's probe chain, even after table saturation.
+      if (key === 0 || key === -handle - 1) return create ? available : 0;
     }
     return create ? available : 0;
   }
@@ -1910,7 +1911,9 @@ export class SharedFilesystemState {
     for (let field = 0; field < HANDLE; field++)
       if (field !== FILE_LOCK) Atomics.store(this.slots, this.at(slot, field), 0);
     this.slots[this.at(slot, REVISION_STATE)]! &= ~RESIDENT;
-    Atomics.store(this.slots, this.at(slot, HANDLE), -1);
+    // Preserve the removed handle as a lookup terminator without moving any live slot.
+    const key = this.at(slot, HANDLE);
+    Atomics.store(this.slots, key, -this.slots[key]!);
   }
   private free(handle: FileHandle, access: "data" | "release" = "data"): void {
     this.globalLock(undefined, this.lockOwner, false, access);

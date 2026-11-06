@@ -9,7 +9,7 @@ import {
 } from "./checkpoint-pressure.js";
 import { FilesystemError, PAGE } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
-import { MemoryBackend, type LocalMutationPlan } from "./backend.js";
+import { MemoryBackend, type LocalMutationPlan, type MemoryBackendSharedRoot } from "./backend.js";
 import {
   MemFS,
   adoptInodes,
@@ -99,8 +99,9 @@ export class PersistentBackend extends MemoryBackend {
     checkpointLimits?: Partial<CheckpointLimits>,
     private readonly dirtyLimits: Partial<DirtyLimits> | false = {},
     startupRoot?: MemoryBudget,
+    sharedRoot?: MemoryBackendSharedRoot,
   ) {
-    super(fs, reservation, startupRoot);
+    super(fs, reservation, startupRoot, undefined, sharedRoot);
     this.pressure = new CheckpointPressure(checkpointLimits);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
@@ -140,6 +141,7 @@ export class PersistentBackend extends MemoryBackend {
       checkpointLimits?: Partial<CheckpointLimits>;
       dirtyLimits?: Partial<DirtyLimits> | false;
       startupRoot?: MemoryBudget;
+      sharedRoot?: MemoryBackendSharedRoot;
     } = {},
   ): Promise<PersistentBackend> {
     const index = await storage.load();
@@ -156,6 +158,7 @@ export class PersistentBackend extends MemoryBackend {
         options.checkpointLimits,
         options.dirtyLimits,
         options.startupRoot,
+        options.sharedRoot,
       );
     const nodes = new Map<number, Node>();
     for (const entry of index.nodes) nodes.set(entry.ino, restoreNode(entry));
@@ -180,6 +183,7 @@ export class PersistentBackend extends MemoryBackend {
       options.checkpointLimits,
       options.dirtyLimits,
       options.startupRoot,
+      options.sharedRoot,
     );
     try {
       if (!index.nodes[0]?.identity) {

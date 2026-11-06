@@ -6,6 +6,7 @@ import { Worker } from "node:worker_threads";
 import type { PipeEndpointHandle } from "../proc/pipes.js";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
 import { Wasi } from "../core/wasi.js";
+import { createNullDevice } from "../core/devices.js";
 import { shareFileResource } from "../core/open-file.js";
 import { createFilesystemIdentity, reapFilesystem } from "../fs/protocol.js";
 import { MemFS } from "../fs/memory.js";
@@ -13,6 +14,7 @@ import { ProcessABI, ProcessSignalExit, type ProcessABIOptions } from "../proc/a
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import { Signal } from "../proc/types.js";
+import { SIGNAL_PENDING, signalPending } from "../proc/signals.js";
 
 type WakeRegisteringStream = Stream & {
   registerWake(wake: Int32Array): (() => void) | void;
@@ -440,6 +442,83 @@ test("poll uses exact 16-byte subscription/event layouts with opaque u64 userdat
   expect(f.bytes()[560]).toBe(0xaa);
 });
 
+test("zero-time read observation preserves files, null and both pipe directions", () => {
+  const f = fixture();
+  const root = f.fs.preopen("/");
+  const resolved = f.fs.resolve(root, "read-ready");
+  if (typeof resolved === "number") throw new Error("resolve failed");
+  const handle = f.fs.create(resolved, "file");
+  if (typeof handle !== "number") throw new Error("create failed");
+  f.fs.retain(handle);
+  expect(f.fs.write(handle, [encoder.encode("abc")], 0)).toBe(3);
+  const file = { kind: "file" as const, handle, offset: 1, append: false };
+  const owner = f.descriptors.open(file, ALL, ALL, () => f.fs.release(handle));
+  const writeOnly = f.descriptors.dup(owner);
+  f.descriptors.get(writeOnly)!.rightsBase &= ~(1n << 1n);
+  const nullFd = f.descriptors.open(createNullDevice(), ALL & ~(1n << 1n), ALL);
+  const observe = (fd: number, expected: number) => {
+    const entry = f.descriptors.get(fd)!;
+    const references = entry.description.references;
+    f.sub(0, 0, fd, 0n);
+    expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(expected);
+    expect(entry.description.references).toBe(references);
+  };
+  observe(owner, 1);
+  observe(writeOnly, 1);
+  observe(nullFd, 1);
+  expect(file.offset).toBe(1);
+  expect(f.abi.imports.read!(writeOnly, 4096, 1)).toBe(-76);
+  expect(f.abi.imports.read!(nullFd, 4096, 1)).toBe(-76);
+  expect(f.abi.imports.read!(owner, 4096, 2)).toBe(2);
+  expect(decoder.decode(f.bytes().subarray(4096, 4098))).toBe("bc");
+  observe(owner, 1);
+  expect(file.offset).toBe(3);
+
+  const [reader, writer] = f.pipe();
+  observe(reader, 0);
+  observe(writer, 0);
+  f.put("x");
+  expect(f.abi.imports.write!(writer, 2048, 1)).toBe(1);
+  observe(reader, 1);
+  observe(writer, 0);
+  expect(f.abi.imports.read!(writer, 4096, 1)).toBe(-76);
+  expect(f.abi.imports.read!(reader, 4096, 1)).toBe(1);
+  expect(f.bytes()[4096]).toBe(120);
+  observe(reader, 0);
+  f.descriptors.close(writer);
+  observe(reader, 1);
+  expect(f.abi.imports.read!(reader, 4096, 1)).toBe(0);
+
+  const [lastReader, brokenWriter] = f.pipe();
+  f.descriptors.close(lastReader);
+  observe(brokenWriter, 1);
+  expect(f.view().getUint32(524, true)).toBe(1);
+  expect(f.abi.imports.read!(brokenWriter, 4096, 1)).toBe(-76);
+  f.sub(0, 0, 0x7fffffff, 0n);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(-8);
+  expect(f.waits()).toBe(0);
+});
+
+test("zero-time poll never waits and pending signals leave ready data untouched", () => {
+  const f = fixture();
+  const [reader, writer] = f.pipe();
+  f.sub(0, 0, reader, 0n);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  expect(f.abi.imports.poll!(256, 0, 0, 512)).toBe(0);
+  f.put("x");
+  expect(f.abi.imports.write!(writer, 2048, 1)).toBe(1);
+  expect(f.abi.imports.signal!(Signal.SIGINT, 2)).toBe(0);
+  f.supervisor.kill(f.pid, Signal.SIGINT);
+  f.bytes().fill(0xaa, 512, 528);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  expect(Array.from(f.bytes().subarray(512, 528))).toEqual(Array(16).fill(0xaa));
+  expect(f.abi.imports.interrupted!()).toBe(Signal.SIGINT);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+  expect(f.abi.imports.read!(reader, 4096, 1)).toBe(1);
+  expect(f.bytes()[4096]).toBe(120);
+  expect(f.waits()).toBe(0);
+});
+
 test("poll waits for readiness, hangup, child exit or interrupt, not read/write/wait", () => {
   let tick = 0,
     action: () => void = () => {};
@@ -648,6 +727,10 @@ test("cold file I/O uses nonblocking hooks and commits only the successful retry
   expect(f.abi.imports.write!(fd, 2048, 5)).toBe(-6);
   expect(resource.offset).toBe(3);
   expect(commits).toBe(0);
+  f.sub(0, 0, fd);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+  expect(resource.offset).toBe(3);
+  expect(commits).toBe(0);
   f.sub(0, 1, fd);
   f.sub(1, 3, 8);
   expect(f.abi.imports.poll!(256, 2, 100, 512)).toBe(2);
@@ -681,6 +764,9 @@ test("shared file-offset contention returns EAGAIN until poll can observe the lo
   expect(f.abi.imports.read!(fd, 4096, 1)).toBe(-6);
   expect(resource.offset).toBe(0);
   f.sub(0, 0, fd);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+  expect(controlLoad(cells, 0)).toBe(otherOwner);
+  expect(resource.offset).toBe(0);
   expect(f.abi.imports.poll!(256, 1, 100, 512)).toBe(1);
   expect(controlLoad(cells, 0)).toBe(0);
 });
@@ -964,7 +1050,32 @@ test("the wait hook receives the sequence captured before a racing ready publica
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(1);
 });
 
-for (const mode of ["signal", "child"] as const) {
+function holdSignalHintsUntilPollCapture(
+  signals: ReturnType<typeof fixture>["signals"],
+  captured: Int32Array,
+): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(signals, "requestedSignal")!;
+  const requestedSignal = signals.requestedSignal;
+  let paused = false;
+  Object.defineProperty(signals, "requestedSignal", {
+    configurable: true,
+    get() {
+      if (paused || (controlLoad(signals.signalState, 2) & SIGNAL_PENDING) === 0)
+        return requestedSignal;
+      paused = true;
+      expect(controlLoad(requestedSignal, 0)).toBe(0);
+      expect(controlLoad(signals.interrupt, 0)).toBe(0);
+      // Pause the real publisher after pending is visible but before its hint writes.
+      // This separate acknowledgement never wakes the poll's common-wake word.
+      controlWait(captured, 0, 0, 1000);
+      expect(controlLoad(captured, 0)).toBe(1);
+      return requestedSignal;
+    },
+  });
+  return () => Object.defineProperty(signals, "requestedSignal", descriptor);
+}
+
+for (const mode of ["signal", "signal-before-hint", "child"] as const) {
   test(`native worker poll wakes for a ${mode} change without any common-wake notification`, async () => {
     const f = fixture(),
       wake = new Int32Array(new SharedArrayBuffer(4));
@@ -977,9 +1088,12 @@ for (const mode of ["signal", "child"] as const) {
       job: 0,
       fds: [],
     });
+    const captured =
+      mode === "signal-before-hint" ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
     const worker = new Worker(new URL("./fixtures/process-abi-poll-guest.ts", import.meta.url), {
       workerData: {
-        mode,
+        mode: mode === "child" ? "child" : "signal",
+        captured,
         pid: f.pid,
         child,
         childOutcome: f.supervisor.get(child)!.outcome,
@@ -992,6 +1106,7 @@ for (const mode of ["signal", "child"] as const) {
         },
       },
     });
+    const restore = captured ? holdSignalHintsUntilPollCapture(f.signals, captured) : () => {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -1010,19 +1125,23 @@ for (const mode of ["signal", "child"] as const) {
           if (message.phase === "waiting") {
             if (published) return;
             published = true;
-            if (mode === "signal") f.supervisor.kill(f.pid, 2);
+            if (mode !== "child") f.supervisor.kill(f.pid, 2);
             else f.supervisor.exit(child, 23);
           } else resolve(message);
         });
       });
       expect(result).toEqual(
-        mode === "signal"
-          ? { phase: "done", ready: 0, interrupt: 2, code: 0 }
-          : { phase: "done", ready: 1, interrupt: 0, code: 23 },
+        mode !== "child"
+          ? { phase: "done", ready: 0, pending: true, code: 0 }
+          : { phase: "done", ready: 1, pending: false, code: 23 },
       );
+      // The synchronous publisher has finished now; the worker's earlier snapshot may precede it.
+      expect(controlLoad(f.signals.interrupt, 0)).toBe(mode === "child" ? 0 : 2);
+      expect(signalPending(f.signals)).toBe(mode !== "child");
       expect(controlLoad(wake, 0)).toBe(0);
     } finally {
       clearTimeout(timer);
+      restore();
       await worker.terminate();
     }
   });

@@ -1,3 +1,11 @@
+import {
+  allocateHostProgramMemory,
+  allocateSharedControl,
+  createSharedControlAllocator,
+  installSharedControlAllocator,
+  type SharedControlGrant,
+} from "../memory/control.js";
+import type { Preview1NetworkConnection } from "./preview1-network-types.js";
 import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
@@ -79,9 +87,11 @@ import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import type { GroupMember } from "../group/member.js";
 
 export interface RuntimeWorkerRequest {
+  readonly controlGrant: SharedControlGrant;
   /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
   memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
+  network?: Preview1NetworkConnection;
   /** Supplied by the owning page or broker, never read from guest env. */
   hostIdentity?: RuntimeHostIdentity | null;
   module: WebAssembly.Module;
@@ -105,6 +115,7 @@ export interface RuntimeWorkerRequest {
 export type SleepMode = "atomics" | "busy-wait";
 export type RuntimeWorkerMessage =
   | WorkerProcessMessage
+  | { type: "shared-control-allocation"; buffer: SharedArrayBuffer }
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
   /** The page drained terminalOutput and waits for this before reading it again. */
@@ -277,7 +288,7 @@ export function describeWorkerError(err: unknown): string {
 
 function createSleepCell(host: RuntimeWorkerHost): Int32Array | null {
   if (!host.crossOriginIsolated || typeof SharedArrayBufferConstructor !== "function") return null;
-  return new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+  return new Int32ArrayConstructor(allocateSharedControl(4));
 }
 
 function captureWorkerHost(host: RuntimeWorkerHost) {
@@ -458,7 +469,25 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   executor: WorkerExecutor<R> | HostProgramExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
-  const { postToHost, addListener, removeListener } = captureWorkerHost(host);
+  const hooks = captureWorkerHost(host);
+  if (!req.controlGrant) throw new TypeError("Worker bootstrap requires a shared control grant");
+  const allocateShared = createSharedControlAllocator(req.controlGrant, (buffer) =>
+    hooks.postToHost({ type: "shared-control-allocation", buffer }),
+  );
+  const restoreAllocator = installSharedControlAllocator(allocateShared);
+  try {
+    await bootstrapAllocated(req, executor, host, hooks, allocateShared);
+  } finally {
+    restoreAllocator();
+  }
+}
+async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  host: RuntimeWorkerHost,
+  { postToHost, addListener, removeListener }: ReturnType<typeof captureWorkerHost>,
+  allocateShared: (length: number) => SharedArrayBuffer,
+): Promise<void> {
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
@@ -547,6 +576,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
+  let socketNetwork:
+    | ReturnType<(typeof import("./preview1-socket.js"))["attachPreview1Sockets"]>
+    | undefined;
+  const releaseNetworkPort = captureNetworkPort(req.network);
   let writeDiagnostic: ((data: Uint8Array) => number) | undefined;
   let pendingFinish: Promise<void> | undefined;
   const finish = (result: WorkerResult): void => {
@@ -625,6 +658,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const streams = ownedStreams(ownedStdio);
       closeDiscardedStdio(streams, new SetConstructor());
     });
+    attempt(() => socketNetwork?.dispose());
+    attempt(releaseNetworkPort);
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
       try {
@@ -869,9 +904,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         }
       },
     };
-    const reservedFds = bindingTargets(req.runtimeProcess);
+    const hostCallFd = executor.hostCallFd;
+    const reservedFds = bindingTargets(req.runtimeProcess, req.network, hostCallFd);
     wasi = new Wasi({
-      hostCallFd: executor.hostCallFd,
+      hostCallFd,
       args: req.args,
       env,
       fs,
@@ -937,14 +973,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
+        allocateShared,
         transport: req.runtimeProcess,
         postMessage,
         fallback: createFilesystemDescriptorCodec(fs),
-        registry: (
-          req.runtimeProcess.data as
-            | { pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle }
-            | undefined
-        )?.pipeRegistry,
+        registry: runtime!.workerProcessPipeRegistry(req.runtimeProcess),
       });
       runtimeProcess = new runtime!.WorkerProcessClient({
         transport: req.runtimeProcess,
@@ -1041,6 +1074,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
+    if (req.network?.sockets.length) {
+      const { attachPreview1Sockets } = await import("./preview1-socket.js");
+      checkActive();
+      socketNetwork = attachPreview1Sockets(req.network, checkActive, socketWait(checkActive));
+      socketNetwork.install(wasi.descriptors, checkIoActive);
+    }
     const enter = () => {
       checkActive();
       const committed = runtimeProcess
@@ -1120,12 +1159,39 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   }
 }
 
+function socketWait(checkActive: () => void): (word: Int32Array, expected: number) => void {
+  return (word, expected) => {
+    checkActive();
+    assertTerminalWaitAllowed();
+    controlWait(word, 0, expected, 10);
+    checkActive();
+  };
+}
+
+function captureNetworkPort(connection: Preview1NetworkConnection | undefined): () => void {
+  if (!connection) return () => {};
+  const port = connection.port;
+  const close = port.close;
+  return () => reflectApply(close, port, []);
+}
+
 /** Child descriptor numbers the process's bindings reserve before preopens are placed. */
-function bindingTargets(transport: WorkerProcessTransport | undefined): number[] | undefined {
-  if (!transport) return undefined;
+function bindingTargets(
+  transport: WorkerProcessTransport | undefined,
+  network?: Preview1NetworkConnection,
+  hostCallFd?: number,
+): number[] {
   const fds: number[] = [];
-  for (let index = 0; index < transport.bindings.length; index++)
-    fds[index] = transport.bindings[index]!.fd;
+  if (transport)
+    for (let index = 0; index < transport.bindings.length; index++)
+      arrayAppend(fds, transport.bindings[index]!.fd);
+  if (!network) return fds;
+  for (let index = 0; index < network.sockets.length; index++) {
+    const fd = network.sockets[index]!.fd;
+    if (fd === hostCallFd)
+      throw new ExecutableFormatError("socket descriptor collides with executor.hostCallFd");
+    arrayAppend(fds, fd);
+  }
   return fds;
 }
 
@@ -1143,7 +1209,7 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
 ): HostProgramContext<R> {
   const { wasi, fs, checkActive } = context;
   const cwd = context.request.runtimeProcess?.cwd ?? "/";
-  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const memory = allocateHostProgramMemory(context.request.controlGrant);
   bindMemory(memory);
   enter();
   const buffer = wasmMemoryBuffer(memory);

@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { DescriptorTable, OpenDescription } from "../core/descriptors.js";
@@ -717,6 +718,7 @@ test("browser global shutdown joins failed-launch controller stops and parent ha
   let parentStopping = false,
     childStopping = false;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: new ProcessTable(identities),
     registry,
@@ -742,7 +744,7 @@ test("browser global shutdown joins failed-launch controller stops and parent ha
     ownerStop.resolve();
     await broker.dispose();
   });
-  const root = await broker.adoptRoot({});
+  const root = await broker.adoptRoot({ memory: [] });
   const s = await broker.ready();
   const owner = s.reserveSpawn(root, { ...spec(), executable: "owner" });
   await s.start(owner);
@@ -814,6 +816,7 @@ function adoptedShellRoot(fatal: boolean) {
   const stopped: string[] = [];
   const children = new Map<number, Worker>();
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: new ProcessTable(identities),
     registry,
@@ -878,7 +881,7 @@ function adoptedShellRoot(fatal: boolean) {
 for (const fatal of [false, true])
   test(`adopted shell root keeps handled TERM through owned-job CLEANUP and real worker retirement (fatal=${fatal})`, async () => {
     const shell = adoptedShellRoot(fatal);
-    await shell.broker.adoptRuntimeRoot(shell.transport, { stop() {} });
+    await shell.broker.adoptRuntimeRoot(shell.transport, { memory: [], stop() {} });
     const spawned = (await shell.next("spawned")) as {
       kind: string;
       owned: number;

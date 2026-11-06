@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { RingWriter, createRing } from "../browser/net/ring.js";
@@ -30,6 +31,28 @@ import type { GuestWatchWriterMessage } from "./fixtures/guest-watch-writer-work
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
+}
+
+const guestWatchFailureDescriptionLimit = 240;
+
+function guestWatchFailureDescription(error: unknown): string {
+  try {
+    let description: string;
+    if (error instanceof Error) description = error.message;
+    else if (typeof error === "string") description = error;
+    else if (error === null || typeof error !== "object") description = String(error);
+    else description = "<non-Error thrown value>";
+    const bounded = description.replace(/[\r\n]+/g, " ").trim();
+    return (bounded || "<empty error message>").slice(0, guestWatchFailureDescriptionLimit);
+  } catch {
+    return "<unprintable thrown value>";
+  }
+}
+
+export function guestWatchFailure(stage: string, error: unknown): Error {
+  return new Error(`guest watch proof failed at ${stage}: ${guestWatchFailureDescription(error)}`, {
+    cause: error,
+  });
 }
 
 /** Ordered replies from one Worker; any failure rejects every waiter. */
@@ -111,6 +134,7 @@ export async function guestWatchCase(
   writer.onerror = (event) => writes.fail(Error(event.message));
   const diagnostics: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: new ProcessTable(identities),
     registry,
@@ -173,7 +197,7 @@ export async function guestWatchCase(
     writer.postMessage(init, [writerConnection.port]);
     await ready;
     stage = "spawn";
-    await broker.adoptRuntimeRoot(transport);
+    await broker.adoptRuntimeRoot(transport, { memory: [] });
     const pid = client.spawn(client.pid, {
       executable: "watcher",
       argv: [],
@@ -230,7 +254,7 @@ export async function guestWatchCase(
     check(diagnostics.length === 0, `broker diagnostics: ${diagnostics}`);
     return { quietWakes, directWrites, pageWrites, ...done };
   } catch (error) {
-    throw new Error(`guest watch proof failed at ${stage}`, { cause: error });
+    throw guestWatchFailure(stage, error);
   } finally {
     clearTimeout(timeout);
     const disposed = writes.take((value): value is { disposed: true } => "disposed" in value);

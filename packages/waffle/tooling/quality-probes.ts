@@ -1,9 +1,20 @@
+import { sharedReservationFindings, unaccountedSharedConstruction } from "./shared-reservations.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
 import { retireCommandGroup } from "../scripts/owned-command.ts";
 
 const root = join(import.meta.dir, "..");
 const repository = join(root, "../..");
+const sharedFindings = sharedReservationFindings(root);
+if (sharedFindings.length)
+  throw new Error(`Unaccounted shared constructors: ${sharedFindings.join(", ")}`);
+if (
+  !unaccountedSharedConstruction(
+    "browser/quality-seed.ts",
+    "new SharedArrayBuffer(0, { maxByteLength: 1024 })",
+  )
+)
+  throw new Error("Shared reservation guard accepted its seeded violation");
 const stopped = new AbortController();
 const stop = () => stopped.abort();
 process.once("SIGINT", stop);

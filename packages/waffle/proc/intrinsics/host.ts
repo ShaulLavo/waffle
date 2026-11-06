@@ -15,6 +15,7 @@ export const atomicsWaitAsync = (
       array: Int32Array,
       index: number,
       value: number,
+      timeout?: number,
     ): { async: false; value: string } | { async: true; value: Promise<string> };
   }
 ).waitAsync;
@@ -36,8 +37,12 @@ type TypedArray = Parameters<typeof typedArrayBuffer>[0];
 const byteLengthGetter = descriptor(prototype, "byteLength")!.get!;
 const tagGetter = descriptor(prototype, Symbol.toStringTag)!.get!;
 const setMethod = prototype.set;
+const fillMethod = prototype.fill;
 export function typedArrayByteLength(view: TypedArray): number {
   return apply(byteLengthGetter, view, []);
+}
+export function typedArrayFill(view: Uint8Array, value: number): void {
+  apply(fillMethod, view, [value]);
 }
 export function typedArraySet(
   view: TypedArray,
@@ -168,6 +173,9 @@ export function cryptoRandomUUID(): string {
 }
 // Relay scheduling passes a closure over private pipe state to the native timer.
 export const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
+export const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
+export const scheduleInterval = globalThis.setInterval.bind(globalThis);
+export const cancelInterval = globalThis.clearInterval.bind(globalThis);
 
 export const SetConstructor = Set;
 export const WeakMapConstructor = WeakMap;

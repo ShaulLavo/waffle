@@ -6,17 +6,39 @@ import type {
   NotificationWord,
 } from "./notification-relay.js";
 
+// iOS Safari 26.5 was seen to stop forwarding notifications from an idle relay, so a guest
+// asleep in its poll woke only at its own timeout. Keep each armed word's observer and its
+// pending wait reachable from this module, not only from the engine's waiter list. One slot per
+// armed word, reused for every wait: no allocation beyond the waits themselves. A slot empties
+// when its wait settles or its observer ends, and every slot empties on dispose.
+const observers: (Promise<void> | undefined)[] = [];
+const pendingWaits: (Promise<string> | undefined)[] = [];
+
 function publish(state: Int32Array): void {
   if (Atomics.load(state, 1)) return;
   Atomics.add(state, 0, 1);
   Atomics.notify(state, 0);
 }
 
-async function observe(word: NotificationWord, state: Int32Array): Promise<void> {
+function clearRoot<T>(roots: (T | undefined)[], slot: number): void {
+  if (slot < roots.length) roots[slot] = undefined;
+}
+
+async function observe(word: NotificationWord, state: Int32Array, slot: number): Promise<void> {
   let seen = Atomics.load(word.cells, word.index);
   while (!Atomics.load(state, 1)) {
     const waiting = atomicsWaitAsync(word.cells, word.index, seen);
-    if (waiting.async) await waiting.value;
+    if (!waiting.async) {
+      seen = Atomics.load(word.cells, word.index);
+      publish(state);
+      continue;
+    }
+    pendingWaits[slot] = waiting.value;
+    try {
+      await waiting.value;
+    } finally {
+      clearRoot(pendingWaits, slot);
+    }
     seen = Atomics.load(word.cells, word.index);
     publish(state);
   }
@@ -26,12 +48,15 @@ async function observeSafely(
   word: NotificationWord,
   state: Int32Array,
   reply: (value: NotificationRelayReply) => void,
+  slot: number,
 ): Promise<void> {
   try {
-    await observe(word, state);
+    await observe(word, state, slot);
   } catch (error) {
     reply({ type: "error", message: String(error) });
     globalThis.postMessage("failed");
+  } finally {
+    clearRoot(observers, slot);
   }
 }
 
@@ -42,7 +67,8 @@ function arm(
 ): void {
   if (typeof atomicsWaitAsync !== "function")
     throw new Error("notification relay requires Atomics.waitAsync");
-  for (const word of words) void observeSafely(word, state, reply);
+  for (let slot = 0; slot < words.length; slot++)
+    observers[slot] = observeSafely(words[slot]!, state, reply, slot);
   reply({ type: "armed" });
 }
 
@@ -51,6 +77,8 @@ function connect({ port, state }: NotificationConnection): void {
   const reply = (value: NotificationRelayReply) => port.postMessage(value);
   port.onmessage = ({ data }: MessageEvent<NotificationRelayRequest>) => {
     if (data.type === "dispose") {
+      observers.length = 0;
+      pendingWaits.length = 0;
       port.close();
       globalThis.postMessage("disposed");
       return;

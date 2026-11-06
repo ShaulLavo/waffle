@@ -1,9 +1,9 @@
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   isInstance,
   isSharedArrayBuffer,
   isInt32Array,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsAdd,
   atomicsNotify,
   objectFreeze,
@@ -112,7 +112,7 @@ function signalWord(source?: ControlCells | SharedArrayBuffer): ControlCells {
     ? source
     : isInt32Array(source)
       ? source
-      : new Int32ArrayConstructor(source ?? new SharedArrayBufferConstructor(4));
+      : new Int32ArrayConstructor(source ?? allocateSharedControl(4));
   if (
     !isSharedArrayBuffer(isInstance(word, TaggedCells) ? word.buffer : typedArrayBuffer(word)) ||
     (isInstance(word, TaggedCells) ? word.length : typedArrayLength(word)) !== 1
@@ -137,6 +137,13 @@ function snapshot(
     ...(selection.jobLifetime === undefined ? {} : { jobLifetime: selection.jobLifetime }),
     fds: spec.fds.map((binding) => ({ ...binding })),
   };
+}
+
+function checkInheritedDescriptor(table: DescriptorTable, fd: number): void {
+  const source = table.get(fd);
+  if (!source) throw new ProcessError(ProcessErrno.BADF, `missing parent descriptor ${fd}`);
+  if (source.resource.kind === "socket")
+    throw new ProcessError(ProcessErrno.NOTSUP, "socket inheritance is unsupported");
 }
 
 /** Responsive control plane. launch must hand execution to a worker, never run a guest inline. */
@@ -539,8 +546,7 @@ export class ProcessSupervisor {
       if (!validFd(binding.child) || !validFd(binding.parent) || bindings.has(binding.child)) {
         throw new ProcessError(ProcessErrno.INVAL, "invalid or duplicate descriptor binding");
       }
-      if (!parentDescriptors.get(binding.parent))
-        throw new ProcessError(ProcessErrno.BADF, `missing parent descriptor ${binding.parent}`);
+      checkInheritedDescriptor(parentDescriptors, binding.parent);
       bindings.add(binding.child);
     }
     const interrupt = signalWord(reservation.interrupt),

@@ -28,8 +28,8 @@
     "test:oracle": "node scripts/test-jq.ts --native jq",
     "test:source": "node --test scripts/jaq-source.test.ts tests/command-deadline.test.ts",
     "typecheck": "tsc -p .",
-    "pack": "node ../../tools/program-package.ts pack",
-    "prepack": "node ../../tools/program-package.ts check",
+    "pack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts pack",
+    "prepack": "bun ../../tools/waffle-family-metadata.ts --package . && node ../../tools/program-package.ts check",
     "prepare:package": "bun run build"
   },
   "devDependencies": {
@@ -39,5 +39,6 @@
   },
   "peerDependencies": {
     "waffle": "*"
-  }
+  },
+  "waffleHostInterface": 1
 }

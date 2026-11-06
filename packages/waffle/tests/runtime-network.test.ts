@@ -382,3 +382,75 @@ test("listening callback revocation never publishes a successful handle", async 
     await runtime.dispose();
   }
 });
+
+test("connector options are validated, captured once and invoked only for outbound connects", async () => {
+  const runtime = create();
+  let host: NetHost | undefined;
+  let signal: AbortSignal | undefined;
+  let reads = 0;
+  let calls = 0;
+  try {
+    const network = await runtime.network();
+    for (const connect of [null, false, 1, {}]) {
+      expect(() =>
+        Reflect.apply(network.createHelper, undefined, [
+          { ring: createRing(), fetch: noFetch, connect },
+        ]),
+      ).toThrow(/connect policy/);
+    }
+    let selected: import("../browser/net/outbound.js").NetConnect = (_target, value) => {
+      signal = value;
+      calls++;
+      return new Promise<never>(() => {});
+    };
+    const ring = createRing();
+    const helper = network.createHelper({
+      ring,
+      fetch: noFetch,
+      get connect() {
+        reads++;
+        return selected;
+      },
+    });
+    expect(calls).toBe(0);
+    expect(reads).toBe(1);
+    selected = async () => {
+      throw Error("must use the captured connector");
+    };
+    host = new NetHost(ring, helper.handle, undefined, { shared: true });
+    expect(host.connect("localhost", 65432)).toBe(-1);
+    expect(calls).toBe(0);
+    expect(host.connect("database.example", 5432)).toBeGreaterThan(0);
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    expect(reads).toBe(1);
+    host.dispose();
+    host = undefined;
+    helper.dispose();
+    expect(signal?.aborted).toBe(true);
+  } finally {
+    host?.dispose();
+    await runtime.dispose();
+  }
+});
+
+test("connector option getter revocation cannot admit a helper after disposal begins", async () => {
+  const runtime = create();
+  try {
+    const network = await runtime.network();
+    expect(() =>
+      network.createHelper({
+        ring: createRing(),
+        fetch: noFetch,
+        get connect() {
+          void runtime.dispose();
+          return async () => {
+            throw Error("must not be invoked");
+          };
+        },
+      }),
+    ).toThrow(/disposed/);
+  } finally {
+    await runtime.dispose();
+  }
+});

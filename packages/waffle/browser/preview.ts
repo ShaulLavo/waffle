@@ -60,8 +60,15 @@ export class PreviewRouter {
       host.close();
       throw new Error("Preview origin is already bound to another virtual port");
     }
-    this.hosts.get(binding.port)?.close();
+    const previous = this.hosts.get(binding.port);
     this.hosts.set(binding.port, host);
+    try {
+      previous?.close();
+    } catch (error) {
+      if (this.hosts.get(binding.port) === host) this.hosts.delete(binding.port);
+      host.close();
+      throw error;
+    }
     return host;
   }
 
@@ -69,13 +76,18 @@ export class PreviewRouter {
     return this.servers.has(port);
   }
   register(port: number, server: PreviewServer): void {
+    if (this.servers.get(port) === server) return;
+    const previous = this.hosts.get(port);
+    this.hosts.delete(port);
     this.servers.set(port, server);
+    previous?.close();
   }
   unregister(port: number, server: PreviewServer): void {
     if (this.servers.get(port) !== server) return;
     this.servers.delete(port);
-    this.hosts.get(port)?.close();
+    const previous = this.hosts.get(port);
     this.hosts.delete(port);
+    previous?.close();
   }
 
   private connectSocket(port: number, reply: MessagePort): void {

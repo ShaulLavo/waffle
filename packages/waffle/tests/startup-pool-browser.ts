@@ -126,7 +126,7 @@ export async function browserStartupPool(): Promise<void> {
   try {
     await runtime.filesystem.writeFile("/app", source);
     await runtime.filesystem.writeFile("/loop", program(true));
-    await service.adoptRuntimeRoot(root);
+    await service.adoptRuntimeRoot(root, { memory: [] });
     supervisor = await service.ready();
     await wait(await spawn("first"));
     await until(() => created.length === 3 && stopped.size === 1);

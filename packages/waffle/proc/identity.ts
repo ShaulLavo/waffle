@@ -1,6 +1,6 @@
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsCompareExchange,
   atomicsLoad,
   sharedArrayBufferByteLength,
@@ -12,7 +12,7 @@ import { ProcessError, ProcessErrno } from "./types.ts";
 export class ProcessIdentityAllocator {
   readonly buffer: SharedArrayBuffer;
   private readonly counters: Int32Array;
-  constructor(buffer = new SharedArrayBufferConstructor(8)) {
+  constructor(buffer = allocateSharedControl(8)) {
     if (sharedArrayBufferByteLength(buffer) !== 8)
       throw new RangeError("process identity buffer must contain two words");
     this.buffer = buffer;

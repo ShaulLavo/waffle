@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { command, identity, provision, sha256, verify } from "../scripts/native-oracle.ts";
+import { processState } from "./fixtures/process-state.ts";
 
 const roots: string[] = [];
 const signal = () => AbortSignal.timeout(5000);
@@ -135,7 +136,7 @@ test("deadline stops the shell and its child, not just the parent", async () => 
   expect(observed).toHaveLength(2);
   for (const pid of observed) {
     const path = `/proc/${pid}/stat`;
-    const state = existsSync(path) ? readFileSync(path, "utf8").split(") ")[1]?.[0] : undefined;
+    const state = processState(path);
     expect(state === undefined || state === "Z").toBe(true);
   }
 });

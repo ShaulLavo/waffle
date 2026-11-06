@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   chromium,
@@ -14,6 +14,25 @@ import {
 } from "./process-recycling-browser-runner-control.js";
 
 export const engines = { chromium, firefox, webkit };
+
+export async function exitAfterBrowserCleanup(
+  label: string,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  try {
+    await cleanup();
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        cleanup: label,
+        failed: true,
+        error: String(error),
+        errors: error instanceof AggregateError ? error.errors.map(String) : [],
+      }),
+    );
+  }
+  process.exit(1);
+}
 type Engine = keyof typeof engines;
 
 export interface IsolatedPageRun {
@@ -28,8 +47,12 @@ export interface IsolatedPageRun {
   /** Served path to source module, bundled for the browser relative to the tests directory. */
   readonly sources: Readonly<Record<string, string>>;
   /** A response for a path the bundles do not cover. */
-  readonly route?: (path: string, headers: Record<string, string>) => Response | undefined;
+  readonly route?: (
+    path: string,
+    headers: Record<string, string>,
+  ) => Response | undefined | Promise<Response | undefined>;
   readonly names: readonly string[];
+  readonly dispose?: () => Promise<void>;
   readonly evaluate: (page: Page) => Promise<unknown>;
 }
 
@@ -44,13 +67,29 @@ export async function runIsolatedPages(run: IsolatedPageRun): Promise<void> {
   const cleanup = () =>
     (cleaning ??= (async () => {
       const errors = await closeBrowserResources(contexts, browsers);
-      server?.stop(true);
+      await server?.stop(true);
+      try {
+        await run.dispose?.();
+      } catch (error) {
+        errors.push(error);
+      }
       const scratch = await scratchCreation;
-      if (scratch && browsers.size === 0) await rm(scratch, { recursive: true, force: true });
+      if (scratch && browsers.size === 0) {
+        await rm(scratch, { recursive: true, force: true });
+        await requireRemoved(scratch);
+      }
       if (errors.length) throw new AggregateError(errors, `${run.label} cleanup failed`);
+      console.log(
+        JSON.stringify({
+          cleanup: run.label,
+          browsers: browsers.size,
+          contexts: contexts.size,
+          scratchRemoved: Boolean(scratch),
+        }),
+      );
     })());
   const stop = () => {
-    void cleanup().finally(() => process.exit(1));
+    void exitAfterBrowserCleanup(run.label, cleanup);
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
@@ -71,14 +110,14 @@ export async function runIsolatedPages(run: IsolatedPageRun): Promise<void> {
     server = Bun.serve({
       hostname: "127.0.0.1",
       port: run.port,
-      fetch(request) {
+      async fetch(request) {
         const path = new URL(request.url).pathname;
         const headers = {
           "Cross-Origin-Opener-Policy": "same-origin",
           "Cross-Origin-Embedder-Policy": "require-corp",
           "Content-Type": path === "/" ? "text/html" : "text/javascript",
         };
-        const routed = run.route?.(path, headers);
+        const routed = await run.route?.(path, headers);
         if (routed) return routed;
         if (path === "/")
           return new Response(`<!doctype html><title>${run.label}</title>`, { headers });
@@ -133,4 +172,14 @@ async function inPage(
   console.log(JSON.stringify({ engine: name, passed: await run.evaluate(page) }));
   const errors = await closeBrowserResources(contexts, browsers);
   if (errors.length) throw new AggregateError(errors, `${name} cleanup failed`);
+}
+
+async function requireRemoved(path: string): Promise<void> {
+  try {
+    await stat(path);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`Browser scratch remains after cleanup: ${path}`);
 }

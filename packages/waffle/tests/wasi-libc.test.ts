@@ -1,3 +1,4 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { Wasi } from "../core/wasi.ts";
@@ -215,11 +216,12 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
     try {
       await bootstrap(
         {
+          controlGrant: { kind: "unbounded" },
           module: await guest("patched", true),
           args: ["fixture"],
           env: {},
           filesystem: connection.client,
-          runtimeProcess,
+          runtimeProcess: standaloneRuntimeProcess(runtimeProcess),
         },
         {
           setup({ fs: client }) {
