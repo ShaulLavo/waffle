@@ -55,9 +55,11 @@ async function oneCase(request: Extract<WorkerRequest, { kind: "run" }>): Promis
   });
   if (mode === "case-hang") return unsettled();
   if (mode === "page-unresponsive") {
-    for (;;) {
-      /* Deliberate main-thread stall, closed by the owned browser teardown. */
+    const until = performance.now() + 8000;
+    while (performance.now() < until) {
+      /* Outlast the actual probe, then release the fixture so teardown can join WebKit. */
     }
+    return unsettled();
   }
   if (mode === "wrong-label" || mode === "worker-timeout" || mode === "aggregate-error") {
     await failedWorker(request, caseId);

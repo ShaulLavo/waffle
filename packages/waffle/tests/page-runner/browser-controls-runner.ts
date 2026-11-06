@@ -66,6 +66,9 @@ async function reporterControl(
       ? { ...storageBudgets, run: 120_000 }
       : { hello: 4000, heartbeat: 1800, case: 3000, group: 5000, run: 25_000 },
   });
+  const { session, launcher, server, scratch } = result.cleanup;
+  if ([session, launcher, server, scratch].some((step) => step.status === "unconfirmed"))
+    throw new Error(`Real control cleanup unconfirmed: ${JSON.stringify(result.cleanup)}`);
   const outcome = Object.values(result.outcomes).find((entry) => entry.status !== "pending");
   if (mode === "pass" && result.exit !== 4)
     throw new Error(`Expected filtered control, got ${JSON.stringify(result.failures)}`);
