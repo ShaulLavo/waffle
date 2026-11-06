@@ -22,21 +22,22 @@ function enumeration(type: string, name: string): number {
   if (value === undefined) throw new Error(`Missing pinned C enum ${type}.${name}`);
   return value;
 }
+function publish(connection: GpuConnection, writer: LogicalAppend): void {
+  for (let steps = 0; steps < 10000; steps++) {
+    const state = writer.advance();
+    connection.slice();
+    if (connection.state.kind !== "ready") throw new Error("Native control connection closed");
+    if (state === "done") return;
+    if (state === "terminal") throw new Error("Native control stream terminated");
+  }
+  throw new Error("Native control stream did not progress");
+}
 function send(connection: GpuConnection, bytes: Uint8Array): void {
   const writer = new LogicalAppend(connection.commands, bytes);
   let completed = false;
   try {
-    for (let steps = 0; steps < 10000; steps++) {
-      const state = writer.advance();
-      connection.slice();
-      if (connection.state.kind !== "ready") throw new Error("Native control connection closed");
-      if (state === "done") {
-        completed = true;
-        return;
-      }
-      if (state === "terminal") throw new Error("Native control stream terminated");
-    }
-    throw new Error("Native control stream did not progress");
+    publish(connection, writer);
+    completed = true;
   } finally {
     if (!completed) writer.cancel();
   }
