@@ -1,9 +1,17 @@
+import { consumerControl, consumerControlModes } from "./consumer-controls.js";
+import { storagePolicy } from "./storage-policy.js";
+import {
+  commandControl,
+  commandControlModes,
+  storagePageLabelControl,
+} from "./command-controls.js";
 import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { Collector } from "./collector.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
-import { runStorage, serveCollector, retireDocument, writeResult } from "./storage-host.js";
+import { runStorage } from "./storage-host.js";
+import { serveCollector, retireDocument, writeResult } from "./suite-host.js";
 import { storageBudgets } from "./protocol.js";
 import { bounded } from "./driver.js";
 import { storageWorker } from "./storage-worker.js";
@@ -107,7 +115,7 @@ async function storageControl(
 ): Promise<void> {
   const run = crypto.randomUUID(),
     ids = ["indexeddb: control", "opfs: control"];
-  const collector = new Collector(run, ids, ids);
+  const collector = new Collector(run, ids, ids, storagePolicy);
   const page = await fixtureBundle("storage-control-page.ts", {
     PAGE_RUNNER_STORAGE_FAILURE: String(failed),
   });
@@ -173,7 +181,7 @@ async function malformedAllocationControl(
 ): Promise<void> {
   const run = crypto.randomUUID(),
     id = "opfs: ownership";
-  const collector = new Collector(run, [id], [id]);
+  const collector = new Collector(run, [id], [id], storagePolicy);
   const fixture = serveCollector(collector, {
     "/page.js": "",
     "/cleanup.js": await browserBundle(join(import.meta.dir, "storage-cleanup.ts")),
@@ -273,6 +281,30 @@ async function engineControls(
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
   for (const mode of modes.filter((mode) => !selected || mode.includes(selected)))
     await checkControl(engine, mode, () => reporterControl(engine, mode, root), results);
+  for (const mode of commandControlModes.filter(
+    (mode) => !selected || `command-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `command-${mode}`,
+      () => commandControl(engine, mode, root),
+      results,
+    );
+  for (const mode of consumerControlModes.filter(
+    (mode) => !selected || `consumer-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `consumer-${mode}`,
+      () => consumerControl(engine, mode, root),
+      results,
+    );
+  for (const label of ["wrong", "missing"] as const) {
+    const name = `production-storage-${label}-label`;
+    if (!selected || name.includes(selected))
+      await checkControl(engine, name, () => storagePageLabelControl(engine, label, root), results);
+  }
+
   if (!selected || "canonical-ownership".includes(selected))
     await checkControl(
       engine,

@@ -45,3 +45,40 @@ These controls test reporting failures, the original Worker timeout, document de
 and exact-name cleanup without deleting foreign-prefix storage. They do not count
 as an iOS storage-suite run. The standard browser matrix and CI run these controls
 on Chromium and WebKit. Unit and fake-driver controls run under `bun run test`.
+
+## Other page-owned Safari commands
+
+Each command runs its original exported body once and writes its actual result to a separate file. Only storage uses `STORAGE_TEST_FILTER`.
+
+```sh
+IOS_UDID=<udid> bun packages/waffle/tests/guest-watch-browser-runner.ts ios-safari --result /absolute/guest-watch.json
+IOS_UDID=<udid> bun packages/waffle/tests/fs-socket-browser-runner.ts ios-safari --result /absolute/fs-socket-attachment.json
+IOS_UDID=<udid> bun packages/waffle/tests/search-executor-browser-runner.ts ios-safari --result /absolute/search-executor.json
+```
+
+The new page-runner case clocks reuse the desktop lifecycle bounds of 120, 60, and 600 seconds. Including list, finish, retirement, and cleanup, their total allowances are 510, 450, and 990 seconds. The bodies retain their shorter internal deadlines. All existing desktop engines and CI rows remain blocking.
+
+## Use the host from a Bun consumer
+
+Test tooling can import `runPageSuite`, `nativeMain`, `ownedDatabase` and the authoritative
+`SuiteAdapter`, `RunOptions`, `NativeOptions` and `PreparationContext` types from
+`waffle/testing/page-runner`. Browser pages import `isHostedPage`, `startPage` and
+`cleanupStorage` from `waffle/testing/page-runner/page`. Local controls explicitly import
+`PlaywrightDriver` from `waffle/testing/page-runner/playwright` and supply their own
+Playwright development dependency. The host and driver imports are Bun-only, not Node exports.
+
+An adapter's `assets({ scratch, signal })` prepares its complete same-origin asset map below
+the owned scratch directory. The callback settles only after its producer has stopped.
+Unconfirmed producers retain scratch. File blobs retain their MIME types. `page.path` and
+`page.script` select local document and module paths; reserved reporting routes take precedence.
+Keep `requireResult: true` in a result-bearing consumer policy. `ownedDatabase(prefix)` accepts
+only IndexedDB with the exact name `${prefix}-${run}` during a running case. Await allocation
+before opening it, reuse that name sequentially, and finish with exact-ledger cleanup.
+
+Pass a finite same-process `performance.now()` value as `startedAt` to include earlier setup
+in the absolute budget. An explicit `port` is validated and probed before preparation, then
+bound without fallback. Omit it to retain storage's environment behavior. A consumer may set
+`resultWaitMs: 90_000` for its terminal result window after navigation, with `case`, `group`
+and `run` budgets of 120,000 milliseconds. The original absolute deadline still wins, including
+report draining and finish retirement. Confirmed teardown runs after the execution clock stops.
+These test-only exports do not load through the production runtime.
