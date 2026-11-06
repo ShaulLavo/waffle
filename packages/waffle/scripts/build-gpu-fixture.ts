@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { generate } from "../tooling/gpu-stream.ts";
 import { CommandCleanupError, runOwned } from "./owned-command.ts";
 
@@ -28,6 +28,7 @@ const flags = [
   "-Wl,--initial-memory=262144",
   "-Wl,--max-memory=16777216",
   "-Wl,--export-memory",
+  "-Wl,--strip-debug",
 ];
 const inputs = [
   "scripts/build-gpu-fixture.ts",
@@ -98,15 +99,12 @@ function compiler(sdkPath: string | undefined): string {
 
 function outputDirectory(directory: string): string {
   if (!isAbsolute(directory)) throw new Error("GPU_FIXTURE_DIR must be absolute and outside Git");
-  const path = resolve(directory);
-  if (!relative(repositoryRoot, path).startsWith("../"))
+  mkdirSync(directory, { recursive: true });
+  const output = realpathSync(directory);
+  const detection = Bun.spawnSync(["git", "rev-parse", "--is-inside-work-tree"], { cwd: output });
+  if (detection.exitCode === 0 && detection.stdout.toString().trim() === "true")
     throw new Error("GPU fixture output must be outside Git");
-  mkdirSync(path, { recursive: true });
-  const actual = realpathSync(path);
-  const git = Bun.spawnSync(["git", "-C", actual, "rev-parse", "--is-inside-work-tree"]);
-  if (git.exitCode === 0 && git.stdout.toString().trim() === "true")
-    throw new Error("GPU fixture output must be outside Git");
-  return actual;
+  return output;
 }
 
 function inspectImports(wasm: Uint8Array<ArrayBuffer>): void {
