@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import {
   gpuDescriptorAdapters,
@@ -34,8 +35,24 @@ function selected() {
 }
 
 function scratch(): string {
-  return mkdtempSync("/work/tmp/waffle-gpu-schema-");
+  return mkdtempSync(join(process.env.GPU_SCRATCH_ROOT ?? tmpdir(), "waffle-gpu-schema-"));
 }
+
+test("schema scratch follows an explicit portable root", () => {
+  const directory = mkdtempSync(join(tmpdir(), "waffle-gpu-schema-root-"));
+  const previous = process.env.GPU_SCRATCH_ROOT;
+  let path: string | undefined;
+  try {
+    process.env.GPU_SCRATCH_ROOT = directory;
+    path = scratch();
+    expect(dirname(path)).toBe(directory);
+  } finally {
+    if (previous === undefined) delete process.env.GPU_SCRATCH_ROOT;
+    else process.env.GPU_SCRATCH_ROOT = previous;
+    if (path) rmSync(path, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function copyInputs(path: string): void {
   for (const file of Object.keys(gpuStreamSources)) {
