@@ -6,7 +6,6 @@ import { GpuCallError, GpuResourceError, type Handle } from "./protocol.js";
 
 interface Frame {
   readonly texture: GPUTexture;
-  readonly exposed: object;
 }
 interface Presenter {
   readonly owner: SurfaceConnection;
@@ -167,19 +166,16 @@ export class SurfaceConnection implements SurfaceTarget {
     if (!presenter.frame) {
       const texture = presenter.device.createTexture(presenter.configuration);
       this.counts.frameTexturesCreated++;
-      const frame: Frame = {
-        texture,
-        exposed: {
-          createView: (descriptor?: GPUTextureViewDescriptor) => texture.createView(descriptor),
-          destroy: () => {
-            texture.destroy();
-            if (presenter.frame === frame) presenter.frame = undefined;
-          },
-        },
-      };
-      presenter.frame = frame;
+      presenter.frame = { texture };
     }
-    return { kind: "ready", texture: presenter.frame.exposed, status: 1 };
+    return { kind: "ready", texture: presenter.frame.texture, status: 1 };
+  }
+  textureDestroyed(texture: object): void {
+    for (const reference of this.#references) {
+      const presenter = reference.visible.presenter;
+      if (presenter?.owner === this && presenter.frame?.texture === texture)
+        presenter.frame = undefined;
+    }
   }
   present(surface: object): ReturnType<SurfaceTarget["present"]> {
     const reference = this.#reference(surface);
