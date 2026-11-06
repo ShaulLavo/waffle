@@ -56,7 +56,7 @@ bun run test
 bun run size
 ```
 
-`bun run format` fixes Markdown formatting in `docs/`. `README.md` and `AGENTS.md` are not
+`bun run --cwd packages/waffle format` fixes Markdown formatting in `docs/`. `README.md` and `AGENTS.md` are not
 formatter inputs.
 
 The browser storage matrix is `bun packages/waffle/tests/storage-browser-runner.ts chromium firefox webkit`.

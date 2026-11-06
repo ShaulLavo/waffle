@@ -50,7 +50,12 @@ The concrete direct relay API is:
   connection. The native host then sends only trailing upgrade bytes and later
   duplex data. Waffle does not implement the native WebSocket server.
 - `relay.close()` revokes the grant and closes outstanding connections. The owner
-  AbortSignal, a replacement binding, or server unregister also revokes it.
+  AbortSignal, a replacement binding, server unregister, or registration of a different
+  server at the same port also revokes it. Registering the same server again preserves
+  its live binding. A new server requires a fresh `bindHost` grant. Retirement
+  attempts every connection close and notification before reporting callback failures
+  as an `AggregateError`. Replacement registration and unregister complete their routing
+  transition before reporting those errors. A failed rebind leaves no live binding.
 - `relay.authorization` is immutable `{owner, port, origin, capability}`. It is
   specific to one router owner, port, origin, and lifetime. Wrong grant fields or
   another request/socket origin fail before a virtual connection opens.
@@ -102,8 +107,12 @@ The direct relay, wire dispatcher, and loopback reference host are implemented.
 `packages/waffle/tests/preview-host-reference.ts` adapts HTTP requests through the wire protocol
 and keeps grants in the host. It is a test fixture, not a production hosting service.
 Native transport authentication, the production Bun adapter, and exact Bun app
-acceptance remain consumer work. Raw upgrade bytes are tested; a native WebSocket
-proxy and Vite HMR are not established by the HTTP hydration proof.
+acceptance remain consumer work. The native Vite transport test exercises dev and
+preview HTTP through a shared virtual listener, mounted requests and root host exchanges.
+It also checks real Vite WebSocket upgrade and connected bytes through mounted and root
+sockets. The test bridges bytes to a native Vite server, not a guest Bun process.
+Browser React rendering, source-edit HMR, and a production native WebSocket proxy remain
+consumer acceptance gates.
 
 The host maps initial navigation, nested routes, assets, and browser reload by
 origin to the same authenticated grant. It cannot depend on a previous clientId,
