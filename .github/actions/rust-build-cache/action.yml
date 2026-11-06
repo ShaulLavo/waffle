@@ -18,4 +18,4 @@ runs:
         version: v0.19.0
         disable_annotations: true
     - shell: bash
-      run: echo "sccache objects restored from ${{ steps.objects.outputs.cache-matched-key }} (exact hit=${{ steps.objects.outputs.cache-hit }})"
+      run: echo "sccache exact object cache hit=${{ steps.objects.outputs.cache-hit }} (see cache restore step for matched key)"
