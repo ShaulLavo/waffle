@@ -991,6 +991,12 @@ jobs:
           fail-on-cache-miss: true
       - name: Verify exact-input network artifact before installation
         run: bun run --cwd packages/waffle tooling/build-network.ts --verify
+      - name: Cache Bun package downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/cache@v4
         id: wasmtime
         with:
