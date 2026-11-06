@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
 import {
@@ -20,7 +21,9 @@ export class PlaywrightDriver implements Driver {
   ) {}
   async start(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    await this.lifecycle.init(this.scratch);
+    // The host already added its own scratch directory below the supervised root.
+    // Give the browser a sibling, not another nested layer in its socket-path budget.
+    await this.lifecycle.init(dirname(this.scratch));
     const profile = await this.lifecycle.directory(this.lifecycle.scratch, "p-");
     this.context = await this.lifecycle.persistent(this.engine, profile);
     this.page = this.context.pages()[0] ?? (await this.context.newPage());
@@ -84,8 +87,14 @@ export class PlaywrightDriver implements Driver {
       };
     } catch (error) {
       return {
-        session: { status: "unconfirmed", detail: String(error) },
-        launcher: { status: "unconfirmed", detail: String(error) },
+        session: {
+          status: "unconfirmed",
+          detail: `${String(error)}; browser root ${this.lifecycle.scratch}`,
+        },
+        launcher: {
+          status: "unconfirmed",
+          detail: `${String(error)}; browser root ${this.lifecycle.scratch}`,
+        },
         serviceDisposition: "No native service",
       };
     }
