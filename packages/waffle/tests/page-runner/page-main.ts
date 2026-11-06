@@ -64,6 +64,9 @@ declare global {
     __suiteConfiguration: Configuration<unknown>;
   }
 }
+export function isHostedPage(): boolean {
+  return typeof window !== "undefined" && window.__suiteConfiguration !== undefined;
+}
 export function startPage<R>(suite: PageSuite<R>): void {
   // The host serializes its typed request into this document, never a driver script argument.
   const config = window.__suiteConfiguration as Configuration<R>;

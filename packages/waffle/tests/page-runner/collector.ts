@@ -29,6 +29,7 @@ export type DocumentState = {
   heartbeatAt: number;
   messages: string[];
   complete: boolean;
+  terminalAt: number | null;
   ready: boolean;
   retiring: boolean;
   cutoff: number | null;
@@ -68,6 +69,7 @@ export class Collector {
       heartbeatAt: this.now(),
       messages: [],
       complete: false,
+      terminalAt: null,
       ready: false,
       retiring: false,
       cutoff: null,
@@ -200,6 +202,7 @@ export class Collector {
       state.complete
     )
       this.violation(`Case end before start or duplicate terminal: ${body.caseId}`, state);
+    state.terminalAt = this.now();
     if (body.status === "fail") {
       this.outcomes[body.caseId] = { status: "fail", detail: body.error ?? "test failure" };
       return;

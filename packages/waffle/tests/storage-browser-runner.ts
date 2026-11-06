@@ -23,7 +23,9 @@ if (process.argv[2] === "ios-safari") {
   const { nativeMain } = await import("./page-runner/native.js");
   const { storageAdapter } = await import("./page-runner/storage-host.js");
   process.exit(
-    await nativeMain(storageAdapter, process.argv.slice(3), process.env.STORAGE_TEST_FILTER),
+    await nativeMain(storageAdapter, process.argv.slice(3), {
+      filter: process.env.STORAGE_TEST_FILTER,
+    }),
   );
 }
 const lifecycle = new BrowserRunnerLifecycle();

@@ -22,23 +22,70 @@ const headers = {
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Cache-Control": "no-store",
 };
-export function serveCollector(collector: Collector, assets: Record<string, Blob | string>) {
+export type HostedPage = { path: string; script: string };
+export type PreparationContext = { scratch: string; signal: AbortSignal };
+const defaultPage: HostedPage = { path: "/", script: "/page.js" };
+function localPath(path: string): void {
+  const url = new URL(path, "http://localhost");
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    url.origin !== "http://localhost" ||
+    url.pathname !== path ||
+    url.search ||
+    url.hash ||
+    /[\\\s<>"']/u.test(path)
+  )
+    throw new Error("Expected a same-origin local page path");
+}
+function validatePage(page: HostedPage): HostedPage {
+  localPath(page.path);
+  localPath(page.script);
+  if (["/report", "/heartbeat", "/retire", "/favicon.ico"].includes(page.path))
+    throw new Error("Hosted page conflicts with a reserved endpoint");
+  return page;
+}
+function validatePort(port: number): number {
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535)
+    throw new Error("Expected a port from 1024 through 65535");
+  return port;
+}
+function probePort(port: number): void {
+  const listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+  listener.stop(true);
+}
+export function serveCollector(
+  collector: Collector,
+  assets: Record<string, Blob | string>,
+  page: HostedPage = defaultPage,
+  port = Number(process.env.STORAGE_TEST_PORT ?? 0),
+) {
+  validatePage(page);
   const configurations = new Map<string, unknown>();
   const server = Bun.serve({
     hostname: "127.0.0.1",
-    port: Number(process.env.STORAGE_TEST_PORT ?? 0),
+    port,
     maxRequestBodySize: 65536,
     async fetch(request) {
       const url = new URL(request.url);
       try {
         if (request.method === "POST") return await acceptPost(collector, request, url.pathname);
         if (url.pathname === "/retire") return retirementCommand(collector, url);
-        if (url.pathname === "/")
-          return pageResponse(configurations.get(url.searchParams.get("token") ?? ""));
-        const asset = assets[url.pathname];
+        if (url.pathname === "/report" || url.pathname === "/heartbeat")
+          return new Response("Method not allowed", { status: 405, headers });
+        if (url.pathname === "/favicon.ico") return new Response(null, { status: 204, headers });
+        if (url.pathname === page.path)
+          return pageResponse(configurations.get(url.searchParams.get("token") ?? ""), page.script);
+        const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
         return new Response(asset ?? "Not found", {
           status: asset === undefined ? 404 : 200,
-          headers: { ...headers, "Content-Type": "application/javascript" },
+          headers: {
+            ...headers,
+            "Content-Type":
+              typeof asset === "string"
+                ? "application/javascript"
+                : asset?.type || "application/octet-stream",
+          },
         });
       } catch (error) {
         if (error instanceof ObservationClosed)
@@ -67,11 +114,11 @@ function retirementCommand(collector: Collector, url: URL): Response {
     throw new Error("Unbound retirement poll");
   return Response.json(state.retiring, { headers });
 }
-function pageResponse(configuration: unknown): Response {
+function pageResponse(configuration: unknown, script: string): Response {
   if (!configuration) return new Response("Unknown document token", { status: 404, headers });
   const encoded = JSON.stringify(configuration).replaceAll("<", "\\u003c");
   return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Page suite</title><script>window.__suiteConfiguration=${encoded}</script><script type="module" src="/page.js"></script>`,
+    `<!doctype html><meta charset="utf-8"><title>Page suite</title><script>window.__suiteConfiguration=${encoded}</script><script type="module" src="${script.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"></script>`,
     { headers: { ...headers, "Content-Type": "text/html" } },
   );
 }
@@ -83,6 +130,8 @@ export type RunOptions = {
   budgets?: Budgets;
   assets?: Record<string, Blob | string>;
   cleanupTimeoutMs?: number;
+  startedAt?: number;
+  port?: number;
 };
 export type SuiteResult = {
   suite: string;
@@ -151,14 +200,12 @@ export type SuiteAdapter<R> = {
   suite: string;
   inventory(): SuiteCase<R>[];
   policy: CollectorPolicy;
-  assets(): Promise<Record<string, Blob | string>>;
+  assets(context: PreparationContext): Promise<Record<string, Blob | string>>;
+  page?: HostedPage;
+  resultWaitMs?: number;
   budgets(selected: number): Budgets;
 };
-export async function runPageSuite<R>(
-  adapter: SuiteAdapter<R>,
-  factory: (scratch: string) => Driver,
-  options: RunOptions,
-): Promise<SuiteResult> {
+function selectCases<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
   const inventory = adapter.inventory(),
     required = inventory.map((item) => item.id);
   const selectedCases = inventory.filter(
@@ -167,9 +214,39 @@ export async function runPageSuite<R>(
   const selected = selectedCases.map((item) => item.id),
     run = crypto.randomUUID();
   const collector = new Collector(run, required, selected, adapter.policy);
-  const controller = new AbortController();
   const budgets = options.budgets ?? adapter.budgets(selected.length);
-  const started = performance.now();
+
+  return { required, selectedCases, selected, run, collector, budgets };
+}
+export async function runPageSuite<R>(
+  adapter: SuiteAdapter<R>,
+  factory: (scratch: string) => Driver,
+  options: RunOptions,
+): Promise<SuiteResult> {
+  const entered = performance.now();
+  const started = options.startedAt ?? entered;
+  if (!Number.isFinite(started) || started > entered)
+    throw new Error(
+      "startedAt must be a finite same-process monotonic timestamp, not in the future",
+    );
+  const port = options.port === undefined ? undefined : validatePort(options.port);
+  const page = validatePage(adapter.page ?? defaultPage);
+  if (
+    adapter.resultWaitMs !== undefined &&
+    (!Number.isFinite(adapter.resultWaitMs) || adapter.resultWaitMs <= 0)
+  )
+    throw new Error("resultWaitMs must be positive and finite");
+  const controller = new AbortController();
+  let expire = () => {};
+  const watchdog = setInterval(() => expire(), 25);
+  let selection: ReturnType<typeof selectCases<R>>;
+  try {
+    selection = selectCases(adapter, options);
+  } catch (error) {
+    clearInterval(watchdog);
+    throw error;
+  }
+  const { required, selectedCases, selected, run, collector, budgets } = selection;
   let scratch = "",
     driver: Driver | undefined,
     fixture: ReturnType<typeof serveCollector> | undefined;
@@ -181,6 +258,7 @@ export async function runPageSuite<R>(
     launcher: absent(),
     serviceDisposition: "No driver allocated",
   };
+  let preparation: Promise<void> | undefined;
   let cleaning: Promise<void> | undefined;
   const interrupted = () => {
     collector.fail("interrupted", "Run interrupted");
@@ -188,11 +266,25 @@ export async function runPageSuite<R>(
   };
   const stop = (): Promise<void> => (cleaning ??= teardown());
   const teardown = async (): Promise<void> => {
-    if (driver) driverCleanup = await stopDriver(driver, options.cleanupTimeoutMs ?? 12_000);
+    controller.abort("execution stopped");
+    const cleanupMs = options.cleanupTimeoutMs ?? 12_000;
+    const [producerStopped] = await Promise.all([
+      joinPreparation(preparation, cleanupMs),
+      driver
+        ? stopDriver(driver, cleanupMs).then((result) => {
+            driverCleanup = result;
+          })
+        : undefined,
+    ]);
     const stopped =
+      producerStopped &&
       driverCleanup.session.status !== "unconfirmed" &&
       driverCleanup.launcher.status !== "unconfirmed";
-    if (!stopped) collector.fail("cleanup", driverCleanup.session.detail);
+    if (!stopped)
+      collector.fail(
+        "cleanup",
+        producerStopped ? driverCleanup.session.detail : "Asset producer settlement unconfirmed",
+      );
     if (fixture) server = await stopCollector(fixture.server, stopped);
     if (scratch) scratchCleanup = await removeScratch(scratch, stopped);
   };
@@ -200,12 +292,14 @@ export async function runPageSuite<R>(
   process.on("SIGTERM", interrupted);
   options.signal?.addEventListener("abort", interrupted, { once: true });
   if (options.signal?.aborted) interrupted();
-  const watchdog = setInterval(() => {
-    if (performance.now() - started < budgets.run) return;
+  const checkDeadline = () => {
+    if (signal.aborted || performance.now() - started < budgets.run) return;
     collector.fail("run-timeout", "Absolute run deadline");
     controller.abort("run-timeout");
-  }, 100);
+  };
   const signal = controller.signal;
+  expire = checkDeadline;
+  checkDeadline();
   async function document(
     group: Group,
     item: SuiteCase<R> | null,
@@ -217,7 +311,7 @@ export async function runPageSuite<R>(
       throw new Error("Driver unavailable or command completion uncertain");
     operationSignal.throwIfAborted();
     const token = crypto.randomUUID(),
-      url = `${fixture.origin}/?token=${token}`;
+      url = `${fixture.origin}${page.path}?token=${token}`;
     const state = collector.expect(group, token, url, await driver.handle(operationSignal));
     fixture.configurations.set(token, {
       run,
@@ -231,6 +325,10 @@ export async function runPageSuite<R>(
       budgets.hello,
       "navigation",
     );
+    const resultDeadline =
+      group.role === "case" && adapter.resultWaitMs !== undefined
+        ? performance.now() + adapter.resultWaitMs
+        : undefined;
     await awaitState(
       state,
       () => state.complete,
@@ -240,6 +338,7 @@ export async function runPageSuite<R>(
       cleanupOnly ? performance.now() : started,
       operationSignal,
       priorFailures,
+      resultDeadline,
     );
     state.retiring = true;
     await awaitState(
@@ -253,6 +352,9 @@ export async function runPageSuite<R>(
       priorFailures,
     );
     await retireDocument(state, collector, driver, operationSignal, priorFailures);
+    operationSignal.throwIfAborted();
+    if (!cleanupOnly) checkDeadline();
+    operationSignal.throwIfAborted();
     fixture.configurations.delete(token);
   }
   async function interruptedFinish(error: unknown): Promise<void> {
@@ -270,10 +372,25 @@ export async function runPageSuite<R>(
       options.scratchRoot ??
       process.env.STORAGE_SCRATCH_ROOT ??
       (process.platform === "darwin" ? join(homedir(), "tmp") : "/work/tmp");
+    if (port !== undefined) probePort(port);
+    signal.throwIfAborted();
     await mkdir(root, { recursive: true });
+    signal.throwIfAborted();
     scratch = await mkdtemp(join(root, "w-pr-"));
+    signal.throwIfAborted();
+    const producing = Promise.resolve().then(() => {
+      signal.throwIfAborted();
+      return options.assets ?? adapter.assets({ scratch, signal });
+    });
+    preparation = producing.then(
+      () => {},
+      () => {},
+    );
+    const assets = await untilAborted(producing, signal);
+    signal.throwIfAborted();
+    fixture = serveCollector(collector, assets, page, port);
+    signal.throwIfAborted();
     driver = factory(scratch);
-    fixture = serveCollector(collector, options.assets ?? (await adapter.assets()));
     await bounded(
       driver.start(AbortSignal.any([signal, AbortSignal.timeout(20_000)])),
       20_000,
@@ -308,11 +425,12 @@ export async function runPageSuite<R>(
       detail: "Run stopped; exact registered ledger retained in result",
     };
   } finally {
-    await stop();
+    checkDeadline();
     clearInterval(watchdog);
     process.removeListener("SIGINT", interrupted);
     process.removeListener("SIGTERM", interrupted);
     options.signal?.removeEventListener("abort", interrupted);
+    await stop();
   }
   if (!adapter.policy.allocation)
     storage = { status: "not-created", detail: "suite declares no durable allocations" };
@@ -372,16 +490,20 @@ async function awaitState(
   started: number,
   signal: AbortSignal,
   priorFailures = 0,
+  resultDeadline?: number,
 ): Promise<void> {
-  while (!done()) {
+  for (;;) {
     signal.throwIfAborted();
-    const overdue = collector.deadline(budgets, started);
+    const resultOverdue =
+      resultDeadline !== undefined && (state.terminalAt ?? performance.now()) >= resultDeadline;
+    if (!resultOverdue && done()) return;
+    const overdue = resultOverdue ? "result-timeout" : collector.deadline(budgets, started);
     if (overdue) {
       const category = await probeDocument(state, driver, signal);
       collector.fail(
         category === "responsive"
-          ? overdue === "case-hang"
-            ? "case-hang"
+          ? overdue === "case-hang" || overdue === "result-timeout"
+            ? overdue
             : "report-lost"
           : category,
         overdue,
@@ -460,5 +582,31 @@ export async function writeResult(path: string, value: unknown): Promise<void> {
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });
+  }
+}
+
+async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let abort = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+async function joinPreparation(
+  preparation: Promise<void> | undefined,
+  ms: number,
+): Promise<boolean> {
+  if (!preparation) return true;
+  try {
+    await bounded(preparation, ms, "asset producer join");
+    return true;
+  } catch {
+    return false;
   }
 }
