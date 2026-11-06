@@ -30,6 +30,16 @@ const intrinsicModules: Readonly<Record<string, string>> = {
 };
 const trustedModules: Readonly<Record<string, string>> = {
   ...intrinsicModules,
+  "browser/display/owner.ts": "Page-only display, grant and service lifecycle owner.",
+  "browser/gpu/service.ts": "Dedicated GPU service, never a guest implementation.",
+  "browser/gpu/service-worker.ts": "Dedicated GPU service entry, never a guest implementation.",
+  "browser/gpu/surfaces.ts": "Dedicated service-owned native canvases and devices.",
+  "browser/gpu/scheduler.ts": "Dedicated resumable service scheduler.",
+  "browser/gpu/replay.ts": "Dedicated service replay and terminal native resource ownership.",
+  "browser/gpu/completions.ts": "Dedicated service completion and pending operation ownership.",
+  "browser/gpu/handles.ts": "Dedicated native GPU object table.",
+  "browser/gpu/lowering.ts": "Dedicated native descriptor lowering.",
+  "browser/gpu/codec.ts": "Service-only schema decoder and encoder.",
   "proc/command.ts": "Trusted page-command data contract, not imported by the guest bootstrap.",
   "proc/command-runner.ts": "Page-only trusted command execution and physical task ownership.",
   "proc/command-stdio.ts": "Page-only asynchronous descriptor I/O for trusted host callbacks.",
@@ -131,6 +141,12 @@ export const payloadExceptions: readonly PayloadException[] = [
 
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
 export const enforcedModules = [
+  "browser/display/protocol.ts",
+  "browser/display/guest.ts",
+  "browser/gpu/guest.ts",
+  "browser/gpu/ring.ts",
+  "browser/gpu/transport.ts",
+  "browser/gpu/protocol.ts",
   "fs/request-memory.ts",
   "fs/section.ts",
   "proc/intrinsics.ts",
@@ -207,6 +223,15 @@ const containers = new Set([
   "WeakSet",
 ]);
 const authority = new Set([
+  "GraphicsConnection",
+  "GraphicsGrant",
+  "GraphicsOpen",
+  "GuestGpuConnection",
+  "RecordRing",
+  "RingWriter",
+  "LogicalAppend",
+  "LogicalReader",
+  "RingTerminal",
   "Arena",
   "FilesystemTransportSection",
   "FilesystemRequestMemory",

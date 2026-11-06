@@ -3707,3 +3707,62 @@ test("consumer roots take single-use workers from the broker's precreated pool",
     globalThis.Worker = original;
   }
 });
+
+for (const threaded of [false, true]) {
+  test(`graphics grant releases exactly once before child ownership, threaded=${threaded}`, async () => {
+    const { declareThreadModule } = await import("../memory/declarations.js");
+    const { pages } = await import("../memory/reservations.js");
+    const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    if (threaded)
+      declareThreadModule(module, {
+        initialPages: pages(2),
+        actualMaximumPages: pages(512),
+        sourceMaximumPages: pages(512),
+      });
+    const channel = new MessageChannel();
+    let releases = 0;
+    const graphics = {
+      connection: {
+        port: channel.port1,
+        gpu: true,
+        revocation: new SharedArrayBuffer(64),
+        surfaces: [],
+        commandBytes: 4096,
+        completionBytes: 4096,
+      },
+      dispose() {
+        releases++;
+      },
+      retired: async () => {},
+    };
+    const identities = new ProcessIdentityAllocator(),
+      registry = new ExecutableRegistry();
+    registry.register("fixture", { adapter: "fixture", module, interruptible: true });
+    const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
+      identities,
+      table: new ProcessTable(identities),
+      registry,
+      filesystem: unusedFilesystem(),
+      onError() {},
+      launch: (context) =>
+        broker.launchWorker(context, {
+          workerUrl: "unused",
+          graphics,
+          request: { module: context.module, args: [], env: {} },
+        }),
+    });
+    try {
+      const { root, supervisor, pid } = await reserveFixtureChild(broker, "fixture");
+      await supervisor.start(pid);
+      expect((await supervisor.waitForExit(root, pid)).kind).toBe("start-failed");
+      expect(releases).toBe(1);
+      expect(broker.workerMemory()).toEqual([]);
+    } finally {
+      await broker.dispose();
+      channel.port1.close();
+      channel.port2.close();
+    }
+    expect(releases).toBe(1);
+  });
+}

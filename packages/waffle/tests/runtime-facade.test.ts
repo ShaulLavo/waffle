@@ -1894,3 +1894,23 @@ test("the borrowed process service queries exact idle ownership without exposing
     leased?.terminate();
   }
 });
+
+test("display activation is lazy, cached and owned without process or GPU workers", async () => {
+  const runtime = create();
+  const first = runtime.display();
+  expect(runtime.display()).toBe(first);
+  const display = await first;
+  expect(typeof display.createSurface).toBe("function");
+  expect(events).toEqual(["filesystem:start"]);
+  await runtime.dispose();
+  await expect(runtime.display()).rejects.toThrow("disposed");
+});
+
+test("disposal wins an unstarted lazy display activation without leaking its owner", async () => {
+  const runtime = create();
+  const pending = runtime.display();
+  const disposal = runtime.dispose();
+  await expect(pending).rejects.toThrow("disposed");
+  await disposal;
+  expect(events).toEqual(["filesystem:start", "filesystem:stop"]);
+});

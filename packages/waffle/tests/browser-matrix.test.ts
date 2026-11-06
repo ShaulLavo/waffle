@@ -14,6 +14,7 @@ const runners = [
   "publication-cross-tab",
   "search-executor",
   "guest-watch",
+  "gpu",
 ];
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";

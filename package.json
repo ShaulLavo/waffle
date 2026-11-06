@@ -45,7 +45,8 @@
     "programs:packed": "bun tools/family-packed.ts",
     "programs:gh": "bun run --cwd packages/gh typecheck && bun run --cwd packages/gh test && bun run --cwd packages/gh build && bun run --cwd packages/gh prepack && bun run --cwd packages/gh pack",
     "programs:procps": "bun run programs:procps:pure && bun run --cwd packages/procps test:runtime && bun run --cwd packages/procps pack:check && bun run --cwd packages/procps size:commands",
-    "relay:check": "bun run --cwd packages/waffle-relay build && bun run --cwd packages/waffle-relay typecheck && bun run --cwd packages/waffle-relay test && bun run --cwd packages/waffle-relay test:native && bun run --cwd packages/waffle-relay test:worker && bun run --cwd packages/waffle-relay pack:check"
+    "relay:check": "bun run --cwd packages/waffle-relay build && bun run --cwd packages/waffle-relay typecheck && bun run --cwd packages/waffle-relay test && bun run --cwd packages/waffle-relay test:native && bun run --cwd packages/waffle-relay test:worker && bun run --cwd packages/waffle-relay pack:check",
+    "size:gpu": "bun run --cwd packages/waffle size:gpu"
   },
   "devDependencies": {
     "@waffle/python": "workspace:*",

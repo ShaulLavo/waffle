@@ -590,6 +590,20 @@
       "bun": "./browser/preview1-network.ts",
       "browser": "./browser/preview1-network.ts",
       "default": "./browser/preview1-network.ts"
+    },
+    "./browser/display": {
+      "types": "./browser/display/owner.ts",
+      "node": "./dist/browser/display/owner.js",
+      "bun": "./browser/display/owner.ts",
+      "browser": "./browser/display/owner.ts",
+      "default": "./browser/display/owner.ts"
+    },
+    "./browser/gpu/service-worker": {
+      "types": "./browser/gpu/service-worker.ts",
+      "node": "./dist/browser/gpu/service-worker.js",
+      "bun": "./browser/gpu/service-worker.ts",
+      "browser": "./browser/gpu/service-worker.ts",
+      "default": "./browser/gpu/service-worker.ts"
     }
   },
   "scripts": {
@@ -616,7 +630,9 @@
     "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked",
     "pack": "bun tooling/check-package-metadata.ts && bun pm pack --destination dist",
     "pack:check": "bun tooling/tarball-smoke.ts",
-    "check:gpu-stream": "bun tooling/gpu-stream.ts --check"
+    "check:gpu-stream": "bun tooling/gpu-stream.ts --check",
+    "size:gpu": "bun tooling/gpu-size.ts",
+    "build:gpu-fixture": "bun scripts/build-gpu-fixture.ts"
   },
   "dependencies": {},
   "devDependencies": {

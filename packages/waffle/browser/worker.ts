@@ -1,3 +1,4 @@
+import type { GraphicsConnection } from "./display/protocol.js";
 import {
   allocateHostProgramMemory,
   allocateSharedControl,
@@ -92,6 +93,7 @@ export interface RuntimeWorkerRequest {
   memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
   network?: Preview1NetworkConnection;
+  graphics?: GraphicsConnection;
   /** Supplied by the owning page or broker, never read from guest env. */
   hostIdentity?: RuntimeHostIdentity | null;
   module: WebAssembly.Module;
@@ -580,6 +582,10 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     | ReturnType<(typeof import("./preview1-socket.js"))["attachPreview1Sockets"]>
     | undefined;
   const releaseNetworkPort = captureNetworkPort(req.network);
+  const releaseGraphicsPort = captureNetworkPort(req.graphics);
+  // Import/capture before executor hooks or guest entry can poison builtins.
+  let boundMemory: WebAssembly.Memory | undefined;
+  let graphics: ReturnType<(typeof import("./gpu/guest.js"))["createGraphicsGuest"]> | undefined;
   let writeDiagnostic: ((data: Uint8Array) => number) | undefined;
   let pendingFinish: Promise<void> | undefined;
   const finish = (result: WorkerResult): void => {
@@ -659,6 +665,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       closeDiscardedStdio(streams, new SetConstructor());
     });
     attempt(() => socketNetwork?.dispose());
+    attempt(() => (graphics ? graphics.dispose() : releaseGraphicsPort()));
     attempt(releaseNetworkPort);
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
@@ -740,6 +747,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       : (requestOutcome ?? executor.outcome);
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
     if (req.memoryObservation) memorySampler = createWorkerMemorySampler(req.memoryObservation);
+    graphics = await prepareGraphics(req.graphics, () => boundMemory, checkActive);
     const processModules = loadProcessModules(req.runtimeProcess);
     if (req.filesystem.residentPublication) await fs.attachResidentPublication();
     if (req.startupStderr) {
@@ -949,10 +957,14 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         controlWait(word, 0, expected, ms);
         checkActive();
       },
-      namespaces: { ...namespaces, ...groupMember.namespaces, runtime_proc: processImports },
+      namespaces: {
+        ...namespaces,
+        ...groupMember.namespaces,
+        ...graphics?.imports,
+        runtime_proc: processImports,
+      },
       trace: req.trace ? (line) => console.debug(`[wasi] ${line}`) : undefined,
     });
-    let boundMemory: WebAssembly.Memory | undefined;
     const bindMemory = (memory: WebAssembly.Memory) => {
       checkActive();
       if (boundMemory && boundMemory !== memory)
@@ -1168,7 +1180,7 @@ function socketWait(checkActive: () => void): (word: Int32Array, expected: numbe
   };
 }
 
-function captureNetworkPort(connection: Preview1NetworkConnection | undefined): () => void {
+function captureNetworkPort(connection: { readonly port: MessagePort } | undefined): () => void {
   if (!connection) return () => {};
   const port = connection.port;
   const close = port.close;
@@ -1299,3 +1311,22 @@ function entryMemory(
 
 /** Plain preview1 commands have no engine, native slots or module-cache policy. */
 export const preview1Executor: WorkerExecutor = { run: (_context, exited) => exited ?? 0 };
+
+async function prepareGraphics(
+  connection: GraphicsConnection | undefined,
+  memory: () => WebAssembly.Memory | undefined,
+  live: () => void,
+) {
+  if (!connection) return undefined;
+  const { createGraphicsGuest } = await import("./gpu/guest.js");
+  live();
+  return createGraphicsGuest(
+    connection,
+    () => {
+      const value = memory();
+      if (!value) throw new ExecutableFormatError("Graphics memory is not bound");
+      return value;
+    },
+    live,
+  );
+}
