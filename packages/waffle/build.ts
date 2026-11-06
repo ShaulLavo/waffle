@@ -351,17 +351,24 @@ export async function buildNodeModules(
   }
   if (existsSync(join(root, "tests/page-runner/framework.ts"))) {
     await emitFrameworkClosure();
-    const bootstrap = await Bun.build({
-      entrypoints: [join(root, "tests/page-runner/framework-bootstrap-main.ts")],
-      target: "browser",
-      format: "iife",
-      minify: true,
-    });
-    if (!bootstrap.success || !bootstrap.outputs[0])
-      throw new AggregateError(bootstrap.logs, "Framework bootstrap build failed");
-    await Bun.write(join(outdir, "tests/page-runner/framework-bootstrap.js"), bootstrap.outputs[0]);
+    await buildFrameworkBootstrap(root, outdir);
   }
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
+}
+
+export async function buildFrameworkBootstrap(
+  root = import.meta.dir,
+  outdir = join(root, "dist"),
+): Promise<void> {
+  const bootstrap = await Bun.build({
+    entrypoints: [join(root, "tests/page-runner/framework-bootstrap-main.ts")],
+    target: "browser",
+    format: "iife",
+    minify: true,
+  });
+  if (!bootstrap.success || !bootstrap.outputs[0])
+    throw new AggregateError(bootstrap.logs, "Framework bootstrap build failed");
+  await Bun.write(join(outdir, "tests/page-runner/framework-bootstrap.js"), bootstrap.outputs[0]);
 }
 
 if (import.meta.main) await buildNodeModules();
