@@ -165,7 +165,7 @@
       "name": "command_encoder.begin_compute_pass",
       "group": "encoder",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Begin an optional compute-pass descriptor with timestamp sentinel adaptation and retain its pass identity across bounded replay slices.",
       "call": {
         "opcode": 35,
         "context": "encoder",
@@ -271,7 +271,7 @@
       "name": "compute_pass_encoder.insert_debug_marker",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Insert the pinned UTF-8 compute marker label on the current native compute pass.",
       "call": {
         "opcode": 36,
         "context": "pass",
@@ -285,7 +285,7 @@
       "name": "compute_pass_encoder.pop_debug_group",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Pop the current compute debug group and leave balance validation to native WebGPU.",
       "call": {
         "opcode": 37,
         "context": "pass",
@@ -299,7 +299,7 @@
       "name": "compute_pass_encoder.push_debug_group",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Push the pinned UTF-8 group label on the current native compute pass.",
       "call": {
         "opcode": 38,
         "context": "pass",
@@ -313,7 +313,7 @@
       "name": "compute_pass_encoder.set_pipeline",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Resolve a compute-pipeline handle and bind its exact native identity on the current compute pass.",
       "call": {
         "opcode": 39,
         "context": "pass",
@@ -327,7 +327,7 @@
       "name": "compute_pass_encoder.set_bind_group",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Bind a native group or explicit null with the original group index and u32 dynamic-offset array.",
       "call": {
         "opcode": 40,
         "context": "pass",
@@ -341,7 +341,7 @@
       "name": "compute_pass_encoder.set_immediates",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Replace the C data pointer and size with one byte span; pass the exact byte offset and Uint8Array to native setImmediates.",
       "call": {
         "opcode": 41,
         "context": "pass",
@@ -359,7 +359,7 @@
       "name": "compute_pass_encoder.dispatch_workgroups",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Dispatch the pinned three u32 workgroup counts without defaulting zero counts or changing their order.",
       "call": {
         "opcode": 42,
         "context": "pass",
@@ -373,7 +373,7 @@
       "name": "compute_pass_encoder.dispatch_workgroups_indirect",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Dispatch through the exact native indirect buffer and checked safe-number u64 byte offset.",
       "call": {
         "opcode": 43,
         "context": "pass",
@@ -387,7 +387,7 @@
       "name": "compute_pass_encoder.end",
       "group": "compute-pass",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "End the native compute pass and return resumable replay to encoder context.",
       "call": {
         "opcode": 44,
         "context": "pass",
@@ -401,7 +401,7 @@
       "name": "compute_pass_encoder.set_label",
       "group": "labels",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Assign the pinned label string to the native compute-pass label property, not a fictional method.",
       "call": {
         "opcode": 45,
         "context": "pass",
@@ -488,7 +488,7 @@
       "name": "device.create_compute_pipeline",
       "group": "creation",
       "category": "selected",
-      "reason": "Selected ordinary compute call with exact pinned arguments, native object identity and connection-local protocol validation.",
+      "reason": "Create a synchronous native compute pipeline with explicit or automatic layout, checked shader identity and constant-record adaptation.",
       "call": {
         "opcode": 34,
         "context": "top",

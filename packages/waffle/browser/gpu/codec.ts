@@ -223,7 +223,7 @@ export function decodeCall(bytes: Uint8Array): DecodedCall {
   const header = recordHeader(bytes);
   if (header.flags || header.length !== bytes.byteLength)
     throw new GpuProtocolError("Invalid command framing");
-  const layout = gpuStream.calls.find((call) => call.opcode === header.opcode);
+  const layout = callsByOpcode.get(header.opcode);
   if (!layout) throw new GpuProtocolError("Unknown selected opcode");
   const reader = new WireReader(bytes, 8);
   const fields = reader.fields(layout.fields);
@@ -305,3 +305,5 @@ class CompletionWriter {
 }
 
 const tables: WireTables = gpuStream;
+const callsByOpcode = new Map<number, CallLayout>();
+for (const call of tables.calls) callsByOpcode.set(call.opcode, call);
