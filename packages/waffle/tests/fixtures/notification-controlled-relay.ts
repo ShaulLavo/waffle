@@ -28,9 +28,11 @@ export async function controlledNotificationRelay() {
   const source = await Bun.file(
     new URL("../../browser/notification-worker.ts", import.meta.url),
   ).text();
-  const binding = 'import { atomicsWaitAsync } from "../proc/intrinsics.js";';
+  const binding = "const waiters = createNotificationWaiters(import.meta.url);";
   if (source.split(binding).length !== 2) throw new Error("expected one relay wait binding");
-  const script = source.replace(binding, "const atomicsWaitAsync = globalThis.controlledWait;");
+  const script = source
+    .replace(/import \{[^}]+\} from "\.\/notification-blocking-wait\.js";\n/, "")
+    .replace(binding, "const waiters = { wait: globalThis.controlledWait, dispose() {} };");
   runInContext(new Bun.Transpiler({ loader: "ts" }).transformSync(script), context);
   runInContext("globalThis.onmessage({ data: connection })", context);
   port.onmessage({ data: { type: "arm", words: words.map((cells) => ({ cells, index: 0 })) } });

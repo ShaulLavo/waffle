@@ -4,6 +4,7 @@ const stopped = new AbortController();
 const stop = () => stopped.abort();
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
+const gpuRunner = "tests/gpu-browser-runner.ts";
 const runners = [
   "tests/safe-staging-browser-runner.ts",
   "tests/storage-browser-runner.ts",
@@ -14,9 +15,14 @@ const runners = [
   "tests/publication-cross-tab-browser-runner.ts",
   "tests/search-executor-browser-runner.ts",
   "tests/guest-watch-browser-runner.ts",
-  "tests/gpu-browser-runner.ts",
+  gpuRunner,
 ];
-const parallel = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat([
+const parallel = [
+  runners
+    .filter((runner) => runner !== gpuRunner)
+    .map((runner) => ({ runner, engines: ["chromium", "firefox"] })),
+].concat([
+  [{ runner: gpuRunner, engines: ["chromium", "firefox"] }],
   [{ runner: "tests/recovery-r42-browser-runner.ts", engines: ["chromium"] }],
 ]);
 const serial = runners

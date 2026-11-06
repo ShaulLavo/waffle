@@ -79,3 +79,64 @@ test("heartbeat is independent of a blocked report and permits only one request 
       await pending;
     }
   }));
+
+test("report retry and retirement use pre-fixture dependencies while instrumentation remains active", () =>
+  withWindow(async () => {
+    const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+    const timer = globalThis.setTimeout,
+      clear = globalThis.clearTimeout;
+    const interval = globalThis.setInterval,
+      clearInterval = globalThis.clearInterval;
+    const timeout = AbortSignal.timeout;
+    let attempts = 0,
+      observedTimers = 0,
+      retired = false;
+    const reporter = new Reporter(
+      "r",
+      async (url, init) => {
+        if (url.startsWith("/retire")) {
+          retired = true;
+          return Response.json(true);
+        }
+        if (++attempts === 1) throw new Error("Lost ACK");
+        return acknowledge(init);
+      },
+      500,
+    );
+    try {
+      Reflect.set(globalThis, "fetch", () => {
+        throw new Error("Patched fetch");
+      });
+      Reflect.set(globalThis, "setTimeout", () => {
+        observedTimers++;
+        throw new Error("Observed reporter timeout");
+      });
+      Reflect.set(globalThis, "setInterval", () => {
+        throw new Error("Observed reporter interval");
+      });
+      Reflect.set(globalThis, "clearTimeout", () => {
+        throw new Error("Observed reporter clear");
+      });
+      Reflect.set(globalThis, "clearInterval", () => {
+        throw new Error("Observed reporter clear");
+      });
+      AbortSignal.timeout = () => {
+        throw new Error("Patched abort timeout");
+      };
+      reporter.startHeartbeat(1000);
+      await reporter.send({ kind: "doc-complete" });
+      await reporter.readyForRetirement();
+      reporter.stop();
+      expect(retired).toBe(true);
+      expect(observedTimers).toBe(0);
+      expect(attempts).toBe(3);
+    } finally {
+      if (fetchDescriptor) Object.defineProperty(globalThis, "fetch", fetchDescriptor);
+      globalThis.setTimeout = timer;
+      globalThis.clearTimeout = clear;
+      globalThis.setInterval = interval;
+      globalThis.clearInterval = clearInterval;
+      AbortSignal.timeout = timeout;
+      reporter.stop();
+    }
+  }));
