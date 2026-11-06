@@ -1,3 +1,4 @@
+import { withStorageCleanup, type StorageAllocationHooks } from "./storage-allocation.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
@@ -669,6 +670,7 @@ async function pendingRuntimeOpenCase(
 function indexedDBCases(
   filesystemWorkerURL?: string | URL,
   gatedWorkerURL?: string | URL,
+  allocation?: StorageAllocationHooks,
 ): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => {
@@ -963,6 +965,7 @@ function indexedDBCases(
     };
     for (const compactEvery of [1, 128]) {
       const database = `${name}-${compactEvery}`;
+      await allocation?.allocate({ kind: "indexeddb", name: database });
       const stale = await IndexedDBStorage.open(database, { locks, compactEvery });
       await stale.persist(batch(1));
       const original = crypto.subtle.digest.bind(crypto.subtle);
@@ -1292,25 +1295,28 @@ function indexedDBCases(
 export function storageTests(
   filesystemWorkerURL?: string | URL,
   gatedWorkerURL?: string | URL,
+  allocation?: StorageAllocationHooks,
 ): BrowserStorageTest[] {
   return storageContractCases()
-    .concat(indexedDBCases(filesystemWorkerURL, gatedWorkerURL))
+    .concat(indexedDBCases(filesystemWorkerURL, gatedWorkerURL, allocation))
     .map(({ label, run, compactEvery = 2 }) => ({
       label,
       async run() {
-        const name = `bun-wasm-storage-test-${crypto.randomUUID()}`;
+        const name = allocation?.name() ?? `bun-wasm-storage-test-${crypto.randomUUID()}`;
+        await allocation?.allocate({ kind: "indexeddb", name });
         const opened: IndexedDBStorage[] = [];
         const open = async () => {
           const backend = await IndexedDBStorage.open(name, { compactEvery });
           opened.push(backend);
           return backend;
         };
-        try {
-          await run(name, open);
-        } finally {
-          for (const backend of opened) await backend.close().catch(() => {});
-          await request(indexedDB.deleteDatabase(name));
-        }
+        await withStorageCleanup(
+          () => run(name, open),
+          async () => {
+            for (const backend of opened) await backend.close().catch(() => {});
+            await request(indexedDB.deleteDatabase(name));
+          },
+        );
       },
     }));
 }
