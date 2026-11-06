@@ -11,6 +11,33 @@ Waffle owns `core/`, `fs/`, `proc/`, `interrupt/` and generic `browser/` service
 guest engines, native bindings, module caches, service-worker registration policy and application
 adapters. Consumers pin one exact Waffle Git commit and use the matching package exports.
 
+## Automatic shared-memory defaults
+
+Status: Idea, deferred by the owner on November 6, 2026. Owner: Waffle runtime track.
+Automatic Apple-mobile defaults are not required target behavior. Keep the current omission
+contract: omitting `sharedMemory` selects the unbounded default on every browser, without
+reading the user agent. Explicit application declarations remain available.
+
+[PR 272](https://github.com/ShaulLavo/waffle/pull/272) is closed as superseded. Its branch
+`t3/ios-memory-budget` and head `1600eb044c388a2fb9e9df14252c6a58988b392e` are preserved.
+Automatic Apple-mobile defaults were not shipped. Accounting and admission landed separately
+in [PR 339](https://github.com/ShaulLavo/waffle/pull/339), and Runtime thread work landed in
+[PR 340](https://github.com/ShaulLavo/waffle/pull/340).
+
+There is no demonstrated failure caused by omitted `sharedMemory` reserving too much.
+The conditional Nuxt iOS runs consume Waffle 0.0.110, not PR 272 or current main, and do not
+qualify current main natively. Browser-specific defaults need a real failure, not browser sniffing
+based on assumed capacity. The separate [default-sizing measurement plan](../docs/reservation-defaults-later.md)
+does not make automatic mobile defaults required behavior.
+
+Revisit this idea only if an actual iOS or other run fails because omitted `sharedMemory`
+reserves too much. Capture the failing allocation, runtime version, browser, and reproduction.
+Then design a narrow fix against current main, with an independent review and regression tests
+before merge. Do not revive the broad draft or infer backing-memory reclamation from worker exit.
+
+Keep the process-disappearance test-observer correction on its own PR. Nuxt and its iOS SSR fetch
+TypeError remain with Engines. This decision changes no source, release, or consumer pin.
+
 ## Admission and cleanup
 
 Source bytes are instrumented before execution. A compiled module requires explicit cooperative
