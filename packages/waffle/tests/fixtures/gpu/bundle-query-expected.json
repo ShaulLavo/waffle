@@ -1,0 +1,400 @@
+{
+  "note": "Independent literal bytes from the pinned C argument order and append-only opcode checkpoint. No Waffle encoder or generated table produced these expected bytes.",
+  "vectors": [
+    {
+      "name": "device.create_render_bundle_encoder",
+      "command": "device.create_render_bundle_encoder",
+      "input": {
+        "result": {
+          "id": 6,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "color_formats": [22],
+          "depth_stencil_format": 0,
+          "sample_count": 1,
+          "depth_read_only": true,
+          "stencil_read_only": false
+        }
+      },
+      "hex": "2e 00 00 00 38 00 00 00 06 00 00 00 01 00 00 00 03 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 16 00 00 00 00 00 00 00 01 00 00 00 01 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.set_pipeline",
+      "command": "render_bundle_encoder.set_pipeline",
+      "input": {
+        "pipeline": {
+          "id": 5,
+          "generation": 1
+        }
+      },
+      "hex": "2f 00 00 00 10 00 00 00 05 00 00 00 01 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.set_bind_group",
+      "command": "render_bundle_encoder.set_bind_group",
+      "input": {
+        "group_index": 2,
+        "group": {
+          "id": 8,
+          "generation": 1
+        },
+        "dynamic_offsets": [256, 512]
+      },
+      "hex": "30 00 00 00 20 00 00 00 02 00 00 00 08 00 00 00 01 00 00 00 02 00 00 00 00 01 00 00 00 02 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.set_immediates",
+      "command": "render_bundle_encoder.set_immediates",
+      "input": {
+        "offset": 4,
+        "data": [1, 2, 3]
+      },
+      "hex": "31 00 00 00 18 00 00 00 04 00 00 00 03 00 00 00 01 02 03 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.draw",
+      "command": "render_bundle_encoder.draw",
+      "input": {
+        "vertex_count": 3,
+        "instance_count": 2,
+        "first_vertex": 1,
+        "first_instance": 0
+      },
+      "hex": "32 00 00 00 18 00 00 00 03 00 00 00 02 00 00 00 01 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.draw_indexed",
+      "command": "render_bundle_encoder.draw_indexed",
+      "input": {
+        "index_count": 3,
+        "instance_count": 2,
+        "first_index": 1,
+        "base_vertex": -2,
+        "first_instance": 0
+      },
+      "hex": "33 00 00 00 20 00 00 00 03 00 00 00 02 00 00 00 01 00 00 00 fe ff ff ff 00 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.draw_indirect",
+      "command": "render_bundle_encoder.draw_indirect",
+      "input": {
+        "indirect_buffer": {
+          "id": 9,
+          "generation": 1
+        },
+        "indirect_offset": 4294967296
+      },
+      "hex": "34 00 00 00 18 00 00 00 09 00 00 00 01 00 00 00 00 00 00 00 01 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.draw_indexed_indirect",
+      "command": "render_bundle_encoder.draw_indexed_indirect",
+      "input": {
+        "indirect_buffer": {
+          "id": 9,
+          "generation": 1
+        },
+        "indirect_offset": 16
+      },
+      "hex": "35 00 00 00 18 00 00 00 09 00 00 00 01 00 00 00 10 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.insert_debug_marker",
+      "command": "render_bundle_encoder.insert_debug_marker",
+      "input": {
+        "marker_label": "λ"
+      },
+      "hex": "36 00 00 00 10 00 00 00 02 00 00 00 ce bb 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.pop_debug_group",
+      "command": "render_bundle_encoder.pop_debug_group",
+      "input": {},
+      "hex": "37 00 00 00 08 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.push_debug_group",
+      "command": "render_bundle_encoder.push_debug_group",
+      "input": {
+        "group_label": "bundle"
+      },
+      "hex": "38 00 00 00 18 00 00 00 06 00 00 00 62 75 6e 64 6c 65 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.set_vertex_buffer",
+      "command": "render_bundle_encoder.set_vertex_buffer",
+      "input": {
+        "slot": 1,
+        "buffer": null,
+        "offset": 8,
+        "size": 12
+      },
+      "hex": "39 00 00 00 28 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00 0c 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.set_index_buffer",
+      "command": "render_bundle_encoder.set_index_buffer",
+      "input": {
+        "buffer": {
+          "id": 9,
+          "generation": 1
+        },
+        "format": 1,
+        "offset": 0,
+        "size": 12
+      },
+      "hex": "3a 00 00 00 28 00 00 00 09 00 00 00 01 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0c 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_bundle_encoder.finish",
+      "command": "render_bundle_encoder.finish",
+      "input": {
+        "result": {
+          "id": 10,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "done"
+        }
+      },
+      "hex": "3b 00 00 00 20 00 00 00 0a 00 00 00 01 00 00 00 01 00 00 00 00 00 00 00 04 00 00 00 64 6f 6e 65"
+    },
+    {
+      "name": "render_bundle_encoder.set_label",
+      "command": "render_bundle_encoder.set_label",
+      "input": {
+        "label": "reused"
+      },
+      "hex": "3c 00 00 00 18 00 00 00 06 00 00 00 72 65 75 73 65 64 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_pass_encoder.execute_bundles",
+      "command": "render_pass_encoder.execute_bundles",
+      "input": {
+        "bundles": [
+          {
+            "id": 10,
+            "generation": 1
+          },
+          {
+            "id": 11,
+            "generation": 1
+          }
+        ]
+      },
+      "hex": "3d 00 00 00 20 00 00 00 02 00 00 00 0a 00 00 00 01 00 00 00 0b 00 00 00 01 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "device.create_query_set",
+      "command": "device.create_query_set",
+      "input": {
+        "result": {
+          "id": 15,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "type": 2,
+          "count": 2
+        }
+      },
+      "hex": "3e 00 00 00 28 00 00 00 0f 00 00 00 01 00 00 00 03 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 02 00 00 00 02 00 00 00"
+    },
+    {
+      "name": "command_encoder.resolve_query_set",
+      "command": "command_encoder.resolve_query_set",
+      "input": {
+        "query_set": {
+          "id": 15,
+          "generation": 1
+        },
+        "first_query": 1,
+        "query_count": 2,
+        "destination": {
+          "id": 9,
+          "generation": 1
+        },
+        "destination_offset": 4294967296
+      },
+      "hex": "3f 00 00 00 28 00 00 00 0f 00 00 00 01 00 00 00 01 00 00 00 02 00 00 00 09 00 00 00 01 00 00 00 00 00 00 00 01 00 00 00"
+    },
+    {
+      "name": "render_pass_encoder.begin_occlusion_query",
+      "command": "render_pass_encoder.begin_occlusion_query",
+      "input": {
+        "query_index": 1
+      },
+      "hex": "40 00 00 00 10 00 00 00 01 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_pass_encoder.end_occlusion_query",
+      "command": "render_pass_encoder.end_occlusion_query",
+      "input": {},
+      "hex": "41 00 00 00 08 00 00 00"
+    },
+    {
+      "name": "query_set.destroy",
+      "command": "query_set.destroy",
+      "input": {
+        "receiver": {
+          "id": 15,
+          "generation": 1
+        }
+      },
+      "hex": "42 00 00 00 10 00 00 00 0f 00 00 00 01 00 00 00"
+    },
+    {
+      "name": "compute_pipeline.get_bind_group_layout",
+      "command": "compute_pipeline.get_bind_group_layout",
+      "input": {
+        "result": {
+          "id": 7,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 5,
+          "generation": 1
+        },
+        "group_index": 2
+      },
+      "hex": "43 00 00 00 20 00 00 00 07 00 00 00 01 00 00 00 05 00 00 00 01 00 00 00 02 00 00 00 00 00 00 00"
+    },
+    {
+      "name": "render_pipeline.get_bind_group_layout",
+      "command": "render_pipeline.get_bind_group_layout",
+      "input": {
+        "result": {
+          "id": 8,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 6,
+          "generation": 1
+        },
+        "group_index": 3
+      },
+      "hex": "44 00 00 00 20 00 00 00 08 00 00 00 01 00 00 00 06 00 00 00 01 00 00 00 03 00 00 00 00 00 00 00"
+    }
+  ],
+  "records": [
+    {
+      "name": "render-bundle",
+      "encoder": 6,
+      "commands": ["render_bundle_encoder.finish"],
+      "hex": "02 10 00 00 30 00 00 00 06 00 00 00 01 00 00 00 18 00 00 00 3b 00 00 00 18 00 00 00 0a 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ],
+  "prior45": {
+    "parent": "a0181df12703f5b249500047164b340853417035",
+    "callsSha256": "ea898f2b563561be0c4cd6de3213201afbebd144b97ce403bb2401fbfec983e4",
+    "structs": {
+      "request_adapter_options": "ba69cdbd2337fd5835b837a25a8841147232117f8f8190094912acf156dec17b",
+      "device_descriptor": "5ec923ed44757f88a2278a5e704696969582bf90467ab23cd502eaf6ebeee7d0",
+      "limits": "0ad672a2fda382a6d7e4498bbf9266ed1c90da46a6c33529e0c4181a07d3f50d",
+      "queue_descriptor": "98fbf36642142af2a90a27d83d82051ecb01e39705f47af9041318a852d88bcf",
+      "surface_descriptor": "1d0e16f84538084a9369e70daa7f3f57255070b8471f55fb35895579ef9248a0",
+      "surface_source_waffle": "3936d3ecaafdbec4f8dc7663d443fb3fed02f58985cccae3d4161d183b95d834",
+      "surface_configuration": "6b7dcd1ead4fd76c65f3163ecca983ab85b79752d936a3cd8aba641c23779f7f",
+      "shader_module_descriptor": "f2495376b569257a1e80a9a153fa53a8b2d7e3e2181a9dc42a6edc70ab57e065",
+      "shader_source_WGSL": "ea91a800b321896f6406d7e0e357a06131f39a01a5a258224a2e2bd1c7155f8d",
+      "render_pipeline_descriptor": "53fd3426338d5bbf2ba7cdb0ba5ef39cc9236e8911ec677d7a46b2656c11616a",
+      "vertex_state": "49dfc317c265bdfe9759e380c357df6cad6e79168884453b44d2b285cb884805",
+      "constant_entry": "351ee1b11d4a1f3d7730eb8b91410c7ca8f2ebe3d1b292f771498920c7e847cf",
+      "vertex_buffer_layout": "f51ab48a9d5debd726e3a073d030324b2cef6b4cbb658a7cf6e59da4eaf9f11b",
+      "vertex_attribute": "c7f138d64f6f1aa4e9aee6c8159e2d18b302472c8e94a6d5b35ff82598f122e8",
+      "primitive_state": "fd08a4c6652fe062f6b2f842befbd3b035a825527b9a9e6e3d1af8904f7e5eb3",
+      "depth_stencil_state": "845bd45a97388721243f1b091aaaf6fc4488e183ce9a336f489d82fa0afd3d57",
+      "stencil_face_state": "0794d9e6632e0011618c4cb200bf6dadd8bed22bc43da12d1c02c1a15078c49f",
+      "multisample_state": "3a9af84cf5643aec37113673e97a0d21317c8f10a8b85c601dd342f4b49d3106",
+      "fragment_state": "c0105137da3ce7b382c1ee7fa5a4e2b3cfc85f88793d4c125c201dec80200f5c",
+      "color_target_state": "6c3dbf6c5a30df6af25f5a6eb0eea4b64e3a42b71357f77c680a3d9ecec8b8d9",
+      "blend_state": "1d85166d0e3a7888b5beebda97bd10d7494f80aeb6b9b6cf9e867a111925048d",
+      "blend_component": "383932c4089416c9e6d83c3477301cb1e62b38b25d1c395011a8266f9da68ff9",
+      "texture_view_descriptor": "b11cce11b311a2dfc844f132f403326bed435f73ce253295da2b5e58d5682431",
+      "command_encoder_descriptor": "de028291cbc11e7a0c9686752df51dea17d8c96d38f128418a7e81c6b10c9e5f",
+      "render_pass_descriptor": "5630d398f6a4dc1fdd92d92f601b14d167f53643224d04a55d9b631e911aa808",
+      "render_pass_color_attachment": "4f70b9d08e1af7052b8e9c79d02578041d4f7de29453f75cbc1f7dbb3a1956e7",
+      "color": "9762fcbf929d7fa984cd5f5fb802f4caa7a5133e94aeb5ab41aa7f750a122a85",
+      "render_pass_depth_stencil_attachment": "0855b378e8786458a7499560716ede02ee1711338805e7d0478347bf6b38b4d4",
+      "pass_timestamp_writes": "41da9d1e65aa35fb3944aedf09bc899e9e4c38805508c65830bbb0e7aff1302c",
+      "command_buffer_descriptor": "2f21e3d0848a780af2e827caf7c424310237c9fcce447a40d252b493ebcdd5f3",
+      "buffer_descriptor": "ea49b62299a96300e4fefdfe16ca4476883bd32530795e64431bf5b8e518bee4",
+      "texture_descriptor": "96d36891ffd7f158ccaf5f7d938999a2cbe60f0574109ee30746a91c47290342",
+      "extent_3D": "b75ef0f7fb5b14d9d799943612e67c77688838a681d89ed7c5672da1d19dd795",
+      "sampler_descriptor": "7479a1a14c2024418f46d6c2d29054dead70ca37597e634e0ba32e286df9c6a5",
+      "bind_group_layout_descriptor": "2c1bbec7e7e9e39ab9b88ea104e43d279872eeb7acfbb15f9a72992b73fb19bf",
+      "bind_group_layout_entry": "8c27c799f78da221d0420560cb5d84a6cfc40c2649ec00f2f48269f41f45cfb3",
+      "buffer_binding_layout": "3e06ed8c011010dabb0348f8231090638f9d121b8d099a7346051e63c5af436e",
+      "sampler_binding_layout": "01cffe3b918e73393bee19d260473f949b2c48f09b219c528f2865a383c33f02",
+      "texture_binding_layout": "6174bb4f4f063d9bff4f48c6c7b23219f9bc671fc3f7600dcfe18cfeef4e433a",
+      "storage_texture_binding_layout": "94929750ff709e2e8866cb5bc2f7e14cab54102bc107279cf2333daf756207e9",
+      "pipeline_layout_descriptor": "fa89a67aeeb5cd12af8f1103a89627090c65f679dd1ce90d4e27baee5a3d55db",
+      "bind_group_descriptor": "cb9317538cdf7a4865dbfaf34a01b8d9f9b898b8be76f9ebebcb180f7775fe5e",
+      "bind_group_entry": "88b378bb26defbb0557198ae8e248f8af6316743cf1c0dc7f34d2aa537859a36",
+      "texel_copy_texture_info": "95e0a7fd2c72a99c13053c95d7a004bb717335943fcb0fe6f9833b504557943b",
+      "origin_3D": "00dec83f22327f63bb9d0c61b587a43cb80a15a021bf89b669bd448133e0a3c8",
+      "texel_copy_buffer_layout": "b3192f58f95a1bcc175f90020c48453b72608a0c8acff77b64ac35061ad69b10",
+      "compute_pipeline_descriptor": "7d3e4f63a05dd15834b34ae961570c3d058e460e18809f4b5888327f13344951",
+      "compute_state": "a4257a11986b1b0c073bf19bc436a44177280803e8879e1471efb68d898e6aec",
+      "compute_pass_descriptor": "4ce039183488294f27fb4f8d609fd5c97e7374b82a87076ce323474480bf7d33"
+    },
+    "enums": {
+      "enum.feature_level": "33d4318a7a171906b8afa30a0285fc3f0a6da4582add0af80366aa2e7560f560",
+      "enum.power_preference": "4621834c2caf2585169753fd67125eb9d99caab1c2545713a2cd0b4df9f82cb4",
+      "enum.backend_type": "c0e624e5c1a2c119babf4ec9e2672fe5defe3ae500ea8ac5aea0136938ce378b",
+      "enum.feature_name": "14f115b0f6b0858d418d5f6492348bec769b54977298b121281cedc530a293fe",
+      "enum.texture_format": "302cfa25368605e6ab11871489ace02cc97256f6f2008e2f7a69efab6926bbc9",
+      "bitflag.texture_usage": "ca573479553dc169a0ba8d0b63142d7d14b876a6d13c7e28d6b2e935f30e02cf",
+      "enum.composite_alpha_mode": "df567d902c87c45a95605cbea333d1e6f6843fdf9c73be56116b3bc1a3f10952",
+      "enum.present_mode": "0ba03bfb1bbc01d6e42df5fa1fe73de875e773db249316856c97d1dcfc6b9999",
+      "enum.vertex_step_mode": "c6675884ab1da24f10aa5e04da3767b870011a81ea6ad86f02ea3b54e55ab23d",
+      "enum.vertex_format": "a9adcfc87444881a0a2b5763a6212699a7ff82ab8e0886b5989a2cf24c7d287a",
+      "enum.primitive_topology": "bd0f6e5a8dbbaf13d68e8a70165dda730172b0ad1f0339841e40cbfc5155549e",
+      "enum.index_format": "653b5e8315f7774ae42f273fc6a5b47b6c4be08416feb1c8201281274e4a8dc3",
+      "enum.front_face": "004628f4531e405e30a18bdb3960f2c8c66e63cbae839951c2e2a0990e875f77",
+      "enum.cull_mode": "019bf4cdb6f604dbf808d023a962f83e69f5e66c11a4926a9c076af8c321159f",
+      "enum.optional_bool": "7f0426788f52c371b7e1bfd1fe5c836e3fa2f31fd4a05bd832eaf46a4bde8070",
+      "enum.compare_function": "f80f1f94f8ac7bd78c15b65b35063e6e436a6ea74fe48176c1d4982e18300b12",
+      "enum.stencil_operation": "2bdf9018a2584aa3a9bf216bd42d786ad3b8a5ae8112af479864243319d52a1b",
+      "enum.blend_operation": "5c324ffcfae1d9a18b6181204192496ef4cfb98f0f914b32f4dde1a18646d52e",
+      "enum.blend_factor": "5646602a4c165d8dc17db037e0ed16c8f87d73b4c94a2183f76fc502a06eccb1",
+      "bitflag.color_write_mask": "f0dc78cc0dc6ddd112537dde9d090d6aaaf3fb467be8bb4fc68c7caccbf6c176",
+      "enum.texture_view_dimension": "1130f8550187ac91f71670f5c1031acdfc254b6bd60320c4fc26757a9a88de2f",
+      "enum.texture_aspect": "2cb7d6bdafdfd61d52f9dd19953509a213396aa0ed5b72d6f1921001625f17a0",
+      "enum.load_op": "7df9af3ea5be76e0f880d3b21dfa6ab0595c6bdfb2ebcc7b753258e754c6e7a7",
+      "enum.store_op": "2fa180e93379f26d5fc353c46e1eb45d286a7ce936887702d27c3e6267b12610",
+      "enum.error_filter": "0a2e67f083f7d92e18d34317426be0e7bcad7acf5b6e639fe2e7f86108e31c2b",
+      "bitflag.buffer_usage": "19977cb828c649fb45072ac64aba1c7c2eea3271449d5d0ae546999c554e926d",
+      "enum.texture_dimension": "9ea5a75558ffd2f4dc6206052fa2d2283c09a264ecbc3b5f6fe2dbca5d8ef678",
+      "enum.address_mode": "fe7500b383a8f25155c9c06cef65d78a95aafc4cf5c2a48fd7ee882eaacd2545",
+      "enum.filter_mode": "27a7200c4c08b8c496d1e1d22475227326f037c2c30de177efddcbc9375a495e",
+      "enum.mipmap_filter_mode": "27a7200c4c08b8c496d1e1d22475227326f037c2c30de177efddcbc9375a495e",
+      "bitflag.shader_stage": "957ce01816765a6697bfd7df4b48f48b0756ce721767a40c36374834dac13381",
+      "enum.buffer_binding_type": "a2fbd7bfd5b658835fea61ab309a5713391711e74e958f85a62bd9b3280e3dc1",
+      "enum.sampler_binding_type": "4c3edf4052f97554a1dd28ac4a63d918eb2fa75c21fe24f1420d8829b3f94e62",
+      "enum.texture_sample_type": "c29f88d0ba94b7aa620cb24ac6dfbbf263e7aef2d9b2bd95f7eae6d810a37724",
+      "enum.storage_texture_access": "e68c130c0dd5f9de2cb938e35389ccf0fa30dbaeea208d9bdca31ee7404ca8b6",
+      "enum.request_adapter_status": "b7adff12c3da08bcc4e5687dbefa2ef5d8d2ecf9fde7f4c11b981e03f9601d06",
+      "enum.request_device_status": "7c70ed1e605a5f5a44e2b1c5574d965072d49f0ffd2f0cba6a5abdbc8f7d6b06",
+      "enum.surface_get_current_texture_status": "75b79efb8825a1e7b4c40bd1e1c4711d16e7eb28942db07d842bcc3aeeb171da",
+      "enum.status": "1ee6e6dd37ef19b3e6cb9cb81885872407c3dcb7afb9b85a292bebd856fbbbc0",
+      "enum.pop_error_scope_status": "7c70ed1e605a5f5a44e2b1c5574d965072d49f0ffd2f0cba6a5abdbc8f7d6b06",
+      "enum.error_type": "de2da1ed019029a60f5484ce001b5dbe392ea86751f90b1118ec71dc2fc532f0",
+      "enum.device_lost_reason": "c57cc74045b6b686ecc050e3fc2e06f5750ca17911968df631f274de97c09afb",
+      "enum.s_type": "d6a4de992550d89e76a5397598c352db44531f8e0eb0089714ba77412e805ce8"
+    }
+  }
+}

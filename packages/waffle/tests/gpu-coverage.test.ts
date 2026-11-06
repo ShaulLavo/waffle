@@ -179,9 +179,9 @@ test("the rerunnable report uses classifications and leaves the full G1 gate ope
   const report = coverageReport(entries);
   expect(report).toContain("146 YAML object methods and 4 global functions");
   expect(report).toContain(`selected: ${selection.calls.length}`);
-  expect(report).toContain("render_pass_encoder.execute_bundles");
-  expect(report).toContain("render_bundle_encoder.finish");
-  expect(report).toContain("query_set.destroy");
+  expect(report).toContain("buffer.map_async");
+  expect(report).not.toContain("render_bundle_encoder.finish");
+  expect(report).not.toContain("query_set.destroy");
   expect(report).toContain("real textured depth-tested scene");
   expect(report).toContain("large-blob fairness");
   expect(report).toContain("C-only adaptations remain planned");
