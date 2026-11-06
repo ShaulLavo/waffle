@@ -2,6 +2,15 @@ import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 
+export const computeNativeControls = [
+  "direct",
+  "auto",
+  "indirect",
+  "no-dispatch",
+  "immediate-auto",
+  "immediate-explicit",
+];
+
 export async function computeNativeRoutes() {
   const module = await browserBundle(resolve(import.meta.dir, "fixtures/gpu/compute-native.ts"));
   return {
@@ -19,14 +28,7 @@ async function runComputeNative() {
     const page = await browser.newPage();
     await page.goto(endpoint);
     const results: unknown[] = [];
-    for (const control of [
-      "direct",
-      "auto",
-      "indirect",
-      "no-dispatch",
-      "immediate-auto",
-      "immediate-explicit",
-    ]) {
+    for (const control of computeNativeControls) {
       const result: unknown = await page.evaluate(async (name) => {
         const path = "/compute.js";
         const entry = await import(path);

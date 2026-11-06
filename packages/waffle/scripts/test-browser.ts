@@ -18,6 +18,7 @@ const runners = [
 ];
 const parallel = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat([
   [{ runner: "tests/recovery-r42-browser-runner.ts", engines: ["chromium"] }],
+  [{ runner: "tests/gpu-native-browser-runner.ts", engines: ["chromium"] }],
 ]);
 const serial = runners
   .map((runner) => [{ runner, engines: ["webkit"] }])

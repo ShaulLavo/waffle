@@ -1,6 +1,40 @@
 import { browserBundle } from "./browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 
+export const copyDrawNativeControls = [
+  "frame-copy",
+  "copy",
+  "changed-copy-input",
+  "no-buffer-copy",
+  "no-clear",
+  "no-buffer-texture",
+  "no-texture-copy",
+  "no-texture-buffer",
+  "indirect",
+  "indexed-indirect",
+  "no-draw",
+  "no-stencil",
+  "changed-stencil",
+  "no-blend",
+  "changed-blend",
+  "no-viewport",
+  "changed-viewport",
+  "changed-depth-range",
+  "no-scissor",
+  "changed-scissor",
+  "immediate",
+  "zero-immediates",
+  "immediate-invalid-length",
+  "immediate-invalid-offset",
+  "immediate-invalid-range",
+  "destroy-buffer",
+  "destroy-texture",
+  "destroy-frame",
+  "invalid-copy",
+  "invalid-scissor",
+  "webidl-viewport",
+];
+
 export async function copyDrawNativeRoutes() {
   return {
     "/": "<!doctype html><title>Copy/draw native lowering controls</title>",
@@ -19,41 +53,7 @@ async function main() {
     const page = await browser.newPage();
     await page.goto(url);
     const controls = process.argv.slice(2);
-    for (const control of controls.length
-      ? controls
-      : [
-          "frame-copy",
-          "copy",
-          "changed-copy-input",
-          "no-buffer-copy",
-          "no-clear",
-          "no-buffer-texture",
-          "no-texture-copy",
-          "no-texture-buffer",
-          "indirect",
-          "indexed-indirect",
-          "no-draw",
-          "no-stencil",
-          "changed-stencil",
-          "no-blend",
-          "changed-blend",
-          "no-viewport",
-          "changed-viewport",
-          "changed-depth-range",
-          "no-scissor",
-          "changed-scissor",
-          "immediate",
-          "zero-immediates",
-          "immediate-invalid-length",
-          "immediate-invalid-offset",
-          "immediate-invalid-range",
-          "destroy-buffer",
-          "destroy-texture",
-          "destroy-frame",
-          "invalid-copy",
-          "invalid-scissor",
-          "webidl-viewport",
-        ]) {
+    for (const control of controls.length ? controls : copyDrawNativeControls) {
       const result: unknown = await page.evaluate(async (name) => {
         const path = "/copy-draw.js";
         const module: typeof import("./fixtures/gpu/copy-draw-native.js") = await import(path);

@@ -3,6 +3,21 @@ import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 
+export const bundleQueryNativeControls = [
+  "direct",
+  "indexed",
+  "indirect",
+  "indexed-indirect",
+  "no-execute",
+  "no-query",
+  "no-resolve",
+  "immediate",
+  "zero-immediates",
+  "no-immediates",
+  "timestamp",
+  "no-timestamp",
+];
+
 export async function bundleQueryNativeRoutes() {
   return {
     "/": "<!doctype html><title>Native render bundle and query controls</title>",
@@ -27,20 +42,7 @@ async function run() {
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
     await page.goto(endpoint);
-    for (const control of [
-      "direct",
-      "indexed",
-      "indirect",
-      "indexed-indirect",
-      "no-execute",
-      "no-query",
-      "no-resolve",
-      "immediate",
-      "zero-immediates",
-      "no-immediates",
-      "timestamp",
-      "no-timestamp",
-    ]) {
+    for (const control of bundleQueryNativeControls) {
       const result = await invokeControl(page, control);
       console.log(JSON.stringify({ browser: browser.version(), result }));
     }
