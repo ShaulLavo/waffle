@@ -76,6 +76,7 @@ test("Chromium never skips a missing software adapter; other engines report unsu
 
 test("clear controls require a blank placeholder, not merely an incorrect frame", () => {
   assertBlankPixels({ center: [255, 255, 255, 255], corner: [255, 255, 255, 255] });
+  expect(() => assertBlankPixels({ center: [], corner: [] })).toThrow();
   expect(() => assertBlankPixels({ center: [255, 0, 0, 255], corner: [0, 0, 255, 255] })).toThrow();
   expect(() => assertBlankPixels({ center: [0, 255, 0, 255], corner: [0, 255, 0, 255] })).toThrow();
 });

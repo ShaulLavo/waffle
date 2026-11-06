@@ -272,8 +272,9 @@ async function gpuFrames(page: Page) {
 export async function qualifyGpuBrowser(
   page: Page,
   engine: Engine,
-  record: (stage: string, value: unknown) => void = () => {},
+  options: { bitmapOnly?: boolean; record?: (stage: string, value: unknown) => void } = {},
 ) {
+  const record = options.record ?? (() => {});
   const failures: string[] = [];
   const failedPage = (error: Error) => {
     failures.push(error.message);
@@ -284,19 +285,25 @@ export async function qualifyGpuBrowser(
     record("negative", negative);
     const realm = await open(page);
     record("realm", realm);
-    const capabilities = await command(page, { kind: "capabilities" });
+    const capabilities = options.bitmapOnly
+      ? { adapter: { kind: "not-requested" }, reason: "F6x requires no WebGPU" }
+      : await command(page, { kind: "capabilities" });
     record("capabilities", capabilities);
-    const hasAdapter = requireWorkerAdapter(engine, capabilities);
+    const hasAdapter = options.bitmapOnly ? false : requireWorkerAdapter(engine, capabilities);
     const source = await command(page, { kind: "bitmap", suppressTransfer: false });
     // Prove this realm actually presents before spending fourteen seconds on retention.
     await Bun.sleep(100);
     const initialPixels = await pixels(page);
     assertFramePixels(initialPixels);
+    record("initialPixels", initialPixels);
     const retention = await retainedSamples(page);
     record("retention", retention);
     const stableFrame = hasAdapter
       ? await gpuFrames(page)
-      : { kind: "unsupported", reason: qualificationRecord(capabilities.adapter).kind };
+      : {
+          kind: options.bitmapOnly ? "not-requested" : "unsupported",
+          reason: qualificationRecord(capabilities.adapter).kind,
+        };
     record("stableFrame", stableFrame);
     const disposed = await command(page, { kind: "dispose" });
     await Bun.sleep(100);
@@ -307,6 +314,7 @@ export async function qualifyGpuBrowser(
       engine,
       browserVersion: page.context().browser()?.version(),
       qualificationOnly: true,
+      bitmapOnly: options.bitmapOnly ?? false,
       realm,
       capabilities,
       negative,
@@ -323,13 +331,58 @@ export async function qualifyGpuBrowser(
   }
 }
 
+async function runEngine({
+  runner,
+  engine,
+  url,
+  bitmapOnly,
+}: {
+  runner: GpuQualificationLifecycle;
+  engine: Engine;
+  url: string;
+  bitmapOnly: boolean;
+}): Promise<unknown> {
+  const browser = await runner.launch(engine);
+  const page = await browser.newPage({ deviceScaleFactor: 1 });
+  const evidence: Record<string, unknown> = {};
+  try {
+    await page.goto(url);
+    const report = await qualifyGpuBrowser(page, engine, {
+      bitmapOnly,
+      record: (stage, value) => {
+        evidence[stage] = value;
+        console.log(JSON.stringify({ engine, stage }));
+      },
+    });
+    console.log(JSON.stringify(report));
+    return report;
+  } catch (error) {
+    const failure = {
+      engine,
+      browserVersion: browser.version(),
+      failed: true,
+      evidence,
+      error: String(error),
+    };
+    console.error(JSON.stringify(failure));
+    process.exitCode = 1;
+    return failure;
+  } finally {
+    await page.close();
+    await runner.closeBrowser(browser);
+  }
+}
+
 async function main() {
   const runner = new GpuQualificationLifecycle(180_000);
   const reports: unknown[] = [];
   try {
-    const names = (
-      process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox", "webkit"]
-    ).map(qualificationEngine);
+    const args = process.argv.slice(2);
+    const bitmapOnly = args.includes("--bitmap-only");
+    const requested = args.filter((arg) => arg !== "--bitmap-only");
+    const names = (requested.length ? requested : ["chromium", "firefox", "webkit"]).map(
+      qualificationEngine,
+    );
     await runner.init(process.env.GPU_QUALIFICATION_SCRATCH_ROOT ?? tmpdir());
     const url = runner.serve(
       await qualificationRoutes(),
@@ -345,33 +398,7 @@ async function main() {
         playwright: (await import("playwright/package.json")).version,
       }),
     );
-    for (const engine of names) {
-      const browser = await runner.launch(engine);
-      const page = await browser.newPage({ deviceScaleFactor: 1 });
-      const evidence: Record<string, unknown> = {};
-      try {
-        await page.goto(url);
-        const report = await qualifyGpuBrowser(page, engine, (stage, value) => {
-          evidence[stage] = value;
-        });
-        reports.push(report);
-        console.log(JSON.stringify(report));
-      } catch (error) {
-        const failure = {
-          engine,
-          browserVersion: browser.version(),
-          failed: true,
-          evidence,
-          error: String(error),
-        };
-        reports.push(failure);
-        console.error(JSON.stringify(failure));
-        process.exitCode = 1;
-      } finally {
-        await page.close();
-        await runner.closeBrowser(browser);
-      }
-    }
+    for (const engine of names) reports.push(await runEngine({ runner, engine, url, bitmapOnly }));
   } catch (error) {
     reports.push({ failed: true, error: String(error) });
     process.exitCode = 1;
