@@ -165,6 +165,34 @@ and counter at `ready`, after the peer write, and when `watch.next()` starts wai
 whether the commit is published before the reader waits and whether it is ever lost. Raising the
 timeout is not a fix.
 
+## Serial guest-watch notification stall
+
+Approved; implemented in this change. The serial WebKit proof could hang during a quiet
+write even though native notify returned 1. The source counter advanced while the relay's
+pending `Atomics.waitAsync` promise never settled. This is separate from navigation and
+the unclassified Bun full-suite timeout above.
+
+A standalone three-word native reproduction also stalls and resumes on an unrelated
+worker message without a second notify. In Playwright WebKit 2370's pinned WebKit commit
+`56453fdfe0b0ca6258c23e6453b34f70b885d13f`, `WorkerDedicatedRunLoop::runInMode` checks
+native timers before attaching `addTimerSetNotification`, then sleeps on its message
+queue. A notify in that gap schedules promise resolution without waking the worker.
+Retaining the promise or its result object cannot close that gap.
+
+The relay now uses one reusable blocking worker per armed word. Each native `Atomics.wait`
+checks the original expected generation again when its request arrives, and its message
+reply resumes the relay. Disposal terminates these workers; physical parent termination
+also terminates its nested workers. This adds up to three workers per guest in exchange
+for removing worker native-async timer dispatch from the forwarding path. There is no
+polling, deadline extension, or change to existing guest-watch assertions.
+
+`bun packages/waffle/tests/notification-race-browser-runner.ts` drives 200,000 isolated
+handoffs and runs in serial browser CI. Before the fix it failed at handoff 13,889 with
+notify returning 1; after the fix all 200,000 passed. The unchanged guest-watch case also
+passed 200 fresh WebKit contexts: 4,000 quiet writes and 40,000 socket-ordered writes.
+The native reproducer and rerunnable context loop are retained in the owner report
+`/work/reports/wave-20261106/guest-watch-race/`. Actual Safari acceptance remains separate.
+
 
 ## Recovering quarantined pipe slots
 

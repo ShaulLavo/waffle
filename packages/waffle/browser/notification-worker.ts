@@ -1,4 +1,8 @@
-import { atomicsWaitAsync } from "../proc/intrinsics.js";
+import {
+  createNotificationWaiters,
+  notificationBlockingWait,
+  type NotificationBlockingRequest,
+} from "./notification-blocking-wait.js";
 import type {
   NotificationConnection,
   NotificationRelayReply,
@@ -6,11 +10,11 @@ import type {
   NotificationWord,
 } from "./notification-relay.js";
 
-// iOS Safari 26.5 was seen to stop forwarding notifications from an idle relay, so a guest
-// asleep in its poll woke only at its own timeout. Keep each armed word's observer and its
-// pending wait reachable from this module, not only from the engine's waiter list. One slot per
-// armed word, reused for every wait: no allocation beyond the waits themselves. A slot empties
-// when its wait settles or its observer ends, and every slot empties on dispose.
+const waiters = createNotificationWaiters(import.meta.url);
+const waitForWord = waiters.wait;
+
+// One observer and pending reply per armed word. Disposal clears these roots before
+// terminating the relay; late replies must not recreate the cleared slots.
 const observers: (Promise<void> | undefined)[] = [];
 const pendingWaits: (Promise<string> | undefined)[] = [];
 
@@ -27,7 +31,7 @@ function clearRoot<T>(roots: (T | undefined)[], slot: number): void {
 async function observe(word: NotificationWord, state: Int32Array, slot: number): Promise<void> {
   let seen = Atomics.load(word.cells, word.index);
   while (!Atomics.load(state, 1)) {
-    const waiting = atomicsWaitAsync(word.cells, word.index, seen);
+    const waiting = waitForWord(word.cells, word.index, seen);
     if (!waiting.async) {
       seen = Atomics.load(word.cells, word.index);
       publish(state);
@@ -65,8 +69,6 @@ function arm(
   state: Int32Array,
   reply: (value: NotificationRelayReply) => void,
 ): void {
-  if (typeof atomicsWaitAsync !== "function")
-    throw new Error("notification relay requires Atomics.waitAsync");
   for (let slot = 0; slot < words.length; slot++)
     observers[slot] = observeSafely(words[slot]!, state, reply, slot);
   reply({ type: "armed" });
@@ -77,6 +79,7 @@ function connect({ port, state }: NotificationConnection): void {
   const reply = (value: NotificationRelayReply) => port.postMessage(value);
   port.onmessage = ({ data }: MessageEvent<NotificationRelayRequest>) => {
     if (data.type === "dispose") {
+      waiters.dispose();
       observers.length = 0;
       pendingWaits.length = 0;
       port.close();
@@ -94,4 +97,9 @@ function connect({ port, state }: NotificationConnection): void {
   port.start();
 }
 
-globalThis.onmessage = ({ data }: MessageEvent<NotificationConnection>) => connect(data);
+globalThis.onmessage = ({
+  data,
+}: MessageEvent<NotificationConnection | NotificationBlockingRequest>) => {
+  if ("type" in data) notificationBlockingWait(data);
+  else connect(data);
+};
