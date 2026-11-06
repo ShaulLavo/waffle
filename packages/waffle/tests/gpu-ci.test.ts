@@ -90,6 +90,8 @@ test("the producer runs only the compiled fixture suites with its verified artif
   expect(step).toContain("bounded frame-mode wire controls");
   expect(step).toContain("gpu-scene-fixture.test.ts");
   expect(step).toContain("compiled textured depth scene");
+  expect(step).toContain("gpu-fairness-fixture.test.ts");
+  expect(step).toContain("compiled fairness fixture");
   expect(step).toContain("--reporter=junit");
   expect(step).toContain("assert");
   expect(step).toContain("skipped");
@@ -112,11 +114,12 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
     "compiled C completion handling, not GPU acceptance",
     "bounded frame-mode wire controls, not native GPU acceptance",
     "compiled textured depth scene, protocol assertions",
+    "compiled fairness fixture, protocol and deterministic scheduling",
   ];
   const passing = suites
     .map(
       (name, index) =>
-        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 26 : 1)}</testsuite>`,
+        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 31 : 1)}</testsuite>`,
     )
     .join("");
   const root = mkdtempSync(join(tmpdir(), "gpu-ci-report-"));
