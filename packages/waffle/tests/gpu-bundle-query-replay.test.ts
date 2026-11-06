@@ -127,8 +127,11 @@ test("all bundle commands retain exact receivers and finish ownership across bou
     bind(connection, 9, "buffer", native.buffer);
     const writer = new LogicalAppend(connection.commands, blob(0x1002, 6, bundleCalls()));
     expect(writer.advance()).toBe("done");
-    for (let turn = 0; turn < 20; turn++)
+    for (let turn = 0; turn < 20; turn++) {
+      const before = calls.length;
       connection.slice({ bytes: 1, milliseconds: 1, now: () => 0 });
+      expect(calls.length - before).toBeLessThanOrEqual(1);
+    }
     expect(connection.replay.busy).toBe(false);
     expect(Reflect.get(native.encoder, "label")).toBe("renamed");
     expect(connection.replay.handles.native(h(10), "render_bundle")).toBe(native.bundle);
