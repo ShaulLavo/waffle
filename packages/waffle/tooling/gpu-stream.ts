@@ -648,12 +648,19 @@ static inline void waffle_gpu_u32(WaffleGpuWriter *w, uint32_t v) {
     waffle_gpu_align(w, 4);
     for (unsigned i = 0; i < 4; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
 }
+static inline void waffle_gpu_u16(WaffleGpuWriter *w, uint16_t v) {
+    waffle_gpu_align(w, 2);
+    for (unsigned i = 0; i < 2; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
+}
 static inline void waffle_gpu_u64(WaffleGpuWriter *w, uint64_t v) {
     waffle_gpu_align(w, 8);
     for (unsigned i = 0; i < 8; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
 }
 static inline void waffle_gpu_f64(WaffleGpuWriter *w, double v) {
     uint64_t bits; memcpy(&bits, &v, sizeof(bits)); waffle_gpu_u64(w, bits);
+}
+static inline void waffle_gpu_f32(WaffleGpuWriter *w, float v) {
+    uint32_t bits; memcpy(&bits, &v, sizeof(bits)); waffle_gpu_u32(w, bits);
 }
 static inline void waffle_gpu_handle(WaffleGpuWriter *w, uint32_t id, uint32_t generation) {
     waffle_gpu_u32(w, id); waffle_gpu_u32(w, generation);

@@ -10,6 +10,7 @@ import {
   depthState,
   depthStencil,
   layoutEntry,
+  samplerDescriptor,
   textureDescriptor,
 } from "./scene-fixture.js";
 import expected from "./expected.json";
@@ -64,6 +65,16 @@ function blob(encoder: number, records: Uint8Array[]): Uint8Array {
 }
 function bytes(values: number[]): Uint8Array {
   return new Uint8Array(new Float32Array(values).buffer);
+}
+function releaseResource(connection: GpuConnection, kind: number, id: number) {
+  const output = new Uint8Array(24);
+  const view = new DataView(output.buffer);
+  view.setUint16(0, 0x1000, true);
+  view.setUint32(4, 24, true);
+  view.setUint32(8, kind, true);
+  view.setUint32(12, id, true);
+  view.setUint32(16, 1, true);
+  send(connection, output);
 }
 const shader = `
 @group(0) @binding(0) var image: texture_2d<f32>;
@@ -288,6 +299,10 @@ function draw(connection: GpuConnection) {
       call("command_encoder.finish", { result: h(22), descriptor: null }),
     ]),
   );
+  // A C client can drop its handles after encoding. Native commands and bind groups
+  // retain their resources; release must not turn into an explicit destroy call.
+  for (const id of [4, 5, 6]) releaseResource(connection, 14, id);
+  releaseResource(connection, 8, 7);
   record(connection, "queue.submit", { receiver: h(19), commands: [h(22)] });
 }
 async function pixels(connection: GpuConnection, device: object): Promise<number[]> {
@@ -315,11 +330,32 @@ async function nativeValidation(connection: GpuConnection, replies: RecordRing) 
   create(connection, "buffer", 23, bufferDescriptor(0, 0));
   if (connection.replay.handles.get(h(23), "buffer").kind !== "native")
     throw new Error("Invalid native buffer became JS exception placeholder");
+  record(connection, "device.pop_error_scope", { receiver: h(3), token: 1 });
+  await scopeResult(connection, replies, 1, "validation");
+  record(connection, "device.push_error_scope", { receiver: h(3), filter: 1 });
   create(connection, "bind_group", 24, {
     next_in_chain: [],
     label: "",
     layout: h(9),
     entries: [
+      {
+        next_in_chain: [],
+        binding: 0,
+        buffer: null,
+        offset: 0,
+        size: 0,
+        sampler: null,
+        texture_view: h(11),
+      },
+      {
+        next_in_chain: [],
+        binding: 1,
+        buffer: null,
+        offset: 0,
+        size: 0,
+        sampler: h(8),
+        texture_view: null,
+      },
       {
         next_in_chain: [],
         binding: 2,
@@ -333,8 +369,42 @@ async function nativeValidation(connection: GpuConnection, replies: RecordRing) 
   });
   if (connection.replay.handles.get(h(24), "bind_group").kind !== "native")
     throw new Error("Dependent invalid bind group became JS exception placeholder");
-  record(connection, "device.pop_error_scope", { receiver: h(3), token: 1 });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  record(connection, "device.pop_error_scope", { receiver: h(3), token: 2 });
+  await scopeResult(connection, replies, 2, "validation");
+  record(connection, "device.push_error_scope", { receiver: h(3), filter: 1 });
+  create(connection, "sampler", 25, { ...samplerDescriptor(), lod_min_clamp: Infinity });
+  if (connection.replay.handles.get(h(25), "sampler").kind !== "exception")
+    throw new Error("Native JS conversion did not create a distinct placeholder");
+  const exception = new Uint8Array(replies.capacity);
+  const exceptionResult = replies.readInto(exception);
+  const exceptionKind = gpuStream.completions.find(
+    (entry) => entry.name === "call-exception",
+  )?.kind;
+  if (
+    exceptionResult.kind !== "record" ||
+    new DataView(exception.buffer).getUint16(0, true) !== exceptionKind
+  )
+    throw new Error("Missing JS exception completion");
+  record(connection, "device.pop_error_scope", { receiver: h(3), token: 3 });
+  await scopeResult(connection, replies, 3, "no_error");
+  return {
+    nativeInvalidCreation: true,
+    dependentNativeInvalidCreation: true,
+    errorScopeValidation: true,
+    jsExceptionPlaceholderDistinct: true,
+  };
+}
+async function scopeResult(
+  connection: GpuConnection,
+  replies: RecordRing,
+  token: number,
+  error: string,
+) {
+  const deadline = performance.now() + 5000;
+  while (connection.completions.pendingCount) {
+    if (performance.now() > deadline) throw new Error("Native scope result timed out");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   const scratch = new Uint8Array(replies.capacity);
   const result = replies.readInto(scratch);
   if (result.kind !== "record") throw new Error("Missing native scope result");
@@ -342,17 +412,13 @@ async function nativeValidation(connection: GpuConnection, replies: RecordRing) 
   const kind = gpuStream.completions.find((entry) => entry.name === "error-scope")?.kind;
   if (
     view.getUint16(0, true) !== kind ||
+    view.getUint32(8, true) !== token ||
     view.getInt32(12, true) !== 0 ||
-    view.getUint32(20, true) !== enumeration("error_type", "validation")
+    view.getUint32(20, true) !== enumeration("error_type", error)
   )
     throw new Error("Native scope did not report validation");
   if (replies.readInto(scratch).kind !== "empty")
     throw new Error("Unexpected call exception or uncaptured error");
-  return {
-    nativeInvalidCreation: true,
-    dependentNativeInvalidCreation: true,
-    errorScopeValidation: true,
-  };
 }
 /** @browserEntry Bounded native lowering control, never a compiled guest acceptance fixture. */
 export async function sceneNativeControl(control = "normal") {

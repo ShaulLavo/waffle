@@ -70,6 +70,7 @@ export class GpuReplay {
   #cursor: Cursor | undefined;
   #waiting: WaitingSurface | undefined;
   readonly #devices = new Map<object, () => void>();
+  readonly #frameTextures = new WeakSet<object>();
   readonly #finished = new Map<number, number>();
   #live = true;
   constructor(
@@ -579,6 +580,7 @@ export class GpuReplay {
   }
   #bindSurfaceTexture(call: DecodedCall, result: Handle | undefined, texture: object | null): void {
     if (texture) {
+      this.#frameTextures.add(texture);
       this.#bind(call, result, texture);
       return;
     }
@@ -616,7 +618,10 @@ export class GpuReplay {
       }
       return;
     }
-    if (kind !== "device" && kind !== "texture" && kind !== "buffer") return;
+    // Releasing a guest handle is not WebGPU destroy(). Native bind groups and
+    // command buffers retain ordinary resources. The owning device retires them.
+    // Surface frames alone have the explicit discard-on-last-handle contract.
+    if (kind !== "device" && !(kind === "texture" && this.#frameTextures.has(value))) return;
     this.#devices.get(value)?.();
     this.#devices.delete(value);
     destroyNative(value);

@@ -72,6 +72,10 @@ function last(calls: ReturnType<typeof sceneTarget>["calls"], member: string) {
   if (!found) throw new Error(`Missing call ${member}`);
   return found;
 }
+function member(value: unknown, name: string): unknown {
+  if (!value || typeof value !== "object") throw new Error("Missing native dictionary");
+  return Reflect.get(value, name);
+}
 
 test("creation dictionaries preserve native object identities through explicit layouts and resource unions", async () => {
   const { target, native, calls } = sceneTarget();
@@ -182,6 +186,12 @@ test("creation dictionaries preserve native object identities through explicit l
         { binding: 2, resource: native.view },
       ],
     });
+    const groupEntries = member(group, "entries");
+    if (!Array.isArray(groupEntries)) throw new Error("Missing binding entries");
+    expect(member(group, "layout")).toBe(native.layout);
+    expect(member(member(groupEntries[0], "resource"), "buffer")).toBe(native.buffer);
+    expect(member(groupEntries[1], "resource")).toBe(native.sampler);
+    expect(member(groupEntries[2], "resource")).toBe(native.view);
     expect(connection.replay.handles.native(handle(9), "bind_group")).toBe(native.group);
   } finally {
     connection.close(GPU_TERMINAL.closed);
@@ -481,7 +491,7 @@ test("large dynamic-offset count and nonzero sampler padding fail locally", () =
   expect(() => decodeCall(sampler)).toThrow(GpuProtocolError);
 });
 
-test("buffer release destroys once without scanning unrelated object slots", async () => {
+test("ordinary buffer release drops the handle without destroying dependent native resources", async () => {
   const { target, native, calls } = sceneTarget();
   const { connection } = rig(target, 4096);
   try {
@@ -490,12 +500,15 @@ test("buffer release destroys once without scanning unrelated object slots", asy
     send(connection, words(0x1000, [14, 4, 1]));
     expect(
       calls.filter((entry) => entry.receiver === native.buffer && entry.member === "destroy"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   } finally {
     connection.close(GPU_TERMINAL.closed);
   }
   expect(
     calls.filter((entry) => entry.receiver === native.buffer && entry.member === "destroy"),
+  ).toHaveLength(0);
+  expect(
+    target.calls.filter((entry) => entry.receiver === "device" && entry.member === "destroy"),
   ).toHaveLength(1);
 });
 

@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { decodeCall, WireReader } from "../browser/gpu/codec.ts";
 import { gpuStream } from "../browser/gpu/generated/tables.ts";
 import { encodeGpuCommand, encodeGpuStruct } from "../tooling/gpu-stream-layout.ts";
@@ -54,4 +58,55 @@ test("upload layouts replace only their pinned C pointer/size pair", async () =>
   if (!create) throw new Error("Missing creation selection");
   Reflect.set(create.lowering, "descriptor", "texture_descriptor");
   expect(() => compileSchema(yaml, badDescriptor)).toThrow("pinned C argument");
+});
+
+test("generated C cursors independently encode sampler f32 and u16 fields", () => {
+  const scratch = mkdtempSync(join(process.env.GPU_SCRATCH_ROOT ?? tmpdir(), "gpu-scene-c-"));
+  try {
+    const source = join(scratch, "sampler.c");
+    const binary = join(scratch, "sampler");
+    writeFileSync(
+      source,
+      `#include "waffle_gpu_stream.h"
+#include <stdio.h>
+int main(void) {
+  unsigned char bytes[80] = {0}; WaffleGpuWriter w = {bytes, sizeof(bytes), 0, 0};
+  size_t start = waffle_gpu_begin(&w, WAFFLE_GPU_OP_DEVICE_CREATE_SAMPLER);
+  waffle_gpu_handle(&w, 6, 1); waffle_gpu_handle(&w, 3, 1);
+  waffle_gpu_u32(&w, 1); waffle_gpu_u32(&w, 0); waffle_gpu_string(&w, "", 0);
+  for (unsigned i = 0; i < 6; ++i) waffle_gpu_u32(&w, 0);
+  waffle_gpu_f32(&w, 0); waffle_gpu_f32(&w, 32); waffle_gpu_u32(&w, 0);
+  waffle_gpu_u16(&w, 0x1234); waffle_gpu_end(&w, start);
+  if (w.error) return 1;
+  for (size_t i = 0; i < w.offset; ++i) printf("%02x", bytes[i]);
+  return 0;
+}`,
+    );
+    const compiled = spawnSync(
+      "cc",
+      [
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-I",
+        resolve(import.meta.dir, "fixtures/gpu"),
+        source,
+        "-o",
+        binary,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(compiled.stderr).toBe("");
+    expect(compiled.status).toBe(0);
+    const run = spawnSync(binary, [], { encoding: "utf8" });
+    expect(run.status).toBe(0);
+    const vector = expected.vectors.find(
+      (entry) => entry.name === "sampler u16 is two-byte aligned",
+    );
+    if (!vector) throw new Error("Missing independent sampler vector");
+    expect(run.stdout).toBe(vector.hex.replaceAll(/\s/g, ""));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
