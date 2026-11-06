@@ -161,14 +161,19 @@ export function assertScenePixels(
   mode: SceneMode = "normal",
 ) {
   const colour = mode === "no-depth" ? 1 : 0;
-  const left = [0, 0, 0, 255], right = [0, 0, 0, 255];
+  const left = [0, 0, 0, 255],
+    right = [0, 0, 0, 255];
   if (mode !== "black-texture") {
     left[colour] = 255;
     right[colour] = 128;
   }
   const close = (actual: number[], expected: number[]) =>
     actual.length === 4 && actual.every((byte, at) => Math.abs(byte - expected[at]!) <= 8);
-  if (!close(value.left, left) || !close(value.right, right) || !close(value.corner, [0, 0, 255, 255]))
+  if (
+    !close(value.left, left) ||
+    !close(value.right, right) ||
+    !close(value.corner, [0, 0, 255, 255])
+  )
     throw new Error(`Compiled scene pixel failure, mode=${mode}: ${JSON.stringify(value)}`);
 }
 async function sceneCase(page: Page, mode: SceneMode) {
@@ -178,30 +183,57 @@ async function sceneCase(page: Page, mode: SceneMode) {
     await invoke(page, "launchScene", [mode === "normal" ? [] : [`--${mode}`]]);
     await marker(page, "GPU_WAIT_STDIN stage=scene-encoded");
     const encoded = await invoke(page, "drainTriangle");
-    if (!encoded.text.includes("GPU_SCENE_RELEASED ordinary=13 frame=retained stage=before-submit") ||
-        encoded.service.presents !== 0 || encoded.service.frameTexturesLive !== 1)
-      throw new Error(`Scene did not pause after ordinary handle release: ${JSON.stringify(encoded)}`);
+    if (
+      !encoded.text.includes("GPU_SCENE_RELEASED ordinary=13 frame=retained stage=before-submit") ||
+      encoded.service.presents !== 0 ||
+      encoded.service.frameTexturesLive !== 1
+    )
+      throw new Error(
+        `Scene did not pause after ordinary handle release: ${JSON.stringify(encoded)}`,
+      );
     await invoke(page, "feedTriangle");
     await marker(page, `GPU_SCENE_FRAME mode=${mode}`);
     const image = await pixels(page);
     assertScenePixels(image, mode);
     if (mode !== "normal") {
       let rejected = false;
-      try { assertScenePixels(image); } catch { rejected = true; }
+      try {
+        assertScenePixels(image);
+      } catch {
+        rejected = true;
+      }
       if (!rejected) throw new Error(`Scene negative control ${mode} passed positive pixels`);
     }
     const stopped = await invoke(page, "stopTriangle");
     assertRetired(stopped.service);
     assertControlAccounting(stopped.snapshot);
-    if (stopped.exit.kind !== "exited" || stopped.exit.code !== 0 || stopped.text.includes("GPU_FAIL"))
+    if (
+      stopped.exit.kind !== "exited" ||
+      stopped.exit.code !== 0 ||
+      stopped.text.includes("GPU_FAIL")
+    )
       throw new Error(`Compiled scene failed: ${JSON.stringify(stopped)}`);
-    if (!stopped.authority.length || stopped.authority.some(
-      (report: { canaries: string[]; leaks: string[] }) => report.canaries.length < 10 || report.leaks.length))
+    if (
+      !stopped.authority.length ||
+      stopped.authority.some(
+        (report: { canaries: string[]; leaks: string[] }) =>
+          report.canaries.length < 10 || report.leaks.length,
+      )
+    )
       throw new Error("Compiled scene authority canaries failed");
     return { compiledGuest: true, mode, image, encoded, stopped };
   } finally {
     await invoke(page, "closeIntegration");
   }
+}
+async function sceneCases(page: Page, url: string, available: boolean) {
+  if (!available) return [await unsupportedCase(page, "gpu", true)];
+  const results = [];
+  for (const mode of ["normal", "no-depth", "black-texture"] satisfies SceneMode[]) {
+    await page.goto(url);
+    results.push(await sceneCase(page, mode));
+  }
+  return results;
 }
 async function retainedPixels(page: Page, colour: string) {
   for (const ms of [500, 2500, 7000]) {
@@ -435,13 +467,7 @@ async function main() {
       await page.goto(url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
-      const scenes = [];
-      if (available) {
-        for (const mode of ["normal", "no-depth", "black-texture"] satisfies SceneMode[]) {
-          await page.goto(url);
-          scenes.push(await sceneCase(page, mode));
-        }
-      } else scenes.push(await unsupportedCase(page, "gpu", true));
+      const scenes = await sceneCases(page, url, available);
       await page.goto(url);
       const guest = available ? await guestCase(page) : await unsupportedCase(page, "gpu");
       await page.goto(url);

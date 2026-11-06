@@ -17,6 +17,8 @@ import {
   buildGpuFixture,
   GPU_FIXTURE_WASM,
   verifiedGpuFixture,
+  verifiedGpuSceneFixture,
+  GPU_SCENE_FIXTURE_WASM,
 } from "../scripts/build-gpu-fixture.ts";
 import { gpuStream } from "../browser/gpu/generated/tables.ts";
 import { encodeGpuCommand } from "../tooling/gpu-stream-layout.ts";
@@ -342,6 +344,49 @@ describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
     );
     expect(result.exitCode).toBe(0);
   });
+  test("a corrupt scene fails the complete producer verification even when triangle is intact", () => {
+    const copy = join(scratch, "corrupt-scene");
+    cpSync(artifactDirectory, copy, { recursive: true });
+    expect(verifiedGpuSceneFixture(copy).length).toBeGreaterThan(0);
+    writeFileSync(join(copy, GPU_SCENE_FIXTURE_WASM), "corrupt scene");
+    expect(verifiedGpuFixture(copy)).toEqual(wasm);
+    expect(() => verifiedGpuSceneFixture(copy)).toThrow("artifact changed");
+    const checked = Bun.spawnSync(
+      [process.execPath, join(packageRoot, "scripts/build-gpu-fixture.ts"), copy, "--verify"],
+      { env: { ...process.env, WASI_SDK_PATH: "" }, stderr: "pipe" },
+    );
+    expect(checked.exitCode).not.toBe(0);
+    expect(checked.stderr.toString()).toContain("artifact changed");
+  });
+  test("a second-command compiler failure preserves both previously published artifacts", () => {
+    const copy = join(scratch, "second-command-failure");
+    cpSync(artifactDirectory, copy, { recursive: true });
+    const before = readdirSync(copy).map((name) => [name, readFileSync(join(copy, name))] as const);
+    const fakeSdk = join(scratch, "second-command-sdk");
+    mkdirSync(join(fakeSdk, "bin"), { recursive: true });
+    writeFileSync(join(fakeSdk, "VERSION"), "34.0\nwasi-libc: 2e6fb9d8ee0c\n");
+    const clang = join(fakeSdk, "bin/clang");
+    writeFileSync(
+      clang,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clang version 23.1.0-wasi-sdk producer-test"; exit 0; fi\nfor arg do case "$arg" in */scene.c) echo "intentional scene compile failure" >&2; exit 42;; esac; destination="$arg"; done\ncp "$GPU_FIXTURE_FIRST_COMMAND" "$destination"\n',
+    );
+    chmodSync(clang, 0o755);
+    const failed = Bun.spawnSync(
+      [process.execPath, join(packageRoot, "scripts/build-gpu-fixture.ts"), copy],
+      {
+        env: {
+          ...process.env,
+          WASI_SDK_PATH: fakeSdk,
+          GPU_FIXTURE_FIRST_COMMAND: join(artifactDirectory, GPU_FIXTURE_WASM),
+        },
+        stderr: "pipe",
+      },
+    );
+    expect(failed.exitCode).not.toBe(0);
+    expect(failed.stderr.toString()).toContain("intentional scene compile failure");
+    expect(readdirSync(copy)).toEqual(before.map(([name]) => name));
+    for (const [name, bytes] of before) expect(readFileSync(join(copy, name))).toEqual(bytes);
+  });
   test("all compiler, schema, golden and generated layout inputs invalidate the cache", () => {
     const sourceRoot = join(scratch, "source");
     const metadata = record(
@@ -359,10 +404,14 @@ describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
       cpSync(join(packageRoot, path), join(sourceRoot, path));
     }
     expect(verifiedGpuFixture(artifactDirectory, sourceRoot)).toEqual(wasm);
+    expect(verifiedGpuSceneFixture(artifactDirectory, sourceRoot).length).toBeGreaterThan(0);
     for (const path of paths) {
       const original = readFileSync(join(sourceRoot, path));
       writeFileSync(join(sourceRoot, path), "stale fixture input");
       expect(() => verifiedGpuFixture(artifactDirectory, sourceRoot)).toThrow("inputs changed");
+      expect(() => verifiedGpuSceneFixture(artifactDirectory, sourceRoot)).toThrow(
+        "inputs changed",
+      );
       writeFileSync(join(sourceRoot, path), original);
     }
     expect(paths).toContain("browser/gpu/upstream/webgpu.yml");
@@ -371,7 +420,6 @@ describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
     expect(paths).toContain("tests/fixtures/gpu/gpu_encode.h");
   });
 });
-
 
 describe.skipIf(!compiled)("compiled C completion handling, not GPU acceptance", () => {
   test("uses real imports, supplied dimensions, monotonic tokens, split barriers and fd 0 reads", () => {
@@ -505,7 +553,8 @@ describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acc
     },
   );
   test("combined controls use distinct result IDs and validate the freshly presented third frame", () => {
-    const host = new FixtureProtocolHost(wasm, 
+    const host = new FixtureProtocolHost(
+      wasm,
       ["red", "--repeat-acquire", "--discard-after-first-frame", "--expired-frame-use", "--split"],
       "none",
       true,

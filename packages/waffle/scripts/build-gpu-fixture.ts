@@ -158,14 +158,19 @@ export async function buildGpuFixture(directory: string, signal?: AbortSignal): 
       );
       const wasm = new Uint8Array(readFileSync(artifact));
       inspectImports(wasm);
-      writeFileSync(join(scratch, name.replace(".wasm", ".inputs.json")), json({
-        contract: configuration,
-        artifact: { size: wasm.length, sha256: digest(wasm) },
-      }));
+      writeFileSync(
+        join(scratch, name.replace(".wasm", ".inputs.json")),
+        json({
+          contract: configuration,
+          artifact: { size: wasm.length, sha256: digest(wasm) },
+        }),
+      );
     }
     if (json(configuration) !== json(contract(packageRoot)))
       throw new Error("GPU fixture inputs changed during compilation; rebuild explicitly");
-    for (const name of fixtures.concat(fixtures.map((name) => name.replace(".wasm", ".inputs.json"))))
+    for (const name of fixtures.concat(
+      fixtures.map((name) => name.replace(".wasm", ".inputs.json")),
+    ))
       renameSync(join(scratch, name), join(outdir, name));
     return join(outdir, GPU_FIXTURE_WASM);
   } catch (error) {
@@ -194,10 +199,16 @@ function verifiedFixture(
   return wasm;
 }
 
-export function verifiedGpuFixture(directory: string, sourceRoot = packageRoot): Uint8Array<ArrayBuffer> {
+export function verifiedGpuFixture(
+  directory: string,
+  sourceRoot = packageRoot,
+): Uint8Array<ArrayBuffer> {
   return verifiedFixture(directory, GPU_FIXTURE_WASM, sourceRoot);
 }
-export function verifiedGpuSceneFixture(directory: string, sourceRoot = packageRoot): Uint8Array<ArrayBuffer> {
+export function verifiedGpuSceneFixture(
+  directory: string,
+  sourceRoot = packageRoot,
+): Uint8Array<ArrayBuffer> {
   return verifiedFixture(directory, GPU_SCENE_FIXTURE_WASM, sourceRoot);
 }
 
@@ -209,11 +220,14 @@ if (import.meta.main) {
     throw new Error("usage: build-gpu-fixture.ts [absolute-output-directory] [--verify]");
   const directory = positional[0] ?? process.env.GPU_FIXTURE_DIR;
   if (!directory) throw new Error("Pass an output directory or set GPU_FIXTURE_DIR");
-  if (verify) console.log(json({
-    verified: true,
-    triangle: verifiedGpuFixture(directory).length,
-    scene: verifiedGpuSceneFixture(directory).length,
-  }));
+  if (verify)
+    console.log(
+      json({
+        verified: true,
+        triangle: verifiedGpuFixture(directory).length,
+        scene: verifiedGpuSceneFixture(directory).length,
+      }),
+    );
   else {
     const controller = new AbortController();
     const interrupt = () => controller.abort();

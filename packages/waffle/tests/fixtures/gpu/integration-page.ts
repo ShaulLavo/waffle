@@ -165,7 +165,7 @@ export async function launchTriangle(
       : display.grant({ surfaces: [ensureSurface(slot)], gpu: grant === "gpu" });
   const pid = client.spawn(rootPid, {
     executable: `/bin/${program}`,
-    argv: [program].concat(args),
+    argv: Array.of<string>(program).concat(args),
     env: { GPU_POISON: poison ? "1" : "0", GPU_FORGE: forge ? "1" : "0" },
     cwd: "/",
     job: -1,

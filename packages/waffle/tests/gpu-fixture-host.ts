@@ -28,6 +28,7 @@ export class FixtureProtocolHost {
   readonly reads: number[] = [];
   readonly timeouts: bigint[] = [];
   readonly readPresentCounts: number[] = [];
+  readonly readSubmitCounts: number[] = [];
   readonly scopes: number[] = [];
   readonly acquired = new Set<number>();
   readonly presented = new Set<number>();
@@ -37,7 +38,7 @@ export class FixtureProtocolHost {
   readonly args: Uint8Array[];
   constructor(
     readonly wasm: Uint8Array<ArrayBuffer>,
-    args: string[],
+    args: readonly string[],
     readonly fault: ReplyFault = "none",
     readonly injectExpiredValidation = false,
   ) {
@@ -160,6 +161,7 @@ export class FixtureProtocolHost {
   fdRead(fd: number, iovs: number, _count: number, written: number): number {
     this.reads.push(fd);
     this.readPresentCounts.push(this.commands.filter((bytes) => bytes[0] === 6).length);
+    this.readSubmitCounts.push(this.commands.filter((bytes) => bytes[0] === 17).length);
     this.put(this.view.getUint32(iovs, true), new Uint8Array([10]));
     this.word(written, 1);
     return 0;
@@ -249,4 +251,3 @@ export class FixtureProtocolHost {
     }
   }
 }
-

@@ -1070,7 +1070,7 @@ jobs:
           assert {suite.get("name") for suite in suites} == names, "Missing compiled GPU fixture suite"
           assert all(suite.findall("testcase") for suite in suites), "Empty compiled GPU fixture suite"
           cases = [case for suite in suites for case in suite.findall("testcase")]
-          assert len(cases) >= 27, "Compiled GPU fixture tests did not execute"
+          assert len(cases) >= 29, "Compiled GPU fixture tests did not execute"
           assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
           print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
           PYTHON

@@ -116,7 +116,7 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
   const passing = suites
     .map(
       (name, index) =>
-        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 24 : 1)}</testsuite>`,
+        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 26 : 1)}</testsuite>`,
     )
     .join("");
   const root = mkdtempSync(join(tmpdir(), "gpu-ci-report-"));

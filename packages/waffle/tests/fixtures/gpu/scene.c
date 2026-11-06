@@ -63,7 +63,8 @@ int main(int argc, char **argv) {
   wait_stdin("scene-encoded");
   gpu_submit(&writer);
   finish_scope(WAFFLE_GPU_ENUM_ERROR_TYPE_NO_ERROR);
-  present_frame(1, !strcmp(mode, "no-depth") ? "green" : "red");
+  const char *colour = !strcmp(mode, "black-texture") ? "black" : "red";
+  present_frame(1, !strcmp(mode, "no-depth") ? "green" : colour);
   printf("GPU_SCENE_FRAME mode=%s indexed=2 texture=sampled depth=%s validation=none\n",
          mode, !strcmp(mode, "no-depth") ? "always" : "less");
   wait_stdin("scene-frame");
