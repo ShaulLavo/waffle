@@ -27,6 +27,7 @@ const fixedInputs = [
   "tooling/gpu-stream-layout.ts",
   "tests/fixtures/gpu/expected.json",
   "tests/fixtures/gpu/enums.json",
+  "tests/fixtures/gpu/scene-expected.json",
 ];
 
 export function sha256(bytes: string | Uint8Array): string {
@@ -69,6 +70,20 @@ function lowering(value: unknown): Lowering {
   switch (entry.kind) {
     case "method":
       return { kind: entry.kind, member: text(entry.member) };
+    case "descriptor-method":
+      return {
+        kind: entry.kind,
+        member: text(entry.member),
+        descriptor: text(entry.descriptor),
+      };
+    case "write-buffer":
+    case "write-texture": {
+      const span = record(entry.span);
+      const size = entry.kind === "write-buffer" ? "size" : "data_size";
+      const member = entry.kind === "write-buffer" ? "writeBuffer" : "writeTexture";
+      if (span.pointer !== "data" || span.size !== size || entry.member !== member) break;
+      return { kind: entry.kind, member, span: { pointer: "data", size } };
+    }
     case "property":
       if (entry.member === "queue") return { kind: entry.kind, member: entry.member };
       break;
@@ -188,7 +203,8 @@ function compileCall(
   if (token) prefix = prefix.concat([field("token", "token")]);
   if (context === "top") prefix = prefix.concat([field("receiver", `object.${receiver}`)]);
   const args = method.args ? fields(method.args) : [];
-  const input = chosen.kind === "handle" && chosen.source === "output" ? [] : args;
+  const adapter = lowering(entry.lowering);
+  const input = chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
   return {
     opcode: uint(entry.opcode, 0xfff),
     name,
@@ -198,10 +214,20 @@ function compileCall(
     cReturn,
     callback,
     token,
-    lowering: lowering(entry.lowering),
+    lowering: adapter,
     omitted,
     fields: prefix.concat(input),
   };
+}
+
+function spanArguments(args: Field[], adapter: Lowering): Field[] {
+  if (adapter.kind !== "write-buffer" && adapter.kind !== "write-texture") return args;
+  const index = args.findIndex((arg) => arg.name === adapter.span.pointer);
+  const pointer = args[index];
+  const size = args[index + 1];
+  if (pointer?.type !== "c_void_data_ptr" || size?.name !== adapter.span.size || size.type !== "usize")
+    throw new Error("Upload span must replace the pinned C data pointer and size pair");
+  return args.slice(0, index).concat([field(pointer.name, "bytes")], args.slice(index + 2));
 }
 
 function callbackLayout(value: unknown, expected: unknown): CallLayout["callback"] {
@@ -525,6 +551,7 @@ function macro(name: string): string {
 }
 
 function fixedSize(type: string): number | null {
+  if (type === "uint16") return 2;
   if (
     type.startsWith("object.") ||
     type.startsWith("bitflag.") ||
@@ -547,7 +574,7 @@ function cFields(name: string, members: readonly Field[], start = 0): string[] {
   for (const [index, member] of members.entries()) {
     const prefix = `WAFFLE_GPU_${macro(name)}_${macro(member.name)}`;
     const size = fixedSize(member.type);
-    const align =
+    const align = size === 2 ? 2 :
       size === 8 && !member.type.startsWith("object.") && member.type !== "handle" ? 8 : 4;
     if (offset !== null) offset = Math.ceil(offset / align) * align;
     lines.push(

@@ -199,12 +199,14 @@ export class WireReader {
     if (type === "float64" || type === "float64_supertype") return this.#view.getFloat64(at, true);
     if (type === "float32" || type === "nullable_float32") return this.#view.getFloat32(at, true);
     if (type === "int32") return this.#view.getInt32(at, true);
+    if (type === "uint16") return this.#view.getUint16(at, true);
     if (type === "uint32") return this.#view.getUint32(at, true);
     throw new GpuProtocolError(`Unsupported scalar ${type}`);
   }
 }
 
 function wireAlignment(type: string): number {
+  if (type === "uint16") return 2;
   if (
     ["uint64", "usize", "float64", "float64_supertype", "token"].includes(type) ||
     type.startsWith("bitflag.")

@@ -16,6 +16,12 @@ export type Result =
 
 export type Lowering =
   | { kind: "method"; member: string }
+  | { kind: "descriptor-method"; member: string; descriptor: string }
+  | {
+      kind: "write-buffer" | "write-texture";
+      member: string;
+      span: { pointer: "data"; size: "size" | "data_size" };
+    }
   | { kind: "property"; member: "queue" }
   | { kind: "request-adapter"; descriptor: "adapter-options" }
   | { kind: "request-device"; descriptor: "device-descriptor" }
