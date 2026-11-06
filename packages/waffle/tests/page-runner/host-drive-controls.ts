@@ -23,6 +23,7 @@ export const hostControlModes = [
   "disposal-twice",
   "final-ack",
   "sync-hook",
+  "large-errors",
 ];
 function equal(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
@@ -44,6 +45,7 @@ async function drive(host: HostCase, mode: string): Promise<unknown> {
   if (mode === "disposal-twice") await host.task("window.__hostFixture.disposed++;");
   equal(await host.script("return window.__hostFixture.value;"), 7);
   if (mode === "assertion" || mode === "disposal-fail") throw new Error("PRIMARY_ASSERTION");
+  if (mode === "large-errors") throw new Error('😀\u0000"\\'.repeat(16_384));
   if (mode === "expression") await host.script("throw new Error('KNOWN_EXPRESSION_FAILURE');");
   if (mode === "thenable") await host.script("return Promise.resolve(1);");
   if (mode === "separate-hook") await host.sleep(90);
@@ -139,6 +141,7 @@ export async function hostControl(
     "array-mismatch",
     "thenable",
     "sync-hook",
+    "large-errors",
   ].includes(mode);
   if (result.exit !== (infra ? 2 : 4))
     throw new Error(`Host ${mode} wrong exit ${JSON.stringify(result)}`);

@@ -5,7 +5,7 @@ import { HostConsumers, HostDrive } from "./host-drive.js";
 import { Collector } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
 import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import { record, type Body, type HostCase, type HostVerdict } from "./protocol.js";
+import { record, formatHostError, type Body, type HostCase, type HostVerdict } from "./protocol.js";
 
 class HostDriver extends FakeDriver {
   readonly verdicts: HostVerdict[] = [];
@@ -455,3 +455,30 @@ test("failure to persist diagnostics retains scratch and does not replace the bo
     expect(JSON.stringify(result.outcomes)).toContain("PRIMARY_BODY");
     expect(result.failures.some((failure) => failure.category === "diagnostics-write")).toBe(true);
   }));
+
+test("escaped multibyte body and disposal errors fit both unchanged report bounds", () => {
+  const original = '😀\u0000"\\'.repeat(16_384);
+  const body = formatHostError(original),
+    teardown = formatHostError(original);
+  const result = {
+    body: { status: "fail", error: body },
+    teardown: { status: "fail", error: teardown },
+  };
+  const message = {
+    run: "run",
+    doc: "doc",
+    seq: 1,
+    kind: "case-end",
+    caseId: "host",
+    status: "fail",
+    error: [body, teardown].join("; "),
+    result,
+  };
+  expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
+    48 * 1024,
+  );
+  expect(new TextEncoder().encode(JSON.stringify(message)).byteLength).toBeLessThanOrEqual(
+    64 * 1024,
+  );
+  expect(body.length).toBeGreaterThan(0);
+});

@@ -1,4 +1,4 @@
-import { record, type HostVerdict } from "./protocol.js";
+import { record, formatHostError, type HostVerdict } from "./protocol.js";
 import type { Reporter } from "./reporter.js";
 import type { Configuration } from "./page-main.js";
 
@@ -62,7 +62,7 @@ function receiver(
       void task
         .then(
           () => reportTask(operation, "pass"),
-          (error: unknown) => reportTask(operation, "fail", String(error).slice(0, 16_384)),
+          (error: unknown) => reportTask(operation, "fail", formatHostError(error)),
         )
         .catch(() => {});
     },
@@ -92,7 +92,7 @@ async function hook<R>(
   try {
     operation = Promise.resolve(run.teardown(request, body));
   } catch (error) {
-    synchronousFailure = String(error).slice(0, 16_384);
+    synchronousFailure = formatHostError(error);
     operation = Promise.reject(error);
   }
   const observation: { outcome: HookOutcome | null } = { outcome: null };
@@ -110,8 +110,8 @@ async function hook<R>(
     (error: unknown) =>
       observe(
         clock.now() >= until
-          ? { status: "timeout", error: String(error).slice(0, 16_384), settled: true }
-          : { status: "fail", error: String(error).slice(0, 16_384) },
+          ? { status: "timeout", error: formatHostError(error), settled: true }
+          : { status: "fail", error: formatHostError(error) },
       ),
   );
   try {

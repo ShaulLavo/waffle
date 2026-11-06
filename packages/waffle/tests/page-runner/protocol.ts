@@ -112,3 +112,11 @@ export function validateWorkerLabel(returned: unknown, expected: string): void {
 }
 
 export const resultByteLimit = 48 * 1024;
+
+export function formatHostError(error: unknown): string {
+  let text = String(error).slice(0, 16_384);
+  const encoder = new TextEncoder();
+  while (encoder.encode(JSON.stringify(text)).byteLength > 8192)
+    text = text.slice(0, Math.floor(text.length / 2));
+  return text;
+}

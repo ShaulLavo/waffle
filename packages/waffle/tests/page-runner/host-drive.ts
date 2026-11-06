@@ -1,6 +1,7 @@
 import { bounded, type Driver } from "./driver.js";
 import {
   record,
+  formatHostError,
   resultByteLimit,
   type Budgets,
   type HostCase,
@@ -300,7 +301,7 @@ try {
         stack: error instanceof Error ? (error.stack ?? null) : null,
         details: error,
       };
-      verdict = { status: "fail", error: message.slice(0, 16_384) };
+      verdict = { status: "fail", error: formatHostError(message) };
     } finally {
       clearInterval(monitor);
       this.signal.removeEventListener("abort", stop);

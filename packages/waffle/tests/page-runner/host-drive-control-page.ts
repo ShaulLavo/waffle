@@ -39,6 +39,7 @@ const run: HostPageRun<Request> = {
     const fixture = window.__hostFixture;
     if (fixture) fixture.disposed++;
     if (request.mode === "disposal-fail") throw new Error("DISPOSAL_FAILURE");
+    if (request.mode === "large-errors") throw new Error('😀\u0000"\\'.repeat(16_384));
     if (request.mode === "disposal-hang") await new Promise(() => {});
     if (request.mode === "sync-hook") {
       const until = performance.now() + 80;
