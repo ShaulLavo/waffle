@@ -43,4 +43,5 @@ bun packages/waffle/tests/page-runner/browser-controls-runner.ts chromium webkit
 
 These controls test reporting failures, the original Worker timeout, document death,
 and exact-name cleanup without deleting foreign-prefix storage. They do not count
-as an iOS storage-suite run. Unit and fake-driver controls run under `bun run test`.
+as an iOS storage-suite run. The standard browser matrix and CI run these controls
+on Chromium and WebKit. Unit and fake-driver controls run under `bun run test`.
