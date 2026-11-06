@@ -45,3 +45,15 @@ These controls test reporting failures, the original Worker timeout, document de
 and exact-name cleanup without deleting foreign-prefix storage. They do not count
 as an iOS storage-suite run. The standard browser matrix and CI run these controls
 on Chromium and WebKit. Unit and fake-driver controls run under `bun run test`.
+
+## Other page-owned Safari commands
+
+Each command runs its original exported body once and writes its actual result to a separate file. Only storage uses `STORAGE_TEST_FILTER`.
+
+```sh
+IOS_UDID=<udid> bun packages/waffle/tests/guest-watch-browser-runner.ts ios-safari --result /absolute/guest-watch.json
+IOS_UDID=<udid> bun packages/waffle/tests/fs-socket-browser-runner.ts ios-safari --result /absolute/fs-socket-attachment.json
+IOS_UDID=<udid> bun packages/waffle/tests/search-executor-browser-runner.ts ios-safari --result /absolute/search-executor.json
+```
+
+The new page-runner case clocks reuse the desktop lifecycle bounds of 120, 60, and 600 seconds. Including list, finish, retirement, and cleanup, their total allowances are 510, 450, and 990 seconds. The bodies retain their shorter internal deadlines. All existing desktop engines and CI rows remain blocking.

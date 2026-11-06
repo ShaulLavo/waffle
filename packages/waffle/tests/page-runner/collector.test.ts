@@ -1,8 +1,8 @@
+import { storagePolicy, listIds } from "./storage-policy.js";
 import { expect, test } from "bun:test";
 import { Collector } from "./collector.js";
 import {
   exactInventory,
-  listIds,
   parseMessage,
   storageBudgets,
   validateWorkerLabel,
@@ -13,7 +13,13 @@ const first = "indexeddb: first",
   second = "opfs: second";
 function fixture() {
   let now = 0;
-  const collector = new Collector("run", [first, second], [first, second], () => now);
+  const collector = new Collector(
+    "run",
+    [first, second],
+    [first, second],
+    storagePolicy,
+    () => now,
+  );
   const state = collector.expect(
     { id: "case", role: "case", caseIds: [first] },
     "token",
@@ -130,7 +136,7 @@ test("pass then window error cannot become a clean pass", () => {
   });
 });
 test("list and finish page errors have run/group failures without a running case", () => {
-  const collector = new Collector("run", [], []);
+  const collector = new Collector("run", [], [], storagePolicy);
   for (const role of ["list", "finish"] as const) {
     collector.expect({ id: role, role, caseIds: [] }, role, "http://runner/", "root");
     collector.receive({ run: "run", doc: role, seq: 0, kind: "hello", token: role, group: role });
@@ -213,7 +219,7 @@ test("exact run allocation ledger includes derived names and rejects foreign all
 });
 
 function opfsAllocation(name: string) {
-  const collector = new Collector("run", [second], [second]);
+  const collector = new Collector("run", [second], [second], storagePolicy);
   collector.expect(
     { id: "opfs", role: "case", caseIds: [second] },
     "token",

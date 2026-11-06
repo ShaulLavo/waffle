@@ -1,10 +1,10 @@
 import type { StorageEntry } from "../storage-allocation.js";
 export type Body =
   | { kind: "hello"; token: string; group: string }
-  | { kind: "list"; cases: Record<"indexeddb" | "opfs", string[]> }
+  | { kind: "list"; cases: unknown }
   | { kind: "allocation"; entry: StorageEntry }
   | { kind: "case-start"; caseId: string }
-  | { kind: "case-end"; caseId: string; status: "pass" | "fail"; error?: string }
+  | { kind: "case-end"; caseId: string; status: "pass" | "fail"; error?: string; result?: unknown }
   | { kind: "error"; message: string }
   | { kind: "doc-complete" | "retire-ready" }
   | { kind: "run-complete"; remaining: StorageEntry[] };
@@ -27,7 +27,7 @@ export const storageBudgets = { hello: 20_000, heartbeat: 10_000, case: 60_000, 
 export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function strings(value: unknown): value is string[] {
+export function strings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
 }
 function storageEntry(value: unknown): value is StorageEntry {
@@ -39,22 +39,12 @@ function storageEntry(value: unknown): value is StorageEntry {
     value.name.length < 1024
   );
 }
-export function listIds(value: unknown): string[] {
-  if (!record(value) || !strings(value.indexeddb) || !strings(value.opfs))
-    throw new Error("Invalid storage list backend arrays");
-  const ids = value.indexeddb
-    .map((label) => `indexeddb: ${label}`)
-    .concat(value.opfs.map((label) => `opfs: ${label}`));
-  if (new Set(ids).size !== ids.length) throw new Error("Duplicate storage list IDs");
-  return ids;
-}
 function validBody(value: Record<string, unknown>): boolean {
   switch (value.kind) {
     case "hello":
       return typeof value.token === "string" && typeof value.group === "string";
     case "list":
-      listIds(value.cases);
-      return true;
+      return "cases" in value;
     case "allocation":
       return storageEntry(value.entry);
     case "case-start":
@@ -95,9 +85,11 @@ export function exactInventory(required: readonly string[], actual: readonly str
     new Set(actual).size !== actual.length ||
     actual.some((id) => !required.includes(id))
   )
-    throw new Error("Storage inventory does not cover required cases exactly once");
+    throw new Error("Suite inventory does not cover required cases exactly once");
 }
 export function validateWorkerLabel(returned: unknown, expected: string): void {
   if (returned !== expected)
     throw new Error(`Wrong Worker label: ${JSON.stringify(returned)}, expected ${expected}`);
 }
+
+export const resultByteLimit = 48 * 1024;
