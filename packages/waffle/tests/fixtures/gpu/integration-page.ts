@@ -40,7 +40,12 @@ let suppress = false;
 let holdMode = "";
 
 /** @browserEntry */
-export async function openIntegration(suppressTransfer = false, hold = "") {
+export async function openIntegration(
+  suppressTransfer = false,
+  hold = "",
+  freezeSnapshots = false,
+) {
+  lastServiceSnapshot = freezeSnapshots ? { presents: 0, frameTexturesLive: 0 } : undefined;
   holdMode = hold;
   suppress = suppressTransfer;
   rootPid = 0;
@@ -56,7 +61,7 @@ export async function openIntegration(suppressTransfer = false, hold = "") {
       workers.push({ url: String(path), worker: this, stopped: false });
       this.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
         if (typeof data !== "object" || data === null) return;
-        if ("gpuSnapshot" in data) lastServiceSnapshot = data.gpuSnapshot;
+        if ("gpuSnapshot" in data && !freezeSnapshots) lastServiceSnapshot = data.gpuSnapshot;
         if ("gpuAuthority" in data) authority.push(data.gpuAuthority);
       });
     }

@@ -177,12 +177,14 @@ export function assertScenePixels(
     throw new Error(`Compiled scene pixel failure, mode=${mode}: ${JSON.stringify(value)}`);
 }
 async function sceneCase(page: Page, mode: SceneMode) {
-  await invoke(page, "openIntegration");
+  // Keep unsolicited telemetry stale so only a correlated snapshot can prove this checkpoint.
+  await invoke(page, "openIntegration", [false, "", true]);
   await invoke(page, "activateDisplay");
   try {
     await invoke(page, "launchScene", [mode === "normal" ? [] : [`--${mode}`]]);
     await marker(page, "GPU_WAIT_STDIN stage=scene-encoded");
     const encoded = await invoke(page, "drainTriangle");
+    encoded.service = await invoke(page, "serviceCommand", ["snapshot"]);
     if (
       !encoded.text.includes("GPU_SCENE_RELEASED ordinary=13 frame=retained stage=before-submit") ||
       encoded.service.presents !== 0 ||
