@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import type { BrowserContext, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
@@ -125,7 +126,7 @@ async function open(state: State, origin: string): Promise<void> {
     worker.once("close", () => state.workers.set(worker, true));
     if (state.pages[0] === page) state.authority = worker;
   });
-  await page.goto(origin);
+  await navigateTestPage(page, origin);
   equal(await page.opener(), null);
   equal(await page.evaluate(() => crossOriginIsolated), true);
 }
@@ -405,7 +406,7 @@ async function initialPages(state: State, origin: string): Promise<unknown> {
 async function contain(state: State | undefined, origin: unknown): Promise<unknown> {
   if (!state) return null;
   const audit = await state.context.newPage();
-  await audit.goto(String(origin));
+  await navigateTestPage(audit, String(origin));
   await Promise.all(state.pages.map((page) => page.close()));
   await until(
     async () => Array.from(state.workers.values()).every(Boolean),

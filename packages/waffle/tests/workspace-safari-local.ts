@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import {
   prepareWorkspaceSafari,
@@ -15,7 +16,7 @@ export async function runWorkspaceSafariLocal(): Promise<void> {
     server = serveWorkspaceSafari(directory);
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(`http://127.0.0.1:${server.port}`);
+    await navigateTestPage(page, `http://127.0.0.1:${server.port}`);
     const report = await page.evaluate(async () => {
       const path = "/browser.js";
       const fixture: typeof import("./workspace-safari-browser.js") = await import(path);

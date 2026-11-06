@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 
@@ -13,7 +14,7 @@ try {
   });
   const browser = await lifecycle.launch("webkit");
   const page = await browser.newPage();
-  await page.goto(origin, { waitUntil: "commit" });
+  await navigateTestPage(page, origin, { waitUntil: "commit" });
   const result = await page.evaluate(async () => {
     const path = "/cases.js";
     const cases: typeof import("./notification-race-cases.js") = await import(path);

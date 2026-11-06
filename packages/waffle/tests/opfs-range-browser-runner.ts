@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import type { Browser, Worker as BrowserWorker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
@@ -51,7 +52,7 @@ async function nativeCase(browser: Browser, origin: string) {
     const page = await context.newPage();
     page.setDefaultTimeout(45_000);
     page.on("worker", (worker) => workers.push(observe(worker)));
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const result = await page.evaluate(pageRequest);
     await context.close();
     await Promise.all(workers.map((worker) => worker.joined));

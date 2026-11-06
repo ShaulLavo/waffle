@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { chromium } from "playwright";
 import { mkdtemp, rm } from "node:fs/promises";
 import {
@@ -76,7 +77,7 @@ try {
   contexts.add({ creation: contextCreation, stopped: false });
   const page = await (await contextCreation).newPage();
   page.on("pageerror", (error) => console.error(error));
-  await page.goto(server.url.href);
+  await navigateTestPage(page, server.url.href);
   const result = await page.evaluate(async () => {
     const mixedPath = "/mixed.js",
       lifetimePath = "/lifetime.js";

@@ -30,6 +30,9 @@ test("navigation capture stays bounded and labels construction without claiming 
 function navigationFixture() {
   type NavigationPage = Parameters<typeof storageNavigate>[0]["page"];
   const page = {
+    context: () => ({ browser: () => null }),
+    route: mock<Page["route"]>(),
+    unroute: mock<Page["unroute"]>().mockResolvedValue(),
     on: mock<(event: string, listener: (...args: never[]) => void) => Page>(),
     off: mock<(event: string, listener: (...args: never[]) => void) => Page>(),
     mainFrame: mock<NavigationPage["mainFrame"]>(),

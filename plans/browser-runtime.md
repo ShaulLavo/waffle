@@ -167,6 +167,11 @@ timeout is not a fix.
 
 ## Serial guest-watch notification stall
 
+The earlier navigation investigation captured the same successful-notify, lost-settlement
+signature. Its observations and rerunnable diagnostic are retained in
+`/work/reports/wave-20261106/webkit-navigation/GUEST-WATCH.md`. This follow-up is resolved
+by [PR 375](https://github.com/ShaulLavo/waffle/pull/375).
+
 Approved; implemented in this change. The serial WebKit proof could hang during a quiet
 write even though native notify returned 1. The source counter advanced while the relay's
 pending `Atomics.waitAsync` promise never settled. This is separate from navigation and
