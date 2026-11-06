@@ -1,7 +1,8 @@
 # Vite 8 in the playground
 
-Status: **Approved (owner, 2026-11-04). Preserved for later execution; this change implements
-nothing.** No Vite build, probe or deployment ran while writing it.
+Status: **Approved (owner, 2026-11-04). In progress (2026-11-06).** Waffle transport
+verification and a root binding lifetime fix are implemented. bun-wasm React acceptance remains
+with the consumer lane; no public deployment is part of this change.
 
 Prepared 2026-11-04 from Waffle `745959ed` (package 0.0.110) and bun-wasm `5312b1fb`, which
 consumes the `waffle-v0.0.110` release tarball. Owner request: Waffle track, 2026-10-29 (local
@@ -146,6 +147,60 @@ registers with the playground preview router, and from there through Waffle's `r
 and `PreviewRouter`. Record where the two paths diverge and which repository owns that point. Also
 explain why the embedded frame reached the server in run A while the standalone tab did not. Write
 the result into this plan before stage 3.
+
+### November 6 boundary trace and Waffle implementation
+
+The two Waffle listen messages share one owning path. `NetHost.listen` in shared mode sends
+`tcp-listen`; `NetHelper.executeTcp` calls `NetHelper.listen`, just as the asynchronous `listen`
+message does. Successful namespace binding publishes `hooks.listening`. The bun-wasm adapter
+`createBunNetworkHelper` forwards that event to the playground's `previews.register(port, helper)`.
+Closing the listener or disposing its helper publishes `stopped`, which unregisters that exact
+helper. A stale helper cannot unregister a replacement. None of these paths requires Vite policy.
+
+The current consumer trace narrows the ready-then-502 failure to guest lifetime, not missing
+Waffle registration. Its Vite 7 diagnostic records `tcp-listen` on 5173 at 52898.155 ms,
+`listening` and registration at 52898.260 ms, `stopped` and unregister at 52913.205 ms, then worker
+exit at 52926.620 ms. `Bun.serve` and minimal `node:http` controls both return 200 while still
+running and registered. The consumer lane confirmed Vite closes its server on `process.stdin` end during noninteractive
+execution. Setting `CI=true` keeps its Vite 7 diagnostic alive; desktop Chromium then renders React
+and delivers an `App.tsx` edit while retaining counter state and recording zero navigations. This
+does not establish Vite 8 acceptance or resolve the unrecorded embedded result from run B. The
+failing trace is `/work/reports/wave-20261106/vite-react-hmr/listener-trace-initial.json`; the
+subsequent passing trace is `listener-trace.json` beside it.
+
+A separate Waffle bug was reproduced before its fix. Replacing a `PreviewRouter` server left the
+old root relay open, and its dynamic connection lookup could reach the replacement listener.
+`register` now closes and removes the old root binding when server identity changes. Registering
+the same server preserves its binding. Regression tests cover active upgrade retirement, rejected
+old HTTP and socket calls, a fresh replacement grant, and stale unregister calls. Independent
+review also found that a throwing retirement callback stopped the cleanup loop. The coordinator
+added failing-first tests with two live connections, drains close and notification callbacks
+before reporting collected errors, and completes routing transitions despite retirement errors.
+Replacement, unregister and rebind failure paths preserve a usable fresh grant.
+
+`packages/waffle/tests/preview-vite.test.ts` runs the existing stock Vite 8.3.4 dependency with a
+small vanilla TypeScript and CSS fixture, without a Vite plugin or application patch. A test-only
+byte bridge connects a real `runtime.network()` shared listener to the native Vite server. It
+checks dev HTML, the Vite client and transformed source through standalone mounted requests,
+embedded root-relative requests, and a real loopback root host using the HTTP exchange protocol.
+It builds the fixture, starts Vite preview, and checks the built HTML, JavaScript and CSS through
+the same routes. Actual `vite-hmr` upgrade responses and connected frames pass through both the
+mounted socket channel and root relay. Listener stop and helper teardown unregister the routes;
+new requests return 502. The test asserts that preview work never activates process services.
+
+This is native Vite protocol and Waffle transport proof. It is not guest Bun execution, a browser
+React counter test, or real React source-edit HMR acceptance. The consumer lane owns those gates,
+stock template install, stdin lifetime, and the separate Rolldown package-selection failure.
+
+Reproduce from this exclusive worktree through the PC heavy runner:
+
+```sh
+NETWORK_SCRATCH_ROOT=/work/tmp bun test packages/waffle/tests/preview-vite.test.ts
+bun test packages/waffle/tests/preview-host.test.ts packages/waffle/tests/preview-upgrade.test.ts packages/waffle/tests/preview-upgrade-lifetime.test.ts packages/waffle/tests/preview.test.ts
+```
+
+Both files are discovered by the package CI job's existing `bun run test`. No optional flag or
+browser gate is required. Full browser acceptance stays in stages 4 and 5.
 
 ### 3. Fix at the owning layer
 

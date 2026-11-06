@@ -235,9 +235,19 @@ export function createPreviewHostRelay(
     if (item.closed) return;
     item.closed = true;
     active.delete(item);
-    item.connection?.close();
-    if (error !== undefined) item.sink.error(error);
-    else item.sink.end();
+    const errors: unknown[] = [];
+    try {
+      item.connection?.close();
+    } catch (failure) {
+      errors.push(failure);
+    }
+    try {
+      if (error !== undefined) item.sink.error(error);
+      else item.sink.end();
+    } catch (failure) {
+      errors.push(failure);
+    }
+    if (errors.length) throw new AggregateError(errors, "Preview connection retirement failed");
   }
 
   function open(input: unknown, url: string, sink: ConnectionSink): PreviewConnection | null {
@@ -393,7 +403,15 @@ export function createPreviewHostRelay(
     closed = true;
     lifetime.abort();
     signal?.removeEventListener("abort", close);
-    for (const item of active) finish(item, "Preview host relay closed");
+    const errors: unknown[] = [];
+    for (const item of active) {
+      try {
+        finish(item, "Preview host relay closed");
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, "Preview host retirement failed");
   }
   signal?.addEventListener("abort", close, { once: true });
   const relay: PreviewHostRelay = {
