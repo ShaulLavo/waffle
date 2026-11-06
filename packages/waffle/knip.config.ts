@@ -17,6 +17,8 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        "tests/gpu-browser-qualification.ts",
+        "tests/fixtures/gpu/qualification-worker.ts",
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",
         "tests/fixtures/interrupt-dom-consumer.ts",
