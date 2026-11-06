@@ -28,7 +28,14 @@
         "kind": "request-adapter",
         "descriptor": "adapter-options"
       },
-      "omitted": ["callback_info"]
+      "omitted": ["callback_info"],
+      "cReturn": "struct.future",
+      "callback": {
+        "type": "callback.request_adapter",
+        "future": "token-as-future-id",
+        "delivery": "guest-local-completion-pump",
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
+      }
     },
     {
       "opcode": 2,
@@ -45,7 +52,14 @@
         "kind": "request-device",
         "descriptor": "device-descriptor"
       },
-      "omitted": ["callback_info"]
+      "omitted": ["callback_info"],
+      "cReturn": "struct.future",
+      "callback": {
+        "type": "callback.request_device",
+        "future": "token-as-future-id",
+        "delivery": "guest-local-completion-pump",
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
+      }
     },
     {
       "opcode": 3,
@@ -62,7 +76,9 @@
         "kind": "surface-create",
         "descriptor": "waffle-surface"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.surface",
+      "callback": null
     },
     {
       "opcode": 4,
@@ -77,7 +93,9 @@
         "kind": "surface-configure",
         "descriptor": "stable-frame"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 5,
@@ -94,7 +112,9 @@
         "kind": "surface-acquire",
         "output": "surface_texture"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 6,
@@ -110,7 +130,9 @@
         "kind": "surface-present",
         "result": "enum.status"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "enum.status",
+      "callback": null
     },
     {
       "opcode": 7,
@@ -127,7 +149,9 @@
         "kind": "property",
         "member": "queue"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.queue",
+      "callback": null
     },
     {
       "opcode": 8,
@@ -144,7 +168,9 @@
         "kind": "shader-module",
         "descriptor": "wgsl-chain"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.shader_module",
+      "callback": null
     },
     {
       "opcode": 9,
@@ -161,7 +187,9 @@
         "kind": "render-pipeline",
         "descriptor": "auto-layout"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.render_pipeline",
+      "callback": null
     },
     {
       "opcode": 10,
@@ -178,7 +206,9 @@
         "kind": "method",
         "member": "createView"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.texture_view",
+      "callback": null
     },
     {
       "opcode": 11,
@@ -195,7 +225,9 @@
         "kind": "method",
         "member": "createCommandEncoder"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.command_encoder",
+      "callback": null
     },
     {
       "opcode": 12,
@@ -212,7 +244,9 @@
         "kind": "method",
         "member": "beginRenderPass"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.render_pass_encoder",
+      "callback": null
     },
     {
       "opcode": 13,
@@ -227,7 +261,9 @@
         "kind": "method",
         "member": "setPipeline"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 14,
@@ -242,7 +278,9 @@
         "kind": "method",
         "member": "draw"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 15,
@@ -257,7 +295,9 @@
         "kind": "method",
         "member": "end"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 16,
@@ -274,7 +314,9 @@
         "kind": "method",
         "member": "finish"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "object.command_buffer",
+      "callback": null
     },
     {
       "opcode": 17,
@@ -289,7 +331,9 @@
         "kind": "method",
         "member": "submit"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 18,
@@ -304,7 +348,9 @@
         "kind": "method",
         "member": "destroy"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 19,
@@ -319,7 +365,9 @@
         "kind": "error-scope",
         "member": "pushErrorScope"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     },
     {
       "opcode": 20,
@@ -334,7 +382,14 @@
         "kind": "error-scope",
         "member": "popErrorScope"
       },
-      "omitted": ["callback_info"]
+      "omitted": ["callback_info"],
+      "cReturn": "struct.future",
+      "callback": {
+        "type": "callback.pop_error_scope",
+        "future": "token-as-future-id",
+        "delivery": "guest-local-completion-pump",
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
+      }
     },
     {
       "opcode": 21,
@@ -349,7 +404,9 @@
         "kind": "method",
         "member": "unconfigure"
       },
-      "omitted": []
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     }
   ],
   "records": [
@@ -1075,7 +1132,7 @@
       "green": 2,
       "blue": 4,
       "alpha": 8,
-      "all": 16
+      "all": 15
     },
     "enum.texture_view_dimension": {
       "undefined": "@omit",
@@ -1498,5 +1555,14 @@
     "zeroTextureViewUsage": "omit-inherit-texture-usage",
     "pass_timestamp_writes": "omit-u32-max-indices",
     "colorAttachmentHole": "null-view-to-null-array-entry"
+  },
+  "cOutput": {
+    "surface.get_current_texture": {
+      "parameter": "surface_texture",
+      "type": "struct.surface_texture",
+      "reply": "surface-texture",
+      "fields": ["texture", "status"],
+      "chain": "guest-local-empty-output-chain"
+    }
   }
 }

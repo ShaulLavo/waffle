@@ -33,6 +33,14 @@
       "texture_binding": 4,
       "storage_binding": 8,
       "render_attachment": 16
+    },
+    "bitflag.color_write_mask": {
+      "none": 0,
+      "red": 1,
+      "green": 2,
+      "blue": 4,
+      "alpha": 8,
+      "all": 15
     }
   }
 }

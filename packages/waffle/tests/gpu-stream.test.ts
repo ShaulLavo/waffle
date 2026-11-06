@@ -11,6 +11,7 @@ import {
   gpuDictionaryMembers,
   gpuDictionaryRules,
   gpuObjectKinds,
+  gpuCOutputs,
 } from "../browser/gpu/generated/tables.ts";
 import selection from "../browser/gpu/stream.json";
 import expected from "./fixtures/gpu/expected.json";
@@ -155,6 +156,8 @@ test("C enum values agree with independent primary-header transcriptions", () =>
   expect(() => gpuEnum(gpuStream, "enum.texture_format", 0x1234)).toThrow("Unknown");
   expect(() => gpuEnum(gpuStream, "enum.backend_type", 1)).toThrow("Unsupported");
   expect(gpuFlags(gpuStream, "bitflag.texture_usage", 17n)).toBe(17);
+  expect(gpuFlags(gpuStream, "bitflag.color_write_mask", 15n)).toBe(15);
+  expect(() => gpuFlags(gpuStream, "bitflag.color_write_mask", 16n)).toThrow("Unsupported");
   expect(() => gpuFlags(gpuStream, "bitflag.texture_usage", 32n)).toThrow("Unsupported");
 });
 
@@ -308,4 +311,11 @@ test("dictionary names and special policies are explicit selection inputs", () =
     "array-of-key-value-to-record-reject-duplicate-keys",
   );
   expect(gpuObjectKinds.device).toBe(3);
+  expect(gpuCOutputs["surface.get_current_texture"].fields).toEqual(["texture", "status"]);
+  expect(gpuStream.calls.find((entry) => entry.name === "instance.request_adapter")?.cReturn).toBe(
+    "struct.future",
+  );
+  expect(
+    gpuStream.calls.find((entry) => entry.name === "instance.request_adapter")?.callback?.future,
+  ).toBe("token-as-future-id");
 });

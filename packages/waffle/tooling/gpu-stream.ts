@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import selection from "../browser/gpu/stream.json";
+import selection from "../browser/gpu/stream.json" with { type: "json" };
 import {
   fields,
   list,
@@ -44,6 +44,8 @@ function named(value: unknown): Map<string, Record<string, unknown>> {
 
 function unique(values: number[], retired: readonly number[], max: number): void {
   const seen = new Set(retired);
+  if (seen.size !== retired.length || retired.some((value) => uint(value, max) === 0))
+    throw new Error("Duplicate or padding retired value");
   for (const value of values) {
     if (uint(value, max) === 0 || seen.has(value))
       throw new Error(`Duplicate or retired value ${value}`);
@@ -160,6 +162,13 @@ function compileCall(
   if (!method || !name.startsWith(`${receiver}.`)) throw new Error(`Missing YAML call ${name}`);
   const chosen = result(entry.result);
   checkResult(chosen, method, callbacks);
+  const cReturn = method.callback
+    ? "struct.future"
+    : method.returns
+      ? text(record(method.returns).type)
+      : "void";
+  if (entry.cReturn !== cReturn) throw new Error("Undeclared C return type");
+  const callback = callbackLayout(entry.callback, method.callback);
   const token = entry.token === null ? null : text(entry.token);
   if (
     (method.callback ||
@@ -186,6 +195,8 @@ function compileCall(
     receiver,
     context,
     result: chosen,
+    cReturn,
+    callback,
     token,
     lowering: lowering(entry.lowering),
     omitted,
@@ -193,17 +204,52 @@ function compileCall(
   };
 }
 
+function callbackLayout(value: unknown, expected: unknown): CallLayout["callback"] {
+  if (expected === undefined && value === null) return null;
+  const callback = record(value);
+  if (
+    callback.type !== expected ||
+    callback.future !== "token-as-future-id" ||
+    callback.delivery !== "guest-local-completion-pump"
+  )
+    throw new Error("Invalid callback lowering");
+  const omitted = list(callback.omitted).map(text);
+  if (omitted.join(",") !== "next_in_chain,mode,callback,userdata1,userdata2")
+    throw new Error("Callback-info fields must remain guest-local");
+  return {
+    type: text(callback.type),
+    future: callback.future,
+    delivery: callback.delivery,
+    omitted,
+  };
+}
+
+function combinedFlags(value: unknown, previous: Record<string, number>): number {
+  const bits = list(value)
+    .map(text)
+    .reduce((bits, name) => {
+      const number = previous[name];
+      if (number === undefined) throw new Error(`Unknown flag combination member ${name}`);
+      return bits | BigInt(number);
+    }, 0n);
+  return uint(Number(bits));
+}
+
 function enumValues(value: Record<string, unknown>, bitflag: boolean): Record<string, number> {
-  return Object.fromEntries(
-    list(value.entries).flatMap((item, index) => {
-      if (item === null) return [];
-      const entry = record(item);
-      if (entry.value !== undefined)
-        throw new Error("Unexpected explicit enum value; inspect upstream generator");
-      const number = bitflag && index > 0 ? 2 ** (index - 1) : index;
-      return [[text(entry.name), uint(number)]];
-    }),
-  );
+  const values: Record<string, number> = {};
+  for (const [index, item] of list(value.entries).entries()) {
+    if (item === null) continue;
+    const entry = record(item);
+    if (entry.value !== undefined)
+      throw new Error("Unexpected explicit enum value; inspect upstream generator");
+    const ordinal = bitflag && index > 0 ? 2 ** (index - 1) : index;
+    const number =
+      entry.value_combination === undefined
+        ? ordinal
+        : combinedFlags(entry.value_combination, values);
+    values[text(entry.name)] = uint(number);
+  }
+  return values;
 }
 
 function collectType(
@@ -345,6 +391,15 @@ export function compileSchema(yaml: unknown, input: unknown): WireTables {
   for (const member of allFields)
     collectType(member.type, tables, structs, enumSource, bitflags, omitted);
   tables.enums["enum.s_type"] = enumValues(record(enumSource.get("s_type")), false);
+  const output = record(record(selected.cOutput)["surface.get_current_texture"]);
+  const outputFields = fields(record(structs.get("surface_texture")).members).map(
+    (member) => member.name,
+  );
+  if (
+    output.type !== "struct.surface_texture" ||
+    JSON.stringify(output.fields) !== JSON.stringify(outputFields)
+  )
+    throw new Error("Surface output layout mismatch");
   validateSelection(tables, selected);
   return tables;
 }
@@ -363,6 +418,15 @@ function validateSelection(tables: WireTables, selected: Record<string, unknown>
     selected.retiredCompletions,
   );
   validateDictionaries(tables, selected);
+  const objectKinds = Object.values(record(selected.objectKinds)).map((value) => uint(value));
+  unique(objectKinds, [], 0xffffffff);
+  if (
+    JSON.stringify(tables.chains.shader_module_descriptor) !==
+      JSON.stringify([{ sType: 2, struct: "shader_source_WGSL" }]) ||
+    JSON.stringify(tables.chains.surface_descriptor) !==
+      JSON.stringify([{ sType: 4096, struct: "surface_source_waffle" }])
+  )
+    throw new Error("Changed reserved triangle chain layout");
   const descriptors = record(selected.descriptors);
   for (const call of tables.calls) {
     if ("descriptor" in call.lowering && !descriptors[call.lowering.descriptor])
@@ -495,9 +559,12 @@ function cFields(name: string, members: readonly Field[], start = 0): string[] {
   return lines;
 }
 
-function cHeader(tables: WireTables, hashes: Record<string, string>): string {
+function cHeader(
+  tables: WireTables,
+  hashes: Record<string, string>,
+  objectKinds: Record<string, unknown>,
+): string {
   const constants = tables.calls
-    .concat([])
     .map((entry) => `#define WAFFLE_GPU_OP_${macro(entry.name)} ${entry.opcode}u`)
     .concat(
       tables.records.map((entry) => `#define WAFFLE_GPU_OP_${macro(entry.name)} ${entry.opcode}u`),
@@ -505,8 +572,8 @@ function cHeader(tables: WireTables, hashes: Record<string, string>): string {
         (entry) => `#define WAFFLE_GPU_REPLY_${macro(entry.name)} ${entry.kind}u`,
       ),
     );
-  const objects = Object.entries(selection.objectKinds).map(
-    ([name, number]) => `#define WAFFLE_GPU_OBJECT_${macro(name)} ${number}u`,
+  const objects = Object.entries(objectKinds).map(
+    ([name, number]) => `#define WAFFLE_GPU_OBJECT_${macro(name)} ${uint(number)}u`,
   );
   const values = Object.entries(tables.enums).flatMap(([name, entries]) =>
     Object.entries(entries).map(
@@ -514,7 +581,11 @@ function cHeader(tables: WireTables, hashes: Record<string, string>): string {
     ),
   );
   const layouts = tables.calls
-    .flatMap((call) => cFields(call.name, call.fields, 8))
+    .flatMap((call) =>
+      [
+        `/* C return: ${call.cReturn}; receiver: ${call.receiver}, ${call.context}; callback future stays guest-local. */`,
+      ].concat(cFields(call.name, call.fields, 8)),
+    )
     .concat(
       Object.entries(tables.structs).flatMap(([name, value]) => cFields(name, value.fields)),
       tables.completions.flatMap((entry) => cFields(`reply_${entry.name}`, entry.fields, 16)),
@@ -567,6 +638,19 @@ static inline void waffle_gpu_end(WaffleGpuWriter *w, size_t start) {
     for (unsigned i = 0; i < 4; ++i) w->data[start + 4 + i] = (uint8_t)(length >> (8 * i));
 }`;
 
+function tableSource(tables: WireTables): string {
+  const browserEnums = Object.entries(tables.browserEnums)
+    .map(([name, entries]) => {
+      const native = JSON.stringify(entries) === JSON.stringify(tables.enums[name]);
+      return `${JSON.stringify(name)}: ${native ? `gpuEnums[${JSON.stringify(name)}]` : JSON.stringify(entries)}`;
+    })
+    .join(",\n");
+  const body = JSON.stringify({ ...tables, enums: {}, browserEnums: {} }, null, 2)
+    .replace('"enums": {}', '"enums": gpuEnums')
+    .replace('"browserEnums": {}', `"browserEnums": {${browserEnums}}`);
+  return `const gpuEnums = ${JSON.stringify(tables.enums, null, 2)};\nexport const gpuStream = ${body} satisfies WireTables;`;
+}
+
 /** @public Tool entry used by quality and focused tests, never imported by runtime entries. */
 export async function generate(root = packageRoot, check = false): Promise<void> {
   const yamlBytes = await Bun.file(resolve(root, schemaPath)).bytes();
@@ -585,7 +669,7 @@ export async function generate(root = packageRoot, check = false): Promise<void>
       fixedInputs.map(async (path) => [path, sha256(await Bun.file(resolve(root, path)).bytes())]),
     ),
   );
-  const raw = `// Generated by tooling/gpu-stream.ts. Do not edit.\n// YAML and numeric enums: BSD-3-Clause; see ../upstream/LICENSE.\nimport type { WireTables } from "../../../tooling/gpu-stream-model.ts";\nexport const gpuStream = ${JSON.stringify(tables, null, 2)} satisfies WireTables;\nexport const gpuStreamSources = ${JSON.stringify(hashes, null, 2)};\nexport const gpuDescriptorAdapters = ${JSON.stringify(record(input).descriptors, null, 2)};\nexport const gpuEventRoutes = ${JSON.stringify(record(input).events, null, 2)};\nexport const gpuSentinels = ${JSON.stringify(record(input).sentinels, null, 2)};\nexport const gpuDictionaryMembers = ${JSON.stringify(record(input).dictionaryMembers, null, 2)};\nexport const gpuDictionaryRules = ${JSON.stringify(record(input).dictionaryRules, null, 2)};\nexport const gpuObjectKinds = ${JSON.stringify(record(input).objectKinds, null, 2)};\n`;
+  const raw = `// Generated by tooling/gpu-stream.ts. Do not edit.\n// YAML and numeric enums: BSD-3-Clause; see ../upstream/LICENSE.\nimport type { WireTables } from "../../../tooling/gpu-stream-model.ts";\n${tableSource(tables)}\nexport const gpuStreamSources = ${JSON.stringify(hashes, null, 2)};\nexport const gpuDescriptorAdapters = ${JSON.stringify(record(input).descriptors, null, 2)};\nexport const gpuEventRoutes = ${JSON.stringify(record(input).events, null, 2)};\nexport const gpuSentinels = ${JSON.stringify(record(input).sentinels, null, 2)};\nexport const gpuDictionaryMembers = ${JSON.stringify(record(input).dictionaryMembers, null, 2)};\nexport const gpuDictionaryRules = ${JSON.stringify(record(input).dictionaryRules, null, 2)};\nexport const gpuObjectKinds = ${JSON.stringify(record(input).objectKinds, null, 2)};\nexport const gpuCOutputs = ${JSON.stringify(record(input).cOutput, null, 2)};\n`;
   const formatter = Bun.spawn(
     [
       "bun",
@@ -599,7 +683,7 @@ export async function generate(root = packageRoot, check = false): Promise<void>
   );
   const formatted = await new Response(formatter.stdout).text();
   if ((await formatter.exited) !== 0) throw new Error(await new Response(formatter.stderr).text());
-  const content = [formatted, cHeader(tables, hashes)];
+  const content = [formatted, cHeader(tables, hashes, record(record(input).objectKinds))];
   for (const [index, path] of outputs.entries()) {
     const expected = content[index];
     if (expected === undefined) throw new Error("Missing generated output");

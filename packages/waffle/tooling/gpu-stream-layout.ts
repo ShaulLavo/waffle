@@ -205,18 +205,31 @@ function writeField(writer: Writer, tables: WireTables, member: Field, value: un
   writeType(writer, tables, member.type, value, member.optional);
 }
 
-export function encodeGpuCommand(tables: WireTables, name: string, value: unknown): Uint8Array {
-  const call = tables.calls.find((entry) => entry.name === name);
-  if (!call) throw new Error("Unknown selected command");
+function beginRecord(code: number): Writer {
   const writer = new Writer();
-  writer.integer(call.opcode, 2);
+  writer.integer(code, 2);
   writer.integer(0, 2);
   writer.integer(0, 4);
-  writeFields(writer, tables, call.fields, value);
+  return writer;
+}
+
+function finishRecord(
+  writer: Writer,
+  tables: WireTables,
+  members: readonly Field[],
+  value: unknown,
+): Uint8Array {
+  writeFields(writer, tables, members, value);
   writer.align(8);
   const bytes = Uint8Array.from(writer.bytes);
   new DataView(bytes.buffer).setUint32(4, uint(bytes.length), true);
   return bytes;
+}
+
+export function encodeGpuCommand(tables: WireTables, name: string, value: unknown): Uint8Array {
+  const call = tables.calls.find((entry) => entry.name === name);
+  if (!call) throw new Error("Unknown selected command");
+  return finishRecord(beginRecord(call.opcode), tables, call.fields, value);
 }
 
 export function encodeGpuStruct(tables: WireTables, name: string, value: unknown): Uint8Array {
@@ -234,15 +247,8 @@ export function encodeGpuCompletion(
 ): Uint8Array {
   const completion = tables.completions.find((entry) => entry.name === name);
   if (!completion) throw new Error("Unknown completion");
-  const writer = new Writer();
-  writer.integer(completion.kind, 2);
-  writer.integer(0, 2);
-  writer.integer(0, 4);
+  const writer = beginRecord(completion.kind);
   writer.integer(token, 4);
   writer.integer(status, 4, true);
-  writeFields(writer, tables, completion.fields, value);
-  writer.align(8);
-  const bytes = Uint8Array.from(writer.bytes);
-  new DataView(bytes.buffer).setUint32(4, bytes.length, true);
-  return bytes;
+  return finishRecord(writer, tables, completion.fields, value);
 }

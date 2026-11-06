@@ -33,6 +33,13 @@ export interface CallLayout {
   receiver: string;
   context: "top" | "encoder" | "pass";
   result: Result;
+  cReturn: string;
+  callback: null | {
+    type: string;
+    future: "token-as-future-id";
+    delivery: "guest-local-completion-pump";
+    omitted: string[];
+  };
   token: string | null;
   lowering: Lowering;
   omitted: string[];
