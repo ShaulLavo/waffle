@@ -31,3 +31,27 @@ for (const vector of expected.structs) {
     expect(reader.offset).toBe(literal.byteLength);
   });
 }
+
+test("upload layouts replace only their pinned C pointer/size pair", async () => {
+  const { compileSchema } = await import("../tooling/gpu-stream.ts");
+  const selection = (await import("../browser/gpu/stream.json")).default;
+  const yaml: unknown = Bun.YAML.parse(
+    await Bun.file(new URL("../browser/gpu/upstream/webgpu.yml", import.meta.url)).text(),
+  );
+  for (const name of ["queue.write_buffer", "queue.write_texture"]) {
+    const call = gpuStream.calls.find((entry) => entry.name === name);
+    expect(call?.fields.map((field) => field.name)).not.toContain("size");
+    expect(call?.fields.map((field) => field.name)).not.toContain("data_size");
+    expect(call?.fields.find((field) => field.name === "data")?.type).toBe("bytes");
+  }
+  const badSpan = structuredClone(selection);
+  const upload = badSpan.calls.find((entry) => entry.name === "queue.write_buffer");
+  if (!upload) throw new Error("Missing upload selection");
+  Reflect.set(upload.lowering, "span", { pointer: "data", size: "data_size" });
+  expect(() => compileSchema(yaml, badSpan)).toThrow("lowering");
+  const badDescriptor = structuredClone(selection);
+  const create = badDescriptor.calls.find((entry) => entry.name === "device.create_buffer");
+  if (!create) throw new Error("Missing creation selection");
+  Reflect.set(create.lowering, "descriptor", "texture_descriptor");
+  expect(() => compileSchema(yaml, badDescriptor)).toThrow("pinned C argument");
+});

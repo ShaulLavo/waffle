@@ -566,3 +566,100 @@ test("unsupported binding arrays and impossible C resource unions are call error
     connection.close();
   }
 });
+
+test("explicit pipeline layout and depth attachments reach native calls by identity", async () => {
+  const { target, native } = sceneTarget();
+  const { connection } = rig(target, 4096);
+  try {
+    await openDevice(connection);
+    create(connection, "bind_group_layout", 7, { next_in_chain: [], label: "", entries: [] });
+    create(connection, "pipeline_layout", 8, {
+      next_in_chain: [],
+      label: "",
+      bind_group_layouts: [handle(7)],
+      immediate_size: 0,
+    });
+    create(connection, "texture", 5, textureDescriptor(46, 16));
+    send(
+      connection,
+      command("texture.create_view", { result: handle(6), receiver: handle(5), descriptor: null }),
+    );
+    send(
+      connection,
+      command("device.create_shader_module", {
+        result: handle(10),
+        receiver: handle(3),
+        descriptor: { next_in_chain: [{ sType: 2, value: { code: "" } }], label: "" },
+      }),
+    );
+    const baseline = (await import("./fixtures/gpu/expected.json")).default.vectors.find(
+      (entry) => entry.command === "device.create_render_pipeline",
+    )?.input.descriptor;
+    if (!baseline?.vertex) throw new Error("Missing baseline pipeline");
+    create(connection, "render_pipeline", 11, {
+      ...baseline,
+      layout: handle(8),
+      vertex: { ...baseline.vertex, module: handle(10) },
+      fragment: null,
+      depth_stencil: depthState(),
+    });
+    const pipeline = target.calls.find((entry) => entry.member === "createRenderPipeline")?.args[0];
+    expect(pipeline).toMatchObject({
+      layout: native.pipelineLayout,
+      depthStencil: {
+        format: "depth24plus",
+        depthWriteEnabled: true,
+        depthCompare: "less",
+        depthBias: 0,
+      },
+    });
+    if (!pipeline || typeof pipeline !== "object") throw new Error("Missing pipeline dictionary");
+    expect(Reflect.get(pipeline, "layout")).toBe(native.pipelineLayout);
+    send(
+      connection,
+      command("device.create_command_encoder", {
+        result: handle(12),
+        receiver: handle(3),
+        descriptor: null,
+      }),
+    );
+    send(
+      connection,
+      encodeBlob(
+        12,
+        joinRecords(
+          command("command_encoder.begin_render_pass", {
+            result: handle(13),
+            descriptor: {
+              next_in_chain: [],
+              label: "",
+              color_attachments: [],
+              depth_stencil_attachment: depthStencil(handle(6)),
+              occlusion_query_set: null,
+              timestamp_writes: null,
+            },
+          }),
+          command("render_pass_encoder.end", {}),
+          command("command_encoder.finish", { result: handle(14), descriptor: null }),
+        ),
+      ),
+    );
+    const pass = target.calls.find((entry) => entry.member === "beginRenderPass")?.args[0];
+    expect(pass).toEqual({
+      label: "",
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: native.view,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+        depthClearValue: 1,
+        depthReadOnly: false,
+        stencilClearValue: 0,
+        stencilReadOnly: false,
+      },
+    });
+    expect(connection.state.kind).toBe("ready");
+  } finally {
+    connection.close();
+  }
+});

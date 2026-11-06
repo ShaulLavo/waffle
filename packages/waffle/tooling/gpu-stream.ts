@@ -204,6 +204,11 @@ function compileCall(
   if (context === "top") prefix = prefix.concat([field("receiver", `object.${receiver}`)]);
   const args = method.args ? fields(method.args) : [];
   const adapter = lowering(entry.lowering);
+  if (
+    adapter.kind === "descriptor-method" &&
+    !args.some((arg) => arg.name === "descriptor" && arg.type === `struct.${adapter.descriptor}`)
+  )
+    throw new Error("Descriptor lowering must match the pinned C argument");
   const input =
     chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
   return {
