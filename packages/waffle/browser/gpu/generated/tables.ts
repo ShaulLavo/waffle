@@ -414,6 +414,10 @@ const gpuEnums = {
     read_only: 3,
     read_write: 4,
   },
+  "enum.query_type": {
+    occlusion: 1,
+    timestamp: 2,
+  },
   "enum.request_adapter_status": {
     success: 1,
     callback_cancelled: 2,
@@ -1962,6 +1966,718 @@ export const gpuStream = {
         },
       ],
     },
+    {
+      opcode: 46,
+      name: "device.create_render_bundle_encoder",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "render_bundle_encoder",
+        source: "return",
+      },
+      cReturn: "object.render_bundle_encoder",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createRenderBundleEncoder",
+        descriptor: "render_bundle_encoder_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.render_bundle_encoder",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.render_bundle_encoder_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 47,
+      name: "render_bundle_encoder.set_pipeline",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setPipeline",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "pipeline",
+          type: "object.render_pipeline",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 48,
+      name: "render_bundle_encoder.set_bind_group",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setBindGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_index",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "group",
+          type: "object.bind_group",
+          optional: true,
+        },
+        {
+          name: "dynamic_offsets",
+          type: "array<uint32>",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 49,
+      name: "render_bundle_encoder.set_immediates",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "set-immediates",
+        member: "setImmediates",
+        span: {
+          pointer: "data",
+          size: "size",
+        },
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "offset",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "data",
+          type: "bytes",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 50,
+      name: "render_bundle_encoder.draw",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "draw",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "vertex_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "instance_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "first_vertex",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "first_instance",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 51,
+      name: "render_bundle_encoder.draw_indexed",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "drawIndexed",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "index_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "instance_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "first_index",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "base_vertex",
+          type: "int32",
+          optional: false,
+        },
+        {
+          name: "first_instance",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 52,
+      name: "render_bundle_encoder.draw_indirect",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "drawIndirect",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "indirect_buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "indirect_offset",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 53,
+      name: "render_bundle_encoder.draw_indexed_indirect",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "drawIndexedIndirect",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "indirect_buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "indirect_offset",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 54,
+      name: "render_bundle_encoder.insert_debug_marker",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "insertDebugMarker",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "marker_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 55,
+      name: "render_bundle_encoder.pop_debug_group",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "popDebugGroup",
+      },
+      omitted: [],
+      fields: [],
+    },
+    {
+      opcode: 56,
+      name: "render_bundle_encoder.push_debug_group",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "pushDebugGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 57,
+      name: "render_bundle_encoder.set_vertex_buffer",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setVertexBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "slot",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: true,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 58,
+      name: "render_bundle_encoder.set_index_buffer",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setIndexBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "format",
+          type: "enum.index_format",
+          optional: false,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 59,
+      name: "render_bundle_encoder.finish",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "handle",
+        object: "render_bundle",
+        source: "return",
+      },
+      cReturn: "object.render_bundle",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "finish",
+        descriptor: "render_bundle_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.render_bundle",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.render_bundle_descriptor",
+          optional: true,
+        },
+      ],
+    },
+    {
+      opcode: 60,
+      name: "render_bundle_encoder.set_label",
+      receiver: "render_bundle_encoder",
+      context: "bundle",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "label",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 61,
+      name: "render_pass_encoder.execute_bundles",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "executeBundles",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "bundles",
+          type: "array<object.render_bundle>",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 62,
+      name: "device.create_query_set",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "query_set",
+        source: "return",
+      },
+      cReturn: "object.query_set",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createQuerySet",
+        descriptor: "query_set_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.query_set",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.query_set_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 63,
+      name: "command_encoder.resolve_query_set",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "resolveQuerySet",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "query_set",
+          type: "object.query_set",
+          optional: false,
+        },
+        {
+          name: "first_query",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "query_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "destination",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "destination_offset",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 64,
+      name: "render_pass_encoder.begin_occlusion_query",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "beginOcclusionQuery",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "query_index",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 65,
+      name: "render_pass_encoder.end_occlusion_query",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "endOcclusionQuery",
+      },
+      omitted: [],
+      fields: [],
+    },
+    {
+      opcode: 66,
+      name: "query_set.destroy",
+      receiver: "query_set",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "destroy",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.query_set",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 67,
+      name: "compute_pipeline.get_bind_group_layout",
+      receiver: "compute_pipeline",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "bind_group_layout",
+        source: "return",
+      },
+      cReturn: "object.bind_group_layout",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "getBindGroupLayout",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.bind_group_layout",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.compute_pipeline",
+          optional: false,
+        },
+        {
+          name: "group_index",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 68,
+      name: "render_pipeline.get_bind_group_layout",
+      receiver: "render_pipeline",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "bind_group_layout",
+        source: "return",
+      },
+      cReturn: "object.bind_group_layout",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "getBindGroupLayout",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.bind_group_layout",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.render_pipeline",
+          optional: false,
+        },
+        {
+          name: "group_index",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
   ],
   structs: {
     request_adapter_options: {
@@ -3455,6 +4171,83 @@ export const gpuStream = {
         },
       ],
     },
+    render_bundle_encoder_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.render_bundle_encoder_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "color_formats",
+          type: "array<enum.texture_format>",
+          optional: false,
+        },
+        {
+          name: "depth_stencil_format",
+          type: "enum.texture_format",
+          optional: false,
+        },
+        {
+          name: "sample_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "depth_read_only",
+          type: "bool",
+          optional: false,
+        },
+        {
+          name: "stencil_read_only",
+          type: "bool",
+          optional: false,
+        },
+      ],
+    },
+    render_bundle_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.render_bundle_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    query_set_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.query_set_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "type",
+          type: "enum.query_type",
+          optional: false,
+        },
+        {
+          name: "count",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
   },
   enums: gpuEnums,
   browserEnums: {
@@ -3808,6 +4601,7 @@ export const gpuStream = {
       read_only: "read-only",
       read_write: "read-write",
     },
+    "enum.query_type": { occlusion: "occlusion", timestamp: "timestamp" },
   },
   chains: {
     shader_module_descriptor: [
@@ -4097,8 +4891,19 @@ export const gpuStream = {
     {
       name: "render-bundle",
       opcode: 4098,
-      enabled: false,
-      fields: [],
+      enabled: true,
+      fields: [
+        {
+          name: "encoder",
+          type: "object.render_bundle_encoder",
+          optional: false,
+        },
+        {
+          name: "commands",
+          type: "bytes",
+          optional: false,
+        },
+      ],
     },
     {
       name: "buffer-unmap-writes",
@@ -4145,9 +4950,9 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "e5105442aded7c05ed4084661f63999779ca3d91ce4f265ed6aaf43ee3f59d56",
-  "tooling/gpu-stream.ts": "9c9448db3d67ff3f1c7c78749c256cdbe5d282902c2fbdfbdf4e71496262c729",
-  "tooling/gpu-stream-model.ts": "fb9ede155add81072cd693c635c854ef0a3df5d8c8fa0bc0efec479d332364cd",
+  "browser/gpu/stream.json": "f63b3e9ee017b3cf96fa4725c830df4a133940312a5505ea85bce41d944c914f",
+  "tooling/gpu-stream.ts": "ea1dd16ca5776225cb2bc5f922b1df836090c2f8d62409416c1a834db5114b45",
+  "tooling/gpu-stream-model.ts": "179bd5498d7e2c06445fc0c659da3519f49d529dc0c4c5794fc8f50e595118ee",
   "tooling/gpu-stream-layout.ts":
     "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
   "tests/fixtures/gpu/expected.json":
@@ -4283,6 +5088,27 @@ export const gpuDescriptorAdapters = {
     output: "GPUComputePassDescriptor",
     rules: {
       timestamp_writes: "optional-dictionary-omit-uint32-max-indices",
+    },
+  },
+  render_bundle_encoder_descriptor: {
+    input: "struct.render_bundle_encoder_descriptor",
+    output: "GPURenderBundleEncoderDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  render_bundle_descriptor: {
+    input: "struct.render_bundle_descriptor",
+    output: "GPURenderBundleDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  query_set_descriptor: {
+    input: "struct.query_set_descriptor",
+    output: "GPUQuerySetDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
     },
   },
 };
@@ -4657,6 +5483,25 @@ export const gpuDictionaryMembers = {
     label: "label",
     timestamp_writes: "timestampWrites",
   },
+  render_bundle_encoder_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    color_formats: "colorFormats",
+    depth_stencil_format: "depthStencilFormat",
+    sample_count: "sampleCount",
+    depth_read_only: "depthReadOnly",
+    stencil_read_only: "stencilReadOnly",
+  },
+  render_bundle_descriptor: {
+    next_in_chain: null,
+    label: "label",
+  },
+  query_set_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    type: "type",
+    count: "count",
+  },
 };
 export const gpuDictionaryRules = {
   chains: "reject-nonempty-unless-explicitly-allowlisted",
@@ -4681,6 +5526,8 @@ export const gpuDictionaryRules = {
   nullablePassBindings: "null-group-and-vertex-buffer-become-explicit-JS-null",
   immediateSize: "pipeline-layout-immediate_size-to-immediateSize",
   computeImmediates:
+    "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
+  bundleImmediates:
     "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
 };
 export const gpuObjectKinds = {

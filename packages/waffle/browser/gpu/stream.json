@@ -851,6 +851,414 @@
       "omitted": [],
       "cReturn": "void",
       "callback": null
+    },
+    {
+      "opcode": 46,
+      "name": "device.create_render_bundle_encoder",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "render_bundle_encoder",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createRenderBundleEncoder",
+        "descriptor": "render_bundle_encoder_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.render_bundle_encoder",
+      "callback": null
+    },
+    {
+      "opcode": 47,
+      "name": "render_bundle_encoder.set_pipeline",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setPipeline"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 48,
+      "name": "render_bundle_encoder.set_bind_group",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setBindGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 49,
+      "name": "render_bundle_encoder.set_immediates",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "set-immediates",
+        "member": "setImmediates",
+        "span": {
+          "pointer": "data",
+          "size": "size"
+        }
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 50,
+      "name": "render_bundle_encoder.draw",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "draw"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 51,
+      "name": "render_bundle_encoder.draw_indexed",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "drawIndexed"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 52,
+      "name": "render_bundle_encoder.draw_indirect",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "drawIndirect"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 53,
+      "name": "render_bundle_encoder.draw_indexed_indirect",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "drawIndexedIndirect"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 54,
+      "name": "render_bundle_encoder.insert_debug_marker",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "insertDebugMarker"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 55,
+      "name": "render_bundle_encoder.pop_debug_group",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "popDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 56,
+      "name": "render_bundle_encoder.push_debug_group",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "pushDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 57,
+      "name": "render_bundle_encoder.set_vertex_buffer",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setVertexBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 58,
+      "name": "render_bundle_encoder.set_index_buffer",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setIndexBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 59,
+      "name": "render_bundle_encoder.finish",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "handle",
+        "object": "render_bundle",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "finish",
+        "descriptor": "render_bundle_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.render_bundle",
+      "callback": null
+    },
+    {
+      "opcode": 60,
+      "name": "render_bundle_encoder.set_label",
+      "receiver": "render_bundle_encoder",
+      "context": "bundle",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "label"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 61,
+      "name": "render_pass_encoder.execute_bundles",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "executeBundles"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 62,
+      "name": "device.create_query_set",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "query_set",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createQuerySet",
+        "descriptor": "query_set_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.query_set",
+      "callback": null
+    },
+    {
+      "opcode": 63,
+      "name": "command_encoder.resolve_query_set",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "resolveQuerySet"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 64,
+      "name": "render_pass_encoder.begin_occlusion_query",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "beginOcclusionQuery"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 65,
+      "name": "render_pass_encoder.end_occlusion_query",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "endOcclusionQuery"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 66,
+      "name": "query_set.destroy",
+      "receiver": "query_set",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "destroy"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 67,
+      "name": "compute_pipeline.get_bind_group_layout",
+      "receiver": "compute_pipeline",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "bind_group_layout",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "getBindGroupLayout"
+      },
+      "omitted": [],
+      "cReturn": "object.bind_group_layout",
+      "callback": null
+    },
+    {
+      "opcode": 68,
+      "name": "render_pipeline.get_bind_group_layout",
+      "receiver": "render_pipeline",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "bind_group_layout",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "getBindGroupLayout"
+      },
+      "omitted": [],
+      "cReturn": "object.bind_group_layout",
+      "callback": null
     }
   ],
   "records": [
@@ -891,8 +1299,19 @@
     {
       "name": "render-bundle",
       "opcode": 4098,
-      "enabled": false,
-      "fields": []
+      "enabled": true,
+      "fields": [
+        {
+          "name": "encoder",
+          "type": "object.render_bundle_encoder",
+          "optional": false
+        },
+        {
+          "name": "commands",
+          "type": "bytes",
+          "optional": false
+        }
+      ]
     },
     {
       "name": "buffer-unmap-writes",
@@ -1314,6 +1733,27 @@
       "output": "GPUComputePassDescriptor",
       "rules": {
         "timestamp_writes": "optional-dictionary-omit-uint32-max-indices"
+      }
+    },
+    "render_bundle_encoder_descriptor": {
+      "input": "struct.render_bundle_encoder_descriptor",
+      "output": "GPURenderBundleEncoderDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "render_bundle_descriptor": {
+      "input": "struct.render_bundle_descriptor",
+      "output": "GPURenderBundleDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "query_set_descriptor": {
+      "input": "struct.query_set_descriptor",
+      "output": "GPUQuerySetDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
       }
     }
   },
@@ -1797,6 +2237,10 @@
       "write_only": "write-only",
       "read_only": "read-only",
       "read_write": "read-write"
+    },
+    "enum.query_type": {
+      "occlusion": "occlusion",
+      "timestamp": "timestamp"
     }
   },
   "encoding": {
@@ -1868,7 +2312,30 @@
     "compute_pass_encoder.dispatch_workgroups": 42,
     "compute_pass_encoder.dispatch_workgroups_indirect": 43,
     "compute_pass_encoder.end": 44,
-    "compute_pass_encoder.set_label": 45
+    "compute_pass_encoder.set_label": 45,
+    "device.create_render_bundle_encoder": 46,
+    "render_bundle_encoder.set_pipeline": 47,
+    "render_bundle_encoder.set_bind_group": 48,
+    "render_bundle_encoder.set_immediates": 49,
+    "render_bundle_encoder.draw": 50,
+    "render_bundle_encoder.draw_indexed": 51,
+    "render_bundle_encoder.draw_indirect": 52,
+    "render_bundle_encoder.draw_indexed_indirect": 53,
+    "render_bundle_encoder.insert_debug_marker": 54,
+    "render_bundle_encoder.pop_debug_group": 55,
+    "render_bundle_encoder.push_debug_group": 56,
+    "render_bundle_encoder.set_vertex_buffer": 57,
+    "render_bundle_encoder.set_index_buffer": 58,
+    "render_bundle_encoder.finish": 59,
+    "render_bundle_encoder.set_label": 60,
+    "render_pass_encoder.execute_bundles": 61,
+    "device.create_query_set": 62,
+    "command_encoder.resolve_query_set": 63,
+    "render_pass_encoder.begin_occlusion_query": 64,
+    "render_pass_encoder.end_occlusion_query": 65,
+    "query_set.destroy": 66,
+    "compute_pipeline.get_bind_group_layout": 67,
+    "render_pipeline.get_bind_group_layout": 68
   },
   "completionLedger": {
     "adapter": 1,
@@ -2268,6 +2735,25 @@
       "next_in_chain": null,
       "label": "label",
       "timestamp_writes": "timestampWrites"
+    },
+    "render_bundle_encoder_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "color_formats": "colorFormats",
+      "depth_stencil_format": "depthStencilFormat",
+      "sample_count": "sampleCount",
+      "depth_read_only": "depthReadOnly",
+      "stencil_read_only": "stencilReadOnly"
+    },
+    "render_bundle_descriptor": {
+      "next_in_chain": null,
+      "label": "label"
+    },
+    "query_set_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "type": "type",
+      "count": "count"
     }
   },
   "dictionaryRules": {
@@ -2289,7 +2775,8 @@
     "uploads": "length-prefixed-byte-span-replaces-C-pointer-and-size;writeBuffer-byte-count-is-span-length",
     "nullablePassBindings": "null-group-and-vertex-buffer-become-explicit-JS-null",
     "immediateSize": "pipeline-layout-immediate_size-to-immediateSize",
-    "computeImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span"
+    "computeImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
+    "bundleImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span"
   },
   "cOutput": {
     "surface.get_current_texture": {

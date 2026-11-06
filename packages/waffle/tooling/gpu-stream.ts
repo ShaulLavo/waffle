@@ -203,7 +203,7 @@ function compileCall(
   if (method.callback && !omitted.includes("callback_info"))
     throw new Error("Callback pointers must be omitted");
   const context = entry.context;
-  if (context !== "top" && context !== "encoder" && context !== "pass")
+  if (context !== "top" && context !== "encoder" && context !== "pass" && context !== "bundle")
     throw new Error("Bad call context");
   let prefix: Field[] =
     chosen.kind === "handle" ? [field("result", `object.${chosen.object}`)] : [];
