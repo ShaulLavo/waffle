@@ -11,6 +11,8 @@ const publicIssues = Object.fromEntries(
 
 export default {
   includeEntryExports: true,
+  // The schema fixture compiles the generated C header with the host toolchain.
+  ignoreBinaries: ["cc"],
   ignoreIssues: publicIssues,
   tags: ["-@browserEntry", "-@compileFixture", "-@public"],
   workspaces: {

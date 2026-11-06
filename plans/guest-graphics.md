@@ -1,6 +1,8 @@
 # Guest graphics: windows, WebGPU and wgpu
 
-Status: **Proposed plan family. Nothing here is implemented or approved.**
+Status: **Approved (owner, 2026-11-02).** The [WebGPU bridge](gpu-bridge.md) is active since
+2026-11-06 under its [implementation design](gpu-bridge-implementation.md); windows and the wgpu
+backend remain scheduled later. Nothing is implemented yet.
 
 Prepared: 2026-10-31. Inspected Waffle baseline
 [`9b66e3aa2462771f65ca263745a23c80e2c8fea3`](https://github.com/ShaulLavo/waffle/commit/9b66e3aa2462771f65ca263745a23c80e2c8fea3)
@@ -111,7 +113,9 @@ repository is retired. Until then, an adapter can lower `wasi:webgpu` calls into
 
 ## Order of work
 
-Two lanes can start now, without [guest threads](wasi-threads.md):
+The GPU lane is active. It builds the minimal display (surfaces, grants, `surfaces` and
+`surface_info`) that W0 and W1 extend, so the windows lane can start later without rework. Two
+lanes, neither needing [guest threads](wasi-threads.md):
 
 1. **Windows:** W0 → W1 → W2 → W3 → W4 ([slices](guest-windows.md#delivery-slices-and-effort)).
 2. **GPU:** G0 → G1 → G2 → G3 ([slices](gpu-bridge.md#delivery-slices-and-effort)), with B0 → B1

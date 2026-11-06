@@ -156,8 +156,9 @@ Other threads wait on a guest condition variable that the pump signals after eac
   and `PreMultiplied`, usages `RENDER_ATTACHMENT | COPY_SRC | TEXTURE_BINDING`, no HDR colour spaces.
   Apps asking for `Mailbox` must fall back, as Horizon does (`gfx.rs:1437`).
 - `configure`: sends `configure` and records the size.
-- `get_current_texture`: reserves a frame slot (blocking while both are in flight), allocates a
-  texture id and sends `acquire`. If the surface's current size from
+- `get_current_texture`: waits for the surface's presentation credit, allocates a texture id and
+  sends acquire. The service uses a stable ordinary frame texture, not a native canvas texture,
+  following the [revised presentation contract](gpu-bridge-implementation.md#frames-that-survive-guest-pauses-and-device-destruction). If the surface's current size from
   [`surface_info`](guest-windows.md#guest-abi-runtime_window) differs from the configured size,
   it returns `SurfaceStatus::Outdated` so the app reconfigures.
 - `present`: sends `present` and flushes. `texture_discard` sends `present` with a discard flag.
