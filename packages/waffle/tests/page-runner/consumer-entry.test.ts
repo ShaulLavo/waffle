@@ -522,7 +522,7 @@ for (const failure of ["reject", "hang"] as const) {
 }
 function interruptAdded(
   signal: "SIGINT" | "SIGTERM",
-  before: ReturnType<typeof process.listeners>,
+  before: readonly NodeJS.SignalsListener[],
 ): number {
   let called = 0;
   for (const listener of process.listeners(signal)) {

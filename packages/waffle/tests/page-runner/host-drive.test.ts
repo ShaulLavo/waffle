@@ -1,7 +1,8 @@
 import { expect, test, spyOn } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { HostConsumers, HostDrive } from "./host-drive.js";
+import { HostDrive } from "./host-drive.js";
+import { HostConsumers } from "./owned-consumers.js";
 import { Collector } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
 import { runPageSuite, type SuiteAdapter } from "./suite-host.js";

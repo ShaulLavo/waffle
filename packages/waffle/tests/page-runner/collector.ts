@@ -1,3 +1,4 @@
+import { reportSequence } from "./report-stream.js";
 import {
   exactInventory,
   parseMessage,
@@ -135,10 +136,13 @@ export class Collector {
     if (!state || message.run !== this.run)
       return this.violation("Wrong run or no expected document", state);
     const encoded = JSON.stringify(message);
-    if (state.messages[message.seq] === encoded) return { ackedThrough: message.seq };
-    if (state.cutoff !== null) throw new ObservationClosed("Report after observation cutoff");
-    if (state !== this.active || message.seq !== state.messages.length)
-      return this.violation("Report sequence conflict or gap", state);
+    try {
+      if (reportSequence(state, message.seq, encoded) === "retry")
+        return { ackedThrough: message.seq };
+    } catch (error) {
+      return this.violation(String(error), state);
+    }
+    if (state !== this.active) return this.violation("Inactive document", state);
     if (!state.doc && message.kind !== "hello") return this.violation("Report before hello", state);
     if (state.doc && state.doc !== message.doc)
       return this.violation("Unexpected new document", state);

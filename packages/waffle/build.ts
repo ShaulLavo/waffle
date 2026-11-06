@@ -328,6 +328,37 @@ export async function buildNodeModules(
       join(outdir, "tooling/program/program-transformer.json"),
     );
   }
+  if (existsSync(join(root, "tests/page-runner/framework.ts"))) {
+    const pending = ["tests/page-runner/framework.ts", "tests/page-runner/framework-page.ts"];
+    const emitted = new Set<string>();
+    while (pending.length) {
+      const path = pending.pop()!;
+      if (emitted.has(path)) continue;
+      emitted.add(path);
+      await emit(path);
+      const imports = transpiler.scanImports(await Bun.file(join(root, path)).text());
+      for (const entry of imports) {
+        if (!entry.path.startsWith(".")) continue;
+        const target = relative(
+          root,
+          resolve(dirname(join(root, path)), entry.path.replace(/\.js$/, ".ts")),
+        );
+        pending.push(target);
+      }
+    }
+    const bootstrap = await Bun.build({
+      entrypoints: [join(root, "tests/page-runner/framework-bootstrap-main.ts")],
+      target: "browser",
+      format: "iife",
+      minify: true,
+    });
+    if (!bootstrap.success)
+      throw new AggregateError(bootstrap.logs, "Framework bootstrap build failed");
+    await Bun.write(
+      join(outdir, "tests/page-runner/framework-bootstrap.js"),
+      bootstrap.outputs[0]!,
+    );
+  }
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
 }
 

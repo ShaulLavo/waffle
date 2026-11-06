@@ -1,3 +1,8 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+import type { AttachedConnection } from "./framework-types.js";
+import { parseCapabilities } from "./framework-validation.js";
 import { openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -86,21 +91,44 @@ function returnedIdentity(value: unknown, sessionId: string): string {
 const serviceLabel = "com.apple.WebDriver.HTTPService";
 const serviceExecutable =
   "/System/Library/PrivateFrameworks/WebDriver.framework/Versions/A/XPCServices/com.apple.WebDriver.HTTPService.xpc/Contents/MacOS/com.apple.WebDriver.HTTPService";
-async function tool(args: string[], allowMissing = false): Promise<string> {
-  const child = Bun.spawn(args, { stdout: "pipe", stderr: "ignore" });
+function joined(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+}
+async function availablePort(): Promise<number> {
+  const server = createServer();
   try {
-    const [text, exit] = await bounded(
-      Promise.all([new Response(child.stdout).text(), child.exited]),
-      2000,
-      args[0] ?? "tool",
-    );
-    if (exit !== 0 && !allowMissing) throw new Error(`${args[0]} exited ${exit}`);
-    return exit === 0 ? text : "";
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No reserved driver port");
+    return address.port;
   } finally {
-    if (child.exitCode === null) {
-      child.kill();
-      await bounded(child.exited, 1000, "observation tool exit");
-    }
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+}
+async function tool(args: string[], allowMissing = false): Promise<string> {
+  const executable = args[0];
+  if (!executable) throw new Error("Missing executable");
+  const child = spawn(executable, args.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
+  const exit = joined(child);
+  let text = "";
+  child.stdout?.on("data", (chunk) => {
+    text += String(chunk);
+  });
+  try {
+    const code = await bounded(exit, 2000, executable);
+    if (code !== 0 && !allowMissing) throw new Error(`${executable} exited ${code}`);
+    return code === 0 ? text : "";
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await bounded(exit, 1000, "observation tool exit");
   }
 }
 export type Association =
@@ -146,7 +174,9 @@ export function associateListener(
   return { kind: "launchd-service", pid, started: match[4] ?? "" };
 }
 export class SafariDriver implements Driver {
-  private child: ReturnType<typeof Bun.spawn> | undefined;
+  private child: ChildProcess | undefined;
+  private childExit: Promise<number | null> | undefined;
+  private descriptor: AttachedConnection | undefined;
   private base = "";
   private port = 0;
   private session: string | undefined;
@@ -159,33 +189,54 @@ export class SafariDriver implements Driver {
     private readonly scratch: string,
   ) {}
   async start(signal: AbortSignal): Promise<void> {
-    const reservation = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    this.port = reservation.port;
-    reservation.stop(true);
+    this.port = await availablePort();
     this.base = `http://127.0.0.1:${this.port}`;
     const log = openSync(join(this.scratch, "safaridriver.log"), "w");
     try {
-      this.child = Bun.spawn(["/usr/bin/safaridriver", "-p", String(this.port)], {
-        stdin: "ignore",
-        stdout: log,
-        stderr: log,
+      this.child = spawn("/usr/bin/safaridriver", ["-p", String(this.port)], {
+        stdio: ["ignore", log, log],
       });
+      this.childExit = joined(this.child);
+      void this.childExit.catch(() => {});
     } finally {
       closeSync(log);
     }
     await this.ready(signal);
+    await this.createSession(signal);
+  }
+  async startControl(endpoint: string, signal: AbortSignal): Promise<void> {
+    const url = new URL(endpoint);
+    if (
+      url.protocol !== "http:" ||
+      url.hostname !== "127.0.0.1" ||
+      !url.port ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    )
+      throw new Error("Control endpoint must be an explicit loopback HTTP port");
+    this.port = Number(url.port);
+    this.base = url.origin;
+    await this.createSession(signal);
+  }
+  connection(): AttachedConnection {
+    if (!this.descriptor) throw new Error("No validated attached session");
+    return this.descriptor;
+  }
+  private async createSession(signal: AbortSignal): Promise<void> {
     this.uncertain = true;
+    const requested = {
+      browserName: "Safari",
+      platformName: "iOS",
+      "safari:useSimulator": true,
+      "safari:deviceUDID": this.udid,
+    } as const;
     const value = await this.request(
       "POST",
       "/session",
       {
         capabilities: {
-          alwaysMatch: {
-            browserName: "Safari",
-            platformName: "iOS",
-            "safari:useSimulator": true,
-            "safari:deviceUDID": this.udid,
-          },
+          alwaysMatch: requested,
         },
       },
       signal,
@@ -194,6 +245,26 @@ export class SafariDriver implements Driver {
     this.uncertain = false;
     this.sessionIdentity = returnedIdentity(value, this.session);
     nativeCapabilities(value, this.udid);
+    const capabilities = parseCapabilities(
+      record(value) ? value.capabilities : undefined,
+      this.udid,
+    );
+    this.descriptor = {
+      sessionId: this.session,
+      capabilities,
+      requestedCapabilities: requested,
+      options: {
+        hostname: "127.0.0.1",
+        port: this.port,
+        protocol: "http",
+        path: "/",
+        logLevel: "silent",
+        connectionRetryCount: 0,
+        connectionRetryTimeout: 5000,
+        waitforTimeout: 60000,
+        waitforInterval: 100,
+      },
+    };
     await this.command(
       "POST",
       "/timeouts",
@@ -226,7 +297,7 @@ export class SafariDriver implements Driver {
       listeners,
       domain,
       identity,
-      child.pid,
+      child.pid ?? -1,
       this.port,
       process.getuid?.() ?? -1,
     );
@@ -237,7 +308,7 @@ export class SafariDriver implements Driver {
       signal.throwIfAborted();
       const first = await this.observe();
       if (first && (await this.confirm(first, signal))) return;
-      await Bun.sleep(100);
+      await delay(100);
     }
     throw new Error("SafariDriver listener association/readiness unavailable");
   }
@@ -354,12 +425,20 @@ export class SafariDriver implements Driver {
     if (!child) return { status: "not-created", detail: "No launcher created" };
     try {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-      await bounded(child.exited, 2000, "launcher SIGTERM join");
+      await bounded(
+        this.childExit ?? Promise.reject(new Error("Missing launcher join")),
+        2000,
+        "launcher SIGTERM join",
+      );
       return { status: "confirmed", detail: `Direct launcher ${child.pid} joined` };
     } catch {
       try {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        await bounded(child.exited, 2000, "launcher SIGKILL join");
+        await bounded(
+          this.childExit ?? Promise.reject(new Error("Missing launcher join")),
+          2000,
+          "launcher SIGKILL join",
+        );
         return { status: "confirmed", detail: `Direct launcher ${child.pid} killed and joined` };
       } catch (error) {
         return { status: "unconfirmed", detail: String(error) };
