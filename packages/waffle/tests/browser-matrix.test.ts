@@ -21,14 +21,15 @@ const recovery = "recovery-r42";
 const memoryGroup = "memory-group";
 const chromiumOnly = [continuity, rootContinuity, memoryGroup];
 const socket = "fs-socket";
+const reporterControls = "reporter-controls";
 const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
-const name = process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
+const name = process.argv[1].includes("/page-runner/") ? "reporter-controls" : process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
 const engines = process.argv.slice(2).join(",");
-if (${JSON.stringify(chromiumOnly.concat([socket]))}.includes(name)) {
+if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls]))}.includes(name)) {
   appendFileSync(name + ".invocations", engines + "\\n");
-  if (engines !== (name === "fs-socket" ? "firefox" : "chromium")) throw Error("isolated engine repeated or changed");
+  if (engines !== (name === "reporter-controls" ? "chromium,webkit" : name === "fs-socket" ? "firefox" : "chromium")) throw Error("isolated engine repeated or changed");
   if (existsSync(name + ".finished")) throw Error("continuity repeated");
   const scratch = process.env.STORAGE_SCRATCH_ROOT;
   if (scratch !== process.cwd() && !scratch?.startsWith(process.cwd() + "/wb-")) throw Error("scratch missing");
@@ -40,7 +41,7 @@ if (${JSON.stringify(chromiumOnly.concat([socket]))}.includes(name)) {
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
   if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
-  const predecessor = { "workspace-continuity": "recovery-r42", "root-continuity": "workspace-continuity", "memory-group": "root-continuity" }[name] ?? "memory-group";
+  const predecessor = { "workspace-continuity": "recovery-r42", "root-continuity": "workspace-continuity", "memory-group": "root-continuity", "reporter-controls": "fs-socket" }[name] ?? "memory-group";
   if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
   appendFileSync("isolated.order", name + "\\n");
   writeFileSync(name + ".scratch", scratch);
@@ -113,6 +114,8 @@ async function matrix(failing: readonly string[]): Promise<void> {
     for (const runner of runners.concat(chromiumOnly, [socket]))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
+    await mkdir(join(root, "tests/page-runner"));
+    await writeFile(join(root, "tests/page-runner/browser-controls-runner.ts"), fixture);
     let failure: unknown;
     try {
       await runOwned([process.execPath, "scripts/matrix-entry.ts"], {
@@ -143,10 +146,15 @@ async function matrix(failing: readonly string[]): Promise<void> {
         (process.platform !== "linux" && recoveryScratch === root),
     ).toBe(true);
     expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
-      [recovery].concat(chromiumOnly, [socket]).join("\n") + "\n",
+      [recovery].concat(chromiumOnly, [socket, reporterControls]).join("\n") + "\n",
     );
-    for (const runner of chromiumOnly.concat([socket])) {
-      const engine = runner === socket ? "firefox" : "chromium";
+    for (const runner of chromiumOnly.concat([socket, reporterControls])) {
+      const engine =
+        runner === reporterControls
+          ? "chromium,webkit"
+          : runner === socket
+            ? "firefox"
+            : "chromium";
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe(engine);
       expect(await readFile(join(root, `${runner}.invocations`), "utf8")).toBe(engine + "\n");
       const scratch = await readFile(join(root, `${runner}.scratch`), "utf8");
@@ -163,12 +171,16 @@ async function matrix(failing: readonly string[]): Promise<void> {
         [`${recovery}:chromium`],
         runners.map((runner) => `${runner}:webkit`),
         chromiumOnly.map((runner) => `${runner}:chromium`),
-        [`${socket}:firefox`],
+        [`${socket}:firefox`, `${reporterControls}:chromium,webkit`],
       );
     expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
       order
         .filter((entry) => failing.includes(entry))
-        .map((entry) => `tests/${entry.split(":")[0]}-browser-runner.ts failed`),
+        .map((entry) =>
+          entry.startsWith(`${reporterControls}:`)
+            ? "tests/page-runner/browser-controls-runner.ts failed"
+            : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
+        ),
     );
     for (const runner of runners) {
       expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
@@ -232,4 +244,8 @@ test("combined isolated Chromium failures retain supervised order and cleanup", 
 
 test("socket Firefox attachment failure remains blocking in its single invocation", async () => {
   await matrix([`${socket}:firefox`]);
+}, 15_000);
+
+test("page-owned reporter controls fail the matrix without changing existing engine groups", async () => {
+  await matrix([`${reporterControls}:chromium,webkit`]);
 }, 15_000);
