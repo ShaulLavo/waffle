@@ -1,3 +1,4 @@
+import type { StorageAllocationHooks } from "./storage-allocation.js";
 import { OPFS_FORMAT } from "../fs/vfs-format.js";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
@@ -1014,7 +1015,10 @@ function focusedCases(filesystemWorkerURL?: string | URL): OpfsCase[] {
 }
 
 /** Shared contracts and OPFS faults; a consumer-owned worker URL opts in to runtime probes. */
-export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserStorageTest[] {
+export function opfsStorageTests(
+  filesystemWorkerURL?: string | URL,
+  allocation?: StorageAllocationHooks,
+): BrowserStorageTest[] {
   const shared: OpfsCase[] = storageContractCases().map(({ label, run }) => ({
     label,
     run: (name, open) => run(name, open),
@@ -1036,7 +1040,11 @@ export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserSto
   return shared.concat(runtime, focusedCases(filesystemWorkerURL)).map(({ label, run }) => ({
     label,
     async run() {
-      const name = `bun-wasm-opfs-test-${crypto.randomUUID()}`;
+      const name = allocation?.name() ?? `bun-wasm-opfs-test-${crypto.randomUUID()}`;
+      await allocation?.allocate({
+        kind: "opfs-directory",
+        name: `bun-wasm-${encodedTestName(name)}`,
+      });
       const opened: { cancel: AbortController; pending: Promise<OpfsStorage> }[] = [];
       const open = (options: OpfsStorageOptions = {}) => {
         const cancel = new AbortController();
