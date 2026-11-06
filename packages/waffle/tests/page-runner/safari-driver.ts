@@ -139,6 +139,7 @@ export class SafariDriver implements Driver {
       closeSync(log);
     }
     await this.ready(signal);
+    this.uncertain = true;
     const value = await this.request(
       "POST",
       "/session",
@@ -155,6 +156,7 @@ export class SafariDriver implements Driver {
       signal,
     );
     this.session = parseSession(value);
+    this.uncertain = false;
     this.sessionIdentity = returnedIdentity(value, this.session);
     nativeCapabilities(value, this.udid);
     await this.command(

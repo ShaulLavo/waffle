@@ -33,6 +33,10 @@ export class Reporter {
   }
   send(body: Body): Promise<void> {
     if (this.observation.retired) return Promise.reject(new Error("Document retired"));
+    if (this.observation.pending >= 64) {
+      this.observation.failure ??= "Reporter outbox capacity exceeded";
+      return Promise.reject(new Error(this.observation.failure));
+    }
     const encoded = JSON.stringify({
       run: this.run,
       doc: this.observation.doc,

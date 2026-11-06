@@ -53,12 +53,14 @@ bun run test:browser
 
 Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs Chromium and Firefox together and WebKit afterwards, as CI does.
 
+[Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls.
+
 The libc suite builds guest binaries with a pinned wasi-sdk and runs them under Wasmtime. See [Guest libc](wasi-libc.md) for its requirements. `bun run test:libc` runs it.
 
 ## Where things live
 
-| Path         | Holds                                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------ |
+| Path                         | Holds                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------ |
 | `packages/waffle/core/`      | WASI adapter, descriptors, open-file state, memory helpers.                                |
 | `packages/waffle/fs/`        | The filesystem service, storage backends, VFS modes, `WorkspaceVfs`.                       |
 | `packages/waffle/proc/`      | Process ABI, supervisor, jobs, signals, pipes, worker transports.                          |
@@ -67,9 +69,9 @@ The libc suite builds guest binaries with a pinned wasi-sdk and runs them under 
 | `packages/waffle/runtime.ts` | `createRuntime()` and the capability projections that guests receive.                      |
 | `packages/waffle/tests/`     | Unit tests, browser runners and fixtures.                                                  |
 | `packages/waffle/tooling/`   | Size gate, quality probes, benchmark and storage tooling.                                  |
-| `site/`      | The landing page. It has its own `package.json` and [README](../site/README.md).           |
-| `docs/`      | These docs. [The index](README.md) maps them by kind.                                      |
-| `.internal/` | Working notes. Not user documentation.                                                     |
+| `site/`                      | The landing page. It has its own `package.json` and [README](../site/README.md).           |
+| `docs/`                      | These docs. [The index](README.md) maps them by kind.                                      |
+| `.internal/`                 | Working notes. Not user documentation.                                                     |
 
 ## Change the docs
 
