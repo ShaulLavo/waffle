@@ -205,12 +205,25 @@ function nativeRoot(devices: Set<GPUDevice>): object | undefined {
       if (!adapter) return null;
       return {
         async requestDevice(descriptor?: GPUDeviceDescriptor) {
-          const device = await adapter.requestDevice(descriptor);
-          devices.add(device);
-          void device.lost.then(() => devices.delete(device));
-          return device;
+          return trackNativeDevice(await adapter.requestDevice(descriptor), devices);
         },
       };
     },
   };
+}
+
+function trackNativeDevice(device: GPUDevice, devices: Set<GPUDevice>): GPUDevice {
+  const destroy = device.destroy;
+  Object.defineProperty(device, "destroy", {
+    configurable: true,
+    writable: true,
+    value(this: GPUDevice) {
+      const result: unknown = Reflect.apply(destroy, this, []);
+      devices.delete(this);
+      return result;
+    },
+  });
+  devices.add(device);
+  void device.lost.then(() => devices.delete(device));
+  return device;
 }
