@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, type Browser } from "playwright";
@@ -93,7 +94,7 @@ try {
   tab.on("console", (message) => {
     if (message.type() === "error") console.error(`[page] ${message.text()}`);
   });
-  await tab.goto(`http://127.0.0.1:${server.port}/`);
+  await navigateTestPage(tab, `http://127.0.0.1:${server.port}/`);
   const report = await tab.evaluate(async () => {
     const tests = (await import(
       "/memory-group-browser.js" as string

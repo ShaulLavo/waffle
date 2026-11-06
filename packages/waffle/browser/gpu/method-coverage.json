@@ -164,9 +164,17 @@
     {
       "name": "command_encoder.begin_compute_pass",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit begin_compute_pass recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Begin an optional compute-pass descriptor with timestamp sentinel adaptation and retain its pass identity across bounded replay slices.",
+      "call": {
+        "opcode": 35,
+        "context": "encoder",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "beginComputePass",
+          "descriptor": "compute_pass_descriptor"
+        }
+      }
     },
     {
       "name": "command_encoder.begin_render_pass",
@@ -262,72 +270,146 @@
     {
       "name": "compute_pass_encoder.insert_debug_marker",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add insert_debug_marker to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Insert the pinned UTF-8 compute marker label on the current native compute pass.",
+      "call": {
+        "opcode": 36,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.pop_debug_group",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add pop_debug_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Pop the current compute debug group and leave balance validation to native WebGPU.",
+      "call": {
+        "opcode": 37,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.push_debug_group",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add push_debug_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Push the pinned UTF-8 group label on the current native compute pass.",
+      "call": {
+        "opcode": 38,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_pipeline",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add set_pipeline to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Resolve a compute-pipeline handle and bind its exact native identity on the current compute pass.",
+      "call": {
+        "opcode": 39,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_bind_group",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add set_bind_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind a native group or explicit null with the original group index and u32 dynamic-offset array.",
+      "call": {
+        "opcode": 40,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_immediates",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add explicit compute_pass_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Replace the C data pointer and size with one byte span; pass the exact byte offset and Uint8Array to native setImmediates.",
+      "call": {
+        "opcode": 41,
+        "context": "pass",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.dispatch_workgroups",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add dispatch_workgroups to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Dispatch the pinned three u32 workgroup counts without defaulting zero counts or changing their order.",
+      "call": {
+        "opcode": 42,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "dispatchWorkgroups"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.dispatch_workgroups_indirect",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add dispatch_workgroups_indirect to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Dispatch through the exact native indirect buffer and checked safe-number u64 byte offset.",
+      "call": {
+        "opcode": 43,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "dispatchWorkgroupsIndirect"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.end",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add end to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "End the native compute pass and return resumable replay to encoder context.",
+      "call": {
+        "opcode": 44,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "end"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign compute_pass_encoder.label through an explicit ordered lowering; compute_pass_encoder label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Assign the pinned label string to the native compute-pass label property, not a fictional method.",
+      "call": {
+        "opcode": 45,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "label"
+        }
+      }
     },
     {
       "name": "compute_pipeline.get_bind_group_layout",
@@ -405,9 +487,17 @@
     {
       "name": "device.create_compute_pipeline",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_compute_pipeline descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create a synchronous native compute pipeline with explicit or automatic layout, checked shader identity and constant-record adaptation.",
+      "call": {
+        "opcode": 34,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createComputePipeline",
+          "descriptor": "compute_pipeline_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_compute_pipeline_async",

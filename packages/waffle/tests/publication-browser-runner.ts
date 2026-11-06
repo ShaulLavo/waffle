@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 
@@ -30,7 +31,7 @@ async function run(name: string, origin: string): Promise<void> {
     const page = await browser.newPage();
     page.on("console", (message) => console.log(message.text()));
     await installDeathObserver(page);
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const passed = await page.evaluate(async (workspace) => {
       const path = "/tests.js";
       if (workspace) {

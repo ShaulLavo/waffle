@@ -42,7 +42,7 @@ export default {
         "scripts/c-threads-fixture-producer.test.ts",
         "tests/c-threads-packet-runner.ts",
         "tooling/check-network-rust.ts",
-        "tests/{storage,storage-lock,process-recycling,network,notification,notification-race,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
+        "tests/{browser-navigation,storage,storage-lock,process-recycling,network,notification,notification-race,publication,publication-cross-tab,filesystem-transport,search-executor,search-program,guest-watch}-browser-runner.ts",
         "tests/search-executor-browser.ts",
         "tests/search-program-browser.ts",
         "search/{search,shard}-worker.ts",

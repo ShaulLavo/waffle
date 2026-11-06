@@ -46,7 +46,7 @@ static void append(void) {
   writer.offset = 0;
 }
 static uint32_t next_token(void) {
-  return ++token; /* This bounded fixture issues fewer than thirty-two tokens. */
+  return ++token; /* The bounded fixture modes never approach uint32 rollover. */
 }
 static void expect_handle(const uint8_t *p, uint32_t id) {
   if (gpu_read_u32(p) != id || gpu_read_u32(p + 4) != 1) fail("reply-handle", -28);

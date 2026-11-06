@@ -1,4 +1,5 @@
 import { driverResponseLimit } from "./safari-driver.js";
+import { navigateTestPage } from "../browser-navigation.js";
 import { dirname } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
@@ -43,7 +44,7 @@ export class PlaywrightDriver implements Driver {
   async navigate(url: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     try {
-      await this.current().goto(url, { timeout: 15_000 });
+      await navigateTestPage(this.current(), url, { timeout: 15_000 });
     } catch (error) {
       this.uncertain = true;
       throw error;
