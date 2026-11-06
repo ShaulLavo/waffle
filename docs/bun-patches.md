@@ -41,6 +41,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/gpu/upstream/{webgpu.yml,LICENSE}`                                                                                           | Unchanged copy        | webgpu-native/webgpu-headers `webgpu.yml` and root `LICENSE` at `a1dc77409bb2b8bd80540cbf4b8db219e123e909`, BSD-3-Clause. Exact hashes are checked by the generator.                                                                                                                                                                                                                                                         |
 | `browser/gpu/generated/tables.ts`, `tests/fixtures/gpu/waffle_gpu_stream.h`                                                           | Mechanical derivation | Selected C signatures, descriptor order and numeric enums from the same pinned YAML. Original Waffle opcodes, wire alignment, named lowering metadata and C writer helpers are added explicitly.                                                                                                                                                                                                                             |
 | `browser/gpu/stream.json`, `tooling/gpu-stream*.ts`, `tests/gpu-stream.test.ts`, `tests/fixtures/gpu/{expected,enums}.json`           | Original adapter      | Explicit triangle selection, C-to-browser policy, schema tooling and independent expected bytes. No browser implementation or WebGPU IDL enum list copied.                                                                                                                                                                                                                                                                   |
+| `browser/gpu/method-coverage.json`                                                                                                    | Mechanical derivation | Individual object method and global function names from the pinned webgpu-headers YAML above, BSD-3-Clause. Coverage categories, pending slices, reasons and selected-call metadata are original Waffle policy; no method implementations copied.                                                                                                                                                                            |
 
 ## GNU diffutils
 
@@ -470,3 +471,14 @@ The independent expected-byte and enum files were written against the corrected 
 and the pinned upstream C declarations before any replay implementation. `check:gpu-stream`
 checks both generated outputs and hashes the YAML, license, selection, generator, layout tooling
 and independent fixture inputs. This foundation activates no runtime GPU capability.
+
+## GPU method coverage classification
+
+`packages/waffle/browser/gpu/method-coverage.json` mechanically derives method and global function
+names from `webgpu-native/webgpu-headers/webgpu.yml` at
+`a1dc77409bb2b8bd80540cbf4b8db219e123e909`, under the adjacent BSD-3-Clause license.
+The per-declaration classifications, reasons, pending slices and selected-call metadata are
+original Waffle policy. `tooling/gpu-coverage.ts` and `tests/gpu-coverage.test.ts` are original
+validation adapters. They parse the pinned YAML with Bun, reject missing or stale entries and
+compare selected calls with the existing stream and generated lowering metadata. They copy no
+WebGPU implementation and implement no future C client.
