@@ -9,48 +9,11 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { fairnessCases } from "./gpu-fairness-browser.js";
+import { invoke, pixels, assertTrianglePixels, assertRetired } from "./gpu-browser-shared.js";
 import type { Page } from "playwright";
 
 const fixture = resolve(process.env.GPU_FIXTURE_DIR ?? ".build/gpu-fixture", "triangle.wasm");
-async function invoke(page: Page, name: string, args: unknown[] = []) {
-  return page.evaluate(
-    async ({ name, args }) => {
-      const path = "/integration-page.js";
-      const module = await import(path);
-      return module[name](...args);
-    },
-    { name, args },
-  );
-}
-async function pixels(page: Page, slot = 0) {
-  // ImageBitmap reaches its placeholder at a worker rendering update, not the reply task.
-  await page.waitForTimeout(100);
-  const png = await page.locator(`#triangle-${slot}`).screenshot();
-  return page.evaluate(async (bytes) => {
-    const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: "image/png" }));
-    const canvas = new OffscreenCanvas(64, 64),
-      context = canvas.getContext("2d")!;
-    context.drawImage(image, 0, 0);
-    image.close();
-    return {
-      center: Array.from(context.getImageData(32, 32, 1, 1).data),
-      left: Array.from(context.getImageData(20, 32, 1, 1).data),
-      right: Array.from(context.getImageData(44, 32, 1, 1).data),
-      corner: Array.from(context.getImageData(1, 1, 1, 1).data),
-    };
-  }, Array.from(png));
-}
-function assertTrianglePixels(
-  value: { center: number[]; corner: number[] },
-  colour = "red",
-  background = [0, 0, 0, 255],
-) {
-  const expected = colour === "green" ? [0, 255, 0, 255] : [255, 0, 0, 255];
-  const close = (actual: number[], wanted: number[]) =>
-    actual.length === 4 && actual.every((byte, at) => Math.abs(byte - wanted[at]!) <= 8);
-  if (!close(value.center, expected) || !close(value.corner, background))
-    throw new Error(`Compiled guest pixel failure: ${JSON.stringify(value)}`);
-}
 async function marker(page: Page, text: string, slot = 0) {
   const deadline = Date.now() + 20000;
   let observed: unknown;
@@ -396,24 +359,6 @@ function assertControlAccounting(snapshot: {
     throw new Error(`GPU fixed backing charge missing: ${JSON.stringify(controls)}`);
 }
 
-function assertRetired(value: unknown) {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("connections" in value) ||
-    value.connections !== 0 ||
-    !("devicesLive" in value) ||
-    value.devicesLive !== 0 ||
-    !("heapBytes" in value) ||
-    value.heapBytes !== 0 ||
-    !("frameTexturesLive" in value) ||
-    value.frameTexturesLive !== 0 ||
-    !("presentCanvasesLive" in value) ||
-    value.presentCanvasesLive !== 0
-  )
-    throw new Error(`GPU service retained guest resources: ${JSON.stringify(value)}`);
-}
-
 /** The CI lane requires the designated software adapter, not a silent hardware fallback. */
 export function requireIntegrationAdapter(
   engine: "chromium" | "firefox" | "webkit",
@@ -469,6 +414,8 @@ async function main() {
       await page.goto(url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const fairness = await fairnessCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "fairness", fairness }));
       const scenes = await sceneCases(page, url, available);
       await page.goto(url);
       const guest = available ? await guestCase(page) : await unsupportedCase(page, "gpu");
@@ -499,6 +446,7 @@ async function main() {
           qualification,
           guest,
           scenes,
+          fairness,
           negative,
           held,
           forged,

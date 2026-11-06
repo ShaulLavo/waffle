@@ -1,3 +1,4 @@
+import { installFairnessObserver } from "./fairness-observer.js";
 import { GpuService } from "../../../browser/gpu/service.js";
 import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { pressureBurst } from "./qualification-contract.js";
@@ -7,6 +8,7 @@ const host = globalThis as unknown as {
 };
 const params = new URL(location.href).searchParams;
 const hold = params.get("hold");
+const fairness = hold === "fairness" ? installFairnessObserver() : undefined;
 const gate = Promise.withResolvers<void>();
 let held: string | undefined;
 let delayedOpen: Extract<GpuServiceRequest, { type: "open" }> | undefined;
@@ -44,9 +46,24 @@ const service = new GpuService((message) => host.postMessage(message), {
   root,
   suppressTransfer: params.get("suppress") === "1",
 });
-const snapshot = () => ({ ...service.snapshot(), held, lateCreated, lateDestroyed });
+const snapshot = () => ({
+  ...service.snapshot(),
+  held,
+  lateCreated,
+  lateDestroyed,
+  fairness: fairness?.snapshot(),
+});
 host.onmessage = ({ data }) => {
   if ("test" in data) {
+    if (data.test === "fairness-arm") {
+      try {
+        const coverage = fairness?.arm();
+        host.postMessage({ testId: data.id, gpuSnapshot: { ...snapshot(), coverage } });
+      } catch (error) {
+        host.postMessage({ testId: data.id, gpuSnapshot: { observerError: String(error) } });
+      }
+      return;
+    }
     if (data.test === "pressure") pressureBurst();
     if (data.test === "release") {
       gate.resolve();

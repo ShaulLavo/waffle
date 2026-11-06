@@ -45,9 +45,28 @@ static int pause_acquired;
 static int repeat_acquire;
 static int discard_after_first;
 static int expired_frame_use;
+enum { FAIRNESS_NONE, FAIRNESS_HEAVY, FAIRNESS_PEER, FAIRNESS_SEEDED };
+static int fairness;
+static uint32_t fairness_seed;
+#define FAIRNESS_DRAWS 200000u
+#define FAIRNESS_FRAMES 3u
+
+static uint32_t parse_seed(const char *text) {
+  char *end;
+  unsigned long value = strtoul(text, &end, 10);
+  if (!*text || *end || value > 65535) fail("fairness-seed", -28);
+  return (uint32_t)value;
+}
 
 static void options(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--fairness-heavy")) { fairness = FAIRNESS_HEAVY; continue; }
+    if (!strcmp(argv[i], "--fairness-peer")) { fairness = FAIRNESS_PEER; continue; }
+    if (!strcmp(argv[i], "--fairness-seed") && i + 1 < argc) {
+      fairness = FAIRNESS_SEEDED;
+      fairness_seed = parse_seed(argv[++i]);
+      continue;
+    }
     if (!strcmp(argv[i], "--repeat-acquire")) { repeat_acquire = 1; continue; }
     if (!strcmp(argv[i], "--discard-after-first-frame")) { discard_after_first = 1; continue; }
     if (!strcmp(argv[i], "--expired-frame-use")) { expired_frame_use = 1; continue; }
@@ -161,6 +180,103 @@ static void expired_use(const GpuFixtureFrame *presented) {
   puts("GPU_STAGE after-expired-validation connection=ready");
 }
 
+static void fairness_retire(const GpuFixtureFrame *frame) {
+  release_frame_objects(frame);
+  gpu_release(&writer, WAFFLE_GPU_OBJECT_TEXTURE, frame->texture);
+  append();
+  scope_barrier();
+}
+static void fairness_large_blob(const GpuFixtureFrame *frame) {
+  const size_t capacity = (size_t)FAIRNESS_DRAWS * 24 + 512;
+  uint8_t *blob = malloc(capacity);
+  if (!blob) fail("fairness-allocation", -48);
+  WaffleGpuWriter large = {blob, capacity, 0, 0};
+  size_t start = waffle_gpu_begin(&large, WAFFLE_GPU_OP_ENCODE);
+  gpu_object(&large, frame->encoder);
+  waffle_gpu_u32(&large, 0);
+  WaffleGpuWriter nested = {blob + large.offset, capacity - large.offset, 0, 0};
+  const double clear[4] = {0, 0, 0, 1};
+  gpu_render_begin(&nested, frame, WAFFLE_GPU_ENUM_LOAD_OP_CLEAR, clear);
+  size_t pipeline = waffle_gpu_begin(&nested, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_SET_PIPELINE);
+  gpu_object(&nested, PIPELINE);
+  waffle_gpu_end(&nested, pipeline);
+  for (uint32_t draw = 0; draw < FAIRNESS_DRAWS; ++draw) gpu_draw(&nested);
+  gpu_render_end(&nested, frame);
+  uint32_t length = (uint32_t)nested.offset;
+  for (unsigned byte = 0; byte < 4; ++byte) blob[16 + byte] = (uint8_t)(length >> (byte * 8));
+  large.offset += nested.offset;
+  waffle_gpu_end(&large, start);
+  if (nested.error || large.error || large.offset <= 4 * 1024 * 1024) fail("fairness-blob-size", -28);
+  printf("GPU_FAIRNESS_BLOB draws=%u bytes=%u appends=1\n", FAIRNESS_DRAWS, (unsigned)large.offset);
+  check("fairness-append", runtime_gpu_append(connection, blob, (uint32_t)large.offset));
+  free(blob);
+  puts("GPU_FAIRNESS_PUBLISHED");
+}
+static void fairness_heavy(void) {
+  GpuFixtureFrame frame = gpu_frame(TEXTURE);
+  gpu_created(&writer, WAFFLE_GPU_OP_TEXTURE_CREATE_VIEW, frame.view, frame.texture);
+  gpu_created(&writer, WAFFLE_GPU_OP_DEVICE_CREATE_COMMAND_ENCODER, frame.encoder, DEVICE);
+  append();
+  scope_barrier();
+  wait_stdin("fairness-heavy-ready");
+  fairness_large_blob(&frame);
+  scope_barrier();
+  puts("GPU_FAIRNESS_REPLAYED draws=200000");
+  gpu_submit_frame(&writer, &frame);
+  finish_scope(WAFFLE_GPU_ENUM_ERROR_TYPE_NO_ERROR);
+  present_frame(1, colour);
+  wait_stdin("frame");
+}
+static int fairness_peer_input(unsigned frame) {
+  printf("GPU_WAIT_STDIN stage=fairness-peer frame=%u\n", frame);
+  char byte = 0;
+  ssize_t count = read(STDIN_FILENO, &byte, 1);
+  if (count != 1) fail("fairness-peer-stdin", -28);
+  return byte != 'q';
+}
+static void fairness_peer(void) {
+  for (unsigned index = 0; index < 256; ++index) {
+    GpuFixtureFrame frame = gpu_frame(index ? 64 + index * 8 : TEXTURE);
+    if (index) { gpu_push_scope(&writer); acquire_frame(frame.texture); }
+    const double clear[4] = {0, 0, 0, 1};
+    encode_frame(&frame, WAFFLE_GPU_ENUM_LOAD_OP_CLEAR, clear, 1);
+    finish_scope(WAFFLE_GPU_ENUM_ERROR_TYPE_NO_ERROR);
+    present_frame(index + 1, colour);
+    fairness_retire(&frame);
+    if (!fairness_peer_input(index + 1)) return;
+  }
+  fail("fairness-peer-bound", -48);
+}
+static void fairness_checkpoint(unsigned frame, const char *stage) {
+  printf("GPU_FAIRNESS_CHECKPOINT seed=%u frame=%u stage=%s\n", fairness_seed, frame, stage);
+  wait_stdin(stage);
+}
+static void fairness_seeded(void) {
+  for (unsigned index = 0; index < FAIRNESS_FRAMES; ++index) {
+    GpuFixtureFrame frame = gpu_frame(index ? 64 + index * 8 : TEXTURE);
+    if (index) { gpu_push_scope(&writer); acquire_frame(frame.texture); }
+    fairness_checkpoint(index + 1, "seed-acquired");
+    gpu_created(&writer, WAFFLE_GPU_OP_TEXTURE_CREATE_VIEW, frame.view, frame.texture);
+    gpu_created(&writer, WAFFLE_GPU_OP_DEVICE_CREATE_COMMAND_ENCODER, frame.encoder, DEVICE);
+    append();
+    scope_barrier();
+    fairness_checkpoint(index + 1, "seed-view");
+    double clear[4] = {(double)((fairness_seed + index * 17) % 64) / 255.0,
+      (double)((fairness_seed * 3 + index * 11) % 64) / 255.0,
+      (double)((fairness_seed * 7 + index * 5) % 64) / 255.0, 1};
+    gpu_encode_frame(&writer, &frame, WAFFLE_GPU_ENUM_LOAD_OP_CLEAR, clear, 1);
+    append();
+    scope_barrier();
+    fairness_checkpoint(index + 1, "seed-encoded");
+    gpu_submit_frame(&writer, &frame);
+    finish_scope(WAFFLE_GPU_ENUM_ERROR_TYPE_NO_ERROR);
+    fairness_checkpoint(index + 1, "seed-submitted");
+    present_frame(index + 1, colour);
+    fairness_retire(&frame);
+    fairness_checkpoint(index + 1, "seed-presented");
+  }
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
@@ -168,6 +284,13 @@ int main(int argc, char **argv) {
   uint32_t width, height;
   uint32_t surface_id = fixture_open(&width, &height);
   resources(surface_id, width, height);
+  if (fairness) {
+    if (fairness == FAIRNESS_HEAVY) fairness_heavy();
+    if (fairness == FAIRNESS_PEER) fairness_peer();
+    if (fairness == FAIRNESS_SEEDED) fairness_seeded();
+    fixture_close();
+    return 0;
+  }
   if (split) {
     for (int i = 0; i < 3; ++i) {
       scope_barrier();
