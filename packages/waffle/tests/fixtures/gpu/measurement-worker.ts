@@ -33,7 +33,12 @@ async function openDevice() {
     value: {
       adapterMs,
       deviceMs: performance.now() - requested,
-      info: { vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description },
+      info: {
+        vendor: adapter.info.vendor,
+        architecture: adapter.info.architecture,
+        device: adapter.info.device,
+        description: adapter.info.description,
+      },
       limits: Object.fromEntries(Array.from(limitKeys, (key) => [key, device!.limits[key]])),
       features: Array.from(device.features),
       devicesLive: 1,
@@ -154,6 +159,15 @@ function imageTrial(
     totalMs: consumed - before,
   };
 }
+function primeImageTarget(width: number, height: number, sink: ImageBitmapRenderingContext) {
+  const baseline = new OffscreenCanvas(width, height);
+  const context = baseline.getContext("2d");
+  if (!context) throw new Error("Negative-control baseline context unavailable");
+  context.fillStyle = "red";
+  context.fillRect(0, 0, width, height);
+  sink.transferFromImageBitmap(baseline.transferToImageBitmap());
+  baseline.width = baseline.height = 1;
+}
 async function images(request: Extract<MeasurementRequest, { kind: "image" }>) {
   const gpu = requireDevice();
   const { width, height, options, suppress } = request;
@@ -165,6 +179,7 @@ async function images(request: Extract<MeasurementRequest, { kind: "image" }>) {
     throw new Error("Worker WebGPU OffscreenCanvas/bitmaprenderer unavailable");
   canvasesLive += 2;
   try {
+    primeImageTarget(width, height, sink);
     context.configure({
       device: gpu,
       format: navigator.gpu.getPreferredCanvasFormat(),
@@ -198,27 +213,51 @@ async function images(request: Extract<MeasurementRequest, { kind: "image" }>) {
     canvasesLive -= 2;
   }
 }
+let wakeState: { cells: Int32Array; started: number; notified: number } | undefined;
+function notifyWaiter() {
+  if (!wakeState) throw new Error("No armed measurement wait");
+  wakeState.started = performance.now();
+  Atomics.store(wakeState.cells, 0, 1);
+  wakeState.notified = Atomics.notify(wakeState.cells, 0);
+}
 async function wait(request: Extract<MeasurementRequest, { kind: "wait" }>) {
   if (typeof Atomics.waitAsync !== "function") throw new Error("Atomics.waitAsync unavailable");
   const cells = new Int32Array(request.control, 0, 2);
+  const negative = Atomics.waitAsync(cells, 0, 1, request.timeoutMs);
+  if (negative.async || negative.value !== "not-equal")
+    throw new Error("waitAsync not-equal control failed");
+  const state = { cells, started: 0, notified: 0 };
+  wakeState = state;
   const pending = Atomics.waitAsync(cells, 0, 0, request.timeoutMs);
   globalThis.postMessage({ kind: "armed", async: pending.async });
-  const result = await pending.value;
-  const elapsedMs =
-    performance.timeOrigin + performance.now() - new Float64Array(request.control, 8, 1)[0]!;
-  return { async: pending.async, result, elapsedMs, notified: Atomics.load(cells, 1) };
+  try {
+    const result = await pending.value;
+    return {
+      negativeControl: "not-equal",
+      async: pending.async,
+      result,
+      elapsedMs: request.notifier === "worker" ? performance.now() - state.started : undefined,
+      notified: state.notified,
+    };
+  } finally {
+    wakeState = undefined;
+  }
 }
 async function checkedGpu<T>(operation: () => Promise<T>): Promise<T> {
   const gpu = requireDevice();
   gpu.pushErrorScope("validation");
+  gpu.pushErrorScope("out-of-memory");
+  gpu.pushErrorScope("internal");
   const outcome = await measure(operation);
-  const error = await gpu.popErrorScope();
+  const errors = await Promise.all([gpu.popErrorScope(), gpu.popErrorScope(), gpu.popErrorScope()]);
   if (outcome.kind !== "measured") throw new Error(outcome.reason);
-  if (error) throw new Error(error.message);
+  if (errors.some(Boolean)) throw new Error(errors.map((error) => error?.message).join("; "));
   return outcome.value;
 }
 async function dispatch(request: MeasurementRequest): Promise<unknown> {
   switch (request.kind) {
+    case "notify":
+      throw new Error("Notification commands must use the outstanding wait handler");
     case "probe":
       return probeWorkerGpu();
     case "device":
@@ -246,9 +285,18 @@ async function dispatch(request: MeasurementRequest): Promise<unknown> {
 }
 globalThis.onmessage = (event: MessageEvent<unknown>) => {
   void Promise.resolve()
-    .then(() => dispatch(measurementRequest(event.data)))
+    .then(() => {
+      const request = measurementRequest(event.data);
+      if (request.kind === "notify") {
+        notifyWaiter();
+        return undefined;
+      }
+      return dispatch(request);
+    })
     .then(
-      (value) => globalThis.postMessage({ kind: "reply", value }),
+      (value) => {
+        if (value !== undefined) globalThis.postMessage({ kind: "reply", value });
+      },
       (error: unknown) => globalThis.postMessage({ kind: "failure", error: String(error) }),
     );
 };

@@ -97,7 +97,10 @@ async function runtimeMeasurements(controller: Controller, options: MeasurementO
     await controller.call("runtime", "closeMeasuredTriangle");
   }
 }
-async function collect(controller: Controller, options: MeasurementOptions): Promise<Record<string, unknown>> {
+async function collect(
+  controller: Controller,
+  options: MeasurementOptions,
+): Promise<Record<string, unknown>> {
   const report = qualificationRecord(await controller.call("page", "runGpuMeasurement", [options]));
   const runtime =
     options.runtimeFixture && nativeDevice(report)
@@ -168,7 +171,7 @@ async function webdriver(
   const init: RequestInit = {
     method,
     headers: { "content-type": "application/json" },
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(method === "DELETE" || path === "/session" ? 10_000 : 120_000),
   };
   if (body !== undefined) init.body = JSON.stringify(body);
   const response = await fetch(`${driver}${path}`, init);
@@ -187,15 +190,55 @@ export function desktopSafariCapabilities(value: unknown) {
     throw new Error("Expected actual desktop macOS Safari WebDriver capabilities");
   return capabilities;
 }
-async function runSafari(driver: string, url: string, options: MeasurementOptions) {
-  const session = qualificationRecord(
-    await webdriver(driver, "/session", {
-      capabilities: { alwaysMatch: { browserName: "safari", platformName: "mac" } },
-    }),
-  );
-  if (typeof session.sessionId !== "string" || !session.sessionId)
-    throw new Error("WebDriver session ID missing");
-  const path = `/session/${encodeURIComponent(session.sessionId)}`;
+/** Adds one WebDriver session to the existing runner's signal/deadline cleanup. */
+export class SafariMeasurementLifecycle extends BrowserRunnerLifecycle {
+  private session?: Promise<{ driver: string; path: string; capabilities: unknown }>;
+  private closingSafari?: Promise<void>;
+  private closing?: Promise<void>;
+  openSafari(driver: string) {
+    if (this.session || this.closing)
+      throw new Error("Safari measurement lifecycle is not available");
+    this.session = webdriver(driver, "/session", {
+      capabilities: { alwaysMatch: { browserName: "safari" } },
+    }).then((value) => {
+      const session = qualificationRecord(value);
+      if (typeof session.sessionId !== "string" || !session.sessionId)
+        throw new Error("WebDriver session ID missing");
+      return {
+        driver,
+        path: `/session/${encodeURIComponent(session.sessionId)}`,
+        capabilities: session.capabilities,
+      };
+    });
+    return this.session;
+  }
+  closeSafari(): Promise<void> {
+    return (this.closingSafari ??= this.stopSafari());
+  }
+  private async stopSafari() {
+    const session = await this.session;
+    if (session) await webdriver(session.driver, session.path, undefined, "DELETE");
+  }
+  override close(): Promise<void> {
+    return (this.closing ??= this.cleanupSafari());
+  }
+  private async cleanupSafari() {
+    const outcomes = await Promise.allSettled([this.closeSafari(), super.close()]);
+    const failures = outcomes.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length) throw new AggregateError(failures, "Safari measurement cleanup failed");
+  }
+}
+/** Only an owned desktop Safari session is driven; no browser preferences are changed. */
+export async function runGpuMeasurementSafari(
+  runner: SafariMeasurementLifecycle,
+  driver: string,
+  url: string,
+  options: MeasurementOptions,
+) {
+  const session = await runner.openSafari(driver);
+  const path = session.path;
   try {
     const capabilities = desktopSafariCapabilities(session.capabilities);
     await webdriver(driver, `${path}/timeouts`, { script: 120_000 });
@@ -221,7 +264,7 @@ async function runSafari(driver: string, url: string, options: MeasurementOption
     };
     return { engine: "desktop-safari", capabilities, report: await collect(controller, options) };
   } finally {
-    await webdriver(driver, path, undefined, "DELETE");
+    await runner.closeSafari();
   }
 }
 /** Prepare a dependency-free Safari packet. BrowserRunnerLifecycle still owns server/scratch/signals.
@@ -283,8 +326,23 @@ function argument(args: readonly string[], flag: string): string | undefined {
   if (!value || value.startsWith("--")) throw new Error(`Expected ${flag} value`);
   return value;
 }
+function validateArguments(args: readonly string[]) {
+  const values = ["--prepare", "--packet", "--safari", "--trials", "--extra-workers", "--engine"];
+  const switches = ["--runtime", "--software"];
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index]!;
+    if (seen.has(flag)) throw new Error(`Duplicate measurement option: ${flag}`);
+    seen.add(flag);
+    if (switches.includes(flag)) continue;
+    if (!values.includes(flag)) throw new Error(`Unknown measurement option: ${flag}`);
+    argument(args, flag);
+    index++;
+  }
+}
 async function main() {
   const args = process.argv.slice(2);
+  validateArguments(args);
   const prepare = argument(args, "--prepare"),
     packet = argument(args, "--packet"),
     safari = argument(args, "--safari");
@@ -294,6 +352,8 @@ async function main() {
     extraWorkers: Number(argument(args, "--extra-workers") ?? 2),
     runtimeFixture: args.includes("--runtime"),
   });
+  if (prepare && (packet || safari || args.includes("--software")))
+    throw new Error("--prepare cannot also run a browser");
   if (prepare) {
     await prepareGpuMeasurement(resolve(prepare), options, process.env.GPU_FIXTURE_DIR);
     return;
@@ -302,9 +362,11 @@ async function main() {
     throw new Error("Prepared packet requires --safari with a task-owned running SafariDriver URL");
   const software = args.includes("--software");
   if (safari && software) throw new Error("Safari cannot use --software SwiftShader mode");
-  const runner = software
-    ? new GpuQualificationLifecycle(300_000)
-    : new BrowserRunnerLifecycle(300_000);
+  const runner = safari
+    ? new SafariMeasurementLifecycle(300_000)
+    : software
+      ? new GpuQualificationLifecycle(300_000)
+      : new BrowserRunnerLifecycle(300_000);
   const reports: unknown[] = [];
   let cleanup = "completed";
   try {
@@ -334,7 +396,8 @@ async function main() {
         qualification: false,
       }),
     );
-    if (safari) reports.push(await runSafari(safari, url, activeOptions));
+    if (safari && runner instanceof SafariMeasurementLifecycle)
+      reports.push(await runGpuMeasurementSafari(runner, safari, url, activeOptions));
     else {
       const engine = qualificationEngine(argument(args, "--engine") ?? "chromium");
       reports.push(await runGpuMeasurementBrowser(runner, engine, url, activeOptions));

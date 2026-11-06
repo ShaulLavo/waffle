@@ -89,21 +89,39 @@ export function assertWake(value: unknown): number {
 }
 export type MeasurementRequest =
   | { kind: "probe" }
+  | { kind: "notify" }
   | { kind: "device" }
   | { kind: "upload"; options: MeasurementOptions; corrupt: boolean }
   | { kind: "image"; options: MeasurementOptions; width: number; height: number; suppress: boolean }
-  | { kind: "wait"; control: SharedArrayBuffer; timeoutMs: number }
+  | { kind: "wait"; control: SharedArrayBuffer; timeoutMs: number; notifier: "page" | "worker" }
   | { kind: "dispose" };
 export function measurementRequest(value: unknown): MeasurementRequest {
   const entry = qualificationRecord(value);
-  if (entry.kind === "probe" || entry.kind === "device" || entry.kind === "dispose")
+  if (
+    entry.kind === "probe" ||
+    entry.kind === "device" ||
+    entry.kind === "dispose" ||
+    entry.kind === "notify"
+  )
     return { kind: entry.kind };
   if (entry.kind === "wait") {
     if (!(entry.control instanceof SharedArrayBuffer) || entry.control.byteLength !== 16)
       throw new Error("Expected 16-byte shared wake control");
-    if (typeof entry.timeoutMs !== "number" || entry.timeoutMs < 1 || entry.timeoutMs > 30_000)
+    if (
+      typeof entry.timeoutMs !== "number" ||
+      !Number.isFinite(entry.timeoutMs) ||
+      entry.timeoutMs < 1 ||
+      entry.timeoutMs > 30_000
+    )
       throw new Error("Invalid wait timeout");
-    return { kind: entry.kind, control: entry.control, timeoutMs: entry.timeoutMs };
+    if (entry.notifier !== "page" && entry.notifier !== "worker")
+      throw new Error("Invalid notifier realm");
+    return {
+      kind: entry.kind,
+      control: entry.control,
+      timeoutMs: entry.timeoutMs,
+      notifier: entry.notifier,
+    };
   }
   const options = measurementOptions(entry.options);
   if (entry.kind === "upload" && typeof entry.corrupt === "boolean")

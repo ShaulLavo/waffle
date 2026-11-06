@@ -10,6 +10,8 @@ import {
   measurementFailed,
   desktopSafariCapabilities,
   prepareGpuMeasurement,
+  SafariMeasurementLifecycle,
+  runGpuMeasurementSafari,
 } from "../tooling/gpu-measure.js";
 import {
   assertImagePixel,
@@ -166,7 +168,7 @@ for (const engine of ["chromium", "firefox", "webkit"] as const)
         const result = await runGpuMeasurementBrowser(runner, engine, url, options);
         expect(result.report.schema).toBe("waffle-gpu-measure-v1");
         expect(result.report.cleanup).toEqual({ workersLive: 0 });
-        expect(measurementFailed(result)).toBe(false);
+        expect(measurementFailed(result), JSON.stringify(result)).toBe(false);
         if (engine === "chromium") {
           const native = result.report.native;
           expect(native).toHaveProperty("kind", "measured");
@@ -181,3 +183,40 @@ for (const engine of ["chromium", "firefox", "webkit"] as const)
     },
     120_000,
   );
+
+test("Safari capability rejection deletes only the allocated session and closes the shared lifecycle", async () => {
+  const deleted: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (request.method === "DELETE") {
+        deleted.push(path);
+        return Response.json({ value: null });
+      }
+      return Response.json({
+        value: {
+          sessionId: "owned-session",
+          capabilities: { browserName: "Safari", platformName: "iOS" },
+        },
+      });
+    },
+  });
+  const runner = new SafariMeasurementLifecycle(30_000);
+  try {
+    await expect(
+      runGpuMeasurementSafari(
+        runner,
+        `http://127.0.0.1:${server.port}`,
+        "http://127.0.0.1:1",
+        options,
+      ),
+    ).rejects.toThrow("desktop");
+    await runner.close();
+    expect(deleted).toEqual(["/session/owned-session"]);
+  } finally {
+    await runner.close();
+    server.stop(true);
+  }
+});

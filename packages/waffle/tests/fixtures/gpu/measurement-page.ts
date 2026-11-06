@@ -99,45 +99,74 @@ function request(
     }
   });
 }
-async function wake(owner: OwnedWorker, options: MeasurementOptions, notify: boolean) {
+async function wake(
+  owner: OwnedWorker,
+  options: MeasurementOptions,
+  notifier: "page" | "worker",
+): Promise<Record<string, unknown>> {
   const control = new SharedArrayBuffer(16);
   const cells = new Int32Array(control, 0, 2);
-  let notified = 0;
+  let notified = 0,
+    start = 0;
   const reply = qualificationRecord(
     await request(
       owner,
-      { kind: "wait", control, timeoutMs: notify ? options.timeoutMs / 2 : 20 },
+      { kind: "wait", control, timeoutMs: options.timeoutMs / 2, notifier },
       options.timeoutMs,
       () => {
-        new Float64Array(control, 8, 1)[0] = performance.timeOrigin + performance.now();
-        if (!notify) return;
+        start = performance.now();
+        if (notifier === "worker") {
+          owner.worker.postMessage({ kind: "notify" });
+          return;
+        }
         Atomics.store(cells, 0, 1);
         notified = Atomics.notify(cells, 0);
       },
     ),
   );
-  return { ...reply, notified };
+  const roundTripMs = performance.now() - start;
+  return {
+    ...reply,
+    elapsedMs: notifier === "page" ? roundTripMs : reply.elapsedMs,
+    notified: notifier === "page" ? notified : reply.notified,
+  };
 }
 async function wakes(owner: OwnedWorker, options: MeasurementOptions) {
-  const negative = qualificationRecord(await wake(owner, options, false));
-  if (negative.async !== true || negative.result !== "timed-out" || negative.notified !== 0)
-    throw new Error("waitAsync no-notify control failed");
-  const samples: number[] = [];
+  const samples: number[] = [],
+    roundtrips: number[] = [];
   for (let trial = 0; trial < options.warmup + options.trials; trial++) {
-    const elapsed = assertWake(await wake(owner, options, true));
-    if (trial >= options.warmup) samples.push(elapsed);
+    const same = await wake(owner, options, "worker");
+    const cross = await wake(owner, options, "page");
+    if (same.negativeControl !== "not-equal" || cross.negativeControl !== "not-equal")
+      throw new Error("Missing waitAsync negative control");
+    const elapsed = assertWake(same),
+      roundTrip = assertWake(cross);
+    if (trial < options.warmup) continue;
+    samples.push(elapsed);
+    roundtrips.push(roundTrip);
   }
   return {
-    wake: distribution(samples),
-    noNotifyControl: negative.result,
+    sameWorkerNotifyToContinuation: distribution(samples),
+    crossThreadNotifyToReplyUpperBound: distribution(roundtrips),
+    notEqualControl: "not-equal",
     clock:
-      "performance.timeOrigin + performance.now across page and worker; timer precision applies; includes wake dispatch, excludes postMessage arming",
+      "Single-realm performance.now for each distribution. Same-worker excludes arming message; cross-thread includes worker reply postMessage overhead and is an upper bound, not isolated wake latency.",
     notifiedWaitersEachTrial: 1,
   };
 }
 async function closeWorker(owner: OwnedWorker, timeoutMs: number) {
+  if (owner.stopped)
+    return { terminatedOnFailure: true, deviceDestroyAcknowledgement: "unavailable" };
   try {
-    return await request(owner, { kind: "dispose" }, timeoutMs);
+    const value = qualificationRecord(await request(owner, { kind: "dispose" }, timeoutMs));
+    if (
+      value.destroyed !== true ||
+      value.devicesLive !== 0 ||
+      value.buffersLive !== 0 ||
+      value.canvasesLive !== 0
+    )
+      throw new Error(`Native measurement cleanup failed: ${JSON.stringify(value)}`);
+    return value;
   } finally {
     stop(owner);
   }
@@ -166,70 +195,74 @@ async function extraDevices(options: MeasurementOptions) {
     physicalMemory: unavailableMemory(),
   };
 }
-async function nativeMeasurements(options: MeasurementOptions) {
-  const owner = await openWorker(options.timeoutMs);
-  try {
-    const capabilities = await measure(() => request(owner, { kind: "probe" }, options.timeoutMs));
-    const device = qualificationRecord(await request(owner, { kind: "device" }, options.timeoutMs));
-    const wakeLatency =
-      typeof Atomics.waitAsync === "function"
-        ? await measure(() => wakes(owner, options))
-        : { kind: "unsupported", reason: "Atomics.waitAsync unavailable in page" };
-    if (device.kind !== "measured")
-      return {
-        workerStartupMs: owner.startupMs,
-        capabilities,
-        device,
-        wakeLatency,
-        sabUpload: device,
-        image1080p: device,
-        image4k: device,
-      };
-    const sabUpload = await request(
-      owner,
-      { kind: "upload", options, corrupt: false },
-      options.timeoutMs,
-    );
-    const uploadControl = qualificationRecord(
-      await request(owner, { kind: "upload", options, corrupt: true }, options.timeoutMs),
-    );
-    if (
-      uploadControl.kind !== "failed" ||
-      !String(uploadControl.reason).includes("readback differs")
-    )
-      throw new Error("Corrupt-readback negative control did not fail its oracle");
-    const imageControl = qualificationRecord(
-      await request(
-        owner,
-        { kind: "image", options, width: 1920, height: 1080, suppress: true },
-        options.timeoutMs,
-      ),
-    );
-    if (imageControl.kind !== "failed" || !String(imageControl.reason).includes("pixel differs"))
-      throw new Error("Suppressed image transfer negative control did not fail its oracle");
-    const image1080p = await request(
-      owner,
-      { kind: "image", options, width: 1920, height: 1080, suppress: false },
-      options.timeoutMs,
-    );
-    const image4k = await request(
-      owner,
-      { kind: "image", options, width: 3840, height: 2160, suppress: false },
-      options.timeoutMs,
-    );
+async function nativeDeviceMeasurements(owner: OwnedWorker, options: MeasurementOptions) {
+  const capabilities = await measure(() => request(owner, { kind: "probe" }, options.timeoutMs));
+  const device = qualificationRecord(await request(owner, { kind: "device" }, options.timeoutMs));
+  const wakeLatency =
+    typeof Atomics.waitAsync === "function"
+      ? await measure(() => wakes(owner, options))
+      : { kind: "unsupported", reason: "Atomics.waitAsync unavailable in page" };
+  if (device.kind !== "measured")
     return {
       workerStartupMs: owner.startupMs,
       capabilities,
       device,
       wakeLatency,
-      sabUpload,
-      uploadControl,
-      imageControl,
-      image1080p,
-      image4k,
+      sabUpload: device,
+      image1080p: device,
+      image4k: device,
     };
+  const sabUpload = await request(
+    owner,
+    { kind: "upload", options, corrupt: false },
+    options.timeoutMs,
+  );
+  const uploadControl = qualificationRecord(
+    await request(owner, { kind: "upload", options, corrupt: true }, options.timeoutMs),
+  );
+  if (uploadControl.kind !== "failed" || !String(uploadControl.reason).includes("readback differs"))
+    throw new Error("Corrupt-readback negative control did not fail its oracle");
+  const imageControl = qualificationRecord(
+    await request(
+      owner,
+      { kind: "image", options, width: 1920, height: 1080, suppress: true },
+      options.timeoutMs,
+    ),
+  );
+  if (imageControl.kind !== "failed" || !String(imageControl.reason).includes("pixel differs"))
+    throw new Error(
+      `Suppressed image transfer negative control did not fail its oracle: ${JSON.stringify(imageControl)}`,
+    );
+  const image1080p = await request(
+    owner,
+    { kind: "image", options, width: 1920, height: 1080, suppress: false },
+    options.timeoutMs,
+  );
+  const image4k = await request(
+    owner,
+    { kind: "image", options, width: 3840, height: 2160, suppress: false },
+    options.timeoutMs,
+  );
+  return {
+    workerStartupMs: owner.startupMs,
+    capabilities,
+    device,
+    wakeLatency,
+    sabUpload,
+    uploadControl,
+    imageControl,
+    image1080p,
+    image4k,
+  };
+}
+async function nativeMeasurements(options: MeasurementOptions) {
+  const owner = await openWorker(options.timeoutMs);
+  try {
+    const result = await nativeDeviceMeasurements(owner, options);
+    const cleanup = await closeWorker(owner, options.timeoutMs);
+    return { ...result, cleanup };
   } finally {
-    await closeWorker(owner, options.timeoutMs);
+    stop(owner);
   }
 }
 /** @browserEntry */
