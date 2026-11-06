@@ -40,7 +40,7 @@ for (const name of ["browser", "libc"]) {
     );
     const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
     expect(job.if).toBe(
-      `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer}) }}`,
+      `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer})) }}`,
     );
     expect(record(changes.outputs)[name]).toBe(`\${{ steps.paths.outputs.${name} }}`);
   });
@@ -367,10 +367,12 @@ test("package installs share one Bun package-manager cache contract", () => {
   }
 });
 
-test("package and site gates remain unconditional", () => {
+test("package and site gates run for every ready PR", () => {
   for (const name of ["package", "site"]) {
     const job = record(jobs[name]);
-    expect(job.if).toBeUndefined();
+    expect(job.if).toBe(
+      "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}",
+    );
     expect(job.needs).toBe(name === "package" ? "network-wasm" : undefined);
   }
 });
@@ -551,7 +553,7 @@ test("jq has a separate leaf with the shared network artifact prerequisite", () 
   const job = record(jobs.jq);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true')) }}",
   );
   expect(record(changes.outputs).jq).toBe("${{ steps.paths.outputs.jq }}");
   const steps = stepsFor("jq");
@@ -810,7 +812,7 @@ test("diffutils selects its exact integration inputs", () => {
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(record(changes.outputs).diffutils).toBe("${{ steps.paths.outputs.diffutils }}");
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true')) }}",
   );
   for (const path of [
     ".github/workflows/ci.yml",
@@ -996,7 +998,7 @@ test("awk has one bounded leaf using the normal finalizer and verified network b
   const job = record(jobs.awk);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true')) }}",
   );
   expect(record(changes.outputs).awk).toBe("${{ steps.paths.outputs.awk }}");
   expect(job["timeout-minutes"]).toBe(15);
@@ -1080,7 +1082,7 @@ test("procps selects its exact inputs without selecting native work for package-
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true')) }}",
   );
   expect(filters.procps).toEqual([
     ".github/workflows/ci.yml",
@@ -1146,7 +1148,7 @@ test("checksums has a bounded leaf using the existing producer route", () => {
   const job = record(jobs["coreutils-checksums"]);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true')) }}",
   );
   expect(record(changes.outputs).checksums).toBe("${{ steps.paths.outputs.checksums }}");
   expect(job["timeout-minutes"]).toBe(30);

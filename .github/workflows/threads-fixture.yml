@@ -12,6 +12,7 @@ on:
       - "packages/waffle/tests/threads-fixture*.ts"
       - "packages/waffle/tests/fixtures/threads*"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/threads-fixture.yml"
       - "rust-toolchain.toml"
@@ -26,11 +27,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: threads-fixture-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   producer:
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
