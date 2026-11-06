@@ -61,6 +61,7 @@ const SUCCESS = 0;
 const EBADF = 8;
 const EEXIST = 20;
 const EFAULT = 21;
+const EFBIG = 22;
 const EINTR = 27;
 const EINVAL = 28;
 const EIO = 29;
@@ -75,6 +76,11 @@ const ENOTSUP = 58;
 const ENOTSOCK = 57;
 const ESPIPE = 70;
 const ENOTCAPABLE = 76;
+
+const MAX_FILE_SIZE = BigInt(Number.MAX_SAFE_INTEGER);
+function isSupportedFileSize(size: bigint): boolean {
+  return size >= 0n && size <= MAX_FILE_SIZE;
+}
 
 // filetype
 const FT_CHAR = 2;
@@ -794,7 +800,14 @@ export class Wasi {
         RIGHT_FD_ALLOCATE,
         (resource, offset: bigint, len: bigint) => {
           if (resource.kind !== "file") return EINVAL;
-          return this.opts.fs.resize(resource.handle, Number(offset + len), false);
+          const end = offset + len;
+          if (
+            !isSupportedFileSize(offset) ||
+            !isSupportedFileSize(len) ||
+            !isSupportedFileSize(end)
+          )
+            return EFBIG;
+          return this.opts.fs.resize(resource.handle, Number(end), false);
         },
       ),
       fd_close: (fd: number) => (this.descriptors.close(fd) ? SUCCESS : EBADF),
@@ -874,6 +887,7 @@ export class Wasi {
         RIGHT_FD_FILESTAT_SET_SIZE,
         (resource, size: bigint) => {
           if (resource.kind !== "file") return EINVAL;
+          if (!isSupportedFileSize(size)) return EFBIG;
           return this.opts.fs.resize(resource.handle, Number(size), true);
         },
       ),
