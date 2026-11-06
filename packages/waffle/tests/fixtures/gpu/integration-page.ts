@@ -259,7 +259,9 @@ export async function closeIntegration() {
 }
 
 /** @browserEntry */
-export async function serviceCommand(test: "snapshot" | "release" | "pressure" | "fairness-arm") {
+export async function serviceCommand(
+  test: "snapshot" | "release" | "pressure" | "fairness-arm" | "fairness-settled",
+) {
   const worker = workers.find(
     (entry) => entry.url.includes("/gpu/service-worker.ts") && !entry.stopped,
   )?.worker;

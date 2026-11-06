@@ -53,26 +53,30 @@ const snapshot = () => ({
   lateDestroyed,
   fairness: fairness?.snapshot(),
 });
+function armFairness(id: string): void {
+  try {
+    const coverage = fairness?.arm();
+    host.postMessage({ testId: id, gpuSnapshot: { ...snapshot(), coverage } });
+  } catch (error) {
+    host.postMessage({ testId: id, gpuSnapshot: { observerError: String(error) } });
+  }
+}
+function releaseGate(): void {
+  gate.resolve();
+  if (!delayedOpen) return;
+  service.receive(delayedOpen);
+  delayedOpen = undefined;
+}
+async function testCommand(data: { test: string; id: string }): Promise<void> {
+  if (data.test === "fairness-arm") return armFairness(data.id);
+  if (data.test === "fairness-settled") await fairness?.settled();
+  if (data.test === "pressure") pressureBurst();
+  if (data.test === "release") releaseGate();
+  host.postMessage({ testId: data.id, gpuSnapshot: snapshot() });
+}
 host.onmessage = ({ data }) => {
   if ("test" in data) {
-    if (data.test === "fairness-arm") {
-      try {
-        const coverage = fairness?.arm();
-        host.postMessage({ testId: data.id, gpuSnapshot: { ...snapshot(), coverage } });
-      } catch (error) {
-        host.postMessage({ testId: data.id, gpuSnapshot: { observerError: String(error) } });
-      }
-      return;
-    }
-    if (data.test === "pressure") pressureBurst();
-    if (data.test === "release") {
-      gate.resolve();
-      if (delayedOpen) {
-        service.receive(delayedOpen);
-        delayedOpen = undefined;
-      }
-    }
-    host.postMessage({ testId: data.id, gpuSnapshot: snapshot() });
+    void testCommand(data);
     return;
   }
   if (hold === "open" && data.type === "open" && !held) {

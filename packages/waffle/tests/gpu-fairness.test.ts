@@ -8,11 +8,14 @@ test("compiled fairness modes belong to the existing triangle producer", () => {
   expect(source).toContain('"--fairness-seed"');
 });
 
+import { FairnessObserver, fairnessMeasurements } from "./fixtures/gpu/fairness-observer.js";
 import {
-  FairnessObserver,
-  fairnessMeasurements,
-  type FairnessSnapshot,
-} from "./fixtures/gpu/fairness-observer.js";
+  measured,
+  measuredExpectation,
+  seedBaseline,
+  seededComplete,
+} from "./fixtures/gpu/fairness-test-data.js";
+import { validateSeededCheckpoint } from "./fixtures/gpu/fairness-validation.js";
 import { encodeBlob, words, rig } from "./fixtures/gpu/core-fixture.js";
 
 test("fairness observer refuses unproven or partial service-realm coverage", () => {
@@ -61,75 +64,33 @@ test("observation preserves step and native results, records nested ordinals, an
   }
 });
 
-function measured(): FairnessSnapshot {
-  return {
-    epoch: 1,
-    armed: true,
-    overflow: false,
-    blobs: [
-      {
-        connection: 1,
-        commandRingBytes: 4 * 1024 * 1024,
-        bytes: 4800184,
-        draws: 200000,
-        start: 10,
-        end: 210,
-      },
-    ],
-    records: {},
-    native: {},
-    queue: [],
-    slices: Array.from({ length: 20 }, (_, index) => ({
-      connection: 1,
-      start: 10 + index * 10,
-      end: 14 + index * 10,
-      records: 10000,
-      draws: 10000,
-      nativeMs: 1,
-      longestNativeMs: 0.2,
-      firstRecord: 1 + index * 10000,
-      lastRecord: 10000 + index * 10000,
-      bytes: 240000,
-      kind: "yield",
-    })),
-    presents: [
-      { connection: 2, at: 5, otherLargeDraws: [] },
-      { connection: 2, at: 60, otherLargeDraws: [50000] },
-      { connection: 2, at: 130, otherLargeDraws: [120000] },
-      { connection: 2, at: 200, otherLargeDraws: [190000] },
-      { connection: 1, at: 220, otherLargeDraws: [] },
-      { connection: 2, at: 230, otherLargeDraws: [] },
-    ],
-  };
-}
 test("fairness measurements keep slice and presentation targets and native-call overruns visible", () => {
   const normal = measured();
-  expect(fairnessMeasurements(normal)).toMatchObject({
+  expect(fairnessMeasurements(normal, measuredExpectation)).toMatchObject({
     draws: 200000,
     drawSlices: 20,
     peerPresentsDuringReplay: 3,
     sliceTargetMet: true,
     peerGapTargetMet: true,
   });
-  const first = normal.slices[0]!;
-  const browserCall = {
+  const first = normal.slices.find((value) => value.draws === 10000)!;
+  const extend = (nativeMs: number) => ({
     ...normal,
-    slices: [{ ...first, end: first.start + 32, longestNativeMs: 30 }].concat(
-      normal.slices.slice(1),
+    slices: normal.slices.map((value) =>
+      value === first
+        ? { ...first, end: first.start + 9, nativeMs, longestNativeMs: nativeMs }
+        : value,
     ),
-  };
-  const slow = fairnessMeasurements(browserCall);
+    native: { ...normal.native, "1:draw": { count: 200000, totalMs: nativeMs, maxMs: nativeMs } },
+  });
+  const slow = fairnessMeasurements(extend(8.5), measuredExpectation);
   expect(slow.sliceTargetMet).toBe(false);
   expect(slow.oversize[0]?.classification).toBe("indivisible-browser-call");
-  const replayPause = {
-    ...normal,
-    slices: [{ ...first, end: first.start + 32 }].concat(normal.slices.slice(1)),
-  };
-  expect(fairnessMeasurements(replayPause).oversize[0]?.classification).toBe(
+  expect(fairnessMeasurements(extend(0), measuredExpectation).oversize[0]?.classification).toBe(
     "replay-or-service-thread-pause",
   );
-  const gap = { ...normal, presents: normal.presents.filter((present) => present.at !== 130) };
-  expect(fairnessMeasurements(gap).peerGapTargetMet).toBe(false);
+  // A complete observation may miss the unchanged latency target without missing evidence.
+  expect(fairnessMeasurements(measured(185), measuredExpectation).peerGapTargetMet).toBe(false);
 });
 test("fairness rejects stale, missing, truncated and noninterleaved evidence", () => {
   const normal = measured();
@@ -149,15 +110,16 @@ test("fairness rejects stale, missing, truncated and noninterleaved evidence", (
       presents: normal.presents.map((present) => ({ ...present, otherLargeDraws: [] })),
     },
   ])
-    expect(() => fairnessMeasurements(invalid)).toThrow();
+    expect(() => fairnessMeasurements(invalid, measuredExpectation)).toThrow();
 });
 
 test("native queue completion observation distinguishes pending, completed and rejected work", async () => {
   let clock = 0;
-  const observer = new FairnessObserver(() => ++clock);
+  const observer = new FairnessObserver(() => clock);
   const pending = Promise.withResolvers<void>();
   observer.queueCompletion(() => pending.promise);
   expect(observer.snapshot().queue[0]?.settlement.kind).toBe("pending");
+  clock = 2;
   pending.resolve();
   await Promise.resolve();
   expect(observer.snapshot().queue[0]?.settlement).toEqual({ kind: "completed", at: 2 });
@@ -168,4 +130,74 @@ test("native queue completion observation distinguishes pending, completed and r
     throw new Error("native failure");
   });
   expect(observer.snapshot().queue[2]?.settlement.kind).toBe("rejected");
+});
+
+test("large-blob proof rejects missing native, record, peer and queue observations", () => {
+  const normal = measured();
+  for (const invalid of [
+    { ...normal, records: {} },
+    { ...normal, native: {} },
+    { ...normal, queue: [] },
+    { ...normal, slices: normal.slices.filter((slice) => slice.connection === 1) },
+    { ...normal, slices: normal.slices.map((slice) => ({ ...slice, firstRecord: 999999 })) },
+    { ...normal, presents: normal.presents.map((present) => ({ ...present, at: -present.at })) },
+  ])
+    expect(() => fairnessMeasurements(invalid, measuredExpectation)).toThrow();
+});
+
+test("large-blob proof rejects incomplete and inconsistent per-connection queue accounting", () => {
+  const normal = measured();
+  for (const invalid of [
+    { ...normal, epoch: 2 },
+    {
+      ...normal,
+      queue: normal.queue.map((sample) => ({
+        ...sample,
+        settlement: { kind: "pending" as const },
+      })),
+    },
+    {
+      ...normal,
+      queue: normal.queue.map((sample) => ({
+        ...sample,
+        settlement: { kind: "rejected" as const, at: 1 },
+      })),
+    },
+    { ...normal, queue: normal.queue.slice(1) },
+    { ...normal, queue: normal.queue.map((sample) => ({ ...sample, connection: 1 })) },
+    { ...normal, at: Infinity },
+    { ...normal, native: { ...normal.native, "1:submit": { count: 1, totalMs: 0, maxMs: 0 } } },
+    {
+      ...normal,
+      records: { ...normal.records, "2:nested:14": { count: 127, totalMs: 0, maxMs: 0 } },
+    },
+    { ...normal, slices: normal.slices.map((sample) => ({ ...sample, records: -1 })) },
+  ])
+    expect(() => fairnessMeasurements(invalid, measuredExpectation)).toThrow();
+});
+
+test("seeded completion binds exact epochs, observed totals and physically retired resources", () => {
+  const normal = seededComplete();
+  const progress = [1, 2, 3].map((connection) => ({ connection, frame: 4, stage: 0 }));
+  const validate = (value: typeof normal) =>
+    validateSeededCheckpoint(value, progress, 1, seedBaseline, "complete");
+  expect(validate(normal).size).toBe(3);
+  for (const invalid of [
+    { ...normal, connections: -123 },
+    { ...normal, frameTexturesLive: -456 },
+    { ...normal, slices: -789 },
+    { ...normal, devicesLive: 1 },
+    { ...normal, presentCanvasesLive: 1 },
+    { ...normal, heapBytes: 1 },
+    { ...normal, presents: 9 },
+    { ...normal, frameTexturesCreated: 9 },
+    { ...normal, fairness: { ...normal.fairness, epoch: 0 } },
+    { ...normal, fairness: { ...normal.fairness, overflow: true } },
+    { ...normal, fairness: { ...normal.fairness, armed: false } },
+    { ...normal, fairness: { ...normal.fairness, records: {} } },
+    { ...normal, fairness: { ...normal.fairness, native: {} } },
+    { ...normal, fairness: { ...normal.fairness, slices: [] } },
+    { ...normal, fairness: { ...normal.fairness, queue: [] } },
+  ])
+    expect(() => validate(invalid)).toThrow("Invalid fairness observation");
 });

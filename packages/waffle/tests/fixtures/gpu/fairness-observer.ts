@@ -1,3 +1,8 @@
+import {
+  validateFairnessObservation,
+  wireCount,
+  type ObservationExpectation,
+} from "./fairness-validation.js";
 import { GpuConnection } from "../../../browser/gpu/scheduler.js";
 import { GpuReplay, type ReplayStep } from "../../../browser/gpu/replay.js";
 import type { LogicalRecord } from "../../../browser/gpu/transport.js";
@@ -44,6 +49,7 @@ interface QueueCompletion {
   settlement: { kind: "pending" } | { kind: "completed" | "rejected"; at: number };
 }
 export interface FairnessSnapshot {
+  readonly at: number;
   readonly epoch: number;
   readonly armed: boolean;
   readonly overflow: boolean;
@@ -95,6 +101,7 @@ export class FairnessObserver {
   #records: Record<string, Aggregate> = {};
   #native: Record<string, Aggregate> = {};
   #queue: QueueCompletion[] = [];
+  #pending: Promise<void>[] = [];
   #presents: { connection: number; at: number; otherLargeDraws: number[] }[] = [];
   #active:
     | {
@@ -249,7 +256,7 @@ export class FairnessObserver {
       return action();
     } finally {
       const duration = this.now() - start;
-      aggregate(this.#native, name, duration);
+      aggregate(this.#native, `${this.#active?.trace.id ?? 0}:${name}`, duration);
       if (this.#active) {
         this.#active.nativeMs += duration;
         this.#active.longestNativeMs = Math.max(this.#active.longestNativeMs, duration);
@@ -271,7 +278,7 @@ export class FairnessObserver {
       const completion: unknown = action();
       if (!(completion instanceof Promise))
         throw new Error("Native queue returned no completion promise");
-      void completion.then(
+      const pending = completion.then(
         () => {
           sample.settlement = { kind: "completed", at: this.now() };
         },
@@ -279,18 +286,27 @@ export class FairnessObserver {
           sample.settlement = { kind: "rejected", at: this.now() };
         },
       );
+      this.#pending.push(pending);
     } catch {
       sample.settlement = { kind: "rejected", at: this.now() };
     }
+  }
+  async settled(): Promise<FairnessSnapshot> {
+    await Promise.all(this.#pending);
+    return this.snapshot();
   }
   arm(): FairnessSnapshot {
     const baseline = this.snapshot();
     if (
       !baseline.slices.some((slice) => slice.draws > 0) ||
       !baseline.presents.length ||
-      !baseline.queue.some((sample) => sample.settlement.kind === "completed") ||
-      !["draw", "finish", "submit", "transferToImageBitmap", "transferFromImageBitmap"].every(
-        (name) => (baseline.native[name]?.count ?? 0) > 0,
+      !baseline.queue.length ||
+      baseline.queue.some((sample) => sample.settlement.kind !== "completed") ||
+      !baseline.slices.some(
+        (slice) =>
+          ["draw", "finish", "submit", "transferToImageBitmap", "transferFromImageBitmap"].every(
+            (name) => (baseline.native[`${slice.connection}:${name}`]?.count ?? 0) > 0,
+          ) && baseline.queue.some((sample) => sample.connection === slice.connection),
       ) ||
       baseline.overflow
     )
@@ -307,10 +323,12 @@ export class FairnessObserver {
     this.#native = {};
     this.#presents = [];
     this.#queue = [];
+    this.#pending = [];
     return baseline;
   }
   snapshot(): FairnessSnapshot {
     return {
+      at: this.now(),
       epoch: this.#epoch,
       armed: this.#armed,
       overflow: this.#overflow,
@@ -371,7 +389,11 @@ function observeNative(observer: FairnessObserver, constructor: string, name: st
   });
 }
 
-export function fairnessMeasurements(snapshot: FairnessSnapshot) {
+export function fairnessMeasurements(
+  snapshot: FairnessSnapshot,
+  expected: Omit<ObservationExpectation, "phase"> & { readonly peerFrames: number },
+) {
+  const totals = validateFairnessObservation(snapshot, { ...expected, phase: "complete" });
   if (!snapshot.armed || snapshot.epoch < 1 || snapshot.overflow)
     throw new Error("Missing armed, bounded fairness observation epoch");
   const [blob] = snapshot.blobs;
@@ -384,6 +406,16 @@ export function fairnessMeasurements(snapshot: FairnessSnapshot) {
     blob.end === null
   )
     throw new Error("Expected one completed 200000-draw logical blob larger than its ring");
+  const peerIds = expected.connections.filter((id) => id !== blob.connection);
+  if (
+    peerIds.length !== 1 ||
+    expected.peerFrames !== 128 ||
+    wireCount(snapshot, blob.connection, 6) !== 1 ||
+    wireCount(snapshot, peerIds[0]!, 6) !== expected.peerFrames ||
+    totals.get(blob.connection)?.records !== 200023 ||
+    totals.get(peerIds[0]!)?.records !== 7 + 20 * expected.peerFrames
+  )
+    throw new Error("Incomplete compiled large-blob or peer workload observations");
   const slices = snapshot.slices.filter(
     (slice) =>
       slice.connection === blob.connection && slice.end >= blob.start && slice.start <= blob.end!,
