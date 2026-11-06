@@ -265,6 +265,44 @@ test("expired entry calls no producer or driver", () =>
     expect([produced, allocated]).toEqual([0, 0]);
     expect(result.documents).toEqual([]);
   }));
+async function expiredBoundary(root: string, phase: "preparation" | "factory"): Promise<void> {
+  const a = adapter(),
+    d = driver(),
+    clock = { now: 1_000_000 };
+  d.uncertain = true;
+  const now = spyOn(performance, "now").mockImplementation(() => clock.now),
+    serving = spyOn(Bun, "serve"),
+    starting = spyOn(d, "start");
+  let factories = 0;
+  a.budgets = () => ({ hello: 1000, heartbeat: 1000, case: 1000, group: 1000, run: 100 });
+  a.assets = async () => {
+    if (phase === "preparation") clock.now += 101;
+    return {};
+  };
+  const factory = () => {
+    factories++;
+    if (phase === "factory") clock.now += 101;
+    return d;
+  };
+  try {
+    const result = await runPageSuite(a, factory, options(root));
+    expect(result.exit).toBe(2);
+    expect(result.failures.some((failure) => failure.category === "run-timeout")).toBe(true);
+    expect(serving.mock.calls).toHaveLength(phase === "preparation" ? 0 : 1);
+    expect(factories).toBe(phase === "preparation" ? 0 : 1);
+    expect(starting.mock.calls).toHaveLength(0);
+    expect(result.documents).toEqual([]);
+    expect(result.cleanup.scratch.status).toBe("confirmed");
+  } finally {
+    now.mockRestore();
+    serving.mockRestore();
+    starting.mockRestore();
+  }
+}
+for (const phase of ["preparation", "factory"] as const) {
+  test(`synchronous ${phase} expiry stops later allocations before the watchdog runs`, () =>
+    fixture((root) => expiredBoundary(root, phase)));
+}
 test("119-second-old setup expires under the original 120-second clock", () =>
   fixture(async (root) => {
     const a = adapter();

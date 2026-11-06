@@ -303,6 +303,10 @@ export async function runPageSuite<R>(
     controller.abort("run-timeout");
   };
   const signal = controller.signal;
+  const checkExecution = () => {
+    checkDeadline();
+    signal.throwIfAborted();
+  };
   expire = checkDeadline;
   checkDeadline();
   async function document(
@@ -314,10 +318,14 @@ export async function runPageSuite<R>(
     const priorFailures = cleanupOnly ? collector.failures.length : 0;
     if (!driver || !fixture || driver.uncertain)
       throw new Error("Driver unavailable or command completion uncertain");
+    if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
     const token = crypto.randomUUID(),
-      url = `${fixture.origin}${page.path}?token=${token}`;
-    const state = collector.expect(group, token, url, await driver.handle(operationSignal));
+      url = `${fixture.origin}${page.path}?token=${token}`,
+      handle = await driver.handle(operationSignal);
+    if (!cleanupOnly) checkExecution();
+    operationSignal.throwIfAborted();
+    const state = collector.expect(group, token, url, handle);
     fixture.configurations.set(token, {
       run,
       token,
@@ -372,19 +380,19 @@ export async function runPageSuite<R>(
     }
   }
   try {
-    signal.throwIfAborted();
+    checkExecution();
     const root =
       options.scratchRoot ??
       process.env.STORAGE_SCRATCH_ROOT ??
       (process.platform === "darwin" ? join(homedir(), "tmp") : "/work/tmp");
     if (port !== undefined) probePort(port);
-    signal.throwIfAborted();
+    checkExecution();
     await mkdir(root, { recursive: true });
-    signal.throwIfAborted();
+    checkExecution();
     scratch = await mkdtemp(join(root, "w-pr-"));
-    signal.throwIfAborted();
+    checkExecution();
     const producing = Promise.resolve().then(() => {
-      signal.throwIfAborted();
+      checkExecution();
       return options.assets ?? adapter.assets({ scratch, signal });
     });
     preparation = producing.then(
@@ -392,10 +400,11 @@ export async function runPageSuite<R>(
       () => {},
     );
     const assets = await untilAborted(producing, signal);
-    signal.throwIfAborted();
+    checkExecution();
     fixture = serveCollector(collector, assets, page, port);
-    signal.throwIfAborted();
+    checkExecution();
     driver = factory(scratch);
+    checkExecution();
     await bounded(
       driver.start(AbortSignal.any([signal, AbortSignal.timeout(20_000)])),
       20_000,
