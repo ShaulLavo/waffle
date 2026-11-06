@@ -637,6 +637,220 @@
       "omitted": [],
       "cReturn": "void",
       "callback": null
+    },
+    {
+      "opcode": 34,
+      "name": "device.create_compute_pipeline",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "compute_pipeline",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createComputePipeline",
+        "descriptor": "compute_pipeline_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.compute_pipeline",
+      "callback": null
+    },
+    {
+      "opcode": 35,
+      "name": "command_encoder.begin_compute_pass",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "handle",
+        "object": "compute_pass_encoder",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "beginComputePass",
+        "descriptor": "compute_pass_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.compute_pass_encoder",
+      "callback": null
+    },
+    {
+      "opcode": 36,
+      "name": "compute_pass_encoder.insert_debug_marker",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "insertDebugMarker"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 37,
+      "name": "compute_pass_encoder.pop_debug_group",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "popDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 38,
+      "name": "compute_pass_encoder.push_debug_group",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "pushDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 39,
+      "name": "compute_pass_encoder.set_pipeline",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setPipeline"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 40,
+      "name": "compute_pass_encoder.set_bind_group",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setBindGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 41,
+      "name": "compute_pass_encoder.set_immediates",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "set-immediates",
+        "member": "setImmediates",
+        "span": {
+          "pointer": "data",
+          "size": "size"
+        }
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 42,
+      "name": "compute_pass_encoder.dispatch_workgroups",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "dispatchWorkgroups"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 43,
+      "name": "compute_pass_encoder.dispatch_workgroups_indirect",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "dispatchWorkgroupsIndirect"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 44,
+      "name": "compute_pass_encoder.end",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "end"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 45,
+      "name": "compute_pass_encoder.set_label",
+      "receiver": "compute_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "label"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     }
   ],
   "records": [
@@ -1085,6 +1299,21 @@
       "output": "GPUBindGroupDescriptor",
       "rules": {
         "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "compute_pipeline_descriptor": {
+      "input": "struct.compute_pipeline_descriptor",
+      "output": "GPUComputePipelineDescriptor",
+      "rules": {
+        "layout": "null-handle-to-auto-otherwise-resolve",
+        "compute": "compute_state-dictionary-with-constant-record"
+      }
+    },
+    "compute_pass_descriptor": {
+      "input": "struct.compute_pass_descriptor",
+      "output": "GPUComputePassDescriptor",
+      "rules": {
+        "timestamp_writes": "optional-dictionary-omit-uint32-max-indices"
       }
     }
   },
@@ -1627,7 +1856,19 @@
     "render_pass_encoder.set_bind_group": 30,
     "render_pass_encoder.set_vertex_buffer": 31,
     "render_pass_encoder.set_index_buffer": 32,
-    "render_pass_encoder.draw_indexed": 33
+    "render_pass_encoder.draw_indexed": 33,
+    "device.create_compute_pipeline": 34,
+    "command_encoder.begin_compute_pass": 35,
+    "compute_pass_encoder.insert_debug_marker": 36,
+    "compute_pass_encoder.pop_debug_group": 37,
+    "compute_pass_encoder.push_debug_group": 38,
+    "compute_pass_encoder.set_pipeline": 39,
+    "compute_pass_encoder.set_bind_group": 40,
+    "compute_pass_encoder.set_immediates": 41,
+    "compute_pass_encoder.dispatch_workgroups": 42,
+    "compute_pass_encoder.dispatch_workgroups_indirect": 43,
+    "compute_pass_encoder.end": 44,
+    "compute_pass_encoder.set_label": 45
   },
   "completionLedger": {
     "adapter": 1,
@@ -2010,6 +2251,23 @@
       "offset": "offset",
       "bytes_per_row": "bytesPerRow",
       "rows_per_image": "rowsPerImage"
+    },
+    "compute_pipeline_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "layout": "layout",
+      "compute": "compute"
+    },
+    "compute_state": {
+      "next_in_chain": null,
+      "module": "module",
+      "entry_point": "entryPoint",
+      "constants": "constants"
+    },
+    "compute_pass_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "timestamp_writes": "timestampWrites"
     }
   },
   "dictionaryRules": {
@@ -2030,7 +2288,8 @@
     "wholeSize": "u64-max-to-omitted-size-only-for-bind-group-buffer-and-pass-buffer-bindings",
     "uploads": "length-prefixed-byte-span-replaces-C-pointer-and-size;writeBuffer-byte-count-is-span-length",
     "nullablePassBindings": "null-group-and-vertex-buffer-become-explicit-JS-null",
-    "immediateSize": "pipeline-layout-immediate_size-to-immediateSize"
+    "immediateSize": "pipeline-layout-immediate_size-to-immediateSize",
+    "computeImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span"
   },
   "cOutput": {
     "surface.get_current_texture": {
