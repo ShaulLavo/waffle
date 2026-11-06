@@ -7,8 +7,20 @@ export async function storageNativeMain(args: string[]): Promise<number> {
     console.error("Usage: storage-browser-runner.ts ios-safari --result /absolute/result.json");
     return 3;
   }
+  try {
+    return await runNative(resultPath);
+  } catch (error) {
+    console.error(`Storage host failure: ${String(error)}`);
+    return 2;
+  }
+}
+async function runNative(resultPath: string): Promise<number> {
   const udid = process.env.IOS_UDID;
-  if (process.platform !== "darwin" || !udid || !/^[A-Fa-f0-9-]{36}$/.test(udid)) {
+  if (
+    process.platform !== "darwin" ||
+    !udid ||
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(udid)
+  ) {
     await writeResult(resultPath, {
       suite: "storage",
       exit: 3,
