@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import expected from "./fixtures/gpu/expected.json";
 import { completionBytes, type WireObject } from "../browser/gpu/codec.ts";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
+import { gpuObjectKinds } from "../browser/gpu/generated/tables.ts";
 import { RecordRing } from "../browser/gpu/ring.ts";
 import { GPU_TERMINAL } from "../browser/gpu/protocol.ts";
 import {
@@ -17,6 +18,7 @@ import {
   ROOT,
   send,
   settle,
+  words,
 } from "./fixtures/gpu/core-fixture.ts";
 
 describe("bounded completion and async ownership", () => {
@@ -203,12 +205,17 @@ describe("bounded completion and async ownership", () => {
         }),
       );
       expect(local.connection.completions.pendingCount).toBe(2);
-      local.connection.close(GPU_TERMINAL.revoked);
+      send(local.connection, words(0x1000, [gpuObjectKinds.device, 3, 1]));
       held[0]?.resolve({
         destroy() {
           destroyed++;
         },
       });
+      await settle();
+      expect(destroyed).toBe(1);
+      expect(local.connection.completions.pendingCount).toBe(1);
+      expect(local.connection.state.kind).toBe("ready");
+      local.connection.close(GPU_TERMINAL.revoked);
       held[1]?.resolve({
         destroy() {
           destroyed++;
@@ -219,7 +226,7 @@ describe("bounded completion and async ownership", () => {
       expect(local.connection.state.kind).toBe("terminal");
       expect(
         drain(local.replies).map((bytes) => new DataView(bytes.buffer).getUint16(0, true)),
-      ).toEqual([1, 12]);
+      ).toEqual([1, 2, 12]);
     } finally {
       local.connection.close();
     }
