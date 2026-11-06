@@ -1,6 +1,7 @@
 import { expect, test, spyOn } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { HostConsumers, HostDrive } from "./host-drive.js";
 import { Collector } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
@@ -110,7 +111,7 @@ function adapter(drive: (host: HostCase) => Promise<unknown>): SuiteAdapter<null
   };
 }
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp("/work/tmp/hdu-");
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "hdu-"));
   const before = { SIGINT: process.listeners("SIGINT"), SIGTERM: process.listeners("SIGTERM") };
   try {
     await run(root);
@@ -120,6 +121,20 @@ async function fixture(run: (root: string) => Promise<void>): Promise<void> {
     expect(process.listeners("SIGTERM")).toEqual(before.SIGTERM);
   }
 }
+test("host fixtures use the configured scratch root", async () => {
+  const previous = process.env.STORAGE_SCRATCH_ROOT;
+  const parent = await mkdtemp(join(previous ?? tmpdir(), "hdu-root-"));
+  process.env.STORAGE_SCRATCH_ROOT = parent;
+  try {
+    await fixture(async (root) => {
+      expect(dirname(root)).toBe(parent);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.STORAGE_SCRATCH_ROOT;
+    else process.env.STORAGE_SCRATCH_ROOT = previous;
+    await rm(parent, { recursive: true, force: true });
+  }
+});
 function options(root: string) {
   return { scratchRoot: root, resultPath: join(root, "result.json"), cleanupTimeoutMs: 35 };
 }
