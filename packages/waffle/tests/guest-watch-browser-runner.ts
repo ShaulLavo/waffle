@@ -1,7 +1,7 @@
 if (process.argv[2] === "ios-safari") {
   const { nativeMain } = await import("./page-runner/native.js");
   const { commandAdapter } = await import("./page-runner/command-suites.js");
-  process.exit(await nativeMain(commandAdapter("guest-watch"), process.argv.slice(3)));
+  process.exit(await nativeMain(commandAdapter("guest-watch"), process.argv.slice(3), {}));
 }
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";

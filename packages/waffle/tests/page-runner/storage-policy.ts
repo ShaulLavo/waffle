@@ -49,3 +49,11 @@ export const storagePolicy: CollectorPolicy = {
   allocation: validateStorageAllocation,
   check() {},
 };
+
+export function ownedDatabase(prefix: string): NonNullable<CollectorPolicy["allocation"]> {
+  if (!prefix || prefix.length > 900) throw new Error("Invalid database prefix");
+  return (entry, runningCaseIds, run) => {
+    if (!runningCaseIds.length || entry.kind !== "indexeddb" || entry.name !== `${prefix}-${run}`)
+      throw new Error("Allocation is not the exact database owned by this running case");
+  };
+}

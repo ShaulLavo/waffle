@@ -604,6 +604,19 @@
       "bun": "./browser/gpu/service-worker.ts",
       "browser": "./browser/gpu/service-worker.ts",
       "default": "./browser/gpu/service-worker.ts"
+    },
+    "./testing/page-runner": {
+      "types": "./tests/page-runner/consumer.ts",
+      "bun": "./tests/page-runner/consumer.ts"
+    },
+    "./testing/page-runner/page": {
+      "types": "./tests/page-runner/consumer-page.ts",
+      "bun": "./tests/page-runner/consumer-page.ts",
+      "browser": "./tests/page-runner/consumer-page.ts"
+    },
+    "./testing/page-runner/playwright": {
+      "types": "./tests/page-runner/playwright-driver.ts",
+      "bun": "./tests/page-runner/playwright-driver.ts"
     }
   },
   "scripts": {

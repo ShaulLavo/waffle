@@ -1,10 +1,11 @@
 import { isAbsolute } from "node:path";
 import { SafariDriver } from "./safari-driver.js";
-import { runPageSuite, writeResult, type SuiteAdapter } from "./suite-host.js";
+import { runPageSuite, writeResult, type RunOptions, type SuiteAdapter } from "./suite-host.js";
+export type NativeOptions = Pick<RunOptions, "filter" | "startedAt" | "port">;
 export async function nativeMain<R>(
   adapter: SuiteAdapter<R>,
   args: string[],
-  filter?: string,
+  options: NativeOptions = {},
 ): Promise<number> {
   const resultPath = args[args.indexOf("--result") + 1];
   if (args.length !== 2 || args[0] !== "--result" || !resultPath || !isAbsolute(resultPath)) {
@@ -12,7 +13,7 @@ export async function nativeMain<R>(
     return 3;
   }
   try {
-    return await runNative(adapter, resultPath, filter);
+    return await runNative(adapter, resultPath, options);
   } catch (error) {
     console.error(`${adapter.suite} host failure: ${String(error)}`);
     return 2;
@@ -21,7 +22,7 @@ export async function nativeMain<R>(
 async function runNative<R>(
   adapter: SuiteAdapter<R>,
   resultPath: string,
-  filter: string | undefined,
+  options: NativeOptions,
 ): Promise<number> {
   const udid = process.env.IOS_UDID;
   if (
@@ -38,7 +39,7 @@ async function runNative<R>(
   }
   const result = await runPageSuite(adapter, (scratch) => new SafariDriver(udid, scratch), {
     resultPath,
-    filter,
+    ...options,
   });
   console.log(`${adapter.suite} result: ${resultPath}, exit ${result.exit}`);
   return result.exit;

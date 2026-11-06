@@ -1,3 +1,4 @@
+import { consumerControl, consumerControlModes } from "./consumer-controls.js";
 import { storagePolicy } from "./storage-policy.js";
 import {
   commandControl,
@@ -287,6 +288,15 @@ async function engineControls(
       engine,
       `command-${mode}`,
       () => commandControl(engine, mode, root),
+      results,
+    );
+  for (const mode of consumerControlModes.filter(
+    (mode) => !selected || `consumer-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `consumer-${mode}`,
+      () => consumerControl(engine, mode, root),
       results,
     );
   for (const label of ["wrong", "missing"] as const) {
