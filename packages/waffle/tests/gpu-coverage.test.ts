@@ -215,3 +215,35 @@ test("unknown groups and malformed classification schemas fail", () => {
     "Expected array",
   );
 });
+
+test("supported G1 and G2 declarations cannot borrow an unrelated unsupported boundary", () => {
+  for (const name of ["queue.write_buffer", "buffer.map_async"]) {
+    for (const boundary of ["no-external-textures", "no-native-api"]) {
+      const changed = changedEntry(name, { category: "unsupported", boundary });
+      expect(() => validateCoverage(yaml, changed, selection)).toThrow();
+    }
+  }
+});
+
+test("the two documented exclusions cannot exchange their boundaries", () => {
+  for (const { name, boundary } of [
+    { name: "external_texture.set_label", boundary: "no-native-api" },
+    { name: "command_encoder.write_timestamp", boundary: "no-external-textures" },
+  ]) {
+    expect(() => validateCoverage(yaml, changedEntry(name, { boundary }), selection)).toThrow(
+      "boundary does not apply",
+    );
+  }
+});
+
+test("long padded placeholders are not concrete per-method reasons", () => {
+  for (const reason of [
+    "  TODO: classify this method later, after implementing the protocol.",
+    "\tTBD: determine which supported operation this method represents.",
+    "  later this method will have a concrete slice and classification.",
+  ]) {
+    expect(() => validateCoverage(yaml, changedEntry(deferredName, { reason }), selection)).toThrow(
+      "concrete reason",
+    );
+  }
+});
