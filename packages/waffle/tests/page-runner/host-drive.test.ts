@@ -18,6 +18,7 @@ class HostDriver extends FakeDriver {
   }
   config: Record<string, unknown> = {};
   effects: number[] = [];
+  reportFailure: string | null = null;
   dispatchGate: Promise<void> | undefined;
   completionBeforeResponse = false;
   constructor() {
@@ -54,7 +55,7 @@ class HostDriver extends FakeDriver {
     const runner = await super.script("return window.__pageRunner || null");
     const window = {
       __suiteConfiguration: this.config,
-      __pageRunner: runner,
+      __pageRunner: record(runner) ? { ...runner, failure: this.reportFailure } : runner,
       effects: this.effects,
       __hostCase: {
         get phase() {
@@ -482,3 +483,103 @@ test("escaped multibyte body and disposal errors fit both unchanged report bound
   );
   expect(body.length).toBeGreaterThan(0);
 });
+
+for (const failure of ["reporter", "collector"]) {
+  test(
+    `known ${failure} failure synchronously revokes ordinary dispatch`,
+    () =>
+      fixture(async (root) => {
+        const d = new HostDriver();
+        const result = await runPageSuite(
+          adapter(async (host) => {
+            if (failure === "reporter") d.reportFailure = "Report acknowledgement lost";
+            else
+              await fetch(`${new URL(d.currentURL).origin}/report`, {
+                method: "POST",
+                body: "null",
+              });
+            try {
+              await host.script("window.effects.push(71)");
+            } catch {}
+            d.reportFailure = null;
+            try {
+              await host.script("window.effects.push(72)");
+            } catch {}
+            return true;
+          }),
+          () => d,
+          options(root),
+        );
+        expect(result.exit).toBe(2);
+        expect(d.effects).toEqual([]);
+        expect(result.failures.length).toBeGreaterThan(0);
+      }),
+    20_000,
+  );
+}
+for (const deadline of ["document", "heartbeat", "run"]) {
+  test(`successful admission cannot cross the ${deadline} deadline`, async () => {
+    const now = spyOn(performance, "now").mockReturnValue(100);
+    try {
+      const f = unitDrive();
+      f.d.script = async () => {
+        if (deadline === "document") f.state.startedAt = -1901;
+        if (deadline === "heartbeat") f.state.heartbeatAt = -901;
+        if (deadline === "run") now.mockReturnValue(5101);
+        return { kind: "value", value: true };
+      };
+      await expect(f.host.admit()).rejects.toThrow();
+      expect(f.c.failures.length).toBeGreaterThan(0);
+      expect(await f.consumers.join(50)).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
+  });
+}
+test("expiration between admission and callback never enters original setup", async () => {
+  const now = spyOn(performance, "now").mockReturnValue(100);
+  try {
+    const f = unitDrive();
+    f.d.script = async () => ({ kind: "value", value: true });
+    await f.host.admit();
+    f.state.startedAt = -1901;
+    f.d.script = async () => {
+      f.c.beginHost(f.state, "host");
+      f.send({ kind: "case-teardown", caseId: "host" });
+      f.send({ kind: "case-end", caseId: "host", status: "fail", error: "Expired admission" });
+      return { kind: "void" };
+    };
+    let entered = false;
+    await f.host.drive(async () => {
+      entered = true;
+      return true;
+    });
+    expect(entered).toBe(false);
+    expect(f.c.failures.length).toBeGreaterThan(0);
+    expect(await f.consumers.join(50)).toBe(true);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+test("interruption before verdict dispatch attempts the first verdict once under cleanup", () =>
+  fixture(async (root) => {
+    const controller = new AbortController(),
+      d = new HostDriver();
+    const result = await runPageSuite(
+      adapter(async () => {
+        d.handle = async () => {
+          d.handle = async () => "root";
+          controller.abort("ABORT_BEFORE_VERDICT_DISPATCH");
+          return "root";
+        };
+        return true;
+      }),
+      () => d,
+      { ...options(root), signal: controller.signal },
+    );
+    expect(result.exit).toBe(2);
+    expect(d.verdicts).toHaveLength(1);
+    expect(JSON.stringify(result.results)).toContain('"teardown":{"status":"pass"}');
+    expect(result.cleanup.scratch.status).toBe("confirmed");
+  }));

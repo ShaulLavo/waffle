@@ -24,6 +24,7 @@ export const hostControlModes = [
   "final-ack",
   "sync-hook",
   "large-errors",
+  "interruption",
 ];
 function equal(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
@@ -81,6 +82,7 @@ export async function hostControl(
   });
   if (!built.success || !built.outputs[0])
     throw new AggregateError(built.logs, "Host control bundle");
+  const interrupted = new AbortController();
   const adapter: SuiteAdapter<{ mode: string }> = {
     suite: "host-control",
     inventory: () => [
@@ -88,7 +90,12 @@ export async function hostControl(
         id: "host",
         label: "selected host",
         request: () => ({ mode }),
-        drive: (host) => drive(host, mode),
+        drive: async (host) => {
+          if (mode !== "interruption") return drive(host, mode);
+          await host.task("window.__hostFixture = {value:7,disposed:0};");
+          interrupted.abort("CONTROL_INTERRUPTION");
+          return true;
+        },
       },
       {
         id: "unselected",
@@ -127,12 +134,15 @@ export async function hostControl(
     (scratch) => new HostControlDriver(engine, scratch, mode),
     {
       resultPath: join(root, `host-${mode}.json`),
+      signal: interrupted.signal,
       scratchRoot: process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp",
       filter: "selected host",
       assets: { "/page.js": built.outputs[0] },
     },
   );
-  const infra = ["disposal-hang", "late-error", "late-init", "final-ack"].includes(mode);
+  const infra = ["disposal-hang", "late-error", "late-init", "final-ack", "interruption"].includes(
+    mode,
+  );
   const ordinary = [
     "assertion",
     "setup-fail",
@@ -153,6 +163,8 @@ export async function hostControl(
     throw new Error("Host selection changed inventory");
   if (Object.values(result.cleanup).some((step) => record(step) && step.status === "unconfirmed"))
     throw new Error(`Host ${mode} cleanup unconfirmed ${JSON.stringify(result.cleanup)}`);
+  if (mode === "interruption" && !JSON.stringify(result.results).includes('"disposed":1'))
+    throw new Error("Interrupted command skipped settled original teardown");
   if (mode === "disposal-twice" && !JSON.stringify(result.results).includes('"disposed":2'))
     throw new Error("Repeated disposal was memoized");
   if (mode === "late-init" && result.runComplete)

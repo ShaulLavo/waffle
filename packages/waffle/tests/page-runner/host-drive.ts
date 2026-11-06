@@ -44,6 +44,7 @@ export class HostConsumers {
   }
 }
 class ExpressionFailure extends Error {}
+class ObservationFailure extends Error {}
 function compact(value: unknown): unknown {
   const encoded = JSON.stringify(value);
   if (encoded === undefined || new TextEncoder().encode(encoded).byteLength > resultByteLimit)
@@ -63,6 +64,7 @@ async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
 }
 export class HostDrive {
   private tail = Promise.resolve();
+  private pending = 0;
   private readonly body = new AbortController();
   private deadline = Infinity;
   private active = false;
@@ -109,29 +111,38 @@ export class HostDrive {
   }
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.tail;
+    this.pending++;
     const next = this.consumers.invoke(() => previous.then(operation));
     this.tail = next.then(
-      () => {},
-      () => {},
+      () => {
+        this.pending--;
+      },
+      () => {
+        this.pending--;
+      },
     );
     return next;
   }
   private infrastructure(recovery = false): void {
     if (this.closed) throw new Error("Host command owner stopped");
     if (!recovery) this.signal.throwIfAborted();
-    if (!recovery && performance.now() - this.started >= this.budgets.run)
-      throw new Error("Absolute run deadline");
+    if (!recovery) {
+      const overdue = this.collector.deadline(this.budgets, this.started);
+      if (overdue) throw new ObservationFailure(overdue);
+      if (this.collector.failures.length) throw new ObservationFailure("Sticky host failure");
+    }
     if (this.driver.uncertain || this.uncertain) throw new Error("Uncertain host dispatch");
     if (this.collector.active !== this.state || this.state.cutoff !== null)
       throw new Error("Host document observation closed");
   }
   private checkBody(): void {
+    this.infrastructure();
     if (performance.now() >= this.deadline && !this.body.signal.aborted)
       this.body.abort(new Error("Host setup/body timed out"));
     this.body.signal.throwIfAborted();
     if (!this.active) throw new Error("Host case capability revoked");
   }
-  private guard(source: string, user: boolean): string {
+  private guard(source: string, user: boolean, recovery: boolean): string {
     const identity = JSON.stringify({
       run: this.collector.run,
       token: this.state.token,
@@ -146,6 +157,7 @@ if (!c || !r || !h || c.run !== identity.run || c.token !== identity.token ||
  r.doc !== identity.doc || r.retired || location.href !== identity.url ||
  !${JSON.stringify(user ? ["driving"] : ["admitting", "ready", "driving", "teardown", "terminal"])}.includes(h.phase))
  return {kind:'binding-error'};
+if (!${JSON.stringify(recovery)} && r.failure) return {kind:'reporter-error', error:String(r.failure)};
 try {
  const value = new Function("h", "window", "location", ${JSON.stringify(source)})(h, window, location);
  if (value && typeof value.then === 'function') { Promise.resolve(value).catch(() => {}); return {kind:'expression-error', error:'Use host.task for asynchronous work'}; }
@@ -169,10 +181,12 @@ try {
         if (user) this.checkBody();
         beforeDispatch?.();
         if (user) this.checkBody();
-        const value = await this.driver.script(this.guard(source, user), signal);
+        const value = await this.driver.script(this.guard(source, user, recovery), signal);
         this.infrastructure(recovery);
         if (!record(value)) throw new Error("Malformed bound command answer");
         if (value.kind === "binding-error") throw new Error("Host document binding changed");
+        if (value.kind === "reporter-error")
+          throw new ObservationFailure(`Page reporting failed: ${String(value.error)}`);
         if (value.kind === "expression-error" && typeof value.error === "string")
           throw new ExpressionFailure(value.error);
         if (value.kind !== "void" && (value.kind !== "value" || !("value" in value)))
@@ -191,7 +205,9 @@ try {
   private fault(error: unknown): void {
     if (!this.uncertain && !this.closed && this.state.cutoff === null)
       this.collector.fail("host-command", String(error), this.state);
-    this.uncertain = true;
+    this.uncertain ||=
+      !(error instanceof ObservationFailure) &&
+      !(this.signal.aborted && error === this.signal.reason && !this.driver.uncertain);
     this.body.abort(error);
   }
   async admit(): Promise<void> {
@@ -200,7 +216,10 @@ try {
         "if (h.phase === 'admitting') return false; if (h.phase !== 'ready') throw new Error('Host receiver admission repeated'); h.phase = 'driving'; return true;",
         false,
       );
-      if (accepted === true) return;
+      if (accepted === true) {
+        this.infrastructure();
+        return;
+      }
       const overdue = this.collector.deadline(this.budgets, this.started);
       if (overdue || this.collector.failures.length)
         throw new Error(overdue ?? "Host admission failed");
@@ -273,6 +292,7 @@ try {
     }, 25);
     let verdict: HostVerdict;
     try {
+      this.infrastructure();
       this.active = true;
       this.collector.beginHost(this.state, caseId);
       this.deadline = performance.now() + this.budgets.case;
@@ -287,6 +307,7 @@ try {
         task: (source) => this.task(source),
         sleep: (ms) => this.sleep(ms),
       };
+      this.checkBody();
       const returned = this.consumers.invoke(() => callback(host));
       this.checkBody();
       const result = await abortable(returned, this.body.signal);
@@ -295,6 +316,7 @@ try {
       this.checkBody();
       verdict = { status: "pass", result: evidence };
     } catch (error) {
+      if (error instanceof ObservationFailure) this.fault(error);
       const message = String(error);
       this.bodyFailure = {
         message,
@@ -314,18 +336,38 @@ try {
         "Page task outlived its host waiter",
         this.state,
       );
-    if (this.delivered) throw new Error("Host verdict already delivered");
-    this.delivered = true;
-    const deliverySignal = AbortSignal.any([this.signal, AbortSignal.timeout(5000)]);
-    if (!this.signal.aborted)
-      await this.execute(`h.verdict(${JSON.stringify(verdict)});`, false, deliverySignal);
-    else
-      await this.execute(
-        `h.verdict(${JSON.stringify(verdict)});`,
+    await this.deliver(verdict);
+    if (this.signal.aborted || this.collector.failures.length) await this.recoverTeardown();
+  }
+  private async recoverTeardown(): Promise<void> {
+    const signal = AbortSignal.timeout((this.budgets.teardown ?? this.budgets.case) + 10_000);
+    while (this.state.host?.kind !== "terminal") {
+      const observed = await this.execute(
+        "return {phase:h.phase, failure:window.__pageRunner.failure};",
         false,
-        AbortSignal.timeout(5000),
+        signal,
         undefined,
         true,
       );
+      if (record(observed) && observed.phase === "terminal" && observed.failure)
+        throw new ObservationFailure(`Teardown reporting failed: ${String(observed.failure)}`);
+      await abortable(Bun.sleep(10), signal);
+    }
+  }
+  private async deliver(verdict: HostVerdict): Promise<void> {
+    if (this.delivered) throw new Error("Host verdict already delivered");
+    if (this.pending) {
+      this.infrastructure();
+      await abortable(this.tail, this.signal);
+    }
+    await this.execute(
+      `h.verdict(${JSON.stringify(verdict)});`,
+      false,
+      AbortSignal.timeout(5000),
+      () => {
+        this.delivered = true;
+      },
+      true,
+    );
   }
 }

@@ -45,7 +45,11 @@ const run: HostPageRun<Request> = {
       const until = performance.now() + 80;
       while (performance.now() < until) performance.now();
     }
-    if (["separate-hook", "verdict-delivery", "teardown-report"].includes(request.mode))
+    if (
+      ["separate-hook", "verdict-delivery", "teardown-report", "interruption"].includes(
+        request.mode,
+      )
+    )
       await new Promise((resolve) => setTimeout(resolve, 80));
     if (request.mode === "late-error")
       setTimeout(() => {

@@ -103,3 +103,10 @@ preserve page-driven behavior. Host callbacks and commands are revoked and joine
 before scratch deletion. Unsettled callbacks retain scratch and force exit 2 even
 if the browser session was deleted. Failure evidence is saved beside the result
 as `.diagnostics.json` before scratch removal.
+
+A known reporting failure revokes ordinary host commands immediately. Document,
+heartbeat, and enclosing run deadlines are checked at admission and dispatch, not
+only by a timer. After interruption, a still-bound, certain page receives at most
+one cleanup verdict under a fresh bound, and its original teardown is awaited.
+An unconfirmed in-flight command or teardown requires session containment instead
+of navigating away and treating cleanup as complete.
