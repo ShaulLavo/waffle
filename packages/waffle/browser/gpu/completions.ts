@@ -1,0 +1,269 @@
+import { completionBytes, type WireObject } from "./codec.js";
+import type { RecordRing, RingWriter } from "./ring.js";
+import {
+  GPU_LIMITS,
+  GPU_TERMINAL,
+  GpuProtocolError,
+  GpuResourceError,
+  type ConnectionState,
+  type Handle,
+} from "./protocol.js";
+
+interface Pending<T> {
+  owner: CompletionOwner | undefined;
+  settle: ((owner: CompletionOwner, value: T) => void) | undefined;
+  reject: ((owner: CompletionOwner, error: unknown) => void) | undefined;
+  readonly abandon: (value: T) => void;
+}
+interface Payload {
+  readonly generation: number;
+  readonly offset: number;
+  readonly length: number;
+}
+interface Ready {
+  readonly kind: "ready";
+  readonly ring: RecordRing;
+  readonly pending: Map<number, { cancel(): void }>;
+  readonly arena: Uint8Array;
+  readonly payloads: (Payload | undefined)[];
+  readonly generations: number[];
+  retire: (() => void) | undefined;
+}
+
+/** Service realm owner. Retiring replaces the entire ring/arena-bearing state. */
+export class CompletionOwner {
+  #state: Ready | { readonly kind: "terminal"; readonly reason: number };
+  #lastToken = 0;
+  constructor(ring: RecordRing, arena: Uint8Array = new Uint8Array(0)) {
+    if (ring.recordHeaderBytes !== 16) throw new RangeError("Expected completion ring");
+    this.#state = {
+      kind: "ready",
+      ring,
+      pending: new Map(),
+      arena,
+      payloads: Array.from({ length: 64 }, () => undefined),
+      generations: Array.from({ length: 64 }, () => 0),
+      retire: undefined,
+    };
+  }
+  get state(): ConnectionState {
+    this.#synchronize();
+    return this.#state.kind === "ready" ? { kind: "ready" } : this.#state;
+  }
+  get pendingCount(): number {
+    this.#synchronize();
+    return this.#state.kind === "ready" ? this.#state.pending.size : 0;
+  }
+  get payloadBytes(): number {
+    this.#synchronize();
+    return this.#state.kind === "ready"
+      ? this.#state.payloads.reduce((sum, slot) => sum + (slot?.length ?? 0), 0)
+      : 0;
+  }
+  onRetire(retire: () => void): void {
+    if (this.#state.kind === "terminal") {
+      retire();
+      return;
+    }
+    if (this.#state.retire) throw new Error("Completion owner already has retirement cleanup");
+    this.#state.retire = retire;
+  }
+  admit(token: number): void {
+    this.#synchronize();
+    if (this.#state.kind === "terminal") throw new GpuProtocolError("Terminal completion owner");
+    if (!Number.isInteger(token) || token <= this.#lastToken || token > 0xffffffff)
+      throw new GpuProtocolError("Tokens must strictly increase without wrapping");
+    this.#lastToken = token;
+  }
+  publish(name: string, token: number, status: number, value: WireObject): boolean {
+    this.#synchronize();
+    const state = this.#state;
+    if (state.kind === "terminal") return false;
+    try {
+      return this.#publish(state, completionBytes(name, token, status, value, state.ring.capacity));
+    } catch (error) {
+      this.terminate(
+        error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+      );
+      return false;
+    }
+  }
+  /** Admit before starting native work. No continuation retains a retired replay or transport. */
+  start<T>(
+    token: number,
+    start: () => Promise<T>,
+    settle: (owner: CompletionOwner, value: T) => void,
+    reject: (owner: CompletionOwner, error: unknown) => void,
+    abandon: (value: T) => void,
+  ): void {
+    this.admit(token);
+    const state = this.#state;
+    if (state.kind === "terminal") return;
+    if (state.pending.size >= GPU_LIMITS.pending) {
+      this.terminate(GPU_TERMINAL.resource);
+      return;
+    }
+    const pending: Pending<T> = { owner: this, settle, reject, abandon };
+    state.pending.set(token, { cancel: () => detach(pending) });
+    let promise: Promise<T>;
+    try {
+      promise = start();
+    } catch (error) {
+      fail(pending, token, error);
+      return;
+    }
+    watchPromise(promise, pending, token);
+  }
+  settled(token: number): boolean {
+    this.#synchronize();
+    if (this.#state.kind === "terminal") return false;
+    return this.#state.pending.delete(token);
+  }
+  allocatePayload(bytes: Uint8Array): Handle | undefined {
+    this.#synchronize();
+    const state = this.#state;
+    if (state.kind === "terminal") return;
+    try {
+      return this.#allocatePayload(state, bytes);
+    } catch {
+      this.terminate(GPU_TERMINAL.resource);
+      return;
+    }
+  }
+  takePayload(handle: Handle, destination: Uint8Array): number {
+    this.#synchronize();
+    const state = this.#state;
+    if (state.kind === "terminal") throw new GpuCallClosed();
+    const slot = state.payloads[handle.id - 1];
+    if (!slot || slot.generation !== handle.generation)
+      throw new GpuProtocolError("Stale payload handle");
+    if (destination.byteLength < slot.length)
+      throw new GpuResourceError("Short payload destination");
+    destination.set(state.arena.subarray(slot.offset, slot.offset + slot.length));
+    state.payloads[handle.id - 1] = undefined;
+    return slot.length;
+  }
+  terminate(reason: number): void {
+    const state = this.#state;
+    if (state.kind === "terminal") return;
+    if (!Number.isInteger(reason) || reason <= 0 || reason > 0xffffffff)
+      throw new RangeError("Invalid terminal reason");
+    // Select the local state before any wake. A closed record is best effort and
+    // always last; ring termination is the authoritative, immutable OOB result.
+    const selected = state.ring.terminal()?.reason ?? reason;
+    this.#state = { kind: "terminal", reason: selected };
+    publishClosed(state.ring, selected);
+    state.ring.terminate(selected);
+    for (const pending of state.pending.values()) pending.cancel();
+    state.pending.clear();
+    state.payloads.length = 0;
+    state.generations.length = 0;
+    const retire = state.retire;
+    state.retire = undefined;
+    retire?.();
+  }
+  #synchronize(): void {
+    if (this.#state.kind === "terminal") return;
+    const terminal = this.#state.ring.terminal();
+    if (terminal) this.terminate(terminal.reason);
+  }
+  #publish(state: Ready, bytes: Uint8Array): boolean {
+    const acquired = state.ring.tryAcquireWriter();
+    if (acquired.kind === "terminal") {
+      this.terminate(acquired.reason);
+      return false;
+    }
+    if (acquired.kind === "busy") {
+      this.terminate(GPU_TERMINAL.resource);
+      return false;
+    }
+    try {
+      const result = acquired.writer.tryWrite(bytes);
+      if (result.kind === "written") return true;
+      acquired.writer.release();
+      this.terminate(result.kind === "terminal" ? result.reason : GPU_TERMINAL.resource);
+      return false;
+    } finally {
+      acquired.writer.release();
+    }
+  }
+  #allocatePayload(state: Ready, bytes: Uint8Array): Handle {
+    const index = state.payloads.findIndex(
+      (slot, at) => slot === undefined && (state.generations[at] ?? 0) < 0xffffffff,
+    );
+    if (index < 0 || bytes.byteLength > state.arena.byteLength)
+      throw new GpuResourceError("Payload credit exhausted");
+    const occupied = state.payloads.filter((slot): slot is Payload => slot !== undefined);
+    occupied.sort((a, b) => a.offset - b.offset);
+    let offset = 0;
+    for (const slot of occupied) {
+      if (slot.offset - offset >= bytes.byteLength) break;
+      offset = slot.offset + slot.length;
+    }
+    if (bytes.byteLength > state.arena.byteLength - offset)
+      throw new GpuResourceError("Payload credit exhausted");
+    const generation = (state.generations[index] ?? 0) + 1;
+    state.arena.set(bytes, offset);
+    state.generations[index] = generation;
+    state.payloads[index] = { offset, length: bytes.byteLength, generation };
+    return { id: index + 1, generation };
+  }
+}
+class GpuCallClosed extends Error {}
+
+function detach<T>(pending: Pending<T>): void {
+  pending.owner = undefined;
+  pending.settle = undefined;
+  pending.reject = undefined;
+}
+function complete<T>(pending: Pending<T>, token: number, value: T): void {
+  const owner = pending.owner;
+  const settle = pending.settle;
+  detach(pending);
+  if (!owner?.settled(token) || !settle) {
+    pending.abandon(value);
+    return;
+  }
+  try {
+    settle(owner, value);
+  } catch (error) {
+    owner.terminate(
+      error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+    );
+  }
+}
+function fail<T>(pending: Pending<T>, token: number, error: unknown): void {
+  const owner = pending.owner;
+  const reject = pending.reject;
+  detach(pending);
+  if (!owner?.settled(token) || !reject) return;
+  try {
+    reject(owner, error);
+  } catch (failure) {
+    owner.terminate(
+      failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+    );
+  }
+}
+
+function watchPromise<T>(promise: Promise<T>, pending: Pending<T>, token: number): void {
+  void promise.then(
+    (value) => complete(pending, token, value),
+    (error: unknown) => fail(pending, token, error),
+  );
+}
+
+function publishClosed(ring: RecordRing, reason: number): void {
+  let writer: RingWriter | undefined;
+  try {
+    const acquired = ring.tryAcquireWriter();
+    if (acquired.kind !== "acquired") return;
+    writer = acquired.writer;
+    if (ring.capacity >= 24)
+      writer.tryWrite(completionBytes("closed", 0, 0, { reason }, ring.capacity));
+  } catch {
+    /* The out-of-band reason still closes a corrupt or exhausted ring. */
+  } finally {
+    writer?.release();
+  }
+}
