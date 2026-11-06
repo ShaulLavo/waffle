@@ -11,6 +11,12 @@ import {
   type ProgramsOptions,
   type RuntimePrograms,
 } from "./programs/collection.js";
+import type { RuntimeDisplay } from "./browser/display/owner.js";
+export type { RuntimeDisplay, DisplaySurface } from "./browser/display/owner.js";
+type RuntimeDisplayOwner = ReturnType<
+  (typeof import("./browser/display/owner.js"))["createDisplayOwner"]
+>;
+
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
 export type {
   RuntimeNetwork,
@@ -181,6 +187,8 @@ export interface Runtime {
   retainConsumer(consumer: RuntimeConsumer): () => void;
   /** Lazy runtime-owned localhost services, independent of process activation. */
   network(): Promise<RuntimeNetwork>;
+  /** Lazy display ownership. Does not activate processes or start a GPU service. */
+  display(): Promise<RuntimeDisplay>;
   processes(): Promise<ProcessService>;
   dispose(): Promise<void>;
 }
@@ -446,6 +454,9 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let host: BrowserProcessBroker | undefined;
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
   let activation: Promise<ProcessService> | undefined;
+  let displayOwner: RuntimeDisplayOwner | undefined;
+  let ownedDisplay: Promise<RuntimeDisplayOwner | undefined> | undefined;
+  let displayActivation: Promise<RuntimeDisplay> | undefined;
   let ownedNetwork: Promise<RuntimeNetworkOwner | undefined> | undefined;
   let networkActivation: Promise<RuntimeNetwork> | undefined;
   let disposal: Promise<void> | undefined;
@@ -691,6 +702,20 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         physicalStops.delete(owned);
       };
     },
+    display() {
+      if (disposed) return Promise.reject(new Error("Runtime is disposed"));
+      ownedDisplay ??= import("./browser/display/owner.js").then(({ createDisplayOwner }) => {
+        if (disposed) return undefined;
+        displayOwner = createDisplayOwner(assertLive);
+        return displayOwner;
+      });
+      displayActivation ??= ownedDisplay.then((owner) => {
+        assertLive();
+        if (!owner) throw new Error("Runtime is disposed");
+        return owner.display;
+      });
+      return displayActivation;
+    },
     network() {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (networkActivation) return networkActivation;
@@ -853,6 +878,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           stops.map(([owner, stop]) => joinStop({ owner, stop, physicalStops, cleanupDebt })),
         );
         failures.push(...stopFailures(stopped));
+        if (ownedDisplay) {
+          const pendingDisplay = ownedDisplay;
+          await attempt(async () => (await pendingDisplay)?.dispose());
+        }
         let network: RuntimeNetworkOwner | undefined;
         if (ownedNetwork) await attempt(async () => (network = await ownedNetwork));
         if (network) await attempt(() => network?.dispose());
@@ -898,6 +927,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         } catch (error) {
           failures.push(error);
         }
+      }
+      try {
+        displayOwner?.suspend();
+      } catch (error) {
+        failures.push(error);
       }
       suspend(failures);
       return disposal;

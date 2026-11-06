@@ -176,3 +176,20 @@ Argument and environment byte arrays are copied immutable launch payload, not pr
 controls. Their construction and byte-length reads still use captured array and typed-array
 operations. Terminal wait timers use captured scheduling and cancellation functions because
 the callbacks retain private wait ownership. No payload exception is added for either path.
+
+## GPU guest boundary
+
+`browser/display/guest.ts`, `browser/gpu/guest.ts`, `browser/gpu/ring.ts` and
+`browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
+`GraphicsConnection`, `GraphicsGrant`, `GraphicsOpen`, `GuestGpuConnection`, `RecordRing`,
+`RingWriter`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
+native send/close methods are captured before executor hooks or guest execution. Fixed GPU
+controls use the installed shared-control allocator before construction. Views, ring copies,
+collection access and waits use the existing reviewed intrinsic captures. No payload exception
+is added for GPU control buffers.
+
+The display owner runs only on the page. GPU service, scheduler, replay, object table, completion
+owner, descriptor lowering and native presenters run only in the dedicated responsive service
+Worker. Guest bundle-graph tests reject paths to those implementations, including dynamic paths.
+The visible canvas and bitmaprenderer context stay strongly owned by that service after guest
+exit. Device-backed frame textures and private presentation canvases do not.

@@ -8,6 +8,8 @@ export type {
 export { RuntimeNetworkLookupError } from "./runtime.js";
 export type {
   Runtime,
+  RuntimeDisplay,
+  DisplaySurface,
   RuntimeOptions,
   RuntimeNetwork,
   RuntimeNetworkHelper,

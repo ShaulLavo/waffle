@@ -1,3 +1,4 @@
+import type { GraphicsGrant } from "./display/protocol.js";
 import { allocateSharedControl, type SharedControlGrant } from "../memory/control.js";
 import {
   bytes,
@@ -229,6 +230,7 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   threaded?: ThreadLaunchOptions;
   /** Ownership moves to the broker, including all failed launch and termination paths. */
   network?: Preview1Network;
+  graphics?: GraphicsGrant;
   request: Omit<
     T,
     | "filesystem"
@@ -241,6 +243,7 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
     | "memoryGroup"
     | "controlGrant"
     | "network"
+    | "graphics"
   >;
   /** Join a memory group. Admission is reserved before the Worker is constructed. */
   memoryGroup?: MemoryGroupLaunch;
@@ -290,6 +293,7 @@ interface RuntimeChild {
   stopping?: Promise<void>;
   startupStderr?: PipeEndpoint;
   network?: Preview1Network;
+  graphics?: GraphicsGrant;
   cleanup?(): void;
   wake?(): void;
   output?: TerminalOutputReader;
@@ -1529,6 +1533,17 @@ export class BrowserProcessBroker {
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
   ): ProcessHandle {
+    const graphicsOwner = options.graphics;
+    let graphicsReleased = false;
+    const graphics: GraphicsGrant | undefined = graphicsOwner && {
+      connection: graphicsOwner.connection,
+      dispose() {
+        if (graphicsReleased) return;
+        graphicsReleased = true;
+        graphicsOwner.dispose();
+      },
+      retired: () => graphicsOwner.retired(),
+    };
     const owner = options.network;
     let released = false;
     const network = owner && {
@@ -1541,6 +1556,7 @@ export class BrowserProcessBroker {
     };
     try {
       const threaded = threadModuleDeclaration(options.request.module);
+      if (threaded && graphics) throw new Error("Threaded guests do not accept graphics grants");
       if (threaded) return this.launchThreadWorker(context, options, threaded);
       if (
         WebAssembly.Module.imports(options.request.module).some(
@@ -1548,8 +1564,13 @@ export class BrowserProcessBroker {
         )
       )
         throw new Error("Threaded Preview 1 requires validated source bytes");
-      return this.launchOwnedWorker(context, { ...options, network });
+      return this.launchOwnedWorker(context, { ...options, network, graphics });
     } catch (error) {
+      try {
+        graphics?.dispose();
+      } catch (cleanup) {
+        this.report(cleanup);
+      }
       try {
         network?.dispose();
       } catch (cleanup) {
@@ -1675,6 +1696,7 @@ export class BrowserProcessBroker {
       stopped: false,
       cleanup: options.cleanup,
       network: options.network,
+      graphics: options.graphics,
       wake: options.wake,
     };
     this.children.set(context.pid, child);
@@ -1735,6 +1757,7 @@ export class BrowserProcessBroker {
       notifications: child.notifications?.connection,
       terminalOutput: output.buffer,
       network: options.network?.connection,
+      graphics: options.graphics?.connection,
     };
     const group = child.group?.launch();
     if (group) Object.assign(request, { memoryGroup: group.request });
@@ -1838,6 +1861,7 @@ export class BrowserProcessBroker {
       const ports: Transferable[] = [request.filesystem.port];
       if (request.notifications) ports.push(request.notifications.port);
       if (request.network) ports.push(request.network.port);
+      if (request.graphics) ports.push(request.graphics.port);
       worker.postMessage(request, group ? ports.concat(group.transfer) : ports);
     } catch (error) {
       child.failed = true;
@@ -2043,6 +2067,11 @@ export class BrowserProcessBroker {
     return (child.quiescence ??= this.options.filesystem.quiesce(child.filesystem));
   }
   private disposeNetwork(child: RuntimeChild): void {
+    try {
+      child.graphics?.dispose();
+    } catch (error) {
+      this.report(error);
+    }
     const network = child.network;
     child.network = undefined;
     try {
@@ -2073,6 +2102,8 @@ export class BrowserProcessBroker {
       child.stopped = true;
       const errors: unknown[] = [];
       this.disposeNetwork(child);
+      if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
+      child.graphics = undefined;
       const notifications = child.notifications;
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(async () => {

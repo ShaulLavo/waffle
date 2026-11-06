@@ -20,6 +20,9 @@ export default {
       entry: [
         "tests/**/*.test.ts",
         "tests/gpu-browser-qualification.ts",
+        "tests/gpu-browser-runner.ts",
+        "tests/fixtures/gpu/integration-{guest,service-worker,page}.ts",
+        "tests/fixtures/gpu/lazy-page.ts",
         "tests/fixtures/gpu/qualification-worker.ts",
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",

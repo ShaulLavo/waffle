@@ -69,6 +69,7 @@ function inheritedField(
  * filesystem and canary SABs must not turn this into an all-runtime hardening test. */
 export function poisonProcessIntrinsics(buffers: readonly SharedArrayBuffer[]): {
   restore(): IntrinsicsReport;
+  track(buffer: SharedArrayBuffer): void;
 } {
   const privateBuffers = new NativeSet(buffers);
   const canary = new NativeSharedArrayBuffer(16);
@@ -348,6 +349,9 @@ export function poisonProcessIntrinsics(buffers: readonly SharedArrayBuffer[]): 
     throw error;
   }
   return {
+    track(buffer) {
+      nativeApply(nativeSetAdd, privateBuffers, [buffer]);
+    },
     restore() {
       for (let index = undo.length - 1; index >= 0; index--) undo[index]!();
       return { replacements, canaries: Array.from(canaries), leaks };
