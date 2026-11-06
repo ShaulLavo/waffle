@@ -407,6 +407,236 @@
       "omitted": [],
       "cReturn": "void",
       "callback": null
+    },
+    {
+      "opcode": 22,
+      "name": "device.create_buffer",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "buffer",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createBuffer",
+        "descriptor": "buffer_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.buffer",
+      "callback": null
+    },
+    {
+      "opcode": 23,
+      "name": "device.create_texture",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "texture",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createTexture",
+        "descriptor": "texture_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.texture",
+      "callback": null
+    },
+    {
+      "opcode": 24,
+      "name": "device.create_sampler",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "sampler",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createSampler",
+        "descriptor": "sampler_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.sampler",
+      "callback": null
+    },
+    {
+      "opcode": 25,
+      "name": "device.create_bind_group_layout",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "bind_group_layout",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createBindGroupLayout",
+        "descriptor": "bind_group_layout_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.bind_group_layout",
+      "callback": null
+    },
+    {
+      "opcode": 26,
+      "name": "device.create_pipeline_layout",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "pipeline_layout",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createPipelineLayout",
+        "descriptor": "pipeline_layout_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.pipeline_layout",
+      "callback": null
+    },
+    {
+      "opcode": 27,
+      "name": "device.create_bind_group",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "bind_group",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "descriptor-method",
+        "member": "createBindGroup",
+        "descriptor": "bind_group_descriptor"
+      },
+      "omitted": [],
+      "cReturn": "object.bind_group",
+      "callback": null
+    },
+    {
+      "opcode": 28,
+      "name": "queue.write_buffer",
+      "receiver": "queue",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "write-buffer",
+        "member": "writeBuffer",
+        "span": {
+          "pointer": "data",
+          "size": "size"
+        }
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 29,
+      "name": "queue.write_texture",
+      "receiver": "queue",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "write-texture",
+        "member": "writeTexture",
+        "span": {
+          "pointer": "data",
+          "size": "data_size"
+        }
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 30,
+      "name": "render_pass_encoder.set_bind_group",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setBindGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 31,
+      "name": "render_pass_encoder.set_vertex_buffer",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setVertexBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 32,
+      "name": "render_pass_encoder.set_index_buffer",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setIndexBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 33,
+      "name": "render_pass_encoder.draw_indexed",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "drawIndexed"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     }
   ],
   "records": [
@@ -814,13 +1044,58 @@
         "multisample": "dictionary",
         "fragment": "optional-dictionary"
       }
+    },
+    "buffer_descriptor": {
+      "input": "struct.buffer_descriptor",
+      "output": "GPUBufferDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "texture_descriptor": {
+      "input": "struct.texture_descriptor",
+      "output": "GPUTextureDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "sampler_descriptor": {
+      "input": "struct.sampler_descriptor",
+      "output": "GPUSamplerDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "bind_group_layout_descriptor": {
+      "input": "struct.bind_group_layout_descriptor",
+      "output": "GPUBindGroupLayoutDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "pipeline_layout_descriptor": {
+      "input": "struct.pipeline_layout_descriptor",
+      "output": "GPUPipelineLayoutDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
+    },
+    "bind_group_descriptor": {
+      "input": "struct.bind_group_descriptor",
+      "output": "GPUBindGroupDescriptor",
+      "rules": {
+        "members": "explicit-dictionary-members-and-special-policies"
+      }
     }
   },
   "sentinels": {
     "render_pass_color_attachment.depth_slice": "uint32_max-to-omit",
     "render_pass_depth_stencil_attachment.depth_clear_value": "nan-to-omit",
     "texture_view_descriptor.mip_level_count": "uint32_max-to-omit",
-    "texture_view_descriptor.array_layer_count": "uint32_max-to-omit"
+    "texture_view_descriptor.array_layer_count": "uint32_max-to-omit",
+    "bind_group_entry.size": "uint64_max-to-omit",
+    "texel_copy_buffer_layout.bytes_per_row": "uint32_max-to-omit",
+    "texel_copy_buffer_layout.rows_per_image": "uint32_max-to-omit"
   },
   "browserEnums": {
     "enum.feature_level": {
@@ -1222,6 +1497,77 @@
       "external_texture_binding_entry": 14,
       "compatibility_mode_limits": 15,
       "texture_binding_view_dimension": 16
+    },
+    "bitflag.buffer_usage": {
+      "none": 0,
+      "map_read": 1,
+      "map_write": 2,
+      "copy_src": 4,
+      "copy_dst": 8,
+      "index": 16,
+      "vertex": 32,
+      "uniform": 64,
+      "storage": 128,
+      "indirect": 256,
+      "query_resolve": 512
+    },
+    "bitflag.shader_stage": {
+      "none": 0,
+      "vertex": 1,
+      "fragment": 2,
+      "compute": 4
+    },
+    "enum.texture_dimension": {
+      "undefined": "@omit",
+      "1D": "1d",
+      "2D": "2d",
+      "3D": "3d"
+    },
+    "enum.address_mode": {
+      "undefined": "@omit",
+      "clamp_to_edge": "clamp-to-edge",
+      "repeat": "repeat",
+      "mirror_repeat": "mirror-repeat"
+    },
+    "enum.filter_mode": {
+      "undefined": "@omit",
+      "nearest": "nearest",
+      "linear": "linear"
+    },
+    "enum.mipmap_filter_mode": {
+      "undefined": "@omit",
+      "nearest": "nearest",
+      "linear": "linear"
+    },
+    "enum.buffer_binding_type": {
+      "binding_not_used": null,
+      "undefined": "@omit",
+      "uniform": "uniform",
+      "storage": "storage",
+      "read_only_storage": "read-only-storage"
+    },
+    "enum.sampler_binding_type": {
+      "binding_not_used": null,
+      "undefined": "@omit",
+      "filtering": "filtering",
+      "non_filtering": "non-filtering",
+      "comparison": "comparison"
+    },
+    "enum.texture_sample_type": {
+      "binding_not_used": null,
+      "undefined": "@omit",
+      "float": "float",
+      "unfilterable_float": "unfilterable-float",
+      "depth": "depth",
+      "sint": "sint",
+      "uint": "uint"
+    },
+    "enum.storage_texture_access": {
+      "binding_not_used": null,
+      "undefined": "@omit",
+      "write_only": "write-only",
+      "read_only": "read-only",
+      "read_write": "read-write"
     }
   },
   "encoding": {
@@ -1269,7 +1615,19 @@
     "encode": 4097,
     "render-bundle": 4098,
     "buffer-unmap-writes": 4099,
-    "chunk": 4100
+    "chunk": 4100,
+    "device.create_buffer": 22,
+    "device.create_texture": 23,
+    "device.create_sampler": 24,
+    "device.create_bind_group_layout": 25,
+    "device.create_pipeline_layout": 26,
+    "device.create_bind_group": 27,
+    "queue.write_buffer": 28,
+    "queue.write_texture": 29,
+    "render_pass_encoder.set_bind_group": 30,
+    "render_pass_encoder.set_vertex_buffer": 31,
+    "render_pass_encoder.set_index_buffer": 32,
+    "render_pass_encoder.draw_indexed": 33
   },
   "completionLedger": {
     "adapter": 1,
@@ -1541,6 +1899,117 @@
     "command_buffer_descriptor": {
       "next_in_chain": null,
       "label": "label"
+    },
+    "buffer_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "usage": "usage",
+      "size": "size",
+      "mapped_at_creation": "mappedAtCreation"
+    },
+    "texture_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "usage": "usage",
+      "dimension": "dimension",
+      "size": "size",
+      "format": "format",
+      "mip_level_count": "mipLevelCount",
+      "sample_count": "sampleCount",
+      "view_formats": "viewFormats"
+    },
+    "extent_3D": {
+      "width": "width",
+      "height": "height",
+      "depth_or_array_layers": "depthOrArrayLayers"
+    },
+    "origin_3D": {
+      "x": "x",
+      "y": "y",
+      "z": "z"
+    },
+    "sampler_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "address_mode_u": "addressModeU",
+      "address_mode_v": "addressModeV",
+      "address_mode_w": "addressModeW",
+      "mag_filter": "magFilter",
+      "min_filter": "minFilter",
+      "mipmap_filter": "mipmapFilter",
+      "lod_min_clamp": "lodMinClamp",
+      "lod_max_clamp": "lodMaxClamp",
+      "compare": "compare",
+      "max_anisotropy": "maxAnisotropy"
+    },
+    "bind_group_layout_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "entries": "entries"
+    },
+    "bind_group_layout_entry": {
+      "next_in_chain": null,
+      "binding": "binding",
+      "visibility": "visibility",
+      "binding_array_size": null,
+      "buffer": "buffer",
+      "sampler": "sampler",
+      "texture": "texture",
+      "storage_texture": "storageTexture"
+    },
+    "buffer_binding_layout": {
+      "next_in_chain": null,
+      "type": "type",
+      "has_dynamic_offset": "hasDynamicOffset",
+      "min_binding_size": "minBindingSize"
+    },
+    "sampler_binding_layout": {
+      "next_in_chain": null,
+      "type": "type"
+    },
+    "texture_binding_layout": {
+      "next_in_chain": null,
+      "sample_type": "sampleType",
+      "view_dimension": "viewDimension",
+      "multisampled": "multisampled"
+    },
+    "storage_texture_binding_layout": {
+      "next_in_chain": null,
+      "access": "access",
+      "format": "format",
+      "view_dimension": "viewDimension"
+    },
+    "pipeline_layout_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "bind_group_layouts": "bindGroupLayouts",
+      "immediate_size": "immediateSize"
+    },
+    "bind_group_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "layout": "layout",
+      "entries": "entries"
+    },
+    "bind_group_entry": {
+      "next_in_chain": null,
+      "binding": "binding",
+      "buffer": null,
+      "offset": null,
+      "size": null,
+      "sampler": null,
+      "texture_view": null
+    },
+    "texel_copy_texture_info": {
+      "texture": "texture",
+      "mip_level": "mipLevel",
+      "origin": "origin",
+      "aspect": "aspect"
+    },
+    "texel_copy_buffer_layout": {
+      "offset": "offset",
+      "bytes_per_row": "bytesPerRow",
+      "rows_per_image": "rowsPerImage"
     }
   },
   "dictionaryRules": {
@@ -1554,7 +2023,14 @@
     "optionalBool": "0-false-1-true-2-omitted",
     "zeroTextureViewUsage": "omit-inherit-texture-usage",
     "pass_timestamp_writes": "omit-u32-max-indices",
-    "colorAttachmentHole": "null-view-to-null-array-entry"
+    "colorAttachmentHole": "null-view-to-null-array-entry",
+    "bindingLayoutArms": "binding-not-used-omits-arm;undefined-retains-default-dictionary;multiple-active-arms-reach-native-validation",
+    "bindingArraySize": "zero-only;nonzero-is-unsupported-browser-call",
+    "bindGroupResource": "exactly-one-buffer-sampler-texture-view;buffer-offset-and-size-ignored-for-other-arms",
+    "wholeSize": "u64-max-to-omitted-size-only-for-bind-group-buffer-and-pass-buffer-bindings",
+    "uploads": "length-prefixed-byte-span-replaces-C-pointer-and-size;writeBuffer-byte-count-is-span-length",
+    "nullablePassBindings": "null-group-and-vertex-buffer-become-explicit-JS-null",
+    "immediateSize": "pipeline-layout-immediate_size-to-immediateSize"
   },
   "cOutput": {
     "surface.get_current_texture": {

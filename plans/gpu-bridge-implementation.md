@@ -454,17 +454,20 @@ Reserved render-bundle and unmap-write opcodes are not accepted bodies yet. Thei
 remains G1/G2 work. The parallel ring lane owns transport code. The coordinator assigns independent
 review and owns integration of the remaining G0.1 work. No slice is marked complete by this checkpoint.
 
-## G0.3 platform blocker, November 6, 2026
+## G0.3 hardware checkpoint, November 6, 2026
 
-Native Mac SafariDriver reached readiness twice, but `POST /session` timed out while finding or
-launching compatible local Safari/RWIApplication, before collecting GPU data. The managing chat
-diagnosed a locked console, `CGSSessionScreenIsLocked=Yes`, and absent `AllowRemoteAutomation`.
-It owns the owner unlock and enable action. Do not retry or change settings until it reports the
-blocker fixed. Exact logs are
-`/work/reports/wave-20261106/waffle-features/gpu/measurement-mac-final.log` and
-`/work/reports/wave-20261106/waffle-features/gpu/measurement-mac-final.json`.
-Task-owned lock, listener and scratch cleanup passed.
+Desktop Safari 26.4 on the Apple M1 now passes the measured subset: worker GPU access,
+shared-buffer upload and readback, atomic wake, 1080p and 4K bitmap transfers, and two extra-device
+controls. The actual compiled triangle renders and keeps its last frame after SIGKILL at
+0.5, 3 and 10 seconds. Post-stop guest connections, devices, heap, frame textures and presentation
+canvases are zero, with one retained bitmap. Corrupted upload and suppressed transfer controls fail.
 
-A separate bounded iOS Simulator subset is assigned. It does not qualify physical-iPhone device
-or memory limits. Desktop and physical-iPhone qualification remain open. G1 proceeds without
-changing the approved architecture.
+The unlocked-console retry succeeded. Remote automation was already enabled; the earlier
+preference-domain check was wrong. No settings changed. Task-owned SafariDriver, session,
+listener, packet, scratch and lock cleanup passed. Results are in
+`/work/reports/wave-20261106/waffle-features/gpu/safari-desktop-g03-RESULT.md`.
+
+This subset does not qualify compositor latency, physical GPU memory, high-draw caps comparisons
+or physical iPhone behaviour. The iOS 26.5 Simulator passed worker isolation, shared atomic wait,
+OffscreenCanvas and bitmaprenderer controls, but its worker adapter request returned null.
+Full G0.3 remains open. G1 proceeds without changing the approved architecture.

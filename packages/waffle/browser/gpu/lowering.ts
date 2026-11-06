@@ -42,6 +42,7 @@ function omitSentinel(struct: string, name: string, value: WireValue): boolean {
     return true;
   const rule = sentinels[`${struct}.${name}`];
   if (rule === "uint32_max-to-omit" && value === 0xffffffff) return true;
+  if (rule === "uint64_max-to-omit" && value === 0xffffffffffffffffn) return true;
   return rule === "nan-to-omit" && typeof value === "number" && Number.isNaN(value);
 }
 
@@ -51,6 +52,9 @@ export class DescriptorLowering {
   dictionary(name: string, value: WireValue | undefined): Dictionary | undefined {
     if (value === null) return undefined;
     const input = wireObject(value);
+    if (name === "bind_group_entry") return this.#bindingResource(input);
+    if (name === "bind_group_layout_entry" && input.binding_array_size !== 0)
+      throw new GpuCallError("Browser binding arrays are unsupported");
     const layout = tables.structs[name];
     const names = dictionaries[name];
     if (!layout || !names) throw new GpuProtocolError(`Unclassified descriptor ${name}`);
@@ -140,7 +144,25 @@ export class DescriptorLowering {
       return this.#constants(value);
     if (struct === "render_pass_descriptor" && name === "color_attachments")
       return this.#attachments(value);
+    const selector = bindingArms[name];
+    if (struct === "bind_group_layout_entry" && selector && wireObject(value)[selector] === 0)
+      return undefined;
     return this.value(type, value);
+  }
+  #bindingResource(input: WireObject): Dictionary {
+    const arms = ["buffer", "sampler", "texture_view"].filter((name) => input[name] !== null);
+    const arm = arms[0];
+    if (arms.length !== 1 || !arm)
+      throw new GpuCallError("Bind group entry needs exactly one resource");
+    const type = arm === "texture_view" ? "texture_view" : arm;
+    const native = this.handles.native(wireHandle(input[arm]), objectKind(type));
+    if (arm !== "buffer") return { binding: input.binding, resource: native };
+    const resource: Dictionary = Object.create(null);
+    resource.buffer = native;
+    resource.offset = this.value("uint64", input.offset ?? null);
+    if (input.size !== 0xffffffffffffffffn)
+      resource.size = this.value("uint64", input.size ?? null);
+    return { binding: input.binding, resource };
   }
   #constants(value: WireValue): Dictionary {
     const result: Dictionary = Object.create(null);
@@ -193,3 +215,9 @@ export function destroyNative(value: unknown): void {
 }
 
 const tables: WireTables = gpuStream;
+const bindingArms: Readonly<Record<string, string>> = {
+  buffer: "type",
+  sampler: "type",
+  texture: "sample_type",
+  storage_texture: "access",
+};

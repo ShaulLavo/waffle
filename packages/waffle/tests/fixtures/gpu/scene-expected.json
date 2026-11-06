@@ -1,0 +1,360 @@
+{
+  "note": "Independent hand-transcribed little-endian records. Spaces separate wire fields, never native C struct bytes. Written before the G1 encoder and replay implementation.",
+  "vectors": [
+    {
+      "name": "buffer descriptor with u64 size",
+      "command": "device.create_buffer",
+      "input": {
+        "result": {
+          "id": 4,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "usage": 40,
+          "size": 24,
+          "mapped_at_creation": false
+        }
+      },
+      "hex": "16000000 38000000 04000000 01000000 03000000 01000000 00000000 00000000 2800000000000000 1800000000000000 00000000 00000000"
+    },
+    {
+      "name": "texture descriptor and empty view formats",
+      "command": "device.create_texture",
+      "input": {
+        "result": {
+          "id": 5,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "usage": 6,
+          "dimension": 2,
+          "size": {
+            "width": 2,
+            "height": 1,
+            "depth_or_array_layers": 1
+          },
+          "format": 18,
+          "mip_level_count": 1,
+          "sample_count": 1,
+          "view_formats": []
+        }
+      },
+      "hex": "17000000 48000000 05000000 01000000 03000000 01000000 00000000 00000000 0600000000000000 02000000 02000000 01000000 01000000 12000000 01000000 01000000 00000000"
+    },
+    {
+      "name": "optional default sampler",
+      "command": "device.create_sampler",
+      "input": {
+        "result": {
+          "id": 6,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": null
+      },
+      "hex": "18000000 20000000 06000000 01000000 03000000 01000000 00000000 00000000"
+    },
+    {
+      "name": "empty bind group layout",
+      "command": "device.create_bind_group_layout",
+      "input": {
+        "result": {
+          "id": 7,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "entries": []
+        }
+      },
+      "hex": "19000000 28000000 07000000 01000000 03000000 01000000 00000000 00000000 00000000 00000000"
+    },
+    {
+      "name": "explicit pipeline layout",
+      "command": "device.create_pipeline_layout",
+      "input": {
+        "result": {
+          "id": 8,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "bind_group_layouts": [
+            {
+              "id": 7,
+              "generation": 1
+            }
+          ],
+          "immediate_size": 0
+        }
+      },
+      "hex": "1a000000 30000000 08000000 01000000 03000000 01000000 00000000 00000000 01000000 07000000 01000000 00000000"
+    },
+    {
+      "name": "empty bind group",
+      "command": "device.create_bind_group",
+      "input": {
+        "result": {
+          "id": 9,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "layout": {
+            "id": 7,
+            "generation": 1
+          },
+          "entries": []
+        }
+      },
+      "hex": "1b000000 30000000 09000000 01000000 03000000 01000000 00000000 00000000 07000000 01000000 00000000 00000000"
+    },
+    {
+      "name": "buffer upload span replaces pointer and size",
+      "command": "queue.write_buffer",
+      "input": {
+        "receiver": {
+          "id": 10,
+          "generation": 1
+        },
+        "buffer": {
+          "id": 4,
+          "generation": 1
+        },
+        "buffer_offset": 8,
+        "data": [1, 2, 3, 4]
+      },
+      "hex": "1c000000 28000000 0a000000 01000000 04000000 01000000 0800000000000000 04000000 01020304"
+    },
+    {
+      "name": "texture upload span and aligned layout",
+      "command": "queue.write_texture",
+      "input": {
+        "receiver": {
+          "id": 10,
+          "generation": 1
+        },
+        "destination": {
+          "texture": {
+            "id": 5,
+            "generation": 1
+          },
+          "mip_level": 0,
+          "origin": {
+            "x": 1,
+            "y": 2,
+            "z": 3
+          },
+          "aspect": 0
+        },
+        "data": [9, 8, 7],
+        "data_layout": {
+          "offset": 0,
+          "bytes_per_row": 4294967295,
+          "rows_per_image": 4294967295
+        },
+        "write_size": {
+          "width": 1,
+          "height": 1,
+          "depth_or_array_layers": 1
+        }
+      },
+      "hex": "1d000000 58000000 0a000000 01000000 05000000 01000000 00000000 01000000 02000000 03000000 00000000 03000000 09080700 00000000 0000000000000000 ffffffff ffffffff 01000000 01000000 01000000 00000000"
+    },
+    {
+      "name": "bind group with dynamic offset array",
+      "command": "render_pass_encoder.set_bind_group",
+      "input": {
+        "group_index": 2,
+        "group": {
+          "id": 9,
+          "generation": 1
+        },
+        "dynamic_offsets": [256, 512]
+      },
+      "hex": "1e000000 20000000 02000000 09000000 01000000 02000000 00010000 00020000"
+    },
+    {
+      "name": "vertex buffer whole-size sentinel",
+      "command": "render_pass_encoder.set_vertex_buffer",
+      "input": {
+        "slot": 1,
+        "buffer": {
+          "id": 4,
+          "generation": 1
+        },
+        "offset": 8,
+        "size": "WHOLE_SIZE"
+      },
+      "hex": "1f000000 28000000 01000000 04000000 01000000 00000000 0800000000000000 ffffffffffffffff"
+    },
+    {
+      "name": "index buffer size zero is not omitted",
+      "command": "render_pass_encoder.set_index_buffer",
+      "input": {
+        "buffer": {
+          "id": 4,
+          "generation": 1
+        },
+        "format": 1,
+        "offset": 4,
+        "size": 0
+      },
+      "hex": "20000000 28000000 04000000 01000000 01000000 00000000 0400000000000000 0000000000000000"
+    },
+    {
+      "name": "indexed draw signed base vertex",
+      "command": "render_pass_encoder.draw_indexed",
+      "input": {
+        "index_count": 6,
+        "instance_count": 2,
+        "first_index": 1,
+        "base_vertex": -3,
+        "first_instance": 4
+      },
+      "hex": "21000000 20000000 06000000 02000000 01000000 fdffffff 04000000 00000000"
+    },
+    {
+      "name": "sampler u16 is two-byte aligned",
+      "command": "device.create_sampler",
+      "input": {
+        "result": {
+          "id": 6,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "address_mode_u": 0,
+          "address_mode_v": 0,
+          "address_mode_w": 0,
+          "mag_filter": 0,
+          "min_filter": 0,
+          "mipmap_filter": 0,
+          "lod_min_clamp": 0,
+          "lod_max_clamp": 32,
+          "compare": 0,
+          "max_anisotropy": 4660
+        }
+      },
+      "hex": "18000000 50000000 06000000 01000000 03000000 01000000 01000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000042 00000000 3412 0000 00000000"
+    }
+  ],
+  "structs": [
+    {
+      "name": "buffer binding u64 alignment",
+      "struct": "buffer_binding_layout",
+      "input": {
+        "next_in_chain": [],
+        "type": 2,
+        "has_dynamic_offset": true,
+        "min_binding_size": 16
+      },
+      "hex": "00000000 02000000 01000000 00000000 1000000000000000"
+    },
+    {
+      "name": "C bind group resource arms and whole-size",
+      "struct": "bind_group_entry",
+      "input": {
+        "next_in_chain": [],
+        "binding": 1,
+        "buffer": {
+          "id": 4,
+          "generation": 1
+        },
+        "offset": 8,
+        "size": "WHOLE_SIZE",
+        "sampler": null,
+        "texture_view": null
+      },
+      "hex": "00000000 01000000 04000000 01000000 0800000000000000 ffffffffffffffff 0000000000000000 0000000000000000"
+    },
+    {
+      "name": "layout entry active buffer and unused arms",
+      "struct": "bind_group_layout_entry",
+      "input": {
+        "next_in_chain": [],
+        "binding": 0,
+        "visibility": 2,
+        "binding_array_size": 0,
+        "buffer": {
+          "next_in_chain": [],
+          "type": 2,
+          "has_dynamic_offset": true,
+          "min_binding_size": 16
+        },
+        "sampler": {
+          "next_in_chain": [],
+          "type": 0
+        },
+        "texture": {
+          "next_in_chain": [],
+          "sample_type": 0,
+          "view_dimension": 0,
+          "multisampled": false
+        },
+        "storage_texture": {
+          "next_in_chain": [],
+          "access": 0,
+          "format": 0,
+          "view_dimension": 0
+        }
+      },
+      "hex": "00000000 00000000 0200000000000000 00000000 00000000 02000000 01000000 1000000000000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000"
+    },
+    {
+      "name": "render pass depth and stencil attachment",
+      "struct": "render_pass_depth_stencil_attachment",
+      "input": {
+        "next_in_chain": [],
+        "view": {
+          "id": 4,
+          "generation": 1
+        },
+        "depth_load_op": 2,
+        "depth_store_op": 1,
+        "depth_clear_value": 1,
+        "depth_read_only": false,
+        "stencil_load_op": 0,
+        "stencil_store_op": 0,
+        "stencil_clear_value": 0,
+        "stencil_read_only": false
+      },
+      "hex": "00000000 04000000 01000000 02000000 01000000 0000803f 00000000 00000000 00000000 00000000 00000000"
+    }
+  ]
+}

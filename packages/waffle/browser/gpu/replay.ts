@@ -6,6 +6,7 @@ import {
   WireReader,
   wireHandle,
   wireNumber,
+  wireBytes,
   type DecodedCall,
 } from "./codec.js";
 import { CompletionOwner } from "./completions.js";
@@ -69,6 +70,7 @@ export class GpuReplay {
   #cursor: Cursor | undefined;
   #waiting: WaitingSurface | undefined;
   readonly #devices = new Map<object, () => void>();
+  readonly #frameTextures = new WeakSet<object>();
   readonly #finished = new Map<number, number>();
   #live = true;
   constructor(
@@ -304,6 +306,30 @@ export class GpuReplay {
       case "error-scope":
         this.#errorScope(call, receiver);
         return false;
+      case "descriptor-method":
+        this.#bind(
+          call,
+          result,
+          nativeCall(receiver, layout.lowering.member, [
+            this.#lower.dictionary(layout.lowering.descriptor, fields.descriptor),
+          ]),
+        );
+        return false;
+      case "write-buffer":
+        nativeCall(receiver, layout.lowering.member, [
+          this.#lower.value("object.buffer", fields.buffer ?? null),
+          this.#lower.value("uint64", fields.buffer_offset ?? null),
+          wireBytes(fields.data),
+        ]);
+        return false;
+      case "write-texture":
+        nativeCall(receiver, layout.lowering.member, [
+          this.#lower.dictionary("texel_copy_texture_info", fields.destination),
+          wireBytes(fields.data),
+          this.#lower.dictionary("texel_copy_buffer_layout", fields.data_layout),
+          this.#lower.dictionary("extent_3D", fields.write_size),
+        ]);
+        return false;
       case "method":
         this.#method(call, receiver, result);
         return false;
@@ -370,6 +396,28 @@ export class GpuReplay {
           fields.first_instance,
         ]);
         return;
+      case "render_pass_encoder.set_bind_group":
+        nativeCall(receiver, "setBindGroup", [
+          fields.group_index,
+          fields.group === null
+            ? null
+            : this.#lower.value("object.bind_group", fields.group ?? null),
+          this.#lower.value("array<uint32>", fields.dynamic_offsets ?? null),
+        ]);
+        return;
+      case "render_pass_encoder.set_vertex_buffer":
+      case "render_pass_encoder.set_index_buffer":
+        this.#bufferBinding(call, receiver);
+        return;
+      case "render_pass_encoder.draw_indexed":
+        nativeCall(receiver, "drawIndexed", [
+          fields.index_count,
+          fields.instance_count,
+          fields.first_index,
+          fields.base_vertex,
+          fields.first_instance,
+        ]);
+        return;
       case "render_pass_encoder.end":
         nativeCall(receiver, "end", []);
         return;
@@ -387,6 +435,26 @@ export class GpuReplay {
       default:
         throw new GpuProtocolError("Unclassified method lowering");
     }
+  }
+  #bufferBinding(call: DecodedCall, receiver: object): void {
+    const fields = call.fields;
+    const buffer =
+      fields.buffer === null ? null : this.#lower.value("object.buffer", fields.buffer ?? null);
+    const offset = this.#lower.value("uint64", fields.offset ?? null);
+    const size =
+      fields.size === 0xffffffffffffffffn
+        ? undefined
+        : this.#lower.value("uint64", fields.size ?? null);
+    if (call.layout.name === "render_pass_encoder.set_vertex_buffer") {
+      nativeCall(receiver, "setVertexBuffer", [fields.slot, buffer, offset, size]);
+      return;
+    }
+    nativeCall(receiver, "setIndexBuffer", [
+      buffer,
+      this.#lower.value("enum.index_format", fields.format ?? null),
+      offset,
+      size,
+    ]);
   }
   #request(
     call: DecodedCall,
@@ -512,6 +580,7 @@ export class GpuReplay {
   }
   #bindSurfaceTexture(call: DecodedCall, result: Handle | undefined, texture: object | null): void {
     if (texture) {
+      this.#frameTextures.add(texture);
       this.#bind(call, result, texture);
       return;
     }
@@ -549,7 +618,10 @@ export class GpuReplay {
       }
       return;
     }
-    if (kind !== "device" && kind !== "texture") return;
+    // Releasing a guest handle is not WebGPU destroy(). Native bind groups and
+    // command buffers retain ordinary resources. The owning device retires them.
+    // Surface frames alone have the explicit discard-on-last-handle contract.
+    if (kind !== "device" && !(kind === "texture" && this.#frameTextures.has(value))) return;
     this.#devices.get(value)?.();
     this.#devices.delete(value);
     destroyNative(value);

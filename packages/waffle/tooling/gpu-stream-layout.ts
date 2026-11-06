@@ -8,6 +8,12 @@ class Writer {
     while (this.bytes.length % alignment) this.bytes.push(0);
   }
 
+  span(value: unknown): void {
+    const bytes = value instanceof Uint8Array ? value : list(value).map((byte) => uint(byte, 255));
+    this.integer(bytes.length, 4);
+    for (const byte of bytes) this.bytes.push(byte);
+  }
+
   integer(value: unknown, size: 2 | 4 | 8, signed = false): void {
     this.align(size);
     const bits = integerBits(value, size, signed);
@@ -81,6 +87,7 @@ export function gpuFlags(tables: WireTables, type: string, value: bigint): numbe
 }
 
 function alignment(type: string): number {
+  if (type === "uint16") return 2;
   if (
     ["uint64", "float64", "float64_supertype", "usize", "token"].includes(type) ||
     type.startsWith("bitflag.")
@@ -157,6 +164,7 @@ function writeType(
 }
 
 function writeScalar(writer: Writer, tables: WireTables, type: string, value: unknown): void {
+  if (type === "bytes") return writer.span(value);
   if (type === "bool") {
     if (value !== true && value !== false) throw new Error("Expected boolean");
     writer.integer(value ? 1 : 0, 4);
