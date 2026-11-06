@@ -1,3 +1,4 @@
+import { navigateTestPage } from "../browser-navigation.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { isAbsolute, join } from "node:path";
@@ -330,7 +331,7 @@ export async function frameworkDOMControl(
         mode === "missing-cleanup" ? 1800 : 12000,
       );
       await host.openPage(origin + "/", async () => {
-        await page.goto(origin + "/");
+        await navigateTestPage(page, origin + "/");
         if (mode === "entry-tester" || mode === "known-frame-error") {
           const element = await page.$("iframe[data-vitest]");
           const frame = await element?.contentFrame();
