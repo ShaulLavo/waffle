@@ -83,28 +83,29 @@ OffscreenCanvas and send frames through `transferToImageBitmap()` to `bitmaprend
 | Area             | Decision                                                                                                                                                                                                                                                                                                                                                                                      | Reason / cost                                                                                                                                                                                       |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Service shape    | One GPU service worker per runtime, created lazily on the first `runtime_gpu.open` or GPU surface use. Each process gets an isolated connection with its own adapters, devices and handle tables.                                                                                                                                                                                             | Matches every browser engine ([prior art](#prior-art)). A canvas is pinned to the worker that first calls `getContext`, so only a worker that outlives processes can hand a canvas to the next one. |
-| Canvas ownership | `display.createSurface` transfers the OffscreenCanvas to the GPU service before any context exists. The service calls `getContext("webgpu")` once and keeps that context until `surface.dispose()`.                                                                                                                                                                                           | `transferControlToOffscreen` works once per element, and `getContext` pins the canvas to the calling worker.                                                                                        |
+| Canvas ownership | Transfer the visible canvas once to the GPU service and retain its bitmaprenderer context. Render into stable ordinary textures; a private WebGPU OffscreenCanvas exists only for presentation. | Guest pauses and scheduler yields cannot expire frame textures; retained visible pixels do not depend on a killed device. |
 | Identity         | Guest-allocated `(id, generation)` handles per object type, as in Dawn Wire. `release` on drop. Per-connection tables.                                                                                                                                                                                                                                                                        | Creation needs no round trip, so almost every call is one-way. Generations catch use after release.                                                                                                 |
 | Stream           | Binary, little-endian, whole commands. Command encoders, render passes, compute passes and render bundles are recorded in the guest and sent as one blob at `finish()`.                                                                                                                                                                                                                       | Thousands of draws per frame cross the boundary as one copy. Resource creation and queue calls stay in the ordered stream.                                                                          |
 | Ordering         | One ordered stream per connection. Multi-producer ring with an atomic reservation; the client serializes appends under its own lock.                                                                                                                                                                                                                                                          | Matches guest happens-before. Per-thread lanes could not order a `createBuffer` on one thread before a `submit` on another.                                                                         |
 | Async results    | Every async operation carries a guest token. Results arrive as completion records; large payloads (mapped bytes) sit in a payload area copied on demand.                                                                                                                                                                                                                                      | One mechanism for replies and callbacks. The client decides which waits block.                                                                                                                      |
-| Pacing           | `getCurrentTexture` reserves one of two frame slots per surface; the display module's `requestAnimationFrame` tick releases them.                                                                                                                                                                                                                                                             | Bounds latency and memory without the guest knowing about rAF. Hidden tabs stop releasing slots, which stops rendering.                                                                             |
+| Pacing | One presentation credit per surface per page rAF tick, separate from texture identity. Repeated acquire aliases one open frame. | Bounded presentation with no queue of undisplayed frames; hidden tabs stop credit. |
 | Bad input        | A failed creation is not a protocol error: its handle becomes an error object and WebGPU reports the failure through error scopes (contagious invalidity, as in Firefox). Malformed bytes, unknown opcodes, bad spans, stale handles and generations that do not increase are protocol errors: the service destroys that connection's devices and reports device loss with reason `protocol`. | Legal-but-wrong calls behave as they do on the web. Malformed streams from a guest never reach the page or other processes.                                                                         |
 | Loading          | Separate chunk and gzip budget in `tooling/runtime-size.ts`. No effect on core, filesystem or process bundles.                                                                                                                                                                                                                                                                                | Pay for what you use.                                                                                                                                                                               |
 
 ## Canvas and surface ownership
 
-- `display.createSurface(canvas)` keeps the element. On the first GPU request for that surface the
-  display module calls `canvas.transferControlToOffscreen()` and transfers the result to the GPU
-  service with the surface id.
-- A connection may configure a surface only while its process holds that surface's grant
-  ([grants](guest-windows.md#recommended-decisions)). On revocation the service unconfigures the
-  context, destroys the process's devices and releases its ids. The canvas keeps its last frame
-  until the next holder configures it.
-- `surface.dispose()` releases the OffscreenCanvas in the service. The element cannot be reused for
-  WebGPU afterwards; the embedder creates a new one.
-- Canvas size: the guest's `configure` sets `width` and `height` on the OffscreenCanvas from the
-  sizes delivered in `resize` records, in physical pixels.
+The [implementation design](gpu-bridge-implementation.md) refines this plan after independent
+review. The visible granted OffscreenCanvas uses `bitmaprenderer` and stays strongly held in the
+one GPU service. It never has a WebGPU context. Acquiring creates an ordinary, stable texture on
+the process's device, which can span guest pauses and service turns. Present copies it through a
+private WebGPU OffscreenCanvas and moves the image into the visible bitmap in one synchronous
+service step.
+
+Revocation makes the connection terminal before destroying its devices and presenters. The
+visible bitmap remains after ordinary exit and kill until the next holder presents. Size changes,
+surface disposal, runtime disposal, service failure and browser-initiated device loss have the
+explicit limits in the implementation design. A new holder configures only after the old service
+owner releases the surface. No killed process device is kept alive for retention.
 
 ## Guest ABI: `runtime_gpu`
 
@@ -206,8 +207,9 @@ features and limits, or failure), `mapped` (payload handle, or failure), `work-d
   task. After a task that executed a `present`, it returns to the event loop so the browser
   commits the frame. It caps work per task so one connection cannot starve another, and visits
   connections round-robin.
-- `acquire(surface, id)` binds the guest's chosen texture id to `context.getCurrentTexture()` for
-  that frame. The id is invalid after `present`.
+- Acquire binds the guest's chosen texture id to a stable ordinary frame texture. Present moves
+  its image through a service-private canvas into the visible bitmap. Native canvas textures never
+  survive a service turn. Repeated acquire and post-present invalid use follow the implementation design.
 - Error scopes: the service pushes and pops real WebGPU error scopes in stream order and returns
   the popped result as a completion, so `pop-error-scope` is as accurate as on the web.
 - `uncapturederror` and `device.lost` become completion records. The client decides what to do
@@ -221,8 +223,11 @@ features and limits, or failure), `mapped` (payload handle, or failure), `work-d
 
 The first release copies data twice: guest memory to ring (in the `append` import, inside the
 guest's worker) and ring to WebGPU (`writeBuffer`/`writeTexture`). Mesh uploads in a game like
-Horizon move tens of megabytes per second while streaming terrain, so the ring defaults to 16 MiB
-per connection, sized in the [measurement slice](#delivery-slices-and-effort).
+Horizon move tens of megabytes per second while streaming terrain, so the command ring starts at 4 MiB
+per connection and is sized in the [measurement slice](#delivery-slices-and-effort). All shared
+buffers use the already-admitted control allocator before construction. The implementation design
+uses fixed payload storage, bounded chunk/reply state and connection-local resource failure rather
+than an uncounted growable arena or an unbounded pending queue.
 
 A later, measured optimization lets the service read upload bytes straight from the guest's shared
 memory for `wasm32-wasip1-threads` guests, whose memory is already a `SharedArrayBuffer` owned by
@@ -235,8 +240,9 @@ filesystem connections. Decide after measurement, not before.
 
 ## Browser support
 
-The service needs `navigator.gpu` in a dedicated worker, a WebGPU context on an OffscreenCanvas,
-and `Atomics.waitAsync`. As researched on 2026-10-31 (record exact versions again in G0):
+The service needs `navigator.gpu` in a dedicated worker, WebGPU on a standalone OffscreenCanvas,
+WebGPU image transfer, a strongly held visible OffscreenCanvas with bitmaprenderer, and
+`Atomics.waitAsync`. As researched on 2026-10-31 (record exact versions again in G0):
 
 - Safari 26, including iOS, has WebGPU in workers and on OffscreenCanvas
   ([BCD](https://github.com/mdn/browser-compat-data/blob/main/api/OffscreenCanvas.json)).
