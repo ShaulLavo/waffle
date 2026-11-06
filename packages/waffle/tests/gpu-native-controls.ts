@@ -32,8 +32,9 @@ const suites = [
     controls: copyDrawNativeControls,
     routes: copyDrawNativeRoutes,
   },
-];
+] as const;
 
+type NativeSuite = (typeof suites)[number]["name"];
 export type NativeControlInvocation = { path: string; entry: string; control: string };
 type Invoke = (invocation: NativeControlInvocation) => Promise<unknown>;
 
@@ -45,14 +46,22 @@ export async function nativeControlRoutes(): Promise<Record<string, Blob | strin
   return routes;
 }
 
-export function requireNativeControlResult(result: unknown, control: string): void {
+export function requireNativeControlResult(
+  result: unknown,
+  control: string,
+  suite: NativeSuite,
+): void {
   if (!result || typeof result !== "object") throw new Error(`Missing native result: ${control}`);
   if (!("control" in result) || result.control !== control)
     throw new Error(`Wrong native control result: ${control}`);
   if (!("compiledGuest" in result) || result.compiledGuest !== false)
     throw new Error(`Native control must not claim compiled guest acceptance: ${control}`);
+  if (suite === "scene" && !("kind" in result))
+    throw new Error(`Missing native result kind: ${control}`);
   if ("kind" in result && result.kind !== "native-lowering-control")
     throw new Error(`Wrong native result kind: ${control}`);
+  if (suite !== "scene" && !("status" in result))
+    throw new Error(`Required native control did not pass: ${control}: missing status`);
   if (
     "status" in result &&
     result.status !== "passed" &&
@@ -70,7 +79,7 @@ export async function runNativeControls(
   for (const suite of suites) {
     for (const control of suite.controls) {
       const result = await invoke({ path: suite.path, entry: suite.entry, control });
-      requireNativeControlResult(result, control);
+      requireNativeControlResult(result, control, suite.name);
       report({
         kind: "native-lowering-control",
         compiledGuest: false,
