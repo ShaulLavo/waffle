@@ -2103,7 +2103,6 @@ export class BrowserProcessBroker {
       const errors: unknown[] = [];
       this.disposeNetwork(child);
       if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
-      child.graphics = undefined;
       const notifications = child.notifications;
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(async () => {
@@ -2118,6 +2117,8 @@ export class BrowserProcessBroker {
         child.launched?.failed(errors);
         throw new AggregateError(errors, "Child physical stop failed");
       }
+      // The launch revocation backing stays strongly owned through physical guest stop.
+      child.graphics = undefined;
       child.group?.stopped();
       child.launched?.stopped();
       this.children.delete(child.context.pid);

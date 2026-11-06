@@ -6,5 +6,8 @@ const host = globalThis as unknown as {
   postMessage(message: unknown): void;
   onmessage: ((event: MessageEvent<GpuServiceRequest>) => void) | null;
 };
-const service = new GpuService((message) => host.postMessage(message));
-host.onmessage = ({ data }: MessageEvent<GpuServiceRequest>) => service.receive(data);
+let service: GpuService | undefined;
+host.onmessage = ({ data }: MessageEvent<GpuServiceRequest>) => {
+  service ??= new GpuService((message) => host.postMessage(message));
+  service.receive(data);
+};
