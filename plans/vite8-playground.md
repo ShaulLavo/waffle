@@ -172,7 +172,11 @@ A separate Waffle bug was reproduced before its fix. Replacing a `PreviewRouter`
 old root relay open, and its dynamic connection lookup could reach the replacement listener.
 `register` now closes and removes the old root binding when server identity changes. Registering
 the same server preserves its binding. Regression tests cover active upgrade retirement, rejected
-old HTTP and socket calls, a fresh replacement grant, and stale unregister calls.
+old HTTP and socket calls, a fresh replacement grant, and stale unregister calls. Independent
+review also found that a throwing retirement callback stopped the cleanup loop. The coordinator
+added failing-first tests with two live connections, drains close and notification callbacks
+before reporting collected errors, and completes routing transitions despite retirement errors.
+Replacement, unregister and rebind failure paths preserve a usable fresh grant.
 
 `packages/waffle/tests/preview-vite.test.ts` runs the existing stock Vite 8.3.4 dependency with a
 small vanilla TypeScript and CSS fixture, without a Vite plugin or application patch. A test-only

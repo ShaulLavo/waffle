@@ -743,3 +743,133 @@ test("registering the same server preserves its live binding and connections", a
     host.close();
   }
 });
+
+type RetirementFailure = "transport-close" | "sink-error" | "reentrant-unregister";
+
+function retirementFixture(failure: RetirementFailure) {
+  const f = fixture();
+  let closes = 0;
+  let writes = 0;
+  let notifications = 0;
+  let replacements = 0;
+  const callbackFailure = new Error(failure);
+  const previous: PreviewServer = {
+    request: f.server.request,
+    connect() {
+      return {
+        write() {
+          writes++;
+        },
+        close() {
+          closes++;
+          if (closes !== 1) return;
+          if (failure === "transport-close") throw callbackFailure;
+          if (failure === "reentrant-unregister") f.router.unregister(3137, previous);
+        },
+      };
+    },
+  };
+  const replacement: PreviewServer = {
+    request: f.server.request,
+    connect() {
+      replacements++;
+      return { write() {}, close() {} };
+    },
+  };
+  const sink: ConnectionSink = {
+    data() {},
+    end() {},
+    error() {
+      notifications++;
+      if (failure === "sink-error" && notifications === 1) throw callbackFailure;
+    },
+  };
+  f.router.register(3137, previous);
+  return {
+    router: f.router,
+    previous,
+    replacement,
+    sink,
+    get closes() {
+      return closes;
+    },
+    get writes() {
+      return writes;
+    },
+    get notifications() {
+      return notifications;
+    },
+    get replacements() {
+      return replacements;
+    },
+  };
+}
+
+for (const failure of [
+  "transport-close",
+  "sink-error",
+  "reentrant-unregister",
+] satisfies RetirementFailure[]) {
+  test(`replacement retires every old connection after ${failure}`, async () => {
+    const f = retirementFixture(failure);
+    const host = await f.router.bindHost({ port: 3137 });
+    const first = host.connect(host.authorization, socketRequest(), f.sink);
+    const second = host.connect(host.authorization, socketRequest(), f.sink);
+    let retirementError: unknown;
+    try {
+      f.router.register(3137, f.replacement);
+    } catch (error) {
+      retirementError = error;
+    }
+    expect(host.closed).toBe(true);
+    expect(f.closes).toBe(2);
+    expect(f.notifications).toBe(2);
+    const before = f.writes;
+    first?.write(encoder.encode("late first"));
+    second?.write(encoder.encode("late second"));
+    expect(f.writes).toBe(before);
+    expect(() => host.close()).not.toThrow();
+    if (failure === "reentrant-unregister") expect(retirementError).toBeUndefined();
+    else expect(retirementError).toBeInstanceOf(AggregateError);
+    const fresh = await f.router.bindHost({ port: 3137 });
+    try {
+      expect(fresh.connect(fresh.authorization, socketRequest(), f.sink)).not.toBeNull();
+      expect(f.replacements).toBe(1);
+    } finally {
+      fresh.close();
+    }
+  });
+}
+
+for (const failure of ["transport-close", "sink-error"] satisfies RetirementFailure[]) {
+  for (const action of ["unregister", "rebind"]) {
+    test(`${action} retires every old connection after ${failure}`, async () => {
+      const f = retirementFixture(failure);
+      const host = await f.router.bindHost({ port: 3137 });
+      const first = host.connect(host.authorization, socketRequest(), f.sink);
+      const second = host.connect(host.authorization, socketRequest(), f.sink);
+      if (action === "unregister") {
+        expect(() => f.router.unregister(3137, f.previous)).toThrow(AggregateError);
+      } else {
+        await expect(f.router.bindHost({ port: 3137 })).rejects.toBeInstanceOf(AggregateError);
+      }
+      expect(host.closed).toBe(true);
+      expect(f.closes).toBe(2);
+      expect(f.notifications).toBe(2);
+      const before = f.writes;
+      first?.write(encoder.encode("late first"));
+      second?.write(encoder.encode("late second"));
+      expect(f.writes).toBe(before);
+      expect(() => f.router.url(3137)).toThrow("No authenticated preview host");
+      expect(f.router.serves(3137)).toBe(action === "rebind");
+      f.router.register(3137, f.replacement);
+      const fresh = await f.router.bindHost({ port: 3137 });
+      try {
+        expect(fresh.connect(fresh.authorization, socketRequest(), f.sink)).not.toBeNull();
+        expect(f.replacements).toBe(1);
+      } finally {
+        fresh.close();
+      }
+    });
+  }
+}

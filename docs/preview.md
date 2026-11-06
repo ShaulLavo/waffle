@@ -52,7 +52,10 @@ The concrete direct relay API is:
 - `relay.close()` revokes the grant and closes outstanding connections. The owner
   AbortSignal, a replacement binding, server unregister, or registration of a different
   server at the same port also revokes it. Registering the same server again preserves
-  its live binding. A new server requires a fresh `bindHost` grant.
+  its live binding. A new server requires a fresh `bindHost` grant. Retirement
+  attempts every connection close and notification before reporting callback failures
+  as an `AggregateError`. Replacement registration and unregister complete their routing
+  transition before reporting those errors. A failed rebind leaves no live binding.
 - `relay.authorization` is immutable `{owner, port, origin, capability}`. It is
   specific to one router owner, port, origin, and lifetime. Wrong grant fields or
   another request/socket origin fail before a virtual connection opens.
