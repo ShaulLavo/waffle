@@ -1431,10 +1431,15 @@ jobs:
 
   gate:
     name: Complete CI gate
-    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (always()) }}
+    if: always()
     needs: [changes, network-wasm, awk, procps, diffutils, gh, jq, curl, tar, package, libc, browser, site, findutils-xargs, coreutils-echo, coreutils-checksums, programs]
     runs-on: ubuntu-latest
     steps:
+      - name: Require a ready PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo '::error::Mark this PR ready for review to run the required checks.'
+          exit 1
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}
