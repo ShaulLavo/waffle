@@ -28,6 +28,7 @@ export default {
         "tests/fixtures/gpu/integration-{guest,service-worker,page}.ts",
         "tests/fixtures/gpu/lazy-page.ts",
         "tests/fixtures/gpu/qualification-worker.ts",
+        "tests/fixtures/gpu/measurement-{page,worker,runtime}.ts",
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",
         "tests/fixtures/interrupt-dom-consumer.ts",
