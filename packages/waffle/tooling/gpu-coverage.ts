@@ -29,6 +29,11 @@ const groups = [
   "instance",
 ];
 
+const unsupportedDeclarations = {
+  "no-external-textures": "external_texture.set_label",
+  "no-native-api": "command_encoder.write_timestamp",
+};
+
 function nonempty(value: unknown, label: string): string {
   const result = text(value);
   if (!result.trim()) throw new Error(`Missing ${label}`);
@@ -66,8 +71,8 @@ function parseEntry(value: unknown, calls: ReadonlyMap<string, CallLayout>): Ent
   const input = record(value);
   const name = nonempty(input.name, "method name");
   const group = nonempty(input.group, `group for ${name}`);
-  const reason = nonempty(input.reason, `concrete reason for ${name}`);
-  if (reason.trim().length < 24 || /^(todo|tbd|later)\b/i.test(reason))
+  const reason = nonempty(input.reason, `concrete reason for ${name}`).trim();
+  if (reason.length < 24 || /^(todo|tbd|later)\b/i.test(reason))
     throw new Error(`Missing concrete reason for ${name}`);
   if (!groups.includes(group)) throw new Error(`Invalid coverage group for ${name}`);
   const base = { name, group, reason };
@@ -79,6 +84,8 @@ function parseEntry(value: unknown, calls: ReadonlyMap<string, CallLayout>): Ent
   if (input.category !== "unsupported") throw new Error(`Invalid coverage category for ${name}`);
   if (input.boundary !== "no-external-textures" && input.boundary !== "no-native-api")
     throw new Error(`Missing documented browser/guest boundary for ${name}`);
+  if (unsupportedDeclarations[input.boundary] !== name)
+    throw new Error(`Unsupported boundary does not apply to ${name}`);
   return { ...base, category: input.category, boundary: input.boundary };
 }
 
