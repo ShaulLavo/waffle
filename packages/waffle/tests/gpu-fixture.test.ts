@@ -58,21 +58,26 @@ function record(value: unknown): Record<string, unknown> {
 }
 const handle = (id: number) => ({ id, generation: 1 });
 
-function renderCommands(): Uint8Array {
+function renderCommands(
+  base = 8,
+  load = 2,
+  clear = { r: 0, g: 0, b: 0, a: 1 },
+  draw = true,
+): Uint8Array {
   const begin = encodeGpuCommand(gpuStream, "command_encoder.begin_render_pass", {
-    result: handle(11),
+    result: handle(base + 3),
     descriptor: {
       next_in_chain: [],
       label: "",
       color_attachments: [
         {
           next_in_chain: [],
-          view: handle(9),
+          view: handle(base + 1),
           depth_slice: 0xffffffff,
           resolve_target: null,
-          load_op: 2,
+          load_op: load,
           store_op: 1,
-          clear_value: { r: 0, g: 0, b: 0, a: 1 },
+          clear_value: clear,
         },
       ],
       depth_stencil_attachment: null,
@@ -80,17 +85,24 @@ function renderCommands(): Uint8Array {
       timestamp_writes: null,
     },
   });
-  const records = [begin].concat([
-    encodeGpuCommand(gpuStream, "render_pass_encoder.set_pipeline", { pipeline: handle(7) }),
-    encodeGpuCommand(gpuStream, "render_pass_encoder.draw", {
-      vertex_count: 3,
-      instance_count: 1,
-      first_vertex: 0,
-      first_instance: 0,
-    }),
+  const records = [begin];
+  if (draw)
+    records.push(
+      encodeGpuCommand(gpuStream, "render_pass_encoder.set_pipeline", { pipeline: handle(7) }),
+      encodeGpuCommand(gpuStream, "render_pass_encoder.draw", {
+        vertex_count: 3,
+        instance_count: 1,
+        first_vertex: 0,
+        first_instance: 0,
+      }),
+    );
+  records.push(
     encodeGpuCommand(gpuStream, "render_pass_encoder.end", {}),
-    encodeGpuCommand(gpuStream, "command_encoder.finish", { result: handle(12), descriptor: null }),
-  ]);
+    encodeGpuCommand(gpuStream, "command_encoder.finish", {
+      result: handle(base + 4),
+      descriptor: null,
+    }),
+  );
   return Buffer.concat(records);
 }
 
@@ -148,6 +160,7 @@ test("the actual C encoders match ten independent vectors and the nested render 
   envelope.writeUInt32LE(nested.length, 16);
   envelope.set(nested, 20);
   expect(vectors.get("encode")).toBe(hex(envelope));
+  expect(vectors.get("release")).toBe("001000001800000008000000200000000100000000000000");
   const goldenPipeline = expected.vectors.find(
     (entry) => entry.command === "device.create_render_pipeline",
   );
@@ -363,7 +376,15 @@ class FixtureExit extends Error {
     super(`Guest exited ${code}`);
   }
 }
-type ReplyFault = "none" | "adapter" | "scope" | "present" | "token" | "framing" | "exception";
+type ReplyFault =
+  | "none"
+  | "adapter"
+  | "scope"
+  | "present"
+  | "token"
+  | "framing"
+  | "exception"
+  | "late-exception";
 
 // A protocol-only command runner. It has no GPU or canvas and cannot qualify rendering.
 class FixtureProtocolHost {
@@ -374,6 +395,10 @@ class FixtureProtocolHost {
   readonly replies: Uint8Array[] = [];
   readonly reads: number[] = [];
   readonly timeouts: bigint[] = [];
+  readonly readPresentCounts: number[] = [];
+  readonly scopes: number[] = [];
+  readonly acquired = new Set<number>();
+  readonly presented = new Set<number>();
   closed = false;
   closes = 0;
   credit = false;
@@ -381,6 +406,7 @@ class FixtureProtocolHost {
   constructor(
     args: string[],
     readonly fault: ReplyFault = "none",
+    readonly injectExpiredValidation = false,
   ) {
     this.args = ["triangle"].concat(args).map((arg) => new TextEncoder().encode(`${arg}\0`));
   }
@@ -412,20 +438,52 @@ class FixtureProtocolHost {
       return;
     }
     if (opcode === 5) {
-      this.reply("surface-texture", view.getUint32(16, true), { texture: handle(8), status: 1 });
+      const texture = view.getUint32(8, true);
+      this.acquired.add(texture);
+      this.reply("surface-texture", view.getUint32(16, true), {
+        texture: handle(texture),
+        status: 1,
+      });
+      return;
+    }
+    if (opcode === 19) {
+      this.scopes.push(1);
+      return;
+    }
+    if (opcode === 10 && this.presented.has(view.getUint32(16, true))) {
+      this.lateView();
+      return;
+    }
+    if (opcode === 0x1000 && view.getUint32(8, true) === 8) {
+      this.acquired.delete(view.getUint32(12, true));
       return;
     }
     if (opcode === 20) {
       this.reply("error-scope", view.getUint32(8, true), {
         status: 1,
-        type: this.fault === "scope" ? 2 : 1,
+        type: this.fault === "scope" ? 2 : (this.scopes.pop() ?? 1),
         message: "",
       });
       return;
     }
     if (opcode !== 6) return;
     this.credit = true;
+    for (const id of this.acquired) this.presented.add(id);
+    this.acquired.clear();
     this.reply("present", view.getUint32(8, true), { status: this.fault === "present" ? 2 : 1 });
+  }
+  lateView(): void {
+    // Deliberate reply injection, not a WebGPU validation implementation.
+    if (this.fault === "late-exception") {
+      this.replies.push(
+        encodeGpuCompletion(gpuStream, "call-exception", 0, -28, {
+          opcode: 10,
+          message: "injected late exception",
+        }),
+      );
+      return;
+    }
+    if (this.injectExpiredValidation) this.scopes[this.scopes.length - 1] = 2;
   }
   append(ptr: number, length: number): number {
     const bytes = this.bytes(ptr, length);
@@ -468,6 +526,7 @@ class FixtureProtocolHost {
   }
   fdRead(fd: number, iovs: number, _count: number, written: number): number {
     this.reads.push(fd);
+    this.readPresentCounts.push(this.commands.filter((bytes) => bytes[0] === 6).length);
     this.put(this.view.getUint32(iovs, true), new Uint8Array([10]));
     this.word(written, 1);
     return 0;
@@ -610,5 +669,96 @@ describe.skipIf(!compiled)("compiled C completion handling, not GPU acceptance",
     expect(new DataView(config.buffer).getUint32(28, true)).toBe(22);
     expect(blue.output.join("")).toContain("GPU_FRAME colour=blue");
     expect(red.commands).not.toEqual(blue.commands);
+  });
+});
+
+function opcode(bytes: Uint8Array): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(0, true);
+}
+function nestedRecords(host: FixtureProtocolHost): string[] {
+  return host.commands
+    .filter((bytes) => opcode(bytes) === 0x1001)
+    .map((bytes) => {
+      const length = new DataView(bytes.buffer).getUint32(16, true);
+      return hex(bytes.subarray(20, 20 + length));
+    });
+}
+
+describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acceptance", () => {
+  test("repeated acquire clears through one handle, then loads and draws through the second", () => {
+    const host = new FixtureProtocolHost(["red", "--repeat-acquire"]);
+    expect(host.run()).toBe(0);
+    expect(host.output.join("")).toContain("GPU_REPEATED_ACQUIRE first=8 second=13");
+    expect(host.output.join("")).toContain("GPU_FRAME colour=red frame=1 validation=none");
+    expect(nestedRecords(host)).toEqual([
+      hex(renderCommands(8, 2, { r: 0, g: 1, b: 0, a: 1 }, false)),
+      hex(renderCommands(13, 1)),
+    ]);
+    expect(host.commands.filter((bytes) => opcode(bytes) === 6)).toHaveLength(1);
+  });
+  test("discard releases every second-frame alias before its stdin pixel checkpoint and fresh load", () => {
+    const host = new FixtureProtocolHost(["red", "--discard-after-first-frame"]);
+    expect(host.run()).toBe(0);
+    const output = host.output.join("");
+    expect(output).toContain("GPU_DISCARDED frame=2 handles=32,37 validation=none");
+    expect(output).toContain("GPU_WAIT_STDIN stage=discarded");
+    expect(output).toContain("GPU_FRAME colour=transparent frame=3 validation=none");
+    expect(host.readPresentCounts).toEqual([1, 2]);
+    const config = host.commands.find((bytes) => opcode(bytes) === 4);
+    if (!config) throw new Error("Missing discard surface configuration");
+    expect(new DataView(config.buffer).getUint32(52, true)).toBe(2);
+    expect(nestedRecords(host).slice(1)).toEqual([
+      hex(renderCommands(32, 2, { r: 0, g: 1, b: 0, a: 1 }, false)),
+      hex(renderCommands(40, 1, { r: 0, g: 0, b: 0, a: 0 }, false)),
+    ]);
+    const released = host.commands
+      .filter((bytes) => opcode(bytes) === 0x1000)
+      .map((bytes) => {
+        const view = new DataView(bytes.buffer);
+        return [view.getUint32(8, true), view.getUint32(12, true)];
+      });
+    expect(released).toEqual([
+      [9, 33],
+      [10, 34],
+      [11, 35],
+      [12, 36],
+      [8, 32],
+      [8, 37],
+    ]);
+  });
+  test("expired-use mode requires an explicit validation result, then proves the connection still replies", () => {
+    const host = new FixtureProtocolHost(["red", "--expired-frame-use"], "none", true);
+    expect(host.run()).toBe(0);
+    expect(host.output.join("")).toContain(
+      "GPU_EXPECTED_VALIDATION stage=expired-frame texture=8 type=2",
+    );
+    expect(host.output.join("")).toContain("GPU_STAGE after-expired-validation connection=ready");
+    expect(host.errors.join("")).toBe("");
+    const late = host.commands.filter((bytes) => opcode(bytes) === 10).at(-1);
+    if (!late) throw new Error("Missing late view call");
+    expect(new DataView(late.buffer).getUint32(16, true)).toBe(8);
+    expect(nestedRecords(host).at(-1)).toBe(hex(renderCommands(48, 1, { r: 0, g: 0, b: 0, a: 0 })));
+  });
+  test.each(["none", "late-exception"] satisfies ReplyFault[])(
+    "expired-use mode rejects %s instead of inventing a native validation result",
+    (fault) => {
+      const host = new FixtureProtocolHost(["red", "--expired-frame-use"], fault);
+      expect(host.run()).toBe(1);
+      expect(host.output.join("")).not.toContain("GPU_EXPECTED_VALIDATION");
+      expect(host.errors.join("")).toContain("GPU_FAIL");
+    },
+  );
+  test("combined controls use distinct result IDs and validate the freshly presented third frame", () => {
+    const host = new FixtureProtocolHost(
+      ["red", "--repeat-acquire", "--discard-after-first-frame", "--expired-frame-use", "--split"],
+      "none",
+      true,
+    );
+    expect(host.run()).toBe(0);
+    expect(host.output.join("")).toContain(
+      "GPU_EXPECTED_VALIDATION stage=expired-frame texture=40 type=2",
+    );
+    expect(host.errors.join("")).toBe("");
+    expect(host.readPresentCounts).toEqual([1, 2]);
   });
 });

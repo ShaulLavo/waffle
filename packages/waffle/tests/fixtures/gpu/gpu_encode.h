@@ -46,7 +46,8 @@ static inline void gpu_surface(WaffleGpuWriter *w, uint32_t surface_id) {
   waffle_gpu_string(w, "", 0);
   waffle_gpu_end(w, start);
 }
-static inline void gpu_configure(WaffleGpuWriter *w, uint32_t width, uint32_t height, uint32_t format) {
+static inline void gpu_configure_alpha(WaffleGpuWriter *w, uint32_t width, uint32_t height,
+                                       uint32_t format, uint32_t alpha) {
   size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_SURFACE_CONFIGURE);
   gpu_object(w, SURFACE);
   waffle_gpu_u32(w, 0); /* chain */
@@ -56,9 +57,12 @@ static inline void gpu_configure(WaffleGpuWriter *w, uint32_t width, uint32_t he
   waffle_gpu_u32(w, width);
   waffle_gpu_u32(w, height);
   waffle_gpu_u32(w, 0); /* view formats */
-  waffle_gpu_u32(w, WAFFLE_GPU_ENUM_COMPOSITE_ALPHA_MODE_OPAQUE);
+  waffle_gpu_u32(w, alpha);
   waffle_gpu_u32(w, WAFFLE_GPU_ENUM_PRESENT_MODE_FIFO);
   waffle_gpu_end(w, start);
+}
+static inline void gpu_configure(WaffleGpuWriter *w, uint32_t width, uint32_t height, uint32_t format) {
+  gpu_configure_alpha(w, width, height, format, WAFFLE_GPU_ENUM_COMPOSITE_ALPHA_MODE_OPAQUE);
 }
 static inline void gpu_acquire(WaffleGpuWriter *w, uint32_t token, uint32_t id, uint32_t generation) {
   size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_SURFACE_GET_CURRENT_TEXTURE);
@@ -152,52 +156,74 @@ static inline void gpu_draw(WaffleGpuWriter *w) {
   waffle_gpu_u32(w, 0);
   waffle_gpu_end(w, start);
 }
-static inline void gpu_render(WaffleGpuWriter *w) {
+/* Local encoder inputs only. These structs are never copied onto the wire. */
+typedef struct GpuFixtureFrame { uint32_t texture, view, encoder, pass, commands; } GpuFixtureFrame;
+static inline GpuFixtureFrame gpu_frame(uint32_t base) {
+  GpuFixtureFrame frame = {base, base + 1, base + 2, base + 3, base + 4};
+  return frame;
+}
+static inline void gpu_render_frame(WaffleGpuWriter *w, const GpuFixtureFrame *frame,
+                                   uint32_t load, const double clear[4], int draw) {
   size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_COMMAND_ENCODER_BEGIN_RENDER_PASS);
-  gpu_object(w, PASS);
+  gpu_object(w, frame->pass);
   gpu_label(w);
   waffle_gpu_u32(w, 1); /* colour attachment count */
   waffle_gpu_u32(w, 0); /* attachment chain */
-  gpu_object(w, VIEW);
+  gpu_object(w, frame->view);
   waffle_gpu_u32(w, UINT32_MAX); /* undefined depth slice */
   gpu_object(w, 0); /* resolve target */
-  waffle_gpu_u32(w, WAFFLE_GPU_ENUM_LOAD_OP_CLEAR);
+  waffle_gpu_u32(w, load);
   waffle_gpu_u32(w, WAFFLE_GPU_ENUM_STORE_OP_STORE);
-  waffle_gpu_f64(w, 0.0);
-  waffle_gpu_f64(w, 0.0);
-  waffle_gpu_f64(w, 0.0);
-  waffle_gpu_f64(w, 1.0);
+  for (unsigned i = 0; i < 4; ++i) waffle_gpu_f64(w, clear[i]);
   waffle_gpu_u32(w, 0); /* absent depth stencil */
   gpu_object(w, 0); /* occlusion query */
   waffle_gpu_u32(w, 0); /* absent timestamps */
   waffle_gpu_end(w, start);
-  start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_SET_PIPELINE);
-  gpu_object(w, PIPELINE);
-  waffle_gpu_end(w, start);
-  gpu_draw(w);
+  if (draw) {
+    start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_SET_PIPELINE);
+    gpu_object(w, PIPELINE);
+    waffle_gpu_end(w, start);
+    gpu_draw(w);
+  }
   start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_END);
   waffle_gpu_end(w, start);
   start = waffle_gpu_begin(w, WAFFLE_GPU_OP_COMMAND_ENCODER_FINISH);
-  gpu_object(w, COMMANDS);
+  gpu_object(w, frame->commands);
   waffle_gpu_u32(w, 0); /* absent descriptor */
   waffle_gpu_end(w, start);
 }
-static inline void gpu_encode(WaffleGpuWriter *w) {
+static inline void gpu_encode_frame(WaffleGpuWriter *w, const GpuFixtureFrame *frame,
+                                   uint32_t load, const double clear[4], int draw) {
   uint8_t commands[512];
   WaffleGpuWriter nested = {commands, sizeof(commands), 0, 0};
-  gpu_render(&nested);
+  gpu_render_frame(&nested, frame, load, clear, draw);
   size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_ENCODE);
-  gpu_object(w, ENCODER);
+  gpu_object(w, frame->encoder);
   waffle_gpu_u32(w, (uint32_t)nested.offset);
   for (size_t i = 0; i < nested.offset; ++i) waffle_gpu_u8(w, commands[i]);
   if (nested.error) w->error = 1;
   waffle_gpu_end(w, start);
 }
-static inline void gpu_submit(WaffleGpuWriter *w) {
+static inline void gpu_submit_frame(WaffleGpuWriter *w, const GpuFixtureFrame *frame) {
   size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_QUEUE_SUBMIT);
   gpu_object(w, QUEUE);
   waffle_gpu_u32(w, 1);
-  gpu_object(w, COMMANDS);
+  gpu_object(w, frame->commands);
+  waffle_gpu_end(w, start);
+}
+static inline void gpu_encode(WaffleGpuWriter *w) {
+  const GpuFixtureFrame frame = gpu_frame(TEXTURE);
+  const double clear[4] = {0, 0, 0, 1};
+  gpu_encode_frame(w, &frame, WAFFLE_GPU_ENUM_LOAD_OP_CLEAR, clear, 1);
+}
+static inline void gpu_submit(WaffleGpuWriter *w) {
+  const GpuFixtureFrame frame = gpu_frame(TEXTURE);
+  gpu_submit_frame(w, &frame);
+}
+static inline void gpu_release(WaffleGpuWriter *w, uint32_t kind, uint32_t id) {
+  size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RELEASE);
+  waffle_gpu_u32(w, kind);
+  gpu_object(w, id);
   waffle_gpu_end(w, start);
 }
 #endif
