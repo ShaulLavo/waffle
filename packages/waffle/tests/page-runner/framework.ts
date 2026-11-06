@@ -7,6 +7,7 @@ export type {
   SafariReturned,
   AttachedConnection,
   FrameworkOptions,
+  FrameworkMiddlewareStack,
   FrameworkHost,
   FrameworkResult,
   ProviderOperation,

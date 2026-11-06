@@ -3,7 +3,7 @@ import { dispatchReports, reservedReportPath, type ReportSink } from "./collecto
 
 export function frameworkMiddleware(sink: ReportSink) {
   return (incoming: IncomingMessage, outgoing: ServerResponse, next: () => void): void => {
-    const path = incoming.url?.split("?")[0] ?? "";
+    const path = new URL(incoming.url ?? "/", "http://127.0.0.1").pathname;
     if (!reservedReportPath(path)) {
       next();
       return;
@@ -24,19 +24,7 @@ async function respond(
   const timer = setTimeout(() => controller.abort(new Error("Collector body deadline")), 2000);
   const abort = () => controller.abort(new Error("Collector client disconnected"));
   incoming.once("aborted", abort);
-  const body =
-    incoming.method === "POST"
-      ? new ReadableStream<Uint8Array>({
-          start(controller) {
-            incoming.on("data", (chunk: Buffer) => controller.enqueue(chunk));
-            incoming.once("end", () => controller.close());
-            incoming.once("error", (error) => controller.error(error));
-          },
-          cancel() {
-            incoming.pause();
-          },
-        })
-      : undefined;
+  const body = incoming.method === "POST" ? incomingBody(incoming) : undefined;
   try {
     const init: RequestInit & { duplex: "half" } = {
       method: incoming.method,
@@ -53,4 +41,43 @@ async function respond(
     clearTimeout(timer);
     incoming.off("aborted", abort);
   }
+}
+
+function incomingBody(incoming: IncomingMessage): ReadableStream<Uint8Array> {
+  let ended = false;
+  let data = (_chunk: Buffer) => {};
+  let end = () => {};
+  let error = (_error: Error) => {};
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      data = (chunk) => {
+        if (ended) return;
+        controller.enqueue(chunk);
+        if ((controller.desiredSize ?? 0) <= 0) incoming.pause();
+      };
+      end = () => {
+        if (ended) return;
+        ended = true;
+        controller.close();
+      };
+      error = (value) => {
+        if (ended) return;
+        ended = true;
+        controller.error(value);
+      };
+      incoming.on("data", data);
+      incoming.once("end", end);
+      incoming.once("error", error);
+    },
+    pull() {
+      incoming.resume();
+    },
+    cancel() {
+      ended = true;
+      incoming.pause();
+      incoming.off("data", data);
+      incoming.off("end", end);
+      incoming.off("error", error);
+    },
+  });
 }

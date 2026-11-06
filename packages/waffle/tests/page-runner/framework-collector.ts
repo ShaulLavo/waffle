@@ -23,6 +23,8 @@ export type FrameworkDocument = {
   retiring: boolean;
   ready: boolean;
   cutoff: number | null;
+  ackedThrough: number | null;
+  pending: number | null;
 };
 function task(value: unknown): value is FrameworkTask {
   return (
@@ -70,6 +72,7 @@ export class FrameworkCollector {
   readonly events: FrameworkEvent[] = [];
   readonly cases: FrameworkResult["cases"];
   collection: readonly FrameworkTask[] = [];
+  private readonly startedTasks = new Set<string>();
   executionFlushed = false;
   cleanupSettled = false;
   cleanupResponse = false;
@@ -99,6 +102,8 @@ export class FrameworkCollector {
       retiring: false,
       ready: false,
       cutoff: null,
+      ackedThrough: null,
+      pending: null,
     };
     this.documents.push(document);
     return document;
@@ -138,6 +143,7 @@ export class FrameworkCollector {
       )
         throw new Error("Unexpected framework hello");
       document.doc = body.doc;
+      document.heartbeatAt = performance.now();
       return;
     }
     if (!document.doc) throw new Error("Framework report before hello");
@@ -161,9 +167,11 @@ export class FrameworkCollector {
   private event(event: FrameworkEvent): void {
     if (event.kind === "collected") this.collect(event.tasks);
     if (event.kind === "task-started") {
+      if (!this.collection.some((task) => task.id === event.id) || this.startedTasks.has(event.id))
+        throw new Error("Unknown or repeated actual task start");
+      this.startedTasks.add(event.id);
       const item = this.cases.find((item) => item.actualId === event.id);
-      if (!item || item.started) throw new Error("Unknown or repeated actual case start");
-      item.started = true;
+      if (item) item.started = true;
     }
     if (event.kind === "task-update" || event.kind === "case-settled") this.updates(event);
     if (event.kind === "error") this.fail("page-error", JSON.stringify(event));

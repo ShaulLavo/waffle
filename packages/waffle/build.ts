@@ -332,7 +332,8 @@ export async function buildNodeModules(
     const pending = ["tests/page-runner/framework.ts", "tests/page-runner/framework-page.ts"];
     const emitted = new Set<string>();
     while (pending.length) {
-      const path = pending.pop()!;
+      const path = pending.pop();
+      if (path === undefined) break;
       if (emitted.has(path)) continue;
       emitted.add(path);
       await emit(path);
@@ -352,12 +353,9 @@ export async function buildNodeModules(
       format: "iife",
       minify: true,
     });
-    if (!bootstrap.success)
+    if (!bootstrap.success || !bootstrap.outputs[0])
       throw new AggregateError(bootstrap.logs, "Framework bootstrap build failed");
-    await Bun.write(
-      join(outdir, "tests/page-runner/framework-bootstrap.js"),
-      bootstrap.outputs[0]!,
-    );
+    await Bun.write(join(outdir, "tests/page-runner/framework-bootstrap.js"), bootstrap.outputs[0]);
   }
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
 }

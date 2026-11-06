@@ -9,8 +9,14 @@ type Operation = {
   live: boolean;
   controller: AbortController;
   requests: Set<RequestLease>;
+  id: string;
 };
 export class FrameworkQueue {
+  readonly commandHooks: {
+    operation: string | null;
+    phase: "started" | "settled";
+    revoked: boolean;
+  }[] = [];
   private readonly local = new AsyncLocalStorage<Operation>();
   private tail = Promise.resolve();
   private closed = false;
@@ -43,6 +49,7 @@ export class FrameworkQueue {
       live: true,
       controller: new AbortController(),
       requests: new Set(),
+      id: crypto.randomUUID(),
     };
     this.assert(operation);
     this.active.add(operation);
@@ -84,7 +91,7 @@ export class FrameworkQueue {
     ]);
     const completion = Promise.withResolvers<void>();
     const lease: RequestLease = {
-      done: completion.promise,
+      done: this.consumers.invoke(() => completion.promise),
       finish: completion.resolve,
       parsed: false,
     };
@@ -104,7 +111,22 @@ export class FrameworkQueue {
     lease.finish();
     return response;
   }
+  commandStarted(): void {
+    const operation = this.local.getStore();
+    const revoked = !operation || !operation.live || this.closed;
+    this.commandHooks.push({ operation: operation?.id ?? null, phase: "started", revoked });
+    if (revoked) this.fault("Unowned or revoked SDK command hook");
+  }
+  commandSettled(): void {
+    const operation = this.local.getStore();
+    this.commandHooks.push({
+      operation: operation?.id ?? null,
+      phase: "settled",
+      revoked: !operation?.live || this.closed,
+    });
+  }
   observe(value: unknown): void {
+    if (this.closed) return;
     if (!record(value) || typeof value.on !== "function" || typeof value.off !== "function")
       throw new Error("SDK command hook did not supply a transport event emitter");
     if (this.clients.has(value)) return;

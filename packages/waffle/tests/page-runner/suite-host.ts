@@ -1,8 +1,10 @@
+import { writeResult } from "./result-file.js";
+export { writeResult } from "./result-file.js";
 import { dispatchReports } from "./collector-fetch.js";
 import { HostDrive } from "./host-drive.js";
 import { HostConsumers } from "./owned-consumers.js";
-import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import {
   Collector,
@@ -670,17 +672,6 @@ export async function retireDocument(
     await Bun.sleep(25);
   }
   throw new Error("Retirement barrier missing final report acknowledgement");
-}
-
-export async function writeResult(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    await Bun.write(temporary, `${JSON.stringify(value, null, 2)}\n`);
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
 }
 
 async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

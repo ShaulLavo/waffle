@@ -142,7 +142,7 @@ export class Collector {
     } catch (error) {
       return this.violation(String(error), state);
     }
-    if (state !== this.active) return this.violation("Inactive document", state);
+    if (state !== this.active) return this.violation("Report sequence conflict or gap", state);
     if (!state.doc && message.kind !== "hello") return this.violation("Report before hello", state);
     if (state.doc && state.doc !== message.doc)
       return this.violation("Unexpected new document", state);

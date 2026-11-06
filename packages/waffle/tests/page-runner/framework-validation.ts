@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { record } from "./protocol.js";
-import type { FrameworkOptions, Json, SafariReturned } from "./framework-types.js";
+import type { FrameworkOptions, Json, SafariReturned, VitestEnd } from "./framework-types.js";
 
 export function jsonValue(value: unknown): value is Json {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
@@ -48,4 +48,16 @@ export function validateFrameworkOptions(options: FrameworkOptions): void {
     if (identities.has(key)) throw new Error("Duplicate expected identity");
     identities.add(key);
   }
+}
+
+export function parseVitestEnd(value: unknown): VitestEnd {
+  if (!record(value)) throw new Error("Missing actual Vitest end status");
+  if (value.status === "passed") return { status: "passed" };
+  if (
+    (value.status === "failed" || value.status === "interrupted") &&
+    Array.isArray(value.errors) &&
+    value.errors.every(jsonValue)
+  )
+    return { status: value.status, errors: value.errors };
+  throw new Error("Invalid actual Vitest end status");
 }

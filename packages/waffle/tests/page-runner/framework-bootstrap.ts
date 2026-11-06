@@ -1,3 +1,4 @@
+import { resultByteLimit } from "./protocol.js";
 import { OrderedReporter } from "./ordered-reporter.js";
 import type { FrameworkObservation } from "./framework-page.js";
 import type { FrameworkEvent } from "./framework-types.js";
@@ -18,11 +19,20 @@ export function installFrameworkBootstrap(config: Configuration): void {
     tester: Document | null = null;
   const admission = Promise.withResolvers<{ permit: string; width: 414; height: 896 }>();
   const retired = Promise.withResolvers<void>();
-  const send = (event: FrameworkEvent) =>
-    reporter.send({ token: config.token, kind: "event", event });
+  const send = (event: FrameworkEvent): Promise<void> => {
+    try {
+      if (new TextEncoder().encode(JSON.stringify(event)).byteLength > resultByteLimit)
+        throw new Error("Framework observation exceeds 48 KiB");
+      return reporter.send({ token: config.token, kind: "event", event });
+    } catch (error) {
+      state.failure ??= String(error);
+      return Promise.reject(error);
+    }
+  };
   const enqueue = (event: FrameworkEvent): void => {
     void send(event).catch(() => {});
   };
+  const removeEarlyListener = window.removeEventListener.bind(window);
   const error = (event: ErrorEvent) =>
     enqueue({ kind: "error", source: "early-error", error: event.message });
   const rejection = (event: PromiseRejectionEvent) =>
@@ -39,8 +49,8 @@ export function installFrameworkBootstrap(config: Configuration): void {
     testerCleanupSettled: () => enqueue({ kind: "tester-cleanup-settled" }),
     cleanupResponseReceived: () => enqueue({ kind: "cleanup-response-received" }),
     catcherInstalled: () => {
-      removeEventListener("error", error);
-      removeEventListener("unhandledrejection", rejection);
+      removeEarlyListener("error", error);
+      removeEarlyListener("unhandledrejection", rejection);
     },
     waitForInitialViewport: () => admission.promise,
     waitForRetirement: () => retired.promise,
@@ -134,9 +144,9 @@ export function installFrameworkBootstrap(config: Configuration): void {
       return tester?.defaultView?.__waffleFramework?.cutoff(watermark) ?? false;
     },
   };
-  window.__waffleFramework = bridge;
+  Object.defineProperty(window, "__waffleFramework", { value: Object.freeze(bridge) });
   Object.defineProperty(globalThis, Symbol.for("waffle.framework.observation"), {
-    value: () => (valid() ? observation : undefined),
+    value: () => (valid() ? Object.freeze(observation) : undefined),
   });
   reporter.startHeartbeat();
   const hello = reporter.send({

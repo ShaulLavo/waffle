@@ -95,3 +95,29 @@ test("the request guard composes the original SDK signal instead of replacing it
     queue.response({ statusCode: 200, body: { value: null } }, request);
   });
 });
+
+test("SDK hook observations retain their operation token but never substitute for actual HTTP settlement", async () => {
+  const { queue } = fixture();
+  const release = Promise.withResolvers<void>();
+  let request: RequestInit = {};
+  const first = queue.run(async () => {
+    queue.commandStarted();
+    request = queue.guard({});
+    void release.promise.then(() => queue.commandSettled());
+  });
+  let probed = false;
+  const second = queue.run(async () => {
+    probed = true;
+  });
+  await Bun.sleep(10);
+  expect(probed).toBe(false);
+  queue.response({ statusCode: 200, body: { value: null } }, request);
+  await first;
+  await second;
+  expect(probed).toBe(true);
+  release.resolve();
+  await Bun.sleep(0);
+  expect(queue.commandHooks).toHaveLength(2);
+  expect(queue.commandHooks[0]?.operation).toBe(queue.commandHooks[1]?.operation);
+  expect(queue.commandHooks[1]?.revoked).toBe(true);
+});

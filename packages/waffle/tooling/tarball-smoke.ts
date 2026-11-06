@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs.js";
@@ -95,6 +95,7 @@ async function run(): Promise<void> {
   );
   assertWasiLibcBuildInputs(join(consumerDirectory, "node_modules/waffle"));
   await pageRunnerConsumer(consumerDirectory);
+  await frameworkConsumer(consumerDirectory, "packed");
   await sourceInstallParity(packedRoot);
   const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
   const exports = record(metadata.exports);
@@ -285,6 +286,87 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
   );
   consumerCommand(directory, "bun", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json"]);
 }
+async function frameworkConsumer(directory: string, phase: string): Promise<void> {
+  consumerCommand(directory, "node", [
+    "--input-type=module",
+    "--eval",
+    `
+    import { createFrameworkHost } from "waffle/testing/page-runner/framework";
+    import { getFrameworkObservation } from "waffle/testing/page-runner/framework-page";
+    if (typeof createFrameworkHost !== "function" || getFrameworkObservation() !== undefined) throw new Error("bad Node framework entry");
+    const entry = import.meta.resolve("waffle/testing/page-runner/framework");
+    if (!entry.endsWith("/node_modules/waffle/dist/tests/page-runner/framework.js")) throw new Error("Node did not resolve prepared installed JavaScript");
+  `,
+  ]);
+  await writeFile(
+    join(directory, "framework-page.ts"),
+    'export { getFrameworkObservation } from "waffle/testing/page-runner/framework-page";',
+  );
+  consumerCommand(directory, "bun", [
+    "--eval",
+    `
+    const build = await Bun.build({ entrypoints: ["./framework-page.ts"], target: "browser", metafile: true });
+    if (!build.success || !build.metafile) throw new Error("framework browser graph failed");
+    for (const path of Object.keys(build.metafile.inputs)) {
+      if (/node:|playwright|safari-driver|framework-host|\\/(core|fs|proc|browser|network)\\//.test(path)) throw new Error("framework browser graph leak " + path);
+      if (!require("node:path").resolve(path).startsWith(process.cwd() + "/")) throw new Error("framework checkout dependency leak");
+    }
+  `,
+  ]);
+  const manifestPath = join(directory, "package.json");
+  const manifest = record(JSON.parse(await readFile(manifestPath, "utf8")));
+  manifest.devDependencies = {
+    ...record(manifest.devDependencies),
+    "@vitest/browser": "5.0.2",
+    "@vitest/browser-webdriverio": "5.0.0",
+    vitest: "5.0.2",
+    webdriverio: "9.29.1",
+    undici: "6.29.1",
+  };
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  consumerCommand(directory, "bun", [
+    "install",
+    "--ignore-scripts",
+    "--linker=hoisted",
+    "--backend=copyfile",
+  ]);
+  await writeFile(
+    join(directory, "framework-installed.ts"),
+    await readFile(join(packageRoot, "tests/page-runner/framework-controls/installed.ts")),
+  );
+  await writeFile(
+    join(directory, "framework-tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        noUncheckedIndexedAccess: true,
+        noEmit: true,
+        skipLibCheck: true,
+        target: "ES2024",
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        resolveJsonModule: true,
+        types: ["node"],
+        lib: ["ES2024", "DOM", "DOM.Iterable"],
+      },
+      include: ["framework-installed.ts", "framework-page.ts"],
+    }),
+  );
+  consumerCommand(directory, "bun", [
+    "node_modules/typescript/bin/tsc",
+    "-p",
+    "framework-tsconfig.json",
+  ]);
+  for (const mode of ["unowned", "expired", "revoked", "malformed", "wrong-capabilities"]) {
+    execFileSync("node", ["--experimental-strip-types", "framework-installed.ts"], {
+      cwd: directory,
+      stdio: "pipe",
+      timeout: 55000,
+      env: { ...process.env, NODE_PATH: "", W3_MODE: mode },
+    });
+    console.log(`waffle installed framework ${phase} ${mode}: checked finite abort`);
+  }
+}
 async function sourceInstallParity(packedRoot: string): Promise<void> {
   const source = join(scratch, "source-package"),
     consumer = join(scratch, "source-consumer");
@@ -314,11 +396,16 @@ async function sourceInstallParity(packedRoot: string): Promise<void> {
   const installed = join(consumer, "node_modules/waffle");
   if (!existsSync(join(installed, "dist/index.js")))
     throw new Error("source preparation did not emit Node entries");
-  if (existsSync(join(installed, "dist/tests")))
-    throw new Error("testing entries depend on generated tests");
+  if (!existsSync(join(installed, "dist/tests/page-runner/framework.js")))
+    throw new Error("source preparation did not emit the framework host");
+  const prepared = join(scratch, "source-prepared-node");
+  await rename(join(installed, "dist"), prepared);
   // Remove prepared output to prove all three testing entries use their source targets.
-  await rm(join(installed, "dist"), { recursive: true, force: true });
   await pageRunnerConsumer(consumer);
+  // Installing explicit tooling can recopy prepared source files. W1 already ran without them.
+  await rm(join(installed, "dist"), { recursive: true, force: true });
+  await rename(prepared, join(installed, "dist"));
+  await frameworkConsumer(consumer, "source");
 }
 
 try {

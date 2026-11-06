@@ -1,6 +1,6 @@
 import { bounded } from "./driver.js";
 import { ObservationClosed, ReportRejected } from "./collector.js";
-export const collectorHeaders = {
+const collectorHeaders = {
   "Cache-Control": "no-store",
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
@@ -14,7 +14,7 @@ export type ReportSink = {
 export function reservedReportPath(path: string): boolean {
   return ["/report", "/heartbeat", "/retire"].includes(path);
 }
-export async function readReportBody(request: Request): Promise<unknown> {
+async function readReportBody(request: Request): Promise<unknown> {
   if (!request.body) throw new Error("Missing collector body");
   const reader = request.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });

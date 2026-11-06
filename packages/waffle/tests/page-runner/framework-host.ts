@@ -1,5 +1,6 @@
+import { writeResult } from "./result-file.js";
 import { readFileSync, existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile, rename } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -9,7 +10,7 @@ import { HostConsumers } from "./owned-consumers.js";
 import { FrameworkQueue } from "./framework-queue.js";
 import { FrameworkCollector } from "./framework-collector.js";
 import { frameworkMiddleware } from "./framework-middleware.js";
-import { validateFrameworkOptions } from "./framework-validation.js";
+import { validateFrameworkOptions, parseVitestEnd } from "./framework-validation.js";
 import { record } from "./protocol.js";
 import type {
   AttachedConnection,
@@ -17,11 +18,13 @@ import type {
   FrameworkGeometry,
   FrameworkHost,
   FrameworkOptions,
+  FrameworkMiddlewareStack,
   FrameworkResult,
   ProviderOperation,
   VitestEnd,
 } from "./framework-types.js";
 
+const mountedFrameworkServers = new WeakSet<object>();
 const absent = (): CleanupStep => ({ status: "not-created", detail: "Not allocated" });
 function bootstrapSource(): string {
   let root = dirname(fileURLToPath(import.meta.url));
@@ -44,7 +47,13 @@ function snapshot(value: unknown) {
   )
     throw new Error("Invalid actual document observation");
   if (value.failure) throw new Error(`Page reporting failed: ${value.failure}`);
-  return value;
+  return {
+    doc: value.doc,
+    token: value.token,
+    ackedThrough: value.ackedThrough,
+    pending: value.pending,
+    paired: value.paired === true,
+  };
 }
 function geometry(value: unknown): FrameworkGeometry {
   if (!record(value) || !record(value.tester) || !record(value.top) || !record(value.iframe))
@@ -80,6 +89,7 @@ export class PageFrameworkHost implements FrameworkHost {
   private readonly collector: FrameworkCollector;
   private readonly queue: FrameworkQueue;
   readonly middleware: FrameworkHost["middleware"];
+  private readonly mounts = new Set<FrameworkMiddlewareStack>();
   private scratch = "";
   private driver: SafariDriver | undefined;
   private frames: FrameAdapter | undefined;
@@ -88,17 +98,20 @@ export class PageFrameworkHost implements FrameworkHost {
   private executing: Promise<VitestEnd> | undefined;
   private running = false;
   private finalizing: Promise<FrameworkResult> | undefined;
+  private finalized = false;
   private detaching: Promise<void> | undefined;
   private fileStarted: number | null = null;
   private openedUrl: string | null = null;
   private handle: string | null = null;
   private bound = false;
+  private binding: FrameworkResult["binding"] = null;
   private viewportPermit: string | null = null;
   private geometryValue: FrameworkGeometry | null = null;
   private framework: VitestEnd | null = null;
   private monitorTimer: ReturnType<typeof setInterval> | undefined;
   private monitorBusy = false;
   private retired = false;
+  private retirementStarted: number | null = null;
   constructor(
     private readonly options: FrameworkOptions,
     private readonly controlEndpoint?: string,
@@ -118,7 +131,25 @@ export class PageFrameworkHost implements FrameworkHost {
     );
     this.middleware = frameworkMiddleware(this.collector);
   }
+  mount(server: FrameworkMiddlewareStack): void {
+    if (this.driver?.uncertain || this.frames || this.finalizing)
+      throw new Error("Collector mount must precede session allocation");
+    if (
+      mountedFrameworkServers.has(server) ||
+      this.mounts.has(server) ||
+      server.stack.some(
+        (item) =>
+          ["/report", "/heartbeat", "/retire"].includes(item.route) ||
+          item.handle === this.middleware,
+      )
+    )
+      throw new Error("Collector mount conflicts with a reserved route");
+    server.use(this.middleware);
+    this.mounts.add(server);
+    mountedFrameworkServers.add(server);
+  }
   private fault(category: string, detail: string): void {
+    if (this.finalized) return;
     this.collector.fail(category, detail);
     if (!this.controller.signal.aborted) this.controller.abort(new Error(detail));
   }
@@ -159,7 +190,21 @@ export class PageFrameworkHost implements FrameworkHost {
     frames: FrameAdapter;
   }): Promise<T> {
     this.check();
+    if (!this.mounts.size) throw new Error("Collector must be mounted before session creation");
+    if (!this.closeContext)
+      throw new Error("Actual framework context close must be registered before session creation");
+    for (const server of this.mounts) {
+      if (
+        server.stack.some(
+          (item) =>
+            item.handle !== this.middleware &&
+            ["/report", "/heartbeat", "/retire"].includes(item.route),
+        )
+      )
+        throw new Error("Collector mount conflicts with a reserved route before session creation");
+    }
     if (this.frames) throw new Error("Provider attachment repeated or reopened");
+    this.fileStarted ??= performance.now();
     this.frames = input.frames;
     this.disconnect = input.detach;
     return this.queue.run(async () => {
@@ -169,6 +214,8 @@ export class PageFrameworkHost implements FrameworkHost {
         await driver.startControl(this.controlEndpoint, this.controller.signal);
       else await driver.start(this.controller.signal);
       this.check();
+      this.handle = await driver.handle(this.controller.signal);
+      this.check();
       const browser = await this.consumers.invoke(() => input.connect(driver.connection()));
       this.check();
       return browser;
@@ -176,13 +223,14 @@ export class PageFrameworkHost implements FrameworkHost {
   }
   async openPage(actualUrl: string, open: () => Promise<void>): Promise<void> {
     this.check();
-    if (this.fileStarted !== null) throw new Error("Framework file navigation repeated");
-    this.fileStarted = performance.now();
+    if (this.openedUrl !== null) throw new Error("Framework file navigation repeated");
+    this.fileStarted ??= performance.now();
     this.openedUrl = actualUrl;
     await this.queue.run(async () => {
       if (!this.driver) throw new Error("No owned driver");
-      this.handle = await this.driver.handle(this.controller.signal);
       await this.consumers.invoke(open);
+      if (!this.frames || this.handle === null)
+        throw new Error("Provider navigation did not attach the owned session");
     });
     // No admission wait inside navigation. The monitor owns the next queue entry.
   }
@@ -201,8 +249,10 @@ export class PageFrameworkHost implements FrameworkHost {
   }
   requestStarted(client: unknown): void {
     this.queue.observe(client);
+    this.queue.commandStarted();
   }
   requestSettled(outcome: Parameters<FrameworkHost["requestSettled"]>[0]): void {
+    this.queue.commandSettled();
     if (outcome.kind === "transport-fault") this.fault("command", outcome.detail);
   }
   detach(): Promise<void> {
@@ -246,6 +296,8 @@ export class PageFrameworkHost implements FrameworkHost {
       tester = this.collector.document("tester");
     if (!top?.doc || !tester?.doc || !this.frames) return;
     const topSnapshot = snapshot(await this.script("return bridge.snapshot();"));
+    top.ackedThrough = topSnapshot.ackedThrough;
+    top.pending = topSnapshot.pending;
     if (
       topSnapshot.doc !== top.doc ||
       topSnapshot.token !== top.token ||
@@ -258,7 +310,9 @@ export class PageFrameworkHost implements FrameworkHost {
       !record(capture) ||
       capture.doc !== top.doc ||
       capture.testerDoc !== tester.doc ||
-      !record(capture.frame)
+      !record(capture.frame) ||
+      typeof capture.frame["element-6066-11e4-a52e-4f735466cecf"] !== "string" ||
+      !capture.frame["element-6066-11e4-a52e-4f735466cecf"]
     )
       throw new Error("Actual iframe document capture mismatch");
     await this.consumers.invoke(this.frames.tester);
@@ -273,17 +327,34 @@ export class PageFrameworkHost implements FrameworkHost {
     } finally {
       await this.consumers.invoke(this.frames.main);
     }
+    if (!this.handle) throw new Error("Missing owned window at admission");
+    this.binding = {
+      windowHandle: this.handle,
+      iframeElementId: String(capture.frame["element-6066-11e4-a52e-4f735466cecf"]),
+      topUrl: top.url,
+      testerUrl: tester.url,
+    };
     this.viewportPermit = crypto.randomUUID();
-    await this.script(
-      `return bridge.admit(${JSON.stringify(top.token)},${JSON.stringify(top.doc)},${JSON.stringify(this.viewportPermit)});`,
-    );
     top.admitted = true;
     tester.admitted = true;
     this.bound = true;
+    await this.script(
+      `return bridge.admit(${JSON.stringify(top.token)},${JSON.stringify(top.doc)},${JSON.stringify(this.viewportPermit)});`,
+    );
   }
   private async probe(): Promise<void> {
     const top = snapshot(await this.script("return bridge.snapshot();"));
     const tester = snapshot(await this.script("return bridge.testerSnapshot();"));
+    const topState = this.collector.document("orchestrator"),
+      testerState = this.collector.document("tester");
+    if (topState) {
+      topState.ackedThrough = top.ackedThrough;
+      topState.pending = top.pending;
+    }
+    if (testerState) {
+      testerState.ackedThrough = tester.ackedThrough;
+      testerState.pending = tester.pending;
+    }
     if (
       top.doc !== this.collector.document("orchestrator")?.doc ||
       tester.doc !== this.collector.document("tester")?.doc ||
@@ -293,6 +364,7 @@ export class PageFrameworkHost implements FrameworkHost {
     if (this.collector.cleanupResponse && this.collector.cleanupSettled) await this.retire();
   }
   private async retire(): Promise<void> {
+    this.retirementStarted ??= performance.now();
     const tester = this.collector.document("tester"),
       top = this.collector.document("orchestrator");
     if (!tester || !top) throw new Error("Missing paired documents at retirement");
@@ -301,6 +373,10 @@ export class PageFrameworkHost implements FrameworkHost {
     if (!tester.ready || !top.ready) return;
     const testerSnapshot = snapshot(await this.script("return bridge.testerSnapshot();"));
     const topSnapshot = snapshot(await this.script("return bridge.snapshot();"));
+    tester.ackedThrough = testerSnapshot.ackedThrough;
+    tester.pending = testerSnapshot.pending;
+    top.ackedThrough = topSnapshot.ackedThrough;
+    top.pending = topSnapshot.pending;
     if (
       testerSnapshot.pending !== 0 ||
       topSnapshot.pending !== 0 ||
@@ -327,27 +403,37 @@ export class PageFrameworkHost implements FrameworkHost {
       !this.bound ||
       this.collector.viewportConsumed ||
       this.collector.collection.length
-    )
+    ) {
+      this.fault("viewport-permit", "Automatic initial viewport permit rejected");
       throw new Error("Automatic initial viewport permit rejected");
-    await this.queue.run(() =>
-      this.main(async () => {
-        this.check();
-        if (this.collector.viewportConsumed || this.collector.collection.length)
-          throw new Error("Initial viewport permit expired");
-        this.geometryValue = geometry(await this.script("return bridge.geometry();"));
-        this.collector.viewportConsumed = true;
-        this.viewportPermit = null;
-      }),
-    );
+    }
+    await this.queue.run(() => this.measureInitialViewport());
+  }
+  private async measureInitialViewport(): Promise<void> {
+    try {
+      this.check();
+      if (!this.frames || this.frames.isTestFrame())
+        throw new Error("Initial viewport command from the wrong frame");
+      if (this.collector.viewportConsumed || this.collector.collection.length)
+        throw new Error("Initial viewport permit expired");
+      this.geometryValue = geometry(await this.script("return bridge.geometry();"));
+      this.collector.viewportConsumed = true;
+      this.viewportPermit = null;
+    } catch (error) {
+      this.fault("viewport", String(error));
+      throw error;
+    }
   }
   private tick(): void {
-    if (this.finalizing || this.retired) return;
+    if (this.finalizing) return;
     try {
       this.check();
     } catch {
       return;
     }
-    if (this.fileStarted === null || this.monitorBusy) return;
+    if (this.retirementStarted !== null && performance.now() - this.retirementStarted >= 5000)
+      this.fault("retirement-timeout", "Final document barrier exceeded 5000 ms");
+    if (this.retired || this.fileStarted === null || this.monitorBusy) return;
     if (!this.bound && performance.now() - this.fileStarted > 60000)
       this.fault("startup", "Paired admission exceeded 60000 ms");
     if (
@@ -367,6 +453,16 @@ export class PageFrameworkHost implements FrameworkHost {
         this.monitorBusy = false;
       });
   }
+  private async executeFramework(execute: Parameters<FrameworkHost["run"]>[0]): Promise<VitestEnd> {
+    const end = await execute((close) => this.registerContextClose(close));
+    this.framework = parseVitestEnd(end);
+    return this.framework;
+  }
+  private registerContextClose(close: () => Promise<void>): void {
+    if (this.closeContext) throw new Error("Framework context closer registered twice");
+    this.closeContext = close;
+    if (this.controller.signal.aborted) void this.closeRegisteredContext().catch(() => {});
+  }
   async run(execute: Parameters<FrameworkHost["run"]>[0]): Promise<FrameworkResult> {
     if (this.running) throw new Error("Framework run invoked twice");
     this.running = true;
@@ -379,18 +475,14 @@ export class PageFrameworkHost implements FrameworkHost {
       const root =
         process.env.STORAGE_SCRATCH_ROOT ??
         (process.platform === "darwin" ? join(homedir(), "tmp") : "/work/tmp");
-      await mkdir(root, { recursive: true });
+      await this.consumers.invoke(() => mkdir(root, { recursive: true }));
       this.check();
-      this.scratch = await mkdtemp(join(root, "waffle-framework-"));
+      await this.consumers.invoke(async () => {
+        this.scratch = await mkdtemp(join(root, "waffle-framework-"));
+      });
       this.check();
       this.driver = new SafariDriver(this.options.native.udid, this.scratch);
-      this.executing = this.consumers.invoke(() =>
-        execute((close) => {
-          if (this.closeContext) throw new Error("Framework context closer registered twice");
-          this.closeContext = close;
-          if (this.controller.signal.aborted) void this.closeRegisteredContext();
-        }),
-      );
+      this.executing = this.consumers.invoke(() => this.executeFramework(execute));
       const failed = new Promise<never>((_, reject) =>
         this.controller.signal.addEventListener(
           "abort",
@@ -399,7 +491,8 @@ export class PageFrameworkHost implements FrameworkHost {
         ),
       );
       this.check();
-      this.framework = await Promise.race([this.executing, failed]);
+      await Promise.race([this.executing, failed]);
+      await this.queue.join();
       this.check();
       if (!this.retired) throw new Error("Framework ended without paired final retirement");
     } catch (error) {
@@ -412,6 +505,7 @@ export class PageFrameworkHost implements FrameworkHost {
     return this.finish();
   }
   abort(reason: string): Promise<FrameworkResult> {
+    if (this.finalizing) return this.finalizing;
     this.fault("abort", reason);
     return this.finish();
   }
@@ -425,6 +519,8 @@ export class PageFrameworkHost implements FrameworkHost {
     return (this.finalizing ??= Promise.resolve().then(() => this.teardown()));
   }
   private async teardown(): Promise<FrameworkResult> {
+    const cleanupDeadline = performance.now() + 60000;
+    const remaining = () => Math.max(1, Math.min(12000, cleanupDeadline - performance.now()));
     clearInterval(this.monitorTimer);
     this.queue.revoke();
     const context = this.closeContext ? this.closeRegisteredContext() : undefined;
@@ -432,7 +528,7 @@ export class PageFrameworkHost implements FrameworkHost {
       provider = absent();
     const step = async (promise: Promise<unknown>, label: string): Promise<CleanupStep> => {
       try {
-        await bounded(promise, 12000, label);
+        await bounded(promise, remaining(), label);
         return { status: "confirmed", detail: label };
       } catch (error) {
         this.collector.fail("cleanup", String(error));
@@ -446,7 +542,12 @@ export class PageFrameworkHost implements FrameworkHost {
         "Attached provider detached without DELETE",
       );
     if (context) contextStep = await step(context, "Registered framework context closed");
-    const callbacksStopped = await this.consumers.join(12000);
+    const callbacksStopped = await this.consumers.join(remaining());
+    if (!context && this.closeContext)
+      contextStep = await step(
+        this.closeRegisteredContext(),
+        "Late registered framework context closed",
+      );
     const callbacks: CleanupStep = {
       status: callbacksStopped ? "confirmed" : "unconfirmed",
       detail: callbacksStopped
@@ -460,7 +561,7 @@ export class PageFrameworkHost implements FrameworkHost {
     };
     if (this.driver) {
       try {
-        driverCleanup = await bounded(this.driver.stop(), 12000, "Parent driver stop");
+        driverCleanup = await bounded(this.driver.stop(), remaining(), "Parent driver stop");
       } catch (error) {
         driverCleanup.session = { status: "unconfirmed", detail: String(error) };
       }
@@ -504,9 +605,13 @@ export class PageFrameworkHost implements FrameworkHost {
       documents: this.collector.documents.map((item) => ({
         kind: item.kind,
         doc: item.doc,
-        ackedThrough: item.messages.length - 1,
+        acceptedThrough: item.messages.length - 1,
+        ackedThrough: item.ackedThrough,
+        pending: item.pending,
         cutoff: item.cutoff,
       })),
+      binding: this.binding,
+      commandHooks: this.queue.commandHooks.slice(),
       geometry: this.geometryValue,
       framework: this.framework,
       failures: this.collector.failures,
@@ -517,14 +622,16 @@ export class PageFrameworkHost implements FrameworkHost {
       exit: this.collector.failures.length ? 2 : 4,
     };
     try {
-      await mkdir(dirname(this.options.resultPath), { recursive: true });
-      const temporary = `${this.options.resultPath}.${this.collector.run}.tmp`;
-      await writeFile(temporary, JSON.stringify(result, null, 2));
-      await rename(temporary, this.options.resultPath);
+      await bounded(
+        writeResult(this.options.resultPath, result),
+        remaining(),
+        "Atomic framework result write",
+      );
     } catch (error) {
       this.collector.fail("result-write", String(error));
       result.exit = 2;
     }
+    this.finalized = true;
     return result;
   }
 }

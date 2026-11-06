@@ -1,3 +1,5 @@
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
+import browserManifest from "@vitest/browser/package.json" with { type: "json" };
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
@@ -16,10 +18,40 @@ import {
   type VitestEnd,
 } from "waffle/testing/page-runner/framework";
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : (JSON.stringify(error) ?? String(error));
+}
 function settleLater<T>(promise: Promise<T>, settled: () => void): void {
   void promise.then(settled, settled);
 }
+assert.equal(browserManifest.version, "5.0.2");
+// One owned dispatcher also prevents the SDK from allocating hidden per-session agents.
+class FrameworkDispatcher extends Agent {}
+const previousDispatcher = getGlobalDispatcher();
+const dispatcher = new FrameworkDispatcher();
+setGlobalDispatcher(dispatcher);
+async function websocketControl(url: URL, token: string): Promise<void> {
+  url.protocol = "ws:";
+  url.searchParams.set("token", token);
+  const socket = new WebSocket(url, "vite-hmr");
+  const received = once(socket, "message", { signal: AbortSignal.timeout(2000) });
+  void received.catch(() => {});
+  try {
+    await once(socket, "open", { signal: AbortSignal.timeout(2000) });
+    const [message]: unknown[] = await received;
+    assert.ok(message instanceof MessageEvent && typeof message.data === "string");
+    assert.equal(JSON.parse(message.data).type, "connected");
+  } finally {
+    if (socket.readyState !== WebSocket.CLOSED) {
+      const closed = once(socket, "close", { signal: AbortSignal.timeout(2000) });
+      socket.close();
+      await closed;
+    }
+  }
+}
 const directory = process.cwd();
+const previousScratch = process.env.STORAGE_SCRATCH_ROOT;
+process.env.STORAGE_SCRATCH_ROOT = join(directory, "owned-framework-scratch");
 const mode = process.env.W3_MODE ?? "unowned";
 const requests: { method: string; path: string; body: unknown }[] = [];
 const element = { "element-6066-11e4-a52e-4f735466cecf": "actual-frame" };
@@ -28,13 +60,14 @@ const caps = {
   browserVersion: "26.5",
   platformName: "iOS",
   "safari:useSimulator": true,
-  "safari:deviceUDID": "control-device",
+  "safari:deviceUDID": mode === "wrong-capabilities" ? "wrong-device" : "control-device",
   extraActual: "retained",
 };
 let malformed = false;
 let releaseLookup: (() => void) | undefined;
 let lookupHeld = false;
 let navigation: string | undefined;
+let receivedUrl: string | undefined;
 async function answer(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -160,8 +193,8 @@ try {
       return this.browser;
     }
     override async openPage(sessionId: string, url: string) {
+      receivedUrl = url;
       if (this.closed) throw new Error("Attached provider closed");
-      await this.openBrowser();
       await ownedHost.openPage(url, () => super.openPage(sessionId, url));
       await navigationEnd.promise;
     }
@@ -188,6 +221,8 @@ try {
       return provider;
     },
   };
+  assert.equal(attached.serverFactory, stock.serverFactory);
+  assert.equal(attached.name, "webdriverio");
   const result = await host.run(async (registerClose) => {
     const nativeConfig = {
       test: {
@@ -212,7 +247,7 @@ try {
           name: "owned-collector",
           configureServer(server) {
             viteServers.add(server);
-            server.middlewares.use(ownedHost.middleware);
+            ownedHost.mount(server.middlewares);
           },
         },
       ],
@@ -230,12 +265,33 @@ try {
     });
     const starting = context.start([file]);
     void starting.catch(() => {});
+    if (mode === "wrong-capabilities") {
+      await starting;
+      assert.equal(descriptor, undefined);
+      assert.equal(
+        requests.some((request) => request.path.endsWith("/context")),
+        false,
+      );
+      trace.push("capabilities-rejected-before-sdk");
+      return {
+        status: "failed",
+        errors: context.state.getUnhandledErrors().map(errorText),
+      } satisfies VitestEnd;
+    }
     for (let attempt = 0; !navigation && attempt < 200; attempt++) await delay(10);
     assert.ok(navigation, "normal start must call inherited openPage");
     assert.ok(descriptor);
     assert.equal(descriptor.sessionId, "owned-session");
     assert.deepEqual(descriptor.capabilities, caps);
-    assert.equal(descriptor.requestedCapabilities.browserName, "Safari");
+    assert.deepEqual(descriptor.requestedCapabilities, {
+      browserName: "Safari",
+      platformName: "iOS",
+      "safari:useSimulator": true,
+      "safari:deviceUDID": "control-device",
+    });
+    assert.equal(navigation, receivedUrl);
+    assert.equal(provider?.supportsParallelism, false);
+    assert.ok(provider?.initScripts.some((script) => script.endsWith("locators.js")));
     assert.equal(descriptor.options.connectionRetryCount, 0);
     assert.equal(descriptor.options.connectionRetryTimeout, 5000);
     const server = context.projects.find((project) => project.browser)?.browser;
@@ -245,6 +301,16 @@ try {
     const vite = await fetch(new URL("/@vite/client", navigation));
     assert.equal(vite.status, 200);
     assert.match(await vite.text(), /WebSocket/);
+    const actualServer = Array.from(viteServers).find((server) => {
+      const address = server.httpServer?.address();
+      return address && typeof address === "object" && address.port === Number(url.port);
+    });
+    assert.ok(actualServer);
+    await websocketControl(
+      new URL(actualServer.config.base, navigation),
+      actualServer.config.webSocketToken,
+    );
+    trace.push("actual-vite-websocket");
     assert.equal((await fetch(new URL("/report", navigation))).status, 405);
     assert.ok(provider?.browser);
     const actualProvider = provider;
@@ -293,24 +359,37 @@ try {
         await browser.getTitle().catch(() => {});
         assert.equal(requests.length, beforeForbidden);
       }
+    } catch (error) {
+      trace.push(`caught-host-boundary:${String(error)}`);
     } finally {
       navigationEnd.reject(new Error("EXPECTED_FINITE_FAKE_ABORT"));
     }
     trace.push(`${mode}-rejection-caught`);
     await starting;
-    return { status: "interrupted", errors: ["finite fake abort"] } satisfies VitestEnd;
+    const errors = context.state.getUnhandledErrors().map(errorText);
+    assert.ok(errors.some((error) => error.includes("EXPECTED_FINITE_FAKE_ABORT")));
+    return { status: "failed", errors } satisfies VitestEnd;
   });
   await writeFile(
     join(directory, `result-${mode}.json`),
     JSON.stringify({ result, requests, trace }, null, 2),
   );
-  assert.ok(
-    trace.includes("nested-public-frame-bookkeeping"),
-    "Every required frame proof must execute",
+  if (mode === "wrong-capabilities") assert.ok(trace.includes("capabilities-rejected-before-sdk"));
+  else {
+    assert.ok(
+      trace.includes("nested-public-frame-bookkeeping"),
+      "Every required frame proof must execute",
+    );
+    assert.ok(trace.includes("serialized-probe"));
+    assert.ok(trace.includes("actual-vite-websocket"));
+    if (mode !== "malformed") assert.ok(trace.includes(`${mode}-rejection-caught`));
+  }
+  assert.equal(
+    requests.some((request) => /window\/rect|screenshot|actions|goog\/cdp/.test(request.path)),
+    false,
   );
-  assert.ok(trace.includes("serialized-probe"));
-  if (mode !== "malformed") assert.ok(trace.includes(`${mode}-rejection-caught`));
   assert.equal(result.exit, 2);
+  assert.equal(result.framework?.status, "failed");
   assert.equal(result.fileComplete, false);
   assert.equal(result.rootBrowserSuiteComplete, false);
   assert.equal(
@@ -322,6 +401,7 @@ try {
   assert.equal(result.cleanup.scratch.status, "confirmed");
   assert.ok(provider);
   await assert.rejects(provider.openBrowser(), /closed/);
+  await assert.rejects(provider.openPage("closed", receivedUrl ?? "http://closed/"), /closed/);
   await mkdir(join(directory, "evidence"), { recursive: true });
   await writeFile(
     join(directory, "evidence/checkpoint.json"),
@@ -346,4 +426,8 @@ try {
 } finally {
   navigationEnd.reject(new Error("EXPECTED_FINITE_FAKE_ABORT"));
   await close();
+  await dispatcher.close();
+  setGlobalDispatcher(previousDispatcher);
+  if (previousScratch === undefined) delete process.env.STORAGE_SCRATCH_ROOT;
+  else process.env.STORAGE_SCRATCH_ROOT = previousScratch;
 }

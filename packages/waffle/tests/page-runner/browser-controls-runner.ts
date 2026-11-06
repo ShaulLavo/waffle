@@ -1,3 +1,4 @@
+import { frameworkDOMControl, frameworkControlModes } from "./framework-dom-controls.js";
 import { hostControl, hostControlModes } from "./host-drive-controls.js";
 import { consumerControl, consumerControlModes } from "./consumer-controls.js";
 import { storagePolicy } from "./storage-policy.js";
@@ -280,6 +281,15 @@ async function engineControls(
   if (engine !== "chromium" && engine !== "webkit")
     throw new Error(`Unsupported control engine ${engine}`);
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  for (const mode of frameworkControlModes.filter(
+    (mode) => !selected || `framework-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `framework-${mode}`,
+      () => frameworkDOMControl(engine, mode, root),
+      results,
+    );
   for (const mode of modes.filter((mode) => !selected || mode.includes(selected)))
     await checkControl(engine, mode, () => reporterControl(engine, mode, root), results);
   for (const mode of commandControlModes.filter(

@@ -211,6 +211,8 @@ export class SafariDriver implements Driver {
       url.hostname !== "127.0.0.1" ||
       !url.port ||
       url.pathname !== "/" ||
+      url.username ||
+      url.password ||
       url.search ||
       url.hash
     )

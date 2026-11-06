@@ -15,6 +15,7 @@ export type ExpectedCase = {
   readonly timeoutMs: 15000;
   readonly retries: 0;
 };
+/** @public */
 export type SafariRequested = Readonly<Record<string, Json>> & {
   readonly browserName: "Safari";
   readonly platformName: "iOS";
@@ -119,9 +120,18 @@ export type FrameworkResult = {
   documents: {
     kind: "orchestrator" | "tester";
     doc: string | null;
-    ackedThrough: number;
+    acceptedThrough: number;
+    ackedThrough: number | null;
+    pending: number | null;
     cutoff: number | null;
   }[];
+  binding: {
+    windowHandle: string;
+    iframeElementId: string;
+    topUrl: string;
+    testerUrl: string;
+  } | null;
+  commandHooks: { operation: string | null; phase: "started" | "settled"; revoked: boolean }[];
   geometry: FrameworkGeometry | null;
   framework: VitestEnd | null;
   failures: { category: string; detail: string }[];
@@ -136,7 +146,14 @@ export type FrameworkResult = {
   };
   exit: number;
 };
+export type FrameworkMiddlewareStack = {
+  readonly stack: readonly { readonly route: string; readonly handle: unknown }[];
+  use(
+    handler: (request: IncomingMessage, response: ServerResponse, next: () => void) => void,
+  ): unknown;
+};
 export interface FrameworkHost {
+  mount(server: FrameworkMiddlewareStack): void;
   readonly middleware: (
     request: IncomingMessage,
     response: ServerResponse,
