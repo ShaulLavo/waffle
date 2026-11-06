@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PreviewRouter, type PreviewServer } from "../browser/preview";
-import type { PreviewSocketRequest } from "../browser/preview-host";
+import type { PreviewHostRelay, PreviewSocketRequest } from "../browser/preview-host";
 import type { ConnectionSink } from "../browser/net/helper";
 
 const encoder = new TextEncoder();
@@ -671,3 +671,75 @@ for (const malformed of ["1g\r\n", "1\r\naXX", "0\r\n" + "X: abc\r\n".repeat(819
     expect(f.stopped).toBe(1);
   });
 }
+
+test("replacing a server revokes its old binding before it can reach the new listener", async () => {
+  const f = fixture();
+  const host = await f.router.bindHost({ port: 3137 });
+  const errors: string[] = [];
+  let replacementConnections = 0;
+  let next: PreviewHostRelay | undefined;
+  const replacement: PreviewServer = {
+    request: f.server.request,
+    connect() {
+      replacementConnections++;
+      return { write() {}, close() {} };
+    },
+  };
+  try {
+    host.connect(host.authorization, socketRequest(), {
+      data() {},
+      end() {},
+      error(message) {
+        errors.push(message);
+      },
+    });
+    f.router.register(3137, replacement);
+    expect(host.closed).toBe(true);
+    expect(f.stopped).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(() =>
+      host.connect(host.authorization, socketRequest(), {
+        data() {},
+        end() {},
+        error() {},
+      }),
+    ).toThrow();
+    await expect(host.fetch(host.authorization, new Request(origin))).rejects.toThrow();
+    expect(replacementConnections).toBe(0);
+    expect(() => f.router.url(3137)).toThrow("No authenticated preview host");
+    f.router.unregister(3137, f.server);
+    expect(f.router.serves(3137)).toBe(true);
+    next = await f.router.bindHost({ port: 3137 });
+    expect(next.authorization.capability).not.toBe(host.authorization.capability);
+    expect(
+      next.connect(next.authorization, socketRequest(), {
+        data() {},
+        end() {},
+        error() {},
+      }),
+    ).not.toBeNull();
+    expect(replacementConnections).toBe(1);
+  } finally {
+    next?.close();
+    host.close();
+  }
+});
+
+test("registering the same server preserves its live binding and connections", async () => {
+  const f = fixture();
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    const connection = host.connect(host.authorization, socketRequest(), {
+      data() {},
+      end() {},
+      error() {},
+    });
+    f.router.register(3137, f.server);
+    expect(host.closed).toBe(false);
+    expect(f.stopped).toBe(0);
+    expect(f.router.url(3137)).toBe(`${origin}/`);
+    connection?.close();
+  } finally {
+    host.close();
+  }
+});
