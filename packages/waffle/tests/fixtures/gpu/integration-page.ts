@@ -40,7 +40,12 @@ let suppress = false;
 let holdMode = "";
 
 /** @browserEntry */
-export async function openIntegration(suppressTransfer = false, hold = "") {
+export async function openIntegration(
+  suppressTransfer = false,
+  hold = "",
+  freezeSnapshots = false,
+) {
+  lastServiceSnapshot = freezeSnapshots ? { presents: 0, frameTexturesLive: 0 } : undefined;
   holdMode = hold;
   suppress = suppressTransfer;
   rootPid = 0;
@@ -56,7 +61,7 @@ export async function openIntegration(suppressTransfer = false, hold = "") {
       workers.push({ url: String(path), worker: this, stopped: false });
       this.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
         if (typeof data !== "object" || data === null) return;
-        if ("gpuSnapshot" in data) lastServiceSnapshot = data.gpuSnapshot;
+        if ("gpuSnapshot" in data && !freezeSnapshots) lastServiceSnapshot = data.gpuSnapshot;
         if ("gpuAuthority" in data) authority.push(data.gpuAuthority);
       });
     }
@@ -76,7 +81,6 @@ export async function openIntegration(suppressTransfer = false, hold = "") {
     processHost: (options) =>
       new BrowserProcessBroker({ ...options, onError: (error) => errors.push(String(error)) }),
   });
-  const source = new Uint8Array(await (await fetch("/triangle.wasm")).arrayBuffer());
   runtime.registerAdapter("gpu", (context, service) =>
     service.launchWorker(context, {
       workerUrl: "/gpu-guest.js",
@@ -89,8 +93,11 @@ export async function openIntegration(suppressTransfer = false, hold = "") {
       },
     }),
   );
-  runtime.registerProgram("/bin/triangle", { adapter: "gpu", source });
-  await runtime.filesystem.writeFile("/bin/triangle", "registered");
+  for (const name of ["triangle", "scene"]) {
+    const source = new Uint8Array(await (await fetch(`/${name}.wasm`)).arrayBuffer());
+    runtime.registerProgram(`/bin/${name}`, { adapter: "gpu", source });
+    await runtime.filesystem.writeFile(`/bin/${name}`, "registered");
+  }
   return { workers: workers.map((item) => item.url), snapshot: runtime.sharedMemory.snapshot() };
 }
 /** @browserEntry */
@@ -140,6 +147,7 @@ export async function launchTriangle(
   slot = 0,
   poison = false,
   forge = false,
+  program: "triangle" | "scene" = "triangle",
 ) {
   const service = await root(),
     supervisor = await service.ready();
@@ -161,8 +169,8 @@ export async function launchTriangle(
       ? undefined
       : display.grant({ surfaces: [ensureSurface(slot)], gpu: grant === "gpu" });
   const pid = client.spawn(rootPid, {
-    executable: "/bin/triangle",
-    argv: ["triangle"].concat(args),
+    executable: `/bin/${program}`,
+    argv: Array.of<string>(program).concat(args),
     env: { GPU_POISON: poison ? "1" : "0", GPU_FORGE: forge ? "1" : "0" },
     cwd: "/",
     job: -1,
@@ -176,6 +184,10 @@ export async function launchTriangle(
   while (notices.length) await service.runtimeMessage(notices.shift()!, rootPid);
   await supervisor.start(pid);
   return { pid };
+}
+/** @browserEntry */
+export function launchScene(args: string[] = [], grant: "gpu" | "surface" | "none" = "gpu") {
+  return launchTriangle(args, grant, 0, true, false, "scene");
 }
 /** @browserEntry */
 export function drainTriangle(slot = 0, detailed = true) {

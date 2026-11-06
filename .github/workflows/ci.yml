@@ -1019,7 +1019,7 @@ jobs:
         id: gpu-fixture
         with:
           path: ${{ runner.temp }}/gpu-fixture
-          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts') }}
+          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts') }}
       - uses: actions/cache@v4
         id: fixtures
         with:
@@ -1067,16 +1067,16 @@ jobs:
         env:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
         run: |
-          bun test packages/waffle/tests/gpu-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C completion handling|bounded frame-mode wire controls' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
+          bun test packages/waffle/tests/gpu-fixture.test.ts packages/waffle/tests/gpu-scene-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C completion handling|bounded frame-mode wire controls|compiled textured depth scene' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
           python3 - "$RUNNER_TEMP/gpu-fixture-tests.xml" <<'PYTHON'
           import sys
           import xml.etree.ElementTree as ET
-          names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance"}
+          names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance", "compiled textured depth scene, protocol assertions"}
           suites = [suite for suite in ET.parse(sys.argv[1]).iter("testsuite") if suite.get("name") in names]
           assert {suite.get("name") for suite in suites} == names, "Missing compiled GPU fixture suite"
           assert all(suite.findall("testcase") for suite in suites), "Empty compiled GPU fixture suite"
           cases = [case for suite in suites for case in suite.findall("testcase")]
-          assert len(cases) >= 17, "Compiled GPU fixture tests did not execute"
+          assert len(cases) >= 29, "Compiled GPU fixture tests did not execute"
           assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
           print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
           PYTHON
