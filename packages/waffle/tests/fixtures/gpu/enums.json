@@ -1,0 +1,38 @@
+{
+  "source": "webgpu-native/webgpu-headers/a1dc77409bb2b8bd80540cbf4b8db219e123e909/webgpu.h",
+  "values": {
+    "enum.error_filter": {
+      "validation": 1,
+      "out_of_memory": 2,
+      "internal": 3
+    },
+    "enum.status": {
+      "success": 1,
+      "error": 2
+    },
+    "enum.s_type": {
+      "shader_source_WGSL": 2
+    },
+    "enum.texture_format": {
+      "RGBA8_unorm": 22,
+      "BGRA8_unorm": 27,
+      "BGRA8_unorm_srgb": 28
+    },
+    "enum.surface_get_current_texture_status": {
+      "success_optimal": 1,
+      "success_suboptimal": 2,
+      "timeout": 3,
+      "outdated": 4,
+      "lost": 5,
+      "error": 6
+    },
+    "bitflag.texture_usage": {
+      "none": 0,
+      "copy_src": 1,
+      "copy_dst": 2,
+      "texture_binding": 4,
+      "storage_binding": 8,
+      "render_attachment": 16
+    }
+  }
+}

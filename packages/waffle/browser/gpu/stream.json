@@ -1,0 +1,1502 @@
+{
+  "upstream": {
+    "repository": "webgpu-native/webgpu-headers",
+    "revision": "a1dc77409bb2b8bd80540cbf4b8db219e123e909",
+    "sha256": "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
+    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22"
+  },
+  "root": {
+    "object": "instance",
+    "id": 1,
+    "generation": 1
+  },
+  "retiredOpcodes": [],
+  "retiredCompletions": [],
+  "calls": [
+    {
+      "opcode": 1,
+      "name": "instance.request_adapter",
+      "receiver": "instance",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "adapter",
+        "source": "callback"
+      },
+      "token": "adapter",
+      "lowering": {
+        "kind": "request-adapter",
+        "descriptor": "adapter-options"
+      },
+      "omitted": ["callback_info"]
+    },
+    {
+      "opcode": 2,
+      "name": "adapter.request_device",
+      "receiver": "adapter",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "device",
+        "source": "callback"
+      },
+      "token": "device",
+      "lowering": {
+        "kind": "request-device",
+        "descriptor": "device-descriptor"
+      },
+      "omitted": ["callback_info"]
+    },
+    {
+      "opcode": 3,
+      "name": "instance.create_surface",
+      "receiver": "instance",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "surface",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "surface-create",
+        "descriptor": "waffle-surface"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 4,
+      "name": "surface.configure",
+      "receiver": "surface",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "surface-configure",
+        "descriptor": "stable-frame"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 5,
+      "name": "surface.get_current_texture",
+      "receiver": "surface",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "texture",
+        "source": "output"
+      },
+      "token": "surface-texture",
+      "lowering": {
+        "kind": "surface-acquire",
+        "output": "surface_texture"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 6,
+      "name": "surface.present",
+      "receiver": "surface",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "enum.status"
+      },
+      "token": "present",
+      "lowering": {
+        "kind": "surface-present",
+        "result": "enum.status"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 7,
+      "name": "device.get_queue",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "queue",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "property",
+        "member": "queue"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 8,
+      "name": "device.create_shader_module",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "shader_module",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "shader-module",
+        "descriptor": "wgsl-chain"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 9,
+      "name": "device.create_render_pipeline",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "render_pipeline",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "render-pipeline",
+        "descriptor": "auto-layout"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 10,
+      "name": "texture.create_view",
+      "receiver": "texture",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "texture_view",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "createView"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 11,
+      "name": "device.create_command_encoder",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "handle",
+        "object": "command_encoder",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "createCommandEncoder"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 12,
+      "name": "command_encoder.begin_render_pass",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "handle",
+        "object": "render_pass_encoder",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "beginRenderPass"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 13,
+      "name": "render_pass_encoder.set_pipeline",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setPipeline"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 14,
+      "name": "render_pass_encoder.draw",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "draw"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 15,
+      "name": "render_pass_encoder.end",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "end"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 16,
+      "name": "command_encoder.finish",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "handle",
+        "object": "command_buffer",
+        "source": "return"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "finish"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 17,
+      "name": "queue.submit",
+      "receiver": "queue",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "submit"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 18,
+      "name": "device.destroy",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "destroy"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 19,
+      "name": "device.push_error_scope",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "error-scope",
+        "member": "pushErrorScope"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 20,
+      "name": "device.pop_error_scope",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": "error-scope",
+      "lowering": {
+        "kind": "error-scope",
+        "member": "popErrorScope"
+      },
+      "omitted": ["callback_info"]
+    },
+    {
+      "opcode": 21,
+      "name": "surface.unconfigure",
+      "receiver": "surface",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "unconfigure"
+      },
+      "omitted": []
+    }
+  ],
+  "records": [
+    {
+      "name": "release",
+      "opcode": 4096,
+      "enabled": true,
+      "fields": [
+        {
+          "name": "object_kind",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "object",
+          "type": "handle",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "encode",
+      "opcode": 4097,
+      "enabled": true,
+      "fields": [
+        {
+          "name": "encoder",
+          "type": "object.command_encoder",
+          "optional": false
+        },
+        {
+          "name": "commands",
+          "type": "bytes",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "render-bundle",
+      "opcode": 4098,
+      "enabled": false,
+      "fields": []
+    },
+    {
+      "name": "buffer-unmap-writes",
+      "opcode": 4099,
+      "enabled": false,
+      "fields": []
+    },
+    {
+      "name": "chunk",
+      "opcode": 4100,
+      "enabled": true,
+      "fields": [
+        {
+          "name": "logical_length",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "offset",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "payload_length",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "reserved",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "payload",
+          "type": "raw-bytes",
+          "optional": false
+        }
+      ]
+    }
+  ],
+  "completions": [
+    {
+      "name": "adapter",
+      "kind": 1,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.request_adapter_status",
+          "optional": false
+        },
+        {
+          "name": "adapter",
+          "type": "object.adapter",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "device",
+      "kind": 2,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.request_device_status",
+          "optional": false
+        },
+        {
+          "name": "device",
+          "type": "object.device",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "surface-texture",
+      "kind": 3,
+      "fields": [
+        {
+          "name": "texture",
+          "type": "object.texture",
+          "optional": false
+        },
+        {
+          "name": "status",
+          "type": "enum.surface_get_current_texture_status",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "present",
+      "kind": 4,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.status",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "error-scope",
+      "kind": 5,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.pop_error_scope_status",
+          "optional": false
+        },
+        {
+          "name": "type",
+          "type": "enum.error_type",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "uncaptured-error",
+      "kind": 6,
+      "fields": [
+        {
+          "name": "device",
+          "type": "object.device",
+          "optional": false
+        },
+        {
+          "name": "type",
+          "type": "enum.error_type",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "device-lost",
+      "kind": 7,
+      "fields": [
+        {
+          "name": "device",
+          "type": "object.device",
+          "optional": false
+        },
+        {
+          "name": "reason",
+          "type": "enum.device_lost_reason",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "call-exception",
+      "kind": 8,
+      "fields": [
+        {
+          "name": "opcode",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "frame-credit",
+      "kind": 9,
+      "fields": [
+        {
+          "name": "surface",
+          "type": "object.surface",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "present-failed",
+      "kind": 10,
+      "fields": [
+        {
+          "name": "surface",
+          "type": "object.surface",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "surface-lost",
+      "kind": 11,
+      "fields": [
+        {
+          "name": "surface",
+          "type": "object.surface",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "closed",
+      "kind": 12,
+      "fields": [
+        {
+          "name": "reason",
+          "type": "uint32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "mapped",
+      "kind": 13,
+      "fields": [
+        {
+          "name": "payload",
+          "type": "handle",
+          "optional": false
+        },
+        {
+          "name": "length",
+          "type": "uint32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "compilation-info",
+      "kind": 14,
+      "fields": [
+        {
+          "name": "payload",
+          "type": "handle",
+          "optional": false
+        },
+        {
+          "name": "length",
+          "type": "uint32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "work-done",
+      "kind": 15,
+      "fields": []
+    }
+  ],
+  "chains": {
+    "shader_module_descriptor": [
+      {
+        "sType": 2,
+        "struct": "shader_source_WGSL"
+      }
+    ],
+    "surface_descriptor": [
+      {
+        "sType": 4096,
+        "struct": "surface_source_waffle"
+      }
+    ]
+  },
+  "omit": {
+    "device_descriptor": ["device_lost_callback_info", "uncaptured_error_callback_info"]
+  },
+  "events": {
+    "device_descriptor.device_lost_callback_info": "device-lost",
+    "device_descriptor.uncaptured_error_callback_info": "uncaptured-error"
+  },
+  "descriptors": {
+    "adapter-options": {
+      "input": "struct.request_adapter_options",
+      "output": "GPURequestAdapterOptions",
+      "rules": {
+        "feature_level": "undefined-or-core-only",
+        "power_preference": "enum-or-omit-undefined",
+        "force_fallback_adapter": "boolean",
+        "backend_type": "undefined-only",
+        "compatible_surface": "validate-granted-surface-no-browser-field"
+      }
+    },
+    "device-descriptor": {
+      "input": "struct.device_descriptor",
+      "output": "GPUDeviceDescriptor",
+      "rules": {
+        "label": "string",
+        "required_features": "enum-array",
+        "required_limits": "omit-undefined-sentinels",
+        "default_queue": "dictionary",
+        "device_lost_callback_info": "omit-route-device-lost",
+        "uncaptured_error_callback_info": "omit-route-uncaptured-error"
+      }
+    },
+    "waffle-surface": {
+      "input": "struct.surface_descriptor",
+      "output": "granted-surface",
+      "rules": {
+        "next_in_chain": "exactly-one-SurfaceSourceWaffle-holder-checked",
+        "label": "string"
+      }
+    },
+    "stable-frame": {
+      "input": "struct.surface_configuration",
+      "output": "stable-frame-configuration",
+      "rules": {
+        "device": "resolve-handle",
+        "format": "enum",
+        "usage": "u64-safe-number-add-copy-src",
+        "width": "positive-u32",
+        "height": "positive-u32",
+        "view_formats": "enum-array",
+        "alpha_mode": "auto-to-opaque",
+        "present_mode": "undefined-or-fifo-only",
+        "validation": "create-and-destroy-guest-texture;private-present-scopes-balanced",
+        "presentation": "ordinary-frame-texture-to-private-webgpu-canvas-to-visible-bitmaprenderer"
+      }
+    },
+    "wgsl-chain": {
+      "input": "struct.shader_module_descriptor",
+      "output": "GPUShaderModuleDescriptor",
+      "rules": {
+        "label": "string",
+        "next_in_chain": "exactly-one-shader_source_WGSL.code-to-code"
+      }
+    },
+    "auto-layout": {
+      "input": "struct.render_pipeline_descriptor",
+      "output": "GPURenderPipelineDescriptor",
+      "rules": {
+        "layout": "null-handle-to-auto-otherwise-resolve",
+        "label": "string",
+        "vertex": "dictionary",
+        "primitive": "dictionary",
+        "depth_stencil": "optional-dictionary",
+        "multisample": "dictionary",
+        "fragment": "optional-dictionary"
+      }
+    }
+  },
+  "sentinels": {
+    "render_pass_color_attachment.depth_slice": "uint32_max-to-omit",
+    "render_pass_depth_stencil_attachment.depth_clear_value": "nan-to-omit",
+    "texture_view_descriptor.mip_level_count": "uint32_max-to-omit",
+    "texture_view_descriptor.array_layer_count": "uint32_max-to-omit"
+  },
+  "browserEnums": {
+    "enum.feature_level": {
+      "undefined": "@omit",
+      "compatibility": null,
+      "core": "core"
+    },
+    "enum.power_preference": {
+      "undefined": "@omit",
+      "low_power": "low-power",
+      "high_performance": "high-performance"
+    },
+    "enum.backend_type": {
+      "undefined": "@omit",
+      "null": null,
+      "WebGPU": null,
+      "D3D11": null,
+      "D3D12": null,
+      "metal": null,
+      "vulkan": null,
+      "openGL": null,
+      "openGLES": null
+    },
+    "enum.feature_name": {
+      "core_features_and_limits": null,
+      "depth_clip_control": "depth-clip-control",
+      "depth32_float_stencil8": null,
+      "texture_compression_BC": "texture-compression-bc",
+      "texture_compression_BC_sliced_3D": null,
+      "texture_compression_ETC2": "texture-compression-etc2",
+      "texture_compression_ASTC": "texture-compression-astc",
+      "texture_compression_ASTC_sliced_3D": null,
+      "timestamp_query": "timestamp-query",
+      "indirect_first_instance": "indirect-first-instance",
+      "shader_f16": "shader-f16",
+      "RG11B10_ufloat_renderable": null,
+      "BGRA8_unorm_storage": null,
+      "float32_filterable": null,
+      "float32_blendable": null,
+      "clip_distances": null,
+      "dual_source_blending": null,
+      "subgroups": null,
+      "texture_formats_tier_1": null,
+      "texture_formats_tier_2": null,
+      "primitive_index": null,
+      "texture_component_swizzle": null,
+      "subgroup_size_control": null,
+      "texture_compression_unaligned": null,
+      "atomic_vec2u_min_max": null
+    },
+    "enum.texture_format": {
+      "undefined": "@omit",
+      "R8_unorm": null,
+      "R8_snorm": null,
+      "R8_uint": null,
+      "R8_sint": null,
+      "R16_unorm": null,
+      "R16_snorm": null,
+      "R16_uint": null,
+      "R16_sint": null,
+      "R16_float": null,
+      "RG8_unorm": null,
+      "RG8_snorm": null,
+      "RG8_uint": null,
+      "RG8_sint": null,
+      "R32_float": null,
+      "R32_uint": null,
+      "R32_sint": null,
+      "RG16_unorm": null,
+      "RG16_snorm": null,
+      "RG16_uint": null,
+      "RG16_sint": null,
+      "RG16_float": null,
+      "RGBA8_unorm": "rgba8unorm",
+      "RGBA8_unorm_srgb": "rgba8unorm-srgb",
+      "RGBA8_snorm": null,
+      "RGBA8_uint": null,
+      "RGBA8_sint": null,
+      "BGRA8_unorm": "bgra8unorm",
+      "BGRA8_unorm_srgb": "bgra8unorm-srgb",
+      "RGB10_A2_uint": null,
+      "RGB10_A2_unorm": null,
+      "RG11_B10_ufloat": null,
+      "RGB9_E5_ufloat": null,
+      "RG32_float": null,
+      "RG32_uint": null,
+      "RG32_sint": null,
+      "RGBA16_unorm": null,
+      "RGBA16_snorm": null,
+      "RGBA16_uint": null,
+      "RGBA16_sint": null,
+      "RGBA16_float": "rgba16float",
+      "RGBA32_float": null,
+      "RGBA32_uint": null,
+      "RGBA32_sint": null,
+      "stencil8": null,
+      "depth16_unorm": null,
+      "depth24_plus": "depth24plus",
+      "depth24_plus_stencil8": null,
+      "depth32_float": "depth32float",
+      "depth32_float_stencil8": null,
+      "BC1_RGBA_unorm": null,
+      "BC1_RGBA_unorm_srgb": null,
+      "BC2_RGBA_unorm": null,
+      "BC2_RGBA_unorm_srgb": null,
+      "BC3_RGBA_unorm": null,
+      "BC3_RGBA_unorm_srgb": null,
+      "BC4_R_unorm": null,
+      "BC4_R_snorm": null,
+      "BC5_RG_unorm": null,
+      "BC5_RG_snorm": null,
+      "BC6H_RGB_ufloat": null,
+      "BC6H_RGB_float": null,
+      "BC7_RGBA_unorm": null,
+      "BC7_RGBA_unorm_srgb": null,
+      "ETC2_RGB8_unorm": null,
+      "ETC2_RGB8_unorm_srgb": null,
+      "ETC2_RGB8A1_unorm": null,
+      "ETC2_RGB8A1_unorm_srgb": null,
+      "ETC2_RGBA8_unorm": null,
+      "ETC2_RGBA8_unorm_srgb": null,
+      "EAC_R11_unorm": null,
+      "EAC_R11_snorm": null,
+      "EAC_RG11_unorm": null,
+      "EAC_RG11_snorm": null,
+      "ASTC_4x4_unorm": null,
+      "ASTC_4x4_unorm_srgb": null,
+      "ASTC_5x4_unorm": null,
+      "ASTC_5x4_unorm_srgb": null,
+      "ASTC_5x5_unorm": null,
+      "ASTC_5x5_unorm_srgb": null,
+      "ASTC_6x5_unorm": null,
+      "ASTC_6x5_unorm_srgb": null,
+      "ASTC_6x6_unorm": null,
+      "ASTC_6x6_unorm_srgb": null,
+      "ASTC_8x5_unorm": null,
+      "ASTC_8x5_unorm_srgb": null,
+      "ASTC_8x6_unorm": null,
+      "ASTC_8x6_unorm_srgb": null,
+      "ASTC_8x8_unorm": null,
+      "ASTC_8x8_unorm_srgb": null,
+      "ASTC_10x5_unorm": null,
+      "ASTC_10x5_unorm_srgb": null,
+      "ASTC_10x6_unorm": null,
+      "ASTC_10x6_unorm_srgb": null,
+      "ASTC_10x8_unorm": null,
+      "ASTC_10x8_unorm_srgb": null,
+      "ASTC_10x10_unorm": null,
+      "ASTC_10x10_unorm_srgb": null,
+      "ASTC_12x10_unorm": null,
+      "ASTC_12x10_unorm_srgb": null,
+      "ASTC_12x12_unorm": null,
+      "ASTC_12x12_unorm_srgb": null
+    },
+    "bitflag.texture_usage": {
+      "none": 0,
+      "copy_src": 1,
+      "copy_dst": 2,
+      "texture_binding": 4,
+      "storage_binding": 8,
+      "render_attachment": 16,
+      "transient_attachment": null
+    },
+    "enum.composite_alpha_mode": {
+      "auto": "opaque",
+      "opaque": "opaque",
+      "premultiplied": "premultiplied",
+      "unpremultiplied": null,
+      "inherit": null
+    },
+    "enum.present_mode": {
+      "undefined": "@omit",
+      "fifo": "fifo",
+      "fifo_relaxed": null,
+      "immediate": null,
+      "mailbox": null
+    },
+    "enum.vertex_step_mode": {
+      "undefined": "@omit",
+      "vertex": "vertex",
+      "instance": "instance"
+    },
+    "enum.vertex_format": {
+      "uint8": null,
+      "uint8x2": null,
+      "uint8x4": null,
+      "sint8": null,
+      "sint8x2": null,
+      "sint8x4": null,
+      "unorm8": null,
+      "unorm8x2": null,
+      "unorm8x4": null,
+      "snorm8": null,
+      "snorm8x2": null,
+      "snorm8x4": null,
+      "uint16": null,
+      "uint16x2": null,
+      "uint16x4": null,
+      "sint16": null,
+      "sint16x2": null,
+      "sint16x4": null,
+      "unorm16": null,
+      "unorm16x2": null,
+      "unorm16x4": null,
+      "snorm16": null,
+      "snorm16x2": null,
+      "snorm16x4": null,
+      "float16": null,
+      "float16x2": null,
+      "float16x4": null,
+      "float32": "float32",
+      "float32x2": "float32x2",
+      "float32x3": "float32x3",
+      "float32x4": "float32x4",
+      "uint32": null,
+      "uint32x2": null,
+      "uint32x3": null,
+      "uint32x4": null,
+      "sint32": null,
+      "sint32x2": null,
+      "sint32x3": null,
+      "sint32x4": null,
+      "unorm10__10__10__2": null,
+      "unorm8x4_B_G_R_A": null,
+      "snorm10__10__10__2": null
+    },
+    "enum.primitive_topology": {
+      "undefined": "@omit",
+      "point_list": "point-list",
+      "line_list": "line-list",
+      "line_strip": "line-strip",
+      "triangle_list": "triangle-list",
+      "triangle_strip": "triangle-strip"
+    },
+    "enum.index_format": {
+      "undefined": "@omit",
+      "uint16": "uint16",
+      "uint32": "uint32"
+    },
+    "enum.front_face": {
+      "undefined": "@omit",
+      "CCW": "ccw",
+      "CW": "cw"
+    },
+    "enum.cull_mode": {
+      "undefined": "@omit",
+      "none": "none",
+      "front": "front",
+      "back": "back"
+    },
+    "enum.optional_bool": {
+      "false": 0,
+      "true": 1,
+      "undefined": "@omit"
+    },
+    "enum.compare_function": {
+      "undefined": "@omit",
+      "never": "never",
+      "less": "less",
+      "equal": "equal",
+      "less_equal": "less-equal",
+      "greater": "greater",
+      "not_equal": "not-equal",
+      "greater_equal": "greater-equal",
+      "always": "always"
+    },
+    "enum.stencil_operation": {
+      "undefined": "@omit",
+      "keep": "keep",
+      "zero": "zero",
+      "replace": "replace",
+      "invert": "invert",
+      "increment_clamp": "increment-clamp",
+      "decrement_clamp": "decrement-clamp",
+      "increment_wrap": "increment-wrap",
+      "decrement_wrap": "decrement-wrap"
+    },
+    "enum.blend_operation": {
+      "undefined": "@omit",
+      "add": "add",
+      "subtract": "subtract",
+      "reverse_subtract": "reverse-subtract",
+      "min": "min",
+      "max": "max"
+    },
+    "enum.blend_factor": {
+      "undefined": "@omit",
+      "zero": "zero",
+      "one": "one",
+      "src": "src",
+      "one_minus_src": "one-minus-src",
+      "src_alpha": "src-alpha",
+      "one_minus_src_alpha": "one-minus-src-alpha",
+      "dst": "dst",
+      "one_minus_dst": "one-minus-dst",
+      "dst_alpha": "dst-alpha",
+      "one_minus_dst_alpha": "one-minus-dst-alpha",
+      "src_alpha_saturated": "src-alpha-saturated",
+      "constant": "constant",
+      "one_minus_constant": "one-minus-constant",
+      "src1": null,
+      "one_minus_src1": null,
+      "src1_alpha": null,
+      "one_minus_src1_alpha": null
+    },
+    "bitflag.color_write_mask": {
+      "none": 0,
+      "red": 1,
+      "green": 2,
+      "blue": 4,
+      "alpha": 8,
+      "all": 16
+    },
+    "enum.texture_view_dimension": {
+      "undefined": "@omit",
+      "1D": "1d",
+      "2D": "2d",
+      "2D_array": "2d-array",
+      "cube": "cube",
+      "cube_array": "cube-array",
+      "3D": "3d"
+    },
+    "enum.texture_aspect": {
+      "undefined": "@omit",
+      "all": "all",
+      "stencil_only": "stencil-only",
+      "depth_only": "depth-only"
+    },
+    "enum.load_op": {
+      "undefined": "@omit",
+      "load": "load",
+      "clear": "clear"
+    },
+    "enum.store_op": {
+      "undefined": "@omit",
+      "store": "store",
+      "discard": "discard"
+    },
+    "enum.error_filter": {
+      "validation": "validation",
+      "out_of_memory": "out-of-memory",
+      "internal": "internal"
+    },
+    "enum.request_adapter_status": {
+      "success": 1,
+      "callback_cancelled": 2,
+      "unavailable": 3,
+      "error": 4
+    },
+    "enum.request_device_status": {
+      "success": 1,
+      "callback_cancelled": 2,
+      "error": 3
+    },
+    "enum.surface_get_current_texture_status": {
+      "success_optimal": 1,
+      "success_suboptimal": 2,
+      "timeout": 3,
+      "outdated": 4,
+      "lost": 5,
+      "error": 6
+    },
+    "enum.status": {
+      "success": 1,
+      "error": 2
+    },
+    "enum.pop_error_scope_status": {
+      "success": 1,
+      "callback_cancelled": 2,
+      "error": 3
+    },
+    "enum.error_type": {
+      "no_error": 1,
+      "validation": 2,
+      "out_of_memory": 3,
+      "internal": 4,
+      "unknown": 5
+    },
+    "enum.device_lost_reason": {
+      "unknown": 1,
+      "destroyed": 2,
+      "callback_cancelled": 3,
+      "failed_creation": 4
+    },
+    "enum.s_type": {
+      "shader_source_SPIRV": 1,
+      "shader_source_WGSL": 2,
+      "render_pass_max_draw_count": 3,
+      "surface_source_metal_layer": 4,
+      "surface_source_windows_HWND": 5,
+      "surface_source_xlib_window": 6,
+      "surface_source_wayland_surface": 7,
+      "surface_source_android_native_window": 8,
+      "surface_source_XCB_window": 9,
+      "surface_color_management": 10,
+      "request_adapter_WebXR_options": 11,
+      "texture_component_swizzle_descriptor": 12,
+      "external_texture_binding_layout": 13,
+      "external_texture_binding_entry": 14,
+      "compatibility_mode_limits": 15,
+      "texture_binding_view_dimension": 16
+    }
+  },
+  "encoding": {
+    "integers": "little-endian",
+    "commandHeader": ["u16 opcode", "u16 flags", "u32 length"],
+    "completionHeader": ["u16 kind", "u16 flags", "u32 length", "u32 token", "i32 status"],
+    "recordAlignment": 8,
+    "handle": ["u32 id", "u32 generation"],
+    "token": ["u32 token", "u32 zero"],
+    "optionalStruct": "u32 presence followed by members if present",
+    "strings": "u32 UTF-8 length, bytes, pad4; nullable_string permits 0xffffffff",
+    "arrays": "u32 count then element alignment then elements",
+    "structs": "chain-count first for extensible; then YAML members in order; each scalar naturally aligned, no implicit struct-tail padding",
+    "chain": "u32 count then u32 sType and extension members; no guest pointers",
+    "nullHandle": "two zero u32s only where YAML optional",
+    "flags": "u64 as WGPUFlags, checked before converting to Number",
+    "nativeSizes": "usize is u64 on the wire, independent of guest pointer width",
+    "chunk": "header flags 1 more or 2 final; logical length, offset, payload length, reserved zero; exact raw bytes then pad8",
+    "encode": "receiver is the command_encoder; nested records omit receiver and retain encoder/pass state across blobs",
+    "deferred": "render-bundle and buffer-unmap-writes reserve numbers but have no accepted body in G0.1"
+  },
+  "opcodeLedger": {
+    "instance.request_adapter": 1,
+    "adapter.request_device": 2,
+    "instance.create_surface": 3,
+    "surface.configure": 4,
+    "surface.get_current_texture": 5,
+    "surface.present": 6,
+    "device.get_queue": 7,
+    "device.create_shader_module": 8,
+    "device.create_render_pipeline": 9,
+    "texture.create_view": 10,
+    "device.create_command_encoder": 11,
+    "command_encoder.begin_render_pass": 12,
+    "render_pass_encoder.set_pipeline": 13,
+    "render_pass_encoder.draw": 14,
+    "render_pass_encoder.end": 15,
+    "command_encoder.finish": 16,
+    "queue.submit": 17,
+    "device.destroy": 18,
+    "device.push_error_scope": 19,
+    "device.pop_error_scope": 20,
+    "surface.unconfigure": 21,
+    "release": 4096,
+    "encode": 4097,
+    "render-bundle": 4098,
+    "buffer-unmap-writes": 4099,
+    "chunk": 4100
+  },
+  "completionLedger": {
+    "adapter": 1,
+    "device": 2,
+    "surface-texture": 3,
+    "present": 4,
+    "error-scope": 5,
+    "uncaptured-error": 6,
+    "device-lost": 7,
+    "call-exception": 8,
+    "frame-credit": 9,
+    "present-failed": 10,
+    "surface-lost": 11,
+    "closed": 12,
+    "mapped": 13,
+    "compilation-info": 14,
+    "work-done": 15
+  },
+  "objectKinds": {
+    "instance": 1,
+    "adapter": 2,
+    "device": 3,
+    "surface": 4,
+    "queue": 5,
+    "shader_module": 6,
+    "render_pipeline": 7,
+    "texture": 8,
+    "texture_view": 9,
+    "command_encoder": 10,
+    "render_pass_encoder": 11,
+    "command_buffer": 12,
+    "pipeline_layout": 13,
+    "buffer": 14,
+    "query_set": 15,
+    "bind_group": 16,
+    "bind_group_layout": 17,
+    "sampler": 18,
+    "render_bundle": 19,
+    "render_bundle_encoder": 20,
+    "compute_pipeline": 21,
+    "compute_pass_encoder": 22
+  },
+  "dictionaryMembers": {
+    "request_adapter_options": {
+      "next_in_chain": null,
+      "feature_level": "featureLevel",
+      "power_preference": "powerPreference",
+      "force_fallback_adapter": "forceFallbackAdapter",
+      "backend_type": null,
+      "compatible_surface": null
+    },
+    "device_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "required_features": "requiredFeatures",
+      "required_limits": "requiredLimits",
+      "default_queue": "defaultQueue"
+    },
+    "limits": {
+      "next_in_chain": null,
+      "max_texture_dimension_1D": "maxTextureDimension1D",
+      "max_texture_dimension_2D": "maxTextureDimension2D",
+      "max_texture_dimension_3D": "maxTextureDimension3D",
+      "max_texture_array_layers": "maxTextureArrayLayers",
+      "max_bind_groups": "maxBindGroups",
+      "max_bind_groups_plus_vertex_buffers": "maxBindGroupsPlusVertexBuffers",
+      "max_bindings_per_bind_group": "maxBindingsPerBindGroup",
+      "max_dynamic_uniform_buffers_per_pipeline_layout": "maxDynamicUniformBuffersPerPipelineLayout",
+      "max_dynamic_storage_buffers_per_pipeline_layout": "maxDynamicStorageBuffersPerPipelineLayout",
+      "max_sampled_textures_per_shader_stage": "maxSampledTexturesPerShaderStage",
+      "max_samplers_per_shader_stage": "maxSamplersPerShaderStage",
+      "max_storage_buffers_per_shader_stage": "maxStorageBuffersPerShaderStage",
+      "max_storage_textures_per_shader_stage": "maxStorageTexturesPerShaderStage",
+      "max_uniform_buffers_per_shader_stage": "maxUniformBuffersPerShaderStage",
+      "max_uniform_buffer_binding_size": "maxUniformBufferBindingSize",
+      "max_storage_buffer_binding_size": "maxStorageBufferBindingSize",
+      "min_uniform_buffer_offset_alignment": "minUniformBufferOffsetAlignment",
+      "min_storage_buffer_offset_alignment": "minStorageBufferOffsetAlignment",
+      "max_vertex_buffers": "maxVertexBuffers",
+      "max_buffer_size": "maxBufferSize",
+      "max_vertex_attributes": "maxVertexAttributes",
+      "max_vertex_buffer_array_stride": "maxVertexBufferArrayStride",
+      "max_inter_stage_shader_variables": "maxInterStageShaderVariables",
+      "max_color_attachments": "maxColorAttachments",
+      "max_color_attachment_bytes_per_sample": "maxColorAttachmentBytesPerSample",
+      "max_compute_workgroup_storage_size": "maxComputeWorkgroupStorageSize",
+      "max_compute_invocations_per_workgroup": "maxComputeInvocationsPerWorkgroup",
+      "max_compute_workgroup_size_x": "maxComputeWorkgroupSizeX",
+      "max_compute_workgroup_size_y": "maxComputeWorkgroupSizeY",
+      "max_compute_workgroup_size_z": "maxComputeWorkgroupSizeZ",
+      "max_compute_workgroups_per_dimension": "maxComputeWorkgroupsPerDimension",
+      "max_immediate_size": "maxImmediateSize"
+    },
+    "queue_descriptor": {
+      "next_in_chain": null,
+      "label": "label"
+    },
+    "surface_descriptor": {
+      "next_in_chain": null,
+      "label": "label"
+    },
+    "surface_source_waffle": {
+      "surface_id": null
+    },
+    "surface_configuration": {
+      "next_in_chain": null,
+      "device": "device",
+      "format": "format",
+      "usage": "usage",
+      "width": null,
+      "height": null,
+      "view_formats": "viewFormats",
+      "alpha_mode": "alphaMode",
+      "present_mode": null
+    },
+    "shader_module_descriptor": {
+      "next_in_chain": null,
+      "label": "label"
+    },
+    "shader_source_WGSL": {
+      "code": "code"
+    },
+    "render_pipeline_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "layout": "layout",
+      "vertex": "vertex",
+      "primitive": "primitive",
+      "depth_stencil": "depthStencil",
+      "multisample": "multisample",
+      "fragment": "fragment"
+    },
+    "vertex_state": {
+      "next_in_chain": null,
+      "module": "module",
+      "entry_point": "entryPoint",
+      "constants": "constants",
+      "buffers": "buffers"
+    },
+    "constant_entry": {
+      "next_in_chain": null,
+      "key": "key",
+      "value": "value"
+    },
+    "vertex_buffer_layout": {
+      "next_in_chain": null,
+      "step_mode": "stepMode",
+      "array_stride": "arrayStride",
+      "attributes": "attributes"
+    },
+    "vertex_attribute": {
+      "next_in_chain": null,
+      "format": "format",
+      "offset": "offset",
+      "shader_location": "shaderLocation"
+    },
+    "primitive_state": {
+      "next_in_chain": null,
+      "topology": "topology",
+      "strip_index_format": "stripIndexFormat",
+      "front_face": "frontFace",
+      "cull_mode": "cullMode",
+      "unclipped_depth": "unclippedDepth"
+    },
+    "depth_stencil_state": {
+      "next_in_chain": null,
+      "format": "format",
+      "depth_write_enabled": "depthWriteEnabled",
+      "depth_compare": "depthCompare",
+      "stencil_front": "stencilFront",
+      "stencil_back": "stencilBack",
+      "stencil_read_mask": "stencilReadMask",
+      "stencil_write_mask": "stencilWriteMask",
+      "depth_bias": "depthBias",
+      "depth_bias_slope_scale": "depthBiasSlopeScale",
+      "depth_bias_clamp": "depthBiasClamp"
+    },
+    "stencil_face_state": {
+      "compare": "compare",
+      "fail_op": "failOp",
+      "depth_fail_op": "depthFailOp",
+      "pass_op": "passOp"
+    },
+    "multisample_state": {
+      "next_in_chain": null,
+      "count": "count",
+      "mask": "mask",
+      "alpha_to_coverage_enabled": "alphaToCoverageEnabled"
+    },
+    "fragment_state": {
+      "next_in_chain": null,
+      "module": "module",
+      "entry_point": "entryPoint",
+      "constants": "constants",
+      "targets": "targets"
+    },
+    "color_target_state": {
+      "next_in_chain": null,
+      "format": "format",
+      "blend": "blend",
+      "write_mask": "writeMask"
+    },
+    "blend_state": {
+      "color": "color",
+      "alpha": "alpha"
+    },
+    "blend_component": {
+      "operation": "operation",
+      "src_factor": "srcFactor",
+      "dst_factor": "dstFactor"
+    },
+    "texture_view_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "format": "format",
+      "dimension": "dimension",
+      "base_mip_level": "baseMipLevel",
+      "mip_level_count": "mipLevelCount",
+      "base_array_layer": "baseArrayLayer",
+      "array_layer_count": "arrayLayerCount",
+      "aspect": "aspect",
+      "usage": "usage"
+    },
+    "command_encoder_descriptor": {
+      "next_in_chain": null,
+      "label": "label"
+    },
+    "render_pass_descriptor": {
+      "next_in_chain": null,
+      "label": "label",
+      "color_attachments": "colorAttachments",
+      "depth_stencil_attachment": "depthStencilAttachment",
+      "occlusion_query_set": "occlusionQuerySet",
+      "timestamp_writes": "timestampWrites"
+    },
+    "render_pass_color_attachment": {
+      "next_in_chain": null,
+      "view": "view",
+      "depth_slice": "depthSlice",
+      "resolve_target": "resolveTarget",
+      "load_op": "loadOp",
+      "store_op": "storeOp",
+      "clear_value": "clearValue"
+    },
+    "color": {
+      "r": "r",
+      "g": "g",
+      "b": "b",
+      "a": "a"
+    },
+    "render_pass_depth_stencil_attachment": {
+      "next_in_chain": null,
+      "view": "view",
+      "depth_load_op": "depthLoadOp",
+      "depth_store_op": "depthStoreOp",
+      "depth_clear_value": "depthClearValue",
+      "depth_read_only": "depthReadOnly",
+      "stencil_load_op": "stencilLoadOp",
+      "stencil_store_op": "stencilStoreOp",
+      "stencil_clear_value": "stencilClearValue",
+      "stencil_read_only": "stencilReadOnly"
+    },
+    "pass_timestamp_writes": {
+      "next_in_chain": null,
+      "query_set": "querySet",
+      "beginning_of_pass_write_index": "beginningOfPassWriteIndex",
+      "end_of_pass_write_index": "endOfPassWriteIndex"
+    },
+    "command_buffer_descriptor": {
+      "next_in_chain": null,
+      "label": "label"
+    }
+  },
+  "dictionaryRules": {
+    "chains": "reject-nonempty-unless-explicitly-allowlisted",
+    "optionalHandles": "null-to-omitted-except-pipeline-layout-to-auto-and-attachment-view-to-hole",
+    "optionalStructs": "absent-to-omitted",
+    "nullableStrings": "null-to-omitted",
+    "constantEntries": "array-of-key-value-to-record-reject-duplicate-keys",
+    "limits": "omit-u32-max-and-u64-max-before-safe-number-conversion",
+    "uint64": "checked-safe-number",
+    "optionalBool": "0-false-1-true-2-omitted",
+    "zeroTextureViewUsage": "omit-inherit-texture-usage",
+    "pass_timestamp_writes": "omit-u32-max-indices",
+    "colorAttachmentHole": "null-view-to-null-array-entry"
+  }
+}

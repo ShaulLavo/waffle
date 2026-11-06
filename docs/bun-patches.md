@@ -39,6 +39,10 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `packages/program-support/src/{executor,io,runtime}.rs`, `src/runtime/wasi.rs`                                                        | Adaptation       | Neutral guest support from bash-web `shell/engine/src/{executor,io,runtime}.rs` and `runtime/wasi.rs` at `ed31b2bf47fe92afa4c9568868f206f35b9add27`. Public lifetime/cancellation hooks, filesystem adapter and wire decoders; original Waffle timers and read-readiness observations; shell policy stays in bash-web. See [Guest program support](#guest-program-support).                                                  |
 | `packages/waffle-relay/src/*webtransport*.ts`, `tcp-byte-channel.ts`, `tcp-target.ts`                                                 | Original adapter | Original carrier, lifetime, parser and reset adaptation around the public APIs of fails-components/webtransport revision `71d1ba5147c7733fbfd3a375116b9f58484d9f13`, exact npm pair 1.6.11. No upstream implementation is copied. See [WebTransport relay adapter](#webtransport-relay-adapter).                                                                                                                             |
 
+| `browser/gpu/upstream/{webgpu.yml,LICENSE}` | Unchanged copy | webgpu-native/webgpu-headers `webgpu.yml` and root `LICENSE` at `a1dc77409bb2b8bd80540cbf4b8db219e123e909`, BSD-3-Clause. Exact hashes are checked by the generator. |
+| `browser/gpu/generated/tables.ts`, `tests/fixtures/gpu/waffle_gpu_stream.h` | Mechanical derivation | Selected C signatures, descriptor order and numeric enums from the same pinned YAML. Original Waffle opcodes, wire alignment, named lowering metadata and C writer helpers are added explicitly. |
+| `browser/gpu/stream.json`, `tooling/gpu-stream*.ts`, `tests/gpu-stream.test.ts`, `tests/fixtures/gpu/{expected,enums}.json` | Original adapter | Explicit triangle selection, C-to-browser policy, schema tooling and independent expected bytes. No browser implementation or WebGPU IDL enum list copied. |
+
 ## GNU diffutils
 
 `packages/diffutils` builds `diff` and `cmp` from the GNU diffutils 3.12 release archive (`diffutils-3.12.tar.xz`, SHA-256 `7c8b7f9fc8609141fdea9cece85249d308624391ff61dedaf528fcb337727dfd`). The source paths and patch are recorded in `packages/diffutils/sources.lock.json` and `packages/diffutils/patches/gnu-wasi.patch`. The patch disables unsupported process, signal, timezone and locale recovery APIs for WASI; it does not replace the comparison algorithms. Configure disables NLS and uses byte-order directory sorting. The build, packaging and test adapters are original Waffle code. GNU diffutils is licensed under GPL-3.0-or-later.
@@ -441,3 +445,29 @@ The existing wasi-libc patch remains unchanged.
 The optional relay's WebTransport modules are original Waffle adapters. They use `main/lib/server.js`, `main/lib/session.js` and `main/lib/stream.js` from `fails-components/webtransport` revision `71d1ba5147c7733fbfd3a375116b9f58484d9f13` through the exact `@fails-components/webtransport@1.6.11` and `@fails-components/webtransport-transport-http3-quiche@1.6.11` packages. Both dependencies are BSD-3-Clause and remain outside this source tree. No native code or upstream stream implementation is copied or patched.
 
 The private reset adapter translates relay codes 1 through 4 to the dependency's `{ code }` argument and recognizes only its exact bounded reset-message forms. The endpoint owner replaces a stopped server instead of calling `updateCert`, because the pinned native binding does not implement that operation. Certificate rotation resets WebTransport streams and leaves the independently owned WebSocket service running.
+
+## GPU stream schema foundation
+
+`packages/waffle/browser/gpu/upstream/webgpu.yml` is an unchanged copy of
+webgpu-native/webgpu-headers `webgpu.yml` at
+`a1dc77409bb2b8bd80540cbf4b8db219e123e909`, SHA-256
+`9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b`.
+The adjacent unchanged BSD-3-Clause `LICENSE` has SHA-256
+`17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22`.
+
+The checked-in TypeScript tables and C fixture header mechanically derive selected C argument
+order, struct members and numeric enums from that source. The C header describes wire bytes,
+not native C struct padding, and uses Waffle-prefixed names so it can be included alongside
+`webgpu/webgpu.h`. Its cursor writes explicit little-endian bytes. It is fixture support, not a
+C client library.
+
+The selection file and generator are original Waffle code. The instance root, callback-result
+handles, event callback omission, surface output/status replies, queue property, WGSL chain,
+automatic pipeline layout, dictionary names and supported browser enum mappings are explicit
+Waffle adaptations. YAML does not supply these browser semantics. Unsupported values remain
+classified and rejected by the tooling's lowering checks. No WebGPU IDL list was copied.
+
+The independent expected-byte and enum files were written against the corrected wire contract
+and the pinned upstream C declarations before any replay implementation. `check:gpu-stream`
+checks both generated outputs and hashes the YAML, license, selection, generator, layout tooling
+and independent fixture inputs. This foundation activates no runtime GPU capability.

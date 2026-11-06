@@ -439,3 +439,17 @@ its exact upstream path, revision and license in the same PR.
 
 The future guest-crates repository name blocks only the wgpu backend. A failed one-worker
 measurement may require an owner topology decision. Neither blocks the TypeScript G0 work.
+
+## G0.1 schema subunit checkpoint, November 6, 2026
+
+The schema implementation carries this corrected design into its implementation PR. It vendors
+the pinned YAML and license, selects the triangle and error-scope calls with explicit opcodes,
+and generates TypeScript/C wire layouts with a quality freshness check. Named metadata covers
+the root instance, callback results and event omission, surface output/status, queue property,
+WGSL chain, automatic layout and dictionary/enum mappings. Independent byte vectors precede replay.
+
+This is only the schema subunit. It does not implement or qualify rings, chunk transport,
+replay, service ownership, guest imports, display/grants, presentation, or public activation.
+Reserved render-bundle and unmap-write opcodes are not accepted bodies yet. Their implementation
+remains G1/G2 work. The parallel ring lane owns transport code. The coordinator assigns independent
+review and owns integration of the remaining G0.1 work. No slice is marked complete by this checkpoint.

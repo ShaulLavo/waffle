@@ -1,0 +1,251 @@
+{
+  "source": "Independently authored from the corrected wire contract and pinned C declarations before replay exists. Hex is literal little-endian bytes, not a round trip.",
+  "vectors": [
+    {
+      "name": "root instance and callback adapter result",
+      "command": "instance.request_adapter",
+      "input": {
+        "result": {
+          "id": 2,
+          "generation": 1
+        },
+        "token": 1,
+        "receiver": {
+          "id": 1,
+          "generation": 1
+        },
+        "options": null
+      },
+      "hex": "0100000028000000 0200000001000000 0100000000000000 0100000001000000 0000000000000000"
+    },
+    {
+      "name": "callback device result with omitted device event callbacks",
+      "command": "adapter.request_device",
+      "input": {
+        "result": {
+          "id": 3,
+          "generation": 1
+        },
+        "token": 2,
+        "receiver": {
+          "id": 2,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "required_features": [],
+          "required_limits": null,
+          "default_queue": {
+            "next_in_chain": [],
+            "label": ""
+          }
+        }
+      },
+      "hex": "0200000040000000 0300000001000000 0200000000000000 0200000001000000 0100000000000000 0000000000000000 0000000000000000 0000000000000000"
+    },
+    {
+      "name": "surface output handle and result token",
+      "command": "surface.get_current_texture",
+      "input": {
+        "result": {
+          "id": 8,
+          "generation": 2
+        },
+        "token": 3,
+        "receiver": {
+          "id": 4,
+          "generation": 1
+        }
+      },
+      "hex": "0500000020000000 0800000002000000 0300000000000000 0400000001000000"
+    },
+    {
+      "name": "queue property binds a result handle",
+      "command": "device.get_queue",
+      "input": {
+        "result": {
+          "id": 5,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        }
+      },
+      "hex": "0700000018000000 0500000001000000 0300000001000000"
+    },
+    {
+      "name": "WGSL chain becomes code, preserves UTF-8 length and padding",
+      "command": "device.create_shader_module",
+      "input": {
+        "result": {
+          "id": 6,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [
+            {
+              "sType": 2,
+              "value": {
+                "code": "abc"
+              }
+            }
+          ],
+          "label": ""
+        }
+      },
+      "hex": "0800000030000000 0600000001000000 0300000001000000 0100000002000000 0300000061626300 0000000000000000"
+    },
+    {
+      "name": "Waffle surface source is an explicit extension, not a native pointer",
+      "command": "instance.create_surface",
+      "input": {
+        "result": {
+          "id": 4,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 1,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [
+            {
+              "sType": 4096,
+              "value": {
+                "surface_id": 7
+              }
+            }
+          ],
+          "label": ""
+        }
+      },
+      "hex": "0300000028000000 0400000001000000 0100000001000000 0100000000100000 0700000000000000"
+    },
+    {
+      "name": "null pipeline layout means browser auto, no C pointer width",
+      "command": "device.create_render_pipeline",
+      "input": {
+        "result": {
+          "id": 7,
+          "generation": 1
+        },
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "descriptor": {
+          "next_in_chain": [],
+          "label": "",
+          "layout": null,
+          "vertex": {
+            "next_in_chain": [],
+            "module": {
+              "id": 6,
+              "generation": 1
+            },
+            "entry_point": null,
+            "constants": [],
+            "buffers": []
+          },
+          "primitive": {
+            "next_in_chain": [],
+            "topology": 4,
+            "strip_index_format": 0,
+            "front_face": 1,
+            "cull_mode": 1,
+            "unclipped_depth": false
+          },
+          "depth_stencil": null,
+          "multisample": {
+            "next_in_chain": [],
+            "count": 1,
+            "mask": 4294967295,
+            "alpha_to_coverage_enabled": false
+          },
+          "fragment": null
+        }
+      },
+      "hex": "0900000070000000 0700000001000000 0300000001000000 0000000000000000 0000000000000000 0000000006000000 01000000ffffffff 0000000000000000 0000000004000000 0000000001000000 0100000000000000 0000000000000000 01000000ffffffff 0000000000000000",
+      "offsets": "24 descriptor chain, 28 label, 32 layout, 40 vertex chain, 44 module, 52 nullable entry point, 56 constants, 60 buffers, 64 primitive chain, 68 topology, 72 index format, 76 front face, 80 cull, 84 unclipped depth, 88 depth/stencil presence, 92 multisample chain, 96 count, 100 mask, 104 alpha coverage, 108 fragment presence, 112 end"
+    },
+    {
+      "name": "present is a scalar status completion, not void",
+      "command": "surface.present",
+      "input": {
+        "token": 4,
+        "receiver": {
+          "id": 4,
+          "generation": 1
+        }
+      },
+      "hex": "0600000018000000 0400000000000000 0400000001000000"
+    },
+    {
+      "name": "error scope filter uses pinned numeric C enum",
+      "command": "device.push_error_scope",
+      "input": {
+        "receiver": {
+          "id": 3,
+          "generation": 1
+        },
+        "filter": 1
+      },
+      "hex": "1300000018000000 0300000001000000 0100000000000000"
+    },
+    {
+      "name": "nested draw omits receiver",
+      "command": "render_pass_encoder.draw",
+      "input": {
+        "vertex_count": 3,
+        "instance_count": 1,
+        "first_vertex": 0,
+        "first_instance": 0
+      },
+      "hex": "0e00000018000000 0300000001000000 0000000000000000"
+    }
+  ],
+  "completions": [
+    {
+      "name": "surface output struct gets authoritative status",
+      "completion": "surface-texture",
+      "token": 3,
+      "status": 0,
+      "input": {
+        "texture": {
+          "id": 8,
+          "generation": 2
+        },
+        "status": 1
+      },
+      "hex": "0300000020000000 0300000000000000 0800000002000000 0100000000000000"
+    },
+    {
+      "name": "present C scalar status",
+      "completion": "present",
+      "token": 4,
+      "status": 0,
+      "input": {
+        "status": 1
+      },
+      "hex": "0400000018000000 0400000000000000 0100000000000000"
+    },
+    {
+      "name": "error-scope callback success and no error",
+      "completion": "error-scope",
+      "token": 5,
+      "status": 0,
+      "input": {
+        "status": 1,
+        "type": 1,
+        "message": ""
+      },
+      "hex": "0500000020000000 0500000000000000 0100000001000000 0000000000000000"
+    }
+  ]
+}
