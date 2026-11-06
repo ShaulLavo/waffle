@@ -138,10 +138,12 @@ describe("generated-layout GPU replay", () => {
     const surface = { id: 7 };
     const calls: unknown[] = [];
     let creditAvailable = false;
+    let resultHandle: unknown;
     const context = rig({
       root: target.root,
       surfaces: {
-        create(id, label) {
+        create(id, label, result) {
+          resultHandle = result;
           expect(id).toBe(7);
           expect(label).toBe("");
           return surface;
@@ -167,6 +169,7 @@ describe("generated-layout GPU replay", () => {
       await openDevice(context.connection);
       drain(context.replies);
       send(context.connection, vector("instance.create_surface"));
+      expect(resultHandle).toEqual(handle(4));
       send(
         context.connection,
         command("surface.configure", {

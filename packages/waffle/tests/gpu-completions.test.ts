@@ -4,7 +4,9 @@ import { completionBytes, type WireObject } from "../browser/gpu/codec.ts";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
 import { gpuObjectKinds } from "../browser/gpu/generated/tables.ts";
 import { RecordRing } from "../browser/gpu/ring.ts";
-import { GPU_TERMINAL } from "../browser/gpu/protocol.ts";
+import { GPU_TERMINAL, ServiceCredit } from "../browser/gpu/protocol.ts";
+import { LogicalAppend } from "../browser/gpu/transport.ts";
+import { GpuConnection } from "../browser/gpu/scheduler.ts";
 import {
   command,
   deferred,
@@ -77,7 +79,7 @@ describe("bounded completion and async ownership", () => {
   });
   test("pending admission is exactly 64, tokens strictly increase, and no operation starts after overflow", async () => {
     const replies = ring(4096, 16);
-    const owner = new CompletionOwner(replies);
+    const owner = new CompletionOwner({ commands: ring(256), replies });
     const held = deferred<number>();
     let starts = 0;
     let abandoned = 0;
@@ -104,7 +106,7 @@ describe("bounded completion and async ownership", () => {
     } finally {
       owner.terminate(GPU_TERMINAL.closed);
     }
-    const fresh = new CompletionOwner(ring(256, 16));
+    const fresh = new CompletionOwner({ commands: ring(256), replies: ring(256, 16) });
     try {
       fresh.admit(2);
       expect(() => fresh.admit(2)).toThrow("increase");
@@ -117,7 +119,11 @@ describe("bounded completion and async ownership", () => {
     }
   });
   test("fixed payload credit has generation-aware consuming reads and explicit local exhaustion", () => {
-    const owner = new CompletionOwner(ring(256, 16), new Uint8Array(16));
+    const owner = new CompletionOwner({
+      commands: ring(256),
+      replies: ring(256, 16),
+      arena: new Uint8Array(16),
+    });
     try {
       const first = owner.allocatePayload(new Uint8Array([1, 2, 3, 4]));
       expect(first).toEqual(handle(1));
@@ -260,54 +266,94 @@ describe("bounded completion and async ownership", () => {
       local.connection.close();
     }
   });
-  test("an externally terminal reply ring fences late device binding before event attachment", async () => {
-    const target = new RecordingTarget();
-    const held = deferred<object>();
-    Object.assign(target.adapter, { requestDevice: () => held.promise });
-    const local = rig(target);
-    let destroyed = 0;
-    let attached = 0;
-    try {
-      send(
-        local.connection,
-        command("instance.request_adapter", {
-          result: handle(2),
-          token: 1,
-          receiver: ROOT,
-          options: null,
-        }),
-      );
-      await settle();
-      send(
-        local.connection,
-        command("adapter.request_device", {
-          result: handle(3),
-          token: 2,
-          receiver: handle(2),
-          descriptor: null,
-        }),
-      );
-      local.replies.terminate(GPU_TERMINAL.revoked);
-      held.resolve({
-        destroy() {
-          destroyed++;
-        },
-        addEventListener() {
-          attached++;
-        },
-        removeEventListener() {},
+  for (const cancellation of ["reply", "command", "append"]) {
+    test(`${cancellation} cancellation fences device settlement before the next service slice`, async () => {
+      const target = new RecordingTarget();
+      const held = deferred<object>();
+      Object.assign(target.adapter, { requestDevice: () => held.promise });
+      const local = rig(target);
+      let destroyed = 0;
+      let attached = 0;
+      try {
+        send(
+          local.connection,
+          command("instance.request_adapter", {
+            result: handle(2),
+            token: 1,
+            receiver: ROOT,
+            options: null,
+          }),
+        );
+        await settle();
+        drain(local.replies);
+        send(
+          local.connection,
+          command("adapter.request_device", {
+            result: handle(3),
+            token: 2,
+            receiver: handle(2),
+            descriptor: null,
+          }),
+        );
+        if (cancellation === "reply") local.replies.terminate(GPU_TERMINAL.revoked);
+        else if (cancellation === "command") local.commands.terminate(GPU_TERMINAL.revoked);
+        else
+          new LogicalAppend(
+            local.commands,
+            command("device.get_queue", {
+              result: handle(5),
+              receiver: handle(3),
+            }),
+          ).cancel(GPU_TERMINAL.revoked);
+        held.resolve({
+          destroy() {
+            destroyed++;
+          },
+          addEventListener() {
+            attached++;
+          },
+          removeEventListener() {},
+        });
+        await settle();
+        expect(attached).toBe(0);
+        expect(destroyed).toBe(1);
+        expect(local.connection.state).toEqual({ kind: "terminal", reason: GPU_TERMINAL.revoked });
+        expect(
+          drain(local.replies).map((bytes) => new DataView(bytes.buffer).getUint16(0, true)),
+        ).toEqual(cancellation === "reply" ? [] : [12]);
+        expect(local.credit.used).toBe(0);
+      } finally {
+        local.connection.close();
+      }
+    });
+  }
+  for (const operation of ["publish", "allocate", "take"]) {
+    test(`command cancellation fences ${operation} without another service slice`, () => {
+      const commands = ring(256);
+      const replies = ring(256, 16);
+      const credit = new ServiceCredit();
+      const connection = new GpuConnection(commands, replies, { root: {} }, credit, {
+        arena: new Uint8Array(16),
       });
-      await settle();
-      expect(attached).toBe(0);
-      expect(destroyed).toBe(1);
-      expect(local.connection.state).toEqual({ kind: "terminal", reason: GPU_TERMINAL.revoked });
-    } finally {
-      local.connection.close();
-    }
-  });
+      try {
+        const payload = connection.completions.allocatePayload(new Uint8Array([1, 2, 3, 4]));
+        if (!payload) throw new Error("Missing initial payload");
+        commands.terminate(GPU_TERMINAL.revoked);
+        if (operation === "publish")
+          expect(connection.completions.publish("work-done", 1, 0, {})).toBe(false);
+        else if (operation === "allocate")
+          expect(connection.completions.allocatePayload(new Uint8Array(1))).toBeUndefined();
+        else expect(() => connection.completions.takePayload(payload, new Uint8Array(4))).toThrow();
+        expect(connection.state).toEqual({ kind: "terminal", reason: GPU_TERMINAL.revoked });
+        expect(connection.completions.payloadBytes).toBe(0);
+      } finally {
+        connection.close();
+      }
+    });
+  }
   test("resource closure publishes the smaller closed record when the failed reply leaves enough room", () => {
     const replies = ring(64, 16);
-    const owner = new CompletionOwner(replies);
+    const owner = new CompletionOwner({ commands: ring(256), replies });
     try {
       for (let token = 1; token <= 3; token++) owner.publish("work-done", token, 0, {});
       drain(replies);
@@ -330,7 +376,7 @@ describe("bounded completion and async ownership", () => {
   test("corrupt reply writer state still terminates locally and runs every retirement cleanup", () => {
     const backing = new SharedArrayBuffer(64 + 128);
     const replies = new RecordRing(backing, 16);
-    const owner = new CompletionOwner(replies, new Uint8Array(16));
+    const owner = new CompletionOwner({ commands: ring(256), replies, arena: new Uint8Array(16) });
     let retired = false;
     owner.onRetire(() => {
       retired = true;

@@ -31,7 +31,7 @@ export class GpuConnection {
     credit: ServiceCredit,
     options: { maxLogical?: number; arena?: Uint8Array; handles?: number } = {},
   ) {
-    this.completions = new CompletionOwner(replies, options.arena);
+    this.completions = new CompletionOwner({ commands, replies, arena: options.arena });
     this.#reader = new LogicalReader(commands, credit, options.maxLogical);
     try {
       this.replay = new GpuReplay(target, this.completions, options.handles);
@@ -42,8 +42,6 @@ export class GpuConnection {
       throw error;
     }
     this.completions.onRetire(() => {
-      const state = this.completions.state;
-      commands.terminate(state.kind === "terminal" ? state.reason : GPU_TERMINAL.closed);
       this.#reader.dispose();
       this.replay.dispose();
     });
@@ -52,7 +50,7 @@ export class GpuConnection {
     return this.completions.state;
   }
   close(reason: number = GPU_TERMINAL.closed): void {
-    this.completions.terminate(this.commands.terminal()?.reason ?? reason);
+    this.completions.terminate(reason);
   }
   slice(budget: SliceBudget = DEFAULT_BUDGET): SliceResult {
     if (
@@ -62,8 +60,6 @@ export class GpuConnection {
       budget.milliseconds <= 0
     )
       throw new RangeError("Invalid GPU replay budget");
-    const terminal = this.commands.terminal();
-    if (terminal) this.close(terminal.reason);
     if (this.state.kind === "terminal") return { kind: "terminal", bytes: 0 };
     const start = budget.now();
     let bytes = 0;

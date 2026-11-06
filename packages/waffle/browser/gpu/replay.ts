@@ -28,7 +28,7 @@ import type { LogicalRecord } from "./transport.js";
 
 export interface SurfaceTarget {
   /** The trusted display implementation must reject ids outside this connection's grant. */
-  create(id: number, label: string): object;
+  create(id: number, label: string, result: Handle): object;
   configure(surface: object, descriptor: Dictionary): void;
   acquire(
     surface: object,
@@ -273,7 +273,8 @@ export class GpuReplay {
         return false;
       case "surface-create": {
         const source = this.#lower.surfaceSource(fields.descriptor);
-        this.#bind(call, result, this.#surfaces().create(source.id, source.label));
+        if (!result) throw new GpuProtocolError("Missing surface result handle");
+        this.#bind(call, result, this.#surfaces().create(source.id, source.label, result));
         return false;
       }
       case "surface-configure":
