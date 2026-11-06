@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,6 +20,7 @@ import {
 import { gpuStream } from "../browser/gpu/generated/tables.ts";
 import { encodeGpuCommand, encodeGpuCompletion } from "../tooling/gpu-stream-layout.ts";
 import expected from "./fixtures/gpu/expected.json";
+import { retireCommandGroup } from "../scripts/owned-command.ts";
 
 const packageRoot = resolve(import.meta.dir, "..");
 const scratchRoot = process.env.GPU_SCRATCH_ROOT ?? tmpdir();
@@ -28,6 +30,7 @@ const compiled = Boolean(fixtureDirectory || sdk);
 let scratch: string;
 let artifactDirectory: string;
 let wasm: Uint8Array<ArrayBuffer>;
+let safeToRemove = true;
 
 beforeAll(async () => {
   scratch = mkdtempSync(join(scratchRoot, "gpu-fixture-"));
@@ -35,7 +38,10 @@ beforeAll(async () => {
   if (!fixtureDirectory && sdk) await buildGpuFixture(artifactDirectory);
   if (compiled) wasm = verifiedGpuFixture(artifactDirectory);
 });
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+afterAll(() => {
+  if (safeToRemove) rmSync(scratch, { recursive: true, force: true });
+  else console.error(`Compiler retirement unconfirmed; retained scratch: ${scratch}`);
+});
 
 function run(command: string[]): string {
   const result = Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
@@ -220,21 +226,34 @@ test("a compiler failure removes scratch and never replaces an earlier artifact"
   expect(readFileSync(join(failed, GPU_FIXTURE_WASM), "utf8")).toBe("earlier artifact");
 });
 
+async function retireRecordedCompiler(path: string): Promise<void> {
+  if (!existsSync(path)) return;
+  const pid = Number(readFileSync(path, "utf8").trim());
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid owned compiler PID");
+  try {
+    await retireCommandGroup(pid);
+  } catch (error) {
+    safeToRemove = false;
+    throw error;
+  }
+}
+
 test("an interrupted compiler retires its process group before removing scratch", async () => {
   const directory = join(scratch, "interrupted");
   const fakeSdk = join(scratch, "interrupted-sdk");
   mkdirSync(join(fakeSdk, "bin"), { recursive: true });
   writeFileSync(join(fakeSdk, "VERSION"), "34.0\nwasi-libc: 2e6fb9d8ee0c\n");
   const clang = join(fakeSdk, "bin/clang");
+  const pidFile = join(scratch, "interrupt-compiler.pid");
   writeFileSync(
     clang,
-    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clang version 23.1.0-wasi-sdk interrupt-test"; exit 0; fi\necho compiler-ready\nexec sleep 30\n',
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clang version 23.1.0-wasi-sdk interrupt-test"; exit 0; fi\necho "$$" > "$GPU_FIXTURE_INTERRUPT_PID"\necho compiler-ready\nexec sleep 30\n',
   );
   chmodSync(clang, 0o755);
   const child = Bun.spawn(
     [process.execPath, join(packageRoot, "scripts/build-gpu-fixture.ts"), directory],
     {
-      env: { ...process.env, WASI_SDK_PATH: fakeSdk },
+      env: { ...process.env, WASI_SDK_PATH: fakeSdk, GPU_FIXTURE_INTERRUPT_PID: pidFile },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -252,6 +271,7 @@ test("an interrupted compiler retires its process group before removing scratch"
     clearTimeout(timeout);
     if (child.exitCode === null) child.kill("SIGKILL");
     await child.exited;
+    await retireRecordedCompiler(pidFile);
   }
 }, 10000);
 
