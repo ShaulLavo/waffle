@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   runPageSuite,
   ownedDatabase,
@@ -34,7 +35,7 @@ function adapter(): SuiteAdapter<{ databaseName: string }> {
   };
 }
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp("/work/tmp/w1-");
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "w1-"));
   try {
     await run(root);
   } finally {
