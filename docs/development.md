@@ -53,6 +53,8 @@ bun run test:browser
 
 Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite. Each runner removes its own browser profile and processes when it finishes. Other suites take `PROCESS_SCRATCH_ROOT` or `NETWORK_SCRATCH_ROOT`. `bun run test:browser` runs Chromium and Firefox together and WebKit afterwards, as CI does.
 
+[Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls.
+
 ### Run the low-level Rust threads proof
 
 The optional threads runner consumes an existing producer receipt and artifact. It verifies both
