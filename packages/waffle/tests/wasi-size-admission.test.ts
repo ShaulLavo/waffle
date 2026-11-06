@@ -113,7 +113,7 @@ function expectRejected(f: Fixture, name: string, args: readonly bigint[]): void
 }
 
 for (const size of [maxSafe + 1n, maxSafe + 2n, (1n << 63n) - 1n, -(1n << 63n)]) {
-  test(`truncate rejects unrepresentable unsigned size ${size} before resize`, () => {
+  test(`truncate rejects unsupported unsigned size ${size} before resize`, () => {
     withFixture((f) => {
       f.recordResize();
       expectRejected(f, "fd_filestat_set_size", [size]);
