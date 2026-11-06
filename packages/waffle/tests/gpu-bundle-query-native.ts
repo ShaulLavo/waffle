@@ -1,3 +1,4 @@
+import type { Page } from "playwright";
 import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
@@ -9,6 +10,13 @@ export async function bundleQueryNativeRoutes() {
       resolve(import.meta.dir, "fixtures/gpu/bundle-query-native.ts"),
     ),
   };
+}
+async function invokeControl(page: Page, control: string): Promise<unknown> {
+  return page.evaluate(async (name) => {
+    const path = "/bundle-query.js";
+    const entry: typeof import("./fixtures/gpu/bundle-query-native.js") = await import(path);
+    return entry.bundleQueryNativeControl(name);
+  }, control);
 }
 async function run() {
   const lifecycle = new GpuQualificationLifecycle(90_000);
@@ -33,11 +41,7 @@ async function run() {
       "timestamp",
       "no-timestamp",
     ]) {
-      const result: unknown = await page.evaluate(async (name) => {
-        const path = "/bundle-query.js";
-        const entry: typeof import("./fixtures/gpu/bundle-query-native.js") = await import(path);
-        return entry.bundleQueryNativeControl(name);
-      }, control);
+      const result = await invokeControl(page, control);
       console.log(JSON.stringify({ browser: browser.version(), result }));
     }
   } finally {
