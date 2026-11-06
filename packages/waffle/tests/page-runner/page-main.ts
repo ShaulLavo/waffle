@@ -1,3 +1,4 @@
+import { runHostPage, type HostPageRun } from "./host-page.js";
 import { Reporter } from "./reporter.js";
 import { resultByteLimit, type Body } from "./protocol.js";
 import type { StorageEntry } from "../storage-allocation.js";
@@ -7,10 +8,15 @@ export type Configuration<R> = {
   token: string;
   group: string;
   ledger: StorageEntry[];
-} & ({ role: "list" | "finish" } | { role: "case"; caseId: string; request: R });
+} & (
+  | { role: "list" | "finish" }
+  | { role: "case"; caseId: string; request: R; execution?: "host"; teardownMs?: number }
+);
 export type PageSuite<R> = {
   list(): Promise<unknown>;
-  run(request: R, allocate: (entry: StorageEntry) => Promise<void>): Promise<unknown>;
+  run:
+    | ((request: R, allocate: (entry: StorageEntry) => Promise<void>) => Promise<unknown>)
+    | HostPageRun<R>;
   finish(ledger: readonly StorageEntry[]): Promise<StorageEntry[]>;
 };
 function resultSnapshot(value: unknown): unknown {
@@ -25,6 +31,11 @@ async function runCase<R>(
   suite: PageSuite<R>,
   reporter: Reporter,
 ): Promise<void> {
+  if (config.execution === "host") {
+    if (typeof suite.run === "function") throw new Error("Host case requires host page handler");
+    return runHostPage(config, suite.run, reporter, resultSnapshot);
+  }
+  if (typeof suite.run !== "function") throw new Error("Page case requires page run handler");
   const caseId = config.caseId;
   await reporter.send({ kind: "case-start", caseId });
   let outcome: Body;

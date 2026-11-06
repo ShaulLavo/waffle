@@ -1,3 +1,4 @@
+import { hostControl, hostControlModes } from "./host-drive-controls.js";
 import { consumerControl, consumerControlModes } from "./consumer-controls.js";
 import { storagePolicy } from "./storage-policy.js";
 import {
@@ -299,6 +300,10 @@ async function engineControls(
       () => consumerControl(engine, mode, root),
       results,
     );
+  for (const mode of hostControlModes.filter(
+    (mode) => !selected || `host-${mode}`.includes(selected),
+  ))
+    await checkControl(engine, `host-${mode}`, () => hostControl(engine, mode, root), results);
   for (const label of ["wrong", "missing"] as const) {
     const name = `production-storage-${label}-label`;
     if (!selected || name.includes(selected))

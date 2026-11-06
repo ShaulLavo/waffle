@@ -1,3 +1,4 @@
+import { HostConsumers, HostDrive } from "./host-drive.js";
 import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -16,7 +17,7 @@ import {
   type Driver,
   type DriverCleanup,
 } from "./driver.js";
-import { record, type Budgets } from "./protocol.js";
+import { record, type Budgets, type HostCase } from "./protocol.js";
 const headers = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
@@ -195,7 +196,12 @@ async function removeScratch(scratch: string, stopped: boolean): Promise<Cleanup
     return { status: "unconfirmed", detail: String(error) };
   }
 }
-type SuiteCase<R> = { id: string; label: string; request: (run: string) => R };
+export type SuiteCase<R> = {
+  id: string;
+  label: string;
+  request: (run: string) => R;
+  drive?: (host: HostCase) => Promise<unknown>;
+};
 export type SuiteAdapter<R> = {
   suite: string;
   inventory(): SuiteCase<R>[];
@@ -215,6 +221,10 @@ function selectCases<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
     run = crypto.randomUUID();
   const collector = new Collector(run, required, selected, adapter.policy);
   const budgets = options.budgets ?? adapter.budgets(selected.length);
+  for (const value of Object.values(budgets)) {
+    if (!Number.isFinite(value) || value <= 0)
+      throw new Error("Budgets must be positive and finite");
+  }
 
   return { required, selectedCases, selected, run, collector, budgets };
 }
@@ -262,6 +272,8 @@ export async function runPageSuite<R>(
     launcher: absent(),
     serviceDisposition: "No driver allocated",
   };
+  const consumers = new HostConsumers();
+  const hostCases: HostDrive[] = [];
   let preparation: Promise<void> | undefined;
   let cleaning: Promise<void> | undefined;
   const interrupted = () => {
@@ -271,10 +283,12 @@ export async function runPageSuite<R>(
   };
   const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
+    consumers.revoke();
     controller.abort("execution stopped");
     const cleanupMs = options.cleanupTimeoutMs ?? 12_000;
-    const [producerStopped] = await Promise.all([
+    const [producerStopped, hostStopped] = await Promise.all([
       joinPreparation(preparation, cleanupMs),
+      consumers.join(cleanupMs),
       driver
         ? stopDriver(driver, cleanupMs).then((result) => {
             driverCleanup = result;
@@ -283,15 +297,37 @@ export async function runPageSuite<R>(
     ]);
     const stopped =
       producerStopped &&
+      hostStopped &&
       driverCleanup.session.status !== "unconfirmed" &&
       driverCleanup.launcher.status !== "unconfirmed";
     if (!stopped)
       collector.fail(
         "cleanup",
-        producerStopped ? driverCleanup.session.detail : "Asset producer settlement unconfirmed",
+        !hostStopped
+          ? "Host callback or command settlement unconfirmed"
+          : producerStopped
+            ? driverCleanup.session.detail
+            : "Asset producer settlement unconfirmed",
       );
     if (fixture) server = await stopCollector(fixture.server, stopped);
-    if (scratch) scratchCleanup = await removeScratch(scratch, stopped);
+    let diagnosticsSaved = true;
+    if (
+      hostCases.length &&
+      (collector.failures.length ||
+        Object.values(collector.outcomes).some((outcome) => outcome.status === "fail"))
+    ) {
+      try {
+        await writeResult(`${options.resultPath}.diagnostics.json`, {
+          outcomes: collector.outcomes,
+          results: collector.results,
+          failures: collector.failures,
+        });
+      } catch (error) {
+        diagnosticsSaved = false;
+        collector.fail("diagnostics-write", String(error));
+      }
+    }
+    if (scratch) scratchCleanup = await removeScratch(scratch, stopped && diagnosticsSaved);
   };
   process.on("SIGINT", interrupted);
   process.on("SIGTERM", interrupted);
@@ -331,6 +367,7 @@ export async function runPageSuite<R>(
       token,
       group: group.id,
       ...pageConfiguration(group, item, run),
+      teardownMs: budgets.teardown ?? budgets.case,
       ledger: collector.ledger,
     });
     await bounded(
@@ -338,6 +375,24 @@ export async function runPageSuite<R>(
       budgets.hello,
       "navigation",
     );
+    const host = item?.drive
+      ? new HostDrive(driver, collector, state, consumers, budgets, started, operationSignal)
+      : undefined;
+    if (host) hostCases.push(host);
+    const documentDriver = host?.transport ?? driver;
+    if (host && item?.drive) {
+      await awaitState(
+        state,
+        () => state.host?.kind === "ready",
+        collector,
+        documentDriver,
+        budgets,
+        started,
+        operationSignal,
+      );
+      await host.admit();
+      await host.drive(item.drive);
+    }
     const resultDeadline =
       group.role === "case" && adapter.resultWaitMs !== undefined
         ? performance.now() + adapter.resultWaitMs
@@ -346,7 +401,7 @@ export async function runPageSuite<R>(
       state,
       () => state.complete,
       collector,
-      driver,
+      documentDriver,
       budgets,
       cleanupOnly ? performance.now() : started,
       operationSignal,
@@ -358,20 +413,28 @@ export async function runPageSuite<R>(
       state,
       () => state.ready,
       collector,
-      driver,
+      documentDriver,
       budgets,
       cleanupOnly ? performance.now() : started,
       operationSignal,
       priorFailures,
     );
-    await retireDocument(state, collector, driver, operationSignal, priorFailures);
+    if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
+    await retireDocument(state, collector, documentDriver, operationSignal, priorFailures);
     operationSignal.throwIfAborted();
     if (!cleanupOnly) checkDeadline();
     operationSignal.throwIfAborted();
     fixture.configurations.delete(token);
   }
   async function interruptedFinish(error: unknown): Promise<void> {
-    if (!driver || !fixture || driver.uncertain || collector.runComplete) return;
+    if (
+      !driver ||
+      !fixture ||
+      driver.uncertain ||
+      collector.runComplete ||
+      hostCases.some((host) => host.uncontainedPageWork())
+    )
+      return;
     collector.abandon(String(error));
     try {
       await document({ id: "cleanup-finish", role: "finish", caseIds: [] }, null, true);
@@ -414,7 +477,15 @@ export async function runPageSuite<R>(
     await document({ id: "list", role: "list", caseIds: [] }, null);
     for (const item of selectedCases) {
       if (collector.failures.length) throw new Error("Sticky host failure stops case dispatch");
-      await document({ id: item.id, role: "case", caseIds: [item.id] }, item);
+      await document(
+        {
+          id: item.id,
+          role: "case",
+          caseIds: [item.id],
+          execution: item.drive ? "host" : undefined,
+        },
+        item,
+      );
       console.log(`${collector.outcomes[item.id]?.status} ${item.id}`);
     }
     await document({ id: "finish", role: "finish", caseIds: [] }, null);
@@ -476,7 +547,12 @@ export async function runPageSuite<R>(
 function pageConfiguration<R>(group: Group, item: SuiteCase<R> | null, run: string) {
   if (group.role !== "case") return { role: group.role };
   if (!item) throw new Error("Missing host case descriptor");
-  return { role: "case", caseId: item.id, request: item.request(run) };
+  return {
+    role: "case",
+    caseId: item.id,
+    request: item.request(run),
+    execution: item.drive ? "host" : undefined,
+  };
 }
 function resultExit(
   collector: Collector,
