@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 if (process.argv[2] === "ios-safari") {
   const { nativeMain } = await import("./page-runner/native.js");
   const { commandAdapter } = await import("./page-runner/command-suites.js");
@@ -25,7 +26,7 @@ async function prove(name: (typeof engines)[number], origin: string): Promise<vo
   const browser = await lifecycle.launch(name);
   try {
     const page = await browser.newPage();
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const result = await page.evaluate(async () => {
       const path = "/cases.js";
       const cases: typeof import("./guest-watch-browser-cases.js") = await import(path);

@@ -5,6 +5,7 @@ const stop = () => stopped.abort();
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 const runners = [
+  "tests/browser-navigation-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
   "tests/storage-browser-runner.ts",
   "tests/storage-lock-browser-runner.ts",

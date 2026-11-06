@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { runNativeDebt } from "./filesystem-shutdown-browser-debt.js";
 import type { Browser, BrowserContext, Page, Worker } from "playwright";
@@ -438,7 +439,7 @@ async function runArm(
       ledger = captureTargets(page);
       value(
         await before(report.deadline - 20_000, "fixture navigation", () =>
-          requirePage(page).goto(origin),
+          navigateTestPage(requirePage(page), origin),
         ),
         "fixture navigation",
       );
