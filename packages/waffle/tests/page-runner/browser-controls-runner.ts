@@ -1,4 +1,9 @@
 import { storagePolicy } from "./storage-policy.js";
+import {
+  commandControl,
+  commandControlModes,
+  storagePageLabelControl,
+} from "./command-controls.js";
 import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
@@ -275,6 +280,21 @@ async function engineControls(
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
   for (const mode of modes.filter((mode) => !selected || mode.includes(selected)))
     await checkControl(engine, mode, () => reporterControl(engine, mode, root), results);
+  for (const mode of commandControlModes.filter(
+    (mode) => !selected || `command-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `command-${mode}`,
+      () => commandControl(engine, mode, root),
+      results,
+    );
+  for (const label of ["wrong", "missing"] as const) {
+    const name = `production-storage-${label}-label`;
+    if (!selected || name.includes(selected))
+      await checkControl(engine, name, () => storagePageLabelControl(engine, label, root), results);
+  }
+
   if (!selected || "canonical-ownership".includes(selected))
     await checkControl(
       engine,

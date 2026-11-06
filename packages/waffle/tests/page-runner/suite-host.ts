@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
   Collector,
@@ -146,7 +146,7 @@ async function removeScratch(scratch: string, stopped: boolean): Promise<Cleanup
     return { status: "unconfirmed", detail: String(error) };
   }
 }
-export type SuiteCase<R> = { id: string; label: string; request: (run: string) => R };
+type SuiteCase<R> = { id: string; label: string; request: (run: string) => R };
 export type SuiteAdapter<R> = {
   suite: string;
   inventory(): SuiteCase<R>[];

@@ -43,8 +43,12 @@ test("one command retains the actual result and retires every document", async (
   expect(result.required).toHaveLength(1);
   expect(result.selected).toEqual(result.required);
   expect(result.omitted).toEqual([]);
-  expect(result.results).toEqual({ [result.required[0]!]: actual });
-  expect(result.documents.map((doc) => doc.group)).toEqual(["list", result.required[0]!, "finish"]);
+  expect(result.results).toEqual({ ["guest-watch: guestWatchCase"]: actual });
+  expect(result.documents.map((doc) => doc.group)).toEqual([
+    "list",
+    "guest-watch: guestWatchCase",
+    "finish",
+  ]);
   expect(result.documents.every((doc) => doc.doc !== null && doc.cutoff !== null)).toBe(true);
   expect(Object.values(result.outcomes)).toEqual([{ status: "pass", provisional: false }]);
   expect(result.failures).toEqual([]);
@@ -65,7 +69,7 @@ for (const actual of [
     const result = await control(guest, { result: actual });
     expect(result.exit).toBe(1);
     expect(result.runComplete).toBe(true);
-    expect(result.results).toEqual({ [result.required[0]!]: actual });
+    expect(result.results).toEqual({ ["guest-watch: guestWatchCase"]: actual });
     expect(result.failures).toEqual([]);
     expect(Object.values(result.outcomes)[0]).toMatchObject({
       status: "fail",

@@ -10,7 +10,7 @@ export function listIds(value: unknown): string[] {
   if (new Set(ids).size !== ids.length) throw new Error("Duplicate storage list IDs");
   return ids;
 }
-export function validateStorageAllocation(
+function validateStorageAllocation(
   entry: StorageEntry,
   runningCaseIds: readonly string[],
   run: string,

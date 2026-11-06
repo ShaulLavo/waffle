@@ -13,7 +13,7 @@ export type PageSuite<R> = {
   run(request: R, allocate: (entry: StorageEntry) => Promise<void>): Promise<unknown>;
   finish(ledger: readonly StorageEntry[]): Promise<StorageEntry[]>;
 };
-export function resultSnapshot(value: unknown): unknown {
+function resultSnapshot(value: unknown): unknown {
   const encoded = JSON.stringify(value);
   if (encoded === undefined) throw new Error("Missing serializable result");
   if (new TextEncoder().encode(encoded).byteLength > resultByteLimit)
