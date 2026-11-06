@@ -103,3 +103,29 @@ test("unfiltered source assertion failures exit 1 when reporting and cleanup suc
   expect(result.failures).toHaveLength(0);
   expect(Object.values(result.outcomes).every((outcome) => outcome.status === "fail")).toBe(true);
 }, 12_000);
+
+test("already-aborted cancellation allocates no driver and dispatches no cases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pr-pre-abort-"));
+  let allocations = 0;
+  try {
+    const result = await runStorage(
+      () => {
+        allocations++;
+        return new FakeDriver("pass");
+      },
+      {
+        resultPath: join(root, "result.json"),
+        scratchRoot: root,
+        assets: {},
+        signal: AbortSignal.abort("cancelled before entry"),
+      },
+    );
+    expect(result.exit).toBe(2);
+    expect(allocations).toBe(0);
+    expect(result.documents).toHaveLength(0);
+    expect(result.ledger).toHaveLength(0);
+    expect(result.cleanup.session.status).toBe("not-created");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -6,6 +6,7 @@ import { PlaywrightDriver } from "./playwright-driver.js";
 import { runStorage, serveCollector, retireDocument, writeResult } from "./storage-host.js";
 import { storageBudgets } from "./protocol.js";
 import { bounded } from "./driver.js";
+import { storageWorker } from "./storage-worker.js";
 import { withStorageCleanup } from "../storage-allocation.js";
 import { browserBundle, engines } from "../browser-runner-lifecycle.js";
 function hangWorker(): void {
@@ -38,6 +39,7 @@ const modes = [
   "final-ack-loss",
   "page-unresponsive",
   "worker-timeout",
+  "aggregate-error",
 ];
 async function reporterControl(
   engine: keyof typeof engines,
@@ -52,7 +54,14 @@ async function reporterControl(
     resultPath: join(root, `${mode}.json`),
     scratchRoot: process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(),
     filter: "IndexedDB persists format",
-    assets: { "/page.js": page, "/worker.js": `(${hangWorker.toString()})();` },
+    assets: {
+      "/page.js": page,
+      "/worker.js": `(${(mode === "aggregate-error" ? storageWorker : hangWorker).toString()})();`,
+      "/tests.js":
+        mode === "aggregate-error"
+          ? await browserBundle(join(import.meta.dir, "aggregate-error-fixture.ts"))
+          : "",
+    },
     budgets: workerTimeout
       ? { ...storageBudgets, run: 120_000 }
       : { hello: 4000, heartbeat: 1800, case: 3000, group: 5000, run: 25_000 },
@@ -64,6 +73,16 @@ async function reporterControl(
     const expected = workerTimeout ? "storage case worker timed out" : "Wrong Worker label";
     if (outcome?.status !== "fail" || !outcome.detail.includes(expected) || result.failures.length)
       throw new Error(`${mode}: wrong Worker failure classification ${JSON.stringify(result)}`);
+    return;
+  }
+  if (mode === "aggregate-error") {
+    if (
+      outcome?.status !== "fail" ||
+      !outcome.detail.includes("PRIMARY_ASSERTION") ||
+      !outcome.detail.includes("CLEANUP_FAILURE") ||
+      outcome.detail.indexOf("PRIMARY_ASSERTION") > outcome.detail.indexOf("CLEANUP_FAILURE")
+    )
+      throw new Error(`Aggregate Worker causes were lost: ${JSON.stringify(outcome)}`);
     return;
   }
   if (mode !== "pass" && result.exit !== 2)
@@ -145,43 +164,143 @@ async function storageControl(
     }),
   );
 }
+async function malformedAllocationControl(
+  engine: keyof typeof engines,
+  root: string,
+): Promise<void> {
+  const run = crypto.randomUUID(),
+    id = "opfs: ownership";
+  const collector = new Collector(run, [id], [id]);
+  const fixture = serveCollector(collector, {
+    "/page.js": "",
+    "/cleanup.js": await browserBundle(join(import.meta.dir, "storage-cleanup.ts")),
+  });
+  const scratch = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "prb-"));
+  const driver = new PlaywrightDriver(engine, scratch);
+  const logical = `bun-wasm-opfs-test-${run}-foreign`;
+  const name = `foreign!!${btoa(JSON.stringify(logical)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
+  await withStorageCleanup(
+    async () => {
+      const signal = AbortSignal.timeout(20_000),
+        token = crypto.randomUUID();
+      const url = `${fixture.origin}/?token=${token}`;
+      await driver.start(signal);
+      collector.expect({ id, role: "case", caseIds: [id] }, token, url, "root");
+      fixture.configurations.set(token, {});
+      await driver.navigate(url, signal);
+      await driver.script(
+        `return navigator.storage.getDirectory().then(root => root.getDirectoryHandle(${JSON.stringify(name)}, {create:true})).then(() => null)`,
+        signal,
+      );
+      collector.receive({ run, doc: "doc", seq: 0, kind: "hello", token, group: id });
+      collector.receive({ run, doc: "doc", seq: 1, kind: "case-start", caseId: id });
+      const response = await fetch(`${fixture.origin}/report`, {
+        method: "POST",
+        body: JSON.stringify({
+          run,
+          doc: "doc",
+          seq: 2,
+          kind: "allocation",
+          entry: { kind: "opfs-directory", name },
+        }),
+      });
+      if (response.status !== 409 || collector.ledger.length !== 0)
+        throw new Error("Noncanonical OPFS cleanup authority accepted");
+      const survived = await driver.script(
+        `return (async () => {
+      const {cleanupStorage} = await import('/cleanup.js');
+      const remaining = await cleanupStorage(${JSON.stringify(collector.ledger)});
+      const root = await navigator.storage.getDirectory();
+      await root.getDirectoryHandle(${JSON.stringify(name)});
+      await root.removeEntry(${JSON.stringify(name)}, {recursive:true});
+      return remaining.length === 0;
+    })()`,
+        signal,
+      );
+      if (survived !== true)
+        throw new Error("Malformed-allocation foreign directory did not survive cleanup");
+      await Bun.write(
+        join(root, "canonical-ownership.json"),
+        JSON.stringify({ foreignSurvived: true, accepted: collector.ledger.length }),
+      );
+    },
+    async () => {
+      await withStorageCleanup(
+        async () => {
+          const cleanup = await driver.stop();
+          if (cleanup.session.status !== "confirmed" || cleanup.launcher.status !== "confirmed")
+            throw new Error(`Ownership control retained ${scratch}: ${JSON.stringify(cleanup)}`);
+          await rm(scratch, { recursive: true, force: true });
+        },
+        async () => {
+          await fixture.server.stop(true);
+        },
+      );
+    },
+  );
+}
 async function waitFor(done: () => boolean, collector: Collector): Promise<void> {
   while (!done()) {
     if (collector.failures.length) throw new Error(JSON.stringify(collector.failures));
     await Bun.sleep(25);
   }
 }
+type ControlResult = { engine: string; control: string; status: string; error?: string };
+async function checkControl(
+  engine: string,
+  control: string,
+  run: () => Promise<void>,
+  results: ControlResult[],
+): Promise<void> {
+  try {
+    await run();
+    results.push({ engine, control, status: "pass" });
+  } catch (error) {
+    results.push({ engine, control, status: "fail", error: String(error) });
+  }
+  console.log(JSON.stringify(results[results.length - 1]));
+}
+async function engineControls(
+  engine: string,
+  root: string,
+  results: ControlResult[],
+): Promise<void> {
+  if (engine !== "chromium" && engine !== "webkit")
+    throw new Error(`Unsupported control engine ${engine}`);
+  const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  for (const mode of modes.filter((mode) => !selected || mode.includes(selected)))
+    await checkControl(engine, mode, () => reporterControl(engine, mode, root), results);
+  if (!selected || "canonical-ownership".includes(selected))
+    await checkControl(
+      engine,
+      "canonical-ownership",
+      () => malformedAllocationControl(engine, root),
+      results,
+    );
+  for (const failed of selected ? [] : [false, true])
+    await checkControl(
+      engine,
+      `storage-${failed}`,
+      () => storageControl(engine, failed, root),
+      results,
+    );
+}
 async function main(): Promise<void> {
   const args = process.argv.slice(2),
     resultIndex = args.indexOf("--result"),
-    resultPath = args[resultIndex + 1];
-  if (resultIndex < 0 || !resultPath || !isAbsolute(resultPath))
+    resultPath = resultIndex < 0 ? undefined : args[resultIndex + 1];
+  if (resultIndex >= 0 && (!resultPath || !isAbsolute(resultPath)))
     throw new Error("Use chromium webkit --result /absolute/control-results.json");
-  const results: { engine: string; control: string; status: string; error?: string }[] = [];
+  const results: ControlResult[] = [];
   const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
   await mkdir(root, { recursive: true });
   try {
-    for (const engine of args.slice(0, resultIndex)) {
-      if (engine !== "chromium" && engine !== "webkit")
-        throw new Error(`Unsupported control engine ${engine}`);
-      for (const mode of modes)
-        await check(engine, mode, () => reporterControl(engine, mode, root));
-      for (const failed of [false, true])
-        await check(engine, `storage-${failed}`, () => storageControl(engine, failed, root));
-    }
-    async function check(engine: string, control: string, run: () => Promise<void>): Promise<void> {
-      try {
-        await run();
-        results.push({ engine, control, status: "pass" });
-      } catch (error) {
-        results.push({ engine, control, status: "fail", error: String(error) });
-      }
-      console.log(JSON.stringify(results[results.length - 1]));
-    }
+    for (const engine of resultIndex < 0 ? args : args.slice(0, resultIndex))
+      await engineControls(engine, root, results);
   } finally {
-    await writeResult(resultPath, results);
+    await writeResult(resultPath ?? join(root, "results.json"), results);
     await rm(root, { recursive: true, force: true });
   }
-  if (results.some((result) => result.status === "fail")) process.exitCode = 1;
+  if (!results.length || results.some((result) => result.status === "fail")) process.exitCode = 1;
 }
 if (import.meta.main) await main();

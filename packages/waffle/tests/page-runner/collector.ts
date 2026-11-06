@@ -11,6 +11,7 @@ import {
 } from "./protocol.js";
 import type { StorageEntry } from "../storage-allocation.js";
 export class ObservationClosed extends Error {}
+export class ReportRejected extends Error {}
 export type Group = { id: string; role: "list" | "case" | "finish"; caseIds: string[] };
 export type DocumentState = {
   group: Group;
@@ -71,7 +72,7 @@ export class Collector {
   }
   private violation(detail: string, state = this.active): never {
     this.fail("protocol", detail, state);
-    throw new Error(detail);
+    throw new ReportRejected(detail);
   }
   heartbeat(value: unknown): void {
     const state = this.active;
@@ -93,14 +94,19 @@ export class Collector {
     state.heartbeatAt = this.now();
   }
   receive(value: unknown): { ackedThrough: number } {
+    const known =
+      record(value) && value.run === this.run
+        ? this.documents.find((state) => state.doc !== null && state.doc === value.doc)
+        : undefined;
+    if (known?.cutoff !== null && known?.cutoff !== undefined)
+      throw new ObservationClosed("Report after observation cutoff");
+    const state = known ?? this.active;
     let message: Message;
     try {
       message = parseMessage(value);
     } catch (error) {
-      return this.violation(String(error));
+      return this.violation(String(error), state);
     }
-    const old = this.documents.find((state) => state.doc === message.doc);
-    const state = old ?? this.active;
     if (!state || message.run !== this.run)
       return this.violation("Wrong run or no expected document", state);
     const encoded = JSON.stringify(message);
@@ -114,8 +120,8 @@ export class Collector {
     try {
       this.apply(state, message);
     } catch (error) {
-      this.fail("protocol", String(error), state);
-      throw error;
+      if (error instanceof ReportRejected) throw error;
+      return this.violation(String(error), state);
     }
     state.messages.push(encoded);
     return { ackedThrough: message.seq };
@@ -198,16 +204,7 @@ export class Collector {
     );
     if (!id || this.outcomes[id]?.status !== "running")
       this.violation("Allocation outside running storage case", state);
-    let logical = entry.name;
-    if (entry.kind === "opfs-directory") {
-      try {
-        logical = JSON.parse(
-          atob(entry.name.slice("bun-wasm-".length).replaceAll("-", "+").replaceAll("_", "/")),
-        );
-      } catch {
-        this.violation("Invalid encoded OPFS allocation", state);
-      }
-    }
+    const logical = this.logicalAllocation(entry, state);
     const backend = id.startsWith("indexeddb:") ? "storage" : "opfs";
     const expectedKind = backend === "storage" ? "indexeddb" : "opfs-directory";
     if (
@@ -218,6 +215,24 @@ export class Collector {
       this.violation("Allocation not owned by this run and backend", state);
     if (!this.ledger.some((saved) => saved.kind === entry.kind && saved.name === entry.name))
       this.ledger.push(entry);
+  }
+  private logicalAllocation(entry: StorageEntry, state: DocumentState): unknown {
+    if (entry.kind === "indexeddb") return entry.name;
+    if (!entry.name.startsWith("bun-wasm-")) this.violation("Invalid OPFS directory prefix", state);
+    let logical: unknown;
+    try {
+      logical = JSON.parse(atob(entry.name.slice(9).replaceAll("-", "+").replaceAll("_", "/")));
+    } catch {
+      this.violation("Invalid encoded OPFS allocation", state);
+    }
+    if (typeof logical !== "string") this.violation("Invalid OPFS logical name", state);
+    const encoded = btoa(JSON.stringify(logical))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replaceAll("=", "");
+    if (entry.name !== `bun-wasm-${encoded}`)
+      this.violation("Noncanonical OPFS directory name", state);
+    return logical;
   }
   private finish(state: DocumentState, remaining: StorageEntry[]): void {
     const casesSettled = this.selected.every((id) =>

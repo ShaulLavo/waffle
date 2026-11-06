@@ -2,6 +2,7 @@ import { openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import {
   bounded,
+  WebDriverError,
   parseSession,
   stringValue,
   type Driver,
@@ -233,10 +234,16 @@ export class SafariDriver implements Driver {
         signal: AbortSignal.any([signal, AbortSignal.timeout(ms)]),
       });
       const answer: unknown = await response.json();
-      if (!record(answer) || !response.ok || !Object.hasOwn(answer, "value"))
+      if (!record(answer) || !Object.hasOwn(answer, "value"))
         throw new Error(`WebDriver ${path}: ${JSON.stringify(answer)}`);
       if (record(answer.value) && typeof answer.value.error === "string")
-        throw new Error(`WebDriver ${path}: ${JSON.stringify(answer.value)}`);
+        throw new WebDriverError(
+          answer.value.error,
+          typeof answer.value.message === "string"
+            ? answer.value.message
+            : JSON.stringify(answer.value),
+        );
+      if (!response.ok) throw new Error(`WebDriver ${path}: ${JSON.stringify(answer)}`);
       return answer.value;
     } catch (error) {
       if (marksUncertain) this.uncertain = true;

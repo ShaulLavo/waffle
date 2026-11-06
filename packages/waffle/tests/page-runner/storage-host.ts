@@ -4,8 +4,20 @@ import { homedir } from "node:os";
 import { storageTests, opfsStorageTests } from "../storage-browser.js";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { storageWorker, type WorkerRequest } from "./storage-worker.js";
-import { Collector, ObservationClosed, type DocumentState, type Group } from "./collector.js";
-import { bounded, type CleanupStep, type Driver, type DriverCleanup } from "./driver.js";
+import {
+  Collector,
+  ObservationClosed,
+  ReportRejected,
+  type DocumentState,
+  type Group,
+} from "./collector.js";
+import {
+  bounded,
+  WebDriverError,
+  type CleanupStep,
+  type Driver,
+  type DriverCleanup,
+} from "./driver.js";
 import { record, storageBudgets, type Budgets } from "./protocol.js";
 export function storageInventory(): { backend: "indexeddb" | "opfs"; label: string; id: string }[] {
   return storageTests("/fs-worker.js", "/open-fs-worker.js")
@@ -58,7 +70,7 @@ export function serveCollector(collector: Collector, assets: Record<string, Blob
       } catch (error) {
         if (error instanceof ObservationClosed)
           return Response.json({ error: error.message }, { status: 410, headers });
-        collector.fail("collector", String(error));
+        if (!(error instanceof ReportRejected)) collector.fail("collector", String(error));
         return Response.json({ error: String(error) }, { status: 409, headers });
       }
     },
@@ -117,6 +129,49 @@ export type StorageResult = {
 function absent(): CleanupStep {
   return { status: "not-created", detail: "Not allocated" };
 }
+async function stopDriver(driver: Driver, ms: number): Promise<DriverCleanup> {
+  try {
+    return await bounded(driver.stop(), ms, "driver teardown");
+  } catch (error) {
+    return {
+      session: { status: "unconfirmed", detail: String(error) },
+      launcher: {
+        status: "unconfirmed",
+        detail: "Driver teardown did not return a launcher disposition",
+      },
+      serviceDisposition: "Driver teardown incomplete; no service signals",
+    };
+  }
+}
+async function stopCollector(
+  server: ReturnType<typeof Bun.serve>,
+  stopped: boolean,
+): Promise<CleanupStep> {
+  try {
+    await bounded(server.stop(true), 2000, "collector stop");
+    return {
+      status: stopped ? "confirmed" : "unconfirmed",
+      detail: stopped
+        ? "Stopped after owned consumers"
+        : "Stopped at cleanup bound; consumer exit unconfirmed",
+    };
+  } catch (error) {
+    return { status: "unconfirmed", detail: String(error) };
+  }
+}
+async function removeScratch(scratch: string, stopped: boolean): Promise<CleanupStep> {
+  if (!stopped)
+    return {
+      status: "unconfirmed",
+      detail: `Retained ${scratch}, consumers not confirmed stopped`,
+    };
+  try {
+    await bounded(rm(scratch, { recursive: true, force: true }), 2000, "scratch cleanup");
+    return { status: "confirmed", detail: "Owned scratch removed after consumers stopped" };
+  } catch (error) {
+    return { status: "unconfirmed", detail: String(error) };
+  }
+}
 export async function runStorage(
   factory: (scratch: string) => Driver,
   options: RunOptions,
@@ -153,57 +208,18 @@ export async function runStorage(
   };
   const stop = (): Promise<void> => (cleaning ??= teardown());
   const teardown = async (): Promise<void> => {
-    if (driver) {
-      try {
-        driverCleanup = await bounded(
-          driver.stop(),
-          options.cleanupTimeoutMs ?? 12_000,
-          "driver teardown",
-        );
-      } catch (error) {
-        driverCleanup.session = { status: "unconfirmed", detail: String(error) };
-        driverCleanup.launcher = {
-          status: "unconfirmed",
-          detail: "Driver teardown did not return a launcher disposition",
-        };
-        collector.fail("cleanup", String(error));
-      }
-    }
+    if (driver) driverCleanup = await stopDriver(driver, options.cleanupTimeoutMs ?? 12_000);
     const stopped =
       driverCleanup.session.status !== "unconfirmed" &&
       driverCleanup.launcher.status !== "unconfirmed";
-    if (fixture) {
-      try {
-        await bounded(fixture.server.stop(true), 2000, "collector stop");
-        server = {
-          status: stopped ? "confirmed" : "unconfirmed",
-          detail: stopped
-            ? "Stopped after owned consumers"
-            : "Stopped at cleanup bound; consumer exit unconfirmed",
-        };
-      } catch (error) {
-        server = { status: "unconfirmed", detail: String(error) };
-      }
-    }
-    if (scratch && stopped) {
-      try {
-        await bounded(rm(scratch, { recursive: true, force: true }), 2000, "scratch cleanup");
-        scratchCleanup = {
-          status: "confirmed",
-          detail: "Owned scratch removed after consumers stopped",
-        };
-      } catch (error) {
-        scratchCleanup = { status: "unconfirmed", detail: String(error) };
-      }
-    } else if (scratch)
-      scratchCleanup = {
-        status: "unconfirmed",
-        detail: `Retained ${scratch}, consumers not confirmed stopped`,
-      };
+    if (!stopped) collector.fail("cleanup", driverCleanup.session.detail);
+    if (fixture) server = await stopCollector(fixture.server, stopped);
+    if (scratch) scratchCleanup = await removeScratch(scratch, stopped);
   };
   process.on("SIGINT", interrupted);
   process.on("SIGTERM", interrupted);
   options.signal?.addEventListener("abort", interrupted, { once: true });
+  if (options.signal?.aborted) interrupted();
   const watchdog = setInterval(() => {
     if (performance.now() - started < budgets.run) return;
     collector.fail("run-timeout", "Absolute run deadline");
@@ -259,7 +275,17 @@ export async function runStorage(
     await retireDocument(state, collector, driver, operationSignal, priorFailures);
     fixture.configurations.delete(token);
   }
+  async function interruptedFinish(error: unknown): Promise<void> {
+    if (!driver || !fixture || driver.uncertain || collector.runComplete) return;
+    collector.abandon(String(error));
+    try {
+      await document({ id: "cleanup-finish", role: "finish", caseIds: [] }, null, true);
+    } catch (cleanupError) {
+      collector.fail("storage-cleanup", String(cleanupError));
+    }
+  }
   try {
+    signal.throwIfAborted();
     const root =
       options.scratchRoot ??
       process.env.STORAGE_SCRATCH_ROOT ??
@@ -299,14 +325,7 @@ export async function runStorage(
     };
   } catch (error) {
     collector.fail(driver?.uncertain ? "driver-lost" : "host", String(error));
-    if (driver && fixture && !driver.uncertain && !collector.runComplete) {
-      collector.abandon(String(error));
-      try {
-        await document({ id: "cleanup-finish", role: "finish", caseIds: [] }, null, true);
-      } catch (cleanupError) {
-        collector.fail("storage-cleanup", String(cleanupError));
-      }
-    }
+    await interruptedFinish(error);
     storage = {
       status:
         collector.runComplete && collector.remaining?.length === 0
@@ -421,7 +440,7 @@ async function inspectDocument(
     const value = await driver.script("return window.__pageRunner || null", signal);
     return record(value) && value.doc === state.doc ? "responsive" : "page-reloaded";
   } catch (error) {
-    return String(error).includes("script") && String(error).includes("timed out")
+    return error instanceof WebDriverError && error.code === "script timeout"
       ? "page-unresponsive"
       : "driver-lost";
   }

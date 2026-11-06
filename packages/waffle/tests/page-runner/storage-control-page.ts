@@ -14,36 +14,52 @@ async function openDatabase(name: string): Promise<void> {
     request.onerror = () => reject(request.error);
   });
 }
+async function allocation(
+  entry: StorageEntry,
+  worker: Worker,
+  ledger: StorageEntry[],
+): Promise<void> {
+  await reporter.send({ kind: "allocation", entry });
+  ledger.push(entry);
+  worker.postMessage({ kind: "ack" });
+}
+function interruptedReply(
+  event: MessageEvent,
+  worker: Worker,
+  ledger: StorageEntry[],
+  timer: ReturnType<typeof setTimeout>,
+  resolve: () => void,
+  reject: (error: unknown) => void,
+): void {
+  if (event.data.interrupted) {
+    clearTimeout(timer);
+    worker.terminate();
+    resolve();
+    return;
+  }
+  void allocation(event.data.allocation, worker, ledger).catch(reject);
+}
+async function observeInterrupted(
+  worker: Worker,
+  name: string,
+  ledger: StorageEntry[],
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Interrupted fixture did not allocate")), 5000);
+    worker.onmessage = (event) => interruptedReply(event, worker, ledger, timer, resolve, reject);
+    worker.onerror = (event) => {
+      clearTimeout(timer);
+      reject(new Error(event.message));
+    };
+    worker.postMessage({ name });
+  });
+}
 async function interruptedCase(name: string, ledger: StorageEntry[]): Promise<void> {
   const worker = new Worker("/control-worker.js", { type: "module" });
   try {
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error("Interrupted fixture did not allocate")),
-        5000,
-      );
-      worker.onmessage = (event) => {
-        if (event.data.interrupted) {
-          clearTimeout(timer);
-          worker.terminate();
-          resolve();
-          return;
-        }
-        void allocation(event.data.allocation).catch(reject);
-      };
-      worker.onerror = (event) => {
-        clearTimeout(timer);
-        reject(new Error(event.message));
-      };
-      worker.postMessage({ name });
-    });
+    await observeInterrupted(worker, name, ledger);
   } finally {
     worker.terminate();
-  }
-  async function allocation(entry: StorageEntry): Promise<void> {
-    await reporter.send({ kind: "allocation", entry });
-    ledger.push(entry);
-    worker.postMessage({ kind: "ack" });
   }
 }
 async function run(): Promise<void> {

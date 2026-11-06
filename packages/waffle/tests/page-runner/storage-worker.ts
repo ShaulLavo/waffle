@@ -13,28 +13,40 @@ export function storageWorker(): void {
       opfs: suites.opfs.map((test) => test.label),
     };
   }
+  function waitForAllocationAck(resolve: () => void): void {
+    const receive = (event: MessageEvent) => {
+      if (event.data?.kind !== "allocation-ack") return;
+      globalThis.removeEventListener("message", receive);
+      resolve();
+    };
+    globalThis.addEventListener("message", receive);
+  }
+  async function reportAllocation(entry: StorageEntry): Promise<void> {
+    const acknowledged = new Promise<void>(waitForAllocationAck);
+    globalThis.postMessage({ allocation: entry });
+    await acknowledged;
+  }
+  function allocationHooks(request: WorkerRequest) {
+    if (request.kind !== "run" || !request.allocationPrefix) return undefined;
+    return {
+      name: () => `${request.allocationPrefix}-${crypto.randomUUID()}`,
+      allocate: reportAllocation,
+    };
+  }
+  function errorDetail(error: unknown, depth = 0): string {
+    if (!(error instanceof Error)) return String(error).slice(0, 16_384);
+    const detail = `${error.name}: ${error.message}\n${error.stack ?? ""}`;
+    if (!(error instanceof AggregateError) || depth >= 3) return detail.slice(0, 16_384);
+    const causes = error.errors
+      .slice(0, 8)
+      .map((cause) => errorDetail(cause, depth + 1).slice(0, 1600));
+    return `${error.name}: ${error.message.slice(0, 1024)}\nCauses, primary first:\n${causes.join("\n")}`;
+  }
   async function runStorageRequest(request: WorkerRequest): Promise<void> {
     const modulePath = "/tests.js";
     const tests = (await import(modulePath)) as typeof import("../storage-browser");
     // The runner owns this route; imported backend suites do not assume one exists.
-    const hooks =
-      request.kind === "run" && request.allocationPrefix
-        ? {
-            name: () => `${request.allocationPrefix}-${crypto.randomUUID()}`,
-            async allocate(entry: StorageEntry) {
-              const acknowledged = new Promise<void>((resolve) => {
-                const receive = (event: MessageEvent) => {
-                  if (event.data?.kind !== "allocation-ack") return;
-                  globalThis.removeEventListener("message", receive);
-                  resolve();
-                };
-                globalThis.addEventListener("message", receive);
-              });
-              globalThis.postMessage({ allocation: entry });
-              await acknowledged;
-            },
-          }
-        : undefined;
+    const hooks = allocationHooks(request);
     const suites = {
       indexeddb: tests.storageTests("/fs-worker.js", "/open-fs-worker.js", hooks),
       opfs: tests.opfsStorageTests("/fs-worker.js", hooks),
@@ -55,10 +67,7 @@ export function storageWorker(): void {
       await runStorageRequest(event.data);
     } catch (error) {
       // WebKit's stack contains locations only: never let it replace the actual error message.
-      const detail =
-        error instanceof Error
-          ? `${error.name}: ${error.message}\n${error.stack ?? ""}`
-          : String(error);
+      const detail = errorDetail(error);
       const environment = {
         secureContext: globalThis.isSecureContext,
         crossOriginIsolated: globalThis.crossOriginIsolated,
@@ -79,18 +88,33 @@ export function storageWorker(): void {
   };
 }
 
+type StorageReply<T> = { allocation?: StorageEntry; error?: string; result: T };
+function storageReply<T>(
+  data: StorageReply<T>,
+  worker: Worker,
+  allocate: ((entry: StorageEntry) => Promise<void>) | undefined,
+  finish: () => void,
+  resolve: (value: T | PromiseLike<T>) => void,
+  reject: (reason?: unknown) => void,
+): void {
+  if (data.allocation && allocate) {
+    void allocate(data.allocation).then(
+      () => worker.postMessage({ kind: "allocation-ack" }),
+      (error: unknown) => {
+        finish();
+        reject(error);
+      },
+    );
+    return;
+  }
+  finish();
+  if (data.error) reject(new Error(data.error));
+  else resolve(data.result);
+}
 export function storageCase<T>(
   request: WorkerRequest,
   allocate?: (entry: StorageEntry) => Promise<void>,
 ): Promise<T> {
-  function settle(
-    data: { error?: string; result: T },
-    resolve: (value: T | PromiseLike<T>) => void,
-    reject: (reason?: unknown) => void,
-  ): void {
-    if (data.error) reject(new Error(data.error));
-    else resolve(data.result);
-  }
   return new Promise<T>((resolve, reject) => {
     const worker = new Worker("/worker.js", { type: "module" });
     const timeout = setTimeout(() => {
@@ -101,20 +125,8 @@ export function storageCase<T>(
       clearTimeout(timeout);
       worker.terminate();
     };
-    worker.onmessage = (event) => {
-      if (event.data?.allocation && allocate) {
-        void allocate(event.data.allocation).then(
-          () => worker.postMessage({ kind: "allocation-ack" }),
-          (error: unknown) => {
-            finish();
-            reject(error);
-          },
-        );
-        return;
-      }
-      finish();
-      settle(event.data, resolve, reject);
-    };
+    worker.onmessage = (event: MessageEvent<StorageReply<T>>) =>
+      storageReply(event.data, worker, allocate, finish, resolve, reject);
     worker.onerror = (event) => {
       finish();
       reject(new Error(event.message));

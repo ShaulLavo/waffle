@@ -1,6 +1,12 @@
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
-import { bounded, type Driver, type DriverCleanup } from "./driver.js";
+import {
+  bounded,
+  DeadlineError,
+  WebDriverError,
+  type Driver,
+  type DriverCleanup,
+} from "./driver.js";
 /** Local runner regressions only. Not an iOS adapter or a replacement storage body. */
 export class PlaywrightDriver implements Driver {
   private lifecycle = new BrowserRunnerLifecycle();
@@ -53,11 +59,17 @@ export class PlaywrightDriver implements Driver {
   }
   async script(source: string, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
-    return bounded(
-      this.current().evaluate((script) => new Function(script)(), source),
-      3000,
-      "script probe",
-    );
+    try {
+      return await bounded(
+        this.current().evaluate((script) => new Function(script)(), source),
+        3000,
+        "script probe",
+      );
+    } catch (error) {
+      this.uncertain = true;
+      if (error instanceof DeadlineError) throw new WebDriverError("script timeout", error.message);
+      throw error;
+    }
   }
   stop(): Promise<DriverCleanup> {
     return (this.stopping ??= this.stopOnce());

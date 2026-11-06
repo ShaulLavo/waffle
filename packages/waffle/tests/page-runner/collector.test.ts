@@ -211,3 +211,80 @@ test("exact run allocation ledger includes derived names and rejects foreign all
     }),
   ).toThrow();
 });
+
+function opfsAllocation(name: string) {
+  const collector = new Collector("run", [second], [second]);
+  collector.expect(
+    { id: "opfs", role: "case", caseIds: [second] },
+    "token",
+    "http://runner/",
+    "root",
+  );
+  collector.receive({
+    run: "run",
+    doc: "opfs-doc",
+    seq: 0,
+    kind: "hello",
+    token: "token",
+    group: "opfs",
+  });
+  collector.receive({ run: "run", doc: "opfs-doc", seq: 1, kind: "case-start", caseId: second });
+  return {
+    collector,
+    report: {
+      run: "run",
+      doc: "opfs-doc",
+      seq: 2,
+      kind: "allocation",
+      entry: { kind: "opfs-directory", name },
+    },
+  };
+}
+for (const variant of ["foreign-prefix", "padding", "noncanonical-json"]) {
+  test(`OPFS ledger rejects ${variant} before accepting cleanup authority`, () => {
+    const logical = "bun-wasm-opfs-test-run-own";
+    const canonical = btoa(JSON.stringify(logical))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replaceAll("=", "");
+    const name =
+      variant === "foreign-prefix"
+        ? `foreign!!${canonical}`
+        : variant === "padding"
+          ? `bun-wasm-${canonical}=`
+          : `bun-wasm-${btoa(` ${JSON.stringify(logical)}`).replaceAll("=", "")}`;
+    const { collector, report } = opfsAllocation(name);
+    expect(() => collector.receive(report)).toThrow();
+    expect(collector.ledger).toHaveLength(0);
+  });
+}
+test("malformed retired-document reports respect cutoff rather than failing the next group", () => {
+  const f = passed();
+  f.send({ kind: "doc-complete" });
+  f.state.retiring = true;
+  f.send({ kind: "retire-ready" });
+  f.collector.retire(f.state, 4);
+  f.collector.expect(
+    { id: "next", role: "case", caseIds: [second] },
+    "next",
+    "http://next/",
+    "root",
+  );
+  expect(() =>
+    f.collector.receive({ run: "run", doc: "document", seq: 5, kind: "unknown" }),
+  ).toThrow("cutoff");
+  expect(f.collector.failures).toHaveLength(0);
+});
+test("malformed reports from an observed older document keep their original group", () => {
+  const f = passed();
+  f.collector.expect(
+    { id: "next", role: "case", caseIds: [second] },
+    "next",
+    "http://next/",
+    "root",
+  );
+  expect(() =>
+    f.collector.receive({ run: "run", doc: "document", seq: 5, kind: "unknown" }),
+  ).toThrow();
+  expect(f.collector.failures.map((failure) => failure.group)).toEqual(["case"]);
+});

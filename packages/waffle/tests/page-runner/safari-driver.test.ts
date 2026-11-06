@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import { associateListener, nativeCapabilities } from "./safari-driver.js";
+import { associateListener, nativeCapabilities, SafariDriver } from "./safari-driver.js";
 import { parseSession } from "./driver.js";
+import { Collector } from "./collector.js";
+import { probeDocument } from "./storage-host.js";
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const capabilities = {
   browserName: "Safari",
@@ -57,4 +59,45 @@ test("an HTTP response or foreign listener is not a launcher/XPC association", (
   expect(associateListener("p100\nn127.0.0.1:456", "", "", 100, 456, 501)).toEqual({
     kind: "launcher",
   });
+});
+
+test("structured script-timeout code survives HTTP transport and stops later dispatch", async () => {
+  let requests = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      requests++;
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/window/handles")) return Response.json({ value: ["root"] });
+      if (path.endsWith("/window")) return Response.json({ value: "root" });
+      if (path.endsWith("/url")) return Response.json({ value: "http://fixture/" });
+      return Response.json(
+        { value: { error: "script timeout", message: "", stacktrace: "" } },
+        { status: 500 },
+      );
+    },
+  });
+  try {
+    const driver = new SafariDriver(udid, "unused-no-native-start");
+    Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
+    Reflect.set(driver, "session", "fixture-session");
+    const collector = new Collector("run", [], []);
+    const state = collector.expect(
+      { id: "list", role: "list", caseIds: [] },
+      "token",
+      "http://fixture/",
+      "root",
+    );
+    state.doc = "doc";
+    expect(await probeDocument(state, driver, AbortSignal.timeout(2000))).toBe("page-unresponsive");
+    expect(driver.uncertain).toBe(true);
+    const before = requests;
+    await expect(driver.navigate("http://next/", AbortSignal.timeout(1000))).rejects.toThrow(
+      "Uncertain",
+    );
+    expect(requests).toBe(before);
+  } finally {
+    await server.stop(true);
+  }
 });

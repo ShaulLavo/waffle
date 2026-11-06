@@ -59,7 +59,7 @@ async function oneCase(request: Extract<WorkerRequest, { kind: "run" }>): Promis
       /* Deliberate main-thread stall, closed by the owned browser teardown. */
     }
   }
-  if (mode === "wrong-label" || mode === "worker-timeout") {
+  if (mode === "wrong-label" || mode === "worker-timeout" || mode === "aggregate-error") {
     await failedWorker(request, caseId);
     return;
   }
@@ -79,7 +79,12 @@ async function failedWorker(
   caseId: string,
 ): Promise<void> {
   try {
-    const returned = mode === "worker-timeout" ? await storageCase(request) : "wrong label";
+    const returned =
+      mode === "aggregate-error"
+        ? await storageCase({ ...request, label: "aggregate-error" })
+        : mode === "worker-timeout"
+          ? await storageCase(request)
+          : "wrong label";
     validateWorkerLabel(returned, request.label);
   } catch (error) {
     await reporter.send({ kind: "case-end", caseId, status: "fail", error: String(error) });

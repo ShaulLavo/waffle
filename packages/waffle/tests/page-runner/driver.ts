@@ -1,4 +1,18 @@
 import { record } from "./protocol.js";
+export class DeadlineError extends Error {
+  constructor(label: string) {
+    super(`${label} timed out`);
+  }
+}
+export class WebDriverError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WebDriverError";
+  }
+}
 export type CleanupStep = { status: "not-created" | "confirmed" | "unconfirmed"; detail: string };
 export type DriverCleanup = {
   session: CleanupStep;
@@ -21,7 +35,7 @@ export async function bounded<T>(promise: Promise<T>, ms: number, label: string)
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+        timer = setTimeout(() => reject(new DeadlineError(label)), ms);
       }),
     ]);
   } finally {

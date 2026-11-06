@@ -19,6 +19,7 @@ export default {
         "tests/**/*.test.ts",
         "tests/page-runner/*-page.ts",
         "tests/page-runner/storage-control-worker.ts",
+        "tests/page-runner/aggregate-error-fixture.ts",
         "tests/page-runner/browser-controls-runner.ts",
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",
