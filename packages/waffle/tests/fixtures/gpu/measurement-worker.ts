@@ -79,6 +79,10 @@ async function uploadTrial(
   }
   return { writeBufferMs, uploadAndReadbackMs: performance.now() - start };
 }
+function fillUpload(expected: Uint32Array, trial: number) {
+  for (let index = 0; index < expected.length; index++)
+    expected[index] = (index * 2654435761 + trial) >>> 0;
+}
 async function uploads(options: MeasurementOptions, corrupt: boolean) {
   const gpu = requireDevice();
   const expected = new Uint32Array(new SharedArrayBuffer(64 * 1024));
@@ -95,9 +99,7 @@ async function uploads(options: MeasurementOptions, corrupt: boolean) {
     const writes: number[] = [];
     const roundtrips: number[] = [];
     for (let trial = 0; trial < options.warmup + options.trials; trial++) {
-      expected.forEach((_, index) => {
-        expected[index] = (index * 2654435761 + trial) >>> 0;
-      });
+      fillUpload(expected, trial);
       const result = await uploadTrial(gpu, expected, source, target, corrupt);
       if (trial < options.warmup) continue;
       writes.push(result.writeBufferMs);

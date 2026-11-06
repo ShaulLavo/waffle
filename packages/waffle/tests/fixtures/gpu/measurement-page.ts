@@ -18,6 +18,43 @@ function stop(owner: OwnedWorker) {
   owner.stopped = true;
   owned.delete(owner);
 }
+function readyMessage(
+  data: unknown,
+  finish: () => void,
+  resolve: () => void,
+  reject: (error: unknown) => void,
+) {
+  finish();
+  try {
+    const ready = qualificationRecord(data);
+    if (
+      ready.kind !== "ready" ||
+      ready.realm !== "dedicated-worker" ||
+      ready.hasDocument !== false ||
+      ready.isolated !== true
+    )
+      throw new Error("Worker realm/isolation positive control failed");
+    resolve();
+  } catch (error) {
+    reject(error);
+  }
+}
+function workerReady(owner: OwnedWorker, timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Worker startup deadline")), timeoutMs);
+    const finish = () => {
+      clearTimeout(timer);
+      owner.worker.onmessage = null;
+      owner.worker.onerror = null;
+    };
+    owner.worker.onerror = (event) => {
+      finish();
+      reject(new Error(event.message));
+    };
+    owner.worker.onmessage = (event: MessageEvent<unknown>) =>
+      readyMessage(event.data, finish, resolve, reject);
+  });
+}
 async function openWorker(timeoutMs: number): Promise<OwnedWorker> {
   const start = performance.now();
   const owner = {
@@ -27,35 +64,38 @@ async function openWorker(timeoutMs: number): Promise<OwnedWorker> {
   };
   owned.add(owner);
   try {
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Worker startup deadline")), timeoutMs);
-      const done = () => {
-        clearTimeout(timer);
-        owner.worker.onmessage = null;
-        owner.worker.onerror = null;
-      };
-      owner.worker.onerror = (event) => {
-        done();
-        reject(new Error(event.message));
-      };
-      owner.worker.onmessage = (event: MessageEvent<unknown>) => {
-        done();
-        const ready = qualificationRecord(event.data);
-        if (
-          ready.kind !== "ready" ||
-          ready.realm !== "dedicated-worker" ||
-          ready.hasDocument !== false ||
-          ready.isolated !== true
-        )
-          reject(new Error("Worker realm/isolation positive control failed"));
-        else resolve();
-      };
-    });
+    await workerReady(owner, timeoutMs);
     owner.startupMs = performance.now() - start;
     return owner;
   } catch (error) {
     stop(owner);
     throw error;
+  }
+}
+function replyMessage({
+  data,
+  done,
+  fail,
+  resolve,
+  armed,
+}: {
+  data: unknown;
+  done: () => void;
+  fail: (error: unknown) => void;
+  resolve: (value: unknown) => void;
+  armed?: () => void;
+}) {
+  try {
+    const reply = qualificationRecord(data);
+    if (reply.kind === "armed") {
+      armed?.();
+      return;
+    }
+    done();
+    if (reply.kind !== "reply") throw new Error(String(reply.error));
+    resolve(reply.value);
+  } catch (error) {
+    fail(error);
   }
 }
 function request(
@@ -78,20 +118,8 @@ function request(
     };
     const timer = setTimeout(() => fail(new Error(`Worker ${message.kind} deadline`)), timeoutMs);
     owner.worker.onerror = (event) => fail(new Error(event.message));
-    owner.worker.onmessage = (event: MessageEvent<unknown>) => {
-      try {
-        const reply = qualificationRecord(event.data);
-        if (reply.kind === "armed") {
-          armed?.();
-          return;
-        }
-        done();
-        if (reply.kind === "reply") resolve(reply.value);
-        else fail(new Error(String(reply.error)));
-      } catch (error) {
-        fail(error);
-      }
-    };
+    owner.worker.onmessage = (event: MessageEvent<unknown>) =>
+      replyMessage({ data: event.data, done, fail, resolve, armed });
     try {
       owner.worker.postMessage(message);
     } catch (error) {

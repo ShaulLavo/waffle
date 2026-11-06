@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "../tests/browser-runner-lifecycle.js";
 import {
@@ -171,13 +171,19 @@ async function webdriver(
   const init: RequestInit = {
     method,
     headers: { "content-type": "application/json" },
-    signal: AbortSignal.timeout(method === "DELETE" || path === "/session" ? 10_000 : 120_000),
+    signal: AbortSignal.timeout(
+      method === "DELETE" ? 10_000 : path === "/session" ? 60_000 : 120_000,
+    ),
   };
   if (body !== undefined) init.body = JSON.stringify(body);
-  const response = await fetch(`${driver}${path}`, init);
-  const payload = qualificationRecord(await response.json());
-  if (!response.ok) throw new Error(`WebDriver ${path}: ${JSON.stringify(payload)}`);
-  return payload.value;
+  try {
+    const response = await fetch(`${driver}${path}`, init);
+    const payload = qualificationRecord(await response.json());
+    if (!response.ok) throw new Error(`WebDriver ${path}: ${JSON.stringify(payload)}`);
+    return payload.value;
+  } catch (error) {
+    throw new Error(`WebDriver ${method} ${path}: ${String(error)}`);
+  }
 }
 /** No iOS/simulator session can be reported as desktop Safari hardware evidence. */
 export function desktopSafariCapabilities(value: unknown) {
@@ -412,7 +418,11 @@ async function main() {
       reports.push({
         kind: "failed",
         reason: `Cleanup: ${String(error)}`,
-        retainedScratch: runner.scratch,
+        scratch: runner.scratch,
+        scratchExists: await stat(runner.scratch).then(
+          () => true,
+          () => false,
+        ),
       });
     }
     const result = {
