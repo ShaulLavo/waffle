@@ -1160,8 +1160,9 @@ jobs:
         run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
         env:
           MEMORY_GROUP_ARTIFACT_ID: ${{ needs.libc.outputs.memory-group-artifact-id }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
+          digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.memory-group-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/memory-group-fixture
@@ -1169,8 +1170,9 @@ jobs:
         run: test -n "$GPU_ARTIFACT_ID"
         env:
           GPU_ARTIFACT_ID: ${{ needs.libc.outputs.gpu-artifact-id }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
+          digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.gpu-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/gpu-fixture
