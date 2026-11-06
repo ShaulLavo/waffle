@@ -11,6 +11,7 @@ import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
 
 export const consumerControlModes = [
   "pass",
+  "slow-seed",
   "cleanup-fail",
   "late-error",
   "wrong-allocation",
@@ -133,35 +134,55 @@ class ConsumerDriver extends PlaywrightDriver {
     if (this.seeded) await this.verifyBody(signal);
     else await this.beforeHostedNavigation(new URL(url).origin, signal);
     await super.navigate(url, signal);
-    const role = await super.script("return window.__suiteConfiguration.role", signal);
+    const role = await this.inspect("return window.__suiteConfiguration.role", signal);
     if (role !== "list") return;
-    const calls = await super.script(
+    const calls = await this.inspect(
       "return [window.__consumerBodyCalls, window.__consumerOpened]",
       signal,
     );
     if (JSON.stringify(calls) !== "[0,0]")
       throw new Error(`Hosted list invoked consumer envelope: ${JSON.stringify(calls)}`);
-    await super.script(`return (${seedSentinel.toString()})();`, signal);
+    await this.seed(signal);
+  }
+  private async inspect(source: string, signal: AbortSignal): Promise<unknown> {
+    try {
+      return await super.script(source, signal);
+    } catch (error) {
+      throw new Error(`Consumer ${this.mode} script ${source.slice(0, 90)}: ${String(error)}`, {
+        cause: error,
+      });
+    }
+  }
+  private async waitForFixture(source: string, signal: AbortSignal): Promise<unknown> {
+    for (;;) {
+      signal.throwIfAborted();
+      const value = await this.inspect(source, signal);
+      if (value !== undefined) return value;
+      await Bun.sleep(25);
+    }
+  }
+  private async seed(signal: AbortSignal): Promise<void> {
+    const delay = this.mode === "slow-seed" ? 3500 : 0;
+    await this.inspect(
+      `window.__consumerSeed = undefined;
+      void new Promise(resolve => setTimeout(resolve, ${delay})).then(${seedSentinel.toString()})
+        .then(() => { window.__consumerSeed = "ready"; },
+          error => { window.__consumerSeed = "error: " + String(error); }); return null;`,
+      signal,
+    );
+    const state = await this.waitForFixture("return window.__consumerSeed", signal);
+    if (state !== "ready") throw new Error(String(state));
     this.seeded = true;
   }
   private async beforeHostedNavigation(origin: string, signal: AbortSignal): Promise<void> {
     await checkAssets(origin, this.assets);
     if (this.mode !== "pass") return;
     await super.navigate(`${origin}/current/desktop.html`, signal);
-    const actual = await super.script(
-      `return (async () => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (window.__consumerDesktopResult !== undefined) return window.__consumerDesktopResult;
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
-      throw new Error("Desktop positive control did not settle");
-    })();`,
-      signal,
-    );
+    const actual = await this.waitForFixture("return window.__consumerDesktopResult", signal);
     checkResult(id, actual);
   }
   private async verifyBody(signal: AbortSignal): Promise<void> {
-    const value = await super.script(
+    const value = await this.inspect(
       "return [window.__suiteConfiguration.role, window.__consumerBodyCalls, window.__consumerOpened]",
       signal,
     );
@@ -172,19 +193,19 @@ class ConsumerDriver extends PlaywrightDriver {
     this.bodyVerified = true;
   }
   override async script(source: string, signal: AbortSignal): Promise<unknown> {
-    const role = await super.script("return window.__suiteConfiguration.role", signal);
+    const role = await this.inspect("return window.__suiteConfiguration.role", signal);
     if (role === "case" && this.mode === "late-error" && !this.injected) {
       this.injected = true;
-      await super.script(
+      await this.inspect(
         'window.dispatchEvent(new ErrorEvent("error", { message: "STICKY_LATE_ERROR" })); return new Promise(resolve => setTimeout(resolve, 50));',
         signal,
       );
     }
     if (role === "finish") await this.verifyFinish(signal);
-    return super.script(source, signal);
+    return this.inspect(source, signal);
   }
   private async verifyFinish(signal: AbortSignal): Promise<void> {
-    const value = await super.script(
+    const value = await this.inspect(
       "return [window.__consumerForeignVerified, window.__consumerBodyCalls, window.__consumerOpened]",
       signal,
     );
@@ -196,7 +217,7 @@ class ConsumerDriver extends PlaywrightDriver {
     let failure: unknown;
     try {
       if (this.seeded)
-        await super.script(`return (${removeSentinel.toString()})();`, AbortSignal.timeout(2000));
+        await this.inspect(`return (${removeSentinel.toString()})();`, AbortSignal.timeout(2000));
     } catch (error) {
       failure = error;
     }
@@ -287,7 +308,11 @@ function checkControl(
   produced: number,
   verified: boolean,
 ): void {
-  const expected = mode === "pass" ? 0 : ["late-error", "wrong-allocation"].includes(mode) ? 2 : 1;
+  const expected = ["pass", "slow-seed"].includes(mode)
+    ? 0
+    : ["late-error", "wrong-allocation"].includes(mode)
+      ? 2
+      : 1;
   if (
     result.exit !== expected ||
     produced !== 1 ||
