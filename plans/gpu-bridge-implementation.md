@@ -453,3 +453,18 @@ replay, service ownership, guest imports, display/grants, presentation, or publi
 Reserved render-bundle and unmap-write opcodes are not accepted bodies yet. Their implementation
 remains G1/G2 work. The parallel ring lane owns transport code. The coordinator assigns independent
 review and owns integration of the remaining G0.1 work. No slice is marked complete by this checkpoint.
+
+## G0.3 platform blocker, November 6, 2026
+
+Native Mac SafariDriver reached readiness twice, but `POST /session` timed out while finding or
+launching compatible local Safari/RWIApplication, before collecting GPU data. The managing chat
+diagnosed a locked console, `CGSSessionScreenIsLocked=Yes`, and absent `AllowRemoteAutomation`.
+It owns the owner unlock and enable action. Do not retry or change settings until it reports the
+blocker fixed. Exact logs are
+`/work/reports/wave-20261106/waffle-features/gpu/measurement-mac-final.log` and
+`/work/reports/wave-20261106/waffle-features/gpu/measurement-mac-final.json`.
+Task-owned lock, listener and scratch cleanup passed.
+
+A separate bounded iOS Simulator subset is assigned. It does not qualify physical-iPhone device
+or memory limits. Desktop and physical-iPhone qualification remain open. G1 proceeds without
+changing the approved architecture.

@@ -1,0 +1,1306 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "webgpu-native/webgpu-headers",
+    "revision": "a1dc77409bb2b8bd80540cbf4b8db219e123e909",
+    "sha256": "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
+    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22"
+  },
+  "methods": [
+    {
+      "name": "adapter.get_limits",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return adapter get limits through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "adapter.has_feature",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return adapter has feature through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "adapter.get_features",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return adapter get features through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "adapter.get_info",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return adapter get info through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "adapter.request_device",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes adapter.request_device through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 2,
+        "context": "top",
+        "lowering": {
+          "kind": "request-device",
+          "descriptor": "device-descriptor"
+        }
+      }
+    },
+    {
+      "name": "bind_group.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign bind_group.label through an explicit ordered lowering; bind_group label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "bind_group_layout.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign bind_group_layout.label through an explicit ordered lowering; bind_group_layout label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "buffer.map_async",
+      "group": "mapping",
+      "category": "deferred",
+      "reason": "Implement buffer map_async with bounded map completions, payload slots and shadow-write lifetime; mapping is not selected yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.get_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Implement get_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.get_const_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Implement get_const_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.read_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Implement read_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.write_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Implement write_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign buffer.label through an explicit ordered lowering; buffer label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "buffer.get_usage",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "A future C client can answer get_usage from its retained buffer descriptor; no synchronous service pointer or getter is provided.",
+      "slice": "G1"
+    },
+    {
+      "name": "buffer.get_size",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "A future C client can answer get_size from its retained buffer descriptor; no synchronous service pointer or getter is provided.",
+      "slice": "G1"
+    },
+    {
+      "name": "buffer.get_map_state",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Cache buffer map state in the future C client and update it on map completion, unmap and loss; no map-state client exists yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.unmap",
+      "group": "mapping",
+      "category": "deferred",
+      "reason": "Implement buffer unmap with bounded map completions, payload slots and shadow-write lifetime; mapping is not selected yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.destroy",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Add ordered GPUBuffer destruction with handle lifetime checks; only device destruction is selected today.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_buffer.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign command_buffer.label through an explicit ordered lowering; command_buffer label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.finish",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Existing selected stream routes command_encoder.finish through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 16,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "finish"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.begin_compute_pass",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit begin_compute_pass recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.begin_render_pass",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Existing selected stream routes command_encoder.begin_render_pass through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 12,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "beginRenderPass"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.copy_buffer_to_buffer",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit copy_buffer_to_buffer recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.copy_buffer_to_texture",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit copy_buffer_to_texture recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.copy_texture_to_buffer",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit copy_texture_to_buffer recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.copy_texture_to_texture",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit copy_texture_to_texture recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.clear_buffer",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit clear_buffer recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.insert_debug_marker",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit insert_debug_marker recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.pop_debug_group",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit pop_debug_group recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.push_debug_group",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit push_debug_group recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.resolve_query_set",
+      "group": "encoder",
+      "category": "deferred",
+      "reason": "Add explicit resolve_query_set recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "command_encoder.write_timestamp",
+      "group": "encoder",
+      "category": "unsupported",
+      "reason": "The browser command encoder has no standalone writeTimestamp method. Approved browser timestamp writes use pass descriptor timestampWrites; do not fabricate an arbitrary-position native call.",
+      "boundary": "no-native-api"
+    },
+    {
+      "name": "command_encoder.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign command_encoder.label through an explicit ordered lowering; command_encoder label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.insert_debug_marker",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add insert_debug_marker to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.pop_debug_group",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add pop_debug_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.push_debug_group",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add push_debug_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.set_pipeline",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add set_pipeline to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.set_bind_group",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add set_bind_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.set_immediates",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add explicit compute_pass_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.dispatch_workgroups",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add dispatch_workgroups to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.dispatch_workgroups_indirect",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add dispatch_workgroups_indirect to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.end",
+      "group": "compute-pass",
+      "category": "deferred",
+      "reason": "Add end to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pass_encoder.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign compute_pass_encoder.label through an explicit ordered lowering; compute_pass_encoder label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pipeline.get_bind_group_layout",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Bind a guest-allocated handle to compute_pipeline.getBindGroupLayout(groupIndex), including implicit auto-layout ownership and invalidity.",
+      "slice": "G1"
+    },
+    {
+      "name": "compute_pipeline.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign compute_pipeline.label through an explicit ordered lowering; compute_pipeline label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_bind_group",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Resolve the C resource alternatives into the browser buffer-binding, sampler or texture-view resource union.",
+      "call": {
+        "opcode": 27,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroup",
+          "descriptor": "bind_group_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_bind_group_layout",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Lower explicit C binding-layout arms to native dictionaries, omitting BindingNotUsed arms and rejecting browser-unsupported arrays.",
+      "call": {
+        "opcode": 25,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroupLayout",
+          "descriptor": "bind_group_layout_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_buffer",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create native buffers with exact u64 size, usage flags and mapped-at-creation state; shadow mapping remains G2.",
+      "call": {
+        "opcode": 22,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBuffer",
+          "descriptor": "buffer_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_command_encoder",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.create_command_encoder through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 11,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "createCommandEncoder"
+        }
+      }
+    },
+    {
+      "name": "device.create_compute_pipeline",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Add create_compute_pipeline descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_compute_pipeline_async",
+      "group": "creation",
+      "category": "c-only-adaptation",
+      "reason": "The approved sync-pipeline policy lowers create_compute_pipeline_async in a future C client to synchronous creation plus an error scope and local callback delivery; that adapter is not implemented.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_pipeline_layout",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Resolve ordered bind-group-layout handles and lower immediate_size to the native immediateSize member.",
+      "call": {
+        "opcode": 26,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createPipelineLayout",
+          "descriptor": "pipeline_layout_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_query_set",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Add create_query_set descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_render_pipeline_async",
+      "group": "creation",
+      "category": "c-only-adaptation",
+      "reason": "The approved sync-pipeline policy lowers create_render_pipeline_async in a future C client to synchronous creation plus an error scope and local callback delivery; that adapter is not implemented.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_render_bundle_encoder",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Add create_render_bundle_encoder descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_render_pipeline",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.create_render_pipeline through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 9,
+        "context": "top",
+        "lowering": {
+          "kind": "render-pipeline",
+          "descriptor": "auto-layout"
+        }
+      }
+    },
+    {
+      "name": "device.create_sampler",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create native samplers with optional descriptor, C enum defaults and two-byte anisotropy.",
+      "call": {
+        "opcode": 24,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createSampler",
+          "descriptor": "sampler_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_shader_module",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.create_shader_module through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 8,
+        "context": "top",
+        "lowering": {
+          "kind": "shader-module",
+          "descriptor": "wgsl-chain"
+        }
+      }
+    },
+    {
+      "name": "device.create_texture",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create native textures with explicit dimensions, extent, format, sample count and view formats.",
+      "call": {
+        "opcode": 23,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createTexture",
+          "descriptor": "texture_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.destroy",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.destroy through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 18,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
+    },
+    {
+      "name": "device.get_lost_future",
+      "group": "async",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must associate the device-lost completion with a local WGPUFuture; service event delivery alone is not a C future implementation.",
+      "slice": "G2"
+    },
+    {
+      "name": "device.get_limits",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return device get limits through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "device.has_feature",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return device has feature through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "device.get_features",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return device get features through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "device.get_adapter_info",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Return device get adapter info through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
+      "slice": "G2"
+    },
+    {
+      "name": "device.get_queue",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.get_queue through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 7,
+        "context": "top",
+        "lowering": {
+          "kind": "property",
+          "member": "queue"
+        }
+      }
+    },
+    {
+      "name": "device.push_error_scope",
+      "group": "async",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.push_error_scope through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 19,
+        "context": "top",
+        "lowering": {
+          "kind": "error-scope",
+          "member": "pushErrorScope"
+        }
+      }
+    },
+    {
+      "name": "device.pop_error_scope",
+      "group": "async",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.pop_error_scope through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 20,
+        "context": "top",
+        "lowering": {
+          "kind": "error-scope",
+          "member": "popErrorScope"
+        }
+      }
+    },
+    {
+      "name": "device.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign device.label through an explicit ordered lowering; device label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "external_texture.set_label",
+      "group": "labels",
+      "category": "unsupported",
+      "reason": "External video texture import and guest external-texture handles are outside the approved bridge boundary; this receiver cannot be obtained.",
+      "boundary": "no-external-textures"
+    },
+    {
+      "name": "instance.create_surface",
+      "group": "instance",
+      "category": "selected",
+      "reason": "Existing selected stream routes instance.create_surface through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 3,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-create",
+          "descriptor": "waffle-surface"
+        }
+      }
+    },
+    {
+      "name": "instance.get_WGSL_language_features",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Include WGSL language-feature metadata in negotiation so the future C client can answer get_WGSL_language_features; no such reply exists yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "instance.has_WGSL_language_feature",
+      "group": "metadata",
+      "category": "deferred",
+      "reason": "Include WGSL language-feature metadata in negotiation so the future C client can answer has_WGSL_language_feature; no such reply exists yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "instance.process_events",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must implement process_events by pumping guest-local completion tokens; C callbacks and wait arrays cannot execute in the service worker.",
+      "slice": "G2"
+    },
+    {
+      "name": "instance.request_adapter",
+      "group": "instance",
+      "category": "selected",
+      "reason": "Existing selected stream routes instance.request_adapter through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 1,
+        "context": "top",
+        "lowering": {
+          "kind": "request-adapter",
+          "descriptor": "adapter-options"
+        }
+      }
+    },
+    {
+      "name": "instance.wait_any",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must implement wait_any by pumping guest-local completion tokens; C callbacks and wait arrays cannot execute in the service worker.",
+      "slice": "G2"
+    },
+    {
+      "name": "pipeline_layout.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign pipeline_layout.label through an explicit ordered lowering; pipeline_layout label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "query_set.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign query_set.label through an explicit ordered lowering; query_set label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "query_set.get_type",
+      "group": "query",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_type from the future C client's retained query-set descriptor; query-set creation and caching remain G1 work.",
+      "slice": "G1"
+    },
+    {
+      "name": "query_set.get_count",
+      "group": "query",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_count from the future C client's retained query-set descriptor; query-set creation and caching remain G1 work.",
+      "slice": "G1"
+    },
+    {
+      "name": "query_set.destroy",
+      "group": "query",
+      "category": "deferred",
+      "reason": "Add query-set destruction and ordered lifetime handling after query-set creation; neither is currently selected.",
+      "slice": "G1"
+    },
+    {
+      "name": "queue.submit",
+      "group": "queue",
+      "category": "selected",
+      "reason": "Existing selected stream routes queue.submit through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 17,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "submit"
+        }
+      }
+    },
+    {
+      "name": "queue.on_submitted_work_done",
+      "group": "async",
+      "category": "deferred",
+      "reason": "Add queue.on_submitted_work_done promise lowering and bounded completion delivery, including late settlement after revocation; no selected call exists yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "queue.write_buffer",
+      "group": "queue",
+      "category": "selected",
+      "reason": "Replace the C data pointer and paired size with a checked byte span and upload it at an exact buffer offset.",
+      "call": {
+        "opcode": 28,
+        "context": "top",
+        "lowering": {
+          "kind": "write-buffer",
+          "member": "writeBuffer",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
+    },
+    {
+      "name": "queue.write_texture",
+      "group": "queue",
+      "category": "selected",
+      "reason": "Upload checked byte spans with native texture identity, origin, extent and declared copy-stride sentinel omission.",
+      "call": {
+        "opcode": 29,
+        "context": "top",
+        "lowering": {
+          "kind": "write-texture",
+          "member": "writeTexture",
+          "span": {
+            "pointer": "data",
+            "size": "data_size"
+          }
+        }
+      }
+    },
+    {
+      "name": "queue.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign queue.label through an explicit ordered lowering; queue label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign render_bundle.label through an explicit ordered lowering; render_bundle label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.set_pipeline",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement set_pipeline in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.set_bind_group",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement set_bind_group in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.set_immediates",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Add explicit render_bundle_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.draw",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement draw in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.draw_indexed",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement draw_indexed in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.draw_indirect",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement draw_indirect in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.draw_indexed_indirect",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement draw_indexed_indirect in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.insert_debug_marker",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement insert_debug_marker in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.pop_debug_group",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement pop_debug_group in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.push_debug_group",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement push_debug_group in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.set_vertex_buffer",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement set_vertex_buffer in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.set_index_buffer",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement set_index_buffer in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.finish",
+      "group": "bundle",
+      "category": "deferred",
+      "reason": "Implement finish in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_bundle_encoder.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign render_bundle_encoder.label through an explicit ordered lowering; render_bundle_encoder label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.set_pipeline",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Existing selected stream routes render_pass_encoder.set_pipeline through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 13,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_bind_group",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Bind native group identity or explicit null with a bounded array of dynamic offsets inside a recorded render pass.",
+      "call": {
+        "opcode": 30,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_immediates",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add explicit render_pass_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.draw",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Existing selected stream routes render_pass_encoder.draw through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 14,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "draw"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.draw_indexed",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Replay indexed draws with exact counts and first offsets, including signed base_vertex values.",
+      "call": {
+        "opcode": 33,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexed"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.draw_indirect",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add draw_indirect to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.draw_indexed_indirect",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add draw_indexed_indirect to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.execute_bundles",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add execute_bundles to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.insert_debug_marker",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add insert_debug_marker to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.pop_debug_group",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add pop_debug_group to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.push_debug_group",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add push_debug_group to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.set_stencil_reference",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add set_stencil_reference to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.set_blend_constant",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add set_blend_constant to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.set_viewport",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add set_viewport to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.set_scissor_rect",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add set_scissor_rect to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.set_vertex_buffer",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Bind vertex-buffer identity or explicit null, retaining byte offsets and omitting only the whole-size sentinel.",
+      "call": {
+        "opcode": 31,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setVertexBuffer"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_index_buffer",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Bind native index-buffer identity, index format and exact offset/range with declared whole-size omission.",
+      "call": {
+        "opcode": 32,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setIndexBuffer"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.begin_occlusion_query",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add begin_occlusion_query to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.end_occlusion_query",
+      "group": "render-pass",
+      "category": "deferred",
+      "reason": "Add end_occlusion_query to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pass_encoder.end",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Existing selected stream routes render_pass_encoder.end through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 15,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "end"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign render_pass_encoder.label through an explicit ordered lowering; render_pass_encoder label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pipeline.get_bind_group_layout",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Bind a guest-allocated handle to render_pipeline.getBindGroupLayout(groupIndex), including implicit auto-layout ownership and invalidity.",
+      "slice": "G1"
+    },
+    {
+      "name": "render_pipeline.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign render_pipeline.label through an explicit ordered lowering; render_pipeline label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "sampler.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign sampler.label through an explicit ordered lowering; sampler label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "shader_module.get_compilation_info",
+      "group": "async",
+      "category": "deferred",
+      "reason": "Add shader_module.get_compilation_info promise lowering and bounded completion delivery, including late settlement after revocation; no selected call exists yet.",
+      "slice": "G2"
+    },
+    {
+      "name": "shader_module.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign shader_module.label through an explicit ordered lowering; shader_module label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "surface.configure",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.configure through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 4,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-configure",
+          "descriptor": "stable-frame"
+        }
+      }
+    },
+    {
+      "name": "surface.get_capabilities",
+      "group": "surface",
+      "category": "deferred",
+      "reason": "Return explicit browser-supported surface formats, usages, alpha and presentation policy via checked capability metadata; do not expose native window handles.",
+      "slice": "G2"
+    },
+    {
+      "name": "surface.get_current_texture",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.get_current_texture through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 5,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-acquire",
+          "output": "surface_texture"
+        }
+      }
+    },
+    {
+      "name": "surface.present",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.present through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 6,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-present",
+          "result": "enum.status"
+        }
+      }
+    },
+    {
+      "name": "surface.unconfigure",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.unconfigure through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 21,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "unconfigure"
+        }
+      }
+    },
+    {
+      "name": "surface.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign surface.label through an explicit ordered lowering; surface label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.create_view",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes texture.create_view through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 10,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "createView"
+        }
+      }
+    },
+    {
+      "name": "texture.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign texture.label through an explicit ordered lowering; texture label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_width",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_width from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_height",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_height from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_depth_or_array_layers",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_depth_or_array_layers from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_mip_level_count",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_mip_level_count from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_sample_count",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_sample_count from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_dimension",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_dimension from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_texture_binding_view_dimension",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_texture_binding_view_dimension from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_format",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_format from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_usage",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_usage from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.destroy",
+      "group": "creation",
+      "category": "deferred",
+      "reason": "Add texture destruction with frame-texture lifetime handling and validation scopes; texture release is not a destroy call.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture_view.set_label",
+      "group": "labels",
+      "category": "deferred",
+      "reason": "Assign texture_view.label through an explicit ordered lowering; texture_view label mutation is not selected yet.",
+      "slice": "G1"
+    },
+    {
+      "name": "function.create_instance",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client maps its instance to the connection root prebound by runtime_gpu.open; no browser GPUInstance is allocated and no C client is implemented.",
+      "slice": "G1"
+    },
+    {
+      "name": "function.get_instance_features",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client reports only its supported callback/wait capabilities, not native implementation features; that local capability contract remains unimplemented.",
+      "slice": "G2"
+    },
+    {
+      "name": "function.get_instance_limits",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must fill checked instance wait limits for its completion pump; native C instance limits are not browser device limits.",
+      "slice": "G2"
+    },
+    {
+      "name": "function.has_instance_feature",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client answers from the same explicit local instance-feature set as get_instance_features; no native feature probing crosses the stream.",
+      "slice": "G2"
+    }
+  ]
+}
