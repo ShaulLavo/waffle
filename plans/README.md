@@ -8,10 +8,11 @@ Approved work: [Native guest threads](wasi-threads.md), with
 [toolchain research and prior-art references](wasi-threads-references.md). This is an implementation
 plan for execution; thread support is not yet delivered.
 
-Approved, scheduled later (owner, 2026-11-02; don't start until the current finish lines are done):
-[Guest graphics](guest-graphics.md), an overview of three plans that let a
-WASI guest open a window and draw with WebGPU: [windows, input and a winit backend](guest-windows.md),
+Approved (owner, 2026-11-02): [Guest graphics](guest-graphics.md), an overview of three plans that
+let a WASI guest open a window and draw with WebGPU: [windows, input and a winit backend](guest-windows.md),
 the [WebGPU bridge](gpu-bridge.md) and a [wgpu backend](wgpu-backend.md). It also records where
 the guest Rust crates live (outside this repository) and what Horizon, the first consumer, needs.
+The WebGPU bridge is active since 2026-11-06; its [implementation design](gpu-bridge-implementation.md)
+holds the slices. Windows and the wgpu backend stay scheduled later.
 
 Approved, preserved for later (owner, 2026-11-04): [Vite 8 in the playground](vite8-playground.md).

@@ -1,6 +1,8 @@
 # WebGPU bridge for blocking guests
 
-Status: **Approved (owner, 2026-11-02). Scheduled later; don't start until the current finish lines are done.** The page-side service is TypeScript. Its
+Status: **Approved (owner, 2026-11-02). Active since 2026-11-06.** The executable design, slices
+and tests are in [the implementation design](gpu-bridge-implementation.md), which wins where the
+two differ. The page-side service is TypeScript. Its
 Rust client, the [wgpu backend](wgpu-backend.md), lives outside this repository
 ([where the code lives](guest-graphics.md#where-the-code-lives)).
 
@@ -249,6 +251,10 @@ have no WebGPU there. G0 decides whether CI can run Chromium with a software ada
 existing `tooling/workspace-safari-runner.ts` route.
 
 ## Delivery slices and effort
+
+The original slices follow. [The implementation design](gpu-bridge-implementation.md#delivery-slices)
+splits G0 into G0.1 (schema and replay core), G0.2 (first triangle, shipped code rather than a
+throwaway proof) and G0.3 (these measurements), and sets each slice's exit gate.
 
 | Slice                  | Rough effort | Deliverable and exit gate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | ---------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
