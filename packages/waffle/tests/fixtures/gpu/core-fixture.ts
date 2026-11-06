@@ -71,8 +71,8 @@ export function send(connection: GpuConnection, bytes: Uint8Array): void {
   try {
     for (let turns = 0; turns < 100000; turns++) {
       const result = publication.advance();
-      connection.slice();
-      if (result === "done" || result === "terminal") return;
+      const slice = connection.slice();
+      if (result === "terminal" || (result === "done" && slice.kind !== "yield")) return;
     }
     throw new Error("Transport failed to make progress");
   } finally {
