@@ -9,6 +9,45 @@ import {
   type CleanupStep,
 } from "./driver.js";
 import { record } from "./protocol.js";
+export function nativeCapabilities(value: unknown, udid: string) {
+  if (!record(value) || !record(value.capabilities))
+    throw new Error("Missing native session capabilities");
+  const caps = value.capabilities;
+  if (
+    caps.browserName !== "Safari" ||
+    caps.platformName !== "iOS" ||
+    caps["safari:useSimulator"] !== true ||
+    caps["safari:deviceUDID"] !== udid
+  )
+    throw new Error(
+      "Returned WebDriver session is not Safari on the exact requested iOS Simulator",
+    );
+  if (typeof caps.browserVersion !== "string" || !caps.browserVersion)
+    throw new Error("Missing installed Safari version");
+  return {
+    browserName: caps.browserName,
+    browserVersion: caps.browserVersion,
+    platformName: caps.platformName,
+    simulator: true,
+    deviceUDID: udid,
+    platformVersion:
+      typeof caps["safari:platformVersion"] === "string" ? caps["safari:platformVersion"] : null,
+    deviceName: typeof caps["safari:deviceName"] === "string" ? caps["safari:deviceName"] : null,
+  };
+}
+function returnedIdentity(value: unknown, sessionId: string): string {
+  const caps = record(value) && record(value.capabilities) ? value.capabilities : {};
+  return JSON.stringify({
+    sessionId,
+    browserName: caps.browserName,
+    browserVersion: caps.browserVersion,
+    platformName: caps.platformName,
+    deviceUDID: caps["safari:deviceUDID"],
+    simulator: caps["safari:useSimulator"],
+    platformVersion: caps["safari:platformVersion"],
+    deviceName: caps["safari:deviceName"],
+  });
+}
 const serviceLabel = "com.apple.WebDriver.HTTPService";
 const serviceExecutable =
   "/System/Library/PrivateFrameworks/WebDriver.framework/Versions/A/XPCServices/com.apple.WebDriver.HTTPService.xpc/Contents/MacOS/com.apple.WebDriver.HTTPService";
@@ -74,6 +113,7 @@ export class SafariDriver implements Driver {
   private base = "";
   private port = 0;
   private session: string | undefined;
+  private sessionIdentity = "No returned session";
   private association: Association | null = null;
   private stopping: Promise<DriverCleanup> | undefined;
   uncertain = false;
@@ -113,6 +153,8 @@ export class SafariDriver implements Driver {
       signal,
     );
     this.session = parseSession(value);
+    this.sessionIdentity = returnedIdentity(value, this.session);
+    nativeCapabilities(value, this.udid);
     await this.command(
       "POST",
       "/timeouts",
@@ -245,9 +287,9 @@ export class SafariDriver implements Driver {
           5000,
           false,
         );
-        session = { status: "confirmed", detail: "Exact session deleted" };
+        session = { status: "confirmed", detail: `Exact session deleted; ${this.sessionIdentity}` };
       } catch (error) {
-        session = { status: "unconfirmed", detail: String(error) };
+        session = { status: "unconfirmed", detail: `${String(error)}; ${this.sessionIdentity}` };
       }
     } else if (this.uncertain)
       session = {
