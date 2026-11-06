@@ -406,7 +406,7 @@ export class GpuReplay {
         ),
       (owner, value) => this.#requestResult(owner, result, kind, token, value),
       (owner, error) => this.#requestFailure(owner, result, kind, token, error),
-      kind === "device" ? destroyNative : () => {},
+      kind === "device" ? destroyNative : ignoreResult,
     );
   }
   #requestResult(
@@ -483,7 +483,7 @@ export class GpuReplay {
           type: cValue("enum.error_type", "unknown"),
           message: errorMessage(error),
         }),
-      () => {},
+      ignoreResult,
     );
   }
   #surfaces(): SurfaceTarget {
@@ -638,3 +638,5 @@ function deviceListener(
     });
   };
 }
+
+function ignoreResult(): void {}

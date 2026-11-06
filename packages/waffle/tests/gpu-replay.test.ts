@@ -291,10 +291,16 @@ describe("generated-layout GPU replay", () => {
       }
       expect(turns).toBeGreaterThan(1);
       first.connection.slice({ bytes: 256, milliseconds: 4, now: () => 0 });
-      send(
-        second.connection,
-        command("device.get_queue", { receiver: handle(3), result: handle(5) }),
+      const otherPublication = new LogicalAppend(
+        second.commands,
+        joinRecords(
+          command("device.get_queue", { receiver: handle(3), result: handle(5) }),
+          command("queue.submit", { receiver: handle(5), commands: [] }),
+        ),
       );
+      expect(otherPublication.advance()).toBe("done");
+      scheduler.turn({ bytes: 256, milliseconds: 4, now: () => 0 });
+      expect(otherTarget.calls.at(-1)).toEqual({ receiver: "queue", member: "submit", args: [[]] });
       expect(second.connection.replay.handles.native(handle(5), "queue")).toBe(otherTarget.queue);
       expect(target.calls.filter((entry) => entry.member === "draw").length).toBeLessThan(200000);
       let yields = 0;
