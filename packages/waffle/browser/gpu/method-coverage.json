@@ -346,23 +346,47 @@
     {
       "name": "device.create_bind_group",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_bind_group descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Resolve the C resource alternatives into the browser buffer-binding, sampler or texture-view resource union.",
+      "call": {
+        "opcode": 27,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroup",
+          "descriptor": "bind_group_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_bind_group_layout",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_bind_group_layout descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Lower explicit C binding-layout arms to native dictionaries, omitting BindingNotUsed arms and rejecting browser-unsupported arrays.",
+      "call": {
+        "opcode": 25,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroupLayout",
+          "descriptor": "bind_group_layout_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_buffer",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_buffer descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create native buffers with exact u64 size, usage flags and mapped-at-creation state; shadow mapping remains G2.",
+      "call": {
+        "opcode": 22,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBuffer",
+          "descriptor": "buffer_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_command_encoder",
@@ -395,9 +419,17 @@
     {
       "name": "device.create_pipeline_layout",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_pipeline_layout descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Resolve ordered bind-group-layout handles and lower immediate_size to the native immediateSize member.",
+      "call": {
+        "opcode": 26,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createPipelineLayout",
+          "descriptor": "pipeline_layout_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_query_set",
@@ -437,9 +469,17 @@
     {
       "name": "device.create_sampler",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_sampler descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create native samplers with optional descriptor, C enum defaults and two-byte anisotropy.",
+      "call": {
+        "opcode": 24,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createSampler",
+          "descriptor": "sampler_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_shader_module",
@@ -458,9 +498,17 @@
     {
       "name": "device.create_texture",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_texture descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create native textures with explicit dimensions, extent, format, sample count and view formats.",
+      "call": {
+        "opcode": 23,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createTexture",
+          "descriptor": "texture_descriptor"
+        }
+      }
     },
     {
       "name": "device.destroy",
@@ -682,16 +730,38 @@
     {
       "name": "queue.write_buffer",
       "group": "queue",
-      "category": "deferred",
-      "reason": "Add write_buffer upload lowering with paired C data/size replaced by checked bytes, destination descriptors and bounded chunk transport.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Replace the C data pointer and paired size with a checked byte span and upload it at an exact buffer offset.",
+      "call": {
+        "opcode": 28,
+        "context": "top",
+        "lowering": {
+          "kind": "write-buffer",
+          "member": "writeBuffer",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
     },
     {
       "name": "queue.write_texture",
       "group": "queue",
-      "category": "deferred",
-      "reason": "Add write_texture upload lowering with paired C data/size replaced by checked bytes, destination descriptors and bounded chunk transport.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Upload checked byte spans with native texture identity, origin, extent and declared copy-stride sentinel omission.",
+      "call": {
+        "opcode": 29,
+        "context": "top",
+        "lowering": {
+          "kind": "write-texture",
+          "member": "writeTexture",
+          "span": {
+            "pointer": "data",
+            "size": "data_size"
+          }
+        }
+      }
     },
     {
       "name": "queue.set_label",
@@ -822,9 +892,16 @@
     {
       "name": "render_pass_encoder.set_bind_group",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_bind_group to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind native group identity or explicit null with a bounded array of dynamic offsets inside a recorded render pass.",
+      "call": {
+        "opcode": 30,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_immediates",
@@ -850,9 +927,16 @@
     {
       "name": "render_pass_encoder.draw_indexed",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add draw_indexed to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Replay indexed draws with exact counts and first offsets, including signed base_vertex values.",
+      "call": {
+        "opcode": 33,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexed"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.draw_indirect",
@@ -927,16 +1011,30 @@
     {
       "name": "render_pass_encoder.set_vertex_buffer",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_vertex_buffer to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind vertex-buffer identity or explicit null, retaining byte offsets and omitting only the whole-size sentinel.",
+      "call": {
+        "opcode": 31,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setVertexBuffer"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_index_buffer",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_index_buffer to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind native index-buffer identity, index format and exact offset/range with declared whole-size omission.",
+      "call": {
+        "opcode": 32,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setIndexBuffer"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.begin_occlusion_query",

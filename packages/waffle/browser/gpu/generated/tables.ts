@@ -343,6 +343,77 @@ const gpuEnums = {
     out_of_memory: 2,
     internal: 3,
   },
+  "bitflag.buffer_usage": {
+    none: 0,
+    map_read: 1,
+    map_write: 2,
+    copy_src: 4,
+    copy_dst: 8,
+    index: 16,
+    vertex: 32,
+    uniform: 64,
+    storage: 128,
+    indirect: 256,
+    query_resolve: 512,
+  },
+  "enum.texture_dimension": {
+    undefined: 0,
+    "1D": 1,
+    "2D": 2,
+    "3D": 3,
+  },
+  "enum.address_mode": {
+    undefined: 0,
+    clamp_to_edge: 1,
+    repeat: 2,
+    mirror_repeat: 3,
+  },
+  "enum.filter_mode": {
+    undefined: 0,
+    nearest: 1,
+    linear: 2,
+  },
+  "enum.mipmap_filter_mode": {
+    undefined: 0,
+    nearest: 1,
+    linear: 2,
+  },
+  "bitflag.shader_stage": {
+    none: 0,
+    vertex: 1,
+    fragment: 2,
+    compute: 4,
+  },
+  "enum.buffer_binding_type": {
+    binding_not_used: 0,
+    undefined: 1,
+    uniform: 2,
+    storage: 3,
+    read_only_storage: 4,
+  },
+  "enum.sampler_binding_type": {
+    binding_not_used: 0,
+    undefined: 1,
+    filtering: 2,
+    non_filtering: 3,
+    comparison: 4,
+  },
+  "enum.texture_sample_type": {
+    binding_not_used: 0,
+    undefined: 1,
+    float: 2,
+    unfilterable_float: 3,
+    depth: 4,
+    sint: 5,
+    uint: 6,
+  },
+  "enum.storage_texture_access": {
+    binding_not_used: 0,
+    undefined: 1,
+    write_only: 2,
+    read_only: 3,
+    read_write: 4,
+  },
   "enum.request_adapter_status": {
     success: 1,
     callback_cancelled: 2,
@@ -1087,6 +1158,475 @@ export const gpuStream = {
         {
           name: "receiver",
           type: "object.surface",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 22,
+      name: "device.create_buffer",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "buffer",
+        source: "return",
+      },
+      cReturn: "object.buffer",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createBuffer",
+        descriptor: "buffer_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.buffer_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 23,
+      name: "device.create_texture",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "texture",
+        source: "return",
+      },
+      cReturn: "object.texture",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createTexture",
+        descriptor: "texture_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.texture",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.texture_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 24,
+      name: "device.create_sampler",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "sampler",
+        source: "return",
+      },
+      cReturn: "object.sampler",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createSampler",
+        descriptor: "sampler_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.sampler",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.sampler_descriptor",
+          optional: true,
+        },
+      ],
+    },
+    {
+      opcode: 25,
+      name: "device.create_bind_group_layout",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "bind_group_layout",
+        source: "return",
+      },
+      cReturn: "object.bind_group_layout",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createBindGroupLayout",
+        descriptor: "bind_group_layout_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.bind_group_layout",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.bind_group_layout_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 26,
+      name: "device.create_pipeline_layout",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "pipeline_layout",
+        source: "return",
+      },
+      cReturn: "object.pipeline_layout",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createPipelineLayout",
+        descriptor: "pipeline_layout_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.pipeline_layout",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.pipeline_layout_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 27,
+      name: "device.create_bind_group",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "bind_group",
+        source: "return",
+      },
+      cReturn: "object.bind_group",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createBindGroup",
+        descriptor: "bind_group_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.bind_group",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.bind_group_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 28,
+      name: "queue.write_buffer",
+      receiver: "queue",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "write-buffer",
+        member: "writeBuffer",
+        span: {
+          pointer: "data",
+          size: "size",
+        },
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.queue",
+          optional: false,
+        },
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "buffer_offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "data",
+          type: "bytes",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 29,
+      name: "queue.write_texture",
+      receiver: "queue",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "write-texture",
+        member: "writeTexture",
+        span: {
+          pointer: "data",
+          size: "data_size",
+        },
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.queue",
+          optional: false,
+        },
+        {
+          name: "destination",
+          type: "struct.texel_copy_texture_info",
+          optional: false,
+        },
+        {
+          name: "data",
+          type: "bytes",
+          optional: false,
+        },
+        {
+          name: "data_layout",
+          type: "struct.texel_copy_buffer_layout",
+          optional: false,
+        },
+        {
+          name: "write_size",
+          type: "struct.extent_3D",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 30,
+      name: "render_pass_encoder.set_bind_group",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setBindGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_index",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "group",
+          type: "object.bind_group",
+          optional: true,
+        },
+        {
+          name: "dynamic_offsets",
+          type: "array<uint32>",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 31,
+      name: "render_pass_encoder.set_vertex_buffer",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setVertexBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "slot",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: true,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 32,
+      name: "render_pass_encoder.set_index_buffer",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setIndexBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "format",
+          type: "enum.index_format",
+          optional: false,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 33,
+      name: "render_pass_encoder.draw_indexed",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "drawIndexed",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "index_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "instance_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "first_index",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "base_vertex",
+          type: "int32",
+          optional: false,
+        },
+        {
+          name: "first_instance",
+          type: "uint32",
           optional: false,
         },
       ],
@@ -2058,6 +2598,465 @@ export const gpuStream = {
         },
       ],
     },
+    buffer_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.buffer_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "usage",
+          type: "bitflag.buffer_usage",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "mapped_at_creation",
+          type: "bool",
+          optional: false,
+        },
+      ],
+    },
+    texture_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.texture_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "usage",
+          type: "bitflag.texture_usage",
+          optional: false,
+        },
+        {
+          name: "dimension",
+          type: "enum.texture_dimension",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "struct.extent_3D",
+          optional: false,
+        },
+        {
+          name: "format",
+          type: "enum.texture_format",
+          optional: false,
+        },
+        {
+          name: "mip_level_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "sample_count",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "view_formats",
+          type: "array<enum.texture_format>",
+          optional: false,
+        },
+      ],
+    },
+    extent_3D: {
+      fields: [
+        {
+          name: "width",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "height",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "depth_or_array_layers",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    sampler_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.sampler_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "address_mode_u",
+          type: "enum.address_mode",
+          optional: false,
+        },
+        {
+          name: "address_mode_v",
+          type: "enum.address_mode",
+          optional: false,
+        },
+        {
+          name: "address_mode_w",
+          type: "enum.address_mode",
+          optional: false,
+        },
+        {
+          name: "mag_filter",
+          type: "enum.filter_mode",
+          optional: false,
+        },
+        {
+          name: "min_filter",
+          type: "enum.filter_mode",
+          optional: false,
+        },
+        {
+          name: "mipmap_filter",
+          type: "enum.mipmap_filter_mode",
+          optional: false,
+        },
+        {
+          name: "lod_min_clamp",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "lod_max_clamp",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "compare",
+          type: "enum.compare_function",
+          optional: false,
+        },
+        {
+          name: "max_anisotropy",
+          type: "uint16",
+          optional: false,
+        },
+      ],
+    },
+    bind_group_layout_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.bind_group_layout_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "entries",
+          type: "array<struct.bind_group_layout_entry>",
+          optional: false,
+        },
+      ],
+    },
+    bind_group_layout_entry: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.bind_group_layout_entry",
+          optional: false,
+        },
+        {
+          name: "binding",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "visibility",
+          type: "bitflag.shader_stage",
+          optional: false,
+        },
+        {
+          name: "binding_array_size",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "buffer",
+          type: "struct.buffer_binding_layout",
+          optional: false,
+        },
+        {
+          name: "sampler",
+          type: "struct.sampler_binding_layout",
+          optional: false,
+        },
+        {
+          name: "texture",
+          type: "struct.texture_binding_layout",
+          optional: false,
+        },
+        {
+          name: "storage_texture",
+          type: "struct.storage_texture_binding_layout",
+          optional: false,
+        },
+      ],
+    },
+    buffer_binding_layout: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.buffer_binding_layout",
+          optional: false,
+        },
+        {
+          name: "type",
+          type: "enum.buffer_binding_type",
+          optional: false,
+        },
+        {
+          name: "has_dynamic_offset",
+          type: "bool",
+          optional: false,
+        },
+        {
+          name: "min_binding_size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    sampler_binding_layout: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.sampler_binding_layout",
+          optional: false,
+        },
+        {
+          name: "type",
+          type: "enum.sampler_binding_type",
+          optional: false,
+        },
+      ],
+    },
+    texture_binding_layout: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.texture_binding_layout",
+          optional: false,
+        },
+        {
+          name: "sample_type",
+          type: "enum.texture_sample_type",
+          optional: false,
+        },
+        {
+          name: "view_dimension",
+          type: "enum.texture_view_dimension",
+          optional: false,
+        },
+        {
+          name: "multisampled",
+          type: "bool",
+          optional: false,
+        },
+      ],
+    },
+    storage_texture_binding_layout: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.storage_texture_binding_layout",
+          optional: false,
+        },
+        {
+          name: "access",
+          type: "enum.storage_texture_access",
+          optional: false,
+        },
+        {
+          name: "format",
+          type: "enum.texture_format",
+          optional: false,
+        },
+        {
+          name: "view_dimension",
+          type: "enum.texture_view_dimension",
+          optional: false,
+        },
+      ],
+    },
+    pipeline_layout_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.pipeline_layout_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "bind_group_layouts",
+          type: "array<object.bind_group_layout>",
+          optional: false,
+        },
+        {
+          name: "immediate_size",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    bind_group_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.bind_group_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "layout",
+          type: "object.bind_group_layout",
+          optional: false,
+        },
+        {
+          name: "entries",
+          type: "array<struct.bind_group_entry>",
+          optional: false,
+        },
+      ],
+    },
+    bind_group_entry: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.bind_group_entry",
+          optional: false,
+        },
+        {
+          name: "binding",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: true,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "sampler",
+          type: "object.sampler",
+          optional: true,
+        },
+        {
+          name: "texture_view",
+          type: "object.texture_view",
+          optional: true,
+        },
+      ],
+    },
+    texel_copy_texture_info: {
+      fields: [
+        {
+          name: "texture",
+          type: "object.texture",
+          optional: false,
+        },
+        {
+          name: "mip_level",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "origin",
+          type: "struct.origin_3D",
+          optional: false,
+        },
+        {
+          name: "aspect",
+          type: "enum.texture_aspect",
+          optional: false,
+        },
+      ],
+    },
+    origin_3D: {
+      fields: [
+        {
+          name: "x",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "y",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "z",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    texel_copy_buffer_layout: {
+      fields: [
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "bytes_per_row",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "rows_per_image",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
   },
   enums: gpuEnums,
   browserEnums: {
@@ -2370,6 +3369,47 @@ export const gpuStream = {
     "enum.error_type": gpuEnums["enum.error_type"],
     "enum.device_lost_reason": gpuEnums["enum.device_lost_reason"],
     "enum.s_type": gpuEnums["enum.s_type"],
+    "bitflag.buffer_usage": gpuEnums["bitflag.buffer_usage"],
+    "bitflag.shader_stage": gpuEnums["bitflag.shader_stage"],
+    "enum.texture_dimension": { undefined: "@omit", "1D": "1d", "2D": "2d", "3D": "3d" },
+    "enum.address_mode": {
+      undefined: "@omit",
+      clamp_to_edge: "clamp-to-edge",
+      repeat: "repeat",
+      mirror_repeat: "mirror-repeat",
+    },
+    "enum.filter_mode": { undefined: "@omit", nearest: "nearest", linear: "linear" },
+    "enum.mipmap_filter_mode": { undefined: "@omit", nearest: "nearest", linear: "linear" },
+    "enum.buffer_binding_type": {
+      binding_not_used: null,
+      undefined: "@omit",
+      uniform: "uniform",
+      storage: "storage",
+      read_only_storage: "read-only-storage",
+    },
+    "enum.sampler_binding_type": {
+      binding_not_used: null,
+      undefined: "@omit",
+      filtering: "filtering",
+      non_filtering: "non-filtering",
+      comparison: "comparison",
+    },
+    "enum.texture_sample_type": {
+      binding_not_used: null,
+      undefined: "@omit",
+      float: "float",
+      unfilterable_float: "unfilterable-float",
+      depth: "depth",
+      sint: "sint",
+      uint: "uint",
+    },
+    "enum.storage_texture_access": {
+      binding_not_used: null,
+      undefined: "@omit",
+      write_only: "write-only",
+      read_only: "read-only",
+      read_write: "read-write",
+    },
   },
   chains: {
     shader_module_descriptor: [
@@ -2707,15 +3747,17 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "9cc5b85cc3534846cf5c41cb11b3d80f54a695ce5b1ba4aaf6ed50c0a247443b",
-  "tooling/gpu-stream.ts": "00bd6b339c7e606f7b1f615949676b52b424e6639b1769a1e185c411dea73d8b",
-  "tooling/gpu-stream-model.ts": "1de3ad5e77a75d375cac975cc5587b4fcaceca2ebb27efc20293b09ffbc08e04",
+  "browser/gpu/stream.json": "b80fa7645e8fcdc306c34084134777fde922802600cab23225186eee88c2dacb",
+  "tooling/gpu-stream.ts": "6b60fe39eb416a421af3dcd152d1e1cd0eda490db1f1da7a2d5064e0f3f530fc",
+  "tooling/gpu-stream-model.ts": "06fab05be7dbf25de664b1d651c669a492ce840eb655798d9691edd0a6c1f0c1",
   "tooling/gpu-stream-layout.ts":
-    "04a78a7ae906dfb57a173d7dbc137f7901b4380453a71074f79fbd2ca0b1f397",
+    "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
   "tests/fixtures/gpu/expected.json":
     "16a708a48026a3ac5ea0bd3ba38614953e2124bb4105b67eb591951560132350",
   "tests/fixtures/gpu/enums.json":
     "948cf6b35746dc22d491fb2df20a503f9a89e42e3c302a4ff956a2aee1f48fd1",
+  "tests/fixtures/gpu/scene-expected.json":
+    "0b0d409701f46eb8cdbc78ab26ea1f63b0d2c73de45f1d01c4acdebd509092a8",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {
@@ -2786,6 +3828,48 @@ export const gpuDescriptorAdapters = {
       fragment: "optional-dictionary",
     },
   },
+  buffer_descriptor: {
+    input: "struct.buffer_descriptor",
+    output: "GPUBufferDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  texture_descriptor: {
+    input: "struct.texture_descriptor",
+    output: "GPUTextureDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  sampler_descriptor: {
+    input: "struct.sampler_descriptor",
+    output: "GPUSamplerDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  bind_group_layout_descriptor: {
+    input: "struct.bind_group_layout_descriptor",
+    output: "GPUBindGroupLayoutDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  pipeline_layout_descriptor: {
+    input: "struct.pipeline_layout_descriptor",
+    output: "GPUPipelineLayoutDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  bind_group_descriptor: {
+    input: "struct.bind_group_descriptor",
+    output: "GPUBindGroupDescriptor",
+    rules: {
+      members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
 };
 export const gpuEventRoutes = {
   "device_descriptor.device_lost_callback_info": "device-lost",
@@ -2796,6 +3880,9 @@ export const gpuSentinels = {
   "render_pass_depth_stencil_attachment.depth_clear_value": "nan-to-omit",
   "texture_view_descriptor.mip_level_count": "uint32_max-to-omit",
   "texture_view_descriptor.array_layer_count": "uint32_max-to-omit",
+  "bind_group_entry.size": "uint64_max-to-omit",
+  "texel_copy_buffer_layout.bytes_per_row": "uint32_max-to-omit",
+  "texel_copy_buffer_layout.rows_per_image": "uint32_max-to-omit",
 };
 export const gpuDictionaryMembers = {
   request_adapter_options: {
@@ -3027,6 +4114,117 @@ export const gpuDictionaryMembers = {
     next_in_chain: null,
     label: "label",
   },
+  buffer_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    usage: "usage",
+    size: "size",
+    mapped_at_creation: "mappedAtCreation",
+  },
+  texture_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    usage: "usage",
+    dimension: "dimension",
+    size: "size",
+    format: "format",
+    mip_level_count: "mipLevelCount",
+    sample_count: "sampleCount",
+    view_formats: "viewFormats",
+  },
+  extent_3D: {
+    width: "width",
+    height: "height",
+    depth_or_array_layers: "depthOrArrayLayers",
+  },
+  origin_3D: {
+    x: "x",
+    y: "y",
+    z: "z",
+  },
+  sampler_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    address_mode_u: "addressModeU",
+    address_mode_v: "addressModeV",
+    address_mode_w: "addressModeW",
+    mag_filter: "magFilter",
+    min_filter: "minFilter",
+    mipmap_filter: "mipmapFilter",
+    lod_min_clamp: "lodMinClamp",
+    lod_max_clamp: "lodMaxClamp",
+    compare: "compare",
+    max_anisotropy: "maxAnisotropy",
+  },
+  bind_group_layout_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    entries: "entries",
+  },
+  bind_group_layout_entry: {
+    next_in_chain: null,
+    binding: "binding",
+    visibility: "visibility",
+    binding_array_size: null,
+    buffer: "buffer",
+    sampler: "sampler",
+    texture: "texture",
+    storage_texture: "storageTexture",
+  },
+  buffer_binding_layout: {
+    next_in_chain: null,
+    type: "type",
+    has_dynamic_offset: "hasDynamicOffset",
+    min_binding_size: "minBindingSize",
+  },
+  sampler_binding_layout: {
+    next_in_chain: null,
+    type: "type",
+  },
+  texture_binding_layout: {
+    next_in_chain: null,
+    sample_type: "sampleType",
+    view_dimension: "viewDimension",
+    multisampled: "multisampled",
+  },
+  storage_texture_binding_layout: {
+    next_in_chain: null,
+    access: "access",
+    format: "format",
+    view_dimension: "viewDimension",
+  },
+  pipeline_layout_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    bind_group_layouts: "bindGroupLayouts",
+    immediate_size: "immediateSize",
+  },
+  bind_group_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    layout: "layout",
+    entries: "entries",
+  },
+  bind_group_entry: {
+    next_in_chain: null,
+    binding: "binding",
+    buffer: null,
+    offset: null,
+    size: null,
+    sampler: null,
+    texture_view: null,
+  },
+  texel_copy_texture_info: {
+    texture: "texture",
+    mip_level: "mipLevel",
+    origin: "origin",
+    aspect: "aspect",
+  },
+  texel_copy_buffer_layout: {
+    offset: "offset",
+    bytes_per_row: "bytesPerRow",
+    rows_per_image: "rowsPerImage",
+  },
 };
 export const gpuDictionaryRules = {
   chains: "reject-nonempty-unless-explicitly-allowlisted",
@@ -3040,6 +4238,16 @@ export const gpuDictionaryRules = {
   zeroTextureViewUsage: "omit-inherit-texture-usage",
   pass_timestamp_writes: "omit-u32-max-indices",
   colorAttachmentHole: "null-view-to-null-array-entry",
+  bindingLayoutArms:
+    "binding-not-used-omits-arm;undefined-retains-default-dictionary;multiple-active-arms-reach-native-validation",
+  bindingArraySize: "zero-only;nonzero-is-unsupported-browser-call",
+  bindGroupResource:
+    "exactly-one-buffer-sampler-texture-view;buffer-offset-and-size-ignored-for-other-arms",
+  wholeSize: "u64-max-to-omitted-size-only-for-bind-group-buffer-and-pass-buffer-bindings",
+  uploads:
+    "length-prefixed-byte-span-replaces-C-pointer-and-size;writeBuffer-byte-count-is-span-length",
+  nullablePassBindings: "null-group-and-vertex-buffer-become-explicit-JS-null",
+  immediateSize: "pipeline-layout-immediate_size-to-immediateSize",
 };
 export const gpuObjectKinds = {
   instance: 1,

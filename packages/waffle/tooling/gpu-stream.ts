@@ -27,6 +27,7 @@ const fixedInputs = [
   "tooling/gpu-stream-layout.ts",
   "tests/fixtures/gpu/expected.json",
   "tests/fixtures/gpu/enums.json",
+  "tests/fixtures/gpu/scene-expected.json",
 ];
 
 export function sha256(bytes: string | Uint8Array): string {
@@ -69,6 +70,20 @@ function lowering(value: unknown): Lowering {
   switch (entry.kind) {
     case "method":
       return { kind: entry.kind, member: text(entry.member) };
+    case "descriptor-method":
+      return {
+        kind: entry.kind,
+        member: text(entry.member),
+        descriptor: text(entry.descriptor),
+      };
+    case "write-buffer":
+    case "write-texture": {
+      const span = record(entry.span);
+      const size = entry.kind === "write-buffer" ? "size" : "data_size";
+      const member = entry.kind === "write-buffer" ? "writeBuffer" : "writeTexture";
+      if (span.pointer !== "data" || span.size !== size || entry.member !== member) break;
+      return { kind: entry.kind, member, span: { pointer: "data", size } };
+    }
     case "property":
       if (entry.member === "queue") return { kind: entry.kind, member: entry.member };
       break;
@@ -188,7 +203,14 @@ function compileCall(
   if (token) prefix = prefix.concat([field("token", "token")]);
   if (context === "top") prefix = prefix.concat([field("receiver", `object.${receiver}`)]);
   const args = method.args ? fields(method.args) : [];
-  const input = chosen.kind === "handle" && chosen.source === "output" ? [] : args;
+  const adapter = lowering(entry.lowering);
+  if (
+    adapter.kind === "descriptor-method" &&
+    !args.some((arg) => arg.name === "descriptor" && arg.type === `struct.${adapter.descriptor}`)
+  )
+    throw new Error("Descriptor lowering must match the pinned C argument");
+  const input =
+    chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
   return {
     opcode: uint(entry.opcode, 0xfff),
     name,
@@ -198,10 +220,24 @@ function compileCall(
     cReturn,
     callback,
     token,
-    lowering: lowering(entry.lowering),
+    lowering: adapter,
     omitted,
     fields: prefix.concat(input),
   };
+}
+
+function spanArguments(args: Field[], adapter: Lowering): Field[] {
+  if (adapter.kind !== "write-buffer" && adapter.kind !== "write-texture") return args;
+  const index = args.findIndex((arg) => arg.name === adapter.span.pointer);
+  const pointer = args[index];
+  const size = args[index + 1];
+  if (
+    pointer?.type !== "c_void_data_ptr" ||
+    size?.name !== adapter.span.size ||
+    size.type !== "usize"
+  )
+    throw new Error("Upload span must replace the pinned C data pointer and size pair");
+  return args.slice(0, index).concat([field(pointer.name, "bytes")], args.slice(index + 2));
 }
 
 function callbackLayout(value: unknown, expected: unknown): CallLayout["callback"] {
@@ -525,6 +561,7 @@ function macro(name: string): string {
 }
 
 function fixedSize(type: string): number | null {
+  if (type === "uint16") return 2;
   if (
     type.startsWith("object.") ||
     type.startsWith("bitflag.") ||
@@ -548,7 +585,11 @@ function cFields(name: string, members: readonly Field[], start = 0): string[] {
     const prefix = `WAFFLE_GPU_${macro(name)}_${macro(member.name)}`;
     const size = fixedSize(member.type);
     const align =
-      size === 8 && !member.type.startsWith("object.") && member.type !== "handle" ? 8 : 4;
+      size === 2
+        ? 2
+        : size === 8 && !member.type.startsWith("object.") && member.type !== "handle"
+          ? 8
+          : 4;
     if (offset !== null) offset = Math.ceil(offset / align) * align;
     lines.push(
       `#define ${prefix}_INDEX ${index}u /* ${member.type}${member.optional ? "; optional" : ""} */`,
@@ -607,12 +648,19 @@ static inline void waffle_gpu_u32(WaffleGpuWriter *w, uint32_t v) {
     waffle_gpu_align(w, 4);
     for (unsigned i = 0; i < 4; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
 }
+static inline void waffle_gpu_u16(WaffleGpuWriter *w, uint16_t v) {
+    waffle_gpu_align(w, 2);
+    for (unsigned i = 0; i < 2; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
+}
 static inline void waffle_gpu_u64(WaffleGpuWriter *w, uint64_t v) {
     waffle_gpu_align(w, 8);
     for (unsigned i = 0; i < 8; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
 }
 static inline void waffle_gpu_f64(WaffleGpuWriter *w, double v) {
     uint64_t bits; memcpy(&bits, &v, sizeof(bits)); waffle_gpu_u64(w, bits);
+}
+static inline void waffle_gpu_f32(WaffleGpuWriter *w, float v) {
+    uint32_t bits; memcpy(&bits, &v, sizeof(bits)); waffle_gpu_u32(w, bits);
 }
 static inline void waffle_gpu_handle(WaffleGpuWriter *w, uint32_t id, uint32_t generation) {
     waffle_gpu_u32(w, id); waffle_gpu_u32(w, generation);
