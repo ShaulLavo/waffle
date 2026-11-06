@@ -218,11 +218,7 @@ function selectCases<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
 
   return { required, selectedCases, selected, run, collector, budgets };
 }
-export async function runPageSuite<R>(
-  adapter: SuiteAdapter<R>,
-  factory: (scratch: string) => Driver,
-  options: RunOptions,
-): Promise<SuiteResult> {
+function runConfiguration<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
   const entered = performance.now();
   const started = options.startedAt ?? entered;
   if (!Number.isFinite(started) || started > entered)
@@ -236,6 +232,14 @@ export async function runPageSuite<R>(
     (!Number.isFinite(adapter.resultWaitMs) || adapter.resultWaitMs <= 0)
   )
     throw new Error("resultWaitMs must be positive and finite");
+  return { started, port, page };
+}
+export async function runPageSuite<R>(
+  adapter: SuiteAdapter<R>,
+  factory: (scratch: string) => Driver,
+  options: RunOptions,
+): Promise<SuiteResult> {
+  const { started, port, page } = runConfiguration(adapter, options);
   const controller = new AbortController();
   let expire = () => {};
   const watchdog = setInterval(() => expire(), 25);
@@ -261,6 +265,7 @@ export async function runPageSuite<R>(
   let preparation: Promise<void> | undefined;
   let cleaning: Promise<void> | undefined;
   const interrupted = () => {
+    if (cleaning) return;
     collector.fail("interrupted", "Run interrupted");
     controller.abort("interrupted");
   };
@@ -427,10 +432,10 @@ export async function runPageSuite<R>(
   } finally {
     checkDeadline();
     clearInterval(watchdog);
+    await stop();
     process.removeListener("SIGINT", interrupted);
     process.removeListener("SIGTERM", interrupted);
     options.signal?.removeEventListener("abort", interrupted);
-    await stop();
   }
   if (!adapter.policy.allocation)
     storage = { status: "not-created", detail: "suite declares no durable allocations" };

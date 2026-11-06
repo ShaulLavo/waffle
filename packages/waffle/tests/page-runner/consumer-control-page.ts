@@ -11,6 +11,7 @@ type Request = { databaseName: string; encoded: string };
 declare global {
   interface Window {
     __consumerBodyCalls: number;
+    __consumerDesktopResult?: unknown;
     __consumerForeignVerified: boolean;
     __consumerOpened: number;
   }
@@ -85,6 +86,10 @@ function value(mode: string, settled: boolean): unknown {
   if (mode === "partial") return { ...result, ok: false, checks: ["chunk"], currentTest: "worker" };
   return result;
 }
+async function finalizer(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  if (CONSUMER_CONTROL === "cleanup-fail") throw new Error("SETTLED_FINALLY_FAILURE");
+}
 async function envelope(
   request: Request,
   allocate: (entry: StorageEntry) => Promise<void>,
@@ -92,12 +97,12 @@ async function envelope(
   window.__consumerBodyCalls++;
   if (request.encoded !== '</script><script>throw "unsafe"</script>')
     throw new Error("Unsafe configuration encoding");
-  const beforeAllocation = window.__pageRunner.ackedThrough;
+  const beforeAllocation = window.__pageRunner?.ackedThrough ?? -1;
   await allocate({
     kind: "indexeddb",
     name: CONSUMER_CONTROL === "wrong-allocation" ? "waffle-workspace" : request.databaseName,
   });
-  if (window.__pageRunner.ackedThrough <= beforeAllocation)
+  if (isHostedPage() && window.__pageRunner.ackedThrough <= beforeAllocation)
     throw new Error("Storage opened before allocation ACK");
   let settled = false;
   try {
@@ -106,9 +111,8 @@ async function envelope(
     await openOwned(request.databaseName);
     await assets();
   } finally {
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await finalizer();
     settled = true;
-    if (CONSUMER_CONTROL === "cleanup-fail") throw new Error("SETTLED_FINALLY_FAILURE");
   }
   return value(CONSUMER_CONTROL, settled);
 }
@@ -122,3 +126,22 @@ const suite: PageSuite<Request> = {
   },
 };
 if (isHostedPage()) startPage(suite);
+
+async function desktopControl(): Promise<void> {
+  const databaseName = "consumer-desktop-fixture";
+  let result: unknown;
+  try {
+    result = await envelope(
+      { databaseName, encoded: '</script><script>throw "unsafe"</script>' },
+      async () => {},
+    );
+  } finally {
+    const remaining = await cleanupStorage([{ kind: "indexeddb", name: databaseName }]);
+    if (remaining.length) result = { error: "Desktop fixture cleanup failed" };
+  }
+  window.__consumerDesktopResult = result;
+}
+if (!isHostedPage())
+  void desktopControl().catch((error: unknown) => {
+    window.__consumerDesktopResult = { error: String(error) };
+  });

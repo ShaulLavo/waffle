@@ -313,7 +313,7 @@ for (const settles of [true, false]) {
         context.signal.addEventListener(
           "abort",
           () => {
-            if (settles) setTimeout(() => resolve({}), 10);
+            if (settles) setTimeout(resolve, 10, {});
           },
           { once: true },
         );
@@ -486,6 +486,8 @@ test("signals during bounded teardown neither resurrect dispatch nor invent exec
     const original = d.stop.bind(d);
     d.stop = async () => {
       controller.abort("during teardown");
+      expect(process.emit("SIGINT")).toBe(true);
+      expect(process.emit("SIGTERM")).toBe(true);
       await Bun.sleep(40);
       return original();
     };
@@ -524,5 +526,55 @@ test("expiry immediately before finish retirement stays a genuine execution fail
       expect(d.stopCalls).toBe(1);
     } finally {
       now.mockRestore();
+    }
+  }));
+
+test("unconfirmed collector stop prevents a successful result", () =>
+  fixture(async (root) => {
+    const serve = spyOn(Bun, "serve");
+    let close: (() => void | Promise<void>) | undefined;
+    let restore = () => {};
+    try {
+      const result = await runPageSuite(
+        adapter(),
+        () => {
+          const call = serve.mock.results[0];
+          if (!call || call.type !== "return") throw new Error("Missing owned collector");
+          const server = call.value;
+          close = server.stop.bind(server, true);
+          const stop = spyOn(server, "stop").mockRejectedValue(new Error("COLLECTOR_STOP_FAILURE"));
+          restore = stop.mockRestore.bind(stop);
+          return driver();
+        },
+        options(root),
+      );
+      expect(result.exit).toBe(2);
+      expect(result.cleanup.server.status).toBe("unconfirmed");
+      expect(result.cleanup.server.detail).toContain("COLLECTOR_STOP_FAILURE");
+    } finally {
+      restore();
+      serve.mockRestore();
+      await close?.();
+    }
+  }));
+test("scratch deletion failure remains unconfirmed after consumers stop", () =>
+  fixture(async (root) => {
+    const { mkdir, chmod } = await import("node:fs/promises");
+    const a = adapter();
+    let locked = "";
+    a.assets = async ({ scratch }) => {
+      locked = join(scratch, "locked");
+      await mkdir(locked);
+      await Bun.write(join(locked, "fixture"), "owned");
+      await chmod(locked, 0);
+      return {};
+    };
+    try {
+      const result = await runPageSuite(a, driver, options(root));
+      expect(result.exit).toBe(2);
+      expect(result.cleanup.session.status).toBe("confirmed");
+      expect(result.cleanup.scratch.status).toBe("unconfirmed");
+    } finally {
+      if (locked) await chmod(locked, 0o700);
     }
   }));

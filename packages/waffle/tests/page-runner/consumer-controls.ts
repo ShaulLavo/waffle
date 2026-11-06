@@ -4,6 +4,7 @@ import {
   runPageSuite,
   ownedDatabase,
   type SuiteAdapter,
+  type PreparationContext,
   type SuiteResult,
 } from "waffle/testing/page-runner";
 import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
@@ -63,6 +64,10 @@ async function controlAssets(
   await mkdir(join(out, "__bunwasm/chunks"), { recursive: true });
   await Promise.all([
     Bun.write(join(out, "index.html"), "<p>static sibling</p>"),
+    Bun.write(
+      join(out, "desktop.html"),
+      '<script type="module" src="/current/consumer-control-page.js"></script>',
+    ),
     Bun.write(join(out, "data.json"), '{"fixture":true}'),
     Bun.write(join(out, "module.wasm"), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
     Bun.write(join(out, "__bunwasm/mirror.js"), 'export { marker } from "./chunks/mirror.js";'),
@@ -114,6 +119,7 @@ async function removeSentinel(): Promise<void> {
 class ConsumerDriver extends PlaywrightDriver {
   seeded = false;
   verified = false;
+  bodyVerified = false;
   injected = false;
   constructor(
     engine: "chromium" | "webkit",
@@ -124,7 +130,8 @@ class ConsumerDriver extends PlaywrightDriver {
     super(engine, scratch);
   }
   override async navigate(url: string, signal: AbortSignal): Promise<void> {
-    if (!this.seeded) await checkAssets(new URL(url).origin, this.assets);
+    if (this.seeded) await this.verifyBody(signal);
+    else await this.beforeHostedNavigation(new URL(url).origin, signal);
     await super.navigate(url, signal);
     const role = await super.script("return window.__suiteConfiguration.role", signal);
     if (role !== "list") return;
@@ -136,6 +143,33 @@ class ConsumerDriver extends PlaywrightDriver {
       throw new Error(`Hosted list invoked consumer envelope: ${JSON.stringify(calls)}`);
     await super.script(`return (${seedSentinel.toString()})();`, signal);
     this.seeded = true;
+  }
+  private async beforeHostedNavigation(origin: string, signal: AbortSignal): Promise<void> {
+    await checkAssets(origin, this.assets);
+    if (this.mode !== "pass") return;
+    await super.navigate(`${origin}/current/desktop.html`, signal);
+    const actual = await super.script(
+      `return (async () => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (window.__consumerDesktopResult !== undefined) return window.__consumerDesktopResult;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error("Desktop positive control did not settle");
+    })();`,
+      signal,
+    );
+    checkResult(id, actual);
+  }
+  private async verifyBody(signal: AbortSignal): Promise<void> {
+    const value = await super.script(
+      "return [window.__suiteConfiguration.role, window.__consumerBodyCalls, window.__consumerOpened]",
+      signal,
+    );
+    if (!Array.isArray(value) || value[0] !== "case") return;
+    const expectedOpened = this.mode === "wrong-allocation" ? 0 : 2;
+    if (value[1] !== 1 || value[2] !== expectedOpened)
+      throw new Error(`Wrong invocation/allocation count ${JSON.stringify(value)}`);
+    this.bodyVerified = true;
   }
   override async script(source: string, signal: AbortSignal): Promise<unknown> {
     const role = await super.script("return window.__suiteConfiguration.role", signal);
@@ -224,7 +258,7 @@ export async function consumerControl(
       allocation: ownedDatabase("consumer"),
       check: checkResult,
     },
-    assets: async ({ scratch, signal }) => {
+    assets: async ({ scratch, signal }: PreparationContext) => {
       produced++;
       signal.throwIfAborted();
       assets = await controlAssets(scratch, mode);
@@ -245,7 +279,7 @@ export async function consumerControl(
       scratchRoot: process.env.STORAGE_SCRATCH_ROOT,
     },
   );
-  checkControl(result, mode, produced, driver?.verified === true);
+  checkControl(result, mode, produced, driver?.verified === true && driver.bodyVerified);
 }
 function checkControl(
   result: SuiteResult,
@@ -263,6 +297,22 @@ function checkControl(
     )
   )
     throw new Error(`Consumer control ${mode}: ${JSON.stringify(result)}`);
+  const actual = result.results[id];
+  if (
+    !["missing", "oversize", "cleanup-fail", "wrong-allocation"].includes(mode) &&
+    !(id in result.results)
+  )
+    throw new Error("Actual transported result was lost");
+  if (mode === "null" && actual !== null)
+    throw new Error("Null was not retained as a present wrong result");
+  if (
+    mode === "partial" &&
+    (!actual ||
+      typeof actual !== "object" ||
+      !("currentTest" in actual) ||
+      actual.currentTest !== "worker")
+  )
+    throw new Error("Partial failure evidence was lost");
   if (result.ledger.length !== (mode === "wrong-allocation" ? 0 : 1))
     throw new Error("Wrong exact-name ledger");
   if (
