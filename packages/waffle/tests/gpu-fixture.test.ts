@@ -1,3 +1,4 @@
+import { FixtureProtocolHost, type ReplyFault } from "./gpu-fixture-host.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -16,9 +17,11 @@ import {
   buildGpuFixture,
   GPU_FIXTURE_WASM,
   verifiedGpuFixture,
+  verifiedGpuSceneFixture,
+  GPU_SCENE_FIXTURE_WASM,
 } from "../scripts/build-gpu-fixture.ts";
 import { gpuStream } from "../browser/gpu/generated/tables.ts";
-import { encodeGpuCommand, encodeGpuCompletion } from "../tooling/gpu-stream-layout.ts";
+import { encodeGpuCommand } from "../tooling/gpu-stream-layout.ts";
 import expected from "./fixtures/gpu/expected.json";
 import { retireCommandGroup } from "../scripts/owned-command.ts";
 
@@ -341,6 +344,49 @@ describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
     );
     expect(result.exitCode).toBe(0);
   });
+  test("a corrupt scene fails the complete producer verification even when triangle is intact", () => {
+    const copy = join(scratch, "corrupt-scene");
+    cpSync(artifactDirectory, copy, { recursive: true });
+    expect(verifiedGpuSceneFixture(copy).length).toBeGreaterThan(0);
+    writeFileSync(join(copy, GPU_SCENE_FIXTURE_WASM), "corrupt scene");
+    expect(verifiedGpuFixture(copy)).toEqual(wasm);
+    expect(() => verifiedGpuSceneFixture(copy)).toThrow("artifact changed");
+    const checked = Bun.spawnSync(
+      [process.execPath, join(packageRoot, "scripts/build-gpu-fixture.ts"), copy, "--verify"],
+      { env: { ...process.env, WASI_SDK_PATH: "" }, stderr: "pipe" },
+    );
+    expect(checked.exitCode).not.toBe(0);
+    expect(checked.stderr.toString()).toContain("artifact changed");
+  });
+  test("a second-command compiler failure preserves both previously published artifacts", () => {
+    const copy = join(scratch, "second-command-failure");
+    cpSync(artifactDirectory, copy, { recursive: true });
+    const before = readdirSync(copy).map((name) => [name, readFileSync(join(copy, name))] as const);
+    const fakeSdk = join(scratch, "second-command-sdk");
+    mkdirSync(join(fakeSdk, "bin"), { recursive: true });
+    writeFileSync(join(fakeSdk, "VERSION"), "34.0\nwasi-libc: 2e6fb9d8ee0c\n");
+    const clang = join(fakeSdk, "bin/clang");
+    writeFileSync(
+      clang,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clang version 23.1.0-wasi-sdk producer-test"; exit 0; fi\nfor arg do case "$arg" in */scene.c) echo "intentional scene compile failure" >&2; exit 42;; esac; destination="$arg"; done\ncp "$GPU_FIXTURE_FIRST_COMMAND" "$destination"\n',
+    );
+    chmodSync(clang, 0o755);
+    const failed = Bun.spawnSync(
+      [process.execPath, join(packageRoot, "scripts/build-gpu-fixture.ts"), copy],
+      {
+        env: {
+          ...process.env,
+          WASI_SDK_PATH: fakeSdk,
+          GPU_FIXTURE_FIRST_COMMAND: join(artifactDirectory, GPU_FIXTURE_WASM),
+        },
+        stderr: "pipe",
+      },
+    );
+    expect(failed.exitCode).not.toBe(0);
+    expect(failed.stderr.toString()).toContain("intentional scene compile failure");
+    expect(readdirSync(copy)).toEqual(before.map(([name]) => name));
+    for (const [name, bytes] of before) expect(readFileSync(join(copy, name))).toEqual(bytes);
+  });
   test("all compiler, schema, golden and generated layout inputs invalidate the cache", () => {
     const sourceRoot = join(scratch, "source");
     const metadata = record(
@@ -358,10 +404,14 @@ describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
       cpSync(join(packageRoot, path), join(sourceRoot, path));
     }
     expect(verifiedGpuFixture(artifactDirectory, sourceRoot)).toEqual(wasm);
+    expect(verifiedGpuSceneFixture(artifactDirectory, sourceRoot).length).toBeGreaterThan(0);
     for (const path of paths) {
       const original = readFileSync(join(sourceRoot, path));
       writeFileSync(join(sourceRoot, path), "stale fixture input");
       expect(() => verifiedGpuFixture(artifactDirectory, sourceRoot)).toThrow("inputs changed");
+      expect(() => verifiedGpuSceneFixture(artifactDirectory, sourceRoot)).toThrow(
+        "inputs changed",
+      );
       writeFileSync(join(sourceRoot, path), original);
     }
     expect(paths).toContain("browser/gpu/upstream/webgpu.yml");
@@ -371,255 +421,9 @@ describe.skipIf(!compiled)("compiled Preview 1 C fixture", () => {
   });
 });
 
-class FixtureExit extends Error {
-  constructor(readonly code: number) {
-    super(`Guest exited ${code}`);
-  }
-}
-type ReplyFault =
-  | "none"
-  | "adapter"
-  | "scope"
-  | "present"
-  | "token"
-  | "framing"
-  | "exception"
-  | "late-exception";
-
-// A protocol-only command runner. It has no GPU or canvas and cannot qualify rendering.
-class FixtureProtocolHost {
-  memory = new WebAssembly.Memory({ initial: 4 });
-  readonly output: string[] = [];
-  readonly errors: string[] = [];
-  readonly commands: Uint8Array[] = [];
-  readonly replies: Uint8Array[] = [];
-  readonly reads: number[] = [];
-  readonly timeouts: bigint[] = [];
-  readonly readPresentCounts: number[] = [];
-  readonly scopes: number[] = [];
-  readonly acquired = new Set<number>();
-  readonly presented = new Set<number>();
-  closed = false;
-  closes = 0;
-  credit = false;
-  readonly args: Uint8Array[];
-  constructor(
-    args: string[],
-    readonly fault: ReplyFault = "none",
-    readonly injectExpiredValidation = false,
-  ) {
-    this.args = ["triangle"].concat(args).map((arg) => new TextEncoder().encode(`${arg}\0`));
-  }
-  get view(): DataView {
-    return new DataView(this.memory.buffer);
-  }
-  word(ptr: number, value: number): void {
-    this.view.setUint32(ptr, value, true);
-  }
-  put(ptr: number, bytes: Uint8Array): void {
-    new Uint8Array(this.memory.buffer).set(bytes, ptr);
-  }
-  bytes(ptr: number, length: number): Uint8Array {
-    return new Uint8Array(this.memory.buffer).slice(ptr, ptr + length);
-  }
-  reply(name: string, token: number, value: Record<string, unknown>): void {
-    this.replies.push(encodeGpuCompletion(gpuStream, name, token, 0, value));
-  }
-  command(bytes: Uint8Array): void {
-    this.commands.push(bytes);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const opcode = view.getUint16(0, true);
-    if (opcode === 1 || opcode === 2) {
-      this.reply(opcode === 1 ? "adapter" : "device", view.getUint32(16, true), {
-        status: this.fault === "adapter" && opcode === 1 ? 3 : 1,
-        [opcode === 1 ? "adapter" : "device"]: handle(opcode === 1 ? 2 : 3),
-        message: "",
-      });
-      return;
-    }
-    if (opcode === 5) {
-      const texture = view.getUint32(8, true);
-      this.acquired.add(texture);
-      this.reply("surface-texture", view.getUint32(16, true), {
-        texture: handle(texture),
-        status: 1,
-      });
-      return;
-    }
-    if (opcode === 19) {
-      this.scopes.push(1);
-      return;
-    }
-    if (opcode === 10 && this.presented.has(view.getUint32(16, true))) {
-      this.lateView();
-      return;
-    }
-    if (opcode === 0x1000 && view.getUint32(8, true) === 8) {
-      this.acquired.delete(view.getUint32(12, true));
-      return;
-    }
-    if (opcode === 20) {
-      this.reply("error-scope", view.getUint32(8, true), {
-        status: 1,
-        type: this.fault === "scope" ? 2 : (this.scopes.pop() ?? 1),
-        message: "",
-      });
-      return;
-    }
-    if (opcode !== 6) return;
-    this.credit = true;
-    for (const id of this.acquired) this.presented.add(id);
-    this.acquired.clear();
-    this.reply("present", view.getUint32(8, true), { status: this.fault === "present" ? 2 : 1 });
-  }
-  lateView(): void {
-    // Deliberate reply injection, not a WebGPU validation implementation.
-    if (this.fault === "late-exception") {
-      this.replies.push(
-        encodeGpuCompletion(gpuStream, "call-exception", 0, -28, {
-          opcode: 10,
-          message: "injected late exception",
-        }),
-      );
-      return;
-    }
-    if (this.injectExpiredValidation) this.scopes[this.scopes.length - 1] = 2;
-  }
-  append(ptr: number, length: number): number {
-    const bytes = this.bytes(ptr, length);
-    const view = new DataView(bytes.buffer);
-    let offset = 0;
-    while (offset < length) {
-      const count = view.getUint32(offset + 4, true);
-      if (count < 8 || count % 8 || count > length - offset) throw new Error("Invalid C framing");
-      this.command(bytes.slice(offset, offset + count));
-      offset += count;
-    }
-    return 0;
-  }
-  completions(ptr: number, length: number, timeout: bigint, written: number): number {
-    this.timeouts.push(timeout);
-    if (this.timeouts.length > 32) throw new Error("Fixture spun without progress");
-    if (this.replies.length === 0 && this.credit) {
-      this.credit = false;
-      this.reply("frame-credit", 0, { surface: handle(4) });
-    }
-    const bytes = Buffer.concat(this.replies.splice(0));
-    if (bytes.length > length) throw new Error("Short completion destination");
-    if (bytes.length && this.fault === "token") bytes.writeUInt32LE(99, 8);
-    if (bytes.length && this.fault === "framing") bytes.writeUInt32LE(15, 4);
-    if (bytes.length && this.fault === "exception") bytes.writeUInt16LE(8, 0);
-    this.put(ptr, bytes);
-    this.word(written, bytes.length);
-    return 0;
-  }
-  fdWrite(fd: number, iovs: number, count: number, written: number): number {
-    let length = 0;
-    for (let index = 0; index < count; index++) {
-      const ptr = this.view.getUint32(iovs + index * 8, true);
-      const size = this.view.getUint32(iovs + index * 8 + 4, true);
-      (fd === 2 ? this.errors : this.output).push(new TextDecoder().decode(this.bytes(ptr, size)));
-      length += size;
-    }
-    this.word(written, length);
-    return 0;
-  }
-  fdRead(fd: number, iovs: number, _count: number, written: number): number {
-    this.reads.push(fd);
-    this.readPresentCounts.push(this.commands.filter((bytes) => bytes[0] === 6).length);
-    this.put(this.view.getUint32(iovs, true), new Uint8Array([10]));
-    this.word(written, 1);
-    return 0;
-  }
-  imports(): WebAssembly.Imports {
-    return {
-      runtime_window: {
-        surfaces: (ptr: number, length: number) => {
-          expect(length).toBe(32);
-          this.word(ptr, 7);
-          return 1;
-        },
-        surface_info: (id: number, ptr: number) => {
-          expect(id).toBe(7);
-          for (const [offset, value] of [64, 48, 1000, 3].entries())
-            this.word(ptr + offset * 4, value);
-          return 0;
-        },
-      },
-      runtime_gpu: {
-        open: (_flags: number, ptr: number) => {
-          this.word(ptr, 17);
-          return 0;
-        },
-        append: (_conn: number, ptr: number, length: number) => this.append(ptr, length),
-        completions: (_conn: number, ptr: number, length: number, timeout: bigint, out: number) =>
-          this.completions(ptr, length, timeout, out),
-        close: (_conn: number) => {
-          this.closed = true;
-          this.closes++;
-          return 0;
-        },
-        payload: (_conn: number, _handle: number, _ptr: number, _length: number) =>
-          this.closed ? -64 : -8,
-      },
-      wasi_snapshot_preview1: this.wasi(),
-    };
-  }
-  wasi(): WebAssembly.ModuleImports {
-    return {
-      args_sizes_get: (count: number, size: number) => {
-        this.word(count, this.args.length);
-        this.word(
-          size,
-          this.args.reduce((total, arg) => total + arg.length, 0),
-        );
-        return 0;
-      },
-      args_get: (argv: number, buffer: number) => {
-        let offset = buffer;
-        for (const [index, arg] of this.args.entries()) {
-          this.word(argv + index * 4, offset);
-          this.put(offset, arg);
-          offset += arg.length;
-        }
-        return 0;
-      },
-      clock_time_get: () => 0,
-      fd_close: () => 0,
-      fd_seek: () => 70,
-      fd_fdstat_get: (_fd: number, ptr: number) => {
-        this.put(ptr, new Uint8Array(24));
-        return 0;
-      },
-      fd_write: (fd: number, iovs: number, count: number, out: number) =>
-        this.fdWrite(fd, iovs, count, out),
-      fd_read: (fd: number, iovs: number, count: number, out: number) =>
-        this.fdRead(fd, iovs, count, out),
-      proc_exit: (code: number) => {
-        throw new FixtureExit(code);
-      },
-    };
-  }
-  run(): number {
-    const instance = new WebAssembly.Instance(new WebAssembly.Module(wasm), this.imports());
-    const memory = instance.exports.memory;
-    const start = instance.exports._start;
-    if (!(memory instanceof WebAssembly.Memory) || typeof start !== "function")
-      throw new Error("Missing command exports");
-    this.memory = memory;
-    try {
-      start();
-      return 0;
-    } catch (error) {
-      if (error instanceof FixtureExit) return error.code;
-      throw error;
-    }
-  }
-}
-
 describe.skipIf(!compiled)("compiled C completion handling, not GPU acceptance", () => {
   test("uses real imports, supplied dimensions, monotonic tokens, split barriers and fd 0 reads", () => {
-    const host = new FixtureProtocolHost(["green", "--split", "--pause-acquired"]);
+    const host = new FixtureProtocolHost(wasm, ["green", "--split", "--pause-acquired"]);
     expect(host.run()).toBe(0);
     expect(host.errors.join("")).toBe("");
     expect(host.output.join("")).toContain("GPU_FRAME colour=green frame=1 validation=none");
@@ -649,7 +453,7 @@ describe.skipIf(!compiled)("compiled C completion handling, not GPU acceptance",
   ] satisfies ReplyFault[])(
     "rejects %s failure rather than printing a successful frame marker",
     (fault) => {
-      const host = new FixtureProtocolHost(["red"], fault);
+      const host = new FixtureProtocolHost(wasm, ["red"], fault);
       expect(host.run()).toBe(1);
       expect(host.errors.join("")).toContain("GPU_FAIL");
       expect(host.output.join("")).not.toContain("GPU_FRAME");
@@ -658,8 +462,8 @@ describe.skipIf(!compiled)("compiled C completion handling, not GPU acceptance",
     },
   );
   test("second-colour and RGBA8 options change the guest's emitted commands", () => {
-    const red = new FixtureProtocolHost(["red"]);
-    const blue = new FixtureProtocolHost(["blue", "--rgba8"]);
+    const red = new FixtureProtocolHost(wasm, ["red"]);
+    const blue = new FixtureProtocolHost(wasm, ["blue", "--rgba8"]);
     expect(red.run()).toBe(0);
     expect(blue.run()).toBe(0);
     const shader = blue.commands.find((bytes) => bytes[0] === 8);
@@ -686,7 +490,7 @@ function nestedRecords(host: FixtureProtocolHost): string[] {
 
 describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acceptance", () => {
   test("repeated acquire clears through one handle, then loads and draws through the second", () => {
-    const host = new FixtureProtocolHost(["red", "--repeat-acquire"]);
+    const host = new FixtureProtocolHost(wasm, ["red", "--repeat-acquire"]);
     expect(host.run()).toBe(0);
     expect(host.output.join("")).toContain("GPU_REPEATED_ACQUIRE first=8 second=13");
     expect(host.output.join("")).toContain("GPU_FRAME colour=red frame=1 validation=none");
@@ -697,7 +501,7 @@ describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acc
     expect(host.commands.filter((bytes) => opcode(bytes) === 6)).toHaveLength(1);
   });
   test("discard releases every second-frame alias before its stdin pixel checkpoint and fresh load", () => {
-    const host = new FixtureProtocolHost(["red", "--discard-after-first-frame"]);
+    const host = new FixtureProtocolHost(wasm, ["red", "--discard-after-first-frame"]);
     expect(host.run()).toBe(0);
     const output = host.output.join("");
     expect(output).toContain("GPU_DISCARDED frame=2 handles=32,37 validation=none");
@@ -727,7 +531,7 @@ describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acc
     ]);
   });
   test("expired-use mode requires an explicit validation result, then proves the connection still replies", () => {
-    const host = new FixtureProtocolHost(["red", "--expired-frame-use"], "none", true);
+    const host = new FixtureProtocolHost(wasm, ["red", "--expired-frame-use"], "none", true);
     expect(host.run()).toBe(0);
     expect(host.output.join("")).toContain(
       "GPU_EXPECTED_VALIDATION stage=expired-frame texture=8 type=2",
@@ -742,7 +546,7 @@ describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acc
   test.each(["none", "late-exception"] satisfies ReplyFault[])(
     "expired-use mode rejects %s instead of inventing a native validation result",
     (fault) => {
-      const host = new FixtureProtocolHost(["red", "--expired-frame-use"], fault);
+      const host = new FixtureProtocolHost(wasm, ["red", "--expired-frame-use"], fault);
       expect(host.run()).toBe(1);
       expect(host.output.join("")).not.toContain("GPU_EXPECTED_VALIDATION");
       expect(host.errors.join("")).toContain("GPU_FAIL");
@@ -750,6 +554,7 @@ describe.skipIf(!compiled)("bounded frame-mode wire controls, not native GPU acc
   );
   test("combined controls use distinct result IDs and validate the freshly presented third frame", () => {
     const host = new FixtureProtocolHost(
+      wasm,
       ["red", "--repeat-acquire", "--discard-after-first-frame", "--expired-frame-use", "--split"],
       "none",
       true,

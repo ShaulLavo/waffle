@@ -20,8 +20,13 @@ function storageCases(listed: TestList) {
   );
 }
 if (process.argv[2] === "ios-safari") {
-  const { storageNativeMain } = await import("./page-runner/storage-native.js");
-  process.exit(await storageNativeMain(process.argv.slice(3)));
+  const { nativeMain } = await import("./page-runner/native.js");
+  const { storageAdapter } = await import("./page-runner/storage-host.js");
+  process.exit(
+    await nativeMain(storageAdapter, process.argv.slice(3), {
+      filter: process.env.STORAGE_TEST_FILTER,
+    }),
+  );
 }
 const lifecycle = new BrowserRunnerLifecycle();
 let origin = "",

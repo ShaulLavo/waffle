@@ -1,3 +1,4 @@
+import { driverResponseLimit } from "./safari-driver.js";
 import { dirname } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import { BrowserRunnerLifecycle, type engines } from "../browser-runner-lifecycle.js";
@@ -63,11 +64,15 @@ export class PlaywrightDriver implements Driver {
   async script(source: string, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
     try {
-      return await bounded(
+      const value: unknown = await bounded(
         this.current().evaluate((script) => new Function(script)(), source),
         3000,
         "script probe",
       );
+      const encoded = JSON.stringify({ value });
+      if (new TextEncoder().encode(encoded).byteLength > driverResponseLimit)
+        throw new Error("WebDriver response exceeds 4 MiB UTF-8 limit");
+      return value;
     } catch (error) {
       this.uncertain = true;
       if (error instanceof DeadlineError) throw new WebDriverError("script timeout", error.message);

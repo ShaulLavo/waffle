@@ -19,6 +19,9 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
     "./testing/opfs-storage-browser",
     "./search/search-worker",
     "./search/shard-worker",
+    "./testing/page-runner",
+    "./testing/page-runner/page",
+    "./testing/page-runner/playwright",
   ]);
   for (const key of browserOnly) {
     for (const target of Object.values(metadata.exports[key]!)) {

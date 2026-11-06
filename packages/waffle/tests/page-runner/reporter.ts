@@ -12,6 +12,14 @@ declare global {
   }
 }
 export class Reporter {
+  readonly clock = {
+    now: performance.now.bind(performance),
+    timeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    interval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+    abortTimeout: AbortSignal.timeout.bind(AbortSignal),
+  };
   readonly observation: Observation = {
     doc: crypto.randomUUID(),
     ackedThrough: -1,
@@ -25,8 +33,9 @@ export class Reporter {
   private timer: ReturnType<typeof setInterval> | undefined;
   constructor(
     readonly run: string,
-    readonly post: (input: string, init: RequestInit) => Promise<Response> = (input, init) =>
-      fetch(input, init),
+    readonly post: (input: string, init: RequestInit) => Promise<Response> = globalThis.fetch.bind(
+      globalThis,
+    ),
     readonly retryMs = 10_000,
   ) {
     window.__pageRunner = this.observation;
@@ -55,17 +64,17 @@ export class Reporter {
     });
   }
   private async deliver(encoded: string): Promise<void> {
-    const deadline = performance.now() + this.retryMs;
+    const deadline = this.clock.now() + this.retryMs;
     const expected: unknown = JSON.parse(encoded);
     let last: unknown;
-    while (performance.now() < deadline) {
+    while (this.clock.now() < deadline) {
       try {
         await this.attempt(encoded, record(expected) ? expected.seq : undefined);
         return;
       } catch (error) {
         last = error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => this.clock.timeout(resolve, 100));
     }
     throw new Error(`Report acknowledgement lost: ${String(last)}`);
   }
@@ -73,7 +82,7 @@ export class Reporter {
     const response = await this.post("/report", {
       method: "POST",
       body: encoded,
-      signal: AbortSignal.timeout(Math.min(1500, this.retryMs)),
+      signal: this.clock.abortTimeout(Math.min(1500, this.retryMs)),
     });
     const ack: unknown = await response.json();
     if (!response.ok || !record(ack) || ack.ackedThrough !== seq || typeof seq !== "number")
@@ -81,7 +90,7 @@ export class Reporter {
     this.observation.ackedThrough = seq;
   }
   startHeartbeat(interval = 1000): void {
-    this.timer = setInterval(() => {
+    this.timer = this.clock.interval(() => {
       void this.heartbeat();
     }, interval);
   }
@@ -92,7 +101,7 @@ export class Reporter {
       await this.post("/heartbeat", {
         method: "POST",
         body: JSON.stringify({ kind: "heartbeat", run: this.run, doc: this.observation.doc }),
-        signal: AbortSignal.timeout(1500),
+        signal: this.clock.abortTimeout(1500),
       });
     } catch {
     } finally {
@@ -102,17 +111,17 @@ export class Reporter {
   async readyForRetirement(): Promise<void> {
     const url = `/retire?run=${encodeURIComponent(this.run)}&doc=${encodeURIComponent(this.observation.doc)}`;
     while (!this.observation.retired) {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      const response = await this.post(url, { signal: this.clock.abortTimeout(2000) });
       const command: unknown = await response.json();
       if (command === true) {
         await this.send({ kind: "retire-ready" });
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => this.clock.timeout(resolve, 50));
     }
   }
   stop(): void {
-    clearInterval(this.timer);
+    this.clock.clearInterval(this.timer);
   }
   drain(): Promise<void> {
     return this.tail;

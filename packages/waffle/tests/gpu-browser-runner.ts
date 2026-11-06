@@ -1,4 +1,4 @@
-import { verifiedGpuFixture } from "../scripts/build-gpu-fixture.js";
+import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 import { gpuLazyRoutes, assertGpuLazyBrowser } from "./gpu-loading-browser.js";
 import { resolve } from "node:path";
 import {
@@ -9,46 +9,11 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { fairnessCases } from "./gpu-fairness-browser.js";
+import { invoke, pixels, assertTrianglePixels, assertRetired } from "./gpu-browser-shared.js";
 import type { Page } from "playwright";
 
 const fixture = resolve(process.env.GPU_FIXTURE_DIR ?? ".build/gpu-fixture", "triangle.wasm");
-async function invoke(page: Page, name: string, args: unknown[] = []) {
-  return page.evaluate(
-    async ({ name, args }) => {
-      const path = "/integration-page.js";
-      const module = await import(path);
-      return module[name](...args);
-    },
-    { name, args },
-  );
-}
-async function pixels(page: Page, slot = 0) {
-  // ImageBitmap reaches its placeholder at a worker rendering update, not the reply task.
-  await page.waitForTimeout(100);
-  const png = await page.locator(`#triangle-${slot}`).screenshot();
-  return page.evaluate(async (bytes) => {
-    const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: "image/png" }));
-    const canvas = new OffscreenCanvas(64, 64),
-      context = canvas.getContext("2d")!;
-    context.drawImage(image, 0, 0);
-    image.close();
-    return {
-      center: Array.from(context.getImageData(32, 32, 1, 1).data),
-      corner: Array.from(context.getImageData(1, 1, 1, 1).data),
-    };
-  }, Array.from(png));
-}
-function assertTrianglePixels(
-  value: { center: number[]; corner: number[] },
-  colour = "red",
-  background = [0, 0, 0, 255],
-) {
-  const expected = colour === "green" ? [0, 255, 0, 255] : [255, 0, 0, 255];
-  const close = (actual: number[], wanted: number[]) =>
-    actual.length === 4 && actual.every((byte, at) => Math.abs(byte - wanted[at]!) <= 8);
-  if (!close(value.center, expected) || !close(value.corner, background))
-    throw new Error(`Compiled guest pixel failure: ${JSON.stringify(value)}`);
-}
 async function marker(page: Page, text: string, slot = 0) {
   const deadline = Date.now() + 20000;
   let observed: unknown;
@@ -152,6 +117,89 @@ async function guestCase(page: Page, suppress = false) {
     await invoke(page, "closeIntegration");
   }
 }
+type SceneMode = "normal" | "no-depth" | "black-texture";
+/** Both texture columns must survive sampling, dynamic binding and indexed depth ordering. */
+export function assertScenePixels(
+  value: { left: number[]; right: number[]; corner: number[] },
+  mode: SceneMode = "normal",
+) {
+  const colour = mode === "no-depth" ? 1 : 0;
+  const left = [0, 0, 0, 255],
+    right = [0, 0, 0, 255];
+  if (mode !== "black-texture") {
+    left[colour] = 255;
+    right[colour] = 128;
+  }
+  const close = (actual: number[], expected: number[]) =>
+    actual.length === 4 && actual.every((byte, at) => Math.abs(byte - expected[at]!) <= 8);
+  if (
+    !close(value.left, left) ||
+    !close(value.right, right) ||
+    !close(value.corner, [0, 0, 255, 255])
+  )
+    throw new Error(`Compiled scene pixel failure, mode=${mode}: ${JSON.stringify(value)}`);
+}
+async function sceneCase(page: Page, mode: SceneMode) {
+  // Keep unsolicited telemetry stale so only a correlated snapshot can prove this checkpoint.
+  await invoke(page, "openIntegration", [false, "", true]);
+  await invoke(page, "activateDisplay");
+  try {
+    await invoke(page, "launchScene", [mode === "normal" ? [] : [`--${mode}`]]);
+    await marker(page, "GPU_WAIT_STDIN stage=scene-encoded");
+    const encoded = await invoke(page, "drainTriangle");
+    encoded.service = await invoke(page, "serviceCommand", ["snapshot"]);
+    if (
+      !encoded.text.includes("GPU_SCENE_RELEASED ordinary=13 frame=retained stage=before-submit") ||
+      encoded.service.presents !== 0 ||
+      encoded.service.frameTexturesLive !== 1
+    )
+      throw new Error(
+        `Scene did not pause after ordinary handle release: ${JSON.stringify(encoded)}`,
+      );
+    await invoke(page, "feedTriangle");
+    await marker(page, `GPU_SCENE_FRAME mode=${mode}`);
+    const image = await pixels(page);
+    assertScenePixels(image, mode);
+    if (mode !== "normal") {
+      let rejected = false;
+      try {
+        assertScenePixels(image);
+      } catch {
+        rejected = true;
+      }
+      if (!rejected) throw new Error(`Scene negative control ${mode} passed positive pixels`);
+    }
+    const stopped = await invoke(page, "stopTriangle");
+    assertRetired(stopped.service);
+    assertControlAccounting(stopped.snapshot);
+    if (
+      stopped.exit.kind !== "exited" ||
+      stopped.exit.code !== 0 ||
+      stopped.text.includes("GPU_FAIL")
+    )
+      throw new Error(`Compiled scene failed: ${JSON.stringify(stopped)}`);
+    if (
+      !stopped.authority.length ||
+      stopped.authority.some(
+        (report: { canaries: string[]; leaks: string[] }) =>
+          report.canaries.length < 10 || report.leaks.length,
+      )
+    )
+      throw new Error("Compiled scene authority canaries failed");
+    return { compiledGuest: true, mode, image, encoded, stopped };
+  } finally {
+    await invoke(page, "closeIntegration");
+  }
+}
+async function sceneCases(page: Page, url: string, available: boolean) {
+  if (!available) return [await unsupportedCase(page, "gpu", true)];
+  const results = [];
+  for (const mode of ["normal", "no-depth", "black-texture"] satisfies SceneMode[]) {
+    await page.goto(url);
+    results.push(await sceneCase(page, mode));
+  }
+  return results;
+}
 async function retainedPixels(page: Page, colour: string) {
   for (const ms of [500, 2500, 7000]) {
     await page.waitForTimeout(ms);
@@ -161,11 +209,11 @@ async function retainedPixels(page: Page, colour: string) {
   }
 }
 
-async function unsupportedCase(page: Page, grant: "gpu" | "surface" | "none") {
+async function unsupportedCase(page: Page, grant: "gpu" | "surface" | "none", scene = false) {
   await invoke(page, "openIntegration");
   await invoke(page, "activateDisplay");
   try {
-    await invoke(page, "launchTriangle", [[], grant]);
+    await invoke(page, scene ? "launchScene" : "launchTriangle", [[], grant]);
     const result = await invoke(page, "stopTriangle", [false, 0, false]);
     if (result.exit.kind === "exited" && result.exit.code === 0)
       throw new Error("Unsupported/absent GPU unexpectedly succeeded");
@@ -311,24 +359,6 @@ function assertControlAccounting(snapshot: {
     throw new Error(`GPU fixed backing charge missing: ${JSON.stringify(controls)}`);
 }
 
-function assertRetired(value: unknown) {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("connections" in value) ||
-    value.connections !== 0 ||
-    !("devicesLive" in value) ||
-    value.devicesLive !== 0 ||
-    !("heapBytes" in value) ||
-    value.heapBytes !== 0 ||
-    !("frameTexturesLive" in value) ||
-    value.frameTexturesLive !== 0 ||
-    !("presentCanvasesLive" in value) ||
-    value.presentCanvasesLive !== 0
-  )
-    throw new Error(`GPU service retained guest resources: ${JSON.stringify(value)}`);
-}
-
 /** The CI lane requires the designated software adapter, not a silent hardware fallback. */
 export function requireIntegrationAdapter(
   engine: "chromium" | "firefox" | "webkit",
@@ -368,6 +398,9 @@ async function main() {
     routes["/triangle.wasm"] = new Blob([verifiedGpuFixture(resolve(fixture, ".."))], {
       type: "application/wasm",
     });
+    routes["/scene.wasm"] = new Blob([verifiedGpuSceneFixture(resolve(fixture, ".."))], {
+      type: "application/wasm",
+    });
     const url = runner.serve(routes);
     for (const requested of process.argv.slice(2).length
       ? process.argv.slice(2)
@@ -381,6 +414,10 @@ async function main() {
       await page.goto(url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const fairness = await fairnessCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "fairness", fairness }));
+      const scenes = await sceneCases(page, url, available);
+      await page.goto(url);
       const guest = available ? await guestCase(page) : await unsupportedCase(page, "gpu");
       await page.goto(url);
       const negative = available ? await guestCase(page, true) : undefined;
@@ -408,6 +445,8 @@ async function main() {
           loading,
           qualification,
           guest,
+          scenes,
+          fairness,
           negative,
           held,
           forged,

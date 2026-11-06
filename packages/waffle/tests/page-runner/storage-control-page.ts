@@ -2,7 +2,7 @@ import { cleanupStorage } from "./storage-cleanup.js";
 import { Reporter } from "./reporter.js";
 import { withStorageCleanup, type StorageEntry } from "../storage-allocation.js";
 declare const PAGE_RUNNER_STORAGE_FAILURE: boolean;
-const config = window.__storageConfiguration;
+const config = window.__suiteConfiguration;
 const reporter = new Reporter(config.run);
 async function openDatabase(name: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {

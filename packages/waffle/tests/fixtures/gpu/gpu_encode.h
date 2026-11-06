@@ -162,8 +162,8 @@ static inline GpuFixtureFrame gpu_frame(uint32_t base) {
   GpuFixtureFrame frame = {base, base + 1, base + 2, base + 3, base + 4};
   return frame;
 }
-static inline void gpu_render_frame(WaffleGpuWriter *w, const GpuFixtureFrame *frame,
-                                   uint32_t load, const double clear[4], int draw) {
+static inline void gpu_render_begin(WaffleGpuWriter *w, const GpuFixtureFrame *frame,
+                                    uint32_t load, const double clear[4]) {
   size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_COMMAND_ENCODER_BEGIN_RENDER_PASS);
   gpu_object(w, frame->pass);
   gpu_label(w);
@@ -179,18 +179,25 @@ static inline void gpu_render_frame(WaffleGpuWriter *w, const GpuFixtureFrame *f
   gpu_object(w, 0); /* occlusion query */
   waffle_gpu_u32(w, 0); /* absent timestamps */
   waffle_gpu_end(w, start);
-  if (draw) {
-    start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_SET_PIPELINE);
-    gpu_object(w, PIPELINE);
-    waffle_gpu_end(w, start);
-    gpu_draw(w);
-  }
-  start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_END);
+}
+static inline void gpu_render_end(WaffleGpuWriter *w, const GpuFixtureFrame *frame) {
+  size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_END);
   waffle_gpu_end(w, start);
   start = waffle_gpu_begin(w, WAFFLE_GPU_OP_COMMAND_ENCODER_FINISH);
   gpu_object(w, frame->commands);
   waffle_gpu_u32(w, 0); /* absent descriptor */
   waffle_gpu_end(w, start);
+}
+static inline void gpu_render_frame(WaffleGpuWriter *w, const GpuFixtureFrame *frame,
+                                   uint32_t load, const double clear[4], int draw) {
+  gpu_render_begin(w, frame, load, clear);
+  if (draw) {
+    size_t start = waffle_gpu_begin(w, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_SET_PIPELINE);
+    gpu_object(w, PIPELINE);
+    waffle_gpu_end(w, start);
+    gpu_draw(w);
+  }
+  gpu_render_end(w, frame);
 }
 static inline void gpu_encode_frame(WaffleGpuWriter *w, const GpuFixtureFrame *frame,
                                    uint32_t load, const double clear[4], int draw) {

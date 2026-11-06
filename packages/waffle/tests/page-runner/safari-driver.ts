@@ -10,6 +10,40 @@ import {
   type CleanupStep,
 } from "./driver.js";
 import { record } from "./protocol.js";
+export const driverResponseLimit = 4 * 1024 * 1024;
+export async function readDriverResponse(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  signal.throwIfAborted();
+  if (!response.body) throw new Error("Missing WebDriver response body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytes = 0,
+    text = "";
+  const abort = () => {
+    void reader.cancel(signal.reason).catch(() => {});
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      signal.throwIfAborted();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > driverResponseLimit)
+        throw new Error("WebDriver response exceeds 4 MiB UTF-8 limit");
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    signal.throwIfAborted();
+    return JSON.parse(text);
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+    signal.removeEventListener("abort", abort);
+  }
+}
 export function nativeCapabilities(value: unknown, udid: string) {
   if (!record(value) || !record(value.capabilities))
     throw new Error("Missing native session capabilities");
@@ -227,13 +261,14 @@ export class SafariDriver implements Driver {
     marksUncertain = true,
   ): Promise<unknown> {
     try {
+      const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(ms)]);
       const response = await fetch(this.base + path, {
         method,
         body: body === undefined ? undefined : JSON.stringify(body),
         headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.any([signal, AbortSignal.timeout(ms)]),
+        signal: requestSignal,
       });
-      const answer: unknown = await response.json();
+      const answer: unknown = await readDriverResponse(response, requestSignal);
       if (!record(answer) || !Object.hasOwn(answer, "value"))
         throw new Error(`WebDriver ${path}: ${JSON.stringify(answer)}`);
       if (record(answer.value) && typeof answer.value.error === "string")
