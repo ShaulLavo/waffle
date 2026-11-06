@@ -520,14 +520,15 @@ for (const failure of ["reject", "hang"] as const) {
       expect(result.cleanup.scratch.status).toBe("unconfirmed");
     }));
 }
-function interruptAdded(
-  signal: "SIGINT" | "SIGTERM",
-  before: readonly NodeJS.SignalsListener[],
+function interruptAdded<T>(
+  before: readonly T[],
+  current: readonly T[],
+  invoke: (listener: T) => void,
 ): number {
   let called = 0;
-  for (const listener of process.listeners(signal)) {
+  for (const listener of current) {
     if (before.includes(listener)) continue;
-    listener(signal);
+    invoke(listener);
     called++;
   }
   return called;
@@ -541,8 +542,12 @@ test("signals during bounded teardown neither resurrect dispatch nor invent exec
     const before = { SIGINT: process.listeners("SIGINT"), SIGTERM: process.listeners("SIGTERM") };
     d.stop = async () => {
       controller.abort("during teardown");
-      expect(interruptAdded("SIGINT", before.SIGINT)).toBe(1);
-      expect(interruptAdded("SIGTERM", before.SIGTERM)).toBe(1);
+      expect(interruptAdded(before.SIGINT, process.listeners("SIGINT"), (fn) => fn("SIGINT"))).toBe(
+        1,
+      );
+      expect(
+        interruptAdded(before.SIGTERM, process.listeners("SIGTERM"), (fn) => fn("SIGTERM")),
+      ).toBe(1);
       await Bun.sleep(40);
       return original();
     };
