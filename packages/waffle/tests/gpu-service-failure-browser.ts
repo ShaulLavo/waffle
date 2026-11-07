@@ -627,16 +627,15 @@ function recoveredService(
   recoveryRetirement(recovery, compiled, native);
   accounting(state.snapshot, 2, 4);
   accounting(after.snapshot, 1, 5);
-  for (const observation of [state, after]) {
+  retainedAudits(result.auditControl, [state, after]);
+}
+function retainedAudits(expected: unknown, observations: readonly Record<string, unknown>[]) {
+  for (const observation of observations) {
     requireProof(
       observation.audit !== null && typeof observation.audit === "object",
       "terminated service audit missing through recovery",
     );
-    equal(
-      result.auditControl,
-      observation.audit,
-      "terminated service audit rewritten through recovery",
-    );
+    equal(expected, observation.audit, "terminated service audit rewritten through recovery");
   }
 }
 function recoveryRetirement(
