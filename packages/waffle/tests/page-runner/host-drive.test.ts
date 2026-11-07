@@ -2,6 +2,7 @@ import { expect, test, spyOn } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { ownedDatabase } from "./storage-policy.js";
 import { HostDrive } from "./host-drive.js";
 import { HostConsumers } from "./owned-consumers.js";
 import { Collector } from "./collector.js";
@@ -23,6 +24,7 @@ class HostDriver extends FakeDriver {
   reportFailure: string | null = null;
   dispatchGate: Promise<void> | undefined;
   completionBeforeResponse = false;
+  readonly allocations: string[] = [];
   constructor() {
     super("pass", { list: { ids: ["host"] } });
   }
@@ -70,6 +72,15 @@ class HostDriver extends FakeDriver {
           this.verdicts.push(value);
           this.phase = "teardown";
           void this.terminal(value);
+        },
+        allocateDatabase: (operation: string, name: string) => {
+          this.allocations.push(name);
+          this.dispatchGate = this.send({ kind: "allocation", entry: { kind: "indexeddb", name } })
+            .then(() => this.send({ kind: "task-end", caseId: "host", operation, status: "pass" }))
+            .then(async () => {
+              this.completionBeforeResponse = true;
+              await Bun.sleep(10);
+            });
         },
         task: (operation: string) => {
           const reporting = this.send({
@@ -598,4 +609,50 @@ test("interruption before verdict dispatch attempts the first verdict once under
     expect(d.verdicts).toHaveLength(1);
     expect(JSON.stringify(result.results)).toContain('"teardown":{"status":"pass"}');
     expect(result.cleanup.scratch.status).toBe("confirmed");
+  }));
+
+
+test("allocation returns the exact policy-owned name after actual dispatch response", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    let returned = "";
+    const a = adapter(async (host) => {
+      returned = await host.allocateDatabase("host-storage");
+      expect(d.completionBeforeResponse).toBe(true);
+      await host.task("await Promise.resolve()");
+      return { name: returned };
+    });
+    a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+    const result = await runPageSuite(a, () => d, options(root));
+    expect(result.exit).toBe(0);
+    expect(returned).toBe(`host-storage-${result.run}`);
+    expect(d.allocations).toEqual([returned]);
+    expect(result.ledger).toEqual([{ kind: "indexeddb", name: returned }]);
+    expect(d.stopCalls).toBe(1);
+  }));
+for (const prefix of ["", "x".repeat(901)]) {
+  test(`allocation rejects invalid prefix length ${prefix.length} before dispatch`, () =>
+    fixture(async (root) => {
+      const d = new HostDriver();
+      const result = await runPageSuite(adapter(async (host) => {
+        await expect(host.allocateDatabase(prefix)).rejects.toThrow("Invalid database prefix");
+        return true;
+      }), () => d, options(root));
+      expect(result.exit).toBe(0);
+      expect(d.allocations).toEqual([]);
+      expect(result.ledger).toEqual([]);
+    }));
+}
+test("allocation retained by a callback rejects after capability revocation", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    let saved: HostCase | undefined;
+    const result = await runPageSuite(adapter(async (host) => {
+      saved = host;
+      return true;
+    }), () => d, options(root));
+    if (!saved) throw new Error("Missing actual host capability");
+    await expect(saved.allocateDatabase("host-storage")).rejects.toThrow();
+    expect(result.exit).toBe(0);
+    expect(d.allocations).toEqual([]);
   }));
