@@ -624,7 +624,29 @@ function recoveredService(
       record(exit.exit).code === 0,
     "recovery did not exit normally",
   );
-  const terminalService = record(exit.service);
+  recoveryRetirement(recovery, compiled, native);
+  accounting(state.snapshot, 2, 4);
+  accounting(after.snapshot, 1, 5);
+  for (const observation of [state, after]) {
+    requireProof(
+      observation.audit !== null && typeof observation.audit === "object",
+      "terminated service audit missing through recovery",
+    );
+    equal(
+      result.auditControl,
+      observation.audit,
+      "terminated service audit rewritten through recovery",
+    );
+  }
+}
+function recoveryRetirement(
+  recovery: Record<string, unknown>,
+  compiled: Record<string, unknown>,
+  native: Record<string, unknown>,
+) {
+  const before = record(recovery.before),
+    service = record(recovery.service),
+    terminalService = record(record(recovery.exit).service);
   requireProof(
     terminalService.realm === service.realm &&
       terminalService.token === service.token &&
@@ -648,19 +670,6 @@ function recoveredService(
     "recovery terminal native identity changed",
   );
   retired(terminalNative, 1);
-  accounting(state.snapshot, 2, 4);
-  accounting(after.snapshot, 1, 5);
-  for (const observation of [state, after]) {
-    requireProof(
-      observation.audit !== null && typeof observation.audit === "object",
-      "terminated service audit missing through recovery",
-    );
-    equal(
-      result.auditControl,
-      observation.audit,
-      "terminated service audit rewritten through recovery",
-    );
-  }
 }
 /** Uses retained shared controls after termination, never invented native resource zeroes. */
 export function validateServiceFailureResult(value: unknown) {
