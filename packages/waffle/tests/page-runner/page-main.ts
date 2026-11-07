@@ -1,4 +1,4 @@
-import { runHostPage, type HostPageRun } from "./host-page.js";
+import { runPeerPage, runHostPage, type HostPageRun } from "./host-page.js";
 import { Reporter } from "./reporter.js";
 import { resultByteLimit, type Body } from "./protocol.js";
 import type { StorageEntry } from "../storage-allocation.js";
@@ -10,6 +10,14 @@ export type Configuration<R> = {
   ledger: StorageEntry[];
 } & (
   | { role: "list" | "finish" }
+  | {
+      role: "peer";
+      caseId: string;
+      request: R;
+      peer: string;
+      generation: number;
+      execution: "host";
+    }
   | { role: "case"; caseId: string; request: R; execution?: "host"; teardownMs?: number }
 );
 export type PageSuite<R> = {
@@ -63,6 +71,9 @@ async function runPage<R>(
     case "case":
       await runCase(config, suite, reporter);
       break;
+    case "peer":
+      if (typeof suite.run === "function") throw new Error("Peer requires host page handler");
+      return runPeerPage(config, suite.run, reporter);
     case "finish":
       await reporter.send({ kind: "run-complete", remaining: await suite.finish(config.ledger) });
       break;

@@ -6,9 +6,10 @@ import {
   resultByteLimit,
   type Budgets,
   type HostCase,
+  type HostPeer,
   type HostVerdict,
 } from "./protocol.js";
-import type { Collector, DocumentState } from "./collector.js";
+import type { Collector, DocumentState, PeerTransition } from "./collector.js";
 
 class ExpressionFailure extends Error {}
 class ObservationFailure extends Error {}
@@ -38,6 +39,8 @@ export class HostDrive {
   private uncertain = false;
   private delivered = false;
   private closed = false;
+  private readonly peerSignals = new Map<DocumentState, AbortController>();
+  private readonly closes = new Map<DocumentState, Promise<void>>();
   private bodyFailure: { message: string; stack: string | null; details: unknown } | null = null;
   readonly transport: Driver;
   constructor(
@@ -48,6 +51,7 @@ export class HostDrive {
     private readonly budgets: Budgets,
     private readonly started: number,
     private readonly signal: AbortSignal,
+    private readonly configurePeer?: (state: DocumentState, lookupToken: string) => void,
   ) {
     consumers.register(() => {
       this.closed = true;
@@ -57,6 +61,10 @@ export class HostDrive {
       abortable(this.enqueue(callback), signal);
     const isUncertain = () => this.uncertain || driver.uncertain;
     this.transport = {
+      createWindow: (signal) => queue(() => driver.createWindow(signal), signal),
+      selectWindow: (handle, signal) => queue(() => driver.selectWindow(handle, signal), signal),
+      reloadWindow: (signal) => queue(() => driver.reloadWindow(signal), signal),
+      closeWindow: (signal) => queue(() => driver.closeWindow(signal), signal),
       start: (signal) => queue(() => driver.start(signal), signal),
       navigate: (url, signal) => queue(() => driver.navigate(url, signal), signal),
       handle: (signal) => queue(() => driver.handle(signal), signal),
@@ -109,18 +117,22 @@ export class HostDrive {
     this.body.signal.throwIfAborted();
     if (!this.active) throw new Error("Host case capability revoked");
   }
-  private guard(source: string, user: boolean, recovery: boolean): string {
+  private guard(source: string, user: boolean, recovery: boolean, state = this.state): string {
     const identity = JSON.stringify({
       run: this.collector.run,
-      token: this.state.token,
-      doc: this.state.doc,
-      caseId: this.state.group.caseIds[0],
-      url: this.state.expectedURL,
+      token: state.token,
+      doc: state.doc,
+      caseId: state.group.caseIds[0],
+      url: state.expectedURL,
+      role: state.group.role,
+      peer: state.owner.kind === "peer" ? state.owner.peer : null,
+      generation: state.owner.kind === "peer" ? state.owner.generation : null,
     });
     return `const identity = ${identity};
 const c = window.__suiteConfiguration, r = window.__pageRunner, h = window.__hostCase;
 if (!c || !r || !h || c.run !== identity.run || c.token !== identity.token ||
- c.caseId !== identity.caseId || c.role !== 'case' || c.execution !== 'host' ||
+ c.caseId !== identity.caseId || c.role !== identity.role || c.execution !== 'host' ||
+ (identity.role === 'peer' && (c.peer !== identity.peer || c.generation !== identity.generation)) ||
  r.doc !== identity.doc || r.retired || location.href !== identity.url ||
  !${JSON.stringify(user ? ["driving"] : ["admitting", "ready", "driving", "teardown", "terminal"])}.includes(h.phase))
  return {kind:'binding-error'};
@@ -137,19 +149,40 @@ try {
     signal = this.signal,
     beforeDispatch?: () => void,
     recovery = false,
+    state = this.state,
+    until = user
+      ? this.operationDeadline()
+      : Math.min(
+          performance.now() + (this.budgets.operation ?? 15_000),
+          recovery ? Infinity : this.started + this.budgets.run,
+        ),
+    transitioning = false,
   ): Promise<unknown> {
+    const operationSignal = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
+    ]);
     const queued = this.enqueue(async () => {
       if (user) this.checkBody();
       try {
         this.infrastructure(recovery);
-        if ((await this.driver.handle(signal)) !== this.state.handle)
+        this.checkTarget(state, until, transitioning);
+        await this.driver.selectWindow(state.handle, operationSignal);
+        this.checkTarget(state, until, transitioning);
+        if (user) this.checkBody();
+        if ((await this.driver.handle(operationSignal)) !== state.handle)
           throw new Error("Host window handle changed");
         this.infrastructure(recovery);
         if (user) this.checkBody();
+        this.checkTarget(state, until, transitioning);
         beforeDispatch?.();
         if (user) this.checkBody();
-        const value = await this.driver.script(this.guard(source, user, recovery), signal);
+        const value = await this.driver.script(
+          this.guard(source, user, recovery, state),
+          operationSignal,
+        );
         this.infrastructure(recovery);
+        this.checkTarget(state, until, transitioning);
         if (!record(value)) throw new Error("Malformed bound command answer");
         if (value.kind === "binding-error") throw new Error("Host document binding changed");
         if (value.kind === "reporter-error")
@@ -167,7 +200,23 @@ try {
         throw error;
       }
     });
-    return abortable(queued, signal);
+    return abortable(queued, operationSignal);
+  }
+  private operationDeadline(): number {
+    return Math.min(
+      performance.now() + (this.budgets.operation ?? this.budgets.case),
+      this.deadline,
+      this.started + this.budgets.run,
+    );
+  }
+  private checkTarget(state: DocumentState, until: number, transitioning = false): void {
+    if (performance.now() >= until) throw new ExpressionFailure("Host operation timed out");
+    if (
+      !this.collector.owns(state) ||
+      state.cutoff !== null ||
+      (!transitioning && state.physical !== "live")
+    )
+      throw new Error("Peer generation revoked");
   }
   private fault(error: unknown): void {
     if (!this.uncertain && !this.closed && this.state.cutoff === null)
@@ -203,18 +252,26 @@ try {
     this.checkBody();
     return name;
   }
-  private async task(command: (operation: string) => string): Promise<void> {
+  private async task(command: (operation: string) => string, state = this.state): Promise<void> {
+    const until = this.operationDeadline();
     this.checkBody();
     const operation = crypto.randomUUID();
     await abortable(
-      this.execute(command(operation), true, this.signal, () =>
-        this.collector.registerTask(this.state, operation),
+      this.execute(
+        command(operation),
+        true,
+        this.signal,
+        () => this.collector.registerTask(state, operation),
+        false,
+        state,
+        until,
       ),
       this.body.signal,
     );
     for (;;) {
       this.checkBody();
-      const task = this.state.tasks.get(operation);
+      this.checkTarget(state, until);
+      const task = state.tasks.get(operation);
       if (task?.status === "pass") return;
       if (task?.status === "fail") throw new ExpressionFailure(task.error);
       await this.sleep(10);
@@ -234,10 +291,36 @@ try {
   }
   revoke(): void {
     this.active = false;
+    for (const controller of this.peerSignals.values())
+      controller.abort(new Error("Host case capability revoked"));
     if (!this.body.signal.aborted) this.body.abort(new Error("Host case capability revoked"));
   }
   uncontainedPageWork(): boolean {
-    if (Array.from(this.state.tasks.values()).some((task) => task.status === "pending"))
+    if (
+      this.collector.transitions.some(
+        (transition) =>
+          transition.caseId === this.state.group.caseIds[0] &&
+          transition.progress.kind !== "completed",
+      )
+    )
+      return true;
+    if (
+      this.collector.documents.some(
+        (state) =>
+          state.owner.kind === "peer" &&
+          state.owner.coordinator === this.state &&
+          !["closed", "superseded"].includes(state.physical),
+      )
+    )
+      return true;
+    if (
+      this.collector.documents.some(
+        (state) =>
+          this.collector.owns(state) &&
+          !["closed", "superseded"].includes(state.physical) &&
+          Array.from(state.tasks.values()).some((task) => task.status === "pending"),
+      )
+    )
       return true;
     const result = this.collector.results[this.state.group.caseIds[0] ?? ""];
     return (
@@ -258,7 +341,12 @@ try {
     this.signal.addEventListener("abort", stop, { once: true });
     const monitor = setInterval(() => {
       const overdue = this.collector.deadline(this.budgets, this.started);
-      if (overdue) this.collector.fail(overdue, "Host case infrastructure deadline", this.state);
+      if (overdue)
+        this.collector.fail(
+          overdue,
+          "Host case infrastructure deadline",
+          this.collector.overdueDocument(this.budgets) ?? this.state,
+        );
       if (overdue || this.collector.failures.length > priorFailures)
         this.body.abort(new Error(overdue ?? "Sticky host failure"));
       if (performance.now() >= this.deadline)
@@ -269,8 +357,12 @@ try {
       this.infrastructure();
       this.active = true;
       this.collector.beginHost(this.state, caseId);
-      this.deadline = performance.now() + this.budgets.case;
+      this.deadline = Math.min(
+        performance.now() + this.budgets.case,
+        this.started + this.budgets.run,
+      );
       const host: HostCase = {
+        openPeer: () => this.openPeer(),
         signal: this.body.signal,
         remainingMs: () =>
           Math.max(0, Math.min(this.deadline, this.started + this.budgets.run) - performance.now()),
@@ -307,6 +399,7 @@ try {
       this.signal.removeEventListener("abort", stop);
       this.revoke();
     }
+    await this.closeRemainingPeers();
     this.collector.results[caseId] = { body: verdict, teardown: { status: "not-entered" } };
     if (this.uncontainedPageWork())
       this.collector.fail(
@@ -316,6 +409,267 @@ try {
       );
     await this.deliver(verdict);
     if (this.signal.aborted || this.collector.failures.length) await this.recoverTeardown();
+  }
+  private peerCapability(state: DocumentState): HostPeer {
+    const controller = new AbortController();
+    this.peerSignals.set(state, controller);
+    const valid = () => {
+      this.checkBody();
+      controller.signal.throwIfAborted();
+      this.checkTarget(state, this.operationDeadline());
+    };
+    return Object.freeze({
+      signal: controller.signal,
+      script: (source: string) => {
+        valid();
+        return abortable(
+          this.execute(source, true, this.signal, undefined, false, state),
+          this.body.signal,
+        );
+      },
+      task: (source: string) => {
+        valid();
+        return this.task(
+          (operation) => `h.task(${JSON.stringify(operation)}, ${JSON.stringify(source)});`,
+          state,
+        );
+      },
+      reload: () => {
+        valid();
+        return this.reloadPeer(state);
+      },
+      close: () => {
+        const prior = this.closes.get(state);
+        if (prior) return prior;
+        valid();
+        return this.closePeer(state, false);
+      },
+    });
+  }
+  private async barrier(transition: PeerTransition, cleanup: boolean): Promise<number> {
+    const state = transition.source;
+    const signal = cleanup
+      ? AbortSignal.timeout(Math.max(1, Math.ceil(transition.deadline - performance.now())))
+      : this.signal;
+    await this.execute(
+      `h.prepareTransition(${JSON.stringify(transition.id)});`,
+      !cleanup,
+      signal,
+      undefined,
+      cleanup,
+      state,
+      transition.deadline,
+      true,
+    );
+    for (;;) {
+      const observed = await this.execute(
+        `const t=h.transition, r=window.__pageRunner;
+return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough !== null &&
+ r.pending === 0 && !r.failure && t.acknowledgedThrough === r.ackedThrough ? r.ackedThrough : null;`,
+        !cleanup,
+        signal,
+        undefined,
+        cleanup,
+        state,
+        transition.deadline,
+        true,
+      );
+      if (typeof observed === "number") return observed;
+      await abortable(Bun.sleep(10), signal);
+    }
+  }
+  private async transitionCommand<T>(
+    transition: PeerTransition,
+    cleanup: boolean,
+    action: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const watermark = await this.barrier(transition, cleanup);
+    const until = transition.deadline;
+    const signal = AbortSignal.any([
+      cleanup ? new AbortController().signal : this.signal,
+      AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
+    ]);
+    return abortable(
+      this.enqueue(async () => {
+        this.infrastructure(cleanup);
+        if (!cleanup) this.checkBody();
+        this.checkTarget(transition.source, until, true);
+        await this.driver.selectWindow(transition.source.handle, signal);
+        this.infrastructure(cleanup);
+        if (!cleanup) this.checkBody();
+        this.checkTarget(transition.source, until, true);
+        if ((await this.driver.handle(signal)) !== transition.source.handle)
+          throw new Error("Transition source handle changed");
+        this.infrastructure(cleanup);
+        if (!cleanup) this.checkBody();
+        const verified = await this.driver.script(
+          this.guard(
+            `const r=window.__pageRunner, t=h.transition;
+return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough === ${watermark} &&
+ r.ackedThrough === ${watermark} && r.pending === 0 && !r.failure;`,
+            false,
+            cleanup,
+            transition.source,
+          ),
+          signal,
+        );
+        this.infrastructure(cleanup);
+        if (!cleanup) this.checkBody();
+        this.checkTarget(transition.source, until, true);
+        if (!record(verified) || verified.kind !== "value" || verified.value !== true)
+          throw new Error("Transition source barrier changed");
+        this.collector.executeTransition(transition, watermark);
+        try {
+          return await action(signal);
+        } catch (error) {
+          transition.progress = { kind: "failed", detail: String(error) };
+          transition.source.physical = "unconfirmed";
+          this.fault(error);
+          throw error;
+        }
+      }),
+      signal,
+    );
+  }
+  private configure(state: DocumentState): void {
+    if (!this.configurePeer) throw new Error("Host peer configuration unavailable");
+    const token = new URL(state.expectedURL).searchParams.get("token");
+    if (!token) throw new Error("Missing peer lookup token");
+    this.configurePeer(state, token);
+  }
+  private async admitPeer(state: DocumentState, transition: PeerTransition): Promise<HostPeer> {
+    for (;;) {
+      this.checkBody();
+      this.checkTarget(state, transition.deadline);
+      if (state.doc && state.ready) break;
+      await this.sleep(10);
+    }
+    for (;;) {
+      const ready = await this.execute(
+        "return h.phase === 'driving' && window.__pageRunner.pending === 0;",
+        true,
+        this.signal,
+        undefined,
+        false,
+        state,
+        transition.deadline,
+      );
+      if (ready === true) break;
+      await this.sleep(10);
+    }
+    this.collector.completeTransition(transition, state.handle, state);
+    return this.peerCapability(state);
+  }
+  private async openPeer(): Promise<HostPeer> {
+    this.checkBody();
+    const transition = this.collector.prepareTransition(
+      this.state,
+      "create",
+      this.operationDeadline(),
+    );
+    const peer = crypto.randomUUID(),
+      token = crypto.randomUUID();
+    const url = new URL(this.state.expectedURL);
+    url.searchParams.set("token", token);
+    const state = await this.transitionCommand(transition, false, async (signal) => {
+      const before = await this.driver.handles(signal);
+      this.checkBody();
+      const handle = await this.driver.createWindow(signal);
+      this.checkBody();
+      const handles = await this.driver.handles(signal);
+      this.checkBody();
+      if (
+        before.includes(handle) ||
+        !handles.includes(handle) ||
+        before.some((item) => !handles.includes(item))
+      )
+        throw new Error("Created handle is not a fresh owned peer");
+      const state = this.collector.expectPeer(
+        this.state,
+        peer,
+        0,
+        token,
+        url.href,
+        handle,
+        transition,
+      );
+      this.configure(state);
+      await this.driver.selectWindow(handle, signal);
+      this.checkBody();
+      await this.driver.navigate(url.href, signal);
+      this.checkBody();
+      return state;
+    });
+    const capability = await this.admitPeer(state, transition);
+    await this.execute("h.transition = null;", true);
+    return capability;
+  }
+  private async reloadPeer(state: DocumentState): Promise<HostPeer> {
+    this.checkBody();
+    if (state.owner.kind !== "peer") throw new Error("Not a peer");
+    const owner = state.owner;
+    const transition = this.collector.prepareTransition(state, "reload", this.operationDeadline());
+    this.peerSignals.get(state)?.abort(new Error("Peer generation superseded"));
+    const successor = await this.transitionCommand(transition, false, async (signal) => {
+      const successor = this.collector.expectPeer(
+        this.state,
+        owner.peer,
+        owner.generation + 1,
+        crypto.randomUUID(),
+        state.expectedURL,
+        state.handle,
+        transition,
+      );
+      this.configure(successor);
+      await this.driver.reloadWindow(signal);
+      this.checkBody();
+      if ((await this.driver.handle(signal)) !== state.handle)
+        throw new Error("Reload changed peer handle");
+      this.checkBody();
+      return successor;
+    });
+    const capability = await this.admitPeer(successor, transition);
+    if (successor.doc === state.doc) throw new Error("Reload retained old document");
+    return capability;
+  }
+  private closePeer(state: DocumentState, cleanup: boolean): Promise<void> {
+    const prior = this.closes.get(state);
+    if (prior) return prior;
+    const until = cleanup
+      ? performance.now() + Math.min(this.budgets.operation ?? 15_000, 15_000)
+      : this.operationDeadline();
+    const transition = this.collector.prepareTransition(state, "close", until);
+    this.peerSignals.get(state)?.abort(new Error("Peer closed"));
+    const closing = this.transitionCommand(transition, cleanup, async (signal) => {
+      const before = await this.driver.handles(signal);
+      this.infrastructure(cleanup);
+      if (!cleanup) this.checkBody();
+      await this.driver.closeWindow(signal);
+      const remaining = await this.driver.handles(signal);
+      if (
+        remaining.includes(state.handle) ||
+        before.some((handle) => handle !== state.handle && !remaining.includes(handle))
+      )
+        throw new Error("Exact peer close not confirmed");
+      this.collector.completeTransition(transition, state.handle, null);
+    });
+    this.closes.set(state, closing);
+    return closing;
+  }
+  private async closeRemainingPeers(): Promise<void> {
+    const peers = this.collector.documents.filter(
+      (state) =>
+        state.owner.kind === "peer" &&
+        state.owner.coordinator === this.state &&
+        state.physical === "live",
+    );
+    for (const state of peers) {
+      try {
+        await this.closePeer(state, true);
+      } catch (error) {
+        this.collector.fail("peer-cleanup", String(error), state);
+      }
+    }
   }
   private async recoverTeardown(): Promise<void> {
     const signal = AbortSignal.timeout((this.budgets.teardown ?? this.budgets.case) + 10_000);

@@ -373,6 +373,32 @@ export class SafariDriver implements Driver {
       signal,
     );
   }
+  async createWindow(signal: AbortSignal): Promise<string> {
+    const value = await this.command("POST", "/window/new", { type: "tab" }, signal);
+    if (
+      !record(value) ||
+      typeof value.handle !== "string" ||
+      !value.handle ||
+      value.type !== "tab"
+    ) {
+      this.uncertain = true;
+      throw new Error("Invalid new window answer");
+    }
+    return value.handle;
+  }
+  async selectWindow(handle: string, signal: AbortSignal): Promise<void> {
+    await this.command("POST", "/window", { handle }, signal);
+  }
+  async reloadWindow(signal: AbortSignal): Promise<void> {
+    await this.command("POST", "/refresh", undefined, signal);
+  }
+  async closeWindow(signal: AbortSignal): Promise<void> {
+    const value = await this.command("DELETE", "/window", undefined, signal);
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item)) {
+      this.uncertain = true;
+      throw new Error("Invalid closed window answer");
+    }
+  }
   async navigate(url: string, signal: AbortSignal): Promise<void> {
     await this.command("POST", "/url", { url }, signal);
   }

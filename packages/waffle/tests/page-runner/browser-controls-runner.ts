@@ -1,3 +1,4 @@
+import { peerControl, peerControlModes } from "./peer-controls.js";
 import { buildFrameworkBootstrap } from "../../build.js";
 import { frameworkDOMControl, frameworkControlModes } from "./framework-dom-controls.js";
 import { hostStorageControl, hostStorageControlModes } from "./host-storage-controls.js";
@@ -312,6 +313,8 @@ async function engineControls(
       () => consumerControl(engine, mode, root),
       results,
     );
+  for (const mode of peerControlModes.filter((mode) => !selected || mode.includes(selected)))
+    await checkControl(engine, mode, () => peerControl(engine, mode, root), results);
   for (const mode of hostControlModes.filter(
     (mode) => !selected || `host-${mode}`.includes(selected),
   ))

@@ -648,6 +648,11 @@ test("public entries expose authoritative host domain types without widening dri
       host.signal.throwIfAborted();
       await host.script("return null");
       await host.task("await Promise.resolve()");
+      const peer = await host.openPeer();
+      await peer.script("return null");
+      await peer.task("await Promise.resolve()");
+      const successor = await peer.reload();
+      await successor.close();
       const database: Promise<string> = host.allocateDatabase("consumer");
       await database;
       await host.sleep(0);
