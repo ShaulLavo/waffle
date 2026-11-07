@@ -28,21 +28,13 @@
         "kind": "request-adapter",
         "descriptor": "adapter-options"
       },
-      "omitted": [
-        "callback_info"
-      ],
+      "omitted": ["callback_info"],
       "cReturn": "struct.future",
       "callback": {
         "type": "callback.request_adapter",
         "future": "token-as-future-id",
         "delivery": "guest-local-completion-pump",
-        "omitted": [
-          "next_in_chain",
-          "mode",
-          "callback",
-          "userdata1",
-          "userdata2"
-        ]
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
       }
     },
     {
@@ -60,21 +52,13 @@
         "kind": "request-device",
         "descriptor": "device-descriptor"
       },
-      "omitted": [
-        "callback_info"
-      ],
+      "omitted": ["callback_info"],
       "cReturn": "struct.future",
       "callback": {
         "type": "callback.request_device",
         "future": "token-as-future-id",
         "delivery": "guest-local-completion-pump",
-        "omitted": [
-          "next_in_chain",
-          "mode",
-          "callback",
-          "userdata1",
-          "userdata2"
-        ]
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
       }
     },
     {
@@ -398,21 +382,13 @@
         "kind": "error-scope",
         "member": "popErrorScope"
       },
-      "omitted": [
-        "callback_info"
-      ],
+      "omitted": ["callback_info"],
       "cReturn": "struct.future",
       "callback": {
         "type": "callback.pop_error_scope",
         "future": "token-as-future-id",
         "delivery": "guest-local-completion-pump",
-        "omitted": [
-          "next_in_chain",
-          "mode",
-          "callback",
-          "userdata1",
-          "userdata2"
-        ]
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
       }
     },
     {
@@ -2277,10 +2253,7 @@
     ]
   },
   "omit": {
-    "device_descriptor": [
-      "device_lost_callback_info",
-      "uncaptured_error_callback_info"
-    ]
+    "device_descriptor": ["device_lost_callback_info", "uncaptured_error_callback_info"]
   },
   "events": {
     "device_descriptor.device_lost_callback_info": "device-lost",
@@ -2922,27 +2895,11 @@
   },
   "encoding": {
     "integers": "little-endian",
-    "commandHeader": [
-      "u16 opcode",
-      "u16 flags",
-      "u32 length"
-    ],
-    "completionHeader": [
-      "u16 kind",
-      "u16 flags",
-      "u32 length",
-      "u32 token",
-      "i32 status"
-    ],
+    "commandHeader": ["u16 opcode", "u16 flags", "u32 length"],
+    "completionHeader": ["u16 kind", "u16 flags", "u32 length", "u32 token", "i32 status"],
     "recordAlignment": 8,
-    "handle": [
-      "u32 id",
-      "u32 generation"
-    ],
-    "token": [
-      "u32 token",
-      "u32 zero"
-    ],
+    "handle": ["u32 id", "u32 generation"],
+    "token": ["u32 token", "u32 zero"],
     "optionalStruct": "u32 presence followed by members if present",
     "strings": "u32 UTF-8 length, bytes, pad4; nullable_string permits 0xffffffff",
     "arrays": "u32 count then element alignment then elements",
@@ -3521,10 +3478,7 @@
       "parameter": "surface_texture",
       "type": "struct.surface_texture",
       "reply": "surface-texture",
-      "fields": [
-        "texture",
-        "status"
-      ],
+      "fields": ["texture", "status"],
       "chain": "guest-local-empty-output-chain"
     }
   }
