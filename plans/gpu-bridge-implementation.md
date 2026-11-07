@@ -617,3 +617,15 @@ Software measurements retain all original 8 ms slice and 100 ms peer-gap classif
 attempts and their raw observations remain recorded rather than replaced by later samples.
 Same-grant open quotas, payload pressure, surface and regrant behavior, active runtime disposal,
 service failure, physical iPhone acceptance and full G0.3/G4 qualification remain later work.
+
+## G3 same-canvas regrant checkpoint, November 7, 2026
+
+Status: Approved. This bounded unit adds immediate revoke and regrant of the same canvas while
+an original unrelated native peer continues presenting. The proof holds the old owner's
+oversized compiled append, orders replacement configuration after service retirement and
+presenter release, and checks that later original work cannot revive old ownership or mutate
+the replacement. Permanent negative controls reject each missing proof independently.
+
+The 8 ms service-slice and 100 ms peer-gap targets stay unchanged. All raw timing samples,
+including misses, remain evidence. This is not hardware qualification or memory-reclamation
+proof. The async runner and its page-owned adapter extraction are separate work.
