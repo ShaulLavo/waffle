@@ -4,6 +4,7 @@ import {
   checkedSpan,
   GPU_LIMITS,
   GpuProtocolError,
+  GpuCallError,
   GpuResourceError,
   type Handle,
 } from "./protocol.js";
@@ -308,3 +309,91 @@ class CompletionWriter {
 const tables: WireTables = gpuStream;
 const callsByOpcode = new Map<number, CallLayout>();
 for (const call of tables.calls) callsByOpcode.set(call.opcode, call);
+
+/** Runs the same checked traversal for sizing and bounded in-arena encoding. */
+export function outputStruct(name: string, value: WireObject, destination?: Uint8Array): number {
+  const writer = new OutputWriter(destination);
+  writer.value(`struct.${name}`, value);
+  return writer.offset;
+}
+class OutputWriter {
+  offset = 0;
+  readonly #view: DataView | undefined;
+  constructor(readonly destination?: Uint8Array) {
+    this.#view = destination
+      ? new DataView(destination.buffer, destination.byteOffset, destination.byteLength)
+      : undefined;
+  }
+  #align(alignment: number): void {
+    this.offset = Math.ceil(this.offset / alignment) * alignment;
+  }
+  #advance(length: number): number {
+    const at = this.offset;
+    if (length > GPU_LIMITS.logicalBytes - at)
+      throw new GpuResourceError("Output exceeds logical capacity");
+    if (this.destination) checkedSpan(this.destination.byteLength, at, length);
+    this.offset += length;
+    return at;
+  }
+  #u32(value: number): void {
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff)
+      throw new GpuCallError("Invalid C u32 output");
+    const at = this.#advance(4);
+    this.#view?.setUint32(at, value, true);
+  }
+  value(type: string, value: WireValue): void {
+    this.#align(wireAlignment(type));
+    if (type.startsWith("struct.")) return this.#struct(type.slice(7), wireObject(value));
+    if (type.startsWith("chain.")) {
+      this.#u32(0);
+      return;
+    }
+    if (type.startsWith("array<")) {
+      const items = wireArray(value);
+      this.#u32(items.length);
+      this.#align(wireAlignment(type.slice(6, -1)));
+      for (const item of items) this.value(type.slice(6, -1), item);
+      return;
+    }
+    if (type.includes("string")) return this.#string(value);
+    if (type === "bool") {
+      this.#u32(value === true ? 1 : value === false ? 0 : invalidOutput());
+      return;
+    }
+    if (type === "uint64" || type === "usize") {
+      if (typeof value !== "bigint" || value < 0n || value > 0xffffffffffffffffn)
+        throw new GpuCallError("Invalid C u64 output");
+      const at = this.#advance(8);
+      this.#view?.setBigUint64(at, value, true);
+      return;
+    }
+    this.#u32(wireNumber(value));
+  }
+  #struct(name: string, object: WireObject): void {
+    const layout = tables.structs[name];
+    if (!layout) throw new GpuProtocolError("Unknown output structure");
+    for (const field of layout.fields) this.value(field.type, object[field.name] ?? null);
+  }
+  #string(value: WireValue): void {
+    if (typeof value !== "string") throw new GpuCallError("Invalid C string output");
+    const length = utf8Length(value);
+    this.#u32(length);
+    const at = this.#advance(length);
+    if (this.destination)
+      new TextEncoder().encodeInto(value, this.destination.subarray(at, at + length));
+    this.#align(4);
+    if (this.destination && this.offset > this.destination.byteLength)
+      throw new GpuProtocolError("Output padding exceeds capacity");
+  }
+}
+function invalidOutput(): never {
+  throw new GpuCallError("Invalid C boolean output");
+}
+export function utf8Length(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}

@@ -473,6 +473,7 @@ function collectStruct(
 export function compileSchema(yaml: unknown, input: unknown): WireTables {
   const source = record(yaml);
   const selected = record(input);
+  validateArena(record(selected.payloadArena));
   const calls = list(selected.calls).map((entry) =>
     compileCall(entry, named(source.objects), named(source.callbacks), record(selected.cOutput)),
   );
@@ -560,6 +561,28 @@ export function compileSchema(yaml: unknown, input: unknown): WireTables {
     throw new Error("Surface output layout mismatch");
   validateSelection(tables, selected);
   return tables;
+}
+
+function validateArena(layout: Record<string, unknown>): void {
+  const expected = {
+    byteLength: 1048576,
+    headerBytes: 64,
+    slots: 64,
+    slotBytes: 32,
+    directoryOffset: 64,
+    dataOffset: 2112,
+    dataBytes: 1046464,
+    terminalOffset: 0,
+    stateOffset: 0,
+    offsetOffset: 8,
+    lengthOffset: 12,
+    free: 0,
+    ready: 1,
+    reading: 2,
+    consumed: 3,
+  };
+  if (JSON.stringify(layout) !== JSON.stringify(expected))
+    throw new Error("Changed fixed payload arena contract");
 }
 
 function validateSelection(tables: WireTables, selected: Record<string, unknown>): void {

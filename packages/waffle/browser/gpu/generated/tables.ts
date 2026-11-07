@@ -5873,7 +5873,17 @@ export const gpuStream = {
       low_power: "low-power",
       high_performance: "high-performance",
     },
-    "enum.backend_type": gpuEnums["enum.backend_type"],
+    "enum.backend_type": {
+      undefined: "@omit",
+      null: null,
+      WebGPU: null,
+      D3D11: null,
+      D3D12: null,
+      metal: null,
+      vulkan: null,
+      openGL: null,
+      openGLES: null,
+    },
     "enum.feature_name": {
       core_features_and_limits: null,
       depth_clip_control: "depth-clip-control",
@@ -6658,8 +6668,8 @@ export const gpuStreamSources = {
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
   "browser/gpu/upstream/webgpu.h":
     "0314dc40d4641dfe9638ae82071926c0a4136a4bf525c54098b58be345e9b4ed",
-  "browser/gpu/stream.json": "52b1b336c0b20719b20d33046533ec0dfcf20e6e819a216f3ac5fa3869e7656f",
-  "tooling/gpu-stream.ts": "687bdb2c26d011bd8f164d70f3f0cfc51e11763e4991390d170d85e47dee68d6",
+  "browser/gpu/stream.json": "39ac0a803dfd25a09ce33506f9b80336f81e9ea83b5418a054bb15b946950795",
+  "tooling/gpu-stream.ts": "a59f699cce709b87942278ea73418d18ae443ec6ef8128c56f8fd878c75fa542",
   "tooling/gpu-stream-model.ts": "870f7f760af925a1a6b9c3afea31b9b944127df20c78d9ddaa4f8111157ead47",
   "tooling/gpu-stream-layout.ts":
     "02a5038bc7411a5b99cadbe54d74815494fddf74cd15940a9d0e59bdb81dc5c6",

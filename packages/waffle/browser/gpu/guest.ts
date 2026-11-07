@@ -7,6 +7,8 @@ import {
   atomicsNotify,
   atomicsWait,
   dataViewSetUint32,
+  dataViewGetUint32,
+  DataViewConstructor,
   Int32ArrayConstructor,
   MapConstructor,
   mapGet,
@@ -21,6 +23,8 @@ import {
   Uint8ArrayConstructor,
   objectCreate,
 } from "../../proc/intrinsics.js";
+import { gpuPayloadLayout } from "./generated/tables.js";
+import { PayloadDirectory, terminalErrno } from "./payload.js";
 import { RecordRing } from "./ring.js";
 import { LogicalAppend } from "./transport.js";
 import { ProcessError } from "../../proc/errors.js";
@@ -30,6 +34,7 @@ interface GuestGpuConnection {
   readonly control: Int32Array;
   readonly commands: RecordRing;
   readonly replies: RecordRing;
+  readonly payload: PayloadDirectory;
   closed: boolean;
 }
 const minimum = Math.min;
@@ -47,13 +52,14 @@ export function createGraphicsGuest(
   const send = (message: unknown) => reflectApply(sendMethod, port, [message]);
   const connections = new MapConstructor<number, GuestGpuConnection>();
   let next = 1;
-  const terminal = (entry: GuestGpuConnection) =>
-    entry.replies.terminal()?.reason ?? entry.commands.terminal()?.reason;
+  const terminal = (entry: GuestGpuConnection) => entry.commands.terminal()?.reason;
   const errno = (reason: number | undefined) => (reason === GPU_TERMINAL.resource ? -48 : -64);
   const synchronize = (entry: GuestGpuConnection): void => {
     if (!atomicsLoad(revocation, 0)) return;
     const reason = entry.commands.terminate(GPU_TERMINAL.revoked).reason;
     entry.replies.terminate(reason);
+    entry.payload.mirror(reason);
+    atomicsStore(entry.control, 1, reason);
     atomicsStore(entry.control, 0, reason === GPU_TERMINAL.resource ? -48 : -64);
     atomicsNotify(entry.control, 0);
   };
@@ -67,8 +73,10 @@ export function createGraphicsGuest(
     const entry = mapGet(connections, id);
     if (!entry) return id > 0 && id < next ? 0 : -8;
     entry.closed = true;
-    entry.commands.terminate(GPU_TERMINAL.closed);
-    entry.replies.terminate(GPU_TERMINAL.closed);
+    const reason = entry.commands.terminate(GPU_TERMINAL.closed).reason;
+    entry.replies.terminate(reason);
+    entry.payload.mirror(reason);
+    atomicsStore(entry.control, 1, reason);
     mapDelete(connections, id);
     send({ __proto__: null, type: "close", id });
     return 0;
@@ -83,21 +91,25 @@ export function createGraphicsGuest(
     const control = allocateSharedControl(64);
     const commands = allocateSharedControl(connection.commandBytes + 64);
     const replies = allocateSharedControl(connection.completionBytes + 64);
+    const arena = allocateSharedControl(gpuPayloadLayout.byteLength);
     const entry: GuestGpuConnection = {
       control: new Int32ArrayConstructor(control),
       commands: new RecordRing(commands, 8),
       replies: new RecordRing(replies, 16),
+      payload: new PayloadDirectory(arena),
       closed: false,
     };
     const id = next++;
     mapSet(connections, id, entry);
-    const message: GraphicsOpen = { type: "open", id, control, commands, replies };
+    const message: GraphicsOpen = { type: "open", id, control, commands, replies, arena };
     try {
       send(message);
     } catch {
       entry.closed = true;
-      entry.commands.terminate(GPU_TERMINAL.service);
-      entry.replies.terminate(GPU_TERMINAL.service);
+      const reason = entry.commands.terminate(GPU_TERMINAL.service).reason;
+      entry.replies.terminate(reason);
+      entry.payload.mirror(reason);
+      atomicsStore(entry.control, 1, reason);
       mapDelete(connections, id);
       return -64;
     }
@@ -182,10 +194,33 @@ export function createGraphicsGuest(
         invoke(() => completions(id, ptr, length, ns, written)),
       payload: (id: number, handle: number, ptr: number, length: number) =>
         invoke(() => {
-          guestSpan(memory, ptr, length);
-          guestSpan(memory, handle, 8);
+          const destination = guestSpan(memory, ptr, length);
+          const bytes = guestSpan(memory, handle, 8);
+          const view = new DataViewConstructor(
+            typedArrayBuffer(bytes),
+            typedArrayByteOffset(bytes),
+            8,
+          );
+          const identity = {
+            id: dataViewGetUint32(view, 0, true),
+            generation: dataViewGetUint32(view, 4, true),
+          };
           const entry = get(id);
-          return entry.closed || terminal(entry) ? -64 : -8;
+          if (entry.closed || terminal(entry)) return errno(terminal(entry));
+          return entry.payload.copyOnce(
+            identity,
+            destination,
+            () => terminal(entry),
+            (candidate) => {
+              const reason = entry.commands.terminate(candidate).reason;
+              entry.replies.terminate(reason);
+              entry.payload.mirror(reason);
+              atomicsStore(entry.control, 1, reason);
+              atomicsStore(entry.control, 0, terminalErrno(reason));
+              atomicsNotify(entry.control, 0);
+              return reason;
+            },
+          );
         }),
       close: (id: number) => invoke(() => close(id)),
     };
