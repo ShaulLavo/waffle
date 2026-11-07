@@ -34,7 +34,7 @@ export class GpuConnection {
     this.completions = new CompletionOwner({ commands, replies, arena: options.arena });
     this.#reader = new LogicalReader(commands, credit, options.maxLogical);
     try {
-      this.replay = new GpuReplay(target, this.completions, options.handles);
+      this.replay = new GpuReplay(target, this.completions, options.handles, credit);
     } catch (error) {
       this.#reader.dispose();
       commands.terminate(GPU_TERMINAL.service);

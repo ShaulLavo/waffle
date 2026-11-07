@@ -182,7 +182,7 @@ the callbacks retain private wait ownership. No payload exception is added for e
 `browser/display/guest.ts`, `browser/gpu/guest.ts`, `browser/gpu/ring.ts` and
 `browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
 `GraphicsConnection`, `GraphicsGrant`, `GraphicsOpen`, `GuestGpuConnection`, `RecordRing`,
-`RingWriter`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
+`RingWriter`, `PayloadDirectory`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
 native send/close methods are captured before executor hooks or guest execution. Fixed GPU
 controls use the installed shared-control allocator before construction. Each launch also borrows
 a fixed 64-byte revocation cell allocated and counted by the page owner. Guest imports capture
@@ -197,3 +197,8 @@ owner, descriptor lowering and native presenters run only in the dedicated respo
 Worker. Guest bundle-graph tests reject paths to those implementations, including dynamic paths.
 The visible canvas and bitmaprenderer context stay strongly owned by that service after guest
 exit. Device-backed frame textures and private presentation canvases do not.
+
+The fixed GPU payload directory is guest-reachable checked code. Its full-width slot atomics,
+DataView reads and payload copies use captured intrinsics. The command publication remains
+the terminal selector; the payload header only mirrors its winner. Payload handles name slots
+within the supplied connection, not a global provenance domain. No payload exception is added.
