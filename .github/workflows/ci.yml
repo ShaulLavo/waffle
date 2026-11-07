@@ -178,6 +178,7 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
             programs:
+              - ".github/actions/rust-build-cache/action.yml"
               - ".github/workflows/ci.yml"
               - ".github/actions/program-optimizer/action.yml"
               - "package.json"
@@ -1383,6 +1384,7 @@ jobs:
             target
           key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
+      - uses: ./.github/actions/rust-build-cache
       - run: cargo fetch --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
@@ -1429,7 +1431,7 @@ jobs:
       - run: bun run --cwd packages/python test:build
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
+      - run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
 
   gate:
     name: Complete CI gate

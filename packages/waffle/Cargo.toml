@@ -2,6 +2,12 @@
 members = ["network"]
 resolver = "3"
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = "s"
 lto = true

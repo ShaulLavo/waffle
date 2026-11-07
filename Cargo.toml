@@ -52,3 +52,9 @@ lto = "fat"
 panic = "abort"
 codegen-units = 1
 strip = "debuginfo"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
