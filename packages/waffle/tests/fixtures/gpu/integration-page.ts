@@ -30,7 +30,12 @@ let currentGrant: GraphicsGrant | undefined;
 const errors: string[] = [];
 const authority: unknown[] = [];
 const ownAuthority = new Map<string, unknown[]>();
-const workers: { url: string; worker: Worker; stopped: boolean }[] = [];
+const workers: {
+  url: string;
+  worker: Worker;
+  stopped: boolean;
+  createdAt: number;
+}[] = [];
 const nativeWorker = Worker;
 let descriptors: DescriptorTable;
 const notices: WorkerProcessMessage[] = [];
@@ -46,6 +51,7 @@ const disposalOpens: { grant: number; open: GraphicsOpen }[] = [];
 let disposalAudit: SharedArrayBuffer | undefined;
 const workerStops: { id: number; url: string; at: number }[] = [];
 let disposalArmed = false;
+let runtimeEpoch = 0;
 let peerPump: ReturnType<typeof setInterval> | undefined;
 
 /** @browserEntry */
@@ -73,7 +79,12 @@ export async function openIntegration(
         ? `${holdMode === "ownership" ? "/gpu/service-worker.ts/ownership" : url}?suppress=${suppress ? "1" : "0"}&hold=${holdMode}`
         : url;
       super(path, options);
-      workers.push({ url: String(path), worker: this, stopped: false });
+      workers.push({
+        url: String(path),
+        worker: this,
+        stopped: false,
+        createdAt: performance.now(),
+      });
       this.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
         if (typeof data !== "object" || data === null) return;
         if ("gpuSnapshot" in data && !freezeSnapshots) lastServiceSnapshot = data.gpuSnapshot;
@@ -95,11 +106,16 @@ export async function openIntegration(
       const found = workers.find((item) => item.worker === this);
       if (found) {
         found.stopped = true;
-        workerStops.push({ id: workers.indexOf(found) + 1, url: found.url, at: performance.now() });
+        workerStops.push({
+          id: workers.indexOf(found) + 1,
+          url: found.url,
+          at: performance.now(),
+        });
       }
       return super.terminate();
     }
   };
+  runtimeEpoch++;
   runtime = createGpuFixtureRuntime(
     () => currentGrant,
     (error) => errors.push(String(error)),
@@ -324,7 +340,8 @@ export async function serviceCommand(
     | "ownership-release"
     | "malformed-release"
     | "malformed-late"
-    | "admission-coverage",
+    | "admission-coverage"
+    | "service-hold-open",
   detail?: {
     token: string;
     surface: number;
@@ -594,10 +611,11 @@ export function activeDisposalAuditControl() {
 }
 
 function disposalWorkers() {
-  return workers.map(({ url, stopped, worker }, index) => ({
+  return workers.map(({ url, stopped, worker, createdAt }, index) => ({
     id: index + 1,
     url,
     stopped,
+    createdAt,
     ...disposalGuests.get(worker),
   }));
 }
@@ -624,4 +642,80 @@ function captureDisposalGuest(worker: Worker, message: unknown) {
     token: env.GPU_AUTHORITY_TOKEN,
     surface: surface.id,
   });
+}
+
+/** @browserEntry */
+export function serviceFailureState() {
+  return {
+    runtimeEpoch,
+    disposed: runtime!.disposed,
+    workers: disposalWorkers(),
+    controls: disposalControls(),
+    workerStops: workerStops.slice(),
+    revocations: Array.from(runs.values(), (run) => ({
+      pid: run.pid,
+      value: run.grant ? Atomics.load(new Int32Array(run.grant.connection.revocation), 0) : -1,
+    })),
+    snapshot: runtime!.sharedMemory.snapshot(),
+  };
+}
+/** @browserEntry */
+export async function failGpuService() {
+  const entry = workers.find(
+    (item) => item.url.includes("/gpu/service-worker.ts") && !item.stopped,
+  );
+  if (!entry || !runtime || runtime.disposed)
+    throw new Error("Missing live service failure target");
+  const before = serviceFailureState(),
+    id = crypto.randomUUID();
+  const error = new Promise<{
+    trusted: boolean;
+    message: string;
+    at: number;
+    worker: number;
+  }>((resolve, reject) => {
+    const observed = (event: ErrorEvent) => {
+      clearTimeout(timer);
+      resolve({
+        trusted: event.isTrusted,
+        message: event.message,
+        at: performance.now(),
+        worker: workers.indexOf(entry) + 1,
+      });
+    };
+    const timer = setTimeout(() => {
+      entry.worker.removeEventListener("error", observed);
+      reject(new Error("Service failure event deadline"));
+    }, 10000);
+    entry.worker.addEventListener("error", observed, { once: true });
+  });
+  const startedAt = performance.now();
+  entry.worker.postMessage({ test: "service-failure", id });
+  const fault = await error;
+  await Promise.all(Array.from(runs.values(), (run) => run.grant!.retired()));
+  clearInterval(peerPump);
+  peerPump = undefined;
+  const stopped = serviceFailureState();
+  const exits = [];
+  for (const slot of [1, 2, 3]) {
+    feedTriangle("\n", slot);
+    const exit = await stopTriangle(false, slot, false);
+    exits.push({ slot, guest: ownershipGuest(slot), ...exit });
+  }
+  entry.worker.postMessage({
+    test: "ownership-release",
+    id: crypto.randomUUID(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  pressureBurst();
+  return {
+    id,
+    startedAt,
+    before,
+    fault,
+    stopped,
+    exits,
+    after: serviceFailureState(),
+    audit: activeDisposalAuditControl(),
+  };
 }

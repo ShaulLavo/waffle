@@ -27,63 +27,88 @@ import {
 } from "./gpu-regrant-browser.js";
 import { bracketProof, screenshotEnd } from "./gpu-admission-browser.js";
 
-async function disposalCase(page: Page) {
+async function ownershipPhase(
+  page: Page,
+  options: {
+    name: string;
+    peer: number;
+    peerPid: unknown;
+    previous: Record<string, unknown>;
+  },
+) {
+  const last = progress(options.previous, options.peer);
+  const before = await until(page, (service) => peerAdvanced(service, options.peer, last));
+  const image = await pixels(page, 1, false);
+  assertTrianglePixels(image, "green");
+  const service = await screenshotEnd(page, options.peer, before);
+  return { name: options.name, peerPid: options.peerPid, before, service, pixels: image };
+}
+
+export async function startHeldOwnership(page: Page) {
   await invoke(page, "openIntegration", [false, "ownership", true]);
   await invoke(page, "observeActiveDisposal");
   await invoke(page, "activateDisplay");
+  const { controlGuest, controlExit, peerGuest } = await startOwnershipPeer(page);
+  const token = crypto.randomUUID();
+  const surface = await invoke(page, "ownershipSurface", [2]);
+  const observed = record(
+    await invoke(page, "serviceCommand", [
+      "ownership-observe",
+      { token, surface, mode: "disposal" },
+    ]),
+  );
+  const peer = number(entries(observed.owners).find((item) => item.state === "ready")!.id);
+  const phases: Record<string, unknown>[] = [];
+  const capture = async (name: string) => {
+    phases.push(
+      await ownershipPhase(page, {
+        name,
+        peer,
+        peerPid: peerGuest.pid,
+        previous: phases.length ? record(phases.at(-1)!.service) : observed,
+      }),
+    );
+  };
+  await capture("live");
+  await invoke(page, "launchTriangle", [["--fairness-heavy"], "gpu", 2, true]);
+  await checkpoint(page, "GPU_WAIT_STDIN stage=fairness-heavy-ready", 2);
+  const victimGuest = record(await invoke(page, "ownershipGuest", [2]));
+  const ready = await current(page);
+  const victim = number(entries(ready.owners).find((item) => item.surface === surface)!.id);
+  const armed = record(
+    await invoke(page, "serviceCommand", ["ownership-arm", { token, surface, mode: "disposal" }]),
+  );
+  if (armed.observerError) throw new Error(String(armed.observerError));
+  const auditControl = await invoke(page, "activeDisposalAuditControl");
+  await invoke(page, "feedTriangle", ["\n", 2]);
+  await until(
+    page,
+    (service) => service.nativeHeld === true && owner(service, victim, "held").pending === 1,
+  );
+  const blockedGuest = await invoke(page, "ownershipGuest", [2]);
+  await capture("held");
+  return {
+    token,
+    peer,
+    victim,
+    controlGuest,
+    controlExit,
+    peerGuest,
+    victimGuest,
+    blockedGuest,
+    coverage: armed.coverage,
+    auditControl,
+    phases,
+  };
+}
+
+async function disposalCase(page: Page) {
   try {
-    const { controlGuest, controlExit, peerGuest } = await startOwnershipPeer(page);
-    const token = crypto.randomUUID();
-    const surface = await invoke(page, "ownershipSurface", [2]);
-    const observed = record(
-      await invoke(page, "serviceCommand", [
-        "ownership-observe",
-        { token, surface, mode: "disposal" },
-      ]),
-    );
-    const peer = number(entries(observed.owners).find((item) => item.state === "ready")!.id);
-    const phases: Record<string, unknown>[] = [];
-    const capture = async (name: string) => {
-      const previous = phases.at(-1);
-      const last = progress(previous ? record(previous.service) : observed, peer);
-      const before = await until(page, (service) => peerAdvanced(service, peer, last));
-      const image = await pixels(page, 1, false);
-      assertTrianglePixels(image, "green");
-      const service = await screenshotEnd(page, peer, before);
-      phases.push({ name, peerPid: peerGuest.pid, before, service, pixels: image });
-    };
-    await capture("live");
-    await invoke(page, "launchTriangle", [["--fairness-heavy"], "gpu", 2, true]);
-    await checkpoint(page, "GPU_WAIT_STDIN stage=fairness-heavy-ready", 2);
-    const victimGuest = record(await invoke(page, "ownershipGuest", [2]));
-    const ready = await current(page);
-    const victim = number(entries(ready.owners).find((item) => item.surface === surface)!.id);
-    const armed = record(
-      await invoke(page, "serviceCommand", ["ownership-arm", { token, surface, mode: "disposal" }]),
-    );
-    if (armed.observerError) throw new Error(String(armed.observerError));
-    const auditControl = await invoke(page, "activeDisposalAuditControl");
-    await invoke(page, "feedTriangle", ["\n", 2]);
-    await until(
-      page,
-      (service) => service.nativeHeld === true && owner(service, victim, "held").pending === 1,
-    );
-    const blockedGuest = await invoke(page, "ownershipGuest", [2]);
-    await capture("held");
+    const held = await startHeldOwnership(page);
     const disposal = await invoke(page, "disposeActiveIntegration");
     const result = {
       kind: "active-runtime-disposal",
-      token,
-      peer,
-      victim,
-      controlGuest,
-      controlExit,
-      peerGuest,
-      victimGuest,
-      blockedGuest,
-      coverage: armed.coverage,
-      auditControl,
-      phases,
+      ...held,
       disposal,
     };
     try {
@@ -116,7 +141,7 @@ function requireProof(ok: boolean, message: string): asserts ok {
 function equal(before: unknown, after: unknown, message: string) {
   requireProof(JSON.stringify(before) === JSON.stringify(after), message);
 }
-function activeImport(value: unknown, expected: Record<string, unknown>) {
+export function activeImport(value: unknown, expected: Record<string, unknown>) {
   const item = record(value);
   requireProof(
     item.pid === expected.pid && item.token === expected.token && item.surface === expected.surface,
@@ -143,7 +168,7 @@ function activeImport(value: unknown, expected: Record<string, unknown>) {
   );
   return last;
 }
-function heldNative(service: Record<string, unknown>, victim: Record<string, unknown>) {
+export function heldNative(service: Record<string, unknown>, victim: Record<string, unknown>) {
   const scope = record(service.scopeResult),
     completion = record(service.heldCompletion);
   requireProof(
@@ -178,7 +203,7 @@ function heldNative(service: Record<string, unknown>, victim: Record<string, unk
     "missing completed compiled blob before native hold",
   );
 }
-function lifecycle(service: Record<string, unknown>, expected: Record<string, unknown>) {
+export function lifecycle(service: Record<string, unknown>, expected: Record<string, unknown>) {
   const events = entries(service.lifecycle).filter((event) => event.owner === expected.id);
   const configured = events.find((event) => event.kind === "configure");
   requireProof(

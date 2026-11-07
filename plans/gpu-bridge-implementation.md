@@ -663,11 +663,42 @@ The existing single-worker topology, 8 ms slice and 100 ms peer targets are unch
 does not complete broader G3 or qualify hardware. Production, async command and adapter fixtures,
 C producer, workload, deadlines, versions, workflow and budgets are unchanged.
 
-## G3 whole-service failure proof in progress
+## G3 whole-service failure checkpoint, November 8, 2026
 
-Status: Approved. Add one compiled active-load failure and serial recovery case. The original
-green peer must present correct pixels and new native queue work before the actual service
-Worker fails. The normal page owner must terminate that worker and settle retained connections
-and opening waiters. Recovery uses the same live runtime, a fresh eligible canvas and a new
-service incarnation. No original peer survives this global boundary. Production code, producer
-inputs, workloads, latency targets and hardware qualification are unchanged.
+Status: Approved. The ordinary compiled browser gate now exercises an uncaught exception inside
+the actual shared GPU Worker during active load. The original unchanged heavy guest completes
+its 200,000-draw blob and holds its real native error-scope result and completion. The original
+green peer presents correct pixels with new native queue work in both pre-fault screenshot
+brackets. A further original compiled guest waits in its actual open import while the service
+observer holds its posted open before admission.
+
+The browser delivers a trusted Worker error to the normal page owner. That owner terminates the
+failed Worker, revokes every old grant and publishes service-failure reason 5 to the original
+active connections and opening waiter. Original compiled calls return their correlated terminal
+error and the guests stop. Every old connection, including the green peer, stops at this global
+boundary. No continuous original-peer progress across failure is claimed.
+
+The same still-live runtime then opens normally with a fresh eligible canvas and grant. A new
+service realm starts only after the old Worker terminates. Its new owner and device identity,
+scoped to that realm, produce actual green pixels, native submissions and presentation. The
+recovery guest is not the original peer. Reusing a canvas lost with the dead Worker is not part
+of this contract.
+
+After termination, acceptance uses retained shared controls, grant promises, correlated compiled
+outcomes and physical Worker stop calls. It does not invent a native zero-resource snapshot or
+claim physical GPU-byte or memory reclamation. The pre-fault shared audit remains unchanged
+rather than claiming that a dead realm ran its canceled callback. Old publication counters stay
+terminal and fixed through a late release attempt and fresh-service recovery. Actual post-fault
+pixels are recorded without promising retention. Conservative shared-control debt stays counted.
+
+The existing disposal setup and strict scalar helpers are shared without weakening its original
+controls or discovery. Permanent controls reject fabricated faults, stale or rewritten histories,
+changed identities, late pending or rejected submissions, live old waiters, revived publications,
+concurrent services and incorrect recovery output. A legitimate settlement of work already
+pending before retirement remains accepted.
+
+The single-worker topology, 8 ms service slice and 100 ms live-peer gap targets remain unchanged.
+`hardwareQualified` remains false. All historical not-met evidence and the G0.3, G4 and physical
+iPhone limits remain. This bounded case is not full G3 or hardware qualification. Production,
+protected async command and adapter fixtures, C inputs, workloads, deadlines, versions, workflow
+and budgets are unchanged.
