@@ -93,6 +93,9 @@ class StandInPage {
   api!: OpfsClosePage;
   announce: (original: StandInOriginal) => void = () => undefined;
   dispatches = 0;
+  context(): { browser(): null } {
+    return { browser: () => null };
+  }
   on(_event: string, listener: (original: StandInOriginal) => void): void {
     this.announce = listener;
   }

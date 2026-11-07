@@ -1,3 +1,4 @@
+import { reportSequence } from "./report-stream.js";
 import {
   exactInventory,
   parseMessage,
@@ -18,7 +19,18 @@ export type CollectorPolicy = {
 };
 export class ObservationClosed extends Error {}
 export class ReportRejected extends Error {}
-export type Group = { id: string; role: "list" | "case" | "finish"; caseIds: string[] };
+export type Group = {
+  id: string;
+  role: "list" | "case" | "finish";
+  caseIds: string[];
+  execution?: "host";
+};
+export type HostPhase =
+  | { kind: "awaiting-ready" | "ready" }
+  | { kind: "driving"; startedAt: number }
+  | { kind: "teardown"; enteredAt: number }
+  | { kind: "terminal" };
+type PageTask = { status: "pending" } | { status: "pass" } | { status: "fail"; error: string };
 export type DocumentState = {
   group: Group;
   token: string;
@@ -29,11 +41,14 @@ export type DocumentState = {
   heartbeatAt: number;
   messages: string[];
   complete: boolean;
+  terminalAt: number | null;
   ready: boolean;
   retiring: boolean;
   cutoff: number | null;
   final: boolean;
   listed: boolean;
+  host: HostPhase | null;
+  tasks: Map<string, PageTask>;
 };
 export class Collector {
   readonly outcomes: Record<string, Outcome> = {};
@@ -68,11 +83,14 @@ export class Collector {
       heartbeatAt: this.now(),
       messages: [],
       complete: false,
+      terminalAt: null,
       ready: false,
       retiring: false,
       cutoff: null,
       final: false,
       listed: false,
+      host: group.execution === "host" ? { kind: "awaiting-ready" } : null,
+      tasks: new Map(),
     };
     this.documents.push(state);
     this.active = state;
@@ -118,10 +136,13 @@ export class Collector {
     if (!state || message.run !== this.run)
       return this.violation("Wrong run or no expected document", state);
     const encoded = JSON.stringify(message);
-    if (state.messages[message.seq] === encoded) return { ackedThrough: message.seq };
-    if (state.cutoff !== null) throw new ObservationClosed("Report after observation cutoff");
-    if (state !== this.active || message.seq !== state.messages.length)
-      return this.violation("Report sequence conflict or gap", state);
+    try {
+      if (reportSequence(state, message.seq, encoded) === "retry")
+        return { ackedThrough: message.seq };
+    } catch (error) {
+      return this.violation(String(error), state);
+    }
+    if (state !== this.active) return this.violation("Report sequence conflict or gap", state);
     if (!state.doc && message.kind !== "hello") return this.violation("Report before hello", state);
     if (state.doc && state.doc !== message.doc)
       return this.violation("Unexpected new document", state);
@@ -151,7 +172,19 @@ export class Collector {
         this.allocate(state, body.entry);
         return;
       case "case-start":
+        if (state.host) this.violation("Page start for host-driven case", state);
         this.startCase(state, body.caseId);
+        return;
+      case "case-ready":
+        this.hostTransition(state, body.caseId, "awaiting-ready");
+        state.host = { kind: "ready" };
+        return;
+      case "case-teardown":
+        this.hostTransition(state, body.caseId, "driving");
+        state.host = { kind: "teardown", enteredAt: this.now() };
+        return;
+      case "task-end":
+        this.taskEnd(state, body);
         return;
       case "case-end":
         this.endCase(state, body);
@@ -173,6 +206,46 @@ export class Collector {
         this.finish(state, body.remaining);
         return;
     }
+  }
+  private hostTransition(state: DocumentState, id: string, phase: HostPhase["kind"]): void {
+    if (
+      state !== this.active ||
+      state.group.role !== "case" ||
+      state.group.caseIds.length !== 1 ||
+      state.group.caseIds[0] !== id ||
+      state.host?.kind !== phase ||
+      state.complete ||
+      state.cutoff !== null
+    )
+      this.violation("Invalid host phase transition", state);
+  }
+  beginHost(state: DocumentState, id: string): void {
+    this.hostTransition(state, id, "ready");
+    this.startCase(state, id);
+    state.host = { kind: "driving", startedAt: this.now() };
+  }
+  registerTask(state: DocumentState, operation: string): void {
+    if (state !== this.active || state.host?.kind !== "driving" || state.tasks.has(operation))
+      this.violation("Invalid host task registration", state);
+    if (Array.from(state.tasks.values()).some((task) => task.status === "pending"))
+      throw new Error("Only one page task may execute at a time");
+    state.tasks.set(operation, { status: "pending" });
+  }
+  private taskEnd(state: DocumentState, body: Extract<Body, { kind: "task-end" }>): void {
+    if (
+      state !== this.active ||
+      !state.host ||
+      state.group.caseIds[0] !== body.caseId ||
+      state.tasks.get(body.operation)?.status !== "pending" ||
+      ["awaiting-ready", "ready"].includes(state.host.kind)
+    )
+      this.violation("Unexpected page task settlement", state);
+    state.tasks.set(
+      body.operation,
+      body.status === "pass"
+        ? { status: "pass" }
+        : { status: "fail", error: body.error ?? "Page task failed" },
+    );
   }
   private groupTerminal(state: DocumentState): boolean {
     if (state.group.role === "list") return state.listed;
@@ -200,17 +273,33 @@ export class Collector {
       state.complete
     )
       this.violation(`Case end before start or duplicate terminal: ${body.caseId}`, state);
-    if (body.status === "fail") {
-      this.outcomes[body.caseId] = { status: "fail", detail: body.error ?? "test failure" };
-      return;
-    }
-    if (this.policy.requireResult && !("result" in body))
+    if (state.host && state.host.kind !== "teardown")
+      this.violation("Host terminal before teardown", state);
+    if (body.status === "pass" && this.policy.requireResult && !("result" in body))
       this.violation("Missing required command result", state);
     if ("result" in body) {
       const snapshot = JSON.stringify(body.result);
       if (snapshot === undefined || new TextEncoder().encode(snapshot).byteLength > resultByteLimit)
         this.violation("Invalid or oversized result snapshot", state);
       this.results[body.caseId] = body.result;
+    }
+    if (
+      state.host &&
+      record(body.result) &&
+      record(body.result.teardown) &&
+      body.result.teardown.status === "timeout" &&
+      body.result.teardown.settled === false
+    )
+      this.fail(
+        "teardown-unconfirmed",
+        "Page teardown did not settle within its original hook window",
+        state,
+      );
+    state.terminalAt = this.now();
+    if (state.host) state.host = { kind: "terminal" };
+    if (body.status === "fail") {
+      this.outcomes[body.caseId] = { status: "fail", detail: body.error ?? "test failure" };
+      return;
     }
     try {
       this.policy.check(body.caseId, body.result);
@@ -267,11 +356,22 @@ export class Collector {
     if (now - runStartedAt >= budgets.run) return "run-timeout";
     if (!state || state.cutoff !== null) return null;
     if (!state.doc && now - state.startedAt >= budgets.hello) return "no-hello";
-    if (now - state.startedAt >= budgets.group) return "group-timeout";
+    if (
+      (state.host?.kind === "awaiting-ready" || state.host?.kind === "ready") &&
+      now - state.startedAt >= budgets.hello
+    )
+      return "no-case-ready";
+    const documentMs = state.host ? (budgets.caseDocument ?? budgets.group) : budgets.group;
+    if (now - state.startedAt >= documentMs) return "group-timeout";
+    if (
+      state.host?.kind === "teardown" &&
+      now - state.host.enteredAt >= (budgets.teardown ?? budgets.case) + 10_000
+    )
+      return "teardown-report-timeout";
     const running = state.group.caseIds
       .map((id) => this.outcomes[id])
       .find((item) => item?.status === "running");
-    if (running?.status === "running" && now - running.startedAt >= budgets.case)
+    if (!state.host && running?.status === "running" && now - running.startedAt >= budgets.case)
       return "case-hang";
     if (state.doc && now - state.heartbeatAt >= budgets.heartbeat) return "heartbeat-lost";
     return null;

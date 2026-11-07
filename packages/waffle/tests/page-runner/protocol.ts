@@ -1,9 +1,18 @@
 import type { StorageEntry } from "../storage-allocation.js";
+export type HostVerdict = { status: "pass"; result: unknown } | { status: "fail"; error: string };
+export type HostCase = {
+  readonly signal: AbortSignal;
+  remainingMs(): number;
+  script(source: string): Promise<unknown>;
+  task(source: string): Promise<void>;
+  sleep(ms: number): Promise<void>;
+};
 export type Body =
   | { kind: "hello"; token: string; group: string }
   | { kind: "list"; cases: unknown }
   | { kind: "allocation"; entry: StorageEntry }
-  | { kind: "case-start"; caseId: string }
+  | { kind: "case-start" | "case-ready" | "case-teardown"; caseId: string }
+  | { kind: "task-end"; caseId: string; operation: string; status: "pass" | "fail"; error?: string }
   | { kind: "case-end"; caseId: string; status: "pass" | "fail"; error?: string; result?: unknown }
   | { kind: "error"; message: string }
   | { kind: "doc-complete" | "retire-ready" }
@@ -22,6 +31,8 @@ export type Budgets = {
   case: number;
   group: number;
   run: number;
+  teardown?: number;
+  caseDocument?: number;
 };
 export const storageBudgets = { hello: 20_000, heartbeat: 10_000, case: 60_000, group: 90_000 };
 export function record(value: unknown): value is Record<string, unknown> {
@@ -48,7 +59,15 @@ function validBody(value: Record<string, unknown>): boolean {
     case "allocation":
       return storageEntry(value.entry);
     case "case-start":
+    case "case-ready":
+    case "case-teardown":
       return typeof value.caseId === "string";
+    case "task-end":
+      return (
+        typeof value.caseId === "string" &&
+        typeof value.operation === "string" &&
+        (value.status === "pass" || (value.status === "fail" && typeof value.error === "string"))
+      );
     case "case-end":
       return (
         typeof value.caseId === "string" &&
@@ -93,3 +112,11 @@ export function validateWorkerLabel(returned: unknown, expected: string): void {
 }
 
 export const resultByteLimit = 48 * 1024;
+
+export function formatHostError(error: unknown): string {
+  let text = String(error).slice(0, 16_384);
+  const encoder = new TextEncoder();
+  while (encoder.encode(JSON.stringify(text)).byteLength > 8192)
+    text = text.slice(0, Math.floor(text.length / 2));
+  return text;
+}

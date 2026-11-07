@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
@@ -160,7 +161,7 @@ async function inPage<T>(browser: Browser, label?: string): Promise<T> {
     page.on("pageerror", (error) => console.error(`Process page error: ${error.message}`));
     observation.record("goto-begin", { route: "/", waitUntil: "load", defaultTimeoutMs: 30_000 });
     try {
-      await page.goto(`http://127.0.0.1:${server!.port}/`);
+      await navigateTestPage(page, `http://127.0.0.1:${server!.port}/`);
       observation.record("goto-fulfilled");
     } catch (error) {
       observation.recordRejection("goto-rejected", error);

@@ -1631,6 +1631,337 @@ export const gpuStream = {
         },
       ],
     },
+    {
+      opcode: 34,
+      name: "device.create_compute_pipeline",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "handle",
+        object: "compute_pipeline",
+        source: "return",
+      },
+      cReturn: "object.compute_pipeline",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "createComputePipeline",
+        descriptor: "compute_pipeline_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.compute_pipeline",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.compute_pipeline_descriptor",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 35,
+      name: "command_encoder.begin_compute_pass",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "handle",
+        object: "compute_pass_encoder",
+        source: "return",
+      },
+      cReturn: "object.compute_pass_encoder",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "descriptor-method",
+        member: "beginComputePass",
+        descriptor: "compute_pass_descriptor",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "result",
+          type: "object.compute_pass_encoder",
+          optional: false,
+        },
+        {
+          name: "descriptor",
+          type: "struct.compute_pass_descriptor",
+          optional: true,
+        },
+      ],
+    },
+    {
+      opcode: 36,
+      name: "compute_pass_encoder.insert_debug_marker",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "insertDebugMarker",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "marker_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 37,
+      name: "compute_pass_encoder.pop_debug_group",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "popDebugGroup",
+      },
+      omitted: [],
+      fields: [],
+    },
+    {
+      opcode: 38,
+      name: "compute_pass_encoder.push_debug_group",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "pushDebugGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 39,
+      name: "compute_pass_encoder.set_pipeline",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setPipeline",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "pipeline",
+          type: "object.compute_pipeline",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 40,
+      name: "compute_pass_encoder.set_bind_group",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setBindGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_index",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "group",
+          type: "object.bind_group",
+          optional: true,
+        },
+        {
+          name: "dynamic_offsets",
+          type: "array<uint32>",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 41,
+      name: "compute_pass_encoder.set_immediates",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "set-immediates",
+        member: "setImmediates",
+        span: {
+          pointer: "data",
+          size: "size",
+        },
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "offset",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "data",
+          type: "bytes",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 42,
+      name: "compute_pass_encoder.dispatch_workgroups",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "dispatchWorkgroups",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "workgroupCountX",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "workgroupCountY",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "workgroupCountZ",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 43,
+      name: "compute_pass_encoder.dispatch_workgroups_indirect",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "dispatchWorkgroupsIndirect",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "indirect_buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "indirect_offset",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 44,
+      name: "compute_pass_encoder.end",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "end",
+      },
+      omitted: [],
+      fields: [],
+    },
+    {
+      opcode: 45,
+      name: "compute_pass_encoder.set_label",
+      receiver: "compute_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "label",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
   ],
   structs: {
     request_adapter_options: {
@@ -3057,6 +3388,73 @@ export const gpuStream = {
         },
       ],
     },
+    compute_pipeline_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.compute_pipeline_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "layout",
+          type: "object.pipeline_layout",
+          optional: true,
+        },
+        {
+          name: "compute",
+          type: "struct.compute_state",
+          optional: false,
+        },
+      ],
+    },
+    compute_state: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.compute_state",
+          optional: false,
+        },
+        {
+          name: "module",
+          type: "object.shader_module",
+          optional: false,
+        },
+        {
+          name: "entry_point",
+          type: "nullable_string",
+          optional: false,
+        },
+        {
+          name: "constants",
+          type: "array<struct.constant_entry>",
+          optional: false,
+        },
+      ],
+    },
+    compute_pass_descriptor: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.compute_pass_descriptor",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+        {
+          name: "timestamp_writes",
+          type: "struct.pass_timestamp_writes",
+          optional: true,
+        },
+      ],
+    },
   },
   enums: gpuEnums,
   browserEnums: {
@@ -3747,9 +4145,9 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "b80fa7645e8fcdc306c34084134777fde922802600cab23225186eee88c2dacb",
-  "tooling/gpu-stream.ts": "6b60fe39eb416a421af3dcd152d1e1cd0eda490db1f1da7a2d5064e0f3f530fc",
-  "tooling/gpu-stream-model.ts": "06fab05be7dbf25de664b1d651c669a492ce840eb655798d9691edd0a6c1f0c1",
+  "browser/gpu/stream.json": "e5105442aded7c05ed4084661f63999779ca3d91ce4f265ed6aaf43ee3f59d56",
+  "tooling/gpu-stream.ts": "9c9448db3d67ff3f1c7c78749c256cdbe5d282902c2fbdfbdf4e71496262c729",
+  "tooling/gpu-stream-model.ts": "fb9ede155add81072cd693c635c854ef0a3df5d8c8fa0bc0efec479d332364cd",
   "tooling/gpu-stream-layout.ts":
     "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
   "tests/fixtures/gpu/expected.json":
@@ -3758,6 +4156,8 @@ export const gpuStreamSources = {
     "948cf6b35746dc22d491fb2df20a503f9a89e42e3c302a4ff956a2aee1f48fd1",
   "tests/fixtures/gpu/scene-expected.json":
     "0b0d409701f46eb8cdbc78ab26ea1f63b0d2c73de45f1d01c4acdebd509092a8",
+  "tests/fixtures/gpu/compute-expected.json":
+    "e7e4d6864937478048150a60cf8ba5f9fb333c0862e29ea63e0459e774bbc24c",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {
@@ -3868,6 +4268,21 @@ export const gpuDescriptorAdapters = {
     output: "GPUBindGroupDescriptor",
     rules: {
       members: "explicit-dictionary-members-and-special-policies",
+    },
+  },
+  compute_pipeline_descriptor: {
+    input: "struct.compute_pipeline_descriptor",
+    output: "GPUComputePipelineDescriptor",
+    rules: {
+      layout: "null-handle-to-auto-otherwise-resolve",
+      compute: "compute_state-dictionary-with-constant-record",
+    },
+  },
+  compute_pass_descriptor: {
+    input: "struct.compute_pass_descriptor",
+    output: "GPUComputePassDescriptor",
+    rules: {
+      timestamp_writes: "optional-dictionary-omit-uint32-max-indices",
     },
   },
 };
@@ -4225,6 +4640,23 @@ export const gpuDictionaryMembers = {
     bytes_per_row: "bytesPerRow",
     rows_per_image: "rowsPerImage",
   },
+  compute_pipeline_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    layout: "layout",
+    compute: "compute",
+  },
+  compute_state: {
+    next_in_chain: null,
+    module: "module",
+    entry_point: "entryPoint",
+    constants: "constants",
+  },
+  compute_pass_descriptor: {
+    next_in_chain: null,
+    label: "label",
+    timestamp_writes: "timestampWrites",
+  },
 };
 export const gpuDictionaryRules = {
   chains: "reject-nonempty-unless-explicitly-allowlisted",
@@ -4248,6 +4680,8 @@ export const gpuDictionaryRules = {
     "length-prefixed-byte-span-replaces-C-pointer-and-size;writeBuffer-byte-count-is-span-length",
   nullablePassBindings: "null-group-and-vertex-buffer-become-explicit-JS-null",
   immediateSize: "pipeline-layout-immediate_size-to-immediateSize",
+  computeImmediates:
+    "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
 };
 export const gpuObjectKinds = {
   instance: 1,

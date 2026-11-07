@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import type { BrowserContext, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
@@ -185,7 +186,11 @@ async function openPage(
 ): Promise<Page> {
   const page = await budget.run("allocate page", () => context.newPage(), proof);
   page.on("worker", observers.capture);
-  await budget.run("navigate stable origin", () => page.goto(origin).then(() => undefined), proof);
+  await budget.run(
+    "navigate stable origin",
+    () => navigateTestPage(page, origin).then(() => undefined),
+    proof,
+  );
   return page;
 }
 async function terminate(

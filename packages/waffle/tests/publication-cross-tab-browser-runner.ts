@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { readyPersistent } from "./fixtures/persistent-ready";
 import { workspaceCleanupPostFailure } from "./fixtures/publication-cleanup-failure";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
@@ -117,7 +118,7 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
       page.on("pageerror", (error) => console.error(error));
       await observeDeaths(page);
       await observeWorkspaceChannels(page);
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
     }
     const descriptor = await control(
       first,
@@ -532,7 +533,7 @@ async function workspaceCleanupPage(
     page.on("pageerror", (error) => console.error(error));
     await observeDeaths(page);
     await observeWorkspaceChannels(page);
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const descriptor = await control(page, "workspaceAuthority", `cleanup-${crypto.randomUUID()}`);
     await control(page, "workspacePeer", descriptor);
     await exercise(page);
@@ -737,7 +738,7 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
       holder = await context.newPage();
     for (const page of [owner, holder]) {
       await observeDeaths(page);
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
     }
     await control(owner, "persistentSeed", name);
     await pendingClaimControl(owner, holder, name);
@@ -840,7 +841,7 @@ async function run(name: string, origin: string, persistentOnly: boolean): Promi
       page.on("console", (message) => console.log(message.text()));
       page.on("pageerror", (error) => console.error(error));
       await observeDeaths(page);
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
     }
     await currentPersistentBaseline(first);
     await persistentOwnerControls(browser, origin);
@@ -965,7 +966,7 @@ async function run(name: string, origin: string, persistentOnly: boolean): Promi
       "PASS queued acquisition cancellation joins cleanup and actual cancelled bootstrap never reaches setup",
     );
     const recovery = await context.newPage();
-    await recovery.goto(origin);
+    await navigateTestPage(recovery, origin);
     equal(await control(recovery, "peer", descriptor), {
       attached: true,
       authorityRootReceived: false,

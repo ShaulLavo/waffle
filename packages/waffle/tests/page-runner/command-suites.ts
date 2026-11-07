@@ -56,11 +56,13 @@ export const commands = [
   },
   {
     suite: "guest-watch",
-    entry: "/cases.js",
+    entry: "/guest-watch.js",
     exportName: "guestWatchCase",
     args: ["/guest.js", "/helper.js", "/writer.js"],
     sources: {
+      "/guest-watch.js": "page-runner/guest-watch-command.ts",
       "/cases.js": "guest-watch-browser-cases.ts",
+      "/race.js": "notification-race-cases.ts",
       "/guest.js": "fixtures/guest-watch-runtime-worker.ts",
       "/helper.js": "../browser/notification-worker.ts",
       "/writer.js": "fixtures/guest-watch-writer-worker.ts",
@@ -70,6 +72,8 @@ export const commands = [
       if (!record(result) || !counter(result.early) || !counter(result.late))
         throw new Error("Guest watch requires nonnegative integer early and late counters");
       if (result.early + result.late !== 200) throw new Error("guest watch proof did not finish");
+      if (!record(result.relay) || result.relay.iterations !== 200_000)
+        throw new Error("notification relay proof did not finish");
     },
   },
 ] satisfies Command[];

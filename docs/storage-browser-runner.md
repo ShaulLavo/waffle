@@ -57,3 +57,66 @@ IOS_UDID=<udid> bun packages/waffle/tests/search-executor-browser-runner.ts ios-
 ```
 
 The new page-runner case clocks reuse the desktop lifecycle bounds of 120, 60, and 600 seconds. Including list, finish, retirement, and cleanup, their total allowances are 510, 450, and 990 seconds. The bodies retain their shorter internal deadlines. All existing desktop engines and CI rows remain blocking.
+
+## Use the host from a Bun consumer
+
+Test tooling can import `runPageSuite`, `nativeMain`, `ownedDatabase` and the authoritative
+`SuiteAdapter`, `RunOptions`, `NativeOptions` and `PreparationContext` types from
+`waffle/testing/page-runner`. Browser pages import `isHostedPage`, `startPage` and
+`cleanupStorage` from `waffle/testing/page-runner/page`. Local controls explicitly import
+`PlaywrightDriver` from `waffle/testing/page-runner/playwright` and supply their own
+Playwright development dependency. The host and driver imports are Bun-only, not Node exports.
+
+An adapter's `assets({ scratch, signal })` prepares its complete same-origin asset map below
+the owned scratch directory. The callback settles only after its producer has stopped.
+Unconfirmed producers retain scratch. File blobs retain their MIME types. `page.path` and
+`page.script` select local document and module paths; reserved reporting routes take precedence.
+Keep `requireResult: true` in a result-bearing consumer policy. `ownedDatabase(prefix)` accepts
+only IndexedDB with the exact name `${prefix}-${run}` during a running case. Await allocation
+before opening it, reuse that name sequentially, and finish with exact-ledger cleanup.
+
+Pass a finite same-process `performance.now()` value as `startedAt` to include earlier setup
+in the absolute budget. An explicit `port` is validated and probed before preparation, then
+bound without fallback. Omit it to retain storage's environment behavior. A consumer may set
+`resultWaitMs: 90_000` for its terminal result window after navigation, with `case`, `group`
+and `run` budgets of 120,000 milliseconds. The original absolute deadline still wins, including
+report draining and finish retirement. Confirmed teardown runs after the execution clock stops.
+These test-only exports do not load through the production runtime.
+
+## Drive a case from the host
+
+The Bun entry `waffle/testing/page-runner` exports `SuiteCase`, `HostCase`, and
+`HostVerdict`. Add an optional `drive(host)` callback to a case descriptor. It runs
+original setup and assertions after receiver admission, under `budgets.case`.
+Return compact serializable evidence. Use `host.script(source)` for synchronous
+JSON observations or void mutations and `host.task(source)` for asynchronous void
+work. `host.sleep(ms)`, `host.signal`, and `host.remainingMs()` share the original
+setup/body deadline. Task completion uses ordered reports, not a long WebDriver
+request. Scripts return complete values up to the 4 MiB WebDriver response limit.
+
+The page entry exports `HostPageRun`. Supply
+`run: { kind: "host", teardown: async (request, verdict) => { /* original hook */ } }`.
+The page runs that hook once after the bound verdict, including setup failure.
+`budgets.teardown` is a separate hook window. `budgets.caseDocument` bounds the
+whole host case document. List and finish keep `budgets.group`. Omitted additions
+preserve page-driven behavior. Host callbacks and commands are revoked and joined
+before scratch deletion. Unsettled callbacks retain scratch and force exit 2 even
+if the browser session was deleted. Failure evidence is saved beside the result
+as `.diagnostics.json` before scratch removal.
+
+A known reporting failure revokes ordinary host commands immediately. Document,
+heartbeat, and enclosing run deadlines are checked at admission and dispatch, not
+only by a timer. After interruption, a still-bound, certain page receives at most
+one cleanup verdict under a fresh bound, and its original teardown is awaited.
+An unconfirmed in-flight command or teardown requires session containment instead
+of navigating away and treating cleanup as complete.
+
+## Framework-owned documents
+
+`waffle/testing/page-runner/framework` is a separate, test-only Node host. Node resolves prepared JavaScript after normal package preparation. The existing Bun host remains Bun-only. The framework host mounts its collector on the real Vite server, retains the exact provider URL, and owns one attached session and one command queue. It does not depend on a framework or browser SDK at runtime.
+
+Call `host.mount(server.middlewares)` in the Vite plugin before creating a session. It rejects duplicate and conflicting reserved routes. The attached provider registers public frame callbacks before connecting. Its command hook calls `host.requestStarted(this)`. Its transport uses `host.guardRequest` and `host.observeResponse`, so swallowed command-hook errors cannot permit HTTP dispatch or erase an uncertain response. Only navigation, frame, and cleanup callbacks receive `host.provider` authority. Consumer glue rejects unsupported input, screenshot, CDP, and ordinary viewport operations. Provider close awaits `host.detach()` without deleting the session. The parent deletes it once after joining consumers.
+
+The browser-only `waffle/testing/page-runner/framework-page` entry exposes `getFrameworkObservation()`. The consumer instruments both actual framework documents before modules, preserves original lifecycle calls and RPC, and converts its installed task types into `FrameworkTask` and `FrameworkUpdate` records. Collection awaits the independent inventory ACK. Other lifecycle methods enqueue without adding time to hooks or bodies. At the automatic viewport call site, await `waitForInitialViewport()` outside the command queue and send its one-use request to `host.initialViewport`. At the original matched cleanup response, call `cleanupResponseReceived()` and await `waitForRetirement()` before returning the isolated run. `catcherInstalled()` removes the temporary early listeners before the consumer's catcher tee takes over.
+
+The host retains both actual documents through separate acknowledged cutoffs. A complete selected file still has `rootBrowserSuiteComplete: false` and exits 4. Reporting, binding, timeout, or unconfirmed cleanup failures exit 2. `createFrameworkControl` is only for owned loopback HTTP controls and grants no native credit. The existing reporter-controls job discovers the focused `framework-` DOM controls; the installed-package gate runs the real SDK fake separately. Neither proves Safari or the consumer's original tests.

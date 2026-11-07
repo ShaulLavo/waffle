@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { createServer } from "node:net";
 import type { Browser, CDPSession, Page, Worker } from "playwright";
@@ -402,7 +403,7 @@ async function completedCheckpoint(): Promise<void> {
         workers.set(worker, false);
         worker.once("close", () => workers.set(worker, true));
       });
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
       equal(await page.evaluate(() => crossOriginIsolated), true);
     }
     [root, peer, audit] = pages;
@@ -578,7 +579,7 @@ async function checkpointPressure(): Promise<void> {
     );
     const browser = await runner.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const result = await page.evaluate(async () => {
       const path = "/continuity-pressure.js";
       const module: { verify: typeof nativeCheckpointPressure } = await import(path);
@@ -625,7 +626,7 @@ async function startupFlushFailure(): Promise<void> {
     const page = await browser.newPage();
     page.on("pageerror", (error) => console.error("startup fixture page error", error));
     page.on("console", (message) => console.log("startup fixture", message.text()));
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     await runStep(steps, 0, async () => {
       const outcome = await call(page, "start", { name }).then(
         (value) => ({ kind: "ready", value }),

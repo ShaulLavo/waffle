@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -168,7 +169,7 @@ async function inPage(
   contexts.add({ creation: contextCreation, stopped: false });
   const page = await (await contextCreation).newPage();
   page.on("pageerror", (error) => console.error(`${run.label} page: ${error.message}`));
-  await page.goto(url);
+  await navigateTestPage(page, url);
   console.log(JSON.stringify({ engine: name, passed: await run.evaluate(page) }));
   const errors = await closeBrowserResources(contexts, browsers);
   if (errors.length) throw new AggregateError(errors, `${name} cleanup failed`);

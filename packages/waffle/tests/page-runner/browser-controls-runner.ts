@@ -1,3 +1,7 @@
+import { buildFrameworkBootstrap } from "../../build.js";
+import { frameworkDOMControl, frameworkControlModes } from "./framework-dom-controls.js";
+import { hostControl, hostControlModes } from "./host-drive-controls.js";
+import { consumerControl, consumerControlModes } from "./consumer-controls.js";
 import { storagePolicy } from "./storage-policy.js";
 import {
   commandControl,
@@ -278,6 +282,15 @@ async function engineControls(
   if (engine !== "chromium" && engine !== "webkit")
     throw new Error(`Unsupported control engine ${engine}`);
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  for (const mode of frameworkControlModes.filter(
+    (mode) => !selected || `framework-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `framework-${mode}`,
+      () => frameworkDOMControl(engine, mode, root),
+      results,
+    );
   for (const mode of modes.filter((mode) => !selected || mode.includes(selected)))
     await checkControl(engine, mode, () => reporterControl(engine, mode, root), results);
   for (const mode of commandControlModes.filter(
@@ -289,6 +302,19 @@ async function engineControls(
       () => commandControl(engine, mode, root),
       results,
     );
+  for (const mode of consumerControlModes.filter(
+    (mode) => !selected || `consumer-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `consumer-${mode}`,
+      () => consumerControl(engine, mode, root),
+      results,
+    );
+  for (const mode of hostControlModes.filter(
+    (mode) => !selected || `host-${mode}`.includes(selected),
+  ))
+    await checkControl(engine, `host-${mode}`, () => hostControl(engine, mode, root), results);
   for (const label of ["wrong", "missing"] as const) {
     const name = `production-storage-${label}-label`;
     if (!selected || name.includes(selected))
@@ -316,6 +342,9 @@ async function main(): Promise<void> {
     resultPath = resultIndex < 0 ? undefined : args[resultIndex + 1];
   if (resultIndex >= 0 && (!resultPath || !isAbsolute(resultPath)))
     throw new Error("Use chromium webkit --result /absolute/control-results.json");
+  const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  if (!selected || frameworkControlModes.some((mode) => `framework-${mode}`.includes(selected)))
+    await buildFrameworkBootstrap();
   const results: ControlResult[] = [];
   const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
   await mkdir(root, { recursive: true });

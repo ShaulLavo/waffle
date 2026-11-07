@@ -1,3 +1,7 @@
+import {
+  navigateTestPage,
+  type NavigationPage as TestNavigationPage,
+} from "./browser-navigation.js";
 import type {
   Browser,
   BrowserContext,
@@ -131,7 +135,7 @@ export function navigationServerError(error: unknown): NavigationServerEvent {
 }
 
 type PageEvents = Pick<Page, "on" | "off" | "mainFrame">;
-type NavigationPage = PageEvents & Pick<Page, "goto">;
+type NavigationPage = PageEvents & TestNavigationPage;
 type ContextEvents = Pick<BrowserContext, "on" | "off">;
 type BrowserEvents = Pick<Browser, "on" | "off">;
 
@@ -215,7 +219,7 @@ export async function storageNavigate({
 }: StorageNavigation): Promise<void> {
   const stop = observeNavigation(diagnostics, page, context, browser);
   try {
-    await page.goto(target);
+    await navigateTestPage(page, target);
   } catch (error) {
     try {
       report(diagnostics.report(caseName));

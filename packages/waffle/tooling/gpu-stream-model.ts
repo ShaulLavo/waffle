@@ -18,7 +18,7 @@ export type Lowering =
   | { kind: "method"; member: string }
   | { kind: "descriptor-method"; member: string; descriptor: string }
   | {
-      kind: "write-buffer" | "write-texture";
+      kind: "write-buffer" | "write-texture" | "set-immediates";
       member: string;
       span: { pointer: "data"; size: "size" | "data_size" };
     }

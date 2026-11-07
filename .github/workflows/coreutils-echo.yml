@@ -85,8 +85,9 @@ jobs:
           bun install --frozen-lockfile --ignore-scripts
           bun run prepare:package
       - name: Download only this run's verified xargs artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
+          digest-mismatch: error
           name: xargs-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .build/xargs-process-input
       - run: bun run --cwd packages/coreutils test:echo:types

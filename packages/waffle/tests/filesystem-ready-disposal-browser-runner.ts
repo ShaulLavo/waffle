@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
@@ -72,7 +73,7 @@ async function proof(): Promise<void> {
   const allocated = await phase("context allocation", () => allocation);
   page = await phase("page allocation", () => allocated.newPage());
   page.on("worker", ownTarget);
-  await phase("fixture navigation", () => originalPage().goto(origin));
+  await phase("fixture navigation", () => navigateTestPage(originalPage(), origin));
   await phase("ready caller gate", () =>
     originalPage().evaluate(
       ({ spec, cutoff }) => window.filesystemShutdownFixture.startReady(spec, cutoff),

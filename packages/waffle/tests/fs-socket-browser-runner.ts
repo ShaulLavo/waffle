@@ -1,7 +1,8 @@
+import { navigateTestPage } from "./browser-navigation.js";
 if (process.argv[2] === "ios-safari") {
   const { nativeMain } = await import("./page-runner/native.js");
   const { commandAdapter } = await import("./page-runner/command-suites.js");
-  process.exit(await nativeMain(commandAdapter("fs-socket-attachment"), process.argv.slice(3)));
+  process.exit(await nativeMain(commandAdapter("fs-socket-attachment"), process.argv.slice(3), {}));
 }
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
@@ -19,7 +20,7 @@ try {
   const browser = await lifecycle.launch("firefox");
   try {
     const page = await browser.newPage();
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const passed = await page.evaluate(async () => {
       const path = "/socket-attachment.js";
       const module: typeof import("./fs-socket-attachment-browser.js") = await import(path);

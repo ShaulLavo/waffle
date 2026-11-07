@@ -65,7 +65,7 @@ export class FakeDriver implements Driver {
     await this.send({ kind: "hello", token: String(config.token), group: String(config.group) });
     await this.run(config.role, config.request);
   }
-  private async run(role: unknown, request: unknown): Promise<void> {
+  protected async run(role: unknown, request: unknown): Promise<void> {
     if (role === "finish") {
       if (this.mode === "finish-error")
         await this.send({ kind: "error", message: "finish failed without active case" });
@@ -82,6 +82,9 @@ export class FakeDriver implements Driver {
       if (!this.command) listIds(cases);
       await this.send({ kind: "list", cases: this.command ? this.command.list : cases });
     } else if (record(request)) await this.case(request);
+    await this.completeDocument();
+  }
+  protected async completeDocument(): Promise<void> {
     await this.send({ kind: "doc-complete" });
     this.retirement = setInterval(() => {
       void this.pollRetirement();
@@ -117,7 +120,7 @@ export class FakeDriver implements Driver {
     if (this.mode === "close") this.closed = true;
     if (this.mode === "driver-lost") this.uncertain = true;
   }
-  private async send(body: Body): Promise<void> {
+  protected async send(body: Body): Promise<void> {
     const response = await fetch(`${this.origin}/report`, {
       method: "POST",
       body: JSON.stringify({
