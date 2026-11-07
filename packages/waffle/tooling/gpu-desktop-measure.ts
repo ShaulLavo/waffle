@@ -3,7 +3,7 @@ import {
   desktopSchedule,
   desktopMeasurements,
 } from "../tests/fixtures/gpu/desktop-fairness-contract.js";
-import type { FairnessSnapshot } from "../tests/fixtures/gpu/fairness-observer.js";
+import { desktopObservation } from "../tests/fixtures/gpu/desktop-fairness-observation.js";
 import { assertRetired } from "../tests/gpu-browser-shared.js";
 
 export interface MeasurementController {
@@ -24,13 +24,6 @@ async function screenshot(controller: MeasurementController, slot: number, colou
     colour,
   ]);
 }
-function observedSnapshot(value: unknown): FairnessSnapshot {
-  // Values originate in the bundled test worker. The validator checks every field and correlation.
-  const result = qualificationRecord(value);
-  if (!result.fairness || typeof result.fairness !== "object")
-    throw new Error("Missing current desktop fairness snapshot");
-  return result.fairness as FairnessSnapshot;
-}
 async function runDesktopArm(
   controller: MeasurementController,
   arm: ReturnType<typeof desktopSchedule>[number],
@@ -43,7 +36,7 @@ async function runDesktopArm(
     raw.armed = await controller.call("desktop", "armDesktopWorkload", [arm.draws, arm.caps]);
     raw.peerReadyPixels = await screenshot(controller, 1, "green");
     raw.finished = await controller.call("desktop", "runDesktopWorkload", [arm.draws]);
-    raw.measurements = desktopMeasurements(observedSnapshot(raw.finished), arm.draws, arm.caps);
+    raw.measurements = desktopMeasurements(desktopObservation(raw.finished), arm.draws, arm.caps);
     raw.heavyPixels = await screenshot(controller, 0, "red");
     raw.peerPixels = await screenshot(controller, 1, "green");
     raw.retired = await controller.call("desktop", "retireDesktopArm");

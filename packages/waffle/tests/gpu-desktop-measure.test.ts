@@ -5,6 +5,7 @@ import {
   runDesktopMeasurements,
   type MeasurementController,
 } from "../tooling/gpu-desktop-measure.js";
+import { desktopObservation } from "./fixtures/gpu/desktop-fairness-observation.js";
 import { processMemorySample } from "../tooling/gpu-measure-host.js";
 import {
   gpuMeasurementRoutes,
@@ -56,6 +57,15 @@ function boundedObservation() {
 }
 test("bounded desktop validator keeps workload, native, queue, and epoch controls strict", () => {
   const snapshot = boundedObservation();
+  expect(desktopObservation({ fairness: snapshot })).toBe(snapshot);
+  for (const patch of [
+    { queue: [null] },
+    { blobs: [{}] },
+    { native: { "1:draw": {} } },
+    { armed: 1 },
+    { slices: [false] },
+  ])
+    expect(() => desktopObservation({ fairness: { ...snapshot, ...patch } })).toThrow();
   expect(desktopMeasurements(snapshot, 20000, "on")).toMatchObject({
     draws: 20000,
     drawSlices: 20,

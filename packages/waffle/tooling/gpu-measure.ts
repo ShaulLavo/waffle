@@ -143,6 +143,8 @@ async function collect(
   const finishMemory = sampleProcessMemory();
   try {
     return { ...(await collectReport(controller, options)), hostProcessMemory: finishMemory() };
+  } catch (error) {
+    return { kind: "failed", reason: String(error), hostProcessMemory: finishMemory() };
   } finally {
     finishMemory();
   }

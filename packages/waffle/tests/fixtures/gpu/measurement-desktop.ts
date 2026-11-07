@@ -50,7 +50,17 @@ export async function openDesktopArm(caps: DesktopCaps) {
     throw new Error("Incomplete native observer coverage incorrectly armed");
   if (feedTriangle("\n") !== 1) throw new Error("Desktop control stdin refused");
   const frame = await checkpoint("GPU_FRAME colour=red frame=1 validation=none");
-  return { firstCompiledFrameMarkerMs: performance.now() - start, incomplete, frame };
+  return {
+    firstCompiledFrameMarkerMs: performance.now() - start,
+    incomplete,
+    frame,
+    document: {
+      url: location.href,
+      timeOrigin: performance.timeOrigin,
+      isolated: crossOriginIsolated,
+      userAgent: navigator.userAgent,
+    },
+  };
 }
 /** @browserEntry */
 export async function armDesktopWorkload(draws: DesktopDraws, caps: DesktopCaps) {

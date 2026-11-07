@@ -203,6 +203,7 @@ async function extraDevices(options: MeasurementOptions) {
   const cohort: OwnedWorker[] = [];
   const devices: unknown[] = [];
   const retired: unknown[] = [];
+  let heldAt = "";
   try {
     for (let index = 0; index < options.extraWorkers; index++) {
       const owner = await openWorker(options.timeoutMs);
@@ -213,11 +214,15 @@ async function extraDevices(options: MeasurementOptions) {
         device: await request(owner, { kind: "device" }, options.timeoutMs),
       });
     }
+    heldAt = new Date().toISOString();
+    // Host RSS polling observes the live cohort. Startup timings exclude this observation hold.
+    await new Promise((resolve) => setTimeout(resolve, 600));
   } finally {
     for (const owner of cohort) retired.push(await closeWorker(owner, options.timeoutMs));
   }
   return {
     requested: options.extraWorkers,
+    processMemoryObservationWindow: { heldAt, disposedAt: new Date().toISOString(), holdMs: 600 },
     devices,
     retired,
     scope: "Bounded native extra-worker/device sample, not a maximum-device-count test",
