@@ -88,20 +88,23 @@ async function database(name: string): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error);
   });
 }
+function sentinelTransaction(db: IDBDatabase, name: string, write: boolean): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("sentinel", write ? "readwrite" : "readonly");
+    const store = tx.objectStore("sentinel");
+    const request = write ? store.put(`content:${name}`, "key") : store.get("key");
+    request.onsuccess = () => {
+      if (!write && request.result !== `content:${name}`) reject(new Error("SENTINEL_CHANGED"));
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
 async function sentinel(name: string, write: boolean): Promise<void> {
   const db = await database(name);
   try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction("sentinel", write ? "readwrite" : "readonly");
-      const store = tx.objectStore("sentinel");
-      const request = write ? store.put(`content:${name}`, "key") : store.get("key");
-      request.onsuccess = () => {
-        if (!write && request.result !== `content:${name}`) reject(new Error("SENTINEL_CHANGED"));
-      };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
+    await sentinelTransaction(db, name, write);
   } finally {
     db.close();
   }
