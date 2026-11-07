@@ -4,6 +4,13 @@ if (process.argv[2] === "ios-safari") {
   const { memoryGroupAdapter } = await import("./page-runner/memory-group-command.js");
   process.exit(await nativeMain(memoryGroupAdapter, process.argv.slice(3), { startedAt }));
 }
+if (process.argv[2] === "--controls") {
+  const { runMemoryGroupControls } = await import("./page-runner/memory-group-controls-runner.js");
+  const [root, scratch] = process.argv.slice(3);
+  if (!root || !scratch) throw new Error("Use --controls /absolute/results /short/owned/scratch");
+  await runMemoryGroupControls(root, scratch);
+  process.exit(0);
+}
 import { checkMemoryGroupResult } from "./page-runner/memory-group-command.js";
 import { navigateTestPage } from "./browser-navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";

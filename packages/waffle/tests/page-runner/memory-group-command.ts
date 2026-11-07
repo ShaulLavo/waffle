@@ -51,7 +51,7 @@ export const memoryGroupAdapter: SuiteAdapter<CommandRequest> = {
     signal.throwIfAborted();
     const assets: Record<string, Blob | string> = {
       "/page.js": await commandPageBundle({ ...request, id }),
-      "/memory-group-member.wasm": new Blob([verifiedFixture(directory)], {
+      "/memory-group-member.wasm": new Blob([new Uint8Array(verifiedFixture(directory))], {
         type: "application/wasm",
       }),
     };
