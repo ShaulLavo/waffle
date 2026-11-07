@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { verifiedGpuAsyncFixture } from "../scripts/build-gpu-fixture.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
@@ -20,7 +21,7 @@ export async function asyncRoutes(wasm: Uint8Array<ArrayBuffer>, signal?: AbortS
   ]) {
     signal?.throwIfAborted();
     if (!route || !source) throw new Error("Invalid async route");
-    routes[route] = await browserBundle(new URL(source, import.meta.url).pathname);
+    routes[route] = await browserBundle(fileURLToPath(new URL(source, import.meta.url)));
   }
   signal?.throwIfAborted();
   routes["/async.wasm"] = new Blob([wasm], { type: "application/wasm" });

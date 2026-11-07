@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "../tests/browser-runner-lifecycle.js";
@@ -44,9 +45,11 @@ export async function gpuMeasurementRoutes(
 ): Promise<Record<string, Blob | string>> {
   const routes: Record<string, Blob | string> = {
     "/": "<!doctype html><title>GPU measurements, not G0.3 qualification</title>",
-    "/measurement-page.js": await browserBundle(new URL("measurement-page.ts", fixtures).pathname),
+    "/measurement-page.js": await browserBundle(
+      fileURLToPath(new URL("measurement-page.ts", fixtures)),
+    ),
     "/measurement-worker.js": await browserBundle(
-      new URL("measurement-worker.ts", fixtures).pathname,
+      fileURLToPath(new URL("measurement-worker.ts", fixtures)),
     ),
     "/measurement-options.json": JSON.stringify(options),
   };
@@ -63,17 +66,19 @@ export async function gpuMeasurementRoutes(
   });
   if (options.desktopFairnessPairs)
     routes["/measurement-desktop.js"] = await browserBundle(
-      new URL("measurement-desktop.ts", fixtures).pathname,
+      fileURLToPath(new URL("measurement-desktop.ts", fixtures)),
     );
   routes["/measurement-runtime.js"] = await browserBundle(
-    new URL("measurement-runtime.ts", fixtures).pathname,
+    fileURLToPath(new URL("measurement-runtime.ts", fixtures)),
   );
-  routes["/gpu-guest.js"] = await browserBundle(new URL("integration-guest.ts", fixtures).pathname);
+  routes["/gpu-guest.js"] = await browserBundle(
+    fileURLToPath(new URL("integration-guest.ts", fixtures)),
+  );
   routes["/gpu/service-worker.ts"] = await browserBundle(
-    new URL("integration-service-worker.ts", fixtures).pathname,
+    fileURLToPath(new URL("integration-service-worker.ts", fixtures)),
   );
   routes["/fs-worker.js"] = await browserBundle(
-    new URL("../browser/fs-worker.ts", import.meta.url).pathname,
+    fileURLToPath(new URL("../browser/fs-worker.ts", import.meta.url)),
   );
   return routes;
 }

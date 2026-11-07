@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { expect, test } from "bun:test";
 import { posix } from "node:path";
 import { checkGpuBudget, GPU_BUDGETS } from "../tooling/gpu-size.js";
@@ -11,7 +12,7 @@ for (const entry of [
 ]) {
   test(`${entry} has no eager GPU or process activation edge`, async () => {
     const build = await Bun.build({
-      entrypoints: [new URL(`../${entry}`, import.meta.url).pathname],
+      entrypoints: [fileURLToPath(new URL(`../${entry}`, import.meta.url))],
       splitting: true,
       metafile: true,
       target: "browser",
@@ -43,7 +44,7 @@ for (const entry of [
 for (const entry of ["browser/worker.ts", "browser/gpu/guest.ts", "browser/display/guest.ts"]) {
   test(`${entry} never reaches the page display owner or GPU service, including dynamic imports`, async () => {
     const result = await Bun.build({
-      entrypoints: [new URL(`../${entry}`, import.meta.url).pathname],
+      entrypoints: [fileURLToPath(new URL(`../${entry}`, import.meta.url))],
       metafile: true,
       target: "browser",
     });
@@ -64,7 +65,7 @@ for (const entry of ["browser/worker.ts", "browser/gpu/guest.ts", "browser/displ
 }
 test("separate service entry reaches real WebGPU service without a process implementation", async () => {
   const result = await Bun.build({
-    entrypoints: [new URL("../browser/gpu/service-worker.ts", import.meta.url).pathname],
+    entrypoints: [fileURLToPath(new URL("../browser/gpu/service-worker.ts", import.meta.url))],
     metafile: true,
     target: "browser",
   });

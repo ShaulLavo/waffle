@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { navigateTestPage } from "./browser-navigation.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
@@ -40,7 +41,7 @@ export async function copyDrawNativeRoutes() {
   return {
     "/": "<!doctype html><title>Copy/draw native lowering controls</title>",
     "/copy-draw.js": await browserBundle(
-      new URL("./fixtures/gpu/copy-draw-native.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/copy-draw-native.ts", import.meta.url)),
     ),
   };
 }

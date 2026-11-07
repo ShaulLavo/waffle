@@ -1,9 +1,10 @@
+import { fileURLToPath } from "node:url";
 import { navigateTestPage } from "./browser-navigation.js";
 import { basename } from "node:path";
 import type { Page } from "playwright";
 export async function gpuLazyRoutes() {
   const build = await Bun.build({
-    entrypoints: [new URL("./fixtures/gpu/lazy-page.ts", import.meta.url).pathname],
+    entrypoints: [fileURLToPath(new URL("./fixtures/gpu/lazy-page.ts", import.meta.url))],
     target: "browser",
     format: "esm",
     splitting: true,

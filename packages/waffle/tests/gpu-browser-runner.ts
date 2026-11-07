@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import { navigateTestPage } from "./browser-navigation.js";
 import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
@@ -394,19 +395,19 @@ async function main() {
     const lazy = await gpuLazyRoutes();
     const routes = { ...(await qualificationRoutes()), ...lazy.routes };
     routes["/integration-page.js"] = await browserBundle(
-      new URL("./fixtures/gpu/integration-page.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/integration-page.ts", import.meta.url)),
     );
     routes["/gpu-guest.js"] = await browserBundle(
-      new URL("./fixtures/gpu/integration-guest.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/integration-guest.ts", import.meta.url)),
     );
     routes["/gpu/service-worker.ts"] = await browserBundle(
-      new URL("./fixtures/gpu/integration-service-worker.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/integration-service-worker.ts", import.meta.url)),
     );
     routes["/gpu/service-worker.ts/ownership"] = await browserBundle(
-      new URL("./fixtures/gpu/ownership-service-worker.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/ownership-service-worker.ts", import.meta.url)),
     );
     routes["/fs-worker.js"] = await browserBundle(
-      new URL("../browser/fs-worker.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("../browser/fs-worker.ts", import.meta.url)),
     );
     routes["/triangle.wasm"] = new Blob([verifiedGpuFixture(resolve(fixture, ".."))], {
       type: "application/wasm",
