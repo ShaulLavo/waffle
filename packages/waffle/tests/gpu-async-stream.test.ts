@@ -161,6 +161,6 @@ test("production output sizing and direct shared-arena UTF-8 writing match indep
     const length = outputStruct(vector.name, value);
     const output = new Uint8Array(new SharedArrayBuffer(length));
     outputStruct(vector.name, value, output);
-    expect(output).toEqual(literal(vector.hex));
+    expect<Uint8Array>(output).toEqual(literal(vector.hex));
   }
 });

@@ -1,4 +1,3 @@
-import type { WireTables } from "../../tooling/gpu-stream-model.js";
 import { gpuStream } from "./generated/tables.js";
 import {
   decodeCall,
@@ -992,8 +991,6 @@ function publishLoss(owner: CompletionOwner | undefined, handle: Handle, info: u
     message: errorMessage(info),
   });
 }
-
-const tables: WireTables = gpuStream;
 
 function watchLoss(
   lost: Promise<unknown>,

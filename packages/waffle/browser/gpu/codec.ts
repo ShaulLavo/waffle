@@ -388,7 +388,7 @@ class OutputWriter {
 function invalidOutput(): never {
   throw new GpuCallError("Invalid C boolean output");
 }
-export function utf8Length(value: string): number {
+function utf8Length(value: string): number {
   let bytes = 0;
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;

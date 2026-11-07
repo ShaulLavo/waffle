@@ -19,7 +19,6 @@ import { gpuPayloadLayout as layout } from "./generated/tables.js";
 import { GPU_TERMINAL, type Handle } from "./protocol.js";
 
 const integer = Number.isInteger;
-const NumberConstructor = Number;
 
 /** Shared directory reads are untrusted. The allocator keeps its own occupied ranges. */
 export class PayloadDirectory {
