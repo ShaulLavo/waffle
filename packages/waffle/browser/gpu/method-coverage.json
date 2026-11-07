@@ -249,9 +249,16 @@
     {
       "name": "command_encoder.resolve_query_set",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit resolve_query_set recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 63,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "resolveQuerySet"
+        }
+      }
     },
     {
       "name": "command_encoder.write_timestamp",
@@ -414,9 +421,16 @@
     {
       "name": "compute_pipeline.get_bind_group_layout",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Bind a guest-allocated handle to compute_pipeline.getBindGroupLayout(groupIndex), including implicit auto-layout ownership and invalidity.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 67,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "getBindGroupLayout"
+        }
+      }
     },
     {
       "name": "compute_pipeline.set_label",
@@ -524,9 +538,17 @@
     {
       "name": "device.create_query_set",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_query_set descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 62,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createQuerySet",
+          "descriptor": "query_set_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_render_pipeline_async",
@@ -538,9 +560,17 @@
     {
       "name": "device.create_render_bundle_encoder",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_render_bundle_encoder descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 46,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createRenderBundleEncoder",
+          "descriptor": "render_bundle_encoder_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_render_pipeline",
@@ -792,9 +822,16 @@
     {
       "name": "query_set.destroy",
       "group": "query",
-      "category": "deferred",
-      "reason": "Add query-set destruction and ordered lifetime handling after query-set creation; neither is currently selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 66,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
     },
     {
       "name": "queue.submit",
@@ -870,100 +907,203 @@
     {
       "name": "render_bundle_encoder.set_pipeline",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement set_pipeline in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 47,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.set_bind_group",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement set_bind_group in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 48,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.set_immediates",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Add explicit render_bundle_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 49,
+        "context": "bundle",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.draw",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement draw in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 50,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "draw"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.draw_indexed",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement draw_indexed in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 51,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexed"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.draw_indirect",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement draw_indirect in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 52,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndirect"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.draw_indexed_indirect",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement draw_indexed_indirect in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 53,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexedIndirect"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.insert_debug_marker",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement insert_debug_marker in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 54,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.pop_debug_group",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement pop_debug_group in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 55,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.push_debug_group",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement push_debug_group in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 56,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.set_vertex_buffer",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement set_vertex_buffer in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 57,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setVertexBuffer"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.set_index_buffer",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement set_index_buffer in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 58,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setIndexBuffer"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.finish",
       "group": "bundle",
-      "category": "deferred",
-      "reason": "Implement finish in the currently disabled render-bundle record and its typed nested replay; the reserved opcode is not implementation.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 59,
+        "context": "bundle",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "finish",
+          "descriptor": "render_bundle_descriptor"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign render_bundle_encoder.label through an explicit ordered lowering; render_bundle_encoder label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 60,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "label"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_pipeline",
@@ -1045,9 +1185,16 @@
     {
       "name": "render_pass_encoder.execute_bundles",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add execute_bundles to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 61,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "executeBundles"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.insert_debug_marker",
@@ -1129,16 +1276,30 @@
     {
       "name": "render_pass_encoder.begin_occlusion_query",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add begin_occlusion_query to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 64,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "beginOcclusionQuery"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.end_occlusion_query",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add end_occlusion_query to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 65,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "endOcclusionQuery"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.end",
@@ -1164,9 +1325,16 @@
     {
       "name": "render_pipeline.get_bind_group_layout",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Bind a guest-allocated handle to render_pipeline.getBindGroupLayout(groupIndex), including implicit auto-layout ownership and invalidity.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 68,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "getBindGroupLayout"
+        }
+      }
     },
     {
       "name": "render_pipeline.set_label",

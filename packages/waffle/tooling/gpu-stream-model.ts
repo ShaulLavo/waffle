@@ -37,7 +37,7 @@ export interface CallLayout {
   opcode: number;
   name: string;
   receiver: string;
-  context: "top" | "encoder" | "pass";
+  context: "top" | "encoder" | "pass" | "bundle";
   result: Result;
   cReturn: string;
   callback: null | {
