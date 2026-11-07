@@ -8,13 +8,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { GPU_ASYNC_FIXTURE_WASM, verifiedGpuAsyncFixture } from "../scripts/build-gpu-fixture.js";
 import { AsyncProtocolHost, type AsyncReplyFault } from "./fixtures/gpu/async-host.js";
 import expected from "./fixtures/gpu/async-expected.json";
 
 const root = resolve(import.meta.dir, "..");
-const scratch = mkdtempSync(join(process.env.GPU_SCRATCH_ROOT ?? "/work/tmp", "waffle-g2-c-"));
+const scratch = mkdtempSync(join(process.env.GPU_SCRATCH_ROOT ?? tmpdir(), "waffle-g2-c-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 const directory = process.env.GPU_FIXTURE_DIR;
 const wasm = directory ? verifiedGpuAsyncFixture(directory) : undefined;
