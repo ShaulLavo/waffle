@@ -1,5 +1,6 @@
 import { buildFrameworkBootstrap } from "../../build.js";
 import { frameworkDOMControl, frameworkControlModes } from "./framework-dom-controls.js";
+import { hostStorageControl, hostStorageControlModes } from "./host-storage-controls.js";
 import { hostControl, hostControlModes } from "./host-drive-controls.js";
 import { consumerControl, consumerControlModes } from "./consumer-controls.js";
 import { storagePolicy } from "./storage-policy.js";
@@ -315,6 +316,15 @@ async function engineControls(
     (mode) => !selected || `host-${mode}`.includes(selected),
   ))
     await checkControl(engine, `host-${mode}`, () => hostControl(engine, mode, root), results);
+  for (const mode of hostStorageControlModes.filter(
+    (mode) => !selected || `host-storage-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `host-storage-${mode}`,
+      () => hostStorageControl(engine, mode, root),
+      results,
+    );
   for (const label of ["wrong", "missing"] as const) {
     const name = `production-storage-${label}-label`;
     if (!selected || name.includes(selected))

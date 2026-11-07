@@ -94,6 +94,16 @@ work. `host.sleep(ms)`, `host.signal`, and `host.remainingMs()` share the origin
 setup/body deadline. Task completion uses ordered reports, not a long WebDriver
 request. Scripts return complete values up to the 4 MiB WebDriver response limit.
 
+`await host.allocateDatabase("prompt-costs")` returns exactly `prompt-costs-${run}`.
+The adapter must select `allocation: ownedDatabase("prompt-costs")`. Prefixes must
+be nonempty and at most 900 characters. The bound page awaits its allocation ACK
+and reports task completion before the host returns. Allocation shares the task
+slot and setup/body clock. It opens nothing and grants no additional cleanup
+policy. Await the returned name before constructing a FAST runtime, dispose its
+owner before sequential same-name reuse, and finish with `cleanupStorage(ledger)`.
+A failed or late return must not start a constructor. An accepted report whose
+ACK was lost still belongs to the exact ledger, even if the page cannot finish.
+
 The page entry exports `HostPageRun`. Supply
 `run: { kind: "host", teardown: async (request, verdict) => { /* original hook */ } }`.
 The page runs that hook once after the bound verdict, including setup failure.

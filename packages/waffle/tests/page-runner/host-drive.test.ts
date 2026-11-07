@@ -2,6 +2,7 @@ import { expect, test, spyOn } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { ownedDatabase } from "./storage-policy.js";
 import { HostDrive } from "./host-drive.js";
 import { HostConsumers } from "./owned-consumers.js";
 import { Collector } from "./collector.js";
@@ -21,8 +22,10 @@ class HostDriver extends FakeDriver {
   config: Record<string, unknown> = {};
   effects: number[] = [];
   reportFailure: string | null = null;
+  retired = false;
   dispatchGate: Promise<void> | undefined;
   completionBeforeResponse = false;
+  readonly allocations: string[] = [];
   constructor() {
     super("pass", { list: { ids: ["host"] } });
   }
@@ -57,7 +60,9 @@ class HostDriver extends FakeDriver {
     const runner = await super.script("return window.__pageRunner || null");
     const window = {
       __suiteConfiguration: this.config,
-      __pageRunner: record(runner) ? { ...runner, failure: this.reportFailure } : runner,
+      __pageRunner: record(runner)
+        ? { ...runner, failure: this.reportFailure, retired: this.retired }
+        : runner,
       effects: this.effects,
       __hostCase: {
         get phase() {
@@ -70,6 +75,15 @@ class HostDriver extends FakeDriver {
           this.verdicts.push(value);
           this.phase = "teardown";
           void this.terminal(value);
+        },
+        allocateDatabase: (operation: string, name: string) => {
+          this.allocations.push(name);
+          this.dispatchGate = this.send({ kind: "allocation", entry: { kind: "indexeddb", name } })
+            .then(() => this.send({ kind: "task-end", caseId: "host", operation, status: "pass" }))
+            .then(async () => {
+              this.completionBeforeResponse = true;
+              await Bun.sleep(10);
+            });
         },
         task: (operation: string) => {
           const reporting = this.send({
@@ -598,4 +612,274 @@ test("interruption before verdict dispatch attempts the first verdict once under
     expect(d.verdicts).toHaveLength(1);
     expect(JSON.stringify(result.results)).toContain('"teardown":{"status":"pass"}');
     expect(result.cleanup.scratch.status).toBe("confirmed");
+  }));
+
+test("allocation returns the exact policy-owned name after actual dispatch response", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    let returned = "";
+    const a = adapter(async (host) => {
+      returned = await host.allocateDatabase("host-storage");
+      expect(d.completionBeforeResponse).toBe(true);
+      await host.task("await Promise.resolve()");
+      return { name: returned };
+    });
+    a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+    const result = await runPageSuite(a, () => d, options(root));
+    expect(result.exit).toBe(0);
+    expect(returned).toBe(`host-storage-${result.run}`);
+    expect(d.allocations).toEqual([returned]);
+    expect(result.ledger).toEqual([{ kind: "indexeddb", name: returned }]);
+    expect(d.stopCalls).toBe(1);
+  }));
+for (const prefix of ["", "x".repeat(901)]) {
+  test(`allocation rejects invalid prefix length ${prefix.length} before dispatch`, () =>
+    fixture(async (root) => {
+      const d = new HostDriver();
+      const result = await runPageSuite(
+        adapter(async (host) => {
+          await expect(host.allocateDatabase(prefix)).rejects.toThrow("Invalid database prefix");
+          return true;
+        }),
+        () => d,
+        options(root),
+      );
+      expect(result.exit).toBe(0);
+      expect(d.allocations).toEqual([]);
+      expect(result.ledger).toEqual([]);
+    }));
+}
+test("allocation retained by a callback rejects after capability revocation", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    let saved: HostCase | undefined;
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        saved = host;
+        return true;
+      }),
+      () => d,
+      options(root),
+    );
+    if (!saved) throw new Error("Missing actual host capability");
+    await expect(saved.allocateDatabase("host-storage")).rejects.toThrow();
+    expect(result.exit).toBe(0);
+    expect(d.allocations).toEqual([]);
+  }));
+
+for (const binding of [
+  "run",
+  "token",
+  "doc",
+  "caseId",
+  "role",
+  "execution",
+  "url",
+  "handle",
+  "phase",
+  "retired",
+  "reporter",
+  "closed",
+]) {
+  test(`allocation same-script ${binding} guard rejects without dispatch or constructor`, () =>
+    fixture(async (root) => {
+      const d = new HostDriver();
+      const a = adapter(async (host) => {
+        if (["run", "token", "caseId", "role", "execution"].includes(binding))
+          d.config[binding] = "wrong";
+        if (binding === "doc") d.currentDoc = "replacement";
+        if (binding === "url") d.currentURL = "http://wrong/";
+        if (binding === "handle") d.handle = async () => "foreign";
+        if (binding === "phase") d.phase = "terminal";
+        if (binding === "retired") d.retired = true;
+        if (binding === "reporter") d.reportFailure = "REPORT_FAILURE";
+        if (binding === "closed") d.uncertain = true;
+        await host.allocateDatabase("host-storage");
+        await host.script("window.effects.push(1)");
+        return true;
+      });
+      a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+      const result = await runPageSuite(a, () => d, options(root));
+      expect(result.exit).toBe(2);
+      expect(d.allocations).toEqual([]);
+      expect(d.effects).toEqual([]);
+      expect(result.ledger).toEqual([]);
+      expect(d.stopCalls).toBe(1);
+    }));
+}
+for (const policy of [undefined, ownedDatabase("other")]) {
+  test(`allocation with ${policy ? "wrong" : "absent"} policy cannot return a name or ledger`, () =>
+    fixture(async (root) => {
+      const d = new HostDriver();
+      const a = adapter(async (host) => {
+        await host.allocateDatabase("host-storage");
+        await host.script("window.effects.push(1)");
+        return true;
+      });
+      a.policy = { ...a.policy, allocation: policy };
+      const result = await runPageSuite(a, () => d, options(root));
+      expect(result.exit).toBe(2);
+      expect(result.ledger).toEqual([]);
+      expect(d.effects).toEqual([]);
+    }));
+}
+test("allocation may settle before its dispatch response but cannot return early", () =>
+  fixture(async (root) => {
+    const d = new HostDriver(),
+      response = Promise.withResolvers<void>();
+    const script = d.script.bind(d);
+    let returned = false;
+    d.script = async (source) => {
+      const answer = await script(source);
+      if (!source.includes("h.allocateDatabase(")) return answer;
+      expect(d.completionBeforeResponse).toBe(true);
+      expect(returned).toBe(false);
+      response.resolve();
+      return answer;
+    };
+    const a = adapter(async (host) => {
+      await host.allocateDatabase("host-storage");
+      returned = true;
+      return true;
+    });
+    a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+    const result = await runPageSuite(a, () => d, options(root));
+    await response.promise;
+    expect(result.exit).toBe(0);
+    expect(returned).toBe(true);
+  }));
+test("uncertain dispatch after accepted allocation and task completion never returns its name", () =>
+  fixture(async (root) => {
+    const d = new HostDriver(),
+      script = d.script.bind(d);
+    d.script = async (source) => {
+      const answer = await script(source);
+      if (!source.includes("h.allocateDatabase(")) return answer;
+      d.uncertain = true;
+      throw new Error("ACTUAL_RESPONSE_LOST");
+    };
+    const a = adapter(async (host) => {
+      await host.allocateDatabase("host-storage");
+      await host.script("window.effects.push(1)");
+      return true;
+    });
+    a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+    const result = await runPageSuite(a, () => d, options(root));
+    expect(result.exit).toBe(2);
+    expect(result.ledger).toHaveLength(1);
+    expect(d.completionBeforeResponse).toBe(true);
+    expect(d.effects).toEqual([]);
+    expect(result.runComplete).toBe(false);
+  }));
+for (const deadline of ["body", "document", "heartbeat", "run"]) {
+  test(`queued allocation cannot cross ${deadline} deadline after handle wait`, () =>
+    fixture(async (root) => {
+      const d = new HostDriver();
+      const a = adapter(async (host) => {
+        const handle = d.handle.bind(d);
+        d.handle = async () => {
+          await Bun.sleep(deadline === "run" ? 220 : 100);
+          return handle();
+        };
+        await host.allocateDatabase("host-storage");
+        await host.script("window.effects.push(1)");
+        return true;
+      });
+      a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+      a.budgets = () => ({
+        ...budgets,
+        case: deadline === "body" ? 60 : 1000,
+        caseDocument: deadline === "document" ? 60 : 2000,
+        heartbeat: deadline === "heartbeat" ? 60 : 1000,
+        run: deadline === "run" ? 150 : 5000,
+      });
+      const result = await runPageSuite(a, () => d, options(root));
+      expect(result.exit).not.toBe(0);
+      expect(d.allocations).toEqual([]);
+      expect(result.ledger).toEqual([]);
+      expect(d.effects).toEqual([]);
+    }));
+}
+test("allocation accepts the same 900-character prefix bound as ownedDatabase", () =>
+  fixture(async (root) => {
+    const prefix = "x".repeat(900),
+      d = new HostDriver();
+    const a = adapter(async (host) => ({ name: await host.allocateDatabase(prefix) }));
+    a.policy = { ...a.policy, allocation: ownedDatabase(prefix) };
+    const result = await runPageSuite(a, () => d, options(root));
+    expect(result.exit).toBe(0);
+    expect(d.allocations).toEqual([`${prefix}-${result.run}`]);
+  }));
+
+for (const when of ["before-dispatch", "after-acceptance"]) {
+  test(`interruption ${when} prevents allocation return and constructors`, () =>
+    fixture(async (root) => {
+      const d = new HostDriver(),
+        controller = new AbortController();
+      const a = adapter(async (host) => {
+        if (when === "before-dispatch")
+          d.handle = async () => {
+            controller.abort("INTERRUPTED_BEFORE_ALLOCATION");
+            return "root";
+          };
+        else {
+          const script = d.script.bind(d);
+          d.script = async (source) => {
+            const answer = await script(source);
+            if (source.includes("h.allocateDatabase("))
+              controller.abort("INTERRUPTED_AFTER_ACCEPTANCE");
+            return answer;
+          };
+        }
+        await host.allocateDatabase("host-storage");
+        await host.script("window.effects.push(1)");
+        return true;
+      });
+      a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+      const result = await runPageSuite(a, () => d, {
+        ...options(root),
+        signal: controller.signal,
+      });
+      expect(result.exit).toBe(2);
+      expect(result.ledger).toHaveLength(when === "before-dispatch" ? 0 : 1);
+      expect(d.effects).toEqual([]);
+      expect(d.stopCalls).toBe(1);
+    }));
+}
+test("aborted allocation wait retains its actual command and callback until they join", () =>
+  fixture(async (root) => {
+    const d = new HostDriver(),
+      release = Promise.withResolvers<void>(),
+      dispatched = Promise.withResolvers<void>();
+    const script = d.script.bind(d);
+    d.script = async (source) => {
+      const answer = await script(source);
+      if (!source.includes("h.allocateDatabase(")) return answer;
+      dispatched.resolve();
+      await release.promise;
+      return answer;
+    };
+    const a = adapter(async (host) => {
+      await host.allocateDatabase("host-storage");
+      await host.script("window.effects.push(1)");
+      return true;
+    });
+    a.policy = { ...a.policy, allocation: ownedDatabase("host-storage") };
+    a.budgets = () => ({ ...budgets, run: 300 });
+    try {
+      const result = await runPageSuite(a, () => d, options(root));
+      await dispatched.promise;
+      const saved = JSON.stringify(result);
+      expect(result.exit).toBe(2);
+      expect(result.cleanup.session.status).toBe("confirmed");
+      expect(result.cleanup.scratch.status).toBe("unconfirmed");
+      release.resolve();
+      await Bun.sleep(30);
+      expect(JSON.stringify(result)).toBe(saved);
+      expect(d.effects).toEqual([]);
+      expect(d.stopCalls).toBe(1);
+    } finally {
+      release.resolve();
+      await release.promise;
+    }
   }));

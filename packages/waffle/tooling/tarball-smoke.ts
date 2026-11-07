@@ -179,7 +179,7 @@ const pageRunnerScript = `
   const built = await Bun.build({ entrypoints: [resolve("page.ts")], target: "browser", metafile: true });
   if (!built.success || !built.metafile) throw new Error("installed page build failed");
   for (const path of Object.keys(built.metafile.inputs)) {
-    if (path.startsWith("node:") || /playwright|browser-runner-lifecycle|storage-browser|\\/(core|fs|proc|browser|network)\\//.test(path)) throw new Error("installed page graph leak " + path);
+    if (path.startsWith("node:") || /playwright|browser-runner-lifecycle|storage-browser|host-storage-control|\\/(core|fs|proc|browser|network)\\//.test(path)) throw new Error("installed page graph leak " + path);
     if (!resolve(path).startsWith(process.cwd() + "/")) throw new Error("checkout dependency leak " + path);
   }
 `;
@@ -204,6 +204,8 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
     const remaining = host.remainingMs();
     await host.script("window.fixture = 1;");
     await host.task("await Promise.resolve();");
+    const database: Promise<string> = host.allocateDatabase("consumer");
+    await database;
     await host.sleep(1);
     return { remaining };
   },
