@@ -1,3 +1,4 @@
+import { validGraphicsOpen } from "../browser/gpu/protocol.ts";
 import { expect, test } from "bun:test";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
 import { PayloadDirectory } from "../browser/gpu/payload.ts";
@@ -190,19 +191,16 @@ test("actual guest payload import validates both spans and snapshots an overlapp
   );
   let open: GraphicsOpen | undefined;
   const channel = new MessageChannel();
-  const port = {
-    postMessage(message: unknown) {
-      if (message && typeof message === "object" && "type" in message && message.type === "open") {
-        open = message as GraphicsOpen;
-        Atomics.store(new Int32Array(open.control), 0, 1);
-      }
-    },
-    close() {},
+  const port = channel.port1;
+  port.postMessage = (message: unknown) => {
+    if (!validGraphicsOpen(message, 4096, 4096)) return;
+    open = message;
+    Atomics.store(new Int32Array(open.control), 0, 1);
   };
   const memory = new WebAssembly.Memory({ initial: 1 });
   const guest = createGraphicsGuest(
     {
-      port: port as unknown as MessagePort,
+      port,
       gpu: true,
       revocation: new SharedArrayBuffer(64),
       surfaces: [],
