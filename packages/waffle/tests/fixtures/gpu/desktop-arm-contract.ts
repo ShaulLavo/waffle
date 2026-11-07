@@ -32,7 +32,7 @@ export function desktopIdentity(value: unknown, token: string, caps: DesktopCaps
   };
 }
 type Identity = ReturnType<typeof desktopIdentity>;
-export function desktopResult(value: unknown, expected: Identity) {
+function desktopResult(value: unknown, expected: Identity) {
   const item = record(value),
     identity = desktopIdentity(value, expected.token, expected.caps);
   if (
@@ -95,7 +95,7 @@ export function desktopPixels(value: unknown, identity: Identity, colour: string
   if (!rgba(pixels.center) || !rgba(pixels.corner)) throw new Error("Malformed desktop pixels");
   assertTrianglePixels({ center: pixels.center, corner: pixels.corner }, colour);
 }
-export function desktopService(value: unknown, caps: DesktopCaps) {
+function desktopService(value: unknown, caps: DesktopCaps) {
   const item = record(value);
   for (const key of [
     "connections",
