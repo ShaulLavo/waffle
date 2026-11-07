@@ -1,10 +1,10 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// G0.2 display/guest baselines: 3,068 B and 4,932 B gzip. G1 scene service: 25,324 B.
-// Bun 1.4.4, 12% headroom. Creation/upload/binding descriptors justify the service increase.
+// G0.2 display/guest baselines: 3,068 B and 4,932 B gzip. G1 labels service: 28,763 B.
+// Bun 1.4.4, 12% headroom. Labels add 435 B over the pinned main service.
 // Display, guest and the existing core budget are unchanged.
-export const GPU_BUDGETS = { display: 3437, guest: 5524, service: 28363 };
+export const GPU_BUDGETS = { display: 3437, guest: 5524, service: 32215 };
 const entries = {
   display: "browser/display/owner.ts",
   guest: "browser/gpu/guest.ts",
