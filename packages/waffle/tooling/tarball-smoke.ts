@@ -235,6 +235,23 @@ const hostSuite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: [hostCase.id] }), run: hostRun, finish: async ledger => ledger.slice(),
 };
 export { hostAdapter, hostSuite };
+export function customDriver(driver: Driver): Driver {
+  return {
+    start: signal => driver.start(signal),
+    navigate: (url, signal) => driver.navigate(url, signal),
+    createWindow: signal => driver.createWindow(signal),
+    selectWindow: (handle, signal) => driver.selectWindow(handle, signal),
+    reloadWindow: signal => driver.reloadWindow(signal),
+    closeWindow: signal => driver.closeWindow(signal),
+    handle: signal => driver.handle(signal),
+    handles: signal => driver.handles(signal),
+    url: signal => driver.url(signal),
+    script: (source, signal) => driver.script(source, signal),
+    stop: () => driver.stop(),
+    get uncertain() { return driver.uncertain; },
+  };
+}
+
 const options: NativeOptions = { startedAt: performance.now(), port: 4186 };
 const suite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: ["consumer"] }),
