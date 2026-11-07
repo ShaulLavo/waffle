@@ -15,6 +15,7 @@ export class PlaywrightDriver implements Driver {
   private lifecycle = new BrowserRunnerLifecycle();
   private context: BrowserContext | undefined;
   private page: Page | undefined;
+  private readonly pages = new Map<string, Page>();
   private stopping: Promise<DriverCleanup> | undefined;
   uncertain = false;
   constructor(
@@ -29,6 +30,7 @@ export class PlaywrightDriver implements Driver {
     const profile = await this.lifecycle.directory(this.lifecycle.scratch, "p-");
     this.context = await this.lifecycle.persistent(this.engine, profile);
     this.page = this.context.pages()[0] ?? (await this.context.newPage());
+    this.pages.set("root", this.page);
     this.page.on("console", (message) => {
       if (message.type() === "error") console.error("Local runner console", message.text());
     });
@@ -41,6 +43,38 @@ export class PlaywrightDriver implements Driver {
     if (!this.page) throw new Error("No page");
     return this.page;
   }
+  async createWindow(signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted();
+    if (!this.context) throw new Error("No context");
+    const page = await this.context.newPage();
+    const handle = crypto.randomUUID();
+    this.pages.set(handle, page);
+    return handle;
+  }
+  async selectWindow(handle: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const page = this.pages.get(handle);
+    if (!page || page.isClosed()) throw new Error("Unknown window handle");
+    this.page = page;
+  }
+  async reloadWindow(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    try {
+      await this.current().reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
+    } catch (error) {
+      this.uncertain = true;
+      throw error;
+    }
+  }
+  async closeWindow(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    try {
+      await this.current().close();
+    } catch (error) {
+      this.uncertain = true;
+      throw error;
+    }
+  }
   async navigate(url: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     try {
@@ -52,11 +86,16 @@ export class PlaywrightDriver implements Driver {
   }
   async handle(signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
-    return "root";
+    for (const [handle, page] of this.pages) {
+      if (page === this.current() && !page.isClosed()) return handle;
+    }
+    throw new Error("Current window closed");
   }
   async handles(signal: AbortSignal): Promise<string[]> {
     signal.throwIfAborted();
-    return this.current().isClosed() ? [] : ["root"];
+    return Array.from(this.pages)
+      .filter(([, page]) => !page.isClosed())
+      .map(([handle]) => handle);
   }
   async url(signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();

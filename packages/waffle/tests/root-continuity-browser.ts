@@ -1,3 +1,4 @@
+import type { RootContinuityStorage } from "./root-continuity-command.js";
 import { createPersistentResidentOwner } from "../browser/persistent-resident-owner";
 import { MemoryBackend } from "../fs/backend";
 import { PersistentBackend } from "../fs/persistent";
@@ -42,7 +43,8 @@ function request(name: string) {
   };
 }
 
-async function completedCheckpoint(name: string) {
+async function completedCheckpoint(name: string, storageHooks?: RootContinuityStorage) {
+  if (storageHooks) await storageHooks.allocate({ kind: "indexeddb", name });
   const seed = publicationAdapter.fixture();
   const memory = residentMemory();
   const construction = new ResidentConstruction(
@@ -71,9 +73,10 @@ async function completedCheckpoint(name: string) {
 }
 
 /** @browserEntry Invoked through the explicit composition runner bundle. */
-export async function selectedRootComposition() {
-  const name = `root-continuity-${crypto.randomUUID()}`;
-  const saved = await completedCheckpoint(name);
+export async function selectedRootComposition(storageHooks?: RootContinuityStorage) {
+  const name = storageHooks?.name() ?? `root-continuity-${crypto.randomUUID()}`;
+  const saved = await completedCheckpoint(name, storageHooks);
+  if (storageHooks) await storageHooks.allocate({ kind: "indexeddb", name });
   const memory = residentMemory();
   const connect = FilesystemService.prototype.connect;
   const attach = MemoryBackend.prototype.attachShared;
@@ -146,6 +149,7 @@ export async function selectedRootComposition() {
     );
     await owner.stop();
     equal(memory.snapshot(), published, "escaped ledger retained after stop");
+    if (storageHooks) await storageHooks.allocate({ kind: "indexeddb", name });
     const reopened = await IndexedDBStorage.open(name, { whenBusy: "wait" });
     try {
       const selected = await reopened.load();
@@ -178,8 +182,12 @@ export async function selectedRootComposition() {
 }
 
 /** @browserEntry Invoked through the explicit composition runner bundle. */
-export async function startupFenceComposition(mode: "cancel" | "failure") {
-  const name = `root-continuity-${mode}-${crypto.randomUUID()}`;
+export async function startupFenceComposition(
+  mode: "cancel" | "failure",
+  storageHooks?: RootContinuityStorage,
+) {
+  const name = storageHooks?.name() ?? `root-continuity-${mode}-${crypto.randomUUID()}`;
+  if (storageHooks) await storageHooks.allocate({ kind: "indexeddb", name });
   const memory = residentMemory();
   const flush = PersistentBackend.prototype.flush;
   const close = IndexedDBStorage.prototype.close;

@@ -9,6 +9,7 @@ export interface MeasurementOptions {
   extraWorkers: number;
   timeoutMs: number;
   runtimeFixture: boolean;
+  desktopFairnessPairs: number;
 }
 export const defaultMeasurementOptions: MeasurementOptions = {
   trials: 5,
@@ -16,6 +17,7 @@ export const defaultMeasurementOptions: MeasurementOptions = {
   extraWorkers: 2,
   timeoutMs: 15_000,
   runtimeFixture: false,
+  desktopFairnessPairs: 0,
 };
 export function measurementOptions(value: unknown): MeasurementOptions {
   const input = qualificationRecord(value);
@@ -32,6 +34,7 @@ export function measurementOptions(value: unknown): MeasurementOptions {
     extraWorkers: integer("extraWorkers", 1, 4),
     timeoutMs: integer("timeoutMs", 100, 30_000),
     runtimeFixture: input.runtimeFixture,
+    desktopFairnessPairs: integer("desktopFairnessPairs", 0, 5),
   };
 }
 export function distribution(samples: readonly number[]) {

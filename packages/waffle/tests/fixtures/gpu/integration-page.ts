@@ -14,6 +14,7 @@ import { pressureBurst } from "./qualification-contract.js";
 
 interface Run {
   pid: number;
+  authorityToken: string;
   input: PipeEndpoint;
   output: PipeEndpoint;
   grant: GraphicsGrant | undefined;
@@ -26,6 +27,7 @@ let rootPid = 0;
 let currentGrant: GraphicsGrant | undefined;
 const errors: string[] = [];
 const authority: unknown[] = [];
+const ownAuthority = new Map<string, unknown[]>();
 const workers: { url: string; worker: Worker; stopped: boolean }[] = [];
 const nativeWorker = Worker;
 let descriptors: DescriptorTable;
@@ -50,6 +52,7 @@ export async function openIntegration(
   errors.length = 0;
   workers.length = 0;
   authority.length = 0;
+  ownAuthority.clear();
   globalThis.Worker = class extends nativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       const path = String(url).includes("/gpu/service-worker.ts")
@@ -60,7 +63,11 @@ export async function openIntegration(
       this.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
         if (typeof data !== "object" || data === null) return;
         if ("gpuSnapshot" in data && !freezeSnapshots) lastServiceSnapshot = data.gpuSnapshot;
-        if ("gpuAuthority" in data) authority.push(data.gpuAuthority);
+        if ("gpuAuthority" in data) {
+          authority.push(data.gpuAuthority);
+          if ("gpuAuthorityToken" in data && typeof data.gpuAuthorityToken === "string")
+            ownAuthority.get(data.gpuAuthorityToken)?.push(data.gpuAuthority);
+        }
       });
     }
     override terminate() {
@@ -139,10 +146,16 @@ export async function launchTriangle(
     grant === "none"
       ? undefined
       : display.grant({ surfaces: [ensureSurface(slot)], gpu: grant === "gpu" });
+  const authorityToken = crypto.randomUUID();
+  ownAuthority.set(authorityToken, []);
   const pid = client.spawn(rootPid, {
     executable: `/bin/${program}`,
     argv: Array.of<string>(program).concat(args),
-    env: { GPU_POISON: poison ? "1" : "0", GPU_FORGE: forge ? "1" : "0" },
+    env: {
+      GPU_POISON: poison ? "1" : "0",
+      GPU_FORGE: forge ? "1" : "0",
+      GPU_AUTHORITY_TOKEN: authorityToken,
+    },
     cwd: "/",
     job: -1,
     fds: [
@@ -151,7 +164,7 @@ export async function launchTriangle(
       { parent: 2, child: 2 },
     ],
   });
-  runs.set(slot, { pid, input, output, grant: currentGrant, text: "" });
+  runs.set(slot, { pid, authorityToken, input, output, grant: currentGrant, text: "" });
   while (notices.length) await service.runtimeMessage(notices.shift()!, rootPid);
   await supervisor.start(pid);
   return { pid };
@@ -199,6 +212,8 @@ export async function stopTriangle(kill = false, slot = 0, feed = true) {
   const snapshot = await serviceCommand("snapshot");
   return {
     exit,
+    pid: run.pid,
+    ownAuthority: ownAuthority.get(run.authorityToken) ?? [],
     snapshot: runtime!.sharedMemory.snapshot(),
     service: snapshot,
     text: drainTriangle(slot).text,
@@ -219,6 +234,7 @@ export async function closeIntegration() {
       run.output.close();
     }
     runs.clear();
+    ownAuthority.clear();
     surfaces.clear();
     for (const canvas of canvases.values()) canvas.remove();
     canvases.clear();

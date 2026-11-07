@@ -1,3 +1,4 @@
+import { storageLockCases, type StorageLockScenario } from "./storage-lock-cases.js";
 import { storageLockNavigate } from "./fixtures/storage-lock-startup.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -6,6 +7,18 @@ import { homedir, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import type { Page, BrowserContext } from "playwright";
+
+if (process.argv[2] === "ios-safari") {
+  const startedAt = performance.now();
+  const { nativeMain } = await import("./page-runner/native.js");
+  const { storageLockAdapter } = await import("./storage-lock-host.js");
+  process.exit(
+    await nativeMain(storageLockAdapter, process.argv.slice(3), {
+      startedAt,
+      filter: process.env.STORAGE_LOCK_TEST_FILTER,
+    }),
+  );
+}
 
 const args = process.argv.slice(2);
 function option(name: string, fallback: string): string {
@@ -771,80 +784,51 @@ async function opfsTakeoverRejected(
   }
 }
 
-function cases(): TestCase[] {
-  const result: TestCase[] = [];
-  for (const backend of ["opfs", "indexeddb"] as const) {
-    result.push(
-      {
-        backend,
-        label: "contested open waits and reads flushed data",
-        run: (context, url, name) => contested(context, url, backend, name),
-      },
-      {
-        backend,
-        label: "early reload after owner close becomes ready",
-        run: (context, url, name) => earlyReload(context, url, backend, name),
-      },
-      {
-        backend,
-        label: "crashed owner releases lock to waiter",
-        run: (context, url, name) => crashedOwner(context, url, backend, name),
-      },
-      {
-        backend,
-        label: "dispose while waiting removes queued request",
-        run: (context, url, name) => cancelWhileWaiting(context, url, backend, name),
-      },
-      {
-        backend,
-        label: "several waiters acquire ownership FIFO",
-        run: (context, url, name) => fifoWaiters(context, url, backend, name),
-      },
-      {
-        backend,
-        label: "guest work remains pending until ownership",
-        run: (context, url, name) => guestWork(context, url, backend, name),
-      },
-    );
+function desktopBody(
+  scenario: StorageLockScenario,
+  context: BrowserContext,
+  url: string,
+  backend: Backend,
+  name: string,
+): Promise<void> {
+  switch (scenario.kind) {
+    case "contested":
+      return contested(context, url, backend, name);
+    case "earlyReload":
+      return earlyReload(context, url, backend, name);
+    case "crashedOwner":
+      return crashedOwner(context, url, backend, name);
+    case "cancelWhileWaiting":
+      return cancelWhileWaiting(context, url, backend, name);
+    case "fifoWaiters":
+      return fifoWaiters(context, url, backend, name);
+    case "guestWork":
+      return guestWork(context, url, backend, name);
+    case "takeover":
+      return indexedDBTakeover(
+        context,
+        url,
+        name,
+        scenario.policy === "default" ? undefined : scenario.policy,
+      );
+    case "opfsTakeoverRejected":
+      return opfsTakeoverRejected(context, url, name);
+    case "recovery":
+      return recoveryOwnershipLoss(context, url, name, scenario.timing);
+    case "lateRecoveryPublication":
+      return lateRecoveryPublication(context, url, name);
+    default: {
+      const exhaustive: never = scenario;
+      throw new Error(String(exhaustive));
+    }
   }
-  result.push(
-    {
-      backend: "indexeddb",
-      label: "default takeover still fences the old owner",
-      run: (context, url, name) => indexedDBTakeover(context, url, name),
-    },
-    {
-      backend: "indexeddb",
-      label: "explicit takeover still fences the old owner",
-      run: (context, url, name) => indexedDBTakeover(context, url, name, "takeover"),
-    },
-    {
-      backend: "opfs",
-      label: "takeover is rejected for OPFS",
-      run: (context, url, name) => opfsTakeoverRejected(context, url, name),
-    },
-    {
-      backend: "indexeddb",
-      label: "ownership loss during gated recovery acknowledges disposal",
-      run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "disposing"),
-    },
-    {
-      backend: "indexeddb",
-      label: "ownership loss during gated recovery fails without disposal",
-      run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "recovering"),
-    },
-    {
-      backend: "indexeddb",
-      label: "ownership loss after gated recovery retains failed cleanup owner",
-      run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "ready"),
-    },
-    {
-      backend: "indexeddb",
-      label: "ownership loss before recovered backend publication rejects startup",
-      run: (context, url, name) => lateRecoveryPublication(context, url, name),
-    },
-  );
-  return result;
+}
+function cases(): TestCase[] {
+  return storageLockCases.map(({ backend, label, scenario }) => ({
+    backend,
+    label,
+    run: (context, url, name) => desktopBody(scenario, context, url, backend, name),
+  }));
 }
 
 let scratch: string | undefined;

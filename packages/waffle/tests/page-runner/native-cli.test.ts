@@ -28,6 +28,7 @@ test("native precondition and result write failures have distinct exits without 
 
 const entrypoints = [
   { runner: "storage", suite: "storage" },
+  { runner: "storage-lock", suite: "storage-lock" },
   { runner: "guest-watch", suite: "guest-watch" },
   { runner: "fs-socket", suite: "fs-socket-attachment" },
   { runner: "search-executor", suite: "search-executor" },

@@ -1,9 +1,11 @@
 import { record, formatHostError, type HostVerdict } from "./protocol.js";
 import type { Reporter } from "./reporter.js";
+import type { StorageEntry } from "../storage-allocation.js";
 import type { Configuration } from "./page-main.js";
 
 export type HostPageRun<R> = {
   kind: "host";
+  peer?: (request: R, allocate: (entry: StorageEntry) => Promise<void>) => Promise<void>;
   teardown(request: R, verdict: HostVerdict): Promise<unknown>;
 };
 type HookOutcome =
@@ -11,6 +13,8 @@ type HookOutcome =
   | { status: "fail"; error: string }
   | { status: "timeout"; error: string; settled: boolean };
 type Receiver = {
+  transition: { id: string; acknowledgedThrough: number | null } | null;
+  prepareTransition(id: string): void;
   phase: "admitting" | "ready" | "driving" | "teardown" | "terminal";
   verdict(value: unknown): void;
   task(operation: string, source: string): void;
@@ -48,6 +52,19 @@ function receiver(
   let running = false;
   const state: Receiver = {
     phase: "admitting",
+    transition: null,
+    prepareTransition(id) {
+      if (state.phase !== "driving" || state.transition)
+        throw new Error("Transition already prepared or out of phase");
+      const prepared = { id, acknowledgedThrough: null as number | null };
+      state.transition = prepared;
+      void reporter
+        .send({ kind: "transition-ready", transitionId: id })
+        .then(() => {
+          prepared.acknowledgedThrough = reporter.observation.ackedThrough;
+        })
+        .catch(() => {});
+    },
     verdict(value) {
       if (state.phase !== "driving") throw new Error("Duplicate or out-of-phase verdict");
       const accepted = verdict(value);
@@ -169,4 +186,20 @@ export async function runHostPage<R>(
     error,
     result: snapshot({ body: accepted, teardown }),
   });
+}
+
+export async function runPeerPage<R>(
+  config: Extract<Configuration<R>, { role: "peer" }>,
+  run: HostPageRun<R>,
+  reporter: Reporter,
+): Promise<never> {
+  if (!run.peer) throw new Error("Host suite has no peer initialization hook");
+  const state = receiver(reporter, config.caseId, () => {
+    throw new Error("Peer cannot deliver verdict");
+  });
+  window.__hostCase = state;
+  await run.peer(config.request, (entry) => reporter.send({ kind: "allocation", entry }));
+  await reporter.send({ kind: "peer-ready" });
+  state.phase = "driving";
+  return new Promise<never>(() => {});
 }

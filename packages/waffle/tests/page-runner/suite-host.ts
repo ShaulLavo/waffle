@@ -109,7 +109,9 @@ export function serveCollector(
   return { server, configurations, origin: `http://127.0.0.1:${server.port}` };
 }
 function retirementCommand(collector: Collector, url: URL): boolean {
-  const state = collector.active;
+  const state = collector.documents.find(
+    (item) => item.doc !== null && item.doc === url.searchParams.get("doc"),
+  );
   if (
     url.searchParams.get("run") !== collector.run ||
     !state?.doc ||
@@ -147,7 +149,27 @@ export type SuiteResult = {
   results: Collector["results"];
   failures: Collector["failures"];
   runComplete: boolean;
-  documents: { group: string; doc: string | null; cutoff: number | null }[];
+  documents: {
+    group: string;
+    doc: string | null;
+    cutoff: number | null;
+    handle: string;
+    peer: string | null;
+    generation: number | null;
+    physical: DocumentState["physical"];
+  }[];
+  transitions: {
+    id: string;
+    action: string;
+    source: string | null;
+    sourceHandle: string;
+    deadline: number;
+    progress: string;
+    detail: string | null;
+    target: { peer: string; generation: number; url: string } | null;
+    successor: string | null;
+    remainingHandles: readonly string[] | null;
+  }[];
   ledger: Collector["ledger"];
   storageRemaining: Collector["remaining"];
   cleanup: DriverCleanup & { server: CleanupStep; storage: CleanupStep; scratch: CleanupStep };
@@ -366,11 +388,12 @@ export async function runPageSuite<R>(
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
     const state = collector.expect(group, token, url, handle);
+    const configuration = pageConfiguration(group, item, run);
     fixture.configurations.set(token, {
       run,
       token,
       group: group.id,
-      ...pageConfiguration(group, item, run),
+      ...configuration,
       teardownMs: budgets.teardown ?? budgets.case,
       ledger: collector.ledger,
     });
@@ -384,7 +407,31 @@ export async function runPageSuite<R>(
         ? performance.now() + adapter.resultWaitMs
         : undefined;
     const host = item?.drive
-      ? new HostDrive(driver, collector, state, consumers, budgets, started, operationSignal)
+      ? new HostDrive(
+          driver,
+          collector,
+          state,
+          consumers,
+          budgets,
+          started,
+          operationSignal,
+          (peer, lookup) => {
+            if (!fixture || peer.owner.kind !== "peer" || !("request" in configuration))
+              throw new Error("Missing peer configuration owner");
+            fixture.configurations.set(lookup, {
+              run,
+              token: peer.token,
+              group: group.id,
+              role: "peer",
+              caseId: item.id,
+              request: configuration.request,
+              peer: peer.owner.peer,
+              generation: peer.owner.generation,
+              execution: "host",
+              ledger: collector.ledger,
+            });
+          },
+        )
       : undefined;
     if (host) hostCases.push(host);
     const documentDriver = host?.transport ?? driver;
@@ -545,6 +592,32 @@ export async function runPageSuite<R>(
       group: state.group.id,
       doc: state.doc,
       cutoff: state.cutoff,
+      handle: state.handle,
+      peer: state.owner.kind === "peer" ? state.owner.peer : null,
+      generation: state.owner.kind === "peer" ? state.owner.generation : null,
+      physical: state.physical,
+    })),
+    transitions: collector.transitions.map((transition) => ({
+      id: transition.id,
+      action: transition.action,
+      source: transition.source.doc,
+      sourceHandle: transition.source.handle,
+      deadline: transition.deadline,
+      progress: transition.progress.kind,
+      detail: transition.progress.kind === "failed" ? transition.progress.detail : null,
+      target: transition.target
+        ? {
+            peer: transition.target.peer,
+            generation: transition.target.generation,
+            url: transition.target.url,
+          }
+        : null,
+      successor:
+        transition.progress.kind === "completed"
+          ? (transition.progress.successor?.doc ?? null)
+          : null,
+      remainingHandles:
+        transition.progress.kind === "completed" ? transition.progress.remainingHandles : null,
     })),
     ledger: collector.ledger,
     storageRemaining: collector.remaining,
