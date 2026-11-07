@@ -1,8 +1,10 @@
+import { requireWorkerAdapter } from "./gpu-browser-qualification.js";
+import type { GpuAsyncEngine } from "./page-runner/gpu-async-request.js";
 import { qualificationRecord } from "./fixtures/gpu/qualification-contract.js";
 
 type AsyncPage = typeof import("./fixtures/gpu/async-page.js");
 export type AsyncCommand = {
-  invoke(name: keyof AsyncPage, args: readonly unknown[]): Promise<unknown>;
+  invoke<K extends keyof AsyncPage>(name: K, args: Parameters<AsyncPage[K]>): Promise<unknown>;
   sleep(ms: number): Promise<void>;
 };
 function observation(result: unknown) {
@@ -12,7 +14,8 @@ function observation(result: unknown) {
   return { ...value, text: value.text, errors: value.errors };
 }
 function finished(result: unknown) {
-  const value = observation(result), exit = qualificationRecord(value.exit);
+  const value = observation(result),
+    exit = qualificationRecord(qualificationRecord(result).exit);
   if (typeof exit.kind !== "string" || typeof exit.code !== "number")
     throw new Error("Invalid async guest exit");
   return { ...value, exit: { ...exit, kind: exit.kind, code: exit.code } };
@@ -168,7 +171,7 @@ export function requireCompiledAsyncRevocation(result: unknown, stage: string): 
 async function negative(page: AsyncCommand, flag: NegativeControl) {
   await page.invoke("launchAsync", [[flag], 0]);
   await marker(page, "GPU_ASYNC_FAIL", 0, true);
-  const result = await page.invoke("finishAsync", [0]);
+  const result = finished(await page.invoke("finishAsync", [0]));
   requireCompiledAsyncNegative(result, flag);
   await complete(page);
   return {
@@ -176,6 +179,7 @@ async function negative(page: AsyncCommand, flag: NegativeControl) {
     status: "passed-negative-control",
     compiledGuest: true,
     text: result.text,
+    result: { exit: result.exit, text: result.text, errors: result.errors },
   };
 }
 function assertAdapterIdentity(text: string, adapter: Record<string, unknown>): void {
@@ -204,4 +208,65 @@ export async function runAsyncSuite(page: AsyncCommand, adapter: Record<string, 
   } finally {
     await page.invoke("closeAsync", []);
   }
+}
+
+export function requireCompleteAsyncResult(
+  result: unknown,
+  adapter: Record<string, unknown>,
+): void {
+  const value = qualificationRecord(result);
+  const normal = observation(value.normal);
+  requireCompiledAsyncResult(normal);
+  assertAdapterIdentity(normal.text, adapter);
+  if (
+    value.status !== "passed" ||
+    value.compiledGuest !== true ||
+    !Array.isArray(value.negatives) ||
+    value.negatives.length !== negativeControls.length ||
+    !Array.isArray(value.lifetimes) ||
+    value.lifetimes.length !== 6
+  )
+    throw new Error("Missing complete compiled async scenarios");
+  for (const [index, flag] of negativeControls.entries()) {
+    const negative = qualificationRecord(value.negatives[index]);
+    if (
+      negative.control !== flag ||
+      negative.status !== "passed-negative-control" ||
+      negative.compiledGuest !== true
+    )
+      throw new Error("Wrong compiled async negative order");
+    requireCompiledAsyncNegative(negative.result, flag);
+  }
+  for (const [index, stage] of ["map-pending", "payload-published", "work-pending"].entries()) {
+    requireLifetime(value.lifetimes[index * 2], stage, "kill");
+    requireLifetime(value.lifetimes[index * 2 + 1], stage, "revoke");
+  }
+  const retired = qualificationRecord(value.retired);
+  if (retired.connections !== 0 || retired.devicesLive !== 0 || retired.heapBytes !== 0)
+    throw new Error("Compiled async service retained resources");
+}
+function requireLifetime(result: unknown, stage: string, action: "kill" | "revoke"): void {
+  const value = qualificationRecord(result);
+  if (
+    value.stage !== stage ||
+    value.action !== action ||
+    value.status !== "passed" ||
+    value.compiledGuest !== true
+  )
+    throw new Error("Wrong compiled async lifetime order");
+  const stopped = finished(value.termination);
+  if (stopped.errors.length) throw new Error("Lifecycle guest has host errors");
+  if (action === "kill" && (stopped.exit.kind !== "signaled" || stopped.exit.code !== 9))
+    throw new Error("Compiled async kill did not select SIGKILL");
+  if (action === "revoke") requireCompiledAsyncRevocation(stopped, stage);
+}
+
+export function admitAsync(engine: GpuAsyncEngine, qualification: unknown) {
+  const observed = qualificationRecord(qualificationRecord(qualification).capabilities);
+  // Reuse the stock optional-adapter policy, not a WebKit capability observation.
+  const available = requireWorkerAdapter(engine === "ios-safari" ? "webkit" : engine, observed);
+  const adapter = qualificationRecord(observed.adapter);
+  if (engine === "chromium" && adapter.architecture !== "swiftshader")
+    throw new Error(`Wrong Chromium adapter: ${JSON.stringify(adapter)}`);
+  return { available, adapter };
 }

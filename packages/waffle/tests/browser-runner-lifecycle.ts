@@ -167,10 +167,15 @@ export class BrowserRunnerLifecycle {
     this.assertLive();
     return browser;
   }
-  async persistent(name: keyof typeof engines, profile: string): Promise<BrowserContext> {
+  async persistent(
+    name: keyof typeof engines,
+    profile: string,
+    args?: readonly string[],
+  ): Promise<BrowserContext> {
     this.assertLive();
     const owner: Owner<BrowserContext> = {
       creation: engines[name].launchPersistentContext(profile, {
+        ...(args === undefined ? {} : { args: Array.from(args) }),
         headless: true,
         downloadsPath: this.scratch,
         tracesDir: this.scratch,

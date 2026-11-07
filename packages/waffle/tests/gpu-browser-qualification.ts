@@ -18,7 +18,7 @@ import {
 type Engine = keyof typeof engines;
 type PageRequest = Exclude<QualificationRequest, { kind: "attach" }>;
 type Pixels = { center: number[]; corner: number[] };
-const swiftShaderArgs = [
+export const swiftShaderArgs = [
   "--enable-unsafe-webgpu",
   "--enable-features=Vulkan",
   "--use-vulkan=swiftshader",
