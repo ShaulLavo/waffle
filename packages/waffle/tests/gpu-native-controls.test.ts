@@ -9,6 +9,7 @@ import { sceneNativeControls } from "./gpu-scene-native.ts";
 import { computeNativeControls } from "./gpu-compute-native.ts";
 import { bundleQueryNativeControls } from "./gpu-bundle-query-native.ts";
 import { copyDrawNativeControls } from "./gpu-copy-draw-native.ts";
+import { asyncNativeControls } from "./gpu-async-native.ts";
 
 const passed = (control: string) => ({ control, compiledGuest: false, status: "passed" });
 const scenePassed = (control: string) => ({
@@ -17,10 +18,12 @@ const scenePassed = (control: string) => ({
   kind: "native-lowering-control",
 });
 function passedInvocation({ path, control }: NativeControlInvocation) {
-  return path === "/scene.js" ? scenePassed(control) : passed(control);
+  if (path === "/scene.js") return scenePassed(control);
+  if (path === "/async-native.js") return { ...scenePassed(control), status: "passed" };
+  return passed(control);
 }
 
-test("aggregate preserves all 52 historical controls and appends label reflection as control 53", async () => {
+test("aggregate preserves the historical 53 controls and appends four strict async controls once", async () => {
   const invoked: string[] = [];
   const reported: Record<string, unknown>[] = [];
   const count = await runNativeControls(
@@ -42,9 +45,18 @@ test("aggregate preserves all 52 historical controls and appends label reflectio
   expect(expected).toHaveLength(52);
   expect(invoked.slice(0, 52)).toEqual(expected);
   expect(invoked[52]).toBe("/label.js:labelNativeControl:labels");
-  expect(count).toBe(53);
-  expect(new Set(invoked).size).toBe(53);
-  expect(reported).toHaveLength(53);
+  expect(asyncNativeControls).toEqual([
+    "metadata",
+    "mapping",
+    "scopes-compilation-work-loss",
+    "mapping-negative",
+  ]);
+  expect(invoked.slice(53)).toEqual(
+    asyncNativeControls.map((control) => `/async-native.js:asyncNativeControl:${control}`),
+  );
+  expect(count).toBe(57);
+  expect(new Set(invoked).size).toBe(57);
+  expect(reported).toHaveLength(57);
   for (const result of reported)
     expect(result).toMatchObject({ kind: "native-lowering-control", compiledGuest: false });
 });
@@ -77,26 +89,31 @@ for (const result of [
     expect(() => requireNativeControlResult(result, "normal", "compute")).toThrow();
   });
 
-for (const failure of ["throw", "unavailable"] as const)
-  test(`native ${failure} propagates without reporting a false success`, async () => {
-    const reported: unknown[] = [];
-    let calls = 0;
-    const run = runNativeControls(
-      async (invocation) => {
-        const { control } = invocation;
-        calls++;
-        if (calls !== 4) return passedInvocation(invocation);
-        if (failure === "throw") throw new Error("native validation regression");
-        return { ...passed(control), status: "unavailable" };
-      },
-      (result) => reported.push(result),
-    );
-    await expect(run).rejects.toThrow(
-      failure === "throw" ? "native validation regression" : "did not pass",
-    );
-    expect(calls).toBe(4);
-    expect(reported).toHaveLength(3);
-  });
+for (const failingCall of [4, 54, 55, 56, 57])
+  for (const failure of ["throw", "unavailable"] as const)
+    test(`native ${failure} at call ${failingCall} propagates without false success`, async () => {
+      const reported: unknown[] = [];
+      let calls = 0;
+      const run = runNativeControls(
+        async (invocation) => {
+          const { control } = invocation;
+          calls++;
+          if (calls !== failingCall) return passedInvocation(invocation);
+          if (failure === "throw") throw new Error("native validation regression");
+          return { ...passed(control), status: "unavailable" };
+        },
+        (result) => reported.push(result),
+      );
+      await expect(run).rejects.toThrow(
+        failure === "throw"
+          ? "native validation regression"
+          : failingCall > 53
+            ? "Async native control failed"
+            : "did not pass",
+      );
+      expect(calls).toBe(failingCall);
+      expect(reported).toHaveLength(failingCall - 1);
+    });
 
 for (const engines of [
   [],
@@ -148,3 +165,17 @@ test("scene requires its native kind while valid copy/draw variants do not", () 
     ),
   ).not.toThrow();
 });
+
+for (const result of [
+  { control: "metadata", compiledGuest: false },
+  { ...passed("metadata") },
+  { ...scenePassed("metadata") },
+  { ...scenePassed("metadata"), status: "passed-negative-control" },
+  { ...scenePassed("metadata"), status: "skipped" },
+  { ...scenePassed("metadata"), status: "passed", compiledGuest: true },
+])
+  test(`async aggregate rejects incomplete or nonpassing native evidence: ${JSON.stringify(result)}`, () => {
+    expect(() => requireNativeControlResult(result, "metadata", "async")).toThrow(
+      "Async native control failed",
+    );
+  });

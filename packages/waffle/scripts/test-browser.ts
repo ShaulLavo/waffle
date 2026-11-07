@@ -5,6 +5,7 @@ const stop = () => stopped.abort();
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 const gpuRunner = "tests/gpu-browser-runner.ts";
+const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
 const runners = [
   "tests/browser-navigation-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
@@ -26,10 +27,12 @@ const parallel = [
   [{ runner: gpuRunner, engines: ["chromium", "firefox"] }],
   [{ runner: "tests/recovery-r42-browser-runner.ts", engines: ["chromium"] }],
   [{ runner: "tests/gpu-native-browser-runner.ts", engines: ["chromium"] }],
+  [{ runner: asyncGpuRunner, engines: ["chromium", "firefox"] }],
 ]);
 const serial = runners
   .map((runner) => [{ runner, engines: ["webkit"] }])
   .concat(
+    [[{ runner: asyncGpuRunner, engines: ["webkit"] }]],
     [[{ runner: "tests/workspace-continuity-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/memory-group-browser-runner.ts", engines: ["chromium"] }]],

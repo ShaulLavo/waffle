@@ -1387,3 +1387,33 @@ test("package prepares exactly the pinned shallow-safe allocation reference befo
   expect(source).toContain('"--depth=1"');
   expect(source).not.toMatch(/--unshallow|fetch.*--all/);
 });
+
+test("G2 producer and native acceptance inputs select the blocking browser job", () => {
+  for (const path of [
+    "packages/waffle/tests/gpu-async-browser-runner.ts",
+    "packages/waffle/tests/gpu-async-fixture.test.ts",
+    "packages/waffle/tests/gpu-async-stream.test.ts",
+    "packages/waffle/tests/gpu-async-native.ts",
+    "packages/waffle/tests/gpu-native-controls.ts",
+    "packages/waffle/tests/fixtures/gpu/async-native.ts",
+    "packages/waffle/tests/fixtures/gpu/async-page.ts",
+    "packages/waffle/tests/fixtures/gpu/async.c",
+    "packages/waffle/tests/fixtures/gpu/async_encode.h",
+    "packages/waffle/tests/fixtures/gpu/async-expected.json",
+    "packages/waffle/browser/gpu/upstream/webgpu.h",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const browser = record(jobs.browser);
+  expect(browser["continue-on-error"]).toBeUndefined();
+  const command = stepsFor("browser").find((step) =>
+    String(step.run).startsWith("bun run test:browser "),
+  );
+  expect(command).toBeDefined();
+  expect(command?.["continue-on-error"]).toBeUndefined();
+  const source = stepsFor("libc").find((step) =>
+    String(step.run).includes("gpu-async-stream.test.ts"),
+  );
+  expect(source).toBeDefined();
+  expect(source?.if).toBeUndefined();
+  expect(source?.["continue-on-error"]).toBeUndefined();
+});
