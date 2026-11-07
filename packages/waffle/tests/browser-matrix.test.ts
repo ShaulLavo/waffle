@@ -20,6 +20,7 @@ const runners = [
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";
 const recovery = "recovery-r42";
+const nativeGpu = "gpu-native";
 const memoryGroup = "memory-group";
 const chromiumOnly = [continuity, rootContinuity, memoryGroup];
 const socket = "fs-socket";
@@ -43,7 +44,7 @@ if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls]))}.includes(
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
   if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
-  const predecessor = { "workspace-continuity": "recovery-r42", "root-continuity": "workspace-continuity", "memory-group": "root-continuity", "reporter-controls": "fs-socket" }[name] ?? "memory-group";
+  const predecessor = { "workspace-continuity": "gpu-native", "root-continuity": "workspace-continuity", "memory-group": "root-continuity", "reporter-controls": "fs-socket" }[name] ?? "memory-group";
   if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
   appendFileSync("isolated.order", name + "\\n");
   writeFileSync(name + ".scratch", scratch);
@@ -88,6 +89,13 @@ appendFileSync("isolated.order", "recovery-r42\\n");
 if (process.env.MATRIX_FAIL?.split("|").includes("recovery-r42:chromium")) throw Error("recovery fixture failure");
 `;
 
+const nativeGpuFixture =
+  recoveryFixture.replaceAll("recovery-r42", "gpu-native") +
+  `
+if (!existsSync("recovery-r42.scratch")) throw Error("native controls ran before recovery");
+if (process.platform === "linux" && existsSync(readFileSync("recovery-r42.scratch", "utf8"))) throw Error("native controls overlap recovery scratch");
+`;
+
 const matrixEntry = `
 import { writeFileSync } from "node:fs";
 let failures = [];
@@ -121,6 +129,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     for (const runner of runners.concat(chromiumOnly, [socket]))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
+    await writeFile(join(root, "tests/gpu-native-browser-runner.ts"), nativeGpuFixture);
     await mkdir(join(root, "tests/page-runner"));
     await writeFile(join(root, "tests/page-runner/browser-controls-runner.ts"), fixture);
     let failure: unknown;
@@ -134,26 +143,28 @@ async function matrix(failing: readonly string[]): Promise<void> {
       cleanupError = error instanceof CommandCleanupError ? error : undefined;
       failure = error;
     }
-    const discovery = Bun.file(join(root, "recovery-r42.invocations"));
-    expect(await discovery.exists()).toBe(true);
-    const invocations: unknown[] = (await discovery.text())
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(invocations).toEqual([
-      {
-        engines: ["chromium"],
-        supervised: process.platform === "linux",
-        ownedScratch: process.platform === "linux",
-      },
-    ]);
-    const recoveryScratch = await readFile(join(root, "recovery-r42.scratch"), "utf8");
-    expect(
-      recoveryScratch.startsWith(root + "/wb-") ||
-        (process.platform !== "linux" && recoveryScratch === root),
-    ).toBe(true);
+    for (const runner of [recovery, nativeGpu]) {
+      const discovery = Bun.file(join(root, `${runner}.invocations`));
+      expect(await discovery.exists()).toBe(true);
+      const invocations: unknown[] = (await discovery.text())
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(invocations).toEqual([
+        {
+          engines: ["chromium"],
+          supervised: process.platform === "linux",
+          ownedScratch: process.platform === "linux",
+        },
+      ]);
+      const recoveryScratch = await readFile(join(root, `${runner}.scratch`), "utf8");
+      expect(
+        recoveryScratch.startsWith(root + "/wb-") ||
+          (process.platform !== "linux" && recoveryScratch === root),
+      ).toBe(true);
+    }
     expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
-      [recovery].concat(chromiumOnly, [socket, reporterControls]).join("\n") + "\n",
+      [recovery, nativeGpu].concat(chromiumOnly, [socket, reporterControls]).join("\n") + "\n",
     );
     for (const runner of chromiumOnly.concat([socket, reporterControls])) {
       const engine =
@@ -175,7 +186,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     const order = runners
       .map((runner) => `${runner}:chromium,firefox`)
       .concat(
-        [`${recovery}:chromium`],
+        [`${recovery}:chromium`, `${nativeGpu}:chromium`],
         runners.map((runner) => `${runner}:webkit`),
         chromiumOnly.map((runner) => `${runner}:chromium`),
         [`${socket}:firefox`, `${reporterControls}:chromium,webkit`],
@@ -257,6 +268,63 @@ test("page-owned reporter controls fail the matrix without changing existing eng
   await matrix([`${reporterControls}:chromium,webkit`]);
 }, 15_000);
 
+test("native GPU failure remains blocking in its single supervised Chromium invocation", async () => {
+  await matrix([`${nativeGpu}:chromium`]);
+}, 15_000);
+
+async function nativeDiscovery(group: "parallel" | "serial", fail: boolean): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "waffle-native-discovery-"));
+  let cleanupError: CommandCleanupError | undefined;
+  try {
+    await mkdir(join(root, "scripts"));
+    await copyFile(
+      join(import.meta.dir, "../scripts/test-browser.ts"),
+      join(root, "scripts/test-browser.ts"),
+    );
+    await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
+    await writeFile(
+      join(root, "scripts/browser-command.ts"),
+      `
+import { appendFileSync } from "node:fs";
+export async function runBrowserSuite(command) {
+  appendFileSync("commands.jsonl", JSON.stringify(command.slice(1)) + "\\n");
+  if (process.env.NATIVE_FAIL === "1" && command[1] === "tests/gpu-native-browser-runner.ts") throw Error("native control failed");
+}
+`,
+    );
+    let failure: unknown;
+    try {
+      await runOwned([process.execPath, "scripts/matrix-entry.ts"], {
+        cwd: root,
+        env: { ...process.env, WAFFLE_BROWSER_GROUP: group, NATIVE_FAIL: fail ? "1" : "0" },
+      });
+    } catch (error) {
+      cleanupError = error instanceof CommandCleanupError ? error : undefined;
+      failure = error;
+    }
+    expect(cleanupError).toBeUndefined();
+    expect(failure instanceof Error).toBe(fail);
+    const commands: string[][] = (await readFile(join(root, "commands.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      commands.filter((command) => command[0] === "tests/gpu-native-browser-runner.ts"),
+    ).toEqual(group === "parallel" ? [["tests/gpu-native-browser-runner.ts", "chromium"]] : []);
+    expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
+      fail ? ["tests/gpu-native-browser-runner.ts failed"] : [],
+    );
+  } finally {
+    if (cleanupError) console.error(`Retained native discovery scratch: ${root}`, cleanupError);
+    else await rm(root, { recursive: true, force: true });
+  }
+}
+
+for (const group of ["parallel", "serial"] as const)
+  test(`native GPU executable discovery in CI ${group} group`, () => nativeDiscovery(group, false));
+
+test("native GPU error exits the designated CI group nonzero", () =>
+  nativeDiscovery("parallel", true));
 test("draw-heavy GPU work runs in its own batch without changing engine groups", async () => {
   await matrix([]);
 }, 15_000);

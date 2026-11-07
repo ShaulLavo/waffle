@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 
+export const sceneNativeControls = ["normal", "no-depth", "black-texture"];
+
 export async function sceneNativeRoutes() {
   return {
     "/": "<!doctype html><title>GPU scene native lowering control</title>",
@@ -18,7 +20,7 @@ export async function runSceneNative() {
     const browser = await runner.launch("chromium");
     const page = await browser.newPage();
     await navigateTestPage(page, url);
-    for (const control of ["normal", "no-depth", "black-texture"]) {
+    for (const control of sceneNativeControls) {
       const result: unknown = await page.evaluate(async (name) => {
         const path = "/scene.js";
         const module = await import(path);
