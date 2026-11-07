@@ -639,9 +639,9 @@ test("completed blob history cannot disappear at retirement or the final sample"
 
 test("completed blob identities and observations cannot be rewritten or reopened", () => {
   for (const key of ["connection", "commandRingBytes", "bytes", "start", "draws", "end"]) {
-    rejects((value) => {
-      for (const sample of afterReplacement(value)) Reflect.set(sample.fairness.blobs[0]!, key, 1);
-    }, /blob.*history rewritten/);
+    const value = proof();
+    for (const sample of afterReplacement(value)) Reflect.set(sample.fairness.blobs[0]!, key, 1);
+    expect(() => validateRegrantResult(value)).toThrow(/blob.*history rewritten/);
   }
   rejects((value) => {
     for (const sample of afterReplacement(value)) sample.fairness.blobs[0]!.end = null;
