@@ -4,36 +4,65 @@
     "repository": "webgpu-native/webgpu-headers",
     "revision": "a1dc77409bb2b8bd80540cbf4b8db219e123e909",
     "sha256": "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
-    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22"
+    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
+    "headerSha256": "0314dc40d4641dfe9638ae82071926c0a4136a4bf525c54098b58be345e9b4ed"
   },
   "methods": [
     {
       "name": "adapter.get_limits",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return adapter get limits through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 110,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "limits"
+        }
+      }
     },
     {
       "name": "adapter.has_feature",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return adapter has feature through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 109,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "has-feature"
+        }
+      }
     },
     {
       "name": "adapter.get_features",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return adapter get features through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 108,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "features"
+        }
+      }
     },
     {
       "name": "adapter.get_info",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return adapter get info through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 107,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "info"
+        }
+      }
     },
     {
       "name": "adapter.request_device",
@@ -80,36 +109,43 @@
     {
       "name": "buffer.map_async",
       "group": "mapping",
-      "category": "deferred",
-      "reason": "Implement buffer map_async with bounded map completions, payload slots and shadow-write lifetime; mapping is not selected yet.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 115,
+        "context": "top",
+        "lowering": {
+          "kind": "async",
+          "member": "mapAsync"
+        }
+      }
     },
     {
       "name": "buffer.get_mapped_range",
       "group": "mapping",
       "category": "c-only-adaptation",
-      "reason": "Implement get_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
       "slice": "G2"
     },
     {
       "name": "buffer.get_const_mapped_range",
       "group": "mapping",
       "category": "c-only-adaptation",
-      "reason": "Implement get_const_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
       "slice": "G2"
     },
     {
       "name": "buffer.read_mapped_range",
       "group": "mapping",
       "category": "c-only-adaptation",
-      "reason": "Implement read_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
       "slice": "G2"
     },
     {
       "name": "buffer.write_mapped_range",
       "group": "mapping",
       "category": "c-only-adaptation",
-      "reason": "Implement write_mapped_range over guest-local shadow bytes and payload copies, never a pointer into service-owned GPU mapped memory.",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
       "slice": "G2"
     },
     {
@@ -130,29 +166,36 @@
       "name": "buffer.get_usage",
       "group": "metadata",
       "category": "c-only-adaptation",
-      "reason": "A future C client can answer get_usage from its retained buffer descriptor; no synchronous service pointer or getter is provided.",
-      "slice": "G1"
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
     },
     {
       "name": "buffer.get_size",
       "group": "metadata",
       "category": "c-only-adaptation",
-      "reason": "A future C client can answer get_size from its retained buffer descriptor; no synchronous service pointer or getter is provided.",
-      "slice": "G1"
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
     },
     {
       "name": "buffer.get_map_state",
       "group": "mapping",
       "category": "c-only-adaptation",
-      "reason": "Cache buffer map state in the future C client and update it on map completion, unmap and loss; no map-state client exists yet.",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
       "slice": "G2"
     },
     {
       "name": "buffer.unmap",
       "group": "mapping",
-      "category": "deferred",
-      "reason": "Implement buffer unmap with bounded map completions, payload slots and shadow-write lifetime; mapping is not selected yet.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 116,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "unmap"
+        }
+      }
     },
     {
       "name": "buffer.destroy",
@@ -759,30 +802,58 @@
     {
       "name": "device.get_limits",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return device get limits through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 113,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "limits"
+        }
+      }
     },
     {
       "name": "device.has_feature",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return device has feature through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 112,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "has-feature"
+        }
+      }
     },
     {
       "name": "device.get_features",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return device get features through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 111,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "features"
+        }
+      }
     },
     {
       "name": "device.get_adapter_info",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Return device get adapter info through negotiation metadata with checked C output layout; current adapter/device replies omit it.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 114,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "info"
+        }
+      }
     },
     {
       "name": "device.get_queue",
@@ -864,16 +935,30 @@
     {
       "name": "instance.get_WGSL_language_features",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Include WGSL language-feature metadata in negotiation so the future C client can answer get_WGSL_language_features; no such reply exists yet.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 119,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "wgsl-features"
+        }
+      }
     },
     {
       "name": "instance.has_WGSL_language_feature",
       "group": "metadata",
-      "category": "deferred",
-      "reason": "Include WGSL language-feature metadata in negotiation so the future C client can answer has_WGSL_language_feature; no such reply exists yet.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 120,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "has-wgsl-feature"
+        }
+      }
     },
     {
       "name": "instance.process_events",
@@ -976,9 +1061,16 @@
     {
       "name": "queue.on_submitted_work_done",
       "group": "async",
-      "category": "deferred",
-      "reason": "Add queue.on_submitted_work_done promise lowering and bounded completion delivery, including late settlement after revocation; no selected call exists yet.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 118,
+        "context": "top",
+        "lowering": {
+          "kind": "async",
+          "member": "onSubmittedWorkDone"
+        }
+      }
     },
     {
       "name": "queue.write_buffer",
@@ -1588,9 +1680,16 @@
     {
       "name": "shader_module.get_compilation_info",
       "group": "async",
-      "category": "deferred",
-      "reason": "Add shader_module.get_compilation_info promise lowering and bounded completion delivery, including late settlement after revocation; no selected call exists yet.",
-      "slice": "G2"
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 117,
+        "context": "top",
+        "lowering": {
+          "kind": "async",
+          "member": "getCompilationInfo"
+        }
+      }
     },
     {
       "name": "shader_module.set_label",

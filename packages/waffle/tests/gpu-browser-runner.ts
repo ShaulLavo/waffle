@@ -1,3 +1,4 @@
+import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import { navigateTestPage } from "./browser-navigation.js";
 import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 import { gpuLazyRoutes, assertGpuLazyBrowser } from "./gpu-loading-browser.js";
@@ -333,7 +334,7 @@ async function heldKillCase(page: Page, hold: "open" | "adapter" | "device") {
   }
 }
 
-function assertControlAccounting(snapshot: {
+export function assertControlAccounting(snapshot: {
   platform: { kind: string };
   holders: { label: string; state: string; shape: { kind: string; length?: number } }[];
 }) {
@@ -354,7 +355,7 @@ function assertControlAccounting(snapshot: {
     !controls.some(
       (holder) =>
         holder.shape.kind === "fixed-buffer" &&
-        holder.shape.length === 4 * 1024 * 1024 + 256 * 1024 + 196,
+        holder.shape.length === 4 * 1024 * 1024 + 256 * 1024 + 196 + gpuPayloadLayout.byteLength,
     )
   )
     throw new Error(`GPU fixed backing charge missing: ${JSON.stringify(controls)}`);

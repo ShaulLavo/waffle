@@ -17,6 +17,17 @@ export type Result =
 export type Lowering =
   | { kind: "label"; target: "native" | "surface-reference" }
   | { kind: "method"; member: string }
+  | {
+      kind: "query";
+      adapter:
+        | "info"
+        | "features"
+        | "limits"
+        | "has-feature"
+        | "wgsl-features"
+        | "has-wgsl-feature";
+    }
+  | { kind: "async"; member: "mapAsync" | "getCompilationInfo" | "onSubmittedWorkDone" }
   | { kind: "descriptor-method"; member: string; descriptor: string }
   | {
       kind: "write-buffer" | "write-texture" | "set-immediates";
@@ -51,6 +62,7 @@ export interface CallLayout {
   lowering: Lowering;
   omitted: string[];
   fields: Field[];
+  output?: { adapter: string; payload: string; fields: Field[] };
 }
 
 export interface WireTables {

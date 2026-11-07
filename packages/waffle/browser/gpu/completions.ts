@@ -1,9 +1,12 @@
+import { PayloadDirectory } from "./payload.js";
+import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
 import { completionBytes, type WireObject } from "./codec.js";
 import type { RecordRing, RingWriter } from "./ring.js";
 import {
   GPU_LIMITS,
   GPU_TERMINAL,
   GpuProtocolError,
+  GpuCallError,
   GpuResourceError,
   type ConnectionState,
   type Handle,
@@ -31,6 +34,7 @@ interface Ready {
   readonly replies: RecordRing;
   readonly pending: Map<number, { cancel(): void }>;
   readonly arena: Uint8Array;
+  readonly directory: PayloadDirectory | undefined;
   readonly payloads: (Payload | undefined)[];
   readonly generations: number[];
   retire: (() => void) | undefined;
@@ -40,6 +44,10 @@ interface Ready {
 export class CompletionOwner {
   #state: Ready | { readonly kind: "terminal"; readonly reason: number };
   #lastToken = 0;
+  #failure: string | undefined;
+  get failure(): string | undefined {
+    return this.#failure;
+  }
   constructor({ commands, replies, arena = new Uint8Array(0) }: CompletionBuffers) {
     if (commands.recordHeaderBytes !== 8 || replies.recordHeaderBytes !== 16)
       throw new RangeError("Expected command and completion rings");
@@ -49,6 +57,11 @@ export class CompletionOwner {
       replies,
       pending: new Map(),
       arena,
+      directory:
+        arena.buffer instanceof SharedArrayBuffer &&
+        arena.byteLength === gpuPayloadLayout.byteLength
+          ? new PayloadDirectory(arena.buffer)
+          : undefined,
       payloads: Array.from({ length: 64 }, () => undefined),
       generations: Array.from({ length: 64 }, () => 0),
       retire: undefined,
@@ -132,13 +145,20 @@ export class CompletionOwner {
     return this.#state.pending.delete(token);
   }
   allocatePayload(bytes: Uint8Array): Handle | undefined {
+    return this.fillPayload(bytes.byteLength, (destination) => destination.set(bytes));
+  }
+  fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") return;
     try {
-      return this.#allocatePayload(state, bytes);
-    } catch {
-      this.terminate(GPU_TERMINAL.resource);
+      return this.#allocatePayload(state, length, fill);
+    } catch (error) {
+      this.#failure = error instanceof Error ? error.message.slice(0, 512) : "Payload fill failed";
+      if (error instanceof GpuCallError) throw error;
+      this.terminate(
+        error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.service,
+      );
       return;
     }
   }
@@ -146,6 +166,19 @@ export class CompletionOwner {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") throw new GpuCallClosed();
+    if (state.directory) {
+      const result = state.directory.copyOnce(
+        handle,
+        destination,
+        () => state.commands.terminal()?.reason,
+        (reason) => {
+          this.terminate(reason);
+          return state.commands.terminal()?.reason ?? reason;
+        },
+      );
+      if (result !== 0) throw new GpuProtocolError(`Payload copy failed: ${result}`);
+      return state.payloads[handle.id - 1]?.length ?? 0;
+    }
     const slot = state.payloads[handle.id - 1];
     if (!slot || slot.generation !== handle.generation)
       throw new GpuProtocolError("Stale payload handle");
@@ -160,12 +193,9 @@ export class CompletionOwner {
     if (state.kind === "terminal") return;
     if (!Number.isInteger(reason) || reason <= 0 || reason > 0xffffffff)
       throw new RangeError("Invalid terminal reason");
-    // Select the local state before any wake. A closed record is best effort and
-    // always last; ring termination is the authoritative, immutable OOB result.
-    const selected =
-      state.replies.terminal()?.reason ?? state.commands.terminal()?.reason ?? reason;
+    const selected = state.commands.terminate(reason).reason;
     this.#state = { kind: "terminal", reason: selected };
-    state.commands.terminate(selected);
+    state.directory?.mirror(selected);
     publishClosed(state.replies, selected);
     state.replies.terminate(selected);
     for (const pending of state.pending.values()) pending.cancel();
@@ -178,7 +208,7 @@ export class CompletionOwner {
   }
   #synchronize(): void {
     if (this.#state.kind === "terminal") return;
-    const terminal = this.#state.replies.terminal() ?? this.#state.commands.terminal();
+    const terminal = this.#state.commands.terminal() ?? this.#state.replies.terminal();
     if (terminal) this.terminate(terminal.reason);
   }
   #publish(state: Ready, bytes: Uint8Array): boolean {
@@ -201,25 +231,33 @@ export class CompletionOwner {
       acquired.writer.release();
     }
   }
-  #allocatePayload(state: Ready, bytes: Uint8Array): Handle {
+  #allocatePayload(state: Ready, length: number, fill: (destination: Uint8Array) => void): Handle {
+    if (!Number.isSafeInteger(length) || length < 0)
+      throw new GpuResourceError("Invalid payload length");
+    for (let index = 0; index < state.payloads.length; index++) {
+      const slot = state.payloads[index];
+      if (slot && state.directory?.consumed(index, slot.generation))
+        state.payloads[index] = undefined;
+    }
     const index = state.payloads.findIndex(
       (slot, at) => slot === undefined && (state.generations[at] ?? 0) < 0xffffffff,
     );
-    if (index < 0 || bytes.byteLength > state.arena.byteLength)
+    if (index < 0 || length > state.arena.byteLength)
       throw new GpuResourceError("Payload credit exhausted");
     const occupied = state.payloads.filter((slot): slot is Payload => slot !== undefined);
     occupied.sort((a, b) => a.offset - b.offset);
-    let offset = 0;
+    let offset = state.directory ? gpuPayloadLayout.dataOffset : 0;
     for (const slot of occupied) {
-      if (slot.offset - offset >= bytes.byteLength) break;
+      if (slot.offset - offset >= length) break;
       offset = slot.offset + slot.length;
     }
-    if (bytes.byteLength > state.arena.byteLength - offset)
+    if (length > state.arena.byteLength - offset)
       throw new GpuResourceError("Payload credit exhausted");
     const generation = (state.generations[index] ?? 0) + 1;
-    state.arena.set(bytes, offset);
+    fill(state.arena.subarray(offset, offset + length));
     state.generations[index] = generation;
-    state.payloads[index] = { offset, length: bytes.byteLength, generation };
+    state.payloads[index] = { offset, length, generation };
+    state.directory?.publish(index, generation, offset, length);
     return { id: index + 1, generation };
   }
 }

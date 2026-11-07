@@ -28,7 +28,7 @@ function changedYamlMethods(change: (methods: unknown[]) => unknown[]): unknown 
 }
 
 const selectedName = "instance.request_adapter";
-const deferredName = "buffer.map_async";
+const deferredName = "buffer.get_map_state";
 
 test("actual pinned method classification validates in normal test discovery", async () => {
   const entries = await checkCoverage();
@@ -179,7 +179,8 @@ test("the rerunnable report uses classifications and leaves the full G1 gate ope
   const report = coverageReport(entries);
   expect(report).toContain("146 YAML object methods and 4 global functions");
   expect(report).toContain(`selected: ${selection.calls.length}`);
-  expect(report).toContain("buffer.map_async");
+  expect(report).toContain("buffer.get_map_state");
+  expect(report).not.toContain("buffer.map_async");
   expect(report).not.toContain("render_bundle_encoder.finish");
   expect(report).not.toContain("query_set.destroy");
   expect(report).toContain("real textured depth-tested scene");

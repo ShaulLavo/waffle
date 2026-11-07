@@ -1,3 +1,4 @@
+import g2 from "./fixtures/gpu/async-expected.json";
 import { expect, test } from "bun:test";
 import { decodeCall } from "../browser/gpu/codec.ts";
 import { gpuStream } from "../browser/gpu/generated/tables.ts";
@@ -98,8 +99,37 @@ test("all prior 88 layouts, private records and numeric enums stay unchanged", a
   const { sha256 } = await import("../tooling/gpu-stream.ts");
   const digest = (value: unknown) => sha256(JSON.stringify(value));
   expect(digest(gpuStream.calls.filter((call) => call.opcode <= 88))).toBe(expected.prior88.calls);
-  expect(digest(gpuStream.records)).toBe(expected.prior88.records);
-  expect(digest(gpuStream.structs)).toBe(expected.prior88.structs);
-  expect(digest(gpuStream.enums)).toBe(expected.prior88.enums);
+  const originalRecords = gpuStream.records.map((entry) =>
+    entry.opcode === 0x1003
+      ? { name: entry.name, opcode: entry.opcode, enabled: false, fields: [] }
+      : entry,
+  );
+  expect(digest(originalRecords)).toBe(expected.prior88.records);
+  expect(gpuStream.records.find((entry) => entry.opcode === 0x1003)).toEqual({
+    name: "buffer-unmap-writes",
+    opcode: 0x1003,
+    enabled: true,
+    fields: [
+      { name: "buffer", type: "object.buffer", optional: false },
+      { name: "ranges", type: "array<struct.write_range>", optional: false },
+    ],
+  });
+  expect(
+    digest(
+      Object.fromEntries(
+        Object.keys(g2.baseline.structs).map((name) => [
+          name,
+          Reflect.get(gpuStream.structs, name),
+        ]),
+      ),
+    ),
+  ).toBe(expected.prior88.structs);
+  expect(
+    digest(
+      Object.fromEntries(
+        Object.keys(g2.baseline.enums).map((name) => [name, Reflect.get(gpuStream.enums, name)]),
+      ),
+    ),
+  ).toBe(expected.prior88.enums);
   expect(digest(gpuStream.root)).toBe(expected.prior88.root);
 });
