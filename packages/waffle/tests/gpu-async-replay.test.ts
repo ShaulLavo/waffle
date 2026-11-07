@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { GpuConnection } from "../browser/gpu/scheduler.ts";
-import { gpuObjectKinds, gpuPayloadLayout, gpuStream } from "../browser/gpu/generated/tables.ts";
+import { gpuObjectKinds, gpuStream } from "../browser/gpu/generated/tables.ts";
+import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.ts";
 import { PayloadDirectory } from "../browser/gpu/payload.ts";
 import { WireReader } from "../browser/gpu/codec.ts";
 import { compilationMessages } from "../browser/gpu/metadata.ts";

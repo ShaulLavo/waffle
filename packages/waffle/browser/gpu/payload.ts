@@ -15,7 +15,7 @@ import {
   typedArraySet,
   Uint8ArrayConstructor,
 } from "../../proc/intrinsics.js";
-import { gpuPayloadLayout as layout } from "./generated/tables.js";
+import { gpuPayloadLayout as layout } from "../display/generated/graphics-layout.js";
 import { GPU_TERMINAL, type Handle } from "./protocol.js";
 
 const integer = Number.isInteger;

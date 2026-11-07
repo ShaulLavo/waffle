@@ -1,5 +1,5 @@
-import { gpuPayloadLayout } from "../browser/gpu/generated/tables.js";
-import { validGraphicsOpen } from "../browser/gpu/protocol.js";
+import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
+import { validGraphicsOpen } from "../browser/display/open.js";
 import { afterEach, expect, test } from "bun:test";
 import { createGraphicsGuest } from "../browser/gpu/guest.js";
 import {
