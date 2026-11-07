@@ -547,7 +547,7 @@ async function ownershipCase(page: Page, mode: Mode) {
     await invoke(page, "closeIntegration");
   }
 }
-export function presentCount(service: Record<string, unknown>, peer: number) {
+function presentCount(service: Record<string, unknown>, peer: number) {
   return entries(record(service.fairness).presents).filter((present) => present.connection === peer)
     .length;
 }

@@ -15,7 +15,6 @@ import {
   checkpoint,
   current,
   until,
-  presentCount,
 } from "./gpu-ownership-browser.js";
 
 type Mode = "header" | "chunk" | "nesting";
@@ -41,9 +40,19 @@ function cleanGuest(value: unknown, expected?: Record<string, unknown>) {
       "replaced victim process",
     );
   const events = importControls(guest);
-  authority({
-    ownAuthority: events.filter((event) => event.phase === "enter").map((event) => event.authority),
-  });
+  const reports = events
+    .filter((event) => event.phase === "enter")
+    .map((event) => record(event.authority));
+  authority({ ownAuthority: reports });
+  for (const report of reports) {
+    const labels = report.canaries;
+    requireProof(
+      Array.isArray(labels) &&
+        labels.every((label) => typeof label === "string" && label.length > 0) &&
+        new Set(labels).size === labels.length,
+      "missing distinct authority canaries",
+    );
+  }
   if (expected) {
     const earlier = entries(expected.events);
     requireProof(
@@ -156,8 +165,31 @@ function progress(service: Record<string, unknown>, peer: unknown) {
       number(record(item.settlement).at) >= number(item.start),
       "invalid native queue progress",
     );
-  return { presents: presents.length, queue: queue.length };
+  return {
+    presents: presents.length,
+    queue: queue.length,
+    presentAt: presents.reduce((latest, item) => Math.max(latest, number(item.at)), 0),
+    queueAt: queue.reduce(
+      (latest, item) => Math.max(latest, number(record(item.settlement).at)),
+      0,
+    ),
+  };
 }
+function peerAdvanced(
+  service: Record<string, unknown>,
+  peer: unknown,
+  previous: ReturnType<typeof progress>,
+  since = 0,
+): boolean {
+  const next = progress(service, peer);
+  return (
+    next.presents > previous.presents &&
+    next.queue > previous.queue &&
+    next.presentAt >= since &&
+    next.queueAt >= since
+  );
+}
+
 type Sample = {
   realm: unknown;
   token: unknown;
@@ -203,6 +235,7 @@ function ownershipProof(service: Record<string, unknown>, index: number, expecte
   const count = index === 1 || index === 2 ? 2 : 1;
   const peer = owner(service, expected.result.peer, "peer");
   requireProof(typeof peer.frame === "boolean", "missing peer frame observation");
+  requireProof(peer.presenter === true, "missing peer presenter ownership");
   requireProof(
     service.connections === count &&
       service.devicesLive === count &&
@@ -351,9 +384,16 @@ export function validateMalformedResult(value: unknown) {
     requireProof(
       start.presents > presents &&
         start.queue > queue &&
-        end.presents >= start.presents &&
-        end.queue >= start.queue,
+        end.presents > start.presents &&
+        end.queue > start.queue,
       "missing fresh native peer progress at checkpoint",
+    );
+    requireProof(
+      end.presentAt >= number(before.at) &&
+        end.presentAt <= number(after.at) &&
+        end.queueAt >= number(before.at) &&
+        end.queueAt <= number(after.at),
+      "missing fresh native peer observation inside screenshot bracket",
     );
     presents = end.presents;
     queue = end.queue;
@@ -442,22 +482,22 @@ async function malformedCase(page: Page, mode: Mode) {
     const phases: Record<string, unknown>[] = [];
     const capture = async (name: (typeof names)[number]) => {
       const previous = phases.at(-1);
-      const before = await until(
-        page,
-        (service) =>
-          presentCount(service, peer) >
-          presentCount(previous ? record(previous.service) : observed, peer),
-      );
+      const previousProgress = progress(previous ? record(previous.service) : observed, peer);
+      const before = await until(page, (service) => peerAdvanced(service, peer, previousProgress));
       const image = await pixels(page, 1, false);
       assertTrianglePixels(image, "green");
       const guest = name === "live" ? undefined : await invoke(page, "ownershipGuest", [2]);
+      const start = progress(before, peer);
+      const after = await until(page, (service) =>
+        peerAdvanced(service, peer, start, number(before.at)),
+      );
       phases.push({
         name,
         before,
         peerPid: peerGuest.pid,
         guest,
         pixels: image,
-        service: await current(page),
+        service: after,
       });
     };
     await capture("live");

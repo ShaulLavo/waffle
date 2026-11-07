@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { validateMalformedResult } from "./gpu-malformed-browser.js";
 
 function cleanAuthority() {
-  return { canaries: Array.from({ length: 33 }, () => "canary"), leaks: [] as string[] };
+  return {
+    canaries: Array.from({ length: 33 }, (_, index) => `synthetic-canary-${index}`),
+    leaks: [] as string[],
+  };
 }
 function ledger(live: number, retired: number) {
   return {
@@ -138,11 +141,14 @@ function proof(kind = "header") {
       fairness: {
         overflow: false,
         slices: [{ connection: 2, start: 1, end: 2 }],
-        presents: Array.from({ length: i + 1 }, (_, n) => ({ connection: 2, at: 20 * (n + 1) })),
-        queue: Array.from({ length: i + 1 }, (_, n) => ({
+        presents: Array.from({ length: serial }, (_, n) => ({
           connection: 2,
-          start: n,
-          settlement: { kind: "completed", at: n + 1 },
+          at: 20 * (n + 1) - 1,
+        })),
+        queue: Array.from({ length: serial }, (_, n) => ({
+          connection: 2,
+          start: 20 * (n + 1) - 3,
+          settlement: { kind: "completed", at: 20 * (n + 1) - 2 },
         })),
       },
     });
@@ -545,4 +551,44 @@ test("nested parser closure requires the exact compiled closed-completion observ
       "nesting",
     );
   }
+});
+
+test("each screenshot bracket requires new presents and completed queue work", () => {
+  for (const index of all) {
+    rejects((value) => {
+      value.phases[index]!.service.fairness.presents = structuredClone(
+        value.phases[index]!.before.fairness.presents,
+      );
+    }, /fresh native peer progress/);
+    rejects((value) => {
+      value.phases[index]!.service.fairness.queue = structuredClone(
+        value.phases[index]!.before.fairness.queue,
+      );
+    }, /fresh native peer progress/);
+  }
+});
+test("the unchanged peer must own a presenter in every snapshot", () => {
+  for (const index of all) {
+    rejects((value) => {
+      value.phases[index]!.before.owners[0]!.presenter = false;
+    }, /peer presenter ownership/);
+    rejects((value) => {
+      value.phases[index]!.service.owners[0]!.presenter = false;
+    }, /peer presenter ownership/);
+  }
+});
+test("replayed old completions cannot count as fresh screenshot-bracket work", () => {
+  for (const index of all) {
+    rejects((value) => {
+      value.phases[index]!.service.fairness.queue.forEach((item) => {
+        item.settlement.at = 1;
+        item.start = 0;
+      });
+    }, /fresh native peer observation/);
+  }
+});
+test("a repeated canary label cannot replace independent observed canaries", () => {
+  rejects((value) => {
+    value.phases[1]!.guest!.events[0]!.authority!.canaries.fill("fake");
+  }, /distinct authority canaries/);
 });
