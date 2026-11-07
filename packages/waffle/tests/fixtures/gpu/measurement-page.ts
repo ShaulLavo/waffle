@@ -203,20 +203,26 @@ async function extraDevices(options: MeasurementOptions) {
   const cohort: OwnedWorker[] = [];
   const devices: unknown[] = [];
   const retired: unknown[] = [];
+  let heldAt = "";
   try {
     for (let index = 0; index < options.extraWorkers; index++) {
       const owner = await openWorker(options.timeoutMs);
       cohort.push(owner);
       devices.push({
+        observedAt: new Date().toISOString(),
         workerStartupMs: owner.startupMs,
         device: await request(owner, { kind: "device" }, options.timeoutMs),
       });
     }
+    heldAt = new Date().toISOString();
+    // Host RSS polling observes the live cohort. Startup timings exclude this observation hold.
+    await new Promise((resolve) => setTimeout(resolve, 600));
   } finally {
     for (const owner of cohort) retired.push(await closeWorker(owner, options.timeoutMs));
   }
   return {
     requested: options.extraWorkers,
+    processMemoryObservationWindow: { heldAt, disposedAt: new Date().toISOString(), holdMs: 600 },
     devices,
     retired,
     scope: "Bounded native extra-worker/device sample, not a maximum-device-count test",
@@ -319,11 +325,11 @@ export async function runGpuMeasurement(input: unknown = defaultMeasurementOptio
         lightGuestFairness: {
           kind: "unmet",
           reason:
-            "Requires real compiled 20,000–50,000-draw guest workload and caps-on/off comparison; G1 workload not implemented. No page-authored stream substitute.",
+            "Requested desktop comparison is reported separately by the portable runner using real compiled 20,000 and 50,000-draw modes. No page-authored stream substitute.",
         },
         replayPerDraw: {
           kind: "unmet",
-          reason: "Requires the real compiled high-draw guest workload.",
+          reason: "See the portable runner desktopFairness result when explicitly requested.",
         },
         physicalIphoneDeviceCount: {
           kind: "unmet",

@@ -49,6 +49,7 @@ enum { FAIRNESS_NONE, FAIRNESS_HEAVY, FAIRNESS_PEER, FAIRNESS_SEEDED };
 static int fairness;
 static uint32_t fairness_seed;
 #define FAIRNESS_DRAWS 200000u
+static uint32_t fairness_draws = FAIRNESS_DRAWS;
 #define FAIRNESS_FRAMES 3u
 
 static uint32_t parse_seed(const char *text) {
@@ -61,6 +62,8 @@ static uint32_t parse_seed(const char *text) {
 static void options(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--fairness-heavy")) { fairness = FAIRNESS_HEAVY; continue; }
+    if (!strcmp(argv[i], "--desktop-heavy-20k")) { fairness = FAIRNESS_HEAVY; fairness_draws = 20000u; continue; }
+    if (!strcmp(argv[i], "--desktop-heavy-50k")) { fairness = FAIRNESS_HEAVY; fairness_draws = 50000u; continue; }
     if (!strcmp(argv[i], "--fairness-peer")) { fairness = FAIRNESS_PEER; continue; }
     if (!strcmp(argv[i], "--fairness-seed") && i + 1 < argc) {
       fairness = FAIRNESS_SEEDED;
@@ -187,7 +190,7 @@ static void fairness_retire(const GpuFixtureFrame *frame) {
   scope_barrier();
 }
 static void fairness_large_blob(const GpuFixtureFrame *frame) {
-  const size_t capacity = (size_t)FAIRNESS_DRAWS * 24 + 512;
+  const size_t capacity = (size_t)fairness_draws * 24 + 512;
   uint8_t *blob = malloc(capacity);
   if (!blob) fail("fairness-allocation", -48);
   WaffleGpuWriter large = {blob, capacity, 0, 0};
@@ -200,14 +203,14 @@ static void fairness_large_blob(const GpuFixtureFrame *frame) {
   size_t pipeline = waffle_gpu_begin(&nested, WAFFLE_GPU_OP_RENDER_PASS_ENCODER_SET_PIPELINE);
   gpu_object(&nested, PIPELINE);
   waffle_gpu_end(&nested, pipeline);
-  for (uint32_t draw = 0; draw < FAIRNESS_DRAWS; ++draw) gpu_draw(&nested);
+  for (uint32_t draw = 0; draw < fairness_draws; ++draw) gpu_draw(&nested);
   gpu_render_end(&nested, frame);
   uint32_t length = (uint32_t)nested.offset;
   for (unsigned byte = 0; byte < 4; ++byte) blob[16 + byte] = (uint8_t)(length >> (byte * 8));
   large.offset += nested.offset;
   waffle_gpu_end(&large, start);
-  if (nested.error || large.error || large.offset <= 4 * 1024 * 1024) fail("fairness-blob-size", -28);
-  printf("GPU_FAIRNESS_BLOB draws=%u bytes=%u appends=1\n", FAIRNESS_DRAWS, (unsigned)large.offset);
+  if (nested.error || large.error || (fairness_draws == FAIRNESS_DRAWS && large.offset <= 4 * 1024 * 1024)) fail("fairness-blob-size", -28);
+  printf("GPU_FAIRNESS_BLOB draws=%u bytes=%u appends=1\n", fairness_draws, (unsigned)large.offset);
   check("fairness-append", runtime_gpu_append(connection, blob, (uint32_t)large.offset));
   free(blob);
   puts("GPU_FAIRNESS_PUBLISHED");
@@ -221,7 +224,7 @@ static void fairness_heavy(void) {
   wait_stdin("fairness-heavy-ready");
   fairness_large_blob(&frame);
   scope_barrier();
-  puts("GPU_FAIRNESS_REPLAYED draws=200000");
+  printf("GPU_FAIRNESS_REPLAYED draws=%u\n", fairness_draws);
   gpu_submit_frame(&writer, &frame);
   finish_scope(WAFFLE_GPU_ENUM_ERROR_TYPE_NO_ERROR);
   present_frame(1, colour);
