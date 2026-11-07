@@ -32,7 +32,7 @@ static void local_checks(void) {
 static void vectors(void) {
   uint8_t data[256]; WaffleGpuWriter w = {data, sizeof(data), 0, 0};
   async_map(&w, 9, 7, WGPUMapMode_Write, 8, WGPU_WHOLE_MAP_SIZE);
-  data[20] = 3;
+  data[WAFFLE_GPU_BUFFER_MAP_ASYNC_RECEIVER_OFFSET + 4] = 3;
   printf("map ");
   for (size_t i = 0; i < w.offset; ++i) printf("%02x", data[i]);
   puts("");
@@ -41,11 +41,26 @@ static void vectors(void) {
     w.offset = 0;
     if (opcode == 109 || opcode == 112 || opcode == 120) async_has(&w, opcode, 9, 7, 1);
     else async_query_end(&w, opcode, 9, 7);
-    data[20] = 3;
+    data[WAFFLE_GPU_ADAPTER_GET_INFO_RECEIVER_OFFSET + 4] = 3;
     printf("query-%u ", opcode);
     for (size_t i = 0; i < w.offset; ++i) printf("%02x", data[i]);
     puts("");
   }
+  w.offset = 0; async_unmap(&w, 7);
+  data[WAFFLE_GPU_BUFFER_UNMAP_RECEIVER_OFFSET + 4] = 3;
+  printf("unmap ");
+  for (size_t i = 0; i < w.offset; ++i) printf("%02x", data[i]);
+  puts("");
+  AsyncShadow shadow = {.id = 7, .device = DEVICE, .size = 64, .offset = 8,
+                        .length = 4, .state = ASYNC_WRITE};
+  uint8_t *range = async_range(&shadow, 8, 4, 1);
+  require(range != NULL, "vector-shadow");
+  for (size_t i = 0; i < 4; ++i) range[i] = (uint8_t)(i + 1);
+  w.offset = 0; async_writeback(&w, &shadow, 0, 0);
+  data[WAFFLE_GPU_BUFFER_UNMAP_WRITES_BUFFER_OFFSET + 4] = 3;
+  printf("writes ");
+  for (size_t i = 0; i < w.offset; ++i) printf("%02x", data[i]);
+  puts("");
   require(!w.error, "vectors");
 }
 #ifdef GPU_ASYNC_LOCAL_ONLY
@@ -112,6 +127,11 @@ static int drain(uint32_t kind, uint32_t t, int64_t timeout) {
             "completion-framing");
     if (actual == WAFFLE_GPU_REPLY_DEVICE_LOST && !gpu_read_u32(p + 8)) loss(p, length);
     else {
+      if (actual == WAFFLE_GPU_REPLY_CLOSED && length >= 24)
+        fprintf(stderr, "GPU_ASYNC_TERMINAL reason=%u\n", gpu_read_u32(p + WAFFLE_GPU_REPLY_CLOSED_REASON_OFFSET));
+      if (actual != kind || gpu_read_u32(p + 8) != t || found)
+        fprintf(stderr, "GPU_ASYNC_UNEXPECTED expected=%u token=%u actual=%u token=%u status=%d bytes=%u\n",
+                kind, t, actual, gpu_read_u32(p + 8), (int32_t)gpu_read_u32(p + 12), length);
       require(actual == kind && gpu_read_u32(p + 8) == t && !found, "completion-correlation");
       memcpy(reply_bytes, p, length); reply_length = length; found = 1;
     }
@@ -194,13 +214,28 @@ static void info(uint16_t opcode, uint32_t receiver) {
 static void request_result(uint32_t kind, uint32_t t, uint32_t id, int success) {
   wait_for(kind, t); AsyncReader r = reply_body();
   uint32_t status = async_u32(&r), result = async_u32(&r), generation = async_u32(&r);
-  async_string(&r); async_end(&r, 8); require(!r.error, "request-layout");
-  if (!success) { require(status != WGPURequestDeviceStatus_Success, "excessive-limit-granted"); return; }
+  AsyncString message = async_string(&r); async_end(&r, 8); require(!r.error, "request-layout");
+  int32_t bridge = (int32_t)gpu_read_u32(reply_bytes + 12);
+  if (!success) {
+    require(status == WGPURequestDeviceStatus_Error && message.length, "excessive-limit-granted");
+    printf("GPU_ASYNC_EXCESSIVE status=%u bridge=%d message=%.*s\n", status, bridge,
+           (int)message.length, (const char *)message.data);
+    return;
+  }
+  if (bridge || status != 1) fprintf(stderr, "GPU_ASYNC_REQUEST id=%u status=%u bridge=%d message=%.*s\n",
+    id, status, bridge, (int)message.length, (const char *)message.data);
   reply_ok(); require(status == 1 && result == id && generation == 1, "request-success");
 }
-static void request_device(uint32_t id, int excessive) {
+static void request_adapter(uint32_t id) {
+  uint32_t t = next_token();
+  size_t start = waffle_gpu_begin(&writer, WAFFLE_GPU_OP_INSTANCE_REQUEST_ADAPTER);
+  gpu_object(&writer, id); waffle_gpu_token(&writer, t); gpu_object(&writer, 1);
+  waffle_gpu_u32(&writer, 0); waffle_gpu_end(&writer, start); append();
+  request_result(WAFFLE_GPU_REPLY_ADAPTER, t, id, 1);
+}
+static void request_device(uint32_t id, uint32_t adapter, int excessive) {
   uint32_t t = next_token(); size_t start = waffle_gpu_begin(&writer, WAFFLE_GPU_OP_ADAPTER_REQUEST_DEVICE);
-  gpu_object(&writer, id); waffle_gpu_token(&writer, t); gpu_object(&writer, ADAPTER);
+  gpu_object(&writer, id); waffle_gpu_token(&writer, t); gpu_object(&writer, adapter);
   waffle_gpu_u32(&writer, 1); gpu_label(&writer);
   waffle_gpu_u32(&writer, adapter_feature_count ? 1 : 0);
   if (adapter_feature_count) waffle_gpu_u32(&writer, adapter_features[0]);
@@ -224,7 +259,7 @@ static void negotiate(void) {
   limits(WAFFLE_GPU_OP_ADAPTER_GET_LIMITS, ADAPTER, adapter_limits);
   wgsl_feature_count = features(WAFFLE_GPU_OP_INSTANCE_GET_WGSL_LANGUAGE_FEATURES, 1, wgsl_features);
   has_features(WAFFLE_GPU_OP_INSTANCE_HAS_WGSL_LANGUAGE_FEATURE, 1, wgsl_features, wgsl_feature_count);
-  request_device(DEVICE, 0);
+  request_device(DEVICE, ADAPTER, 0);
   device_feature_count = features(WAFFLE_GPU_OP_DEVICE_GET_FEATURES, DEVICE, device_features);
   require(device_feature_count == (adapter_feature_count ? 1u : 0u), "granted-features-count");
   if (device_feature_count) require(device_features[0] == adapter_features[0], "granted-feature");
@@ -233,7 +268,7 @@ static void negotiate(void) {
   limits(WAFFLE_GPU_OP_DEVICE_GET_LIMITS, DEVICE, granted);
   require(granted[WAFFLE_GPU_LIMITS_MAX_TEXTURE_DIMENSION_2D_INDEX] ==
           adapter_limits[WAFFLE_GPU_LIMITS_MAX_TEXTURE_DIMENSION_2D_INDEX], "granted-limit");
-  info(WAFFLE_GPU_OP_DEVICE_GET_ADAPTER_INFO, DEVICE); request_device(70, 1);
+  info(WAFFLE_GPU_OP_DEVICE_GET_ADAPTER_INFO, DEVICE); request_adapter(71); request_device(70, 71, 1);
   gpu_queue(&writer); append(); puts("GPU_ASYNC_NEGOTIATED granted=checked excessive=failed");
 }
 static void finish_scope(uint32_t expected) {
@@ -290,6 +325,7 @@ static void buffers(void) {
   require(p && q, "creation-ranges"); memset(p, 37, 8); memset(q, 61, 8);
   memset(creation + 8, 37, 8); memset(creation + 24, 61, 8);
   async_writeback(&writer, &source, suppress_writes, corrupt_ranges); append();
+  if (corrupt_ranges) { drain(0, 0, -1); require(0, "corrupt-range-not-terminal"); }
   gpu_push_scope(&writer); expect_read(creation, 32); finish_scope(WGPUErrorType_NoError);
   puts("GPU_ASYNC_READBACK creation=exact zeros=preserved usages=unchanged");
   map_shadow(&writable, WGPUMapMode_Write, 0, WGPU_WHOLE_MAP_SIZE);
@@ -330,7 +366,9 @@ static void compilation_message(AsyncReader *r, int *located) {
   require(((uint8_t)invalid_wgsl[offset] & 0xc0) != 0x80 &&
           (offset + length == total || ((uint8_t)invalid_wgsl[offset + length] & 0xc0) != 0x80),
           "compilation-utf8-boundary");
-  require(offset > (size_t)(strstr(invalid_wgsl, "λ") - invalid_wgsl), "nonascii-prefix"); *located = 1;
+  require(offset > (size_t)(strstr(invalid_wgsl, "λ") - invalid_wgsl), "nonascii-prefix");
+  if (offset == (uint64_t)(strchr(invalid_wgsl, ';') - invalid_wgsl) && length == 1 &&
+      severity == WGPUCompilationMessageType_Error) *located = 1;
 }
 static void compilation(void) {
   gpu_push_scope(&writer); gpu_shader(&writer, invalid_wgsl); finish_scope(WGPUErrorType_Validation);
@@ -351,8 +389,20 @@ static void invalidate_device(uint32_t id) {
   if (readback.device == id) async_invalidate(&readback);
   if (writable.device == id) async_invalidate(&writable);
 }
+static void buffer_cache_lifetime(void) {
+  AsyncShadow local = {.id = 24, .device = DEVICE, .size = 64, .length = 64, .state = ASYNC_WRITE};
+  async_buffer(&writer, local.id, DEVICE, WGPUBufferUsage_CopySrc, 64, 1);
+  require(async_range(&local, 0, 8, 1) != NULL, "before-buffer-destroy");
+  async_receiver(&writer, WAFFLE_GPU_OP_BUFFER_DESTROY, local.id); async_invalidate(&local); append();
+  require(!async_range(&local, 0, 8, 1), "buffer-destroy-invalidates");
+  local.id = 25; local.state = ASYNC_WRITE; local.length = 64;
+  async_buffer(&writer, local.id, DEVICE, WGPUBufferUsage_CopySrc, 64, 1);
+  require(async_range(&local, 0, 8, 1) != NULL, "before-buffer-release");
+  gpu_release(&writer, WAFFLE_GPU_OBJECT_BUFFER, local.id); async_invalidate(&local); append();
+  require(!async_range(&local, 0, 8, 1), "last-buffer-release-invalidates");
+}
 static void device_loss(void) {
-  request_device(60, 0);
+  request_adapter(72); request_device(60, 72, 0);
   size_t start = waffle_gpu_begin(&writer, WAFFLE_GPU_OP_DEVICE_GET_QUEUE);
   gpu_object(&writer, 61); gpu_object(&writer, 60); waffle_gpu_end(&writer, start);
   map_shadow(&writable, WGPUMapMode_Write, 0, WGPU_WHOLE_MAP_SIZE);
@@ -362,7 +412,11 @@ static void device_loss(void) {
   work(61);
   query(WAFFLE_GPU_OP_DEVICE_HAS_FEATURE, 60, adapter_feature_count ? adapter_features[0] : WGPUFeatureName_DepthClipControl);
   require(payload_length == 4, "second-device-query");
-  gpu_release(&writer, WAFFLE_GPU_OBJECT_DEVICE, 60); invalidate_device(60); append();
+  AsyncShadow secondary = {.id = 62, .device = 60, .size = 64, .length = 64, .state = ASYNC_WRITE};
+  async_buffer(&writer, secondary.id, 60, WGPUBufferUsage_CopySrc, 64, 1);
+  require(async_range(&secondary, 0, 8, 1) != NULL, "before-last-device-release");
+  gpu_release(&writer, WAFFLE_GPU_OBJECT_DEVICE, 60); async_invalidate(&secondary); append();
+  require(!async_range(&secondary, 0, 8, 1), "last-device-release-invalidates");
   puts("GPU_ASYNC_ISOLATION destroyed=unmapped second-device=progress last-release=invalidated");
 }
 int main(int argc, char **argv) {
@@ -380,7 +434,7 @@ int main(int argc, char **argv) {
   }
   check(runtime_gpu_open(0, &connection), "open"); require(connection != 0, "connection");
   require(atexit(cleanup) == 0, "atexit");
-  negotiate(); buffers(); compilation(); device_loss(); drain(0, 0, 0);
+  negotiate(); buffers(); compilation(); buffer_cache_lifetime(); device_loss(); drain(0, 0, 0);
   check(runtime_gpu_close(connection), "close"); connection = 0;
   puts("GPU_ASYNC_OK compiled=C runtime=blocking maps=exact scopes=native payload=once loss=explicit");
   return 0;

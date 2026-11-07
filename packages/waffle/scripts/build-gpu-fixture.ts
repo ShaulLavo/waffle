@@ -136,6 +136,27 @@ function inspectImports(wasm: Uint8Array<ArrayBuffer>, name: string): void {
   custom.sort();
   if (json(custom) !== json(expected) || imports.some((entry) => entry.kind !== "function"))
     throw new Error("GPU fixture imports do not match the blocking Preview 1 contract");
+  if (name === GPU_ASYNC_FIXTURE_WASM) {
+    const wasi = imports
+      .filter((entry) => entry.module === "wasi_snapshot_preview1")
+      .map((entry) => entry.name);
+    wasi.sort();
+    if (
+      json(wasi) !==
+      json([
+        "args_get",
+        "args_sizes_get",
+        "clock_time_get",
+        "fd_close",
+        "fd_fdstat_get",
+        "fd_read",
+        "fd_seek",
+        "fd_write",
+        "proc_exit",
+      ])
+    )
+      throw new Error("Async fixture WASI imports do not match the pinned C command");
+  }
   const exports = WebAssembly.Module.exports(module);
   if (!exports.some((entry) => entry.name === "_start" && entry.kind === "function"))
     throw new Error("GPU fixture has no command entry");

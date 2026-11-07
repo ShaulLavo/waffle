@@ -80,11 +80,11 @@ describe.skipIf(!wasm)(
       );
       for (const vector of expected.commands) {
         const opcode = Number.parseInt(vector.hex.slice(0, 2), 16);
-        if (opcode === 116) continue;
-        expect(vectors.get(opcode === 115 ? "map" : `query-${opcode}`)).toBe(
-          vector.hex.replaceAll(/\s/g, ""),
-        );
+        expect(
+          vectors.get(opcode === 115 ? "map" : opcode === 116 ? "unmap" : `query-${opcode}`),
+        ).toBe(vector.hex.replaceAll(/\s/g, ""));
       }
+      expect(vectors.get("writes")).toBe(expected.private.hex.replaceAll(/\s/g, ""));
       expect(control.commands).toEqual([]);
     });
     test("C pumps its own bytes, payload retry and one-consumption checks", () => {
@@ -180,3 +180,35 @@ describe.skipIf(!wasm)(
     });
   },
 );
+
+test("compiled native result parser rejects missing markers and wrong exits", async () => {
+  const { requireCompiledAsyncResult } = await import("./gpu-async-browser-runner.js");
+  expect(() =>
+    requireCompiledAsyncResult({
+      exit: { kind: "exited", code: 0 },
+      text: "GPU_ASYNC_OK",
+      errors: [],
+    }),
+  ).toThrow("Missing compiled result marker");
+  expect(() =>
+    requireCompiledAsyncResult({ exit: { kind: "exited", code: 1 }, text: "", errors: [] }),
+  ).toThrow("failed");
+});
+test("native negative parser requires its exact assertion and protocol terminal", async () => {
+  const { requireCompiledAsyncNegative } = await import("./gpu-async-browser-runner.js");
+  const result = {
+    exit: { kind: "exited", code: 1 },
+    text: "GPU_ASYNC_FAIL stage=payload-once",
+    errors: [],
+  };
+  expect(() => requireCompiledAsyncNegative(result, "--reuse-payload")).not.toThrow();
+  expect(() => requireCompiledAsyncNegative(result, "--suppress-writes")).toThrow("Wrong negative");
+  result.text = "GPU_ASYNC_FAIL stage=completion-correlation";
+  expect(() => requireCompiledAsyncNegative(result, "--corrupt-range")).toThrow(
+    "Missing protocol terminal",
+  );
+  result.text = "GPU_ASYNC_TERMINAL reason=2\nGPU_ASYNC_FAIL stage=completion-correlation";
+  expect(() => requireCompiledAsyncNegative(result, "--corrupt-range")).not.toThrow();
+  result.text += "\nGPU_ASYNC_OK";
+  expect(() => requireCompiledAsyncNegative(result, "--corrupt-range")).toThrow("Invalid negative");
+});

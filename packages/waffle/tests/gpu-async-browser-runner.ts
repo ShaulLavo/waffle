@@ -91,16 +91,48 @@ async function lifecycle(page: Page, stage: string, action: "kill" | "revoke") {
   await complete(page);
   return { stage, action, status: "passed", compiledGuest: true };
 }
-async function negative(page: Page, flag: string) {
+type NegativeControl =
+  | "--suppress-writes"
+  | "--corrupt-range"
+  | "--reuse-payload"
+  | "--malformed-map";
+const negativeControls: readonly NegativeControl[] = [
+  "--suppress-writes",
+  "--corrupt-range",
+  "--reuse-payload",
+  "--malformed-map",
+];
+export function requireCompiledAsyncNegative(result: unknown, control: NegativeControl): void {
+  const value = qualificationRecord(result),
+    exit = qualificationRecord(value.exit);
+  if (
+    exit.kind !== "exited" ||
+    exit.code !== 1 ||
+    typeof value.text !== "string" ||
+    value.text.includes("GPU_ASYNC_OK") ||
+    !Array.isArray(value.errors) ||
+    value.errors.length
+  )
+    throw new Error(`Invalid negative C result: ${control}`);
+  const stage =
+    control === "--suppress-writes"
+      ? "exact-native-readback"
+      : control === "--reuse-payload"
+        ? "payload-once"
+        : "completion-correlation";
+  if (!value.text.includes(`GPU_ASYNC_FAIL stage=${stage}`))
+    throw new Error(`Wrong negative C assertion: ${control}`);
+  if (
+    (control === "--corrupt-range" || control === "--malformed-map") &&
+    !value.text.includes("GPU_ASYNC_TERMINAL reason=2")
+  )
+    throw new Error(`Missing protocol terminal for ${control}`);
+}
+async function negative(page: Page, flag: NegativeControl) {
   await invoke(page, "launchAsync", [[flag], 0]);
   await marker(page, "GPU_ASYNC_FAIL", 0, true);
   const result = await invoke(page, "finishAsync", [0]);
-  if (
-    result.exit.kind !== "exited" ||
-    result.exit.code !== 1 ||
-    result.text.includes("GPU_ASYNC_OK")
-  )
-    throw new Error(`Negative compiled C control did not fail: ${flag}: ${JSON.stringify(result)}`);
+  requireCompiledAsyncNegative(result, flag);
   await complete(page);
   return {
     control: flag,
@@ -121,6 +153,82 @@ async function capabilities(page: Page) {
     }
   });
 }
+async function asyncRoutes(wasm: Uint8Array<ArrayBuffer>) {
+  const routes = await qualificationRoutes();
+  for (const [route, source] of [
+    ["/async-page.js", "./fixtures/gpu/async-page.ts"],
+    ["/gpu-guest.js", "./fixtures/gpu/integration-guest.ts"],
+    ["/gpu/service-worker.ts", "./fixtures/gpu/integration-service-worker.ts"],
+    ["/fs-worker.js", "../browser/fs-worker.ts"],
+  ]) {
+    if (!route || !source) throw new Error("Invalid async route");
+    routes[route] = await browserBundle(new URL(source, import.meta.url).pathname);
+  }
+  routes["/async.wasm"] = new Blob([wasm], { type: "application/wasm" });
+  return routes;
+}
+function assertAdapterIdentity(text: string, adapter: Record<string, unknown>): void {
+  for (const field of ["vendor", "architecture"]) {
+    const identity = adapter[field];
+    if (typeof identity === "string" && !text.includes(`${field}=${identity}`))
+      throw new Error(`Compiled adapter identity differs for ${field}`);
+  }
+}
+async function asyncSuite(page: Page, adapter: Record<string, unknown>) {
+  await invoke(page, "openAsync", []);
+  try {
+    const normal = await complete(page);
+    assertAdapterIdentity(normal.text, adapter);
+    const negatives = [],
+      lifetimes = [];
+    for (const flag of negativeControls) negatives.push(await negative(page, flag));
+    for (const stage of ["map-pending", "payload-published", "work-pending"]) {
+      lifetimes.push(await lifecycle(page, stage, "kill"));
+      lifetimes.push(await lifecycle(page, stage, "revoke"));
+    }
+    const retired = qualificationRecord(await invoke(page, "asyncServiceSnapshot", []));
+    if (retired.connections !== 0 || retired.devicesLive !== 0 || retired.heapBytes !== 0)
+      throw new Error(`Compiled async service retained resources: ${JSON.stringify(retired)}`);
+    return { status: "passed", compiledGuest: true, normal, negatives, lifetimes, retired };
+  } finally {
+    await invoke(page, "closeAsync", []);
+  }
+}
+async function runEngine(
+  runner: GpuQualificationLifecycle,
+  requested: string,
+  url: string,
+  artifactBytes: number,
+) {
+  const engine = qualificationEngine(requested),
+    browser = await runner.launch(engine);
+  const context = await browser.newContext(),
+    page = await context.newPage();
+  try {
+    await navigateTestPage(page, url);
+    const observed = qualificationRecord(await capabilities(page));
+    const available = requireWorkerAdapter(engine, observed),
+      adapter = qualificationRecord(observed.adapter);
+    if (engine === "chromium" && adapter.architecture !== "swiftshader")
+      throw new Error(`Wrong Chromium adapter: ${JSON.stringify(adapter)}`);
+    console.log(
+      JSON.stringify({
+        engine,
+        version: browser.version(),
+        adapter,
+        stage: "compiled-async-admitted",
+        artifactBytes,
+      }),
+    );
+    const result = available
+      ? await asyncSuite(page, adapter)
+      : { status: "unsupported", compiledGuest: false };
+    console.log(JSON.stringify({ engine, version: browser.version(), adapter, ...result }));
+  } finally {
+    await context.close();
+    await runner.closeBrowser(browser);
+  }
+}
 export async function runCompiledAsync(engines: readonly string[]): Promise<void> {
   const directory = process.env.GPU_FIXTURE_DIR;
   if (!directory) throw new Error("Set GPU_FIXTURE_DIR to the once-built producer output");
@@ -128,78 +236,8 @@ export async function runCompiledAsync(engines: readonly string[]): Promise<void
   const runner = new GpuQualificationLifecycle();
   try {
     await runner.init(process.env.GPU_SCRATCH_ROOT ?? "/work/tmp");
-    const routes = await qualificationRoutes();
-    for (const [route, source] of [
-      ["/async-page.js", "./fixtures/gpu/async-page.ts"],
-      ["/gpu-guest.js", "./fixtures/gpu/integration-guest.ts"],
-      ["/gpu/service-worker.ts", "./fixtures/gpu/integration-service-worker.ts"],
-      ["/fs-worker.js", "../browser/fs-worker.ts"],
-    ]) {
-      if (!route || !source) throw new Error("Invalid async route");
-      routes[route] = await browserBundle(new URL(source, import.meta.url).pathname);
-    }
-    routes["/async.wasm"] = new Blob([wasm], { type: "application/wasm" });
-    const url = runner.serve(routes);
-    for (const requested of engines) {
-      const engine = qualificationEngine(requested),
-        browser = await runner.launch(engine);
-      const context = await browser.newContext(),
-        page = await context.newPage();
-      try {
-        await navigateTestPage(page, url);
-        const observed = qualificationRecord(await capabilities(page));
-        const available = requireWorkerAdapter(engine, observed),
-          adapter = qualificationRecord(observed.adapter);
-        if (engine === "chromium" && adapter.architecture !== "swiftshader")
-          throw new Error(`Wrong Chromium adapter: ${JSON.stringify(adapter)}`);
-        if (!available) {
-          console.log(
-            JSON.stringify({
-              engine,
-              version: browser.version(),
-              adapter,
-              status: "unsupported",
-              compiledGuest: false,
-            }),
-          );
-          continue;
-        }
-        await invoke(page, "openAsync", []);
-        try {
-          const normal = await complete(page);
-          const negatives = [];
-          for (const flag of [
-            "--suppress-writes",
-            "--corrupt-range",
-            "--reuse-payload",
-            "--malformed-map",
-          ])
-            negatives.push(await negative(page, flag));
-          const lifetimes = [];
-          for (const stage of ["map-pending", "payload-published", "work-pending"]) {
-            lifetimes.push(await lifecycle(page, stage, "kill"));
-            lifetimes.push(await lifecycle(page, stage, "revoke"));
-          }
-          console.log(
-            JSON.stringify({
-              engine,
-              version: browser.version(),
-              adapter,
-              status: "passed",
-              compiledGuest: true,
-              normal,
-              negatives,
-              lifetimes,
-            }),
-          );
-        } finally {
-          await invoke(page, "closeAsync", []);
-        }
-      } finally {
-        await context.close();
-        await runner.closeBrowser(browser);
-      }
-    }
+    const url = runner.serve(await asyncRoutes(wasm));
+    for (const requested of engines) await runEngine(runner, requested, url, wasm.byteLength);
   } finally {
     await runner.close();
   }

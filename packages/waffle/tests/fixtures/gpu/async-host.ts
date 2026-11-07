@@ -1,7 +1,7 @@
 import { FixtureProtocolHost } from "../../gpu-fixture-host.js";
 import { decodeCall, wireHandle, wireNumber } from "../../../browser/gpu/codec.js";
 import { gpuStream } from "../../../browser/gpu/generated/tables.js";
-import { encodeGpuCompletion, encodeGpuStruct } from "../../../tooling/gpu-stream-layout.js";
+import { encodeGpuStruct } from "../../../tooling/gpu-stream-layout.js";
 
 export type AsyncReplyFault =
   | "none"
@@ -183,8 +183,8 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
           message: "controlled syntax error",
           type: 1,
           line_num: 1n,
-          line_pos: this.asyncFault === "compilation-location" ? 59n : 62n,
-          offset: 61n,
+          line_pos: this.asyncFault === "compilation-location" ? 63n : 66n,
+          offset: 65n,
           length: 1n,
         },
         {

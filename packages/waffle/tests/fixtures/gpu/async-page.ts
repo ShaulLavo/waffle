@@ -191,3 +191,32 @@ export async function closeAsync() {
 export function resumeAsync(slot = 0) {
   return run(slot).input.tryWrite([new Uint8Array([10])]);
 }
+/** @browserEntry */
+export async function asyncServiceSnapshot(): Promise<unknown> {
+  const worker = workers.find(
+    (owner) => owner.url.includes("/gpu/service-worker.ts") && !owner.stopped,
+  )?.worker;
+  if (!worker) throw new Error("Async GPU service is not live");
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const listener = ({ data }: MessageEvent<unknown>) => {
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !("testId" in data) ||
+        data.testId !== id ||
+        !("gpuSnapshot" in data)
+      )
+        return;
+      clearTimeout(timer);
+      worker.removeEventListener("message", listener);
+      resolve(data.gpuSnapshot);
+    };
+    const timer = setTimeout(() => {
+      worker.removeEventListener("message", listener);
+      reject(new Error("Async snapshot deadline"));
+    }, 10000);
+    worker.addEventListener("message", listener);
+    worker.postMessage({ test: "snapshot", id });
+  });
+}
