@@ -171,18 +171,29 @@ function fixture() {
     { id: 1, url: "/fs-worker.js", stopped: false, createdAt: 1 },
     { id: 2, url: "/gpu/service-worker.ts/ownership", stopped: false, createdAt: 2 },
   ];
-  const workerStops = [{ id: 2, url: oldWorkers[1]!.url, at: 201 }];
-  const failedWorkers = oldWorkers
-    .map((worker) => ({ ...worker, stopped: worker.id === 2 }))
-    .concat(
-      [peerGuest, victimGuest, openingGuest].map((item, index) => ({
-        ...item,
-        id: index + 3,
-        url: "/gpu-guest.js",
-        stopped: true,
-        createdAt: 3,
-      })),
-    );
+  const originalWorkers = oldWorkers.concat(
+    [controlGuest, peerGuest, victimGuest, openingGuest].map((item, index) => ({
+      ...item,
+      id: index + 3,
+      url: "/gpu-guest.js",
+      stopped: index === 0,
+      createdAt: 3,
+    })),
+    [{ id: 7, url: "/gpu-guest.js", stopped: false, createdAt: 3 }],
+  );
+  const failedWorkers = originalWorkers.map((worker) => ({
+    ...worker,
+    stopped: worker.stopped || worker.id === 2,
+  }));
+  const retiredWorkers = failedWorkers.map((worker) => ({
+    ...worker,
+    stopped: worker.stopped || ("pid" in worker && typeof worker.pid === "number"),
+  }));
+  const initialStops = [{ id: 3, url: "/gpu-guest.js", at: 5 }];
+  const workerStops = initialStops.concat([{ id: 2, url: oldWorkers[1]!.url, at: 201 }]);
+  const retiredStops = workerStops.concat(
+    [4, 5, 6].map((id) => ({ id, url: "/gpu-guest.js", at: 200 + id })),
+  );
   const revocations = [controlGuest, peerGuest, victimGuest, openingGuest].map((item) => ({
     pid: item.pid,
     value: 1,
@@ -219,7 +230,14 @@ function fixture() {
       queue: [{ connection: 1, start: 25, settlement: { kind: "completed", at: 28 } }],
     },
   };
-  const ended = { ...recoveryService, owners: [{ ...native(5, true), id: 1, device: 1 }] };
+  const ended = {
+    ...recoveryService,
+    at: 60,
+    serial: 60,
+    responseId: "fresh-60",
+    fairness: structuredClone(recoveryService.fairness),
+    owners: [{ ...native(5, true), id: 1, device: 1 }],
+  };
   const recovered = {
     ...state,
     controls: controls.concat([
@@ -233,9 +251,11 @@ function fixture() {
         replies: ring(),
       },
     ]),
-    workers: failedWorkers.concat([
-      { id: 6, url: oldWorkers[1]!.url, stopped: false, createdAt: 210 },
-    ]),
+    workers: structuredClone(retiredWorkers)
+      .map((worker) => (worker.id === 7 ? { ...worker, ...recoveryGuest } : worker))
+      .concat([{ id: 8, url: oldWorkers[1]!.url, stopped: false, createdAt: 210 }]),
+    workerStops: retiredStops,
+    audit: structuredClone(armed),
     snapshot: ledger(2, 4),
   };
   return {
@@ -292,15 +312,8 @@ function fixture() {
       },
       before: {
         ...state,
-        workers: oldWorkers.concat(
-          [controlGuest, peerGuest, victimGuest, openingGuest].map((item, index) => ({
-            ...item,
-            id: index + 3,
-            url: "/gpu-guest.js",
-            stopped: index === 0,
-            createdAt: 3,
-          })),
-        ),
+        workers: originalWorkers,
+        workerStops: initialStops,
         controls: controls.map((item) =>
           item.grant === 1
             ? item
@@ -315,26 +328,30 @@ function fixture() {
         ),
       },
       stopped: state,
-      after: structuredClone(state),
+      after: { ...structuredClone(state), workers: retiredWorkers, workerStops: retiredStops },
       audit: armed,
       exits: [peerGuest, blockedGuest, openingGuest].map((item, index) => ({
         pid: item.pid,
         guest: {
           ...item,
-          events: item.events.concat([
-            {
-              ...item.events.at(-1)!,
-              name: index === 2 ? "open" : "completions",
-              phase: "return",
-              result: -64,
-            },
-          ]),
+          events: item.events.concat(
+            index === 0 ? [{ ...item.events.at(-1)!, phase: "enter", call: 4, result: 0 }] : [],
+            [
+              {
+                ...item.events.at(-1)!,
+                call: index === 0 ? 4 : item.events.at(-1)!.call,
+                name: index === 2 ? "open" : "completions",
+                phase: "return",
+                result: -64,
+              },
+            ],
+          ),
         },
         exit: { kind: "exited", code: 1, status: 1 },
         ownAuthority: [audit],
         physicallyStopped: true,
         grantRetired: true,
-        text: `GPU_FAIL stage=${index === 2 ? "open" : "completions"} status=-64\n`,
+        text: `${item.text}GPU_FAIL stage=${index === 2 ? "open" : "completions"} status=-64\n`,
       })),
     },
     recovery: {
@@ -345,6 +362,12 @@ function fixture() {
       state: recovered,
       after: {
         ...recovered,
+        workers: recovered.workers.map((worker) => ({
+          ...worker,
+          stopped: worker.stopped || worker.id === 7,
+        })),
+        workerStops: retiredStops.concat([{ id: 7, url: "/gpu-guest.js", at: 260 }]),
+        audit: structuredClone(armed),
         controls: controls.concat([{ ...controls[0]!, grant: 5 }]),
         snapshot: ledger(1, 5),
       },
@@ -613,6 +636,146 @@ const invalid: [string, (value: ReturnType<typeof fixture>) => void, string][] =
     "shared-control",
   ],
 ];
+invalid.push(
+  [
+    "substituted held native identity",
+    (x) => {
+      const owner = x.phases[1]!.before.owners.find((item) => item.id === 3)!;
+      owner.grant = 999;
+      owner.surface = 999;
+      owner.presenterId = 999;
+      owner.presenterDevice = 999;
+    },
+    "held victim native identity changed",
+  ],
+  [
+    "substituted pending native identity",
+    (x) => {
+      x.pending.owners[2]!.grant = 999;
+      x.pending.owners[2]!.surface = 999;
+    },
+    "held victim native identity changed",
+  ],
+  [
+    "another pending open call",
+    (x) => {
+      const events = x.failure.exits[2]!.guest.events;
+      events.at(-1)!.call = 999;
+      events.splice(events.length - 1, 0, { ...events.at(-1)!, phase: "enter", result: 0 });
+    },
+    "pending open completion identity changed",
+  ],
+  [
+    "different pending terminal connection",
+    (x) => {
+      x.failure.exits[2]!.guest.events.at(-1)!.connection = 999;
+    },
+    "uncorrelated terminal import outcome",
+  ],
+  [
+    "lost ready history before hold",
+    (x) => {
+      x.blockedGuest.events.shift();
+      x.failure.exits[1]!.guest.events.shift();
+    },
+    "guest import history rewritten",
+  ],
+  [
+    "lost original C output",
+    (x) => {
+      x.failure.exits[1]!.text = "GPU_FAIL stage=completions status=-64\n";
+    },
+    "guest output history rewritten",
+  ],
+  [
+    "dead realm on recovery retirement",
+    (x) => {
+      x.recovery.exit.service.realm = "old-realm";
+    },
+    "recovery terminal service identity changed",
+  ],
+  [
+    "changed recovery terminal token",
+    (value) => {
+      value.recovery.exit.service.token = "other";
+    },
+    "recovery terminal service identity changed",
+  ],
+  [
+    "changed recovery terminal device",
+    (x) => {
+      x.recovery.exit.service.owners[0]!.device = 999;
+    },
+    "recovery terminal native identity changed",
+  ],
+  [
+    "lost recovery terminal queue history",
+    (x) => {
+      x.recovery.exit.service.fairness.queue = [];
+    },
+    "queue observation history dropped",
+  ],
+  [
+    "lost recovery terminal presents",
+    (x) => {
+      x.recovery.exit.service.fairness.presents = [];
+    },
+    "native observation history rewritten",
+  ],
+  [
+    "revived original guest through recovery",
+    (x) => {
+      for (const state of [x.recovery.state, x.recovery.after])
+        state.workers.find((worker) => worker.id === 5)!.stopped = false;
+    },
+    "original physical worker revived",
+  ],
+  [
+    "erased original stop history",
+    (x) => {
+      x.recovery.state.workerStops = [];
+      x.recovery.after.workerStops = [];
+    },
+    "worker stop history rewritten",
+  ],
+  [
+    "rewritten original constructor time",
+    (x) => {
+      x.recovery.state.workers[2]!.createdAt++;
+    },
+    "original physical worker identity changed",
+  ],
+  [
+    "missing old audit during recovery",
+    (x) => {
+      Reflect.deleteProperty(x.recovery.state, "audit");
+    },
+    "terminated service audit missing through recovery",
+  ],
+  [
+    "rewritten old audit after recovery",
+    (x) => {
+      x.recovery.after.audit.service.serial++;
+    },
+    "terminated service audit rewritten through recovery",
+  ],
+);
+for (const key of ["grant", "surface", "device", "presenterId", "presenterDevice"]) {
+  invalid.push([
+    `changed first held ${key}`,
+    (value) => {
+      Reflect.set(value.phases[1]!.before.owners[2]!, key, 999);
+    },
+    "held victim native identity changed",
+  ]);
+  invalid.push([
+    `changed pending held ${key}`,
+    (value) => {
+      Reflect.set(value.pending.owners[2]!, key, 999);
+    },
+    "held victim native identity changed",
+  ]);
+}
 for (const [name, change, reason] of invalid) {
   test(`service failure controls reject ${name} for its intended reason`, () => {
     const value = structuredClone(fixture());
@@ -638,6 +801,8 @@ test("an already pending retired submission may legitimately settle later", () =
       start: 1,
       settlement: { kind: "completed", at: 6 },
     });
+  value.recovery.state.audit = structuredClone(value.auditControl);
+  value.recovery.after.audit = structuredClone(value.auditControl);
   expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
 });
 
@@ -669,10 +834,9 @@ test("the original peer may first observe global closure in its next append", ()
   const value = fixture(),
     peer = value.failure.exits[0]!;
   const events = peer.guest.events;
+  events.at(-2)!.name = "append";
   events.at(-1)!.name = "append";
-  events.at(-1)!.call = 4;
-  events.splice(events.length - 1, 0, { ...events.at(-1)!, phase: "enter", result: 0 });
-  peer.text = "GPU_FAIL stage=append status=-64\n";
+  peer.text = `${value.peerGuest.text}GPU_FAIL stage=append status=-64\n`;
   expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
 });
 

@@ -94,6 +94,52 @@ function requireProof(ok: boolean, message: string): asserts ok {
 function equal(before: unknown, after: unknown, message: string) {
   requireProof(JSON.stringify(before) === JSON.stringify(after), message);
 }
+function guestHistory(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const original = entries(before.events);
+  equal(
+    original,
+    entries(after.events).slice(0, original.length),
+    "guest import history rewritten",
+  );
+  outputPrefix(before.text, after.text);
+}
+function outputPrefix(before: unknown, after: unknown) {
+  requireProof(
+    typeof before === "string" && typeof after === "string" && after.startsWith(before),
+    "guest output history rewritten",
+  );
+}
+function heldVictim(service: Record<string, unknown>, original: Record<string, unknown>) {
+  const current = owner(service, original.id, "held victim");
+  requireProof(
+    ["grant", "surface", "device", "presenterId", "presenterDevice"].every(
+      (key) => current[key] === original[key],
+    ),
+    "held victim native identity changed",
+  );
+  live(current, original);
+  heldNative(service, current);
+}
+function workerHistory(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const current = entries(after.workers);
+  for (const original of entries(before.workers)) {
+    const matches = current.filter((worker) => worker.id === original.id);
+    requireProof(matches.length === 1, "original physical worker omitted or duplicated");
+    const next = matches[0]!;
+    requireProof(
+      ["id", "url", "createdAt", "pid", "token", "surface"].every(
+        (key) => original[key] === undefined || original[key] === next[key],
+      ),
+      "original physical worker identity changed",
+    );
+    requireProof(
+      typeof next.stopped === "boolean" && (original.stopped !== true || next.stopped === true),
+      "original physical worker revived",
+    );
+  }
+  const stops = entries(before.workerStops);
+  equal(stops, entries(after.workerStops).slice(0, stops.length), "worker stop history rewritten");
+}
 function originalControls(state: Record<string, unknown>, grants: readonly unknown[]) {
   const controls = entries(state.controls).filter((item) => grants.includes(item.grant));
   requireProof(
@@ -204,6 +250,7 @@ function preFailure(result: Record<string, unknown>) {
       "aliased original native identity",
     );
   activeImport(result.blockedGuest, victimGuest);
+  guestHistory(victimGuest, record(result.blockedGuest));
   const armed = record(record(result.auditControl).service);
   requireProof(
     record(result.auditControl).name === "armed" &&
@@ -246,7 +293,7 @@ function preFailure(result: Record<string, unknown>) {
     responses.add(service.responseId);
   }
   let bracket = { presents: 0, queue: 0 };
-  for (const [index, phase] of phases.entries()) {
+  for (const phase of phases) {
     requireProof(phase.peerPid === peerGuest.pid, "original green peer replaced");
     for (const service of [record(phase.before), record(phase.service)]) {
       requireProof(
@@ -254,7 +301,6 @@ function preFailure(result: Record<string, unknown>) {
         "wrong selected service case",
       );
       live(owner(service, peer.id, "original peer"), peer);
-      if (index === 1) heldNative(service, owner(service, victim.id, "held victim"));
     }
     bracket = bracketProof(phase, peer.id, bracket);
   }
@@ -264,7 +310,7 @@ function preFailure(result: Record<string, unknown>) {
     "wrong selected service case",
   );
   live(owner(pending, peer.id, "original peer"), peer);
-  heldNative(pending, owner(pending, victim.id, "held victim"));
+  for (const service of [record(phases[1]!.before), held, pending]) heldVictim(service, victim);
   equal(
     record(phases[1]!.before).heldCompletion,
     held.heldCompletion,
@@ -370,18 +416,6 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
         current.some((item) => item.url === "/fs-worker.js" && item.stopped === false),
       "failed service revived or runtime topology stopped",
     );
-    equal(
-      stopped.workerStops,
-      entries(state.workerStops).filter(
-        (item) =>
-          !original.guests
-            .slice(1)
-            .some(
-              (compiled) => current.find((worker) => worker.id === item.id)?.pid === compiled.pid,
-            ),
-      ),
-      "service stop history changed",
-    );
     const revocations = entries(state.revocations);
     requireProof(
       revocations.length === 4 &&
@@ -391,6 +425,8 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
       "original grant revocation missing",
     );
   }
+  workerHistory(before, stopped);
+  workerHistory(stopped, after);
   equal(result.auditControl, failure.audit, "terminated service audit rewritten");
   failureExits(failure, original);
   accounting(after.snapshot, 1, 4);
@@ -425,29 +461,23 @@ function failureExits(failure: Record<string, unknown>, original: ReturnType<typ
     );
     authority(item);
     const events = entries(observed.events);
-    const originalEvents = entries(index === 1 ? original.blockedGuest.events : compiled.events);
-    equal(originalEvents, events.slice(0, originalEvents.length), "guest import history rewritten");
+    const entered = index === 1 ? original.blockedGuest : compiled;
+    const originalEvents = entries(entered.events);
+    guestHistory(entered, observed);
     const last = events.at(-1)!;
-    if (index === 1)
+    if (index !== 0)
       requireProof(
         events.length === originalEvents.length + 1 && last.call === originalEvents.at(-1)!.call,
-        "held import completion identity changed",
+        index === 1
+          ? "held import completion identity changed"
+          : "pending open completion identity changed",
       );
     const name = index === 2 ? "open" : index === 1 ? "completions" : last.name;
     requireProof(
       index !== 0 || name === "completions" || name === "append",
       "unrelated terminal import",
     );
-    requireProof(
-      last.name === name &&
-        last.phase === "return" &&
-        last.result === -64 &&
-        last.token === compiled.token &&
-        events.some(
-          (event) => event.call === last.call && event.name === name && event.phase === "enter",
-        ),
-      "uncorrelated terminal import outcome",
-    );
+    terminalCall(events, compiled.token, name);
     requireProof(
       typeof item.text === "string" &&
         item.text
@@ -456,6 +486,7 @@ function failureExits(failure: Record<string, unknown>, original: ReturnType<typ
           .join("\n") === `GPU_FAIL stage=${name} status=-64`,
       "wrong compiled failure stage",
     );
+    outputPrefix(entered.text, item.text);
     const state = record(failure.after);
     requireProof(
       entries(state.workers).some(
@@ -468,6 +499,24 @@ function failureExits(failure: Record<string, unknown>, original: ReturnType<typ
       "original guest worker not stopped",
     );
   }
+}
+function terminalCall(events: readonly Record<string, unknown>[], token: unknown, name: unknown) {
+  const last = events.at(-1)!,
+    call = events.filter((event) => event.call === last.call),
+    entered = call[0]!;
+  requireProof(
+    last.name === name &&
+      last.phase === "return" &&
+      last.result === -64 &&
+      events.every((event) => event.token === token && event.phase !== "throw") &&
+      call.length >= 2 &&
+      call.length <= 3 &&
+      entered.phase === "enter" &&
+      call.every((event) => event.name === name) &&
+      call.slice(1, -1).every((event) => event.phase === "wait") &&
+      (last.connection === undefined || last.connection === entered.connection),
+    "uncorrelated terminal import outcome",
+  );
 }
 function recoveredService(
   result: Record<string, unknown>,
@@ -547,6 +596,8 @@ function recoveredService(
       "concurrent service topology or old worker revived",
     );
   }
+  workerHistory(failed.after, state);
+  workerHistory(state, after);
   const liveControls = entries(state.controls),
     closedControls = entries(after.controls);
   const opened = liveControls.find((item) => item.grant === native.grant);
@@ -573,9 +624,43 @@ function recoveredService(
       record(exit.exit).code === 0,
     "recovery did not exit normally",
   );
-  retired(identity(record(exit.service), compiled), 1);
+  const terminalService = record(exit.service);
+  requireProof(
+    terminalService.realm === service.realm &&
+      terminalService.token === service.token &&
+      terminalService.mode === service.mode &&
+      number(terminalService.serial) > number(service.serial) &&
+      number(terminalService.at) >= number(service.at) &&
+      typeof terminalService.responseId === "string" &&
+      terminalService.responseId.length > 0 &&
+      terminalService.responseId !== before.responseId &&
+      terminalService.responseId !== service.responseId &&
+      entries(terminalService.owners).length === 1 &&
+      record(terminalService.fairness).overflow === false,
+    "recovery terminal service identity changed",
+  );
+  cumulative(service, terminalService);
+  const terminalNative = identity(terminalService, compiled);
+  requireProof(
+    ["id", "grant", "surface", "device", "created"].every(
+      (key) => native[key] === terminalNative[key],
+    ),
+    "recovery terminal native identity changed",
+  );
+  retired(terminalNative, 1);
   accounting(state.snapshot, 2, 4);
   accounting(after.snapshot, 1, 5);
+  for (const observation of [state, after]) {
+    requireProof(
+      observation.audit !== null && typeof observation.audit === "object",
+      "terminated service audit missing through recovery",
+    );
+    equal(
+      result.auditControl,
+      observation.audit,
+      "terminated service audit rewritten through recovery",
+    );
+  }
 }
 /** Uses retained shared controls after termination, never invented native resource zeroes. */
 export function validateServiceFailureResult(value: unknown) {

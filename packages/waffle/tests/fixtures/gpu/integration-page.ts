@@ -647,6 +647,7 @@ function captureDisposalGuest(worker: Worker, message: unknown) {
 /** @browserEntry */
 export function serviceFailureState() {
   return {
+    audit: activeDisposalAuditControl(),
     runtimeEpoch,
     disposed: runtime!.disposed,
     workers: disposalWorkers(),

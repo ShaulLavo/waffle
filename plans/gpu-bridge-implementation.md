@@ -687,8 +687,12 @@ of this contract.
 After termination, acceptance uses retained shared controls, grant promises, correlated compiled
 outcomes and physical Worker stop calls. It does not invent a native zero-resource snapshot or
 claim physical GPU-byte or memory reclamation. The pre-fault shared audit remains unchanged
-rather than claiming that a dead realm ran its canceled callback. Old publication counters stay
-terminal and fixed through a late release attempt and fresh-service recovery. Actual post-fault
+rather than claiming that a dead realm ran its canceled callback. The retained audit is read
+again at recovery and after the recovery guest exits, and both observations must match the
+pre-fault bytes. Original worker identities and stop-history prefixes remain intact, including
+legitimate assignment of a prewarmed guest worker. Recovery retirement is a fresh ordered
+snapshot in the new realm, with the same native identity and cumulative work history. Old
+publication counters stay terminal and fixed through a late release attempt and fresh-service recovery. Actual post-fault
 pixels are recorded without promising retention. Conservative shared-control debt stays counted.
 
 The existing disposal setup and strict scalar helpers are shared without weakening its original
