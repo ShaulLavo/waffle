@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 
@@ -51,7 +52,7 @@ async function main() {
     console.log(JSON.stringify({ phase: "setup", scratch: lifecycle.scratch, url }));
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(url);
+    await navigateTestPage(page, url);
     const controls = process.argv.slice(2);
     for (const control of controls.length ? controls : copyDrawNativeControls) {
       const result: unknown = await page.evaluate(async (name) => {

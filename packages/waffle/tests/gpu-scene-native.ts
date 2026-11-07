@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
@@ -18,7 +19,7 @@ export async function runSceneNative() {
     console.log(JSON.stringify({ stage: "setup", scratch: runner.scratch, url }));
     const browser = await runner.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(url);
+    await navigateTestPage(page, url);
     for (const control of sceneNativeControls) {
       const result: unknown = await page.evaluate(async (name) => {
         const path = "/scene.js";

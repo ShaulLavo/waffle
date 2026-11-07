@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -11,14 +12,15 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BUN_VERSION: "1.4.4"
 
 jobs:
   changes:
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     outputs:
       libc: ${{ steps.paths.outputs.libc }}
@@ -176,6 +178,7 @@ jobs:
               - "packages/waffle/**"
               - "packages/base/**"
             programs:
+              - ".github/actions/rust-build-cache/action.yml"
               - ".github/workflows/ci.yml"
               - ".github/actions/program-optimizer/action.yml"
               - "package.json"
@@ -333,7 +336,7 @@ jobs:
               - 'packages/waffle/scripts/build-memory-group-fixture.ts'
   network-wasm:
     needs: changes
-    if: ${{ !cancelled() }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled()) }}
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
@@ -389,7 +392,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -464,7 +467,7 @@ jobs:
           echo "Wasmtime cache-hit=${{ steps.wasmtime.outputs.cache-hit }}"
   procps:
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -504,7 +507,7 @@ jobs:
         run: ../waffle/node_modules/.bin/oxfmt --check --config ../waffle/.oxfmtrc.json src tests scripts docs provenance package.json tsconfig.json
   diffutils:
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -606,7 +609,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.gh == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.gh == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -639,7 +642,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -753,7 +756,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.curl == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.curl == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -815,7 +818,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.tar == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.tar == 'true')) }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -914,6 +917,7 @@ jobs:
           TAR_PACKAGE_ARCHIVE="$PWD/packages/tar/.build/waffle-tar-0.0.0.tgz" bun test packages/tar/tests/tar-wasi.test.ts
 
   package:
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: network-wasm
@@ -967,7 +971,7 @@ jobs:
       memory-group-artifact-id: ${{ steps.memory-group-artifact.outputs.artifact-id }}
       gpu-artifact-id: ${{ steps.gpu-artifact.outputs.artifact-id }}
     # Also the single producer of the memory group fixture that the browser gate consumes.
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true' || needs.changes.outputs.browser == 'true')) }}
     runs-on: ubuntu-latest
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
@@ -1019,7 +1023,7 @@ jobs:
         id: gpu-fixture
         with:
           path: ${{ runner.temp }}/gpu-fixture
-          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts') }}
+          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts') }}
       - uses: actions/cache@v4
         id: fixtures
         with:
@@ -1067,16 +1071,16 @@ jobs:
         env:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
         run: |
-          bun test packages/waffle/tests/gpu-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C completion handling|bounded frame-mode wire controls' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
+          bun test packages/waffle/tests/gpu-fixture.test.ts packages/waffle/tests/gpu-scene-fixture.test.ts packages/waffle/tests/gpu-fairness-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C completion handling|bounded frame-mode wire controls|compiled textured depth scene|compiled fairness fixture' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
           python3 - "$RUNNER_TEMP/gpu-fixture-tests.xml" <<'PYTHON'
           import sys
           import xml.etree.ElementTree as ET
-          names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance"}
+          names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance", "compiled textured depth scene, protocol assertions", "compiled fairness fixture, protocol and deterministic scheduling"}
           suites = [suite for suite in ET.parse(sys.argv[1]).iter("testsuite") if suite.get("name") in names]
           assert {suite.get("name") for suite in suites} == names, "Missing compiled GPU fixture suite"
           assert all(suite.findall("testcase") for suite in suites), "Empty compiled GPU fixture suite"
           cases = [case for suite in suites for case in suite.findall("testcase")]
-          assert len(cases) >= 17, "Compiled GPU fixture tests did not execute"
+          assert len(cases) >= 35, "Compiled GPU fixture tests did not execute"
           assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
           print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
           PYTHON
@@ -1104,7 +1108,7 @@ jobs:
     env:
       WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm, libc]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true')) }}
     # Playwright 1.64.1 browsers are proven on Ubuntu 24.04; move the pin deliberately with a green run.
     runs-on: ubuntu-24.04
     # Chromium/Firefox plus recovery on one runner, serial WebKit and the isolated runners on the other.
@@ -1160,8 +1164,9 @@ jobs:
         run: test -n "$MEMORY_GROUP_ARTIFACT_ID"
         env:
           MEMORY_GROUP_ARTIFACT_ID: ${{ needs.libc.outputs.memory-group-artifact-id }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
+          digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.memory-group-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/memory-group-fixture
@@ -1169,8 +1174,9 @@ jobs:
         run: test -n "$GPU_ARTIFACT_ID"
         env:
           GPU_ARTIFACT_ID: ${{ needs.libc.outputs.gpu-artifact-id }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
+          digest-mismatch: error
           artifact-ids: ${{ needs.libc.outputs.gpu-artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/gpu-fixture
@@ -1204,6 +1210,7 @@ jobs:
           path: ${{ runner.temp }}/waffle-browser-protocol.log
           retention-days: 7
   site:
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1222,13 +1229,13 @@ jobs:
       - run: bun run build
   findutils-xargs:
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.findutils == 'true' || needs.changes.outputs.coreutils == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.findutils == 'true' || needs.changes.outputs.coreutils == 'true')) }}
     uses: ./.github/workflows/findutils-xargs.yml
     with:
       test-process: ${{ github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.findutils == 'true' }}
   coreutils-echo:
     needs: [changes, network-wasm, findutils-xargs]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.coreutils == 'true')) }}
     uses: ./.github/workflows/coreutils-echo.yml
   coreutils-checksums:
     env:
@@ -1236,7 +1243,7 @@ jobs:
       WASI_LIBC_JOBS: "2"
       GNU_CHECKSUM_ORACLE_ROOT: ${{ github.workspace }}/.build/gnu-checksum-native-oracle
     needs: [changes, network-wasm]
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1356,7 +1363,7 @@ jobs:
           echo "GNU oracle=${{ steps.checksum-native-oracle.outputs.cache-hit }}"
   programs:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true') }}
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.programs == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1377,6 +1384,7 @@ jobs:
             target
           key: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('packages/**/*.rs', 'tools/program-build-tools.ts', 'tools/program-optimize.ts', 'tools/program-derivation.ts', 'tools/program-locales/**') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-programs-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}-
+      - uses: ./.github/actions/rust-build-cache
       - run: cargo fetch --locked
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run programs:check
@@ -1423,7 +1431,7 @@ jobs:
       - run: bun run --cwd packages/python test:build
       - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
+      - run: bash scripts/with-build-cache.sh cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source -p upstream-xargs -p waffle-echo -p waffle-date
 
   gate:
     name: Complete CI gate
@@ -1431,6 +1439,11 @@ jobs:
     needs: [changes, network-wasm, awk, procps, diffutils, gh, jq, curl, tar, package, libc, browser, site, findutils-xargs, coreutils-echo, coreutils-checksums, programs]
     runs-on: ubuntu-latest
     steps:
+      - name: Require a ready PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo '::error::Mark this PR ready for review to run the required checks.'
+          exit 1
       - name: Reject failed or cancelled CI jobs
         env:
           RESULTS: ${{ toJSON(needs) }}

@@ -2,10 +2,10 @@ import { Reporter } from "./reporter.js";
 import { storageTests, opfsStorageTests } from "../storage-browser.js";
 import { validateWorkerLabel } from "./protocol.js";
 import { storageCase, type WorkerRequest } from "./storage-worker.js";
+import type { Configuration } from "./page-main.js";
 declare const PAGE_RUNNER_CONTROL: string;
 const mode = PAGE_RUNNER_CONTROL;
-const config: { run: string; group: string; token: string; request: WorkerRequest | null } =
-  window.__storageConfiguration;
+const config = window.__suiteConfiguration as Configuration<WorkerRequest>;
 const post = async (input: string, init: RequestInit) => {
   const response = await fetch(input, init);
   if (mode === "final-ack-loss" && String(init.body).includes('"kind":"run-complete"'))
@@ -19,8 +19,8 @@ function unsettled(): Promise<never> {
 async function run(): Promise<void> {
   await reporter.send({ kind: "hello", token: config.token, group: config.group });
   if (mode !== "heartbeat-lost") reporter.startHeartbeat(100);
-  if (config.request?.kind === "list") await list();
-  else if (config.request?.kind === "run") await oneCase(config.request);
+  if (config.role === "list") await list();
+  else if (config.role === "case" && config.request.kind === "run") await oneCase(config.request);
   else {
     if (mode === "finish-error")
       await reporter.send({ kind: "error", message: "Finish page failure" });

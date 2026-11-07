@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
@@ -167,8 +168,8 @@ try {
     transferMode: "ReportEvents",
   });
   async function navigate() {
-    await page.goto("about:blank");
-    await page.goto(url);
+    await navigateTestPage(page, "about:blank");
+    await navigateTestPage(page, url);
   }
   async function run(cancel = false) {
     return page.evaluate(async (cancel) => {

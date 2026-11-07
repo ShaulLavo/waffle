@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { existsSync } from "node:fs";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 
@@ -14,7 +15,7 @@ try {
   const browser = await lifecycle.launch("chromium");
   console.log(JSON.stringify({ browser: "chromium", version: browser.version() }));
   const page = await browser.newPage();
-  await page.goto(origin);
+  await navigateTestPage(page, origin);
   const result = await page.evaluate(async (mode) => {
     const path = "/tests.js";
     const suite: typeof import("./indexeddb-chunks-browser") = await import(path);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
 const runners = [
+  "browser-navigation",
   "safe-staging",
   "storage",
   "storage-lock",
@@ -52,8 +53,13 @@ if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls]))}.includes(
   process.exit(0);
 }
 if (engines === "chromium,firefox") {
-  writeFileSync(name + ".started", "");
-  while (!names.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
+  const cohort = names.filter((entry) => entry !== "gpu");
+  if (name === "gpu") {
+    if (!cohort.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("GPU overlapped another browser suite");
+  } else {
+    writeFileSync(name + ".started", "");
+    while (!cohort.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
+  }
 } else if (engines === "webkit") {
   if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early WebKit");
   if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
@@ -319,3 +325,6 @@ for (const group of ["parallel", "serial"] as const)
 
 test("native GPU error exits the designated CI group nonzero", () =>
   nativeDiscovery("parallel", true));
+test("draw-heavy GPU work runs in its own batch without changing engine groups", async () => {
+  await matrix([]);
+}, 15_000);

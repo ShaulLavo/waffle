@@ -242,8 +242,11 @@ function clock(memory: GuestMemory, id: number, pointer: number): number {
 function random(memory: GuestMemory, pointer: number, length: number): number {
   const size = length >>> 0;
   memory.span(pointer, size);
-  for (let at = 0; at < size; at += 65536)
-    cryptoGetRandomValues(memory.span((pointer >>> 0) + at, Math.min(65536, size - at)));
+  for (let at = 0; at < size; at += 65536) {
+    const chunk = new Uint8ArrayConstructor(Math.min(65536, size - at));
+    cryptoGetRandomValues(chunk);
+    typedArraySet(memory.span((pointer >>> 0) + at, typedArrayLength(chunk)), chunk);
+  }
   return 0;
 }
 function wasiImports(options: GuestImportOptions): Record<string, GuestFunction> {

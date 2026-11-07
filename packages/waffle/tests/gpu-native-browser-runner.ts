@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import type { Page } from "playwright";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import {
@@ -26,7 +27,7 @@ export async function runNativeBrowser(engines: readonly string[]): Promise<void
     console.log(JSON.stringify({ phase: "native-setup", scratch: lifecycle.scratch, url }));
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(url);
+    await navigateTestPage(page, url);
     const count = await runNativeControls((invocation) => invokeNativeControl(page, invocation));
     console.log(
       JSON.stringify({
