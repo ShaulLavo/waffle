@@ -26,6 +26,8 @@ export default {
         "tests/page-runner/command-fixtures.ts",
         "tests/page-runner/storage-page-control-worker.ts",
         "tests/page-runner/browser-controls-runner.ts",
+        "tests/page-runner/framework-bootstrap-main.ts",
+        "tests/page-runner/framework-controls/installed.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",
         "tests/fixtures/gpu/integration-{guest,service-worker,page}.ts",
