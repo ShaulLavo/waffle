@@ -188,8 +188,11 @@ async function invalidSelections(
   }
   return failures;
 }
-async function run(): Promise<void> {
-  const name = `checkpoint-decoder-r30-${crypto.randomUUID()}`;
+export type StagingDatabaseName = (prefix: string) => Promise<string>;
+async function run(databaseName?: StagingDatabaseName): Promise<void> {
+  const name = databaseName
+    ? await databaseName("checkpoint-decoder-r30")
+    : `checkpoint-decoder-r30-${crypto.randomUUID()}`;
   try {
     const checkpoint = fixture();
     const storage = await IndexedDBStorage.open(name, { whenBusy: "wait", compactEvery: 8 });
