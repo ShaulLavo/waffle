@@ -13,12 +13,13 @@ import {
   measure,
   type MeasurementOptions,
 } from "../tests/fixtures/gpu/measurement-contract.js";
-import { verifiedGpuFixture } from "../scripts/build-gpu-fixture.js";
+import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 
-type Controller = {
-  call: (module: "page" | "runtime", method: string, args?: unknown[]) => Promise<unknown>;
-  screenshot: () => Promise<string>;
-};
+import { runDesktopMeasurements, type MeasurementController } from "./gpu-desktop-measure.js";
+import { navigateTestPage } from "../tests/browser-navigation.js";
+import { sampleProcessMemory } from "./gpu-measure-host.js";
+
+type Controller = MeasurementController;
 const fixtures = new URL("../tests/fixtures/gpu/", import.meta.url);
 const runtimeMethods = [
   "startMeasuredTriangle",
@@ -28,6 +29,14 @@ const runtimeMethods = [
   "observeTriangleScreenshot",
 ];
 const pageMethods = ["runGpuMeasurement", "measurementResources"];
+const desktopMethods = [
+  "openDesktopArm",
+  "armDesktopWorkload",
+  "runDesktopWorkload",
+  "retireDesktopArm",
+  "closeDesktopArm",
+  "observeDesktopPixels",
+];
 /** The same prepared routes work in Playwright and actual desktop Safari. */
 export async function gpuMeasurementRoutes(
   options: MeasurementOptions,
@@ -41,7 +50,7 @@ export async function gpuMeasurementRoutes(
     ),
     "/measurement-options.json": JSON.stringify(options),
   };
-  if (!options.runtimeFixture) return routes;
+  if (!options.runtimeFixture && !options.desktopFairnessPairs) return routes;
   if (!fixtureDirectory)
     throw new Error(
       "Runtime measurement requires GPU_FIXTURE_DIR with the existing compiled triangle",
@@ -49,6 +58,13 @@ export async function gpuMeasurementRoutes(
   routes["/triangle.wasm"] = new Blob([verifiedGpuFixture(resolve(fixtureDirectory))], {
     type: "application/wasm",
   });
+  routes["/scene.wasm"] = new Blob([verifiedGpuSceneFixture(resolve(fixtureDirectory))], {
+    type: "application/wasm",
+  });
+  if (options.desktopFairnessPairs)
+    routes["/measurement-desktop.js"] = await browserBundle(
+      new URL("measurement-desktop.ts", fixtures).pathname,
+    );
   routes["/measurement-runtime.js"] = await browserBundle(
     new URL("measurement-runtime.ts", fixtures).pathname,
   );
@@ -97,7 +113,7 @@ async function runtimeMeasurements(controller: Controller, options: MeasurementO
     await controller.call("runtime", "closeMeasuredTriangle");
   }
 }
-async function collect(
+async function collectReport(
   controller: Controller,
   options: MeasurementOptions,
 ): Promise<Record<string, unknown>> {
@@ -111,9 +127,29 @@ async function collect(
             ? "No working native worker device; compiled triangle not run"
             : "Pass --runtime with GPU_FIXTURE_DIR to reuse the compiled triangle",
         };
+  const desktopFairness =
+    options.desktopFairnessPairs && nativeDevice(report)
+      ? await runDesktopMeasurements(controller, options.desktopFairnessPairs)
+      : {
+          kind: "unmet",
+          reason: "Desktop fairness not requested or native worker device unavailable",
+        };
   const cleanup = qualificationRecord(await controller.call("page", "measurementResources"));
   if (cleanup.workersLive !== 0) throw new Error("Measurement workers remain live");
-  return { ...report, runtime, cleanup };
+  return { ...report, runtime, desktopFairness, cleanup };
+}
+async function collect(
+  controller: Controller,
+  options: MeasurementOptions,
+): Promise<Record<string, unknown>> {
+  const finishMemory = sampleProcessMemory();
+  try {
+    return { ...(await collectReport(controller, options)), hostProcessMemory: finishMemory() };
+  } catch (error) {
+    return { kind: "failed", reason: String(error), hostProcessMemory: finishMemory() };
+  } finally {
+    finishMemory();
+  }
 }
 /** Failed probes stay failures even when other measurements succeed. */
 export function measurementFailed(value: unknown): boolean {
@@ -141,8 +177,11 @@ export async function runGpuMeasurementBrowser(
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
-    await page.goto(url);
+    await navigateTestPage(page, url);
     const controller: Controller = {
+      reset: async (token) => {
+        await navigateTestPage(page, `${url}?arm=${token}`);
+      },
       call: (module, method, args = []) =>
         page.evaluate(
           async ({ module, method, args }) => {
@@ -261,8 +300,15 @@ export async function runGpuMeasurementSafari(
     await webdriver(driver, `${path}/timeouts`, { script: 120_000 });
     await webdriver(driver, `${path}/url`, { url });
     const controller: Controller = {
+      reset: async (token) => {
+        await webdriver(driver, `${path}/url`, { url: `${url}?arm=${token}` });
+      },
       call: async (module, method, args = []) => {
-        if (!(module === "page" ? pageMethods : runtimeMethods).includes(method))
+        if (
+          !(
+            module === "page" ? pageMethods : module === "runtime" ? runtimeMethods : desktopMethods
+          ).includes(method)
+        )
           throw new Error("Unknown measurement method");
         const value = qualificationRecord(
           await webdriver(driver, `${path}/execute/async`, {
@@ -344,7 +390,15 @@ function argument(args: readonly string[], flag: string): string | undefined {
   return value;
 }
 function validateArguments(args: readonly string[]) {
-  const values = ["--prepare", "--packet", "--safari", "--trials", "--extra-workers", "--engine"];
+  const values = [
+    "--prepare",
+    "--packet",
+    "--safari",
+    "--trials",
+    "--extra-workers",
+    "--engine",
+    "--desktop-fairness-pairs",
+  ];
   const switches = ["--runtime", "--software"];
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index++) {
@@ -368,6 +422,7 @@ async function main() {
     trials: Number(argument(args, "--trials") ?? 5),
     extraWorkers: Number(argument(args, "--extra-workers") ?? 2),
     runtimeFixture: args.includes("--runtime"),
+    desktopFairnessPairs: Number(argument(args, "--desktop-fairness-pairs") ?? 0),
   });
   if (prepare && (packet || safari || args.includes("--software")))
     throw new Error("--prepare cannot also run a browser");
@@ -380,10 +435,10 @@ async function main() {
   const software = args.includes("--software");
   if (safari && software) throw new Error("Safari cannot use --software SwiftShader mode");
   const runner = safari
-    ? new SafariMeasurementLifecycle(300_000)
+    ? new SafariMeasurementLifecycle(600_000)
     : software
-      ? new GpuQualificationLifecycle(300_000)
-      : new BrowserRunnerLifecycle(300_000);
+      ? new GpuQualificationLifecycle(600_000)
+      : new BrowserRunnerLifecycle(600_000);
   const reports: unknown[] = [];
   let cleanup = "completed";
   try {

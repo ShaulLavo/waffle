@@ -44,6 +44,18 @@ export class FakeDriver implements Driver {
     readonly command?: FakeCommand,
   ) {}
   async start(): Promise<void> {}
+  async createWindow(): Promise<string> {
+    throw new Error("Unexpected fake peer creation");
+  }
+  async selectWindow(handle: string): Promise<void> {
+    if (handle !== "root") throw new Error("Unknown fake window");
+  }
+  async reloadWindow(): Promise<void> {
+    throw new Error("Unexpected fake refresh");
+  }
+  async closeWindow(): Promise<void> {
+    throw new Error("Unexpected fake close");
+  }
   async navigate(url: string): Promise<void> {
     clearInterval(this.retirement);
     this.navigations++;

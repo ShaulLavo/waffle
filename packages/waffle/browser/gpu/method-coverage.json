@@ -52,16 +52,30 @@
     {
       "name": "bind_group.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign bind_group.label through an explicit ordered lowering; bind_group label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 89,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "bind_group_layout.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign bind_group_layout.label through an explicit ordered lowering; bind_group_layout label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 90,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "buffer.map_async",
@@ -101,9 +115,16 @@
     {
       "name": "buffer.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign buffer.label through an explicit ordered lowering; buffer label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 91,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "buffer.get_usage",
@@ -150,9 +171,16 @@
     {
       "name": "command_buffer.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign command_buffer.label through an explicit ordered lowering; command_buffer label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 92,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "command_encoder.finish",
@@ -333,9 +361,16 @@
     {
       "name": "command_encoder.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign command_encoder.label through an explicit ordered lowering; command_encoder label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 93,
+        "context": "encoder",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.insert_debug_marker",
@@ -498,9 +533,16 @@
     {
       "name": "compute_pipeline.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign compute_pipeline.label through an explicit ordered lowering; compute_pipeline label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 94,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "device.create_bind_group",
@@ -787,9 +829,16 @@
     {
       "name": "device.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign device.label through an explicit ordered lowering; device label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 95,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "external_texture.set_label",
@@ -857,16 +906,30 @@
     {
       "name": "pipeline_layout.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign pipeline_layout.label through an explicit ordered lowering; pipeline_layout label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 96,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "query_set.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign query_set.label through an explicit ordered lowering; query_set label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 97,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "query_set.get_type",
@@ -956,16 +1019,30 @@
     {
       "name": "queue.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign queue.label through an explicit ordered lowering; queue label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 98,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "render_bundle.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign render_bundle.label through an explicit ordered lowering; render_bundle label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 99,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "render_bundle_encoder.set_pipeline",
@@ -1455,9 +1532,16 @@
     {
       "name": "render_pass_encoder.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign render_pass_encoder.label through an explicit ordered lowering; render_pass_encoder label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 100,
+        "context": "pass",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "render_pipeline.get_bind_group_layout",
@@ -1476,16 +1560,30 @@
     {
       "name": "render_pipeline.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign render_pipeline.label through an explicit ordered lowering; render_pipeline label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 101,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "sampler.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign sampler.label through an explicit ordered lowering; sampler label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 102,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "shader_module.get_compilation_info",
@@ -1497,9 +1595,16 @@
     {
       "name": "shader_module.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign shader_module.label through an explicit ordered lowering; shader_module label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 103,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "surface.configure",
@@ -1567,9 +1672,16 @@
     {
       "name": "surface.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign surface.label through an explicit ordered lowering; surface label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the connection-local Waffle surface reference only; no native surface, canvas or context label exists.",
+      "call": {
+        "opcode": 104,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "surface-reference"
+        }
+      }
     },
     {
       "name": "texture.create_view",
@@ -1588,9 +1700,16 @@
     {
       "name": "texture.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign texture.label through an explicit ordered lowering; texture label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 105,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "texture.get_width",
@@ -1672,9 +1791,16 @@
     {
       "name": "texture_view.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign texture_view.label through an explicit ordered lowering; texture_view label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 106,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
     },
     {
       "name": "function.create_instance",

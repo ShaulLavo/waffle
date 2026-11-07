@@ -115,6 +115,7 @@ export class FairnessObserver {
   constructor(
     readonly now: () => number = () => performance.now(),
     readonly limit = 8192,
+    readonly blobThreshold = 4 * 1024 * 1024,
   ) {}
   trace(replay: GpuReplay): ConnectionTrace {
     const found = this.#connections.get(replay);
@@ -184,7 +185,7 @@ export class FairnessObserver {
         cursor.bytes.byteOffset + cursor.top,
       ).getUint32(16, true);
       cursor.nested = { at: cursor.top + 20, end: cursor.top + 20 + size };
-      if (record.length > 4 * 1024 * 1024) this.#beginLarge(trace, record.length, end);
+      if (record.length > this.blobThreshold) this.#beginLarge(trace, record.length, end);
       return;
     }
     if (record.kind === "nested" && cursor.nested) {
@@ -347,8 +348,12 @@ export class FairnessObserver {
 }
 
 /** Test worker only; production modules are unchanged and arguments/results pass through. */
-export function installFairnessObserver(): FairnessObserver {
-  const observer = new FairnessObserver();
+export interface FairnessInstrumentation {
+  readonly caps: "on" | "off";
+  readonly blobThreshold: number;
+}
+export function installFairnessObserver(options?: FairnessInstrumentation): FairnessObserver {
+  const observer = new FairnessObserver(undefined, undefined, options?.blobThreshold);
   const accept = GpuReplay.prototype.accept,
     step = GpuReplay.prototype.step,
     slice = GpuConnection.prototype.slice;
@@ -360,7 +365,15 @@ export function installFairnessObserver(): FairnessObserver {
     return observer.step(this, () => step.call(this));
   };
   GpuConnection.prototype.slice = function (budget) {
-    return observer.slice(this, () => slice.call(this, budget));
+    const activeBudget =
+      options?.caps === "off"
+        ? {
+            bytes: Number.MAX_SAFE_INTEGER,
+            milliseconds: Number.MAX_VALUE,
+            now: () => performance.now(),
+          }
+        : budget;
+    return observer.slice(this, () => slice.call(this, activeBudget));
   };
   observeNative(observer, "GPURenderPassEncoder", "draw");
   observeNative(observer, "GPUCommandEncoder", "finish");

@@ -373,16 +373,60 @@ export class SafariDriver implements Driver {
       signal,
     );
   }
+  async createWindow(signal: AbortSignal): Promise<string> {
+    const value = await this.command("POST", "/window/new", { type: "tab" }, signal);
+    if (
+      !record(value) ||
+      typeof value.handle !== "string" ||
+      !value.handle ||
+      (value.type !== "tab" && value.type !== "window")
+    ) {
+      this.uncertain = true;
+      throw new Error("Invalid new window answer");
+    }
+    return value.handle;
+  }
+  async selectWindow(handle: string, signal: AbortSignal): Promise<void> {
+    const value = await this.command("POST", "/window", { handle }, signal);
+    this.emptyAnswer(value, "switch window");
+  }
+  async reloadWindow(signal: AbortSignal): Promise<void> {
+    const value = await this.command("POST", "/refresh", undefined, signal);
+    this.emptyAnswer(value, "refresh");
+  }
+  async closeWindow(signal: AbortSignal): Promise<void> {
+    const value = await this.command("DELETE", "/window", undefined, signal);
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item)) {
+      this.uncertain = true;
+      throw new Error("Invalid closed window answer");
+    }
+  }
+  private emptyAnswer(value: unknown, label: string): void {
+    if (value === null) return;
+    this.uncertain = true;
+    throw new Error(`Invalid ${label} answer`);
+  }
   async navigate(url: string, signal: AbortSignal): Promise<void> {
     await this.command("POST", "/url", { url }, signal);
   }
   async handle(signal: AbortSignal): Promise<string> {
-    return stringValue(await this.command("GET", "/window", undefined, signal));
+    const value = await this.command("GET", "/window", undefined, signal);
+    if (typeof value !== "string" || !value) {
+      this.uncertain = true;
+      throw new Error("Invalid window handle");
+    }
+    return value;
   }
   async handles(signal: AbortSignal): Promise<string[]> {
     const value = await this.command("GET", "/window/handles", undefined, signal);
-    if (!Array.isArray(value) || !value.every((item) => typeof item === "string"))
+    if (
+      !Array.isArray(value) ||
+      !value.every((item) => typeof item === "string" && item) ||
+      new Set(value).size !== value.length
+    ) {
+      this.uncertain = true;
       throw new Error("Invalid window handles");
+    }
     return value;
   }
   async url(signal: AbortSignal): Promise<string> {

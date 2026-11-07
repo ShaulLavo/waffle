@@ -65,7 +65,7 @@ host.onmessage = async ({ data }) => {
         if (!poison) return;
         const report = poison.restore();
         poison = undefined;
-        send({ gpuAuthority: report });
+        send({ gpuAuthority: report, gpuAuthorityToken: data.env.GPU_AUTHORITY_TOKEN });
       },
     },
     embedding,
