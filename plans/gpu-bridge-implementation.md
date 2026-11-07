@@ -473,3 +473,69 @@ This subset does not qualify compositor latency, physical GPU memory, high-draw 
 or physical iPhone behaviour. The iOS 26.5 Simulator passed worker isolation, shared atomic wait,
 OffscreenCanvas and bitmaprenderer controls, but its worker adapter request returned null.
 Full G0.3 remains open. G1 proceeds without changing the approved architecture.
+
+## G3 blocked-import checkpoint, November 7, 2026
+
+Status: Approved. This first G3 unit implements the blocked append and blocked completion
+SIGKILL proofs from [ownership and revocation](#ownership-revocation-and-asynchronous-work),
+[pressure and completions](#completions-and-progress-under-pressure),
+[scheduling](#scheduling-and-private-authority), and
+[executable acceptance](#executable-acceptance). The broader
+[GPU acceptance requirements](gpu-bridge.md#acceptance) remain in force.
+
+### Prerequisite disposition
+
+Managing accepted the measured, explained indivisible-call exception allowed by the scheduling
+acceptance section. Retain the approved single-worker topology and the unchanged 8 ms service
+slice and 100 ms peer-presentation targets. This resolves the G3 execution prerequisite, not full
+G0.3 or G4 qualification. No scheduling cap, workload default, threshold, or production topology
+changes in this unit.
+
+The actual desktop Safari evidence is
+`/work/reports/wave-20261106/waffle-features/gpu/safari-desktop-repaired/RESULT.md`,
+with unrounded observations in its `report.json`. Both capped 20,000-draw arms met both targets,
+with maximum slices of 5.24 and 5.46 ms and peer gaps of 37.58 and 28.60 ms. Both capped
+50,000-draw arms remain **not-met** for the 8 ms target. Their maximum visits were 14.18 and
+12.60 ms, containing indivisible final `transferToImageBitmap` calls of 13.98 and 12.46 ms,
+with zero draws in those visits. Their peer gaps were 46.20 and 29.66 ms. All capped peer gaps
+were below 100 ms.
+
+All four uncapped arms remain **not-met**. Their draw-bearing visits were 44.46, 96.92, 44.98,
+and 98.86 ms. Their peer gaps were 55.86, 117.36, 258.50, and 121.78 ms. Three uncapped gaps
+missed 100 ms. All eight arms passed functional controls. This disposition neither changes those
+classifications nor attributes the synchronous call's internal cost to a particular browser,
+GPU, or compositor mechanism.
+
+### Implemented proof and limits
+
+The existing blocking compiled browser runner now executes both ownership cases. Its existing
+producer is reused, without C, header, generator, opcode, async-fixture, or native-aggregate
+changes. Each case first rejects missing observer coverage and then runs a real compiled
+positive control in the same process/service realms.
+
+The append victim uses the unchanged 200,000-draw `--fairness-heavy` blob. After one native
+transport chunk enters partial assembly, a test-only victim reader gate holds consumption. The
+proof requires an entered import, its inner ring wait, no return, the active writer, and less
+space than its next observed chunk needs. The ring need not have every byte occupied because
+alignment and chunk framing can leave unusable tail space. The completion victim enters its
+actual import and inner empty-reply wait while a real native device result is held before its
+continuation. Neither intervention blocks the shared service thread or the peer.
+
+One already-live `--fairness-peer` connection and native device presents new green frames before
+arming, while blocked, after SIGKILL and retirement, and after late release. Snapshots carry
+fresh request identities and one service-realm identity. Acceptance checks native identity,
+pixels, grant acknowledgement, physical worker stop, partial/replay/device/presenter retirement,
+late-result destruction, immutable retired ring counters, and conservative shared-control debt.
+Only scalar observations leave the trusted service realm.
+
+Each guest keeps poisoned-intrinsic canaries. The victim emits its own authority checkpoint at
+import entry and reinstalls poison before invoking the original import. That checkpoint covers
+prior completed imports. Physical SIGKILL may preclude its final authority report, so it is not
+reported as a post-return audit of the killed call. The normally exiting control and survivor
+retain their complete own-guest reports. Missing victim entry canaries fail acceptance.
+
+Raw software-adapter timings retain the original targets and explicit met or not-met labels.
+A functional ownership pass is not hardware latency qualification. Remaining G3 work includes
+other combined load/ownership cases, malformed-stream isolation, admission pressure, grant and
+regrant ordering, explicit surface/runtime disposal, and whole-service failure. Physical iPhone
+and broader hardware G0.3/G4 acceptance remain open.

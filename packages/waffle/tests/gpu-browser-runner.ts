@@ -11,6 +11,7 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { ownershipCases } from "./gpu-ownership-browser.js";
 import { fairnessCases } from "./gpu-fairness-browser.js";
 import { invoke, pixels, assertTrianglePixels, assertRetired } from "./gpu-browser-shared.js";
 import type { Page } from "playwright";
@@ -394,6 +395,9 @@ async function main() {
     routes["/gpu/service-worker.ts"] = await browserBundle(
       new URL("./fixtures/gpu/integration-service-worker.ts", import.meta.url).pathname,
     );
+    routes["/gpu/service-worker.ts/ownership"] = await browserBundle(
+      new URL("./fixtures/gpu/ownership-service-worker.ts", import.meta.url).pathname,
+    );
     routes["/fs-worker.js"] = await browserBundle(
       new URL("../browser/fs-worker.ts", import.meta.url).pathname,
     );
@@ -416,6 +420,8 @@ async function main() {
       await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const ownership = await ownershipCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "ownership", ownership }));
       const fairness = await fairnessCases(page, url, available);
       console.log(JSON.stringify({ engine, stage: "fairness", fairness }));
       const scenes = await sceneCases(page, url, available);
@@ -446,6 +452,7 @@ async function main() {
           engine,
           loading,
           qualification,
+          ownership,
           guest,
           scenes,
           fairness,
