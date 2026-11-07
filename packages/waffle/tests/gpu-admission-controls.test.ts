@@ -376,10 +376,9 @@ test("every screenshot bracket needs new original native presents and completed 
       );
     }, /fresh in-bracket native work/);
     rejects((value) => {
-      value.phases[index]!.service.fairness.queue.forEach((item) => {
-        item.start = 0;
-        item.settlement.at = 1;
-      });
+      value.phases[index]!.service.fairness.queue = value.phases[index]!.service.fairness.queue.map(
+        (item) => ({ ...item, start: 0, settlement: { ...item.settlement, at: 1 } }),
+      );
     }, /stale in-bracket queue work/);
     rejects((value) => {
       value.phases[index]!.pixels.center = [255, 0, 0, 255];
