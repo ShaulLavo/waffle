@@ -283,6 +283,10 @@ export class GpuReplay {
   #lowerCall(call: DecodedCall, receiver: object, result: Handle | undefined): boolean {
     const { fields, layout } = call;
     switch (layout.lowering.kind) {
+      case "label":
+        if (layout.lowering.target === "surface-reference") surfaceLabel(receiver, fields.label);
+        else nativeLabel(receiver, fields.label);
+        return false;
       case "request-adapter":
         this.#request(
           call,
@@ -304,7 +308,9 @@ export class GpuReplay {
       case "surface-create": {
         const source = this.#lower.surfaceSource(fields.descriptor);
         if (!result) throw new GpuProtocolError("Missing surface result handle");
-        this.#bind(call, result, this.#surfaces().create(source.id, source.label, result));
+        const surface = this.#surfaces().create(source.id, source.label, result);
+        surfaceLabel(surface, source.label);
+        this.#bind(call, result, surface);
         return false;
       }
       case "surface-configure":
@@ -540,8 +546,7 @@ export class GpuReplay {
         return;
       case "render_bundle_encoder.set_label":
       case "compute_pass_encoder.set_label":
-        if (!Reflect.set(receiver, "label", fields.label))
-          throw new GpuCallError("Native label assignment failed");
+        nativeLabel(receiver, fields.label);
         return;
       case "render_bundle_encoder.set_pipeline":
       case "render_pass_encoder.set_pipeline":
@@ -905,3 +910,12 @@ function deviceListener(
 }
 
 function ignoreResult(): void {}
+
+function nativeLabel(receiver: object, label: unknown): void {
+  if (!Reflect.set(receiver, "label", label))
+    throw new GpuCallError("Native label assignment failed");
+}
+function surfaceLabel(reference: object, label: unknown): void {
+  // A Waffle surface is a service-owned reference, not a native canvas/context label setter.
+  Object.defineProperty(reference, "label", { value: label, writable: true, configurable: true });
+}

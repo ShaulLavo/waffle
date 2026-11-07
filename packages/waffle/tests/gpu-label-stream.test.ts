@@ -65,3 +65,31 @@ test("literal UTF-8 labels include byte lengths and four/eight-byte padding", ()
   expect(decodeCall(top).fields.label).toBe("λ猫");
   expect(decodeCall(pass).fields).toEqual({ label: "λ猫" });
 });
+
+test("generator rejects altered label target, receiver context and optional C arguments", async () => {
+  const { compileSchema } = await import("../tooling/gpu-stream.ts");
+  const { record, list } = await import("../tooling/gpu-stream-model.ts");
+  const selection = (await import("../browser/gpu/stream.json")).default;
+  const yaml: unknown = Bun.YAML.parse(
+    await Bun.file(new URL("../browser/gpu/upstream/webgpu.yml", import.meta.url)).text(),
+  );
+  for (const change of [{ target: "surface-reference" }, { context: "pass" }]) {
+    const changed = structuredClone(selection);
+    const call = changed.calls.find((call) => call.name === "buffer.set_label");
+    if (!call) throw new Error("Missing label selection");
+    if ("context" in change) Reflect.set(call, "context", change.context);
+    else Reflect.set(call.lowering, "target", change.target);
+    expect(() => compileSchema(yaml, changed)).toThrow("Label lowering");
+  }
+  const changed = structuredClone(yaml);
+  const buffer = list(record(changed).objects)
+    .map(record)
+    .find((object) => object.name === "buffer");
+  if (!buffer) throw new Error("Missing pinned buffer");
+  const label = list(buffer.methods)
+    .map(record)
+    .find((method) => method.name === "set_label");
+  if (!label) throw new Error("Missing pinned label");
+  Reflect.set(record(list(label.args)[0]), "optional", true);
+  expect(() => compileSchema(changed, selection)).toThrow("required YAML label");
+});

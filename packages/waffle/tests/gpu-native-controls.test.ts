@@ -20,7 +20,7 @@ function passedInvocation({ path, control }: NativeControlInvocation) {
   return path === "/scene.js" ? scenePassed(control) : passed(control);
 }
 
-test("aggregate invokes all 52 existing native controls exactly once, not compiled guests", async () => {
+test("aggregate preserves all 52 historical controls and appends label reflection as control 53", async () => {
   const invoked: string[] = [];
   const reported: Record<string, unknown>[] = [];
   const count = await runNativeControls(
@@ -39,10 +39,12 @@ test("aggregate invokes all 52 existing native controls exactly once, not compil
       ),
       copyDrawNativeControls.map((control) => `/copy-draw.js:copyDrawNativeControl:${control}`),
     );
-  expect(count).toBe(52);
-  expect(invoked).toEqual(expected);
-  expect(new Set(invoked).size).toBe(52);
-  expect(reported).toHaveLength(52);
+  expect(expected).toHaveLength(52);
+  expect(invoked.slice(0, 52)).toEqual(expected);
+  expect(invoked[52]).toBe("/label.js:labelNativeControl:labels");
+  expect(count).toBe(53);
+  expect(new Set(invoked).size).toBe(53);
+  expect(reported).toHaveLength(53);
   for (const result of reported)
     expect(result).toMatchObject({ kind: "native-lowering-control", compiledGuest: false });
 });
@@ -119,7 +121,7 @@ test("unmarked native results cannot produce success-labelled reports", async ()
   expect(reports).toHaveLength(0);
 });
 
-for (const suite of ["compute", "bundle-query", "copy-draw"] as const) {
+for (const suite of ["compute", "bundle-query", "copy-draw", "label"] as const) {
   test(`${suite} requires a passing status even when a native kind is present`, () => {
     expect(() => requireNativeControlResult(scenePassed("normal"), "normal", suite)).toThrow(
       "missing status",
