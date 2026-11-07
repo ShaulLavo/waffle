@@ -78,18 +78,7 @@ async function admissionCase(page: Page) {
       assertTrianglePixels(image, "green");
       const recoveryPixels = name === "recovered" ? await pixels(page, 10, false) : undefined;
       if (recoveryPixels) assertTrianglePixels(recoveryPixels);
-      const start = progress(before, peer);
-      const after = await until(
-        page,
-        (service) =>
-          peerAdvanced(service, peer, start, number(before.at)) &&
-          entries(record(service.fairness).queue).some(
-            (work) =>
-              work.connection === peer &&
-              number(work.start) >= number(before.at) &&
-              record(work.settlement).kind === "completed",
-          ),
-      );
+      const after = await screenshotEnd(page, peer, before);
       phases.push({
         name,
         peerPid: peerGuest.pid,
@@ -756,4 +745,19 @@ export function validateAdmissionResult(value: unknown) {
   validateStops(result, cohort, recovery);
   disposalProof(result.runtimeStop);
   return timing(record(phases.at(-1)!.service), result.peer);
+}
+
+export async function screenshotEnd(page: Page, peer: unknown, before: Record<string, unknown>) {
+  const start = progress(before, peer);
+  return until(
+    page,
+    (service) =>
+      peerAdvanced(service, peer, start, number(before.at)) &&
+      entries(record(service.fairness).queue).some(
+        (work) =>
+          work.connection === peer &&
+          number(work.start) >= number(before.at) &&
+          record(work.settlement).kind === "completed",
+      ),
+  );
 }

@@ -114,7 +114,9 @@ function fairness(serial: number, known: number[], index: number) {
         { count: id === 3 && index >= 2 ? 200000 : 1, totalMs: 1, maxMs: 1 },
       ]),
     ),
-    records: Object.fromEntries(known.map((id) => [`${id}:top:1`, { count: 1 }])),
+    records: Object.fromEntries(
+      known.map((id) => [`${id}:top:1`, { count: 1, totalMs: 1, maxMs: 1 }]),
+    ),
     presents: active
       .flatMap((id) =>
         Array.from({ length: counts(id) }, (_, n) => ({
@@ -590,4 +592,16 @@ test("native result identity, release stamps and producer attribution stay cumul
       settlement: { kind: "completed", at: 126 },
     });
   }, /unowned native producer/);
+});
+
+test("native pending settlements and aggregate timings retain their recorded meaning", () => {
+  rejects((v) => {
+    Reflect.set(v.phases[2]!.service.fairness.queue.at(-1)!.settlement, "kind", "unknown");
+  }, /invalid native queue settlement/);
+  rejects((v) => {
+    v.phases[2]!.service.fairness.native["2:draw"]!.totalMs = 0;
+  }, /aggregate history decreased/);
+  const value = pendingAtRetirement("completed");
+  value.phases[4]!.before.fairness.queue.find((work) => work.connection === 3)!.settlement.at = 100;
+  expect(() => validateRegrantResult(value)).toThrow(/settlement predates its pending observation/);
 });

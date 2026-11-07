@@ -18,7 +18,12 @@ import {
   progress,
   peerAdvanced,
 } from "./gpu-ownership-browser.js";
-import { bracketProof, unchangedSubmissions, immutableRetired } from "./gpu-admission-browser.js";
+import {
+  bracketProof,
+  unchangedSubmissions,
+  immutableRetired,
+  screenshotEnd,
+} from "./gpu-admission-browser.js";
 
 const names = ["live", "ready", "held", "replacement", "released", "retired"] as const;
 function requireProof(ok: boolean, message: string): asserts ok {
@@ -138,11 +143,16 @@ function cumulative(before: Record<string, unknown>, after: Record<string, unkno
     const old = record(a[kind]),
       current = record(b[kind]);
     for (const [key, value] of Object.entries(old))
-      requireProof(
-        integer(record(current[key]).count) >= integer(record(value).count),
-        "native aggregate history decreased",
-      );
+      aggregateHistory(record(value), record(current[key]));
   }
+}
+function aggregateHistory(before: Record<string, unknown>, after: Record<string, unknown>) {
+  requireProof(
+    integer(after.count) >= integer(before.count) &&
+      number(after.totalMs) >= number(before.totalMs) &&
+      number(after.maxMs) >= number(before.maxMs),
+    "native aggregate history decreased",
+  );
 }
 function scopeHistory(before: Record<string, unknown>, after: Record<string, unknown>) {
   requireProof(
@@ -370,8 +380,22 @@ function snapshotProof(
   if (state.previous) cumulative(state.previous, service);
   state.previous = service;
 }
+function queueProof(work: Record<string, unknown>, at: number) {
+  const settlement = record(work.settlement);
+  requireProof(
+    number(work.start) <= at &&
+      ["pending", "completed", "rejected"].includes(String(settlement.kind)),
+    "invalid native queue settlement",
+  );
+  if (settlement.kind !== "pending")
+    requireProof(
+      number(settlement.at) >= number(work.start) && number(settlement.at) <= at,
+      "invalid native queue settlement interval",
+    );
+}
 function knownProducers(service: Record<string, unknown>, ids: readonly unknown[]) {
   const observed = record(service.fairness);
+  for (const work of entries(observed.queue)) queueProof(work, number(service.at));
   for (const key of ["presents", "queue", "slices", "blobs"])
     requireProof(
       entries(observed[key]).every((item) => ids.includes(item.connection)),
@@ -678,18 +702,7 @@ async function regrantCase(page: Page) {
         ? await pixels(page, 2, false)
         : undefined;
       if (replacementPixels) assertTrianglePixels(replacementPixels, "blue");
-      const start = progress(before, peer);
-      const after = await until(
-        page,
-        (service) =>
-          peerAdvanced(service, peer, start, number(before.at)) &&
-          entries(record(service.fairness).queue).some(
-            (work) =>
-              work.connection === peer &&
-              number(work.start) >= number(before.at) &&
-              record(work.settlement).kind === "completed",
-          ),
-      );
+      const after = await screenshotEnd(page, peer, before);
       phases.push({
         name,
         peerPid: peerGuest.pid,
