@@ -1,3 +1,7 @@
+import {
+  navigateTestPage,
+  type NavigationPage as TestNavigationPage,
+} from "../browser-navigation.js";
 import type { Page, Request, Response } from "playwright";
 
 export interface StorageLockNavigationDiagnostic {
@@ -8,7 +12,7 @@ export interface StorageLockNavigationDiagnostic {
   events: string[];
 }
 
-type NavigationPage = Pick<Page, "on" | "off" | "goto" | "url" | "isClosed" | "close">;
+type NavigationPage = Pick<Page, "on" | "off" | "url" | "isClosed" | "close"> & TestNavigationPage;
 
 export async function storageLockNavigate<T extends NavigationPage>(
   context: { newPage(): Promise<T> },
@@ -42,7 +46,7 @@ export async function storageLockNavigate<T extends NavigationPage>(
     page.on("crash", crashed);
     page.on("pageerror", errored);
     phase = "navigation";
-    await page.goto(target);
+    await navigateTestPage(page, target);
     return page;
   } catch (error) {
     report({

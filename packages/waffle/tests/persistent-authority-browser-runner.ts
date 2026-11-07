@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import type { Browser, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
@@ -241,7 +242,7 @@ async function history(
   await observeDeaths(d);
   await step(schedule[0]!, async () => {
     for (const page of pages) {
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
       equal(await page.opener(), null);
       equal(await page.evaluate(() => crossOriginIsolated), true);
     }

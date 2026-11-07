@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { existsSync } from "node:fs";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
 
@@ -15,7 +16,7 @@ export async function runSafeStagingNative(engine: string, control?: string): Pr
     const browser = await lifecycle.launch(engine as keyof typeof engines);
     const page = await browser.newPage();
     page.on("console", (message) => console.log(message.text()));
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     const passed = await page.evaluate(async (selected) => {
       const path = "/test.js";
       const fixture: typeof import("./safe-staging-browser.js") = await import(path);

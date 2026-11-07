@@ -8,6 +8,9 @@ import {
 function navigationFixture() {
   let closed = false;
   const page = {
+    context: () => ({ browser: () => null }),
+    route: mock<Page["route"]>(),
+    unroute: mock<Page["unroute"]>().mockResolvedValue(),
     on: mock<(event: string, listener: (...args: never[]) => void) => Page>(),
     off: mock<(event: string, listener: (...args: never[]) => void) => Page>(),
     goto: mock<Page["goto"]>().mockResolvedValue(null),

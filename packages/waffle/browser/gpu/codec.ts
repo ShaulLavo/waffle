@@ -38,6 +38,10 @@ export function wireNumber(value: WireValue | undefined): number {
   if (typeof value !== "number") throw new GpuProtocolError("Expected wire number");
   return value;
 }
+export function wireBytes(value: WireValue | undefined): Uint8Array {
+  if (!(value instanceof Uint8Array)) throw new GpuProtocolError("Expected wire byte span");
+  return value;
+}
 export function wireHandle(value: WireValue | undefined): Handle {
   const object = wireObject(value);
   return { id: wireNumber(object.id), generation: wireNumber(object.generation) };
@@ -199,12 +203,14 @@ export class WireReader {
     if (type === "float64" || type === "float64_supertype") return this.#view.getFloat64(at, true);
     if (type === "float32" || type === "nullable_float32") return this.#view.getFloat32(at, true);
     if (type === "int32") return this.#view.getInt32(at, true);
+    if (type === "uint16") return this.#view.getUint16(at, true);
     if (type === "uint32") return this.#view.getUint32(at, true);
     throw new GpuProtocolError(`Unsupported scalar ${type}`);
   }
 }
 
 function wireAlignment(type: string): number {
+  if (type === "uint16") return 2;
   if (
     ["uint64", "usize", "float64", "float64_supertype", "token"].includes(type) ||
     type.startsWith("bitflag.")
@@ -217,7 +223,7 @@ export function decodeCall(bytes: Uint8Array): DecodedCall {
   const header = recordHeader(bytes);
   if (header.flags || header.length !== bytes.byteLength)
     throw new GpuProtocolError("Invalid command framing");
-  const layout = gpuStream.calls.find((call) => call.opcode === header.opcode);
+  const layout = callsByOpcode.get(header.opcode);
   if (!layout) throw new GpuProtocolError("Unknown selected opcode");
   const reader = new WireReader(bytes, 8);
   const fields = reader.fields(layout.fields);
@@ -299,3 +305,5 @@ class CompletionWriter {
 }
 
 const tables: WireTables = gpuStream;
+const callsByOpcode = new Map<number, CallLayout>();
+for (const call of tables.calls) callsByOpcode.set(call.opcode, call);

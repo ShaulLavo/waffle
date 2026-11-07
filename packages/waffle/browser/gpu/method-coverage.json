@@ -164,9 +164,17 @@
     {
       "name": "command_encoder.begin_compute_pass",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit begin_compute_pass recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Begin an optional compute-pass descriptor with timestamp sentinel adaptation and retain its pass identity across bounded replay slices.",
+      "call": {
+        "opcode": 35,
+        "context": "encoder",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "beginComputePass",
+          "descriptor": "compute_pass_descriptor"
+        }
+      }
     },
     {
       "name": "command_encoder.begin_render_pass",
@@ -262,72 +270,146 @@
     {
       "name": "compute_pass_encoder.insert_debug_marker",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add insert_debug_marker to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Insert the pinned UTF-8 compute marker label on the current native compute pass.",
+      "call": {
+        "opcode": 36,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.pop_debug_group",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add pop_debug_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Pop the current compute debug group and leave balance validation to native WebGPU.",
+      "call": {
+        "opcode": 37,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.push_debug_group",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add push_debug_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Push the pinned UTF-8 group label on the current native compute pass.",
+      "call": {
+        "opcode": 38,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_pipeline",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add set_pipeline to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Resolve a compute-pipeline handle and bind its exact native identity on the current compute pass.",
+      "call": {
+        "opcode": 39,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_bind_group",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add set_bind_group to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind a native group or explicit null with the original group index and u32 dynamic-offset array.",
+      "call": {
+        "opcode": 40,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_immediates",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add explicit compute_pass_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Replace the C data pointer and size with one byte span; pass the exact byte offset and Uint8Array to native setImmediates.",
+      "call": {
+        "opcode": 41,
+        "context": "pass",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.dispatch_workgroups",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add dispatch_workgroups to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Dispatch the pinned three u32 workgroup counts without defaulting zero counts or changing their order.",
+      "call": {
+        "opcode": 42,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "dispatchWorkgroups"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.dispatch_workgroups_indirect",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add dispatch_workgroups_indirect to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Dispatch through the exact native indirect buffer and checked safe-number u64 byte offset.",
+      "call": {
+        "opcode": 43,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "dispatchWorkgroupsIndirect"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.end",
       "group": "compute-pass",
-      "category": "deferred",
-      "reason": "Add end to recorded compute-pass nesting, with receiver-free nested layout and resumable replay.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "End the native compute pass and return resumable replay to encoder context.",
+      "call": {
+        "opcode": 44,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "end"
+        }
+      }
     },
     {
       "name": "compute_pass_encoder.set_label",
       "group": "labels",
-      "category": "deferred",
-      "reason": "Assign compute_pass_encoder.label through an explicit ordered lowering; compute_pass_encoder label mutation is not selected yet.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Assign the pinned label string to the native compute-pass label property, not a fictional method.",
+      "call": {
+        "opcode": 45,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "label"
+        }
+      }
     },
     {
       "name": "compute_pipeline.get_bind_group_layout",
@@ -346,23 +428,47 @@
     {
       "name": "device.create_bind_group",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_bind_group descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Resolve the C resource alternatives into the browser buffer-binding, sampler or texture-view resource union.",
+      "call": {
+        "opcode": 27,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroup",
+          "descriptor": "bind_group_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_bind_group_layout",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_bind_group_layout descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Lower explicit C binding-layout arms to native dictionaries, omitting BindingNotUsed arms and rejecting browser-unsupported arrays.",
+      "call": {
+        "opcode": 25,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroupLayout",
+          "descriptor": "bind_group_layout_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_buffer",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_buffer descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create native buffers with exact u64 size, usage flags and mapped-at-creation state; shadow mapping remains G2.",
+      "call": {
+        "opcode": 22,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBuffer",
+          "descriptor": "buffer_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_command_encoder",
@@ -381,9 +487,17 @@
     {
       "name": "device.create_compute_pipeline",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_compute_pipeline descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create a synchronous native compute pipeline with explicit or automatic layout, checked shader identity and constant-record adaptation.",
+      "call": {
+        "opcode": 34,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createComputePipeline",
+          "descriptor": "compute_pipeline_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_compute_pipeline_async",
@@ -395,9 +509,17 @@
     {
       "name": "device.create_pipeline_layout",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_pipeline_layout descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Resolve ordered bind-group-layout handles and lower immediate_size to the native immediateSize member.",
+      "call": {
+        "opcode": 26,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createPipelineLayout",
+          "descriptor": "pipeline_layout_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_query_set",
@@ -437,9 +559,17 @@
     {
       "name": "device.create_sampler",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_sampler descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create native samplers with optional descriptor, C enum defaults and two-byte anisotropy.",
+      "call": {
+        "opcode": 24,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createSampler",
+          "descriptor": "sampler_descriptor"
+        }
+      }
     },
     {
       "name": "device.create_shader_module",
@@ -458,9 +588,17 @@
     {
       "name": "device.create_texture",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add create_texture descriptor, result-handle and browser lowering with checked member/enum mappings; the current triangle does not create this resource.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Create native textures with explicit dimensions, extent, format, sample count and view formats.",
+      "call": {
+        "opcode": 23,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createTexture",
+          "descriptor": "texture_descriptor"
+        }
+      }
     },
     {
       "name": "device.destroy",
@@ -682,16 +820,38 @@
     {
       "name": "queue.write_buffer",
       "group": "queue",
-      "category": "deferred",
-      "reason": "Add write_buffer upload lowering with paired C data/size replaced by checked bytes, destination descriptors and bounded chunk transport.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Replace the C data pointer and paired size with a checked byte span and upload it at an exact buffer offset.",
+      "call": {
+        "opcode": 28,
+        "context": "top",
+        "lowering": {
+          "kind": "write-buffer",
+          "member": "writeBuffer",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
     },
     {
       "name": "queue.write_texture",
       "group": "queue",
-      "category": "deferred",
-      "reason": "Add write_texture upload lowering with paired C data/size replaced by checked bytes, destination descriptors and bounded chunk transport.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Upload checked byte spans with native texture identity, origin, extent and declared copy-stride sentinel omission.",
+      "call": {
+        "opcode": 29,
+        "context": "top",
+        "lowering": {
+          "kind": "write-texture",
+          "member": "writeTexture",
+          "span": {
+            "pointer": "data",
+            "size": "data_size"
+          }
+        }
+      }
     },
     {
       "name": "queue.set_label",
@@ -822,9 +982,16 @@
     {
       "name": "render_pass_encoder.set_bind_group",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_bind_group to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind native group identity or explicit null with a bounded array of dynamic offsets inside a recorded render pass.",
+      "call": {
+        "opcode": 30,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_immediates",
@@ -850,9 +1017,16 @@
     {
       "name": "render_pass_encoder.draw_indexed",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add draw_indexed to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Replay indexed draws with exact counts and first offsets, including signed base_vertex values.",
+      "call": {
+        "opcode": 33,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexed"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.draw_indirect",
@@ -927,16 +1101,30 @@
     {
       "name": "render_pass_encoder.set_vertex_buffer",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_vertex_buffer to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind vertex-buffer identity or explicit null, retaining byte offsets and omitting only the whole-size sentinel.",
+      "call": {
+        "opcode": 31,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setVertexBuffer"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_index_buffer",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_index_buffer to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Bind native index-buffer identity, index format and exact offset/range with declared whole-size omission.",
+      "call": {
+        "opcode": 32,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setIndexBuffer"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.begin_occlusion_query",

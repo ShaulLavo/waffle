@@ -21,6 +21,33 @@ import {
   words,
 } from "./fixtures/gpu/core-fixture.ts";
 
+test("recording send consumes published commands after a scheduler yield", () => {
+  const target = new RecordingTarget();
+  const { connection } = rig(target);
+  const slice = connection.slice.bind(connection);
+  let calls = 0;
+  connection.slice = (budget) => {
+    calls++;
+    if (calls === 1) return { kind: "yield", bytes: 0 };
+    return slice(budget);
+  };
+  try {
+    send(
+      connection,
+      command("instance.request_adapter", {
+        result: handle(2),
+        token: 1,
+        receiver: ROOT,
+        options: null,
+      }),
+    );
+    expect(calls).toBeGreaterThan(1);
+    expect(target.calls[0]?.member).toBe("requestAdapter");
+  } finally {
+    connection.close();
+  }
+});
+
 function hex(value: string): Uint8Array {
   return Uint8Array.from(Buffer.from(value.replaceAll(" ", ""), "hex"));
 }

@@ -1,8 +1,15 @@
+import { storagePolicy } from "./storage-policy.js";
 import { expect, test } from "bun:test";
-import { associateListener, nativeCapabilities, SafariDriver } from "./safari-driver.js";
+import {
+  associateListener,
+  nativeCapabilities,
+  SafariDriver,
+  driverResponseLimit,
+  readDriverResponse,
+} from "./safari-driver.js";
 import { parseSession } from "./driver.js";
 import { Collector } from "./collector.js";
-import { probeDocument } from "./storage-host.js";
+import { probeDocument } from "./suite-host.js";
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 const capabilities = {
   browserName: "Safari",
@@ -82,7 +89,7 @@ test("structured script-timeout code survives HTTP transport and stops later dis
     const driver = new SafariDriver(udid, "unused-no-native-start");
     Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
     Reflect.set(driver, "session", "fixture-session");
-    const collector = new Collector("run", [], []);
+    const collector = new Collector("run", [], [], storagePolicy);
     const state = collector.expect(
       { id: "list", role: "list", caseIds: [] },
       "token",
@@ -100,4 +107,55 @@ test("structured script-timeout code survives HTTP transport and stops later dis
   } finally {
     await server.stop(true);
   }
+});
+
+test("bounded WebDriver response retains every interior integer", async () => {
+  const actual = Array.from({ length: 196608 }, (_, index) => index % 251);
+  actual[123456] = -1;
+  const response = new Response(JSON.stringify({ value: actual }));
+  const answer = await readDriverResponse(response, AbortSignal.timeout(1000));
+  expect(answer).toEqual({ value: actual });
+  expect(actual[123456]).toBe(-1);
+});
+for (const [label, bytes] of [
+  [
+    "overflow",
+    new TextEncoder().encode(JSON.stringify({ value: "x".repeat(driverResponseLimit) })),
+  ],
+  ["malformed", new TextEncoder().encode('{"value":[1,2,')],
+  ["invalid UTF-8", new Uint8Array([123, 34, 120, 34, 58, 34, 255, 34, 125])],
+] as const) {
+  test(`bounded WebDriver ${label} exposes no partial answer`, async () => {
+    await expect(
+      readDriverResponse(new Response(bytes), AbortSignal.timeout(1000)),
+    ).rejects.toThrow();
+  });
+}
+test("response byte count is streaming and ignores an undersized Content-Length", async () => {
+  let offset = 0;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset++ < 65) controller.enqueue(new Uint8Array(65536).fill(32));
+        else controller.close();
+      },
+    }),
+    { headers: { "Content-Length": "2" } },
+  );
+  await expect(readDriverResponse(response, AbortSignal.timeout(1000))).rejects.toThrow("4 MiB");
+});
+test("a response interrupted mid-array never exposes a value", async () => {
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"value":[1,2,'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+  );
+  await expect(readDriverResponse(response, AbortSignal.timeout(15))).rejects.toThrow();
+  expect(cancelled).toBe(true);
 });
