@@ -26,7 +26,7 @@ async function bundle(source: string, define?: Record<string, string>): Promise<
     throw new AggregateError(build.logs, "Process control bundle failed");
   return build.outputs[0];
 }
-function checked(result: SuiteResult, mode: Control): void {
+export function checkProcessControl(result: SuiteResult, mode: Control): void {
   const id = result.selected[0];
   if (
     !id ||
@@ -44,18 +44,18 @@ function checked(result: SuiteResult, mode: Control): void {
   )
     throw new Error(`Process control cleanup failed: ${JSON.stringify(cleanup)}`);
   const outcome = result.outcomes[id];
-  if (mode === "memory-only" || mode === "startup-memory") {
-    if (result.exit !== 4 || result.results[id] !== id || outcome?.status !== "pass")
-      throw new Error("Original memory-only process body failed");
-    return;
-  }
-  if (outcome?.status !== "fail" && result.failures.length === 0)
-    throw new Error(`Process ${mode} falsely passed`);
   const evidence = JSON.stringify({
     outcomes: result.outcomes,
     failures: result.failures,
     results: result.results,
   });
+  if (mode === "memory-only" || mode === "startup-memory") {
+    if (result.exit !== 4 || result.results[id] !== id || outcome?.status !== "pass")
+      throw new Error(`Original ${mode} process body failed: ${evidence}`);
+    return;
+  }
+  if (outcome?.status !== "fail" && result.failures.length === 0)
+    throw new Error(`Process ${mode} falsely passed`);
   const expected =
     mode === "page-error"
       ? "PROCESS_CONTROL_PAGE_ERROR"
@@ -98,7 +98,7 @@ async function control(engine: "chromium" | "webkit", mode: Control, root: strin
   );
   if (JSON.stringify(await Bun.file(resultPath).json()) !== JSON.stringify(result))
     throw new Error("Persisted process control differs from actual result");
-  checked(result, mode);
+  checkProcessControl(result, mode);
   await writeProcessDiagnostics(resultPath);
   const diagnostics = await Bun.file(`${resultPath}.diagnostics.json`).json();
   if (
