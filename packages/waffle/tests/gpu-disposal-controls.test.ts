@@ -475,3 +475,13 @@ test("GPU service stops after its guests and before the filesystem", () => {
     r.disposal.workerStops[3]!.at = 204;
   }, "owned worker shutdown order changed");
 });
+
+test("the original held completion token cannot be rewritten at the disposal boundary", () => {
+  rejects((r) => {
+    for (const state of [r.disposal.stopped, r.disposal.after]) {
+      state.audits[0]!.service.heldCompletion!.token = 99;
+      state.audits[1]!.service.heldCompletion!.token = 99;
+      state.audits[1]!.service.lateCallback!.token = 99;
+    }
+  }, "held completion identity changed at disposal");
+});

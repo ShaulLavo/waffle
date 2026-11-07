@@ -432,7 +432,7 @@ export function validateDisposalResult(value: unknown) {
       lifecycle(service, native);
     }
   }
-  lateResult(audits, victim, natives);
+  lateResult(audits, victim, natives, record(held.heldCompletion));
   return timing(held, peer.id);
 }
 
@@ -506,6 +506,7 @@ function lateResult(
   audits: readonly Record<string, unknown>[],
   victim: Record<string, unknown>,
   natives: readonly Record<string, unknown>[],
+  heldCompletion: Record<string, unknown>,
 ) {
   const beforeLate = record(audits[0]!.service),
     late = record(audits[1]!.service),
@@ -513,6 +514,7 @@ function lateResult(
   requireProof(late.lateCallback !== undefined, "original canceled native callback did not run");
   const callback = record(late.lateCallback),
     completion = record(beforeLate.heldCompletion);
+  equal(heldCompletion, completion, "held completion identity changed at disposal");
   equal(completion, late.heldCompletion, "held completion identity changed after disposal");
   requireProof(
     record(beforeLate.scopeResult).releasedAt === null &&
