@@ -21,6 +21,7 @@ export class PlaywrightDriver implements Driver {
   constructor(
     private readonly engine: keyof typeof engines,
     private readonly scratch: string,
+    private readonly launchArgs?: readonly string[],
   ) {}
   async start(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
@@ -28,7 +29,9 @@ export class PlaywrightDriver implements Driver {
     // Give the browser a sibling, not another nested layer in its socket-path budget.
     await this.lifecycle.init(dirname(this.scratch));
     const profile = await this.lifecycle.directory(this.lifecycle.scratch, "p-");
-    this.context = await this.lifecycle.persistent(this.engine, profile);
+    this.context = await (this.launchArgs === undefined
+      ? this.lifecycle.persistent(this.engine, profile)
+      : this.lifecycle.persistent(this.engine, profile, this.launchArgs));
     this.page = this.context.pages()[0] ?? (await this.context.newPage());
     this.pages.set("root", this.page);
     this.page.on("console", (message) => {

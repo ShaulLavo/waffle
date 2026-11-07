@@ -54,6 +54,14 @@ const serial = runners
         },
       ],
     ],
+    [
+      [
+        {
+          runner: "tests/page-runner/gpu-async-controls-runner.ts",
+          engines: ["--ci", "chromium", "webkit"],
+        },
+      ],
+    ],
   );
 // CI runs the two groups on separate runners; each keeps its own order.
 const group = process.env.WAFFLE_BROWSER_GROUP;

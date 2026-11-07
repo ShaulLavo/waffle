@@ -55,6 +55,26 @@ Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 
+### Run the complete compiled GPU async command
+
+The GPU async runner requires the existing normal producer output in `GPU_FIXTURE_DIR`.
+It verifies receipt freshness and artifact bytes against this checkout before consumption.
+It never builds or repairs a fixture. Desktop Chromium retains the designated SwiftShader flags.
+
+```sh
+GPU_FIXTURE_DIR=/absolute/path/to/fixture GPU_SCRATCH_ROOT=/work/tmp \
+  bun packages/waffle/tests/gpu-async-browser-runner.ts chromium
+GPU_FIXTURE_DIR=/absolute/path/to/fixture STORAGE_SCRATCH_ROOT=/absolute/scratch/root \
+  IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/gpu-async-browser-runner.ts ios-safari --result /absolute/result.json
+```
+
+The native command uses the supported page-owned host and runs the same complete command
+with one runtime, the original negative controls and lifetime scenarios. It measures the
+actual qualification Worker first. An observed unsupported adapter remains
+`status: "unsupported", compiledGuest: false`, not compiled acceptance.
+Playwright WebKit is not actual Safari qualification.
+
 ### Run the low-level Rust threads proof
 
 The optional threads runner consumes an existing producer receipt and artifact. It verifies both

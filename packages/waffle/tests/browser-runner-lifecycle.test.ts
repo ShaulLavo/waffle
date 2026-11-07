@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test";
+import { swiftShaderArgs } from "./gpu-browser-qualification.js";
+import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.ts";
+import { engines, BrowserRunnerLifecycle } from "./browser-runner-lifecycle.ts";
 import type { BrowserResourceOwner } from "./process-recycling-browser-runner-control.ts";
 
 function nextTurn(): Promise<void> {
@@ -71,3 +72,33 @@ test("controller deadline marks interruption before closing owned resources", ()
   expect(result.stdout.toString()).toContain("controller-interrupted=true");
   expect(result.stderr.toString()).toContain("Browser runner timed out");
 });
+
+for (const engine of ["chromium", "firefox", "webkit"] as const) {
+  for (const args of [undefined, swiftShaderArgs] as const) {
+    test(`persistent ${engine} preserves profile and owned paths with ${args ? "explicit" : "default"} args`, async () => {
+      const lifecycle = new BrowserRunnerLifecycle();
+      lifecycle.scratch = "/work/tmp/gpu-async-launch";
+      const launch = spyOn(engines[engine], "launchPersistentContext").mockRejectedValue(
+        new Error("launch boundary"),
+      );
+      try {
+        await expect(lifecycle.persistent(engine, "/work/tmp/exact-profile", args)).rejects.toThrow(
+          "launch boundary",
+        );
+        const options = {
+          headless: true,
+          downloadsPath: lifecycle.scratch,
+          tracesDir: lifecycle.scratch,
+        };
+        expect(launch.mock.calls[0]).toEqual([
+          "/work/tmp/exact-profile",
+          args === undefined ? options : { ...options, args: Array.from(args) },
+        ]);
+        if (args) expect(launch.mock.calls[0]?.[1]?.args).not.toBe(args);
+      } finally {
+        await lifecycle.close();
+        launch.mockRestore();
+      }
+    });
+  }
+}
