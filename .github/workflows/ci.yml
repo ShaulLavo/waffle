@@ -1454,7 +1454,26 @@ jobs:
   gate:
     name: Complete CI gate
     if: always()
-    needs: [changes, network-wasm, awk, procps, diffutils, gh, jq, curl, tar, package, libc, browser, site, findutils-xargs, coreutils-echo, coreutils-checksums, programs]
+    needs:
+      [
+        changes,
+        network-wasm,
+        awk,
+        procps,
+        diffutils,
+        gh,
+        jq,
+        curl,
+        tar,
+        package,
+        libc,
+        browser,
+        site,
+        findutils-xargs,
+        coreutils-echo,
+        coreutils-checksums,
+        programs,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: Require a ready PR
