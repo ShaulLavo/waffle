@@ -111,7 +111,11 @@ test("network and singular libc caches are shared exactly and native compilation
     assert.equal(record(restored?.with)["fail-on-cache-miss"], true);
     assert.deepEqual(steps(job).find((step) => step.id === "libc")?.with, libc?.with);
   }
-  const native = steps(jobs.programs).filter((step) => String(step.run).startsWith("cargo test "));
+  const native = steps(jobs.programs).filter((step) =>
+    String(step.run)
+      .replace(/^bash scripts\/with-build-cache\.sh /, "")
+      .startsWith("cargo test "),
+  );
   assert.equal(native.length, 1);
   assert.equal(String(native[0]?.run).split("-p waffle-echo").length, 2);
 });

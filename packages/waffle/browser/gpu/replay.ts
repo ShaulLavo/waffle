@@ -42,13 +42,25 @@ export interface ReplayTarget {
   readonly root: object;
   readonly surfaces?: SurfaceTarget;
 }
-interface Blob {
+interface BlobCursor {
   readonly bytes: Uint8Array;
   readonly encoder: Handle;
   offset: number;
-  pass: Handle | undefined;
   finished: boolean;
 }
+type Blob = BlobCursor &
+  (
+    | {
+        readonly kind: "command_encoder";
+        pass:
+          | {
+              readonly handle: Handle;
+              readonly kind: "render_pass_encoder" | "compute_pass_encoder";
+            }
+          | undefined;
+      }
+    | { readonly kind: "render_bundle_encoder" }
+  );
 interface Cursor {
   readonly record: LogicalRecord;
   offset: number;
@@ -127,7 +139,8 @@ export class GpuReplay {
     const header = recordHeader(bytes, cursor.offset);
     const record = bytes.subarray(cursor.offset, cursor.offset + header.length);
     if (header.flags) throw new GpuProtocolError("Source record flags must be zero");
-    if (header.opcode === 0x1001) return this.#beginBlob(cursor, record);
+    if (header.opcode === 0x1001 || header.opcode === 0x1002)
+      return this.#beginBlob(cursor, record, header.opcode);
     if (header.opcode === 0x1000) return this.#release(cursor, record);
     const call = decodeCall(record);
     if (call.layout.context !== "top") throw new GpuProtocolError("Nested command outside encode");
@@ -147,19 +160,22 @@ export class GpuReplay {
     cursor.record.release();
     this.#cursor = undefined;
   }
-  #beginBlob(cursor: Cursor, bytes: Uint8Array): ReplayStep {
-    const layout = gpuStream.records.find((entry) => entry.name === "encode");
+  #beginBlob(cursor: Cursor, bytes: Uint8Array, opcode: number): ReplayStep {
+    const layout = gpuStream.records.find((entry) => entry.opcode === opcode && entry.enabled);
     if (!layout) throw new Error("Missing encode layout");
     const reader = new WireReader(bytes, 8);
     const fields = reader.fields(layout.fields);
     reader.finish();
     const encoder = wireHandle(fields.encoder);
-    this.handles.get(encoder, "command_encoder");
+    const kind = opcode === 0x1001 ? "command_encoder" : "render_bundle_encoder";
+    this.handles.get(encoder, kind);
     if (this.#finished.get(encoder.id) === encoder.generation)
       throw new GpuProtocolError("Encoder already finished");
     if (!(fields.commands instanceof Uint8Array))
       throw new GpuProtocolError("Missing encode bytes");
-    cursor.blob = { bytes: fields.commands, encoder, offset: 0, pass: undefined, finished: false };
+    const state = { bytes: fields.commands, encoder, offset: 0, finished: false };
+    cursor.blob =
+      kind === "command_encoder" ? { ...state, kind, pass: undefined } : { ...state, kind };
     // Only the envelope is charged here. Nested bytes are charged on each later step.
     return {
       kind: "progress",
@@ -169,7 +185,8 @@ export class GpuReplay {
   }
   #nested(cursor: Cursor, blob: Blob): ReplayStep {
     if (blob.offset === blob.bytes.byteLength) {
-      if (blob.pass) throw new GpuProtocolError("Unclosed command pass");
+      if (blob.kind === "command_encoder" && blob.pass)
+        throw new GpuProtocolError("Unclosed command pass");
       cursor.blob = undefined;
       const length = recordHeader(cursor.record.bytes, cursor.offset).length;
       this.#advance(cursor, length);
@@ -178,27 +195,29 @@ export class GpuReplay {
     if (blob.finished) throw new GpuProtocolError("Commands follow encoder finish");
     const header = recordHeader(blob.bytes, blob.offset);
     const call = decodeCall(blob.bytes.subarray(blob.offset, blob.offset + header.length));
-    const context = blob.pass ? "pass" : "encoder";
-    if (call.layout.context !== context) throw new GpuProtocolError("Invalid encoder/pass nesting");
-    const receiver = blob.pass ?? blob.encoder;
-    this.#execute(call, receiver);
+    const pass = blob.kind === "command_encoder" ? blob.pass : undefined;
+    const context = blob.kind === "render_bundle_encoder" ? "bundle" : pass ? "pass" : "encoder";
+    if (call.layout.context !== context || call.layout.receiver !== (pass?.kind ?? blob.kind))
+      throw new GpuProtocolError("Invalid encoder/pass nesting");
+    this.#execute(call, pass?.handle ?? blob.encoder);
     if (!this.#live) return { kind: "terminal" };
-    if (
-      call.layout.name === "command_encoder.begin_render_pass" ||
-      call.layout.name === "command_encoder.begin_compute_pass"
-    )
-      blob.pass = wireHandle(call.fields.result);
-    if (
-      call.layout.name === "render_pass_encoder.end" ||
-      call.layout.name === "compute_pass_encoder.end"
-    )
-      blob.pass = undefined;
-    if (call.layout.name === "command_encoder.finish") {
-      blob.finished = true;
-      this.#finished.set(blob.encoder.id, blob.encoder.generation);
-    }
+    this.#nestedState(blob, call);
     blob.offset += header.length;
     return { kind: "progress", bytes: header.length, presented: false };
+  }
+  #nestedState(blob: Blob, call: DecodedCall): void {
+    const name = call.layout.name;
+    if (blob.kind === "command_encoder") {
+      if (name === "command_encoder.begin_render_pass")
+        blob.pass = { handle: wireHandle(call.fields.result), kind: "render_pass_encoder" };
+      if (name === "command_encoder.begin_compute_pass")
+        blob.pass = { handle: wireHandle(call.fields.result), kind: "compute_pass_encoder" };
+      if (name === "render_pass_encoder.end" || name === "compute_pass_encoder.end")
+        blob.pass = undefined;
+    }
+    if (name !== "command_encoder.finish" && name !== "render_bundle_encoder.finish") return;
+    blob.finished = true;
+    this.#finished.set(blob.encoder.id, blob.encoder.generation);
   }
   #release(cursor: Cursor, bytes: Uint8Array): ReplayStep {
     const layout = gpuStream.records.find((entry) => entry.name === "release");
@@ -393,6 +412,52 @@ export class GpuReplay {
           ]),
         );
         return;
+      case "compute_pipeline.get_bind_group_layout":
+      case "render_pipeline.get_bind_group_layout":
+        this.#bind(call, result, nativeCall(receiver, "getBindGroupLayout", [fields.group_index]));
+        return;
+      case "render_bundle_encoder.finish":
+        this.#bind(
+          call,
+          result,
+          nativeCall(receiver, "finish", [
+            this.#lower.dictionary("render_bundle_descriptor", fields.descriptor),
+          ]),
+        );
+        return;
+      case "render_pass_encoder.execute_bundles":
+        nativeCall(receiver, "executeBundles", [
+          this.#lower.value("array<object.render_bundle>", fields.bundles ?? null),
+        ]);
+        return;
+      case "command_encoder.resolve_query_set":
+        nativeCall(receiver, "resolveQuerySet", [
+          this.#lower.value("object.query_set", fields.query_set ?? null),
+          fields.first_query,
+          fields.query_count,
+          this.#lower.value("object.buffer", fields.destination ?? null),
+          this.#lower.value("uint64", fields.destination_offset ?? null),
+        ]);
+        return;
+      case "render_pass_encoder.begin_occlusion_query":
+        nativeCall(receiver, "beginOcclusionQuery", [fields.query_index]);
+        return;
+      case "render_pass_encoder.end_occlusion_query":
+        nativeCall(receiver, "endOcclusionQuery", []);
+        return;
+      case "render_bundle_encoder.draw_indirect":
+      case "render_bundle_encoder.draw_indexed_indirect":
+        nativeCall(
+          receiver,
+          call.layout.name === "render_bundle_encoder.draw_indirect"
+            ? "drawIndirect"
+            : "drawIndexedIndirect",
+          [
+            this.#lower.value("object.buffer", fields.indirect_buffer ?? null),
+            this.#lower.value("uint64", fields.indirect_offset ?? null),
+          ],
+        );
+        return;
       case "compute_pass_encoder.set_pipeline":
         nativeCall(receiver, "setPipeline", [
           this.#lower.value("object.compute_pipeline", fields.pipeline ?? null),
@@ -411,24 +476,30 @@ export class GpuReplay {
           this.#lower.value("uint64", fields.indirect_offset ?? null),
         ]);
         return;
+      case "render_bundle_encoder.push_debug_group":
       case "compute_pass_encoder.push_debug_group":
         nativeCall(receiver, "pushDebugGroup", [fields.group_label]);
         return;
+      case "render_bundle_encoder.insert_debug_marker":
       case "compute_pass_encoder.insert_debug_marker":
         nativeCall(receiver, "insertDebugMarker", [fields.marker_label]);
         return;
+      case "render_bundle_encoder.pop_debug_group":
       case "compute_pass_encoder.pop_debug_group":
         nativeCall(receiver, "popDebugGroup", []);
         return;
+      case "render_bundle_encoder.set_label":
       case "compute_pass_encoder.set_label":
         if (!Reflect.set(receiver, "label", fields.label))
           throw new GpuCallError("Native label assignment failed");
         return;
+      case "render_bundle_encoder.set_pipeline":
       case "render_pass_encoder.set_pipeline":
         nativeCall(receiver, "setPipeline", [
           this.#lower.value("object.render_pipeline", fields.pipeline ?? null),
         ]);
         return;
+      case "render_bundle_encoder.draw":
       case "render_pass_encoder.draw":
         nativeCall(receiver, "draw", [
           fields.vertex_count,
@@ -438,6 +509,7 @@ export class GpuReplay {
         ]);
         return;
       case "compute_pass_encoder.set_bind_group":
+      case "render_bundle_encoder.set_bind_group":
       case "render_pass_encoder.set_bind_group":
         nativeCall(receiver, "setBindGroup", [
           fields.group_index,
@@ -447,10 +519,13 @@ export class GpuReplay {
           this.#lower.value("array<uint32>", fields.dynamic_offsets ?? null),
         ]);
         return;
+      case "render_bundle_encoder.set_vertex_buffer":
       case "render_pass_encoder.set_vertex_buffer":
+      case "render_bundle_encoder.set_index_buffer":
       case "render_pass_encoder.set_index_buffer":
         this.#bufferBinding(call, receiver);
         return;
+      case "render_bundle_encoder.draw_indexed":
       case "render_pass_encoder.draw_indexed":
         nativeCall(receiver, "drawIndexed", [
           fields.index_count,
@@ -469,6 +544,7 @@ export class GpuReplay {
           this.#lower.value("array<object.command_buffer>", fields.commands ?? null),
         ]);
         return;
+      case "query_set.destroy":
       case "device.destroy":
         nativeCall(receiver, "destroy", []);
         return;
@@ -488,7 +564,7 @@ export class GpuReplay {
       fields.size === 0xffffffffffffffffn
         ? undefined
         : this.#lower.value("uint64", fields.size ?? null);
-    if (call.layout.name === "render_pass_encoder.set_vertex_buffer") {
+    if (call.layout.name.endsWith(".set_vertex_buffer")) {
       nativeCall(receiver, "setVertexBuffer", [fields.slot, buffer, offset, size]);
       return;
     }
