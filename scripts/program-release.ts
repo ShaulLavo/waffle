@@ -842,13 +842,13 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
     NPM_CONFIG_REGISTRY: registry ?? unreachableRegistry,
   };
   await runCommand(
-    ["bun", "install", "--lockfile-only", "--ignore-scripts"],
+    ["bun", "install", "--linker=hoisted", "--lockfile-only", "--ignore-scripts"],
     consumer,
     env,
     control,
   );
   await runCommand(
-    ["bun", "install", "--frozen-lockfile", "--ignore-scripts"],
+    ["bun", "install", "--linker=hoisted", "--frozen-lockfile", "--ignore-scripts"],
     consumer,
     env,
     control,
