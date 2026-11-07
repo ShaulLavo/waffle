@@ -272,11 +272,12 @@ export async function serviceCommand(
     | "ownership-snapshot"
     | "ownership-release"
     | "malformed-release"
-    | "malformed-late",
+    | "malformed-late"
+    | "admission-coverage",
   detail?: {
     token: string;
     surface: number;
-    mode: "append" | "completions" | "header" | "chunk" | "nesting";
+    mode: "append" | "completions" | "header" | "chunk" | "nesting" | "admission";
   },
 ) {
   const worker = workers.find(
@@ -331,6 +332,7 @@ export function ownershipGuest(slot = 0) {
   return {
     pid: run.pid,
     token: run.authorityToken,
+    surface: surfaces.get(slot)!.id,
     events: run.imports.slice(),
     text: drainTriangle(slot, false).text,
   };

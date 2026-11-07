@@ -569,3 +569,71 @@ export async function ownershipCases(source: Page, url: string, available: boole
   }
   return results;
 }
+
+export function nativeCoverage(value: unknown) {
+  const coverage = record(value);
+  for (const key of [
+    "readerReads",
+    "ringReads",
+    "disposed",
+    "destroyed",
+    "nativeRequests",
+    "presents",
+  ])
+    scalarProof(scalarInteger(coverage[key]) > 0, "missing observer coverage");
+  for (const key of [
+    "draw",
+    "finish",
+    "submit",
+    "transferToImageBitmap",
+    "transferFromImageBitmap",
+  ])
+    scalarProof(scalarInteger(record(coverage.native)[key]) > 0, "missing native observer coverage");
+}
+
+export function progress(service: Record<string, unknown>, peer: unknown) {
+  const fairness = record(service.fairness);
+  scalarProof(fairness.overflow === false, "observer overflow");
+  const presents = entries(fairness.presents).filter((item) => item.connection === peer);
+  const queue = entries(fairness.queue).filter(
+    (item) => item.connection === peer && record(item.settlement).kind === "completed",
+  );
+  scalarProof(presents.length > 0 && queue.length > 0, "missing native peer progress");
+  for (const item of queue)
+    scalarProof(
+      number(record(item.settlement).at) >= number(item.start),
+      "invalid native queue progress",
+    );
+  return {
+    presents: presents.length,
+    queue: queue.length,
+    presentAt: presents.reduce((latest, item) => Math.max(latest, number(item.at)), 0),
+    queueAt: queue.reduce(
+      (latest, item) => Math.max(latest, number(record(item.settlement).at)),
+      0,
+    ),
+  };
+}
+export function peerAdvanced(
+  service: Record<string, unknown>,
+  peer: unknown,
+  previous: ReturnType<typeof progress>,
+  since = 0,
+): boolean {
+  const next = progress(service, peer);
+  return (
+    next.presents > previous.presents &&
+    next.queue > previous.queue &&
+    next.presentAt >= since &&
+    next.queueAt >= since
+  );
+}
+
+function scalarProof(ok: boolean, message: string): asserts ok {
+  if (!ok) throw new Error(`GPU observation ${message}`);
+}
+function scalarInteger(value: unknown): number {
+  const parsed = number(value);
+  scalarProof(Number.isSafeInteger(parsed), "invalid integer observation");
+  return parsed;
+}
