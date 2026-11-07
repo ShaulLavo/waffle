@@ -212,3 +212,39 @@ test("native negative parser requires its exact assertion and protocol terminal"
   result.text += "\nGPU_ASYNC_OK";
   expect(() => requireCompiledAsyncNegative(result, "--corrupt-range")).toThrow("Invalid negative");
 });
+
+for (const text of [
+  "GPU_ASYNC_TERMINAL reason=20\nGPU_ASYNC_FAIL stage=completion-correlation",
+  "GPU_ASYNC_TERMINAL reason=2\nGPU_ASYNC_FAIL stage=completion-correlation-unrelated",
+  "GPU_ASYNC_TERMINAL reason=2\nGPU_ASYNC_FAIL stage=completion-correlation\nGPU_ASYNC_FAIL stage=pause-input",
+]) {
+  test("negative controls reject wrong terminal numbers, assertion suffixes and extra failures", async () => {
+    const { requireCompiledAsyncNegative } = await import("./gpu-async-browser-runner.js");
+    expect(() =>
+      requireCompiledAsyncNegative(
+        { exit: { kind: "exited", code: 1 }, text, errors: [] },
+        "--corrupt-range",
+      ),
+    ).toThrow();
+  });
+}
+
+test("revocation proof requires its stage, repeated exact errno and no unrelated assertion", async () => {
+  const { requireCompiledAsyncRevocation } = await import("./gpu-async-browser-runner.js");
+  const good = {
+    exit: { kind: "exited", code: 0 },
+    errors: [],
+    text: "GPU_ASYNC_PAUSED stage=map-pending\nGPU_ASYNC_REVOKED stage=map-pending errno=-64 repeated=2 append=-64 drained=1\n",
+  };
+  expect(() => requireCompiledAsyncRevocation(good, "map-pending")).not.toThrow();
+  for (const text of [
+    "GPU_ASYNC_FAIL stage=pause-input",
+    good.text.replace("errno=-64", "errno=-48"),
+    good.text.replace("repeated=2", "repeated=1"),
+    good.text.replace("stage=map-pending errno", "stage=work-pending errno"),
+    good.text.replace("drained=1", "drained=65"),
+    good.text + "GPU_ASYNC_FAIL stage=unrelated\n",
+    good.text + "GPU_ASYNC_OK\n",
+  ])
+    expect(() => requireCompiledAsyncRevocation({ ...good, text }, "map-pending")).toThrow();
+});

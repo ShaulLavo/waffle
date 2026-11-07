@@ -1,16 +1,14 @@
-import { createRuntime, type Runtime } from "../../../runtime.js";
-import { BrowserProcessBroker } from "../../../browser/process-broker.js";
+import type { Runtime } from "../../../runtime.js";
+import { createGpuFixtureRuntime, gpuFixturePipes } from "./fixture-runtime.js";
 import type { GraphicsGrant } from "../../../browser/display/protocol.js";
 import { DescriptorTable } from "../../../core/descriptors.js";
-import { RIGHTS_ALL } from "../../../core/rights.js";
-import { PipeController, type PipeEndpoint } from "../../../proc/pipes.js";
+import type { PipeEndpoint } from "../../../proc/pipes.js";
 import {
   WorkerProcessClient,
   createWorkerProcessTransport,
   type WorkerProcessMessage,
 } from "../../../proc/worker-client.js";
 import { createWorkerPipeCodec } from "../../../proc/worker-pipes.js";
-import { bytes, declareSharedMemoryPlatform } from "../../../memory/index.js";
 
 type Run = {
   pid: number;
@@ -44,27 +42,9 @@ export async function openAsync() {
       return super.terminate();
     }
   };
-  runtime = createRuntime({
-    sharedMemory: declareSharedMemoryPlatform({
-      kind: "bounded",
-      budgetBytes: bytes(3 * 1024 ** 3),
-      counts: { fixedBuffer: true, sharedMemory: true, privateMemory: false },
-    }),
-    filesystem: { mode: "memory", workerURL: "/fs-worker.js" },
-    processHost: (options) =>
-      new BrowserProcessBroker({ ...options, onError: (error) => errors.push(String(error)) }),
-  });
-  runtime.registerAdapter("gpu", (context, service) =>
-    service.launchWorker(context, {
-      workerUrl: "/gpu-guest.js",
-      graphics: grant,
-      request: {
-        module: context.module,
-        args: context.request.argv,
-        env: context.request.env,
-        interruptible: context.interruptible,
-      },
-    }),
+  runtime = createGpuFixtureRuntime(
+    () => grant,
+    (error) => errors.push(String(error)),
   );
   const response = await fetch("/async.wasm");
   if (!response.ok) throw new Error("Missing verified C async fixture");
@@ -103,16 +83,7 @@ export async function launchAsync(args: string[] = [], slot = 0) {
   const runtime = readyRuntime(),
     service = await runtime.processes(),
     supervisor = await service.ready();
-  const stdout = new PipeController({ relay: "manual" }),
-    stdin = new PipeController({ relay: "manual" });
-  const input = stdin.retain(rootPid, "write"),
-    output = stdout.retain(rootPid, "read");
-  descriptors.close(0);
-  descriptors.close(1);
-  descriptors.close(2);
-  descriptors.openAt(0, stdin.retain(rootPid, "read"), RIGHTS_ALL, RIGHTS_ALL);
-  descriptors.openAt(1, stdout.retain(rootPid, "write"), RIGHTS_ALL, RIGHTS_ALL);
-  descriptors.openAt(2, stdout.retain(rootPid, "write"), RIGHTS_ALL, RIGHTS_ALL);
+  const { input, output } = gpuFixturePipes(descriptors, rootPid);
   grant = (await runtime.display()).grant({ surfaces: [], gpu: true });
   const pid = client.spawn(rootPid, {
     executable: "/bin/async",

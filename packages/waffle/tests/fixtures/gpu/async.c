@@ -81,7 +81,7 @@ static uint32_t connection, token, loss_device;
 static uint8_t command_bytes[8192], payload_bytes[16384], reply_bytes[16384];
 static WaffleGpuWriter writer = {command_bytes, sizeof(command_bytes), 0, 0};
 static size_t reply_length, payload_length;
-static int suppress_writes, corrupt_ranges, reuse_payload, malformed_map;
+static int suppress_writes, corrupt_ranges, reuse_payload, malformed_map, expect_revoke;
 static const char *pause_stage = "";
 static AsyncShadow source = {.id = 20, .device = DEVICE, .size = 64},
                    readback = {.id = 21, .device = DEVICE, .size = 64},
@@ -99,10 +99,30 @@ static void append(void) {
   check(runtime_gpu_append(connection, command_bytes, (uint32_t)writer.offset), "append");
   writer.offset = 0;
 }
+static void assert_revoked(const char *stage) {
+  uint8_t replies[16384]; uint32_t written = 0, drained = 0;
+  int32_t status = 0;
+  while (status == 0 && drained <= 64) {
+    written = 0;
+    status = runtime_gpu_completions(connection, replies, sizeof(replies), 0, &written);
+    if (status != 0) break;
+    require(written > 0 && written <= sizeof(replies), "revocation-drain");
+    drained++;
+  }
+  require(status == -64, "revocation-errno");
+  require(runtime_gpu_completions(connection, replies, sizeof(replies), 0, &written) == -64,
+          "revocation-stable-errno");
+  async_unmap(&writer, source.id);
+  require(!writer.error && runtime_gpu_append(connection, command_bytes, (uint32_t)writer.offset) == -64,
+          "revocation-append-errno");
+  printf("GPU_ASYNC_REVOKED stage=%s errno=-64 repeated=2 append=-64 drained=%u\n", stage, drained);
+  exit(0);
+}
 static void pause_at(const char *stage) {
   if (strcmp(stage, pause_stage)) return;
   printf("GPU_ASYNC_PAUSED stage=%s\n", stage);
   char byte; require(read(STDIN_FILENO, &byte, 1) == 1, "pause-input");
+  if (expect_revoke) assert_revoked(stage);
 }
 static void loss(const uint8_t *p, size_t length) {
   AsyncReader r = {p, length, WAFFLE_GPU_REPLY_DEVICE_LOST_DEVICE_OFFSET, 0};
@@ -422,6 +442,7 @@ static void device_loss(void) {
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0); local_checks();
   for (int i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--expect-revoke")) expect_revoke = 1;
     if (!strcmp(argv[i], "--local")) return 0;
     if (!strcmp(argv[i], "--vectors")) { vectors(); return 0; }
     if (!strcmp(argv[i], "--suppress-writes")) suppress_writes = 1;

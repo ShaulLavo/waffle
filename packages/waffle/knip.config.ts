@@ -13,7 +13,11 @@ export default {
   includeEntryExports: true,
   // The schema fixture compiles the generated C header with the host toolchain.
   ignoreBinaries: ["cc"],
-  ignoreIssues: publicIssues,
+  ignoreIssues: {
+    ...publicIssues,
+    // The CLI runner also exports its entry for aggregate consumers.
+    "tests/gpu-async-browser-runner.ts": ["exports"],
+  },
   tags: ["-@browserEntry", "-@compileFixture", "-@public"],
   workspaces: {
     ".": {
