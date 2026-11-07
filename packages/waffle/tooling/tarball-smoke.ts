@@ -184,7 +184,7 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
 import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
@@ -215,6 +215,9 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
     peer.generation = 4;
     // @ts-expect-error no raw handle selection
     peer.selectWindow("caller");
+    // @ts-expect-error caller IDs cannot construct a peer capability
+    const forged: HostPeer = { peer: "caller", generation: 0 };
+    void forged;
     const database: Promise<string> = host.allocateDatabase("consumer");
     await database;
     await host.sleep(1);

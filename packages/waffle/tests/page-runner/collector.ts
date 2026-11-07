@@ -31,7 +31,7 @@ export type HostPhase =
   | { kind: "teardown"; enteredAt: number }
   | { kind: "terminal" };
 type PageTask = { status: "pending" } | { status: "pass" } | { status: "fail"; error: string };
-export type DocumentOwner =
+type DocumentOwner =
   | { kind: "coordinator" }
   | {
       kind: "peer";
@@ -40,24 +40,30 @@ export type DocumentOwner =
       generation: number;
       admission: PeerTransition;
     };
-export type PhysicalDisposition =
-  | "live"
-  | "transitioning"
-  | "superseded"
-  | "closed"
-  | "unconfirmed";
+type PhysicalDisposition = "live" | "transitioning" | "superseded" | "closed" | "unconfirmed";
+type PeerTarget = {
+  readonly peer: string;
+  readonly generation: number;
+  readonly token: string;
+  readonly url: string;
+};
 export type PeerTransition = {
+  readonly run: string;
   id: string;
   caseId: string;
   source: DocumentState;
-  action: "create" | "close" | "reload";
   deadline: number;
   progress:
     | { kind: "accepted"; watermark: number | null }
     | { kind: "executing"; watermark: number }
-    | { kind: "completed"; handle: string; successor: DocumentState | null }
+    | {
+        kind: "completed";
+        handle: string;
+        successor: DocumentState | null;
+        remainingHandles: readonly string[] | null;
+      }
     | { kind: "failed"; detail: string };
-};
+} & ({ action: "create" | "reload"; target: PeerTarget } | { action: "close"; target: null });
 export type DocumentState = {
   owner: DocumentOwner;
   physical: PhysicalDisposition;
@@ -100,7 +106,18 @@ export class Collector {
     for (const id of required) this.outcomes[id] = { status: "pending" };
   }
   fail(category: string, detail: string, state = this.active): void {
-    this.failures.push({ group: state?.group.id ?? "run", category, detail });
+    const document =
+      state?.owner.kind === "peer"
+        ? {
+            document: {
+              doc: state.doc,
+              peer: state.owner.peer,
+              generation: state.owner.generation,
+              handle: state.handle,
+            },
+          }
+        : {};
+    this.failures.push({ group: state?.group.id ?? "run", category, detail, ...document });
   }
   expect(group: Group, token: string, expectedURL: string, handle: string): DocumentState {
     const state: DocumentState = {
@@ -140,7 +157,14 @@ export class Collector {
     if (
       this.active !== coordinator ||
       admission.progress.kind !== "executing" ||
+      admission.run !== this.run ||
       admission.caseId !== coordinator.group.caseIds[0] ||
+      !admission.target ||
+      admission.target.peer !== peer ||
+      admission.target.generation !== generation ||
+      admission.target.token !== token ||
+      admission.target.url !== expectedURL ||
+      (admission.action === "reload" && handle !== admission.source.handle) ||
       this.documents.some(
         (state) =>
           state.token === token ||
@@ -172,20 +196,43 @@ export class Collector {
       source.cutoff !== null ||
       source.physical !== "live" ||
       this.active?.host?.kind !== "driving" ||
+      (action === "create" && source !== this.active) ||
       (action !== "create" && source.owner.kind !== "peer")
     )
       this.violation("Invalid transition source", source);
+    const destination =
+      action === "close"
+        ? { action, target: null }
+        : { action, target: this.peerTarget(source, action) };
     const transition: PeerTransition = {
       id: crypto.randomUUID(),
+      run: this.run,
       caseId: source.group.caseIds[0] ?? "",
       source,
-      action,
+      ...destination,
       deadline,
       progress: { kind: "accepted", watermark: null },
     };
     if (action !== "create") source.physical = "transitioning";
     this.transitions.push(transition);
     return transition;
+  }
+  private peerTarget(source: DocumentState, action: "create" | "reload"): PeerTarget {
+    const token = crypto.randomUUID();
+    const url = new URL(source.expectedURL);
+    if (action === "create") url.searchParams.set("token", token);
+    if (action === "reload" && source.owner.kind !== "peer")
+      this.violation("Reload has no predecessor", source);
+    return {
+      peer:
+        action === "reload" && source.owner.kind === "peer"
+          ? source.owner.peer
+          : crypto.randomUUID(),
+      generation:
+        action === "reload" && source.owner.kind === "peer" ? source.owner.generation + 1 : 0,
+      token,
+      url: url.href,
+    };
   }
   executeTransition(transition: PeerTransition, watermark: number): void {
     if (
@@ -204,10 +251,32 @@ export class Collector {
     transition: PeerTransition,
     handle: string,
     successor: DocumentState | null,
+    remainingHandles: readonly string[] | null,
   ): void {
     if (transition.progress.kind !== "executing" || this.now() >= transition.deadline)
       this.violation("Transition already consumed or expired", transition.source);
-    transition.progress = { kind: "completed", handle, successor };
+    if (transition.action === "close") {
+      if (
+        successor !== null ||
+        handle !== transition.source.handle ||
+        !remainingHandles ||
+        remainingHandles.includes(handle)
+      )
+        this.violation("Close lacks exact handle disappearance", transition.source);
+    } else if (
+      !successor?.doc ||
+      !successor.ready ||
+      successor.handle !== handle ||
+      successor.token !== transition.target.token ||
+      successor.expectedURL !== transition.target.url ||
+      successor.owner.kind !== "peer" ||
+      successor.owner.peer !== transition.target.peer ||
+      successor.owner.generation !== transition.target.generation ||
+      (transition.action === "reload" &&
+        (handle !== transition.source.handle || successor.doc === transition.source.doc))
+    )
+      this.violation("Wrong successor transition observation", transition.source);
+    transition.progress = { kind: "completed", handle, successor, remainingHandles };
     if (transition.action !== "create")
       transition.source.physical = transition.action === "close" ? "closed" : "superseded";
   }
@@ -501,11 +570,17 @@ export class Collector {
   retire(state: DocumentState, watermark: number): void {
     if (!state.ready || watermark !== state.messages.length - 1 || state !== this.active)
       this.violation("Retirement without final acknowledgement", state);
-    state.cutoff = watermark;
     const contained = this.documents
       .filter((item) => item.owner.kind === "peer" && item.owner.coordinator === state)
       .every((item) => ["closed", "superseded"].includes(item.physical));
-    if (!contained) this.violation("Case peers not physically contained", state);
+    if (
+      !contained ||
+      this.transitions.some(
+        (item) => item.caseId === state.group.caseIds[0] && item.progress.kind !== "completed",
+      )
+    )
+      this.violation("Case peers not physically contained", state);
+    state.cutoff = watermark;
     for (const id of state.group.caseIds) {
       const outcome = this.outcomes[id];
       if (outcome?.status === "pass") outcome.provisional = false;

@@ -7,7 +7,7 @@ const mode = PEER_CONTROL;
 const post = globalThis.fetch.bind(globalThis);
 let held = false;
 if (["peer-ack-held", "peer-ack-lost", "peer-inactive-heartbeat"].includes(mode)) {
-  globalThis.fetch = async (input, init) => {
+  Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
     const peer = window.__suiteConfiguration.role === "peer";
     if (mode === "peer-inactive-heartbeat" && peer && record(body) && body.kind === "heartbeat")
@@ -20,7 +20,7 @@ if (["peer-ack-held", "peer-ack-lost", "peer-inactive-heartbeat"].includes(mode)
     }
     if (mode === "peer-ack-lost") throw new Error("CONTROL_ACK_LOST");
     return response;
-  };
+  });
 }
 startPage({
   list: async () => ["peer"],

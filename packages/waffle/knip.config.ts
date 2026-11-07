@@ -74,6 +74,7 @@ export default {
         "tests/fixtures/owner-freeze-{owner,guest}.ts",
         "tests/fixtures/persistent-authority-observer.ts",
         "tests/fixtures/publication-resident-{authority,guest}.ts",
+        "tests/storage-lock-page.ts",
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
         "tests/storage-open-worker.ts",

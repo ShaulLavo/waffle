@@ -33,7 +33,20 @@ PersistentBackend.open = async (...args: Parameters<typeof PersistentBackend.ope
 await import("../browser/fs-worker.js");
 const receive = scope.onmessage;
 if (!receive) throw new Error("Production filesystem worker did not install a message handler");
+declare const RETAINED_WORKER_CONTROL: string;
 scope.onmessage = (event) => {
+  if (typeof event.data?.probeRetainedWorker === "string" && event.ports.length === 1) {
+    const mode = typeof RETAINED_WORKER_CONTROL === "undefined" ? "" : RETAINED_WORKER_CONTROL;
+    const port = event.ports[0];
+    if (!port || mode === "retained-worker-no-handler") return;
+    port.postMessage({
+      nonce: mode === "retained-worker-replay" ? "prior-nonce" : event.data.probeRetainedWorker,
+      pathname: location.pathname,
+      matches: location.pathname === "/recovery-fs-worker.js",
+    });
+    port.close();
+    return;
+  }
   if (event.data?.probeReleaseRecovery === true) {
     release();
     scope.postMessage({ type: "probe-recovery-released" });

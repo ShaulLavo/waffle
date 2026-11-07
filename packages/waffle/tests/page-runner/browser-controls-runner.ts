@@ -1,3 +1,4 @@
+import { retainedWorkerControl, retainedWorkerControlModes } from "./retained-worker-controls.js";
 import { peerControl, peerControlModes } from "./peer-controls.js";
 import { buildFrameworkBootstrap } from "../../build.js";
 import { frameworkDOMControl, frameworkControlModes } from "./framework-dom-controls.js";
@@ -313,6 +314,10 @@ async function engineControls(
       () => consumerControl(engine, mode, root),
       results,
     );
+  for (const mode of retainedWorkerControlModes.filter(
+    (mode) => !selected || mode.includes(selected),
+  ))
+    await checkControl(engine, mode, () => retainedWorkerControl(engine, mode, root), results);
   for (const mode of peerControlModes.filter((mode) => !selected || mode.includes(selected)))
     await checkControl(engine, mode, () => peerControl(engine, mode, root), results);
   for (const mode of hostControlModes.filter(

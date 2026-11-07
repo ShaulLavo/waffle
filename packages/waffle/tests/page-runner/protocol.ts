@@ -35,7 +35,12 @@ export type Outcome =
   | { status: "pass"; provisional: boolean }
   | { status: "fail"; detail: string }
   | { status: "host"; detail: string };
-export type Failure = { group: string; category: string; detail: string };
+export type Failure = {
+  group: string;
+  category: string;
+  detail: string;
+  document?: { doc: string | null; peer: string; generation: number; handle: string };
+};
 export type Budgets = {
   hello: number;
   heartbeat: number;

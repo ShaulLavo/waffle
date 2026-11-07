@@ -158,7 +158,18 @@ export type SuiteResult = {
     generation: number | null;
     physical: DocumentState["physical"];
   }[];
-  transitions: { id: string; action: string; source: string | null; progress: string }[];
+  transitions: {
+    id: string;
+    action: string;
+    source: string | null;
+    sourceHandle: string;
+    deadline: number;
+    progress: string;
+    detail: string | null;
+    target: { peer: string; generation: number; url: string } | null;
+    successor: string | null;
+    remainingHandles: readonly string[] | null;
+  }[];
   ledger: Collector["ledger"];
   storageRemaining: Collector["remaining"];
   cleanup: DriverCleanup & { server: CleanupStep; storage: CleanupStep; scratch: CleanupStep };
@@ -590,7 +601,23 @@ export async function runPageSuite<R>(
       id: transition.id,
       action: transition.action,
       source: transition.source.doc,
+      sourceHandle: transition.source.handle,
+      deadline: transition.deadline,
       progress: transition.progress.kind,
+      detail: transition.progress.kind === "failed" ? transition.progress.detail : null,
+      target: transition.target
+        ? {
+            peer: transition.target.peer,
+            generation: transition.target.generation,
+            url: transition.target.url,
+          }
+        : null,
+      successor:
+        transition.progress.kind === "completed"
+          ? (transition.progress.successor?.doc ?? null)
+          : null,
+      remainingHandles:
+        transition.progress.kind === "completed" ? transition.progress.remainingHandles : null,
     })),
     ledger: collector.ledger,
     storageRemaining: collector.remaining,

@@ -39,6 +39,7 @@ export class HostDrive {
   private uncertain = false;
   private delivered = false;
   private closed = false;
+  private livenessProbe: Promise<void> | undefined;
   private readonly peerSignals = new Map<DocumentState, AbortController>();
   private readonly closes = new Map<DocumentState, Promise<void>>();
   private bodyFailure: { message: string; stack: string | null; details: unknown } | null = null;
@@ -195,8 +196,8 @@ try {
         return value.kind === "void" ? undefined : value.value;
       } catch (error) {
         if (!(error instanceof ExpressionFailure) && error !== this.body.signal.reason)
-          this.fault(error);
-        else if (this.driver.uncertain) this.fault(error);
+          this.fault(error, state);
+        else if (this.driver.uncertain) this.fault(error, state);
         throw error;
       }
     });
@@ -218,9 +219,9 @@ try {
     )
       throw new Error("Peer generation revoked");
   }
-  private fault(error: unknown): void {
+  private fault(error: unknown, state = this.state): void {
     if (!this.uncertain && !this.closed && this.state.cutoff === null)
-      this.collector.fail("host-command", String(error), this.state);
+      this.collector.fail("host-command", String(error), state);
     this.uncertain ||=
       !(error instanceof ObservationFailure) &&
       !(this.signal.aborted && error === this.signal.reason && !this.driver.uncertain);
@@ -341,12 +342,13 @@ try {
     this.signal.addEventListener("abort", stop, { once: true });
     const monitor = setInterval(() => {
       const overdue = this.collector.deadline(this.budgets, this.started);
-      if (overdue)
-        this.collector.fail(
-          overdue,
-          "Host case infrastructure deadline",
-          this.collector.overdueDocument(this.budgets) ?? this.state,
-        );
+      if (overdue && !this.livenessProbe) {
+        const state = this.collector.overdueDocument(this.budgets) ?? this.state;
+        this.collector.fail(overdue, "Host case infrastructure deadline", state);
+        this.livenessProbe = this.probe(state).then((category) => {
+          if (category !== "responsive") this.collector.fail(category, overdue, state);
+        });
+      }
       if (overdue || this.collector.failures.length > priorFailures)
         this.body.abort(new Error(overdue ?? "Sticky host failure"));
       if (performance.now() >= this.deadline)
@@ -399,6 +401,7 @@ try {
       this.signal.removeEventListener("abort", stop);
       this.revoke();
     }
+    await this.livenessProbe;
     await this.closeRemainingPeers();
     this.collector.results[caseId] = { body: verdict, teardown: { status: "not-entered" } };
     if (this.uncontainedPageWork())
@@ -446,6 +449,35 @@ try {
       },
     });
   }
+  private probe(state: DocumentState): Promise<string> {
+    const signal = AbortSignal.timeout(4000);
+    return this.enqueue(async () => {
+      try {
+        if (this.closed || this.driver.uncertain) return "driver-lost";
+        if (!(await this.driver.handles(signal)).includes(state.handle)) return "page-closed";
+        if (this.closed) return "driver-lost";
+        await this.driver.selectWindow(state.handle, signal);
+        if (this.closed) return "driver-lost";
+        if (
+          (await this.driver.handle(signal)) !== state.handle ||
+          (await this.driver.url(signal)) !== state.expectedURL
+        )
+          return "page-reloaded";
+        if (this.closed) return "driver-lost";
+        const value = await this.driver.script("return window.__pageRunner || null", signal);
+        return record(value) && value.doc === state.doc ? "responsive" : "page-reloaded";
+      } catch {
+        return "driver-lost";
+      }
+    });
+  }
+  private checkTransition(transition: PeerTransition, signal: AbortSignal, cleanup = false): void {
+    signal.throwIfAborted();
+    if (performance.now() >= transition.deadline)
+      throw new Error("Peer transition operation timed out");
+    this.infrastructure(cleanup);
+    if (!cleanup) this.checkBody();
+  }
   private async barrier(transition: PeerTransition, cleanup: boolean): Promise<number> {
     const state = transition.source;
     const signal = cleanup
@@ -481,7 +513,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough !
   private async transitionCommand<T>(
     transition: PeerTransition,
     cleanup: boolean,
-    action: (signal: AbortSignal) => Promise<T>,
+    action: (signal: AbortSignal, before: readonly string[]) => Promise<T>,
   ): Promise<T> {
     const watermark = await this.barrier(transition, cleanup);
     const until = transition.deadline;
@@ -502,6 +534,12 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough !
           throw new Error("Transition source handle changed");
         this.infrastructure(cleanup);
         if (!cleanup) this.checkBody();
+        const before = await this.driver.handles(signal);
+        this.infrastructure(cleanup);
+        if (!cleanup) this.checkBody();
+        this.checkTarget(transition.source, until, true);
+        if (!before.includes(transition.source.handle) || !before.includes(this.state.handle))
+          throw new Error("Transition source or coordinator handle missing");
         const verified = await this.driver.script(
           this.guard(
             `const r=window.__pageRunner, t=h.transition;
@@ -520,11 +558,11 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
           throw new Error("Transition source barrier changed");
         this.collector.executeTransition(transition, watermark);
         try {
-          return await action(signal);
+          return await action(signal, before);
         } catch (error) {
           transition.progress = { kind: "failed", detail: String(error) };
           transition.source.physical = "unconfirmed";
-          this.fault(error);
+          this.fault(error, transition.source);
           throw error;
         }
       }),
@@ -557,7 +595,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       if (ready === true) break;
       await this.sleep(10);
     }
-    this.collector.completeTransition(transition, state.handle, state);
+    this.collector.completeTransition(transition, state.handle, state, null);
     return this.peerCapability(state);
   }
   private async openPeer(): Promise<HostPeer> {
@@ -567,15 +605,15 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       "create",
       this.operationDeadline(),
     );
-    const peer = crypto.randomUUID(),
-      token = crypto.randomUUID();
-    const url = new URL(this.state.expectedURL);
-    url.searchParams.set("token", token);
-    const state = await this.transitionCommand(transition, false, async (signal) => {
-      const before = await this.driver.handles(signal);
+    if (transition.action !== "create") throw new Error("Wrong peer creation action");
+    const { peer, token } = transition.target;
+    const url = new URL(transition.target.url);
+    const state = await this.transitionCommand(transition, false, async (signal, before) => {
       this.checkBody();
+      this.checkTransition(transition, signal);
       const handle = await this.driver.createWindow(signal);
       this.checkBody();
+      this.checkTransition(transition, signal);
       const handles = await this.driver.handles(signal);
       this.checkBody();
       if (
@@ -593,9 +631,11 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
         handle,
         transition,
       );
+      this.checkTransition(transition, signal);
       this.configure(state);
       await this.driver.selectWindow(handle, signal);
       this.checkBody();
+      this.checkTransition(transition, signal);
       await this.driver.navigate(url.href, signal);
       this.checkBody();
       return state;
@@ -607,20 +647,22 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
   private async reloadPeer(state: DocumentState): Promise<HostPeer> {
     this.checkBody();
     if (state.owner.kind !== "peer") throw new Error("Not a peer");
-    const owner = state.owner;
     const transition = this.collector.prepareTransition(state, "reload", this.operationDeadline());
+    if (transition.action !== "reload") throw new Error("Wrong reload action");
     this.peerSignals.get(state)?.abort(new Error("Peer generation superseded"));
     const successor = await this.transitionCommand(transition, false, async (signal) => {
       const successor = this.collector.expectPeer(
         this.state,
-        owner.peer,
-        owner.generation + 1,
-        crypto.randomUUID(),
-        state.expectedURL,
+        transition.target.peer,
+        transition.target.generation,
+        transition.target.token,
+        transition.target.url,
         state.handle,
         transition,
       );
+      this.checkTransition(transition, signal);
       this.configure(successor);
+      this.checkTransition(transition, signal);
       await this.driver.reloadWindow(signal);
       this.checkBody();
       if ((await this.driver.handle(signal)) !== state.handle)
@@ -640,18 +682,19 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       : this.operationDeadline();
     const transition = this.collector.prepareTransition(state, "close", until);
     this.peerSignals.get(state)?.abort(new Error("Peer closed"));
-    const closing = this.transitionCommand(transition, cleanup, async (signal) => {
-      const before = await this.driver.handles(signal);
+    const closing = this.transitionCommand(transition, cleanup, async (signal, before) => {
       this.infrastructure(cleanup);
       if (!cleanup) this.checkBody();
+      this.checkTransition(transition, signal, cleanup);
       await this.driver.closeWindow(signal);
+      this.checkTransition(transition, signal, cleanup);
       const remaining = await this.driver.handles(signal);
       if (
         remaining.includes(state.handle) ||
         before.some((handle) => handle !== state.handle && !remaining.includes(handle))
       )
         throw new Error("Exact peer close not confirmed");
-      this.collector.completeTransition(transition, state.handle, null);
+      this.collector.completeTransition(transition, state.handle, null, remaining);
     });
     this.closes.set(state, closing);
     return closing;

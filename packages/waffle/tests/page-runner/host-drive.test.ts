@@ -883,3 +883,56 @@ test("aborted allocation wait retains its actual command and callback until they
       await release.promise;
     }
   }));
+
+test("late window selection cannot dispatch a retained user script after revocation", () =>
+  fixture(async (root) => {
+    const driver = new HostDriver();
+    const original = driver.selectWindow.bind(driver);
+    driver.selectWindow = async (handle) => {
+      if (driver.phase === "driving") await Bun.sleep(130);
+      await original(handle);
+    };
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        await host.script("window.effects.push(17);");
+        return true;
+      }),
+      () => driver,
+      options(root),
+    );
+    expect(driver.effects).toEqual([]);
+    expect(result.exit).toBe(1);
+    expect(result.cleanup.session.status).toBe("confirmed");
+  }));
+test("several individually bounded operations can exceed the operation budget in total", () =>
+  fixture(async (root) => {
+    const driver = new HostDriver();
+    const a = adapter(async (host) => {
+      const started = performance.now();
+      for (let index = 0; index < 12; index++) await host.task("await Promise.resolve();");
+      expect(performance.now() - started).toBeGreaterThan(100);
+      return true;
+    });
+    a.budgets = () => ({ ...budgets, case: 1000, operation: 100 });
+    const result = await runPageSuite(a, () => driver, options(root));
+    expect(result.exit).toBe(0);
+    expect(driver.verdicts).toEqual([{ status: "pass", result: true }]);
+  }));
+test("one overdue operation fails within a still-valid body deadline", () =>
+  fixture(async (root) => {
+    const driver = new HostDriver();
+    const original = driver.selectWindow.bind(driver);
+    driver.selectWindow = async (handle) => {
+      if (driver.phase === "driving") await Bun.sleep(80);
+      await original(handle);
+    };
+    const a = adapter(async (host) => {
+      await host.script("window.effects.push(19);");
+      return true;
+    });
+    a.budgets = () => ({ ...budgets, case: 1000, operation: 30 });
+    const result = await runPageSuite(a, () => driver, options(root));
+    expect(result.exit).not.toBe(0);
+    expect(driver.effects).toEqual([]);
+    expect(result.outcomes.host?.status).not.toBe("pass");
+  }));
