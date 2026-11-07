@@ -539,3 +539,33 @@ A functional ownership pass is not hardware latency qualification. Remaining G3 
 other combined load/ownership cases, malformed-stream isolation, admission pressure, grant and
 regrant ordering, explicit surface/runtime disposal, and whole-service failure. Physical iPhone
 and broader hardware G0.3/G4 acceptance remain open.
+
+## G3 malformed-connection checkpoint, November 7, 2026
+
+Status: Approved. The existing compiled runner adds header, chunk-offset and nested-opcode
+parser-failure cases. Each uses the unchanged C producer, one already-presenting green peer,
+and the shared test-only ownership observer. Selected bytes are changed only in the victim's
+private reader destination before the original production parser consumes them. No production,
+C, schema, generator, workflow, topology, workload, or latency-bound change is required.
+
+A native positive control establishes observer coverage before selection. Paired snapshots
+bracket each screenshot at live, ready, held, retired and late-release checkpoints. Acceptance
+requires fresh service-realm and request correlation, all victim authority intervals, stable
+peer and victim identities, new native presents and completed queue observations, correct
+pixels, protocol reason 2, physical guest stop, victim resource retirement and return to the
+peer-only service credit. Shared-control debt remains a separate assertion. An actively
+presenting peer may hold its next frame at either snapshot; total frame accounting must match
+that observed peer state rather than assume the peer is always between frames.
+
+Header and chunk failures reach the compiled append's exact protocol errno. Nested parsing can
+close after that append commits; its compiled control observes the closed completion instead.
+Acceptance checks each case's exact C failure stage and status alongside the independently
+correlated production parser terminal, not an arbitrary nonzero exit. Late original reader and
+replay probes cannot consume ring data, publish new replies, or revive ownership.
+
+These software observations retain the unchanged 8 ms and 100 ms target classifications and
+make no hardware qualification claim. The completed exact-build Mac Chromium and Firefox
+attempts returned null worker adapters in their default headless contexts, so their compiled
+GPU arms were not measured. Safari's measured indivisible-call exception remains unchanged.
+Admission pressure, grant/regrant ordering, explicit surface/runtime disposal, whole-service
+failure, physical iPhone acceptance and full G0.3/G4 qualification remain open.

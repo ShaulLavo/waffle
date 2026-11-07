@@ -11,6 +11,7 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { malformedCases } from "./gpu-malformed-browser.js";
 import { ownershipCases } from "./gpu-ownership-browser.js";
 import { fairnessCases } from "./gpu-fairness-browser.js";
 import { invoke, pixels, assertTrianglePixels, assertRetired } from "./gpu-browser-shared.js";
@@ -420,6 +421,8 @@ async function main() {
       await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const malformed = await malformedCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "malformed", malformed }));
       const ownership = await ownershipCases(page, url, available);
       console.log(JSON.stringify({ engine, stage: "ownership", ownership }));
       const fairness = await fairnessCases(page, url, available);
