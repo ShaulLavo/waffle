@@ -485,3 +485,92 @@ test("the original held completion token cannot be rewritten at the disposal bou
     }
   }, "held completion identity changed at disposal");
 });
+
+function auditServices(value: ReturnType<typeof fixture>) {
+  return [value.disposal.stopped, value.disposal.after].flatMap((state) =>
+    state.audits.map((audit) => audit.service),
+  );
+}
+function changeHeldToken(service: ReturnType<typeof observedService>, token: number) {
+  service.heldCompletion!.token = token;
+  if (service.lateCallback) service.lateCallback.token = token;
+}
+
+test("the first held completion token stays fixed through every later held observation", () => {
+  rejects((value) => {
+    changeHeldToken(value.phases[1]!.service, 99);
+    for (const service of auditServices(value)) changeHeldToken(service, 99);
+  }, "held completion identity changed during held observation");
+});
+
+function rejectFirstTerminalStart(kind: string) {
+  rejects((value) => {
+    for (const service of auditServices(value)) {
+      service.fairness.queue.push({ connection: 3, start: 115, settlement: { kind, at: 116 } });
+      Reflect.set(service.fairness.native, "3:submit", { count: 1, totalMs: 0, maxMs: 0 });
+    }
+  }, "native work started after owner retirement");
+}
+for (const kind of ["pending", "rejected"])
+  test(`new ${kind} work cannot enter the first terminal audit baseline`, () => {
+    rejectFirstTerminalStart(kind);
+  });
+
+test("the positive control stays immutable from its earliest terminal observation", () => {
+  rejects((value) => {
+    const services = value.phases
+      .flatMap((phase) => [phase.before, phase.service])
+      .concat([value.auditControl.service], auditServices(value));
+    for (const service of services) service.owners[0]!.readerReads++;
+  }, "late retired owner work");
+});
+
+test("the positive audit cannot hide new work from the already retired control", () => {
+  rejects((value) => {
+    const services = [value.auditControl.service].concat(
+      [value.phases[1]!.before, value.phases[1]!.service],
+      auditServices(value),
+    );
+    for (const service of services)
+      Reflect.set(service.fairness.native, "1:draw", { count: 1, totalMs: 0, maxMs: 0 });
+  }, "late retired replay or native work");
+});
+
+test("pre-retirement work first observed at shutdown can settle without becoming new work", () => {
+  const value = fixture();
+  for (const state of [value.disposal.stopped, value.disposal.after]) {
+    state.audits[0]!.service.fairness.queue.push({
+      connection: 3,
+      start: 105,
+      settlement: { kind: "pending", at: 0 },
+    });
+    state.audits[1]!.service.fairness.queue.push({
+      connection: 3,
+      start: 105,
+      settlement: { kind: "rejected", at: 130 },
+    });
+  }
+  expect(validateDisposalResult(value).hardwareQualified).toBe(false);
+});
+
+test("first terminal audit timestamps cannot grandfather post-retirement replay or presents", () => {
+  rejects((value) => {
+    for (const service of auditServices(value))
+      service.fairness.slices.push({ connection: 3, start: 115, end: 116 });
+  }, "native work started after owner retirement");
+  rejects((value) => {
+    for (const service of auditServices(value))
+      service.fairness.presents.push({ connection: 3, at: 115 });
+  }, "native work started after owner retirement");
+  rejects((value) => {
+    for (const service of auditServices(value))
+      service.fairness.blobs.push({
+        connection: 3,
+        commandRingBytes: 4194304,
+        bytes: 4800184,
+        draws: 1,
+        start: 115,
+        end: 116,
+      });
+  }, "native work started after owner retirement");
+});

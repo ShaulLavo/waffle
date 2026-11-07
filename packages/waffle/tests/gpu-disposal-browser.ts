@@ -326,6 +326,33 @@ function exitProof(
     "held import waiter did not return terminal error",
   );
 }
+function retiredHistory(
+  service: Record<string, unknown>,
+  history: Map<unknown, Record<string, unknown>>,
+) {
+  for (const [id, before] of history) noRetiredWork(before, service, id);
+  for (const native of entries(service.owners)) {
+    if (native.state !== "terminal") continue;
+    retiredStarts(service, native);
+    history.set(native.id, service);
+  }
+}
+function retiredStarts(service: Record<string, unknown>, native: Record<string, unknown>) {
+  const retiredAt = number(lifecycle(service, native).at),
+    fairness = record(service.fairness);
+  for (const [field, stamp] of Object.entries({
+    queue: "start",
+    slices: "start",
+    blobs: "start",
+    presents: "at",
+  })) {
+    const owned = entries(fairness[field]).filter((work) => work.connection === native.id);
+    requireProof(
+      owned.every((work) => number(work[stamp]) <= retiredAt),
+      "native work started after owner retirement",
+    );
+  }
+}
 /** Validates observations, never infers native zeroes from a terminated service. */
 export function validateDisposalResult(value: unknown) {
   const result = record(value),
@@ -380,14 +407,13 @@ export function validateDisposalResult(value: unknown) {
       armedAudit.nativeHeld === false,
     "shared disposal audit positive control missing",
   );
-  cumulative(record(phases[0]!.service), armedAudit);
-  cumulative(armedAudit, record(phases[1]!.before));
   activeImport(result.blockedGuest, victimGuest);
   let previous: Record<string, unknown> | undefined;
   let serial = 0,
     at = 0,
     bracket = { presents: 0, queue: 0 };
   const responses = new Set<unknown>();
+  const retiredOwners = new Map<unknown, Record<string, unknown>>([[control.id, controlService]]);
   const observe = (service: Record<string, unknown>) => {
     requireProof(
       service.realm === first.realm &&
@@ -404,6 +430,7 @@ export function validateDisposalResult(value: unknown) {
       "uncorrelated service observation",
     );
     if (previous) cumulative(previous, service);
+    retiredHistory(service, retiredOwners);
     previous = service;
     serial = number(service.serial);
     at = number(service.at);
@@ -416,7 +443,14 @@ export function validateDisposalResult(value: unknown) {
       livePhase(service, index, peer, control, victim);
     }
     bracket = bracketProof(phase, peer.id, bracket);
+    if (index === 0) observe(armedAudit);
   }
+  const heldCompletion = record(record(phases[1]!.before).heldCompletion);
+  equal(
+    heldCompletion,
+    held.heldCompletion,
+    "held completion identity changed during held observation",
+  );
   const audits = terminalDisposal(result, guests, natives);
   requireProof(
     audits.length === 2 && audits[0]!.name === "retired" && audits[1]!.name === "late",
@@ -432,7 +466,7 @@ export function validateDisposalResult(value: unknown) {
       lifecycle(service, native);
     }
   }
-  lateResult(audits, victim, natives, record(held.heldCompletion));
+  lateResult(audits, victim, natives, heldCompletion);
   return timing(held, peer.id);
 }
 
