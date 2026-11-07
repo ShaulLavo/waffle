@@ -11,6 +11,7 @@ import {
 } from "./protocol.js";
 import type { Collector, DocumentState, PeerTransition } from "./collector.js";
 
+type ScriptMode = "host" | "body" | "peer-admission";
 class ExpressionFailure extends Error {}
 class ObservationFailure extends Error {}
 function compact(value: unknown): unknown {
@@ -74,7 +75,7 @@ export class HostDrive {
       script: (source, signal) =>
         this.execute(
           source,
-          false,
+          "host",
           signal,
           undefined,
           this.signal.aborted && signal !== this.signal,
@@ -118,7 +119,13 @@ export class HostDrive {
     this.body.signal.throwIfAborted();
     if (!this.active) throw new Error("Host case capability revoked");
   }
-  private guard(source: string, user: boolean, recovery: boolean, state = this.state): string {
+  private guard(source: string, mode: ScriptMode, recovery: boolean, state = this.state): string {
+    const phases =
+      mode === "body"
+        ? ["driving"]
+        : mode === "peer-admission"
+          ? ["admitting", "driving"]
+          : ["admitting", "ready", "driving", "teardown", "terminal"];
     const identity = JSON.stringify({
       run: this.collector.run,
       token: state.token,
@@ -135,7 +142,7 @@ if (!c || !r || !h || c.run !== identity.run || c.token !== identity.token ||
  c.caseId !== identity.caseId || c.role !== identity.role || c.execution !== 'host' ||
  (identity.role === 'peer' && (c.peer !== identity.peer || c.generation !== identity.generation)) ||
  r.doc !== identity.doc || r.retired || location.href !== identity.url ||
- !${JSON.stringify(user ? ["driving"] : ["admitting", "ready", "driving", "teardown", "terminal"])}.includes(h.phase))
+ !${JSON.stringify(phases)}.includes(h.phase))
  return {kind:'binding-error'};
 if (!${JSON.stringify(recovery)} && r.failure) return {kind:'reporter-error', error:String(r.failure)};
 try {
@@ -146,12 +153,12 @@ try {
   }
   private execute(
     source: string,
-    user: boolean,
+    mode: ScriptMode,
     signal = this.signal,
     beforeDispatch?: () => void,
     recovery = false,
     state = this.state,
-    until = user
+    until = mode !== "host"
       ? this.operationDeadline()
       : Math.min(
           performance.now() + (this.budgets.operation ?? 15_000),
@@ -159,6 +166,7 @@ try {
         ),
     transitioning = false,
   ): Promise<unknown> {
+    const user = mode !== "host";
     const operationSignal = AbortSignal.any([
       signal,
       AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
@@ -179,7 +187,7 @@ try {
         beforeDispatch?.();
         if (user) this.checkBody();
         const value = await this.driver.script(
-          this.guard(source, user, recovery, state),
+          this.guard(source, mode, recovery, state),
           operationSignal,
         );
         this.infrastructure(recovery);
@@ -231,7 +239,7 @@ try {
     for (;;) {
       const accepted = await this.execute(
         "if (h.phase === 'admitting') return false; if (h.phase !== 'ready') throw new Error('Host receiver admission repeated'); h.phase = 'driving'; return true;",
-        false,
+        "host",
       );
       if (accepted === true) {
         this.infrastructure();
@@ -260,7 +268,7 @@ try {
     await abortable(
       this.execute(
         command(operation),
-        true,
+        "body",
         this.signal,
         () => this.collector.registerTask(state, operation),
         false,
@@ -370,7 +378,7 @@ try {
           Math.max(0, Math.min(this.deadline, this.started + this.budgets.run) - performance.now()),
         script: (source) => {
           this.checkBody();
-          return abortable(this.execute(source, true), this.body.signal);
+          return abortable(this.execute(source, "body"), this.body.signal);
         },
         task: (source) =>
           this.task(
@@ -426,7 +434,7 @@ try {
       script: (source: string) => {
         valid();
         return abortable(
-          this.execute(source, true, this.signal, undefined, false, state),
+          this.execute(source, "body", this.signal, undefined, false, state),
           this.body.signal,
         );
       },
@@ -505,7 +513,7 @@ try {
       : this.signal;
     await this.execute(
       `h.prepareTransition(${JSON.stringify(transition.id)});`,
-      !cleanup,
+      cleanup ? "host" : "body",
       signal,
       undefined,
       cleanup,
@@ -518,7 +526,7 @@ try {
         `const t=h.transition, r=window.__pageRunner;
 return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough !== null &&
  r.pending === 0 && !r.failure && t.acknowledgedThrough === r.ackedThrough ? r.ackedThrough : null;`,
-        !cleanup,
+        cleanup ? "host" : "body",
         signal,
         undefined,
         cleanup,
@@ -565,7 +573,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough !
             `const r=window.__pageRunner, t=h.transition;
 return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough === ${watermark} &&
  r.ackedThrough === ${watermark} && r.pending === 0 && !r.failure;`,
-            false,
+            "host",
             cleanup,
             transition.source,
           ),
@@ -603,9 +611,10 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       await this.sleep(10);
     }
     for (;;) {
+      // Receipt precedes the page's ACK; only this probe may observe admission.
       const ready = await this.execute(
         "return h.phase === 'driving' && window.__pageRunner.pending === 0;",
-        true,
+        "peer-admission",
         this.signal,
         undefined,
         false,
@@ -661,7 +670,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       return state;
     });
     const capability = await this.admitPeer(state, transition);
-    await this.execute("h.transition = null;", true);
+    await this.execute("h.transition = null;", "body");
     return capability;
   }
   private async reloadPeer(state: DocumentState): Promise<HostPeer> {
@@ -739,7 +748,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     while (this.state.host?.kind !== "terminal") {
       const observed = await this.execute(
         "return {phase:h.phase, failure:window.__pageRunner.failure};",
-        false,
+        "host",
         signal,
         undefined,
         true,
@@ -757,7 +766,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     }
     await this.execute(
       `h.verdict(${JSON.stringify(verdict)});`,
-      false,
+      "host",
       AbortSignal.timeout(5000),
       () => {
         this.delivered = true;

@@ -55,7 +55,7 @@ class PeerDocument {
         String(init.body).includes('"kind":"peer-ready"')
       ) {
         driver.peerReadyReceived.resolve();
-        await driver.release.promise;
+        await driver.peerReadyRelease.promise;
       }
       if (String(init.body).includes('"kind":"transition-ready"')) {
         driver.prepared.resolve();
@@ -144,6 +144,7 @@ export class PeerDriverFixture extends FakeDriver {
   holdAcknowledgement = false;
   holdPeerReadyAcknowledgement = false;
   readonly peerReadyReceived = Promise.withResolvers<void>();
+  readonly peerReadyRelease = Promise.withResolvers<void>();
   readonly peerAdmissionObserved = Promise.withResolvers<{ phase: string; pending: number }>();
   private readonly peerStarts: Promise<void>[] = [];
   selectionGate: Promise<void> | undefined;
@@ -226,8 +227,8 @@ export class PeerDriverFixture extends FakeDriver {
     return value;
   }
   override async stop() {
-    this.release.resolve();
     for (const page of this.windows.values()) page?.stop();
+    this.peerReadyRelease.resolve();
     await Promise.all(this.peerStarts);
     return super.stop();
   }
