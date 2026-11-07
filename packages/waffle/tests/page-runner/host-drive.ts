@@ -193,15 +193,22 @@ try {
       await Bun.sleep(25);
     }
   }
-  private async task(source: string): Promise<void> {
+  private async allocateDatabase(prefix: string): Promise<string> {
+    this.checkBody();
+    if (!prefix || prefix.length > 900) throw new Error("Invalid database prefix");
+    const name = `${prefix}-${this.collector.run}`;
+    await this.task(
+      (operation) => `h.allocateDatabase(${JSON.stringify(operation)}, ${JSON.stringify(name)});`,
+    );
+    this.checkBody();
+    return name;
+  }
+  private async task(command: (operation: string) => string): Promise<void> {
     this.checkBody();
     const operation = crypto.randomUUID();
     await abortable(
-      this.execute(
-        `h.task(${JSON.stringify(operation)}, ${JSON.stringify(source)});`,
-        true,
-        this.signal,
-        () => this.collector.registerTask(this.state, operation),
+      this.execute(command(operation), true, this.signal, () =>
+        this.collector.registerTask(this.state, operation),
       ),
       this.body.signal,
     );
@@ -271,7 +278,11 @@ try {
           this.checkBody();
           return abortable(this.execute(source, true), this.body.signal);
         },
-        task: (source) => this.task(source),
+        task: (source) =>
+          this.task(
+            (operation) => `h.task(${JSON.stringify(operation)}, ${JSON.stringify(source)});`,
+          ),
+        allocateDatabase: (prefix) => this.allocateDatabase(prefix),
         sleep: (ms) => this.sleep(ms),
       };
       this.checkBody();

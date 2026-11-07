@@ -14,6 +14,7 @@ type Receiver = {
   phase: "admitting" | "ready" | "driving" | "teardown" | "terminal";
   verdict(value: unknown): void;
   task(operation: string, source: string): void;
+  allocateDatabase(operation: string, name: string): void;
 };
 declare global {
   interface Window {
@@ -54,19 +55,27 @@ function receiver(
       resolve(accepted);
     },
     task(operation, source) {
-      if (state.phase !== "driving" || running || operations.has(operation))
-        throw new Error("Duplicate or out-of-phase task");
-      operations.add(operation);
-      running = true;
-      const task = dispatchTask(reporter, source);
-      void task
-        .then(
-          () => reportTask(operation, "pass"),
-          (error: unknown) => reportTask(operation, "fail", formatHostError(error)),
-        )
-        .catch(() => {});
+      startTask(operation, () => dispatchTask(reporter, source));
+    },
+    allocateDatabase(operation, name) {
+      startTask(operation, () =>
+        reporter.send({ kind: "allocation", entry: { kind: "indexeddb", name } }),
+      );
     },
   };
+  function startTask(operation: string, start: () => Promise<unknown>): void {
+    if (state.phase !== "driving" || running || operations.has(operation))
+      throw new Error("Duplicate or out-of-phase task");
+    operations.add(operation);
+    running = true;
+    const task = start();
+    void task
+      .then(
+        () => reportTask(operation, "pass"),
+        (error: unknown) => reportTask(operation, "fail", formatHostError(error)),
+      )
+      .catch(() => {});
+  }
   function reportTask(operation: string, status: "pass" | "fail", error?: string): Promise<void> {
     running = false;
     return reporter.send({ kind: "task-end", caseId, operation, status, error });

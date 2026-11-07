@@ -5,6 +5,7 @@ export type HostCase = {
   remainingMs(): number;
   script(source: string): Promise<unknown>;
   task(source: string): Promise<void>;
+  allocateDatabase(prefix: string): Promise<string>;
   sleep(ms: number): Promise<void>;
 };
 export type Body =

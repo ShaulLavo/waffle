@@ -611,7 +611,6 @@ test("interruption before verdict dispatch attempts the first verdict once under
     expect(result.cleanup.scratch.status).toBe("confirmed");
   }));
 
-
 test("allocation returns the exact policy-owned name after actual dispatch response", () =>
   fixture(async (root) => {
     const d = new HostDriver();
@@ -634,10 +633,14 @@ for (const prefix of ["", "x".repeat(901)]) {
   test(`allocation rejects invalid prefix length ${prefix.length} before dispatch`, () =>
     fixture(async (root) => {
       const d = new HostDriver();
-      const result = await runPageSuite(adapter(async (host) => {
-        await expect(host.allocateDatabase(prefix)).rejects.toThrow("Invalid database prefix");
-        return true;
-      }), () => d, options(root));
+      const result = await runPageSuite(
+        adapter(async (host) => {
+          await expect(host.allocateDatabase(prefix)).rejects.toThrow("Invalid database prefix");
+          return true;
+        }),
+        () => d,
+        options(root),
+      );
       expect(result.exit).toBe(0);
       expect(d.allocations).toEqual([]);
       expect(result.ledger).toEqual([]);
@@ -647,10 +650,14 @@ test("allocation retained by a callback rejects after capability revocation", ()
   fixture(async (root) => {
     const d = new HostDriver();
     let saved: HostCase | undefined;
-    const result = await runPageSuite(adapter(async (host) => {
-      saved = host;
-      return true;
-    }), () => d, options(root));
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        saved = host;
+        return true;
+      }),
+      () => d,
+      options(root),
+    );
     if (!saved) throw new Error("Missing actual host capability");
     await expect(saved.allocateDatabase("host-storage")).rejects.toThrow();
     expect(result.exit).toBe(0);

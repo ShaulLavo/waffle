@@ -204,6 +204,8 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
     const remaining = host.remainingMs();
     await host.script("window.fixture = 1;");
     await host.task("await Promise.resolve();");
+    const database: Promise<string> = host.allocateDatabase("consumer");
+    await database;
     await host.sleep(1);
     return { remaining };
   },
