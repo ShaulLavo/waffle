@@ -236,11 +236,13 @@ export function pressure() {
   return pressureBurst();
 }
 /** @browserEntry */
-export async function closeIntegration() {
+export async function closeIntegration(captureRetirement = false) {
+  let snapshot: unknown;
   try {
     clearInterval(peerPump);
     peerPump = undefined;
     await runtime?.dispose();
+    if (captureRetirement) snapshot = runtime!.sharedMemory.snapshot();
   } finally {
     for (const run of runs.values()) {
       run.input.close();
@@ -256,7 +258,7 @@ export async function closeIntegration() {
     runtime = undefined;
   }
   if (workers.some((worker) => !worker.stopped)) throw new Error("Integration worker leaked");
-  return { workers: workers.map(({ url, stopped }) => ({ url, stopped })), errors };
+  return { workers: workers.map(({ url, stopped }) => ({ url, stopped })), errors, snapshot };
 }
 
 /** @browserEntry */

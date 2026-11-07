@@ -588,7 +588,10 @@ export function nativeCoverage(value: unknown) {
     "transferToImageBitmap",
     "transferFromImageBitmap",
   ])
-    scalarProof(scalarInteger(record(coverage.native)[key]) > 0, "missing native observer coverage");
+    scalarProof(
+      scalarInteger(record(coverage.native)[key]) > 0,
+      "missing native observer coverage",
+    );
 }
 
 export function progress(service: Record<string, unknown>, peer: unknown) {

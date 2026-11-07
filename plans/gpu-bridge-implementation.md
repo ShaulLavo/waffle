@@ -569,3 +569,44 @@ attempts returned null worker adapters in their default headless contexts, so th
 GPU arms were not measured. Safari's measured indivisible-call exception remains unchanged.
 Admission pressure, grant/regrant ordering, explicit surface/runtime disposal, whole-service
 failure, physical iPhone acceptance and full G0.3/G4 qualification remain open.
+
+## G3 global-admission checkpoint, November 7, 2026
+
+Status: Approved. The existing compiled browser runner adds the shared service's global
+admission saturation, refusal and recovery proof. The unchanged C triangle producer supplies
+all eight admitted guests, the refused ninth guest and the recovery guest. One original green
+peer presents continuously throughout. This tests the existing global connection policy, not
+physical GPU or device-count limits. No production defect was established or fixed.
+
+A normal compiled positive control first exercises native observation and retirement in the
+same service realm. Seven holder guests then present beside the peer. Correlated snapshots
+require all eight original grant, surface, connection and native-device identities. The next
+compiled guest must return `-48` from its actual open import, print exactly
+`GPU_FAIL stage=open status=-48`, and observe service resource reason 3 in its original control,
+command ring, reply ring and payload arena. Its open must leave eight service connections,
+unchanged heap credit and no additional scheduler owner or native device request. Its grant
+acknowledgement and physical process stop are checked separately.
+
+Each screenshot is bracketed by fresh service snapshots and new native presents and completed
+queue work from the same peer. Queue work must start and complete inside the bracket. An
+actively presenting peer can hold its next acquired frame, so frame totals follow observed
+ownership rather than assume the peer is always between frames. Two holders close normally,
+then a new compiled guest opens and presents without replacing the peer or the remaining
+holders. Later native turns cannot revive retired owners or change their ring publication,
+read counters or native work counts. All guests close and every service connection, device,
+presenter, frame and heap credit returns to zero. Routine teardown also checks every owned
+worker stopped, no live shared admission remains, and the ledger retains its separate
+conservative backing debt. This is teardown coverage, not the later active-disposal case.
+
+Permanent invalid-result controls reject missing positive coverage, wrong cap, refusal stage,
+errno or terminal reason, unrelated C failure, changed cohort identities, missing presenters,
+stale snapshots, missing new in-bracket work, stale queue work, unretired resources or credits,
+late work and incorrect backing debt. The original kill, malformed, async and default fixture
+controls remain in place. The complete compiled Chromium path uses the once-built normal
+producer artifact after its existing source and byte verification, never a second C build.
+
+Software measurements retain all original 8 ms slice and 100 ms peer-gap classifications and
+`hardwareQualified: false`. Early runs included both met and not-met peer gaps; failed validator
+attempts and their raw observations remain recorded rather than replaced by later samples.
+Same-grant open quotas, payload pressure, surface and regrant behavior, active runtime disposal,
+service failure, physical iPhone acceptance and full G0.3/G4 qualification remain later work.

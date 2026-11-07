@@ -302,7 +302,10 @@ function attemptSnapshot(attempt: OpenAttempt) {
     owner: admitted?.id ?? null,
     status: Atomics.load(control, 0),
     reason: Atomics.load(control, 1),
-    arenaTerminal: Atomics.load(new Int32Array(message.open.arena, gpuPayloadLayout.terminalOffset, 1), 0),
+    arenaTerminal: Atomics.load(
+      new Int32Array(message.open.arena, gpuPayloadLayout.terminalOffset, 1),
+      0,
+    ),
     commands: ringSnapshot(message.open.commands),
     replies: ringSnapshot(message.open.replies),
     retiredAck: attempt.retiredAck,
@@ -387,7 +390,10 @@ function command(data: Command) {
   try {
     if (data.test === "admission-coverage") {
       const observed = coverage();
-      host.postMessage({ testId: data.id, gpuSnapshot: { ...snapshot(data.id), coverage: observed } });
+      host.postMessage({
+        testId: data.id,
+        gpuSnapshot: { ...snapshot(data.id), coverage: observed },
+      });
       return;
     }
     if (data.test === "ownership-observe") {
@@ -429,17 +435,20 @@ host.onmessage = ({ data }) => {
     return;
   }
   receiving = data.type === "open" ? data : undefined;
-  const before = service.snapshot();
-  const attempt: OpenAttempt | undefined = receiving ? {
-    message: receiving,
-    beforeConnections: before.connections,
-    beforeHeap: before.heapBytes,
-    beforeNativeRequests: nativeRequests,
-    afterConnections: 0,
-    afterHeap: 0,
-    afterNativeRequests: 0,
-    retiredAck: false,
-  } : undefined;
+  const before = receiving ? service.snapshot() : undefined;
+  const attempt: OpenAttempt | undefined =
+    receiving && before
+      ? {
+          message: receiving,
+          beforeConnections: before.connections,
+          beforeHeap: before.heapBytes,
+          beforeNativeRequests: nativeRequests,
+          afterConnections: 0,
+          afterHeap: 0,
+          afterNativeRequests: 0,
+          retiredAck: false,
+        }
+      : undefined;
   if (attempt) attempts.push(attempt);
   try {
     service.receive(data);
