@@ -418,6 +418,27 @@ const gpuEnums = {
     occlusion: 1,
     timestamp: 2,
   },
+  "bitflag.map_mode": {
+    none: 0,
+    read: 1,
+    write: 2,
+  },
+  "enum.WGSL_language_feature_name": {
+    readonly_and_readwrite_storage_textures: 1,
+    packed4x8_integer_dot_product: 2,
+    unrestricted_pointer_parameters: 3,
+    pointer_composite_access: 4,
+    uniform_buffer_standard_layout: 5,
+    subgroup_id: 6,
+    texture_and_sampler_let: 7,
+    subgroup_uniformity: 8,
+    texture_formats_tier1: 9,
+    linear_indexing: 10,
+    immediate_address_space: 11,
+    buffer_view: 12,
+    swizzle_assignment: 13,
+    fragment_depth: 14,
+  },
   "enum.request_adapter_status": {
     success: 1,
     callback_cancelled: 2,
@@ -459,6 +480,32 @@ const gpuEnums = {
     callback_cancelled: 3,
     failed_creation: 4,
   },
+  "enum.map_async_status": {
+    success: 1,
+    callback_cancelled: 2,
+    error: 3,
+    aborted: 4,
+  },
+  "enum.compilation_info_request_status": {
+    success: 1,
+    callback_cancelled: 2,
+  },
+  "enum.queue_work_done_status": {
+    success: 1,
+    callback_cancelled: 2,
+    error: 3,
+  },
+  "enum.adapter_type": {
+    discrete_GPU: 1,
+    integrated_GPU: 2,
+    CPU: 3,
+    unknown: 4,
+  },
+  "enum.compilation_message_type": {
+    error: 1,
+    warning: 2,
+    info: 3,
+  },
   "enum.s_type": {
     shader_source_SPIRV: 1,
     shader_source_WGSL: 2,
@@ -485,38 +532,50 @@ const gpuFields0: Field[] = [
   { name: "first_instance", type: "uint32", optional: false },
 ];
 const gpuFields1: Field[] = [
+  { name: "token", type: "token", optional: false },
+  { name: "receiver", type: "object.device", optional: false },
+];
+const gpuFields2: Field[] = [
   { name: "group_index", type: "uint32", optional: false },
   { name: "group", type: "object.bind_group", optional: true },
   { name: "dynamic_offsets", type: "array<uint32>", optional: false },
 ];
-const gpuFields2: Field[] = [
+const gpuFields3: Field[] = [
   { name: "slot", type: "uint32", optional: false },
   { name: "buffer", type: "object.buffer", optional: true },
   { name: "offset", type: "uint64", optional: false },
   { name: "size", type: "uint64", optional: false },
 ];
-const gpuFields3: Field[] = [
+const gpuFields4: Field[] = [
   { name: "buffer", type: "object.buffer", optional: false },
   { name: "format", type: "enum.index_format", optional: false },
   { name: "offset", type: "uint64", optional: false },
   { name: "size", type: "uint64", optional: false },
 ];
-const gpuFields4: Field[] = [
+const gpuFields5: Field[] = [
   { name: "index_count", type: "uint32", optional: false },
   { name: "instance_count", type: "uint32", optional: false },
   { name: "first_index", type: "uint32", optional: false },
   { name: "base_vertex", type: "int32", optional: false },
   { name: "first_instance", type: "uint32", optional: false },
 ];
-const gpuFields5: Field[] = [
+const gpuFields6: Field[] = [
   { name: "offset", type: "uint32", optional: false },
   { name: "data", type: "bytes", optional: false },
 ];
-const gpuFields6: Field[] = [
+const gpuFields7: Field[] = [
   { name: "indirect_buffer", type: "object.buffer", optional: false },
   { name: "indirect_offset", type: "uint64", optional: false },
 ];
-const gpuFields7: Field[] = [
+const gpuFields8: Field[] = [
+  { name: "token", type: "token", optional: false },
+  { name: "receiver", type: "object.adapter", optional: false },
+];
+const gpuFields9: Field[] = [
+  { name: "returned", type: "enum.status", optional: false },
+  { name: "limits", type: "struct.limits", optional: false },
+];
+const gpuFields10: Field[] = [
   { name: "payload", type: "handle", optional: false },
   { name: "length", type: "uint32", optional: false },
 ];
@@ -1150,18 +1209,7 @@ export const gpuStream = {
         member: "popErrorScope",
       },
       omitted: ["callback_info"],
-      fields: [
-        {
-          name: "token",
-          type: "token",
-          optional: false,
-        },
-        {
-          name: "receiver",
-          type: "object.device",
-          optional: false,
-        },
-      ],
+      fields: gpuFields1,
     },
     {
       opcode: 21,
@@ -1516,7 +1564,7 @@ export const gpuStream = {
         member: "setBindGroup",
       },
       omitted: [],
-      fields: gpuFields1,
+      fields: gpuFields2,
     },
     {
       opcode: 31,
@@ -1534,7 +1582,7 @@ export const gpuStream = {
         member: "setVertexBuffer",
       },
       omitted: [],
-      fields: gpuFields2,
+      fields: gpuFields3,
     },
     {
       opcode: 32,
@@ -1552,7 +1600,7 @@ export const gpuStream = {
         member: "setIndexBuffer",
       },
       omitted: [],
-      fields: gpuFields3,
+      fields: gpuFields4,
     },
     {
       opcode: 33,
@@ -1570,7 +1618,7 @@ export const gpuStream = {
         member: "drawIndexed",
       },
       omitted: [],
-      fields: gpuFields4,
+      fields: gpuFields5,
     },
     {
       opcode: 34,
@@ -1747,7 +1795,7 @@ export const gpuStream = {
         member: "setBindGroup",
       },
       omitted: [],
-      fields: gpuFields1,
+      fields: gpuFields2,
     },
     {
       opcode: 41,
@@ -1769,7 +1817,7 @@ export const gpuStream = {
         },
       },
       omitted: [],
-      fields: gpuFields5,
+      fields: gpuFields6,
     },
     {
       opcode: 42,
@@ -1821,7 +1869,7 @@ export const gpuStream = {
         member: "dispatchWorkgroupsIndirect",
       },
       omitted: [],
-      fields: gpuFields6,
+      fields: gpuFields7,
     },
     {
       opcode: 44,
@@ -1942,7 +1990,7 @@ export const gpuStream = {
         member: "setBindGroup",
       },
       omitted: [],
-      fields: gpuFields1,
+      fields: gpuFields2,
     },
     {
       opcode: 49,
@@ -1964,7 +2012,7 @@ export const gpuStream = {
         },
       },
       omitted: [],
-      fields: gpuFields5,
+      fields: gpuFields6,
     },
     {
       opcode: 50,
@@ -2000,7 +2048,7 @@ export const gpuStream = {
         member: "drawIndexed",
       },
       omitted: [],
-      fields: gpuFields4,
+      fields: gpuFields5,
     },
     {
       opcode: 52,
@@ -2018,7 +2066,7 @@ export const gpuStream = {
         member: "drawIndirect",
       },
       omitted: [],
-      fields: gpuFields6,
+      fields: gpuFields7,
     },
     {
       opcode: 53,
@@ -2036,7 +2084,7 @@ export const gpuStream = {
         member: "drawIndexedIndirect",
       },
       omitted: [],
-      fields: gpuFields6,
+      fields: gpuFields7,
     },
     {
       opcode: 54,
@@ -2120,7 +2168,7 @@ export const gpuStream = {
         member: "setVertexBuffer",
       },
       omitted: [],
-      fields: gpuFields2,
+      fields: gpuFields3,
     },
     {
       opcode: 58,
@@ -2138,7 +2186,7 @@ export const gpuStream = {
         member: "setIndexBuffer",
       },
       omitted: [],
-      fields: gpuFields3,
+      fields: gpuFields4,
     },
     {
       opcode: 59,
@@ -2705,7 +2753,7 @@ export const gpuStream = {
         },
       },
       omitted: [],
-      fields: gpuFields5,
+      fields: gpuFields6,
     },
     {
       opcode: 78,
@@ -2723,7 +2771,7 @@ export const gpuStream = {
         member: "drawIndirect",
       },
       omitted: [],
-      fields: gpuFields6,
+      fields: gpuFields7,
     },
     {
       opcode: 79,
@@ -2741,7 +2789,7 @@ export const gpuStream = {
         member: "drawIndexedIndirect",
       },
       omitted: [],
-      fields: gpuFields6,
+      fields: gpuFields7,
     },
     {
       opcode: 80,
@@ -3504,6 +3552,501 @@ export const gpuStream = {
           optional: false,
         },
       ],
+    },
+    {
+      opcode: 107,
+      name: "adapter.get_info",
+      receiver: "adapter",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "enum.status",
+      },
+      cReturn: "enum.status",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "info",
+      },
+      omitted: [],
+      fields: gpuFields8,
+      output: {
+        adapter: "info",
+        payload: "query_107",
+        fields: [
+          {
+            name: "returned",
+            type: "enum.status",
+            optional: false,
+          },
+          {
+            name: "info",
+            type: "struct.adapter_info",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 108,
+      name: "adapter.get_features",
+      receiver: "adapter",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "features",
+      },
+      omitted: [],
+      fields: gpuFields8,
+      output: {
+        adapter: "features",
+        payload: "query_108",
+        fields: [
+          {
+            name: "features",
+            type: "struct.supported_features",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 109,
+      name: "adapter.has_feature",
+      receiver: "adapter",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "bool",
+      },
+      cReturn: "bool",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "has-feature",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.adapter",
+          optional: false,
+        },
+        {
+          name: "feature",
+          type: "enum.feature_name",
+          optional: false,
+        },
+      ],
+      output: {
+        adapter: "has-feature",
+        payload: "query_109",
+        fields: [
+          {
+            name: "returned",
+            type: "bool",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 110,
+      name: "adapter.get_limits",
+      receiver: "adapter",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "enum.status",
+      },
+      cReturn: "enum.status",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "limits",
+      },
+      omitted: [],
+      fields: gpuFields8,
+      output: {
+        adapter: "limits",
+        payload: "query_110",
+        fields: gpuFields9,
+      },
+    },
+    {
+      opcode: 111,
+      name: "device.get_features",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "features",
+      },
+      omitted: [],
+      fields: gpuFields1,
+      output: {
+        adapter: "features",
+        payload: "query_111",
+        fields: [
+          {
+            name: "features",
+            type: "struct.supported_features",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 112,
+      name: "device.has_feature",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "bool",
+      },
+      cReturn: "bool",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "has-feature",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "feature",
+          type: "enum.feature_name",
+          optional: false,
+        },
+      ],
+      output: {
+        adapter: "has-feature",
+        payload: "query_112",
+        fields: [
+          {
+            name: "returned",
+            type: "bool",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 113,
+      name: "device.get_limits",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "enum.status",
+      },
+      cReturn: "enum.status",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "limits",
+      },
+      omitted: [],
+      fields: gpuFields1,
+      output: {
+        adapter: "limits",
+        payload: "query_113",
+        fields: gpuFields9,
+      },
+    },
+    {
+      opcode: 114,
+      name: "device.get_adapter_info",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "enum.status",
+      },
+      cReturn: "enum.status",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "info",
+      },
+      omitted: [],
+      fields: gpuFields1,
+      output: {
+        adapter: "info",
+        payload: "query_114",
+        fields: [
+          {
+            name: "returned",
+            type: "enum.status",
+            optional: false,
+          },
+          {
+            name: "adapter_info",
+            type: "struct.adapter_info",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 115,
+      name: "buffer.map_async",
+      receiver: "buffer",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "struct.future",
+      callback: {
+        type: "callback.buffer_map",
+        future: "token-as-future-id",
+        delivery: "guest-local-completion-pump",
+        omitted: ["next_in_chain", "mode", "callback", "userdata1", "userdata2"],
+      },
+      token: "map-result",
+      lowering: {
+        kind: "async",
+        member: "mapAsync",
+      },
+      omitted: ["callback_info"],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "mode",
+          type: "bitflag.map_mode",
+          optional: false,
+        },
+        {
+          name: "offset",
+          type: "usize",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "usize",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 116,
+      name: "buffer.unmap",
+      receiver: "buffer",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "unmap",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.buffer",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 117,
+      name: "shader_module.get_compilation_info",
+      receiver: "shader_module",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "struct.future",
+      callback: {
+        type: "callback.compilation_info",
+        future: "token-as-future-id",
+        delivery: "guest-local-completion-pump",
+        omitted: ["next_in_chain", "mode", "callback", "userdata1", "userdata2"],
+      },
+      token: "compilation-result",
+      lowering: {
+        kind: "async",
+        member: "getCompilationInfo",
+      },
+      omitted: ["callback_info"],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.shader_module",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 118,
+      name: "queue.on_submitted_work_done",
+      receiver: "queue",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "struct.future",
+      callback: {
+        type: "callback.queue_work_done",
+        future: "token-as-future-id",
+        delivery: "guest-local-completion-pump",
+        omitted: ["next_in_chain", "mode", "callback", "userdata1", "userdata2"],
+      },
+      token: "queue-work-result",
+      lowering: {
+        kind: "async",
+        member: "onSubmittedWorkDone",
+      },
+      omitted: ["callback_info"],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.queue",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 119,
+      name: "instance.get_WGSL_language_features",
+      receiver: "instance",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "wgsl-features",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.instance",
+          optional: false,
+        },
+      ],
+      output: {
+        adapter: "wgsl-features",
+        payload: "query_119",
+        fields: [
+          {
+            name: "features",
+            type: "struct.supported_WGSL_language_features",
+            optional: false,
+          },
+        ],
+      },
+    },
+    {
+      opcode: 120,
+      name: "instance.has_WGSL_language_feature",
+      receiver: "instance",
+      context: "top",
+      result: {
+        kind: "scalar",
+        type: "bool",
+      },
+      cReturn: "bool",
+      callback: null,
+      token: "query-result",
+      lowering: {
+        kind: "query",
+        adapter: "has-wgsl-feature",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "token",
+          type: "token",
+          optional: false,
+        },
+        {
+          name: "receiver",
+          type: "object.instance",
+          optional: false,
+        },
+        {
+          name: "feature",
+          type: "enum.WGSL_language_feature_name",
+          optional: false,
+        },
+      ],
+      output: {
+        adapter: "has-wgsl-feature",
+        payload: "query_120",
+        fields: [
+          {
+            name: "returned",
+            type: "bool",
+            optional: false,
+          },
+        ],
+      },
     },
   ],
   structs: {
@@ -5089,6 +5632,238 @@ export const gpuStream = {
         },
       ],
     },
+    write_range: {
+      fields: [
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "data",
+          type: "bytes",
+          optional: false,
+        },
+      ],
+    },
+    query_107: {
+      fields: [
+        {
+          name: "returned",
+          type: "enum.status",
+          optional: false,
+        },
+        {
+          name: "info",
+          type: "struct.adapter_info",
+          optional: false,
+        },
+      ],
+    },
+    adapter_info: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.adapter_info",
+          optional: false,
+        },
+        {
+          name: "vendor",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "architecture",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "device",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "description",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "backend_type",
+          type: "enum.backend_type",
+          optional: false,
+        },
+        {
+          name: "adapter_type",
+          type: "enum.adapter_type",
+          optional: false,
+        },
+        {
+          name: "vendor_ID",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "device_ID",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "subgroup_min_size",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "subgroup_max_size",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    query_108: {
+      fields: [
+        {
+          name: "features",
+          type: "struct.supported_features",
+          optional: false,
+        },
+      ],
+    },
+    supported_features: {
+      fields: [
+        {
+          name: "features",
+          type: "array<enum.feature_name>",
+          optional: false,
+        },
+      ],
+    },
+    query_109: {
+      fields: [
+        {
+          name: "returned",
+          type: "bool",
+          optional: false,
+        },
+      ],
+    },
+    query_110: {
+      fields: gpuFields9,
+    },
+    query_111: {
+      fields: [
+        {
+          name: "features",
+          type: "struct.supported_features",
+          optional: false,
+        },
+      ],
+    },
+    query_112: {
+      fields: [
+        {
+          name: "returned",
+          type: "bool",
+          optional: false,
+        },
+      ],
+    },
+    query_113: {
+      fields: gpuFields9,
+    },
+    query_114: {
+      fields: [
+        {
+          name: "returned",
+          type: "enum.status",
+          optional: false,
+        },
+        {
+          name: "adapter_info",
+          type: "struct.adapter_info",
+          optional: false,
+        },
+      ],
+    },
+    query_119: {
+      fields: [
+        {
+          name: "features",
+          type: "struct.supported_WGSL_language_features",
+          optional: false,
+        },
+      ],
+    },
+    supported_WGSL_language_features: {
+      fields: [
+        {
+          name: "features",
+          type: "array<enum.WGSL_language_feature_name>",
+          optional: false,
+        },
+      ],
+    },
+    query_120: {
+      fields: [
+        {
+          name: "returned",
+          type: "bool",
+          optional: false,
+        },
+      ],
+    },
+    compilation_info: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.compilation_info",
+          optional: false,
+        },
+        {
+          name: "messages",
+          type: "array<struct.compilation_message>",
+          optional: false,
+        },
+      ],
+    },
+    compilation_message: {
+      fields: [
+        {
+          name: "next_in_chain",
+          type: "chain.compilation_message",
+          optional: false,
+        },
+        {
+          name: "message",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "type",
+          type: "enum.compilation_message_type",
+          optional: false,
+        },
+        {
+          name: "line_num",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "line_pos",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "length",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
   },
   enums: gpuEnums,
   browserEnums: {
@@ -5443,6 +6218,28 @@ export const gpuStream = {
       read_write: "read-write",
     },
     "enum.query_type": { occlusion: "occlusion", timestamp: "timestamp" },
+    "enum.map_async_status": gpuEnums["enum.map_async_status"],
+    "enum.compilation_info_request_status": gpuEnums["enum.compilation_info_request_status"],
+    "enum.queue_work_done_status": gpuEnums["enum.queue_work_done_status"],
+    "enum.compilation_message_type": { error: "error", warning: "warning", info: "info" },
+    "enum.WGSL_language_feature_name": {
+      readonly_and_readwrite_storage_textures: "readonly_and_readwrite_storage_textures",
+      packed4x8_integer_dot_product: "packed4x8_integer_dot_product",
+      unrestricted_pointer_parameters: "unrestricted_pointer_parameters",
+      pointer_composite_access: "pointer_composite_access",
+      uniform_buffer_standard_layout: "uniform_buffer_standard_layout",
+      subgroup_id: "subgroup_id",
+      texture_and_sampler_let: "texture_and_sampler_let",
+      subgroup_uniformity: "subgroup_uniformity",
+      texture_formats_tier1: "texture_formats_tier1",
+      linear_indexing: "linear_indexing",
+      immediate_address_space: "immediate_address_space",
+      buffer_view: "buffer_view",
+      swizzle_assignment: "swizzle_assignment",
+      fragment_depth: "fragment_depth",
+    },
+    "enum.adapter_type": gpuEnums["enum.adapter_type"],
+    "bitflag.map_mode": gpuEnums["bitflag.map_mode"],
   },
   chains: {
     shader_module_descriptor: [
@@ -5659,17 +6456,106 @@ export const gpuStream = {
     {
       name: "mapped",
       kind: 13,
-      fields: gpuFields7,
+      fields: gpuFields10,
     },
     {
       name: "compilation-info",
       kind: 14,
-      fields: gpuFields7,
+      fields: gpuFields10,
     },
     {
       name: "work-done",
       kind: 15,
       fields: [],
+    },
+    {
+      name: "map-result",
+      kind: 16,
+      fields: [
+        {
+          name: "status",
+          type: "enum.map_async_status",
+          optional: false,
+        },
+        {
+          name: "message",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "payload",
+          type: "handle",
+          optional: true,
+        },
+        {
+          name: "length",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      name: "compilation-result",
+      kind: 17,
+      fields: [
+        {
+          name: "status",
+          type: "enum.compilation_info_request_status",
+          optional: false,
+        },
+        {
+          name: "message",
+          type: "out_string",
+          optional: false,
+        },
+        {
+          name: "payload",
+          type: "handle",
+          optional: true,
+        },
+        {
+          name: "length",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      name: "queue-work-result",
+      kind: 18,
+      fields: [
+        {
+          name: "status",
+          type: "enum.queue_work_done_status",
+          optional: false,
+        },
+        {
+          name: "message",
+          type: "out_string",
+          optional: false,
+        },
+      ],
+    },
+    {
+      name: "query-result",
+      kind: 19,
+      fields: [
+        {
+          name: "opcode",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "payload",
+          type: "handle",
+          optional: true,
+        },
+        {
+          name: "length",
+          type: "uint32",
+          optional: false,
+        },
+      ],
     },
   ],
   records: [
@@ -5727,8 +6613,19 @@ export const gpuStream = {
     {
       name: "buffer-unmap-writes",
       opcode: 4099,
-      enabled: false,
-      fields: [],
+      enabled: true,
+      fields: [
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "ranges",
+          type: "array<struct.write_range>",
+          optional: false,
+        },
+      ],
     },
     {
       name: "chunk",
@@ -5769,11 +6666,15 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "ef72f3dd9b4bdf52dd546a853ad332886512be18151abf0961eba38caa613817",
-  "tooling/gpu-stream.ts": "ff05fedb57a612c4c2eab5d524468f818bf86a8eaed2f30e5fc434b870c436fe",
-  "tooling/gpu-stream-model.ts": "2d67039d2faa1d35712c4cad7b0a188a05f2c2da290d91081a89259a910b6781",
+  "browser/gpu/upstream/webgpu.h":
+    "0314dc40d4641dfe9638ae82071926c0a4136a4bf525c54098b58be345e9b4ed",
+  "browser/gpu/stream.json": "39ac0a803dfd25a09ce33506f9b80336f81e9ea83b5418a054bb15b946950795",
+  "tooling/gpu-stream.ts": "1c98faff564291046a185ab91f643e208eda200fcbf0acb43043211879d7580c",
+  "tooling/gpu-stream-model.ts": "870f7f760af925a1a6b9c3afea31b9b944127df20c78d9ddaa4f8111157ead47",
   "tooling/gpu-stream-layout.ts":
-    "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
+    "02a5038bc7411a5b99cadbe54d74815494fddf74cd15940a9d0e59bdb81dc5c6",
+  "browser/gpu/metadata.ts": "e10598f34d3517aa9818aa7e864f909c1abccd4600a2cdb0a2f3da4b15d271af",
+  "browser/gpu/codec.ts": "bfe969d6379e86a5ea70afa9ffc7880177de19e4bfa49e87f5b64035088db2e5",
   "tests/fixtures/gpu/expected.json":
     "16a708a48026a3ac5ea0bd3ba38614953e2124bb4105b67eb591951560132350",
   "tests/fixtures/gpu/enums.json":
@@ -5788,6 +6689,8 @@ export const gpuStreamSources = {
     "8cc1bcc69dd906d339655b2c1b87a7f495511ee248cca8bee453b86a42909851",
   "tests/fixtures/gpu/label-expected.json":
     "f43f423154ca50022e6d07cf4b424ff5c2491ee49b144e4ab8bff32e3e7a38cf",
+  "tests/fixtures/gpu/async-expected.json":
+    "3da35f271e5aedc49d3179c2c034054cfc72ae2faf7014096db8876d9cbc643f",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {
@@ -5949,6 +6852,7 @@ export const gpuSentinels = {
   "bind_group_entry.size": "uint64_max-to-omit",
   "texel_copy_buffer_layout.bytes_per_row": "uint32_max-to-omit",
   "texel_copy_buffer_layout.rows_per_image": "uint32_max-to-omit",
+  "buffer.map_async.size": "source-size-max-to-wire-u64-max-to-omit",
 };
 export const gpuDictionaryMembers = {
   request_adapter_options: {
@@ -6331,6 +7235,76 @@ export const gpuDictionaryMembers = {
     layout: null,
     buffer: "buffer",
   },
+  query_107: {
+    returned: "returned",
+    info: "info",
+  },
+  query_108: {
+    features: "features",
+  },
+  query_109: {
+    returned: "returned",
+  },
+  query_110: {
+    returned: "returned",
+    limits: "limits",
+  },
+  query_111: {
+    features: "features",
+  },
+  query_112: {
+    returned: "returned",
+  },
+  query_113: {
+    returned: "returned",
+    limits: "limits",
+  },
+  query_114: {
+    returned: "returned",
+    adapter_info: "adapter_info",
+  },
+  query_119: {
+    features: "features",
+  },
+  query_120: {
+    returned: "returned",
+  },
+  write_range: {
+    offset: "offset",
+    data: "data",
+  },
+  adapter_info: {
+    next_in_chain: "next_in_chain",
+    vendor: "vendor",
+    architecture: "architecture",
+    device: "device",
+    description: "description",
+    backend_type: "backend_type",
+    adapter_type: "adapter_type",
+    vendor_ID: "vendor_ID",
+    device_ID: "device_ID",
+    subgroup_min_size: "subgroup_min_size",
+    subgroup_max_size: "subgroup_max_size",
+  },
+  supported_features: {
+    features: "features",
+  },
+  supported_WGSL_language_features: {
+    features: "features",
+  },
+  compilation_info: {
+    next_in_chain: "next_in_chain",
+    messages: "messages",
+  },
+  compilation_message: {
+    next_in_chain: "next_in_chain",
+    message: "message",
+    type: "type",
+    line_num: "line_num",
+    line_pos: "line_pos",
+    offset: "offset",
+    length: "length",
+  },
 };
 export const gpuDictionaryRules = {
   chains: "reject-nonempty-unless-explicitly-allowlisted",
@@ -6395,4 +7369,145 @@ export const gpuCOutputs = {
     fields: ["texture", "status"],
     chain: "guest-local-empty-output-chain",
   },
+  "adapter.get_info": {
+    adapter: "info",
+    reply: "query-result",
+    payload: "query_107",
+    fields: [
+      {
+        name: "returned",
+        type: "enum.status",
+        optional: false,
+      },
+      {
+        name: "info",
+        type: "struct.adapter_info",
+        optional: false,
+      },
+    ],
+  },
+  "adapter.get_features": {
+    adapter: "features",
+    reply: "query-result",
+    payload: "query_108",
+    fields: [
+      {
+        name: "features",
+        type: "struct.supported_features",
+        optional: false,
+      },
+    ],
+  },
+  "adapter.has_feature": {
+    adapter: "has-feature",
+    reply: "query-result",
+    payload: "query_109",
+    fields: [
+      {
+        name: "returned",
+        type: "bool",
+        optional: false,
+      },
+    ],
+  },
+  "adapter.get_limits": {
+    adapter: "limits",
+    reply: "query-result",
+    payload: "query_110",
+    fields: [
+      {
+        name: "returned",
+        type: "enum.status",
+        optional: false,
+      },
+      {
+        name: "limits",
+        type: "struct.limits",
+        optional: false,
+      },
+    ],
+  },
+  "device.get_features": {
+    adapter: "features",
+    reply: "query-result",
+    payload: "query_111",
+    fields: [
+      {
+        name: "features",
+        type: "struct.supported_features",
+        optional: false,
+      },
+    ],
+  },
+  "device.has_feature": {
+    adapter: "has-feature",
+    reply: "query-result",
+    payload: "query_112",
+    fields: [
+      {
+        name: "returned",
+        type: "bool",
+        optional: false,
+      },
+    ],
+  },
+  "device.get_limits": {
+    adapter: "limits",
+    reply: "query-result",
+    payload: "query_113",
+    fields: [
+      {
+        name: "returned",
+        type: "enum.status",
+        optional: false,
+      },
+      {
+        name: "limits",
+        type: "struct.limits",
+        optional: false,
+      },
+    ],
+  },
+  "device.get_adapter_info": {
+    adapter: "info",
+    reply: "query-result",
+    payload: "query_114",
+    fields: [
+      {
+        name: "returned",
+        type: "enum.status",
+        optional: false,
+      },
+      {
+        name: "adapter_info",
+        type: "struct.adapter_info",
+        optional: false,
+      },
+    ],
+  },
+  "instance.get_WGSL_language_features": {
+    adapter: "wgsl-features",
+    reply: "query-result",
+    payload: "query_119",
+    fields: [
+      {
+        name: "features",
+        type: "struct.supported_WGSL_language_features",
+        optional: false,
+      },
+    ],
+  },
+  "instance.has_WGSL_language_feature": {
+    adapter: "has-wgsl-feature",
+    reply: "query-result",
+    payload: "query_120",
+    fields: [
+      {
+        name: "returned",
+        type: "bool",
+        optional: false,
+      },
+    ],
+  },
 };
+export const gpuWholeMapSize = 0xffffffffffffffffn;

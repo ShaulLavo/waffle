@@ -1,3 +1,5 @@
+import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
+import { validGraphicsOpen } from "../browser/display/open.js";
 import { afterEach, expect, test } from "bun:test";
 import { createGraphicsGuest } from "../browser/gpu/guest.js";
 import {
@@ -24,6 +26,7 @@ function openRecord(id = 1): GraphicsOpen {
     control: new SharedArrayBuffer(64),
     commands: new SharedArrayBuffer(64 + 4096),
     replies: new SharedArrayBuffer(64 + 4096),
+    arena: new SharedArrayBuffer(gpuPayloadLayout.byteLength),
   };
 }
 function guest(
@@ -33,7 +36,7 @@ function guest(
   const grant: SharedControlGrant = {
     kind: "bounded",
     state: new SharedArrayBuffer(8),
-    limit: options.limit ?? 100000,
+    limit: options.limit ?? 3_000_000,
   };
   cleanups.push(
     installSharedControlAllocator(
@@ -46,6 +49,7 @@ function guest(
     postMessage(message: GraphicsOpen | { type: "close"; id: number }) {
       if (options.failPost) throw new Error("post failure");
       if (message.type === "open") {
+        if (!validGraphicsOpen(message, 4096, 4096)) throw new Error("Invalid real open shape");
         opened = message;
         if (options.revokeOnPost) {
           Atomics.store(new Int32Array(revocation), 0, 1);
@@ -81,12 +85,17 @@ function guest(
 test("guest shared controls are claimed before construction and fixed", () => {
   const rig = guest();
   expect(rig.invoke("open", 0, 0)).toBe(0);
-  expect(rig.receipts.map((buffer) => buffer.byteLength)).toEqual([64, 4160, 4160]);
+  expect(rig.receipts.map((buffer) => buffer.byteLength)).toEqual([
+    64,
+    4160,
+    4160,
+    gpuPayloadLayout.byteLength,
+  ]);
   expect(rig.receipts.every((buffer) => !buffer.growable)).toBe(true);
-  expect(consumedControlBytes(rig.grant)).toBe(8384);
+  expect(consumedControlBytes(rig.grant)).toBe(1_056_960);
   expect(rig.invoke("close", 1)).toBe(0);
   expect(rig.invoke("close", 1)).toBe(0);
-  expect(consumedControlBytes(rig.grant)).toBe(8384);
+  expect(consumedControlBytes(rig.grant)).toBe(1_056_960);
 });
 test("bounded refusal happens without constructing unadmitted backing or posting open", () => {
   const rig = guest({ limit: 64 });
@@ -113,6 +122,7 @@ test("committed completions drain before resource terminal becomes ENOMEM", () =
   if (writer.kind !== "acquired") throw new Error("Missing writer");
   writer.writer.tryWrite(completionBytes("closed", 0, 0, { reason: 3 }, 4096));
   writer.writer.release();
+  new RecordRing(rig.opened()!.commands, 8).terminate(3);
   ring.terminate(3);
   expect(rig.invoke("completions", 1, 64, 64, 0n, 4)).toBe(0);
   expect(new DataView(rig.memory.buffer).getUint32(4, true)).toBe(24);
@@ -384,8 +394,35 @@ test("native device destruction preserves failures without claiming successful r
 test("native device destruction preserves its result and repeated calls", async () => {
   const rig = await trackedNativeDevice(() => false);
   expect(Reflect.apply(rig.device.destroy, rig.device, [])).toBe(false);
-  expect(rig.service.snapshot().devicesLive).toBe(0);
+  expect(rig.service.snapshot().devicesLive).toBe(1);
   expect(Reflect.apply(rig.device.destroy, rig.device, [])).toBe(false);
   expect(rig.destroyCalls()).toBe(2);
+  expect(rig.service.snapshot().devicesLive).toBe(1);
+  rig.lost.resolve({ reason: "destroyed", message: "actual native loss" });
+  await settle();
   expect(rig.service.snapshot().devicesLive).toBe(0);
+});
+
+for (const limit of [8384, 1_056_959])
+  test(`arena admission refuses before the fourth construction at quota ${limit}`, () => {
+    const rig = guest({ limit });
+    expect(rig.invoke("open", 0, 0)).toBe(-48);
+    expect(rig.opened()).toBeUndefined();
+    expect(rig.receipts.map((buffer) => buffer.byteLength)).toEqual([64, 4160, 4160]);
+    expect(consumedControlBytes(rig.grant)).toBe(64 + 4160 + 4160);
+  });
+test("exact arena quota admits one open and close/reopen preserves physical backing debt", () => {
+  const exact = guest({ limit: 1_056_960 });
+  expect(exact.invoke("open", 0, 0)).toBe(0);
+  expect(consumedControlBytes(exact.grant)).toBe(64 + 4160 + 4160 + gpuPayloadLayout.byteLength);
+  expect(exact.invoke("close", 1)).toBe(0);
+  expect(consumedControlBytes(exact.grant)).toBe(1_056_960);
+  const repeat = guest();
+  expect(repeat.invoke("open", 0, 0)).toBe(0);
+  expect(repeat.invoke("close", 1)).toBe(0);
+  expect(repeat.invoke("open", 0, 0)).toBe(0);
+  expect(
+    repeat.receipts.filter((backing) => backing.byteLength === gpuPayloadLayout.byteLength),
+  ).toHaveLength(2);
+  expect(consumedControlBytes(repeat.grant)).toBe(2 * 1_056_960);
 });

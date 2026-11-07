@@ -16,7 +16,8 @@ const packageRoot = resolve(import.meta.dir, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 export const GPU_FIXTURE_WASM = "triangle.wasm";
 export const GPU_SCENE_FIXTURE_WASM = "scene.wasm";
-const fixtures = [GPU_FIXTURE_WASM, GPU_SCENE_FIXTURE_WASM];
+export const GPU_ASYNC_FIXTURE_WASM = "async.wasm";
+const fixtures = [GPU_FIXTURE_WASM, GPU_SCENE_FIXTURE_WASM, GPU_ASYNC_FIXTURE_WASM];
 const target = "wasm32-wasip1";
 const flags = [
   `--target=${target}`,
@@ -36,6 +37,10 @@ const inputs = [
   "scripts/owned-command.ts",
   "tests/fixtures/gpu/triangle.c",
   "tests/fixtures/gpu/scene.c",
+  "tests/fixtures/gpu/async.c",
+  "tests/fixtures/gpu/async_encode.h",
+  "tests/fixtures/gpu/async-expected.json",
+  "browser/gpu/upstream/webgpu.h",
   "tests/fixtures/gpu/scene_encode.h",
   "tests/fixtures/gpu/gpu_fixture.h",
   "tests/fixtures/gpu/gpu_encode.h",
@@ -111,7 +116,7 @@ function outputDirectory(directory: string): string {
   return output;
 }
 
-function inspectImports(wasm: Uint8Array<ArrayBuffer>): void {
+function inspectImports(wasm: Uint8Array<ArrayBuffer>, name: string): void {
   const module = new WebAssembly.Module(wasm);
   const imports = WebAssembly.Module.imports(module);
   const expected = [
@@ -120,15 +125,38 @@ function inspectImports(wasm: Uint8Array<ArrayBuffer>): void {
     "runtime_gpu.completions",
     "runtime_gpu.open",
     "runtime_gpu.payload",
-    "runtime_window.surface_info",
-    "runtime_window.surfaces",
-  ];
+  ].concat(
+    name === GPU_ASYNC_FIXTURE_WASM
+      ? []
+      : ["runtime_window.surface_info", "runtime_window.surfaces"],
+  );
   const custom = imports
     .filter((entry) => entry.module !== "wasi_snapshot_preview1")
     .map((entry) => `${entry.module}.${entry.name}`);
   custom.sort();
   if (json(custom) !== json(expected) || imports.some((entry) => entry.kind !== "function"))
     throw new Error("GPU fixture imports do not match the blocking Preview 1 contract");
+  if (name === GPU_ASYNC_FIXTURE_WASM) {
+    const wasi = imports
+      .filter((entry) => entry.module === "wasi_snapshot_preview1")
+      .map((entry) => entry.name);
+    wasi.sort();
+    if (
+      json(wasi) !==
+      json([
+        "args_get",
+        "args_sizes_get",
+        "clock_time_get",
+        "fd_close",
+        "fd_fdstat_get",
+        "fd_read",
+        "fd_seek",
+        "fd_write",
+        "proc_exit",
+      ])
+    )
+      throw new Error("Async fixture WASI imports do not match the pinned C command");
+  }
   const exports = WebAssembly.Module.exports(module);
   if (!exports.some((entry) => entry.name === "_start" && entry.kind === "function"))
     throw new Error("GPU fixture has no command entry");
@@ -136,7 +164,7 @@ function inspectImports(wasm: Uint8Array<ArrayBuffer>): void {
     throw new Error("GPU fixture has no exported memory");
 }
 
-/** One producer compiles both commands; consumers verify without invoking clang. */
+/** One producer compiles all commands; consumers verify without invoking clang. */
 export async function buildGpuFixture(directory: string, signal?: AbortSignal): Promise<string> {
   const clang = compiler(process.env.WASI_SDK_PATH);
   await generate(packageRoot, true);
@@ -157,7 +185,7 @@ export async function buildGpuFixture(directory: string, signal?: AbortSignal): 
         { cwd: packageRoot, env: compilerEnvironment(), signal, timeoutMs: 120_000 },
       );
       const wasm = new Uint8Array(readFileSync(artifact));
-      inspectImports(wasm);
+      inspectImports(wasm, name);
       writeFileSync(
         join(scratch, name.replace(".wasm", ".inputs.json")),
         json({
@@ -195,7 +223,7 @@ function verifiedFixture(
   const wasm = new Uint8Array(readFileSync(join(directory, name)));
   if (artifact.size !== wasm.length || artifact.sha256 !== digest(wasm))
     throw new Error("GPU fixture artifact changed; rebuild explicitly");
-  inspectImports(wasm);
+  inspectImports(wasm, name);
   return wasm;
 }
 
@@ -212,6 +240,13 @@ export function verifiedGpuSceneFixture(
   return verifiedFixture(directory, GPU_SCENE_FIXTURE_WASM, sourceRoot);
 }
 
+export function verifiedGpuAsyncFixture(
+  directory: string,
+  sourceRoot = packageRoot,
+): Uint8Array<ArrayBuffer> {
+  return verifiedFixture(directory, GPU_ASYNC_FIXTURE_WASM, sourceRoot);
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const verify = args.includes("--verify");
@@ -226,6 +261,7 @@ if (import.meta.main) {
         verified: true,
         triangle: verifiedGpuFixture(directory).length,
         scene: verifiedGpuSceneFixture(directory).length,
+        async: verifiedGpuAsyncFixture(directory).length,
       }),
     );
   else {

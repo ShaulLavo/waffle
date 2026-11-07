@@ -260,3 +260,9 @@ export function encodeGpuCompletion(
   writer.integer(status, 4, true);
   return finishRecord(writer, tables, completion.fields, value);
 }
+
+export function encodeGpuPrivate(tables: WireTables, name: string, value: unknown): Uint8Array {
+  const layout = tables.records.find((entry) => entry.name === name && entry.enabled);
+  if (!layout) throw new Error("Unknown private record");
+  return finishRecord(beginRecord(layout.opcode), tables, layout.fields, value);
+}
