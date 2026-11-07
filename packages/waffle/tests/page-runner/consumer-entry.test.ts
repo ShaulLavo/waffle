@@ -72,7 +72,7 @@ for (const [entry, target] of [
     const inputs = Object.keys(built.metafile.inputs);
     expect(
       inputs.filter((path) =>
-        /playwright|browser-runner-lifecycle|storage-browser|(?:^|\/)(index|runtime)\.ts$|\/(core|fs|proc|browser|network)\//.test(
+        /playwright|browser-runner-lifecycle|storage-browser|host-storage-control|(?:^|\/)(index|runtime)\.ts$|\/(core|fs|proc|browser|network)\//.test(
           path,
         ),
       ),

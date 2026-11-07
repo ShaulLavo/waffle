@@ -7,6 +7,10 @@ type Request = { mode: string };
 type StorageControl = {
   returned: boolean;
   constructors: number;
+  workers: number;
+  returnedAt: number;
+  taskEnds: number;
+  sentinelsChecked: number;
   opens: string[];
   allocationSeen: boolean;
   ackReceived: boolean;
@@ -14,6 +18,7 @@ type StorageControl = {
   operation: string;
   release(): void;
   exercise(name: string): Promise<void>;
+  snapshot(): Promise<unknown>;
 };
 declare global {
   interface Window {
@@ -30,6 +35,10 @@ const channel = new BroadcastChannel(channelName);
 const state: StorageControl = {
   returned: false,
   constructors: 0,
+  workers: 0,
+  returnedAt: Infinity,
+  taskEnds: 0,
+  sentinelsChecked: 0,
   opens: [],
   allocationSeen: false,
   ackReceived: false,
@@ -37,16 +46,43 @@ const state: StorageControl = {
   operation: "",
   release: release.resolve,
   exercise,
+  snapshot,
 };
 window.__storageControl = state;
 channel.onmessage = (event: MessageEvent<unknown>) => {
   if (!record(event.data) || typeof event.data.name !== "string") return;
   state.opens.push(event.data.name);
-  if (!state.returned) throw new Error("WORKER_OPEN_BEFORE_VALID_RETURN");
+  if (!state.returned || typeof event.data.at !== "number" || event.data.at < state.returnedAt)
+    throw new Error("WORKER_OPEN_BEFORE_VALID_RETURN");
 };
+const NativeWorker = Worker;
+class ObservedWorker extends NativeWorker {
+  constructor(url: string | URL, options?: WorkerOptions) {
+    state.workers++;
+    super(url, options);
+  }
+}
+globalThis.Worker = ObservedWorker;
+async function snapshot(): Promise<unknown> {
+  if (config.role === "case") {
+    for (const name of sentinels) await sentinel(name, false);
+    state.sentinelsChecked = sentinels.length;
+  }
+  return {
+    role: config.role,
+    returned: state.returned,
+    constructors: state.constructors,
+    workers: state.workers,
+    opens: state.opens,
+    attempts: state.attempts,
+    taskEnds: state.taskEnds,
+    sentinelsChecked: state.sentinelsChecked,
+    reporter: window.__pageRunner,
+  };
+}
 async function database(name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, 1);
+    const request = indexedDB.open(name);
     request.onupgradeneeded = () => request.result.createObjectStore("sentinel");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -95,11 +131,14 @@ async function exercise(name: string): Promise<void> {
 }
 const post = globalThis.fetch.bind(globalThis);
 Reflect.set(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+  const body = String(init?.body);
+  if (body.includes('"kind":"task-end"')) state.taskEnds++;
   const response = await post(input, init);
   if (!String(init?.body).includes('"kind":"allocation"')) return response;
   state.allocationSeen = true;
   state.attempts++;
-  if (["delayed", "slot"].includes(HOST_STORAGE_CONTROL)) await release.promise;
+  if (["delayed", "slot"].includes(HOST_STORAGE_CONTROL) && state.attempts === 1)
+    await release.promise;
   if (HOST_STORAGE_CONTROL === "recovered" && state.attempts === 1) throw new Error("LOST_ACK");
   if (HOST_STORAGE_CONTROL === "exhausted") throw new Error("EXHAUSTED_ACK");
   if (HOST_STORAGE_CONTROL === "late") await new Promise((resolve) => setTimeout(resolve, 400));
@@ -119,8 +158,17 @@ startPage<Request>({
     },
   },
   finish: async (ledger) => {
-    const remaining = await cleanupStorage(ledger);
+    const blocked =
+      HOST_STORAGE_CONTROL === "blocked" && ledger[0] ? await database(ledger[0].name) : undefined;
+    let remaining;
+    try {
+      remaining = await cleanupStorage(ledger, HOST_STORAGE_CONTROL === "blocked" ? 60 : 8000);
+    } finally {
+      blocked?.close();
+    }
+
     for (const name of sentinels) await sentinel(name, false);
+    state.sentinelsChecked = sentinels.length;
     const fixtureRemaining = await cleanupStorage(
       sentinels.map((name) => ({ kind: "indexeddb", name })),
     );
