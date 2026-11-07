@@ -30,6 +30,7 @@ const fixedInputs = [
   "tests/fixtures/gpu/scene-expected.json",
   "tests/fixtures/gpu/compute-expected.json",
   "tests/fixtures/gpu/bundle-query-expected.json",
+  "tests/fixtures/gpu/copy-draw-expected.json",
 ];
 
 export function sha256(bytes: string | Uint8Array): string {

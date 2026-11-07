@@ -37,6 +37,8 @@ export interface SurfaceTarget {
   present(surface: object): { kind: "await" } | { kind: "ready"; status: number };
   unconfigure(surface: object): void;
   release(surface: object): void;
+  /** Frame-owning targets forget storage after native destruction, independently of handles. */
+  textureDestroyed?(texture: object): void;
 }
 export interface ReplayTarget {
   readonly root: object;
@@ -430,6 +432,48 @@ export class GpuReplay {
           this.#lower.value("array<object.render_bundle>", fields.bundles ?? null),
         ]);
         return;
+      case "command_encoder.copy_buffer_to_buffer":
+        nativeCall(receiver, "copyBufferToBuffer", [
+          this.#lower.value("object.buffer", fields.source ?? null),
+          this.#lower.value("uint64", fields.source_offset ?? null),
+          this.#lower.value("object.buffer", fields.destination ?? null),
+          this.#lower.value("uint64", fields.destination_offset ?? null),
+          this.#lower.value("uint64", fields.size ?? null),
+        ]);
+        return;
+      case "command_encoder.copy_buffer_to_texture":
+      case "command_encoder.copy_texture_to_buffer":
+      case "command_encoder.copy_texture_to_texture":
+        this.#textureCopy(call, receiver);
+        return;
+      case "command_encoder.clear_buffer":
+        nativeCall(receiver, "clearBuffer", [
+          this.#lower.value("object.buffer", fields.buffer ?? null),
+          this.#lower.value("uint64", fields.offset ?? null),
+          fields.size === 0xffffffffffffffffn
+            ? undefined
+            : this.#lower.value("uint64", fields.size ?? null),
+        ]);
+        return;
+      case "render_pass_encoder.set_stencil_reference":
+        nativeCall(receiver, "setStencilReference", [fields.reference]);
+        return;
+      case "render_pass_encoder.set_blend_constant":
+        nativeCall(receiver, "setBlendConstant", [this.#lower.dictionary("color", fields.color)]);
+        return;
+      case "render_pass_encoder.set_viewport":
+        nativeCall(receiver, "setViewport", [
+          fields.x,
+          fields.y,
+          fields.width,
+          fields.height,
+          fields.min_depth,
+          fields.max_depth,
+        ]);
+        return;
+      case "render_pass_encoder.set_scissor_rect":
+        nativeCall(receiver, "setScissorRect", [fields.x, fields.y, fields.width, fields.height]);
+        return;
       case "command_encoder.resolve_query_set":
         nativeCall(receiver, "resolveQuerySet", [
           this.#lower.value("object.query_set", fields.query_set ?? null),
@@ -445,13 +489,13 @@ export class GpuReplay {
       case "render_pass_encoder.end_occlusion_query":
         nativeCall(receiver, "endOcclusionQuery", []);
         return;
+      case "render_pass_encoder.draw_indirect":
+      case "render_pass_encoder.draw_indexed_indirect":
       case "render_bundle_encoder.draw_indirect":
       case "render_bundle_encoder.draw_indexed_indirect":
         nativeCall(
           receiver,
-          call.layout.name === "render_bundle_encoder.draw_indirect"
-            ? "drawIndirect"
-            : "drawIndexedIndirect",
+          call.layout.name.endsWith(".draw_indirect") ? "drawIndirect" : "drawIndexedIndirect",
           [
             this.#lower.value("object.buffer", fields.indirect_buffer ?? null),
             this.#lower.value("uint64", fields.indirect_offset ?? null),
@@ -476,14 +520,20 @@ export class GpuReplay {
           this.#lower.value("uint64", fields.indirect_offset ?? null),
         ]);
         return;
+      case "command_encoder.push_debug_group":
+      case "render_pass_encoder.push_debug_group":
       case "render_bundle_encoder.push_debug_group":
       case "compute_pass_encoder.push_debug_group":
         nativeCall(receiver, "pushDebugGroup", [fields.group_label]);
         return;
+      case "command_encoder.insert_debug_marker":
+      case "render_pass_encoder.insert_debug_marker":
       case "render_bundle_encoder.insert_debug_marker":
       case "compute_pass_encoder.insert_debug_marker":
         nativeCall(receiver, "insertDebugMarker", [fields.marker_label]);
         return;
+      case "command_encoder.pop_debug_group":
+      case "render_pass_encoder.pop_debug_group":
       case "render_bundle_encoder.pop_debug_group":
       case "compute_pass_encoder.pop_debug_group":
         nativeCall(receiver, "popDebugGroup", []);
@@ -544,6 +594,11 @@ export class GpuReplay {
           this.#lower.value("array<object.command_buffer>", fields.commands ?? null),
         ]);
         return;
+      case "texture.destroy":
+        nativeCall(receiver, "destroy", []);
+        this.target.surfaces?.textureDestroyed?.(receiver);
+        return;
+      case "buffer.destroy":
       case "query_set.destroy":
       case "device.destroy":
         nativeCall(receiver, "destroy", []);
@@ -554,6 +609,23 @@ export class GpuReplay {
       default:
         throw new GpuProtocolError("Unclassified method lowering");
     }
+  }
+  #textureCopy(call: DecodedCall, receiver: object): void {
+    const { fields, layout } = call;
+    if (layout.lowering.kind !== "method") throw new GpuProtocolError("Invalid copy lowering");
+    const source =
+      layout.name === "command_encoder.copy_buffer_to_texture"
+        ? "texel_copy_buffer_info"
+        : "texel_copy_texture_info";
+    const destination =
+      layout.name === "command_encoder.copy_texture_to_buffer"
+        ? "texel_copy_buffer_info"
+        : "texel_copy_texture_info";
+    nativeCall(receiver, layout.lowering.member, [
+      this.#lower.dictionary(source, fields.source),
+      this.#lower.dictionary(destination, fields.destination),
+      this.#lower.dictionary("extent_3D", fields.copy_size),
+    ]);
   }
   #bufferBinding(call: DecodedCall, receiver: object): void {
     const fields = call.fields;
@@ -744,6 +816,7 @@ export class GpuReplay {
     this.#devices.get(value)?.();
     this.#devices.delete(value);
     destroyNative(value);
+    if (kind === "texture") this.target.surfaces?.textureDestroyed?.(value);
   }
 }
 

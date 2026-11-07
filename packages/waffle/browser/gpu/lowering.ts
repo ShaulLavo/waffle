@@ -53,6 +53,12 @@ export class DescriptorLowering {
     if (value === null) return undefined;
     const input = wireObject(value);
     if (name === "bind_group_entry") return this.#bindingResource(input);
+    if (name === "texel_copy_buffer_info")
+      return Object.assign(
+        Object.create(null),
+        this.dictionary("texel_copy_buffer_layout", input.layout),
+        { buffer: this.value("object.buffer", input.buffer ?? null) },
+      );
     if (name === "bind_group_layout_entry" && input.binding_array_size !== 0)
       throw new GpuCallError("Browser binding arrays are unsupported");
     const layout = tables.structs[name];

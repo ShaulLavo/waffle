@@ -2439,6 +2439,560 @@ export const gpuStream = {
         },
       ],
     },
+    {
+      opcode: 69,
+      name: "command_encoder.copy_buffer_to_buffer",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "copyBufferToBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "source",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "source_offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "destination",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "destination_offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 70,
+      name: "command_encoder.copy_buffer_to_texture",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "copyBufferToTexture",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "source",
+          type: "struct.texel_copy_buffer_info",
+          optional: false,
+        },
+        {
+          name: "destination",
+          type: "struct.texel_copy_texture_info",
+          optional: false,
+        },
+        {
+          name: "copy_size",
+          type: "struct.extent_3D",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 71,
+      name: "command_encoder.copy_texture_to_buffer",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "copyTextureToBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "source",
+          type: "struct.texel_copy_texture_info",
+          optional: false,
+        },
+        {
+          name: "destination",
+          type: "struct.texel_copy_buffer_info",
+          optional: false,
+        },
+        {
+          name: "copy_size",
+          type: "struct.extent_3D",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 72,
+      name: "command_encoder.copy_texture_to_texture",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "copyTextureToTexture",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "source",
+          type: "struct.texel_copy_texture_info",
+          optional: false,
+        },
+        {
+          name: "destination",
+          type: "struct.texel_copy_texture_info",
+          optional: false,
+        },
+        {
+          name: "copy_size",
+          type: "struct.extent_3D",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 73,
+      name: "command_encoder.clear_buffer",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "clearBuffer",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "offset",
+          type: "uint64",
+          optional: false,
+        },
+        {
+          name: "size",
+          type: "uint64",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 74,
+      name: "command_encoder.insert_debug_marker",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "insertDebugMarker",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "marker_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 75,
+      name: "command_encoder.pop_debug_group",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "popDebugGroup",
+      },
+      omitted: [],
+      fields: [],
+    },
+    {
+      opcode: 76,
+      name: "command_encoder.push_debug_group",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "pushDebugGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 77,
+      name: "render_pass_encoder.set_immediates",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "set-immediates",
+        member: "setImmediates",
+        span: {
+          pointer: "data",
+          size: "size",
+        },
+      },
+      omitted: [],
+      fields: gpuFields5,
+    },
+    {
+      opcode: 78,
+      name: "render_pass_encoder.draw_indirect",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "drawIndirect",
+      },
+      omitted: [],
+      fields: gpuFields6,
+    },
+    {
+      opcode: 79,
+      name: "render_pass_encoder.draw_indexed_indirect",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "drawIndexedIndirect",
+      },
+      omitted: [],
+      fields: gpuFields6,
+    },
+    {
+      opcode: 80,
+      name: "render_pass_encoder.insert_debug_marker",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "insertDebugMarker",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "marker_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 81,
+      name: "render_pass_encoder.pop_debug_group",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "popDebugGroup",
+      },
+      omitted: [],
+      fields: [],
+    },
+    {
+      opcode: 82,
+      name: "render_pass_encoder.push_debug_group",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "pushDebugGroup",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "group_label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 83,
+      name: "render_pass_encoder.set_stencil_reference",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setStencilReference",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "reference",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 84,
+      name: "render_pass_encoder.set_blend_constant",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setBlendConstant",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "color",
+          type: "struct.color",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 85,
+      name: "render_pass_encoder.set_viewport",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setViewport",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "x",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "y",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "width",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "height",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "min_depth",
+          type: "float32",
+          optional: false,
+        },
+        {
+          name: "max_depth",
+          type: "float32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 86,
+      name: "render_pass_encoder.set_scissor_rect",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "setScissorRect",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "x",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "y",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "width",
+          type: "uint32",
+          optional: false,
+        },
+        {
+          name: "height",
+          type: "uint32",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 87,
+      name: "buffer.destroy",
+      receiver: "buffer",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "destroy",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.buffer",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 88,
+      name: "texture.destroy",
+      receiver: "texture",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "method",
+        member: "destroy",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.texture",
+          optional: false,
+        },
+      ],
+    },
   ],
   structs: {
     request_adapter_options: {
@@ -4009,6 +4563,20 @@ export const gpuStream = {
         },
       ],
     },
+    texel_copy_buffer_info: {
+      fields: [
+        {
+          name: "layout",
+          type: "struct.texel_copy_buffer_layout",
+          optional: false,
+        },
+        {
+          name: "buffer",
+          type: "object.buffer",
+          optional: false,
+        },
+      ],
+    },
   },
   enums: gpuEnums,
   browserEnums: {
@@ -4104,7 +4672,7 @@ export const gpuStream = {
       stencil8: null,
       depth16_unorm: null,
       depth24_plus: "depth24plus",
-      depth24_plus_stencil8: null,
+      depth24_plus_stencil8: "depth24plus-stencil8",
       depth32_float: "depth32float",
       depth32_float_stencil8: null,
       BC1_RGBA_unorm: null,
@@ -4689,8 +5257,8 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "f63b3e9ee017b3cf96fa4725c830df4a133940312a5505ea85bce41d944c914f",
-  "tooling/gpu-stream.ts": "cf01f3b049a8f6e8e87558b9f50c57a71ced189363b88ddfea1f718a2ad8ddc6",
+  "browser/gpu/stream.json": "35d45279ae1dd5e3f898f01d1fc7f9bc0ae1beeafd9b6699048c9a0ff893e275",
+  "tooling/gpu-stream.ts": "0eb64c8a161f8d0b60c9e1f5e5c114630254366f1ff24df9c41db73afe9c981d",
   "tooling/gpu-stream-model.ts": "179bd5498d7e2c06445fc0c659da3519f49d529dc0c4c5794fc8f50e595118ee",
   "tooling/gpu-stream-layout.ts":
     "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
@@ -4704,6 +5272,8 @@ export const gpuStreamSources = {
     "e7e4d6864937478048150a60cf8ba5f9fb333c0862e29ea63e0459e774bbc24c",
   "tests/fixtures/gpu/bundle-query-expected.json":
     "febe5f9caac846f3a995d37fae43c7dfc224fbcd7454289248b87c27adfb08e8",
+  "tests/fixtures/gpu/copy-draw-expected.json":
+    "8cc1bcc69dd906d339655b2c1b87a7f495511ee248cca8bee453b86a42909851",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {
@@ -5243,6 +5813,10 @@ export const gpuDictionaryMembers = {
     type: "type",
     count: "count",
   },
+  texel_copy_buffer_info: {
+    layout: null,
+    buffer: "buffer",
+  },
 };
 export const gpuDictionaryRules = {
   chains: "reject-nonempty-unless-explicitly-allowlisted",
@@ -5269,6 +5843,10 @@ export const gpuDictionaryRules = {
   computeImmediates:
     "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
   bundleImmediates:
+    "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
+  copyBufferInfo: "flatten-C-layout-to-browser-offset-bytesPerRow-rowsPerImage-and-buffer",
+  clearBufferSize: "u64-max-to-omitted-size-only;offset-remains-checked-u64",
+  renderImmediates:
     "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
 };
 export const gpuObjectKinds = {

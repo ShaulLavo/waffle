@@ -28,7 +28,7 @@ function changedYamlMethods(change: (methods: unknown[]) => unknown[]): unknown 
 }
 
 const selectedName = "instance.request_adapter";
-const deferredName = "buffer.destroy";
+const deferredName = "buffer.map_async";
 
 test("actual pinned method classification validates in normal test discovery", async () => {
   const entries = await checkCoverage();
@@ -58,7 +58,7 @@ test("new upstream methods must be explicitly classified", () => {
 
 test("removed upstream methods leave a failing stale entry", () => {
   const removed = changedYamlMethods((methods) =>
-    methods.filter((method) => record(method).name !== "destroy"),
+    methods.filter((method) => record(method).name !== deferredName.slice("buffer.".length)),
   );
   expect(() => validateCoverage(removed, coverage, selection)).toThrow(
     `Stale coverage entry: ${deferredName}`,

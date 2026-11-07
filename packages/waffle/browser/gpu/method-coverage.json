@@ -136,9 +136,16 @@
     {
       "name": "buffer.destroy",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add ordered GPUBuffer destruction with handle lifetime checks; only device destruction is selected today.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 87,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
     },
     {
       "name": "command_buffer.set_label",
@@ -193,58 +200,114 @@
     {
       "name": "command_encoder.copy_buffer_to_buffer",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit copy_buffer_to_buffer recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 69,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyBufferToBuffer"
+        }
+      }
     },
     {
       "name": "command_encoder.copy_buffer_to_texture",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit copy_buffer_to_texture recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 70,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyBufferToTexture"
+        }
+      }
     },
     {
       "name": "command_encoder.copy_texture_to_buffer",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit copy_texture_to_buffer recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 71,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyTextureToBuffer"
+        }
+      }
     },
     {
       "name": "command_encoder.copy_texture_to_texture",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit copy_texture_to_texture recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 72,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyTextureToTexture"
+        }
+      }
     },
     {
       "name": "command_encoder.clear_buffer",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit clear_buffer recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 73,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "clearBuffer"
+        }
+      }
     },
     {
       "name": "command_encoder.insert_debug_marker",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit insert_debug_marker recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 74,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
     },
     {
       "name": "command_encoder.pop_debug_group",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit pop_debug_group recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 75,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
     },
     {
       "name": "command_encoder.push_debug_group",
       "group": "encoder",
-      "category": "deferred",
-      "reason": "Add explicit push_debug_group recording, argument validation and resumable encoder replay; currently only render-pass begin and finish are selected.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 76,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
     },
     {
       "name": "command_encoder.resolve_query_set",
@@ -1136,9 +1199,20 @@
     {
       "name": "render_pass_encoder.set_immediates",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add explicit render_pass_encoder immediate-data lowering and browser feature validation; raw C data pointers must become checked byte spans.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 77,
+        "context": "pass",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
     },
     {
       "name": "render_pass_encoder.draw",
@@ -1171,16 +1245,30 @@
     {
       "name": "render_pass_encoder.draw_indirect",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add draw_indirect to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 78,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndirect"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.draw_indexed_indirect",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add draw_indexed_indirect to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 79,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexedIndirect"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.execute_bundles",
@@ -1199,51 +1287,100 @@
     {
       "name": "render_pass_encoder.insert_debug_marker",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add insert_debug_marker to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 80,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.pop_debug_group",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add pop_debug_group to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 81,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.push_debug_group",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add push_debug_group to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 82,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_stencil_reference",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_stencil_reference to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 83,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setStencilReference"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_blend_constant",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_blend_constant to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 84,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBlendConstant"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_viewport",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_viewport to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 85,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setViewport"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_scissor_rect",
       "group": "render-pass",
-      "category": "deferred",
-      "reason": "Add set_scissor_rect to the recorded render pass with typed arguments and resumable replay; triangle set-pipeline/draw/end is insufficient.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 86,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setScissorRect"
+        }
+      }
     },
     {
       "name": "render_pass_encoder.set_vertex_buffer",
@@ -1521,9 +1658,16 @@
     {
       "name": "texture.destroy",
       "group": "creation",
-      "category": "deferred",
-      "reason": "Add texture destruction with frame-texture lifetime handling and validation scopes; texture release is not a destroy call.",
-      "slice": "G1"
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 88,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
     },
     {
       "name": "texture_view.set_label",

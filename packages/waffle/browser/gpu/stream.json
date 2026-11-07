@@ -1259,6 +1259,350 @@
       "omitted": [],
       "cReturn": "object.bind_group_layout",
       "callback": null
+    },
+    {
+      "opcode": 69,
+      "name": "command_encoder.copy_buffer_to_buffer",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "copyBufferToBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 70,
+      "name": "command_encoder.copy_buffer_to_texture",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "copyBufferToTexture"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 71,
+      "name": "command_encoder.copy_texture_to_buffer",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "copyTextureToBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 72,
+      "name": "command_encoder.copy_texture_to_texture",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "copyTextureToTexture"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 73,
+      "name": "command_encoder.clear_buffer",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "clearBuffer"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 74,
+      "name": "command_encoder.insert_debug_marker",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "insertDebugMarker"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 75,
+      "name": "command_encoder.pop_debug_group",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "popDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 76,
+      "name": "command_encoder.push_debug_group",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "pushDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 77,
+      "name": "render_pass_encoder.set_immediates",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "set-immediates",
+        "member": "setImmediates",
+        "span": {
+          "pointer": "data",
+          "size": "size"
+        }
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 78,
+      "name": "render_pass_encoder.draw_indirect",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "drawIndirect"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 79,
+      "name": "render_pass_encoder.draw_indexed_indirect",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "drawIndexedIndirect"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 80,
+      "name": "render_pass_encoder.insert_debug_marker",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "insertDebugMarker"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 81,
+      "name": "render_pass_encoder.pop_debug_group",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "popDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 82,
+      "name": "render_pass_encoder.push_debug_group",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "pushDebugGroup"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 83,
+      "name": "render_pass_encoder.set_stencil_reference",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setStencilReference"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 84,
+      "name": "render_pass_encoder.set_blend_constant",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setBlendConstant"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 85,
+      "name": "render_pass_encoder.set_viewport",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setViewport"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 86,
+      "name": "render_pass_encoder.set_scissor_rect",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "setScissorRect"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 87,
+      "name": "buffer.destroy",
+      "receiver": "buffer",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "destroy"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 88,
+      "name": "texture.destroy",
+      "receiver": "texture",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "destroy"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     }
   ],
   "records": [
@@ -1863,7 +2207,7 @@
       "stencil8": null,
       "depth16_unorm": null,
       "depth24_plus": "depth24plus",
-      "depth24_plus_stencil8": null,
+      "depth24_plus_stencil8": "depth24plus-stencil8",
       "depth32_float": "depth32float",
       "depth32_float_stencil8": null,
       "BC1_RGBA_unorm": null,
@@ -2335,7 +2679,27 @@
     "render_pass_encoder.end_occlusion_query": 65,
     "query_set.destroy": 66,
     "compute_pipeline.get_bind_group_layout": 67,
-    "render_pipeline.get_bind_group_layout": 68
+    "render_pipeline.get_bind_group_layout": 68,
+    "command_encoder.copy_buffer_to_buffer": 69,
+    "command_encoder.copy_buffer_to_texture": 70,
+    "command_encoder.copy_texture_to_buffer": 71,
+    "command_encoder.copy_texture_to_texture": 72,
+    "command_encoder.clear_buffer": 73,
+    "command_encoder.insert_debug_marker": 74,
+    "command_encoder.pop_debug_group": 75,
+    "command_encoder.push_debug_group": 76,
+    "render_pass_encoder.set_immediates": 77,
+    "render_pass_encoder.draw_indirect": 78,
+    "render_pass_encoder.draw_indexed_indirect": 79,
+    "render_pass_encoder.insert_debug_marker": 80,
+    "render_pass_encoder.pop_debug_group": 81,
+    "render_pass_encoder.push_debug_group": 82,
+    "render_pass_encoder.set_stencil_reference": 83,
+    "render_pass_encoder.set_blend_constant": 84,
+    "render_pass_encoder.set_viewport": 85,
+    "render_pass_encoder.set_scissor_rect": 86,
+    "buffer.destroy": 87,
+    "texture.destroy": 88
   },
   "completionLedger": {
     "adapter": 1,
@@ -2754,6 +3118,10 @@
       "label": "label",
       "type": "type",
       "count": "count"
+    },
+    "texel_copy_buffer_info": {
+      "layout": null,
+      "buffer": "buffer"
     }
   },
   "dictionaryRules": {
@@ -2776,7 +3144,10 @@
     "nullablePassBindings": "null-group-and-vertex-buffer-become-explicit-JS-null",
     "immediateSize": "pipeline-layout-immediate_size-to-immediateSize",
     "computeImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
-    "bundleImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span"
+    "bundleImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span",
+    "copyBufferInfo": "flatten-C-layout-to-browser-offset-bytesPerRow-rowsPerImage-and-buffer",
+    "clearBufferSize": "u64-max-to-omitted-size-only;offset-remains-checked-u64",
+    "renderImmediates": "length-prefixed-byte-span-replaces-C-data-and-size;native-setImmediates-offset-and-span"
   },
   "cOutput": {
     "surface.get_current_texture": {
