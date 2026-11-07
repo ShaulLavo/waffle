@@ -1,5 +1,5 @@
 import { PayloadDirectory } from "./payload.js";
-import { gpuPayloadLayout } from "./generated/tables.js";
+import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
 import { completionBytes, type WireObject } from "./codec.js";
 import type { RecordRing, RingWriter } from "./ring.js";
 import {

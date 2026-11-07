@@ -1,4 +1,4 @@
-import { validGraphicsOpen } from "../gpu/protocol.js";
+import { validGraphicsOpen } from "./open.js";
 import { allocateSharedControl } from "../../memory/control.js";
 import type {
   GraphicsConnection,

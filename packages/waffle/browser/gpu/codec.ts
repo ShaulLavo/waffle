@@ -325,7 +325,9 @@ class OutputWriter {
       : undefined;
   }
   #align(alignment: number): void {
-    this.offset = Math.ceil(this.offset / alignment) * alignment;
+    const length = Math.ceil(this.offset / alignment) * alignment - this.offset;
+    const at = this.#advance(length);
+    this.destination?.fill(0, at, this.offset);
   }
   #advance(length: number): number {
     const at = this.offset;

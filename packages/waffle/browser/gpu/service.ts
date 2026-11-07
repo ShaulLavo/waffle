@@ -1,8 +1,9 @@
+import { validGraphicsOpen } from "../display/open.js";
 import type { GraphicsOpen, GpuServiceRequest, GpuServiceReply } from "../display/protocol.js";
 import { GpuConnection, GpuScheduler } from "./scheduler.js";
 import { RecordRing } from "./ring.js";
-import { gpuPayloadLayout } from "./generated/tables.js";
-import { GPU_TERMINAL, ServiceCredit, validGraphicsOpen } from "./protocol.js";
+import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
+import { GPU_TERMINAL, ServiceCredit } from "./protocol.js";
 import { GpuSurfaces, type SurfaceConnection } from "./surfaces.js";
 import type { SurfaceTarget } from "./replay.js";
 

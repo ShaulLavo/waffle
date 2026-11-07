@@ -6669,10 +6669,12 @@ export const gpuStreamSources = {
   "browser/gpu/upstream/webgpu.h":
     "0314dc40d4641dfe9638ae82071926c0a4136a4bf525c54098b58be345e9b4ed",
   "browser/gpu/stream.json": "39ac0a803dfd25a09ce33506f9b80336f81e9ea83b5418a054bb15b946950795",
-  "tooling/gpu-stream.ts": "a59f699cce709b87942278ea73418d18ae443ec6ef8128c56f8fd878c75fa542",
+  "tooling/gpu-stream.ts": "1c98faff564291046a185ab91f643e208eda200fcbf0acb43043211879d7580c",
   "tooling/gpu-stream-model.ts": "870f7f760af925a1a6b9c3afea31b9b944127df20c78d9ddaa4f8111157ead47",
   "tooling/gpu-stream-layout.ts":
     "02a5038bc7411a5b99cadbe54d74815494fddf74cd15940a9d0e59bdb81dc5c6",
+  "browser/gpu/metadata.ts": "d95703776329e8a691dba18736fdc4d9c386cc12a64c96fbba6818e1d78438c1",
+  "browser/gpu/codec.ts": "bfe969d6379e86a5ea70afa9ffc7880177de19e4bfa49e87f5b64035088db2e5",
   "tests/fixtures/gpu/expected.json":
     "16a708a48026a3ac5ea0bd3ba38614953e2124bb4105b67eb591951560132350",
   "tests/fixtures/gpu/enums.json":
@@ -7507,22 +7509,5 @@ export const gpuCOutputs = {
       },
     ],
   },
-};
-export const gpuPayloadLayout = {
-  byteLength: 1048576,
-  headerBytes: 64,
-  slots: 64,
-  slotBytes: 32,
-  directoryOffset: 64,
-  dataOffset: 2112,
-  dataBytes: 1046464,
-  terminalOffset: 0,
-  stateOffset: 0,
-  offsetOffset: 8,
-  lengthOffset: 12,
-  free: 0,
-  ready: 1,
-  reading: 2,
-  consumed: 3,
 };
 export const gpuWholeMapSize = 0xffffffffffffffffn;

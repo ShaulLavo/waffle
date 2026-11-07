@@ -1,8 +1,8 @@
-import { validGraphicsOpen } from "../browser/gpu/protocol.ts";
+import { validGraphicsOpen } from "../browser/display/open.ts";
 import { expect, test } from "bun:test";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
 import { PayloadDirectory } from "../browser/gpu/payload.ts";
-import { gpuPayloadLayout as layout } from "../browser/gpu/generated/tables.ts";
+import { gpuPayloadLayout as layout } from "../browser/display/generated/graphics-layout.ts";
 import { createGraphicsGuest } from "../browser/gpu/guest.ts";
 import type { GraphicsOpen } from "../browser/display/protocol.ts";
 import {

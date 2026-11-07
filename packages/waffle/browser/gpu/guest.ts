@@ -24,7 +24,7 @@ import {
   Uint8ArrayConstructor,
   objectCreate,
 } from "../../proc/intrinsics.js";
-import { gpuPayloadLayout } from "./generated/tables.js";
+import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
 import { PayloadDirectory, terminalErrno } from "./payload.js";
 import { RecordRing } from "./ring.js";
 import { LogicalAppend } from "./transport.js";
