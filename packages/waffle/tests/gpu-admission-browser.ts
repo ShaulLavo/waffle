@@ -76,6 +76,8 @@ async function admissionCase(page: Page) {
       const before = await until(page, (service) => peerAdvanced(service, peer, last));
       const image = await pixels(page, 1, false);
       assertTrianglePixels(image, "green");
+      const recoveryPixels = name === "recovered" ? await pixels(page, 10, false) : undefined;
+      if (recoveryPixels) assertTrianglePixels(recoveryPixels);
       const start = progress(before, peer);
       const after = await until(
         page,
@@ -88,7 +90,14 @@ async function admissionCase(page: Page) {
               record(work.settlement).kind === "completed",
           ),
       );
-      phases.push({ name, peerPid: peerGuest.pid, before, service: after, pixels: image });
+      phases.push({
+        name,
+        peerPid: peerGuest.pid,
+        before,
+        service: after,
+        pixels: image,
+        recoveryPixels,
+      });
     };
     await capture("live");
     const cohort: unknown[] = [peerGuest];
@@ -116,7 +125,6 @@ async function admissionCase(page: Page) {
     await capture("capacity");
     await invoke(page, "launchTriangle", [[], "gpu", 10, true]);
     await checkpoint(page, "GPU_FRAME colour=red frame=1 validation=none", 10);
-    assertTrianglePixels(await pixels(page, 10, false));
     const recovered = await invoke(page, "ownershipGuest", [10]);
     await capture("recovered");
     const endings = [];
@@ -159,7 +167,6 @@ async function admissionCase(page: Page) {
   }
 }
 
-/** The original C producer reaches the unmodified shared service's global admission policy. */
 export async function admissionCases(source: Page, url: string, available: boolean) {
   if (!available) return { kind: "unsupported", implementedProofExecuted: false };
   const browser = source.context().browser();
@@ -304,7 +311,11 @@ function immutableRetired(previous: Record<string, unknown>, next: Record<string
   ])
     requireProof(integer(previous[key]) === integer(next[key]), "late retired owner work");
 }
-function refusedAttempt(service: Record<string, unknown>, guest: Record<string, unknown>) {
+function refusedAttempt(
+  service: Record<string, unknown>,
+  guest: Record<string, unknown>,
+  heap: number,
+) {
   const attempt = attemptFor(service, guest.surface);
   requireProof(
     attempt.owner === null &&
@@ -315,7 +326,8 @@ function refusedAttempt(service: Record<string, unknown>, guest: Record<string, 
       attempt.arenaTerminal === 3 &&
       attempt.beforeConnections === 8 &&
       attempt.afterConnections === 8 &&
-      attempt.beforeHeap === attempt.afterHeap &&
+      attempt.beforeHeap === heap &&
+      attempt.afterHeap === heap &&
       attempt.beforeNativeRequests === 9 &&
       attempt.afterNativeRequests === 9,
     "wrong correlated service cap or refusal",
@@ -437,6 +449,13 @@ function retiredProgress(
 }
 function cohortProof(service: Record<string, unknown>, cohort: Cohort) {
   const natives = entries(service.owners);
+  const known = new Set(cohort.all.map((entry) => entry.native.id));
+  const observed = record(service.fairness);
+  for (const name of ["presents", "queue", "slices"])
+    requireProof(
+      entries(observed[name]).every((item) => known.has(item.connection)),
+      "unowned native producer observation",
+    );
   requireProof(
     natives.length === cohort.all.length &&
       service.connections === cohort.live.length &&
@@ -557,7 +576,24 @@ function disposalProof(value: unknown) {
   );
 }
 
-/** Fail closed on original compiled outcomes, cohort identities, physical stops and separate debt. */
+type PhaseProof = Cohort & {
+  readonly observed: Observation;
+  readonly refused: Record<string, unknown>;
+  readonly index: number;
+};
+function phaseSnapshotProof(service: Record<string, unknown>, expected: PhaseProof) {
+  snapshotProof(service, expected.observed);
+  cohortProof(service, expected);
+  admittedAttempts(service, expected.all, expected.live);
+  requireProof(
+    entries(service.attempts).length === expected.all.length + Number(expected.index >= 2),
+    "unexpected service open attempts",
+  );
+  if (expected.index < 2) return;
+  const refusal = refusedAttempt(service, expected.refused, expected.heapUnit * 8);
+  requireProof(expected.index < 3 || refusal.retiredAck === true, "refused grant did not retire");
+}
+
 export function validateAdmissionResult(value: unknown) {
   const result = record(value);
   requireProof(
@@ -626,25 +662,35 @@ export function validateAdmissionResult(value: unknown) {
     const seen = index === 0 ? [control, cohort[0]!] : index >= 5 ? all : [control].concat(cohort);
     const live = liveCohorts[index]!;
     for (const service of [record(phase.before), record(phase.service)]) {
-      snapshotProof(service, observed);
-      cohortProof(service, { all: seen, live, heapUnit, retired: retiredOwners });
-      admittedAttempts(service, seen, live);
-      requireProof(
-        entries(service.attempts).length === seen.length + Number(index >= 2),
-        "unexpected service open attempts",
-      );
-      if (index >= 2) {
-        const refusal = refusedAttempt(service, refused);
-        requireProof(index < 3 || refusal.retiredAck === true, "refused grant did not retire");
-      }
+      phaseSnapshotProof(service, {
+        all: seen,
+        live,
+        heapUnit,
+        retired: retiredOwners,
+        observed,
+        refused,
+        index,
+      });
     }
     previous = bracketProof(phase, result.peer, previous);
+    if (index === 5) {
+      const image = record(phase.recoveryPixels);
+      requireProof(
+        Array.isArray(image.center) && Array.isArray(image.corner),
+        "missing recovery pixels",
+      );
+      assertTrianglePixels({ center: image.center.map(number), corner: image.corner.map(number) });
+    }
   }
   const final = record(result.final);
   snapshotProof(final, observed);
   cohortProof(final, { all, live: [], heapUnit, retired: retiredOwners });
   admittedAttempts(final, all, []);
-  requireProof(refusedAttempt(final, refused).retiredAck === true, "final refused grant live");
+  requireProof(entries(final.attempts).length === all.length + 1, "unexpected final open attempts");
+  requireProof(
+    refusedAttempt(final, refused, heapUnit * 8).retiredAck === true,
+    "final refused grant live",
+  );
   assertRetired(final);
   validateStops(result, cohort, recovery);
   disposalProof(result.runtimeStop);

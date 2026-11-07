@@ -196,6 +196,7 @@ function proof() {
     before: snapshot(index, index * 2 + 1),
     service: snapshot(index, index * 2 + 2),
     pixels: { center: [0, 255, 0, 255], corner: [0, 0, 0, 255] },
+    recoveryPixels: { center: [255, 0, 0, 255], corner: [0, 0, 0, 255] },
   }));
   return {
     kind: "global-admission",
@@ -483,4 +484,21 @@ test("retired native producers cannot submit or present after their retirement b
       settlement: { kind: "completed", at: 230 },
     });
   }, /late retired native work/);
+});
+
+test("no unowned native producer or extra final open can hide outside the cohort", () => {
+  rejects((value) => {
+    value.phases[2]!.service.fairness.presents.push({ connection: 99, at: 99 });
+  }, /unowned native producer/);
+  rejects((value) => {
+    value.final.attempts.push(attempt(12, false));
+  }, /unexpected final open attempts/);
+  rejects((value) => {
+    value.phases[2]!.service.attempts.at(-1)!.beforeHeap++;
+  }, /service cap or refusal/);
+});
+test("recovery must retain its actual new compiled guest pixels", () => {
+  rejects((value) => {
+    value.phases[5]!.recoveryPixels.center = [0, 255, 0, 255];
+  }, /pixel failure/);
 });
