@@ -18,6 +18,11 @@ function controlSnapshot(live: number, retired: number) {
     ),
   };
 }
+function cleanAuthority() {
+  const canaries = Array.from({ length: 33 }, () => "canary");
+  const leaks: string[] = [];
+  return { canaries, leaks };
+}
 function proof(kind = "append") {
   const owner = (id: number, retired = false) => ({
     id,
@@ -52,9 +57,25 @@ function proof(kind = "append") {
     replies: { head: 0, tail: 0, capacity: 262144, used: 0, writer: 0, terminal: retired ? 4 : 0 },
   });
   const events = [
-    { token: "victim", call: 1, name: "append", phase: "enter", connection: 1, length: 32 },
+    {
+      token: "victim",
+      call: 1,
+      name: "append",
+      phase: "enter",
+      connection: 1,
+      length: 32,
+      authority: cleanAuthority(),
+    },
     { token: "victim", call: 1, name: "append", phase: "return", result: 0 },
-    { token: "victim", call: 2, name: "completions", phase: "enter", connection: 1, length: 1024 },
+    {
+      token: "victim",
+      call: 2,
+      name: "completions",
+      phase: "enter",
+      connection: 1,
+      length: 1024,
+      authority: cleanAuthority(),
+    },
     { token: "victim", call: 2, name: "completions", phase: "wait" },
     { token: "victim", call: 2, name: "completions", phase: "return", result: 0 },
     {
@@ -63,7 +84,7 @@ function proof(kind = "append") {
       name: kind,
       phase: "enter",
       connection: 1,
-      authority: { canaries: Array(33).fill("canary"), leaks: [] },
+      authority: cleanAuthority(),
       length: kind === "append" ? 4800184 : 1024,
     },
     { token: "victim", call: 3, name: kind, phase: "wait" },
@@ -90,6 +111,7 @@ function proof(kind = "append") {
       nativeReleased: index === 4,
       connections: index === 2 ? 2 : 1,
       devicesLive: index === 2 && kind === "append" ? 2 : 1,
+      heapBytes: index === 2 ? (kind === "append" ? 4_932_356 : 131_622) : 66_086,
       fairness: {
         overflow: false,
         slices: [{ start: 1, end: 2 }],
@@ -139,17 +161,17 @@ function proof(kind = "append") {
       grantRetired: true,
       physicallyStopped: true,
       snapshot: controlSnapshot(2, 2),
-      ownAuthority: [{ canaries: Array(33).fill("canary"), leaks: [] }],
+      ownAuthority: [cleanAuthority()],
     },
     controlExit: {
       exit: { kind: "exited", code: 0 },
-      ownAuthority: [{ canaries: Array(33).fill("canary"), leaks: [] }],
+      ownAuthority: [cleanAuthority()],
     },
     peerExit: {
       snapshot: controlSnapshot(1, 3),
       pid: 11,
       exit: { kind: "exited", code: 0 },
-      ownAuthority: [{ canaries: Array(33).fill("canary"), leaks: [] }],
+      ownAuthority: [cleanAuthority()],
     },
     final: {
       connections: 0,
@@ -276,4 +298,76 @@ test("the existing blocking runner always bundles and executes the ownership pro
   expect(source.indexOf("await ownershipCases(page")).toBeLessThan(
     source.indexOf("await fairnessCases(page"),
   );
+});
+
+for (const mode of ["append", "completions"]) {
+  test(`every earlier ${mode} victim authority checkpoint is required and clean`, () => {
+    for (const call of [1, 2]) {
+      const leaked = proof(mode);
+      leaked.phases[2]!.events.find(
+        (event) => event.call === call && event.phase === "enter",
+      )!.authority!.leaks.push("Atomics.load");
+      expect(() => validateOwnershipResult(leaked)).toThrow("authority");
+      const missing = proof(mode);
+      missing.phases[2]!.events.find(
+        (event) => event.call === call && event.phase === "enter",
+      )!.authority = undefined;
+      expect(() => validateOwnershipResult(missing)).toThrow();
+      const noCanaries = proof(mode);
+      noCanaries.phases[2]!.events.find(
+        (event) => event.call === call && event.phase === "enter",
+      )!.authority!.canaries.length = 0;
+      expect(() => validateOwnershipResult(noCanaries)).toThrow("authority");
+    }
+  });
+
+  test(`${mode} retirement identities stay anchored to the blocked victim`, () => {
+    for (const field of ["grant", "surface", "device"] as const) {
+      const value = proof(mode);
+      value.phases[3]!.service.owners[1]![field] = 99;
+      value.phases[4]!.service.owners[1]![field] = 99;
+      expect(() => validateOwnershipResult(value)).toThrow("ownership");
+    }
+    const created = proof(mode);
+    for (const phase of created.phases.slice(3)) {
+      const victim = phase.service.owners[1]!;
+      victim.created = 2;
+      victim.destroyed = mode === "completions" && phase.name === "retired" ? 0 : 2;
+    }
+    expect(() => validateOwnershipResult(created)).toThrow("ownership");
+  });
+
+  test(`${mode} service heap returns to the stable live-peer baseline`, () => {
+    for (const index of [3, 4]) {
+      const value = proof(mode);
+      value.phases[index]!.service.heapBytes++;
+      expect(() => validateOwnershipResult(value)).toThrow("credit");
+    }
+    const unstable = proof(mode);
+    unstable.phases[1]!.service.heapBytes++;
+    expect(() => validateOwnershipResult(unstable)).toThrow("credit");
+  });
+}
+
+test("blocked partial assembly requires its full observed logical credit", () => {
+  const uncharged = proof();
+  uncharged.phases[2]!.service.heapBytes = uncharged.phases[1]!.service.heapBytes;
+  expect(() => validateOwnershipResult(uncharged)).toThrow("credit");
+  const short = proof();
+  short.phases[2]!.service.heapBytes =
+    short.phases[1]!.service.heapBytes + short.phases[2]!.service.owners[1]!.logicalBytes - 1;
+  expect(() => validateOwnershipResult(short)).toThrow("credit");
+});
+
+test("all intermediate service credit observations are present, finite byte counts", () => {
+  for (const index of [0, 1, 2, 3, 4]) {
+    const value = proof();
+    Reflect.deleteProperty(value.phases[index]!.service, "heapBytes");
+    expect(() => validateOwnershipResult(value)).toThrow();
+  }
+  for (const invalid of [NaN, Infinity, -1, 1.5]) {
+    const value = proof();
+    value.phases[2]!.service.heapBytes = invalid;
+    expect(() => validateOwnershipResult(value)).toThrow();
+  }
 });

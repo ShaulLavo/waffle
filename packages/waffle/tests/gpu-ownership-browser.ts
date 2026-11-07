@@ -67,7 +67,6 @@ function importProof(phase: Record<string, unknown>, mode: Mode) {
     throw new Error("Selected import already returned or threw");
   if (mode === "append" && number(entered.length) <= 4 * 1024 * 1024)
     throw new Error("Blocked append was not the compiled oversized blob");
-  return last.call;
 }
 function blockedProof(
   service: Record<string, unknown>,
@@ -240,9 +239,20 @@ function accounting(value: unknown, liveCount: number, retiredCount: number) {
   )
     throw new Error("Ownership shared-control monotonic debt was reset or mischarged");
 }
-function stableRetirement(retired: Record<string, unknown>, released: Record<string, unknown>) {
+function stableRetirement(
+  blocked: Record<string, unknown>,
+  retired: Record<string, unknown>,
+  released: Record<string, unknown>,
+) {
   for (const key of ["grant", "surface", "device", "created"]) {
-    if (retired[key] !== released[key]) throw new Error("Late result replaced victim ownership");
+    const expected = number(blocked[key]);
+    if (
+      !Number.isSafeInteger(expected) ||
+      expected === 0 ||
+      retired[key] !== expected ||
+      released[key] !== expected
+    )
+      throw new Error("Victim ownership changed across retirement");
   }
   for (const name of ["commands", "replies"]) {
     const before = record(retired[name]),
@@ -254,6 +264,21 @@ function stableRetirement(retired: Record<string, unknown>, released: Record<str
     if (["head", "tail", "terminal"].some((key) => before[key] !== after[key]))
       throw new Error("Late work published to retired victim rings");
   }
+}
+function heapCreditProof(
+  phases: readonly Record<string, unknown>[],
+  victim: Record<string, unknown>,
+  mode: Mode,
+) {
+  const heap = phases.map((phase) => number(record(phase.service).heapBytes));
+  if (heap.some((bytes) => !Number.isSafeInteger(bytes)))
+    throw new Error("Invalid service heap credit byte count");
+  const peer = heap[1]!;
+  if (heap[0] !== peer || heap[3] !== peer || heap[4] !== peer)
+    throw new Error("Victim service heap credit did not return to the stable peer baseline");
+  const partial = mode === "append" ? number(victim.logicalBytes) : 0;
+  if (heap[2]! - peer < partial)
+    throw new Error("Blocked partial assembly service credit is missing");
 }
 /** Independent, fail-closed validation. Timings retain unchanged targets, not a hardware verdict. */
 export function validateOwnershipResult(value: unknown) {
@@ -286,12 +311,15 @@ export function validateOwnershipResult(value: unknown) {
   const phases = validatePhases(result, mode);
   const blocked = phases[2]!,
     blockedService = record(blocked.service);
-  const blockedCall = importProof(blocked, mode);
-  const blockedEntry = entries(blocked.events).find(
-    (event) => event.call === blockedCall && event.phase === "enter",
-  )!;
-  authority({ ownAuthority: [blockedEntry.authority] });
-  blockedProof(blockedService, owner(blockedService, result.victim, "victim"), mode);
+  importProof(blocked, mode);
+  authority({
+    ownAuthority: entries(blocked.events)
+      .filter((event) => event.phase === "enter")
+      .map((event) => event.authority),
+  });
+  const blockedVictim = owner(blockedService, result.victim, "victim");
+  blockedProof(blockedService, blockedVictim, mode);
+  heapCreditProof(phases, blockedVictim, mode);
   const released = record(phases[4]!.service);
   if (
     released.released !== true ||
@@ -327,6 +355,7 @@ export function validateOwnershipResult(value: unknown) {
   accounting(peerExit.snapshot, 1, 3);
   const retired = record(phases[3]!.service);
   stableRetirement(
+    blockedVictim,
     owner(retired, result.victim, "victim"),
     owner(released, result.victim, "victim"),
   );
