@@ -2826,15 +2826,15 @@
       "high_performance": "high-performance"
     },
     "enum.backend_type": {
-      "undefined": 0,
-      "null": 1,
-      "WebGPU": 2,
-      "D3D11": 3,
-      "D3D12": 4,
-      "metal": 5,
-      "vulkan": 6,
-      "openGL": 7,
-      "openGLES": 8
+      "undefined": "@omit",
+      "null": null,
+      "WebGPU": null,
+      "D3D11": null,
+      "D3D12": null,
+      "metal": null,
+      "vulkan": null,
+      "openGL": null,
+      "openGLES": null
     },
     "enum.feature_name": {
       "core_features_and_limits": null,
