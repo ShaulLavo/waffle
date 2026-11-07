@@ -433,7 +433,11 @@ function failureExits(failure: Record<string, unknown>, original: ReturnType<typ
         events.length === originalEvents.length + 1 && last.call === originalEvents.at(-1)!.call,
         "held import completion identity changed",
       );
-    const name = index === 2 ? "open" : "completions";
+    const name = index === 2 ? "open" : index === 1 ? "completions" : last.name;
+    requireProof(
+      index !== 0 || name === "completions" || name === "append",
+      "unrelated terminal import",
+    );
     requireProof(
       last.name === name &&
         last.phase === "return" &&

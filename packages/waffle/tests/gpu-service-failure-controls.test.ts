@@ -277,10 +277,10 @@ function fixture() {
       peerPid: peerGuest.pid,
       before: service(before!),
       service: service(after!),
-      pixels: green,
+      pixels: structuredClone(green),
     })),
     pending: service(110),
-    lostPixels: green,
+    lostPixels: structuredClone(green),
     failure: {
       id: "fault",
       startedAt: 200,
@@ -341,7 +341,7 @@ function fixture() {
       guest: recoveryGuest,
       before: recoveryBefore,
       service: recoveryService,
-      pixels: green,
+      pixels: structuredClone(green),
       state: recovered,
       after: {
         ...recovered,
@@ -543,6 +543,13 @@ const invalid: [string, (value: ReturnType<typeof fixture>) => void, string][] =
     "held import completion identity changed",
   ],
   [
+    "unrelated peer import",
+    (x) => {
+      x.failure.exits[0]!.guest.events.at(-1)!.name = "open";
+    },
+    "unrelated terminal import",
+  ],
+  [
     "wrong C failure",
     (x) => {
       x.failure.exits[2]!.text = "GPU_FAIL stage=device status=-64\n";
@@ -656,4 +663,24 @@ test("the real Worker throw is outside the observer catch and the ordinary compi
   expect(runner.indexOf("await serviceFailureCases")).toBeLessThan(
     runner.indexOf("if (serviceFailureOnly)"),
   );
+});
+
+test("the original peer may first observe global closure in its next append", () => {
+  const value = fixture(),
+    peer = value.failure.exits[0]!;
+  const events = peer.guest.events;
+  events.at(-1)!.name = "append";
+  events.at(-1)!.call = 4;
+  events.splice(events.length - 1, 0, { ...events.at(-1)!, phase: "enter", result: 0 });
+  peer.text = "GPU_FAIL stage=append status=-64\n";
+  expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
+});
+
+test("recovery pixel negatives do not mutate the original peer's observations", () => {
+  const value = fixture();
+  value.recovery.pixels.center = [255, 0, 0, 255];
+  expect(
+    value.phases.every((phase) => JSON.stringify(phase.pixels) === JSON.stringify(green)),
+  ).toBe(true);
+  expect(() => validateServiceFailureResult(value)).toThrow("Compiled guest pixel failure");
 });
