@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
 import { PayloadDirectory } from "../browser/gpu/payload.ts";
 import { gpuPayloadLayout as layout } from "../browser/gpu/generated/tables.ts";
-import { GPU_TERMINAL } from "../browser/gpu/protocol.ts";
 import { createGraphicsGuest } from "../browser/gpu/guest.ts";
 import type { GraphicsOpen } from "../browser/display/protocol.ts";
 import {
@@ -149,35 +148,40 @@ for (const first of [3, 4])
       other.owner.terminate(1);
     }
   });
-test("64 unread payload slots, oversize and fragmentation are connection-local resource pressure", () => {
-  for (const mode of ["slots", "oversize", "fragmented"]) {
+function exhaustPayload(rig: ReturnType<typeof arenaRig>, mode: string): void {
+  const length = mode === "slots" ? 0 : Math.floor(layout.dataBytes / 64);
+  const handles = Array.from({ length: 64 }, () =>
+    rig.owner.allocatePayload(new Uint8Array(length)),
+  );
+  if (mode === "fragmented") consumeAlternating(rig, handles, length);
+  rig.owner.fillPayload(mode === "slots" ? 0 : length * 2, () => {
+    throw new Error("Must not fill exhausted payload");
+  });
+}
+function consumeAlternating(
+  rig: ReturnType<typeof arenaRig>,
+  handles: readonly ({ id: number; generation: number } | undefined)[],
+  length: number,
+): void {
+  for (let index = 0; index < handles.length; index += 2) {
+    const handle = handles[index];
+    if (handle) rig.directory.copyOnce(handle, new Uint8Array(length), rig.terminal, rig.terminate);
+  }
+}
+for (const mode of ["slots", "oversize", "fragmented"])
+  test(`payload pressure ${mode} closes locally`, () => {
     const rig = arenaRig();
     try {
       if (mode === "oversize")
         rig.owner.fillPayload(layout.dataBytes + 1, () => {
           throw new Error("Must not fill");
         });
-      else {
-        const handles = [];
-        const length = mode === "slots" ? 0 : Math.floor(layout.dataBytes / 64);
-        for (let i = 0; i < 64; i++)
-          handles.push(rig.owner.allocatePayload(new Uint8Array(length)));
-        if (mode === "fragmented")
-          for (let i = 0; i < 64; i += 2) {
-            const handle = handles[i];
-            if (handle)
-              rig.directory.copyOnce(handle, new Uint8Array(length), rig.terminal, rig.terminate);
-          }
-        rig.owner.fillPayload(mode === "slots" ? 0 : length * 2, () => {
-          throw new Error("Must not fill exhausted payload");
-        });
-      }
+      else exhaustPayload(rig, mode);
       expect(rig.owner.state).toEqual({ kind: "terminal", reason: 3 });
     } finally {
       rig.owner.terminate(1);
     }
-  }
-});
+  });
 test("actual guest payload import validates both spans and snapshots an overlapping handle", () => {
   const grant = { kind: "bounded" as const, state: new SharedArrayBuffer(8), limit: 3_000_000 };
   const receipts: SharedArrayBuffer[] = [];
@@ -198,14 +202,12 @@ test("actual guest payload import validates both spans and snapshots an overlapp
   const memory = new WebAssembly.Memory({ initial: 1 });
   const guest = createGraphicsGuest(
     {
-      ...{
-        port: port as unknown as MessagePort,
-        gpu: true,
-        revocation: new SharedArrayBuffer(64),
-        surfaces: [],
-        commandBytes: 4096,
-        completionBytes: 4096,
-      },
+      port: port as unknown as MessagePort,
+      gpu: true,
+      revocation: new SharedArrayBuffer(64),
+      surfaces: [],
+      commandBytes: 4096,
+      completionBytes: 4096,
     },
     () => memory,
     () => {},
@@ -250,5 +252,20 @@ test("actual guest payload import validates both spans and snapshots an overlapp
     restore();
     channel.port1.close();
     channel.port2.close();
+  }
+});
+
+test("unexpected service payload fill exceptions are not fabricated resource exhaustion", () => {
+  const rig = arenaRig();
+  try {
+    expect(
+      rig.owner.fillPayload(4, () => {
+        throw new TypeError("native adaptation failure");
+      }),
+    ).toBeUndefined();
+    expect(rig.owner.state).toEqual({ kind: "terminal", reason: 5 });
+    expect(rig.owner.failure).toBe("native adaptation failure");
+  } finally {
+    rig.owner.terminate(1);
   }
 });

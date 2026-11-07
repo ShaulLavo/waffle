@@ -44,6 +44,10 @@ interface Ready {
 export class CompletionOwner {
   #state: Ready | { readonly kind: "terminal"; readonly reason: number };
   #lastToken = 0;
+  #failure: string | undefined;
+  get failure(): string | undefined {
+    return this.#failure;
+  }
   constructor({ commands, replies, arena = new Uint8Array(0) }: CompletionBuffers) {
     if (commands.recordHeaderBytes !== 8 || replies.recordHeaderBytes !== 16)
       throw new RangeError("Expected command and completion rings");
@@ -150,8 +154,11 @@ export class CompletionOwner {
     try {
       return this.#allocatePayload(state, length, fill);
     } catch (error) {
+      this.#failure = error instanceof Error ? error.message.slice(0, 512) : "Payload fill failed";
       if (error instanceof GpuCallError) throw error;
-      this.terminate(GPU_TERMINAL.resource);
+      this.terminate(
+        error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.service,
+      );
       return;
     }
   }
