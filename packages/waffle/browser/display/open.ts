@@ -10,7 +10,8 @@ const growableGetter = SharedArrayBufferConstructor
   ? descriptor(SharedArrayBufferConstructor.prototype, "growable")?.get
   : undefined;
 function fixedBuffer(value: unknown, bytes: number): value is SharedArrayBuffer {
-  if (!SharedArrayBufferConstructor || !(value instanceof SharedArrayBufferConstructor)) return false;
+  if (!SharedArrayBufferConstructor || !(value instanceof SharedArrayBufferConstructor))
+    return false;
   return (
     sharedArrayBufferByteLength(value) === bytes &&
     (!growableGetter || reflectApply(growableGetter, value, []) !== true)
