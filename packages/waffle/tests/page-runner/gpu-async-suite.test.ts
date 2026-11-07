@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { type HostCase, runPageSuite } from "waffle/testing/page-runner";
 import { admitAsync } from "../gpu-async-command.js";
 import { asyncFixture } from "../gpu-async-assets.js";
@@ -9,8 +10,12 @@ import { checkGpuAsyncResult, driveGpuAsync, gpuAsyncAdapter } from "./gpu-async
 import { gpuAsyncId } from "./gpu-async-request.js";
 import { runGpuAsyncControls } from "./gpu-async-controls-runner.js";
 
-const root = await mkdtemp(join(process.env.GPU_SCRATCH_ROOT ?? "/work/tmp", "waffle-ga-unit-"));
+const root = await mkdtemp(join(process.env.GPU_SCRATCH_ROOT ?? tmpdir(), "waffle-ga-unit-"));
 afterAll(() => rm(root, { recursive: true, force: true }));
+
+test("unit scratch uses the configured GPU root or platform temporary directory", () => {
+  expect(dirname(resolve(root))).toBe(resolve(process.env.GPU_SCRATCH_ROOT ?? tmpdir()));
+});
 
 test("one complete command, not internal scenarios, is the framework inventory", () => {
   const adapter = gpuAsyncAdapter("ios-safari");
