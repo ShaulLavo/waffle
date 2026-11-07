@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { bounded } from "./driver.js";
 import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
 import type { HostCase } from "./protocol.js";
@@ -11,7 +12,7 @@ async function fixture(
   callback: (host: HostCase) => Promise<unknown>,
   inspect?: (result: Awaited<ReturnType<typeof runPageSuite>>) => void,
 ): Promise<void> {
-  const root = await mkdtemp("/work/tmp/peer-unit-");
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "peer-unit-"));
   const adapter: SuiteAdapter<null> = {
     suite: "peer-unit",
     inventory: () => [{ id: "peer", label: "peer", request: () => null, drive: callback }],

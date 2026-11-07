@@ -449,27 +449,47 @@ try {
       },
     });
   }
+  private probeLive(signal: AbortSignal, until: number): boolean {
+    return (
+      !signal.aborted &&
+      performance.now() < until &&
+      !this.closed &&
+      !this.uncertain &&
+      !this.driver.uncertain
+    );
+  }
   private probe(state: DocumentState): Promise<string> {
-    const signal = AbortSignal.timeout(4000);
-    return this.enqueue(async () => {
+    const until = Math.min(
+      performance.now() + 4000,
+      this.deadline,
+      this.started + this.budgets.run,
+    );
+    const signal = AbortSignal.any([
+      this.signal,
+      AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
+    ]);
+    const operation = this.enqueue(async () => {
       try {
-        if (this.closed || this.driver.uncertain) return "driver-lost";
-        if (!(await this.driver.handles(signal)).includes(state.handle)) return "page-closed";
-        if (this.closed) return "driver-lost";
+        if (!this.probeLive(signal, until)) return "driver-lost";
+        const handles = await this.driver.handles(signal);
+        if (!this.probeLive(signal, until)) return "driver-lost";
+        if (!handles.includes(state.handle)) return "page-closed";
         await this.driver.selectWindow(state.handle, signal);
-        if (this.closed) return "driver-lost";
-        if (
-          (await this.driver.handle(signal)) !== state.handle ||
-          (await this.driver.url(signal)) !== state.expectedURL
-        )
-          return "page-reloaded";
-        if (this.closed) return "driver-lost";
+        if (!this.probeLive(signal, until)) return "driver-lost";
+        const handle = await this.driver.handle(signal);
+        if (!this.probeLive(signal, until)) return "driver-lost";
+        if (handle !== state.handle) return "page-reloaded";
+        const url = await this.driver.url(signal);
+        if (!this.probeLive(signal, until)) return "driver-lost";
+        if (url !== state.expectedURL) return "page-reloaded";
         const value = await this.driver.script("return window.__pageRunner || null", signal);
+        if (!this.probeLive(signal, until)) return "driver-lost";
         return record(value) && value.doc === state.doc ? "responsive" : "page-reloaded";
       } catch {
         return "driver-lost";
       }
     });
+    return abortable(operation, signal).catch(() => "driver-lost");
   }
   private checkTransition(transition: PeerTransition, signal: AbortSignal, cleanup = false): void {
     signal.throwIfAborted();
