@@ -3,7 +3,8 @@
     "repository": "webgpu-native/webgpu-headers",
     "revision": "a1dc77409bb2b8bd80540cbf4b8db219e123e909",
     "sha256": "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
-    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22"
+    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
+    "headerSha256": "0314dc40d4641dfe9638ae82071926c0a4136a4bf525c54098b58be345e9b4ed"
   },
   "root": {
     "object": "instance",
@@ -1909,6 +1910,302 @@
       "omitted": [],
       "cReturn": "void",
       "callback": null
+    },
+    {
+      "opcode": 107,
+      "name": "adapter.get_info",
+      "receiver": "adapter",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "enum.status"
+      },
+      "cReturn": "enum.status",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "info"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 108,
+      "name": "adapter.get_features",
+      "receiver": "adapter",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "void",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "features"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 109,
+      "name": "adapter.has_feature",
+      "receiver": "adapter",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "bool"
+      },
+      "cReturn": "bool",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "has-feature"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 110,
+      "name": "adapter.get_limits",
+      "receiver": "adapter",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "enum.status"
+      },
+      "cReturn": "enum.status",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "limits"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 111,
+      "name": "device.get_features",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "void",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "features"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 112,
+      "name": "device.has_feature",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "bool"
+      },
+      "cReturn": "bool",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "has-feature"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 113,
+      "name": "device.get_limits",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "enum.status"
+      },
+      "cReturn": "enum.status",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "limits"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 114,
+      "name": "device.get_adapter_info",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "enum.status"
+      },
+      "cReturn": "enum.status",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "info"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 115,
+      "name": "buffer.map_async",
+      "receiver": "buffer",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "struct.future",
+      "callback": {
+        "type": "callback.buffer_map",
+        "future": "token-as-future-id",
+        "delivery": "guest-local-completion-pump",
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"],
+        "args": [
+          {
+            "name": "status",
+            "type": "enum.map_async_status",
+            "pointer": null
+          },
+          {
+            "name": "message",
+            "type": "out_string",
+            "pointer": null
+          }
+        ]
+      },
+      "token": "map-result",
+      "lowering": {
+        "kind": "async",
+        "member": "mapAsync"
+      },
+      "omitted": ["callback_info"]
+    },
+    {
+      "opcode": 116,
+      "name": "buffer.unmap",
+      "receiver": "buffer",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "void",
+      "callback": null,
+      "token": null,
+      "lowering": {
+        "kind": "method",
+        "member": "unmap"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 117,
+      "name": "shader_module.get_compilation_info",
+      "receiver": "shader_module",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "struct.future",
+      "callback": {
+        "type": "callback.compilation_info",
+        "future": "token-as-future-id",
+        "delivery": "guest-local-completion-pump",
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"],
+        "args": [
+          {
+            "name": "status",
+            "type": "enum.compilation_info_request_status",
+            "pointer": null
+          },
+          {
+            "name": "compilation_info",
+            "type": "struct.compilation_info",
+            "pointer": "immutable"
+          }
+        ]
+      },
+      "token": "compilation-result",
+      "lowering": {
+        "kind": "async",
+        "member": "getCompilationInfo"
+      },
+      "omitted": ["callback_info"]
+    },
+    {
+      "opcode": 118,
+      "name": "queue.on_submitted_work_done",
+      "receiver": "queue",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "struct.future",
+      "callback": {
+        "type": "callback.queue_work_done",
+        "future": "token-as-future-id",
+        "delivery": "guest-local-completion-pump",
+        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"],
+        "args": [
+          {
+            "name": "status",
+            "type": "enum.queue_work_done_status",
+            "pointer": null
+          },
+          {
+            "name": "message",
+            "type": "out_string",
+            "pointer": null
+          }
+        ]
+      },
+      "token": "queue-work-result",
+      "lowering": {
+        "kind": "async",
+        "member": "onSubmittedWorkDone"
+      },
+      "omitted": ["callback_info"]
+    },
+    {
+      "opcode": 119,
+      "name": "instance.get_WGSL_language_features",
+      "receiver": "instance",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "cReturn": "void",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "wgsl-features"
+      },
+      "omitted": []
+    },
+    {
+      "opcode": 120,
+      "name": "instance.has_WGSL_language_feature",
+      "receiver": "instance",
+      "context": "top",
+      "result": {
+        "kind": "scalar",
+        "type": "bool"
+      },
+      "cReturn": "bool",
+      "callback": null,
+      "token": "query-result",
+      "lowering": {
+        "kind": "query",
+        "adapter": "has-wgsl-feature"
+      },
+      "omitted": []
     }
   ],
   "records": [
@@ -1966,8 +2263,19 @@
     {
       "name": "buffer-unmap-writes",
       "opcode": 4099,
-      "enabled": false,
-      "fields": []
+      "enabled": true,
+      "fields": [
+        {
+          "name": "buffer",
+          "type": "object.buffer",
+          "optional": false
+        },
+        {
+          "name": "ranges",
+          "type": "array<struct.write_range>",
+          "optional": false
+        }
+      ]
     },
     {
       "name": "chunk",
@@ -2236,6 +2544,95 @@
       "name": "work-done",
       "kind": 15,
       "fields": []
+    },
+    {
+      "name": "map-result",
+      "kind": 16,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.map_async_status",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        },
+        {
+          "name": "payload",
+          "type": "handle",
+          "optional": true
+        },
+        {
+          "name": "length",
+          "type": "uint32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "compilation-result",
+      "kind": 17,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.compilation_info_request_status",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        },
+        {
+          "name": "payload",
+          "type": "handle",
+          "optional": true
+        },
+        {
+          "name": "length",
+          "type": "uint32",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "queue-work-result",
+      "kind": 18,
+      "fields": [
+        {
+          "name": "status",
+          "type": "enum.queue_work_done_status",
+          "optional": false
+        },
+        {
+          "name": "message",
+          "type": "out_string",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "query-result",
+      "kind": 19,
+      "fields": [
+        {
+          "name": "opcode",
+          "type": "uint32",
+          "optional": false
+        },
+        {
+          "name": "payload",
+          "type": "handle",
+          "optional": true
+        },
+        {
+          "name": "length",
+          "type": "uint32",
+          "optional": false
+        }
+      ]
     }
   ],
   "chains": {
@@ -2414,7 +2811,8 @@
     "texture_view_descriptor.array_layer_count": "uint32_max-to-omit",
     "bind_group_entry.size": "uint64_max-to-omit",
     "texel_copy_buffer_layout.bytes_per_row": "uint32_max-to-omit",
-    "texel_copy_buffer_layout.rows_per_image": "uint32_max-to-omit"
+    "texel_copy_buffer_layout.rows_per_image": "uint32_max-to-omit",
+    "buffer.map_async.size": "source-size-max-to-wire-u64-max-to-omit"
   },
   "browserEnums": {
     "enum.feature_level": {
@@ -2428,15 +2826,15 @@
       "high_performance": "high-performance"
     },
     "enum.backend_type": {
-      "undefined": "@omit",
-      "null": null,
-      "WebGPU": null,
-      "D3D11": null,
-      "D3D12": null,
-      "metal": null,
-      "vulkan": null,
-      "openGL": null,
-      "openGLES": null
+      "undefined": 0,
+      "null": 1,
+      "WebGPU": 2,
+      "D3D11": 3,
+      "D3D12": 4,
+      "metal": 5,
+      "vulkan": 6,
+      "openGL": 7,
+      "openGLES": 8
     },
     "enum.feature_name": {
       "core_features_and_limits": null,
@@ -2891,6 +3289,53 @@
     "enum.query_type": {
       "occlusion": "occlusion",
       "timestamp": "timestamp"
+    },
+    "enum.map_async_status": {
+      "success": 1,
+      "callback_cancelled": 2,
+      "error": 3,
+      "aborted": 4
+    },
+    "enum.compilation_info_request_status": {
+      "success": 1,
+      "callback_cancelled": 2
+    },
+    "enum.queue_work_done_status": {
+      "success": 1,
+      "callback_cancelled": 2,
+      "error": 3
+    },
+    "enum.compilation_message_type": {
+      "error": "error",
+      "warning": "warning",
+      "info": "info"
+    },
+    "enum.WGSL_language_feature_name": {
+      "readonly_and_readwrite_storage_textures": "readonly_and_readwrite_storage_textures",
+      "packed4x8_integer_dot_product": "packed4x8_integer_dot_product",
+      "unrestricted_pointer_parameters": "unrestricted_pointer_parameters",
+      "pointer_composite_access": "pointer_composite_access",
+      "uniform_buffer_standard_layout": "uniform_buffer_standard_layout",
+      "subgroup_id": "subgroup_id",
+      "texture_and_sampler_let": "texture_and_sampler_let",
+      "subgroup_uniformity": "subgroup_uniformity",
+      "texture_formats_tier1": "texture_formats_tier1",
+      "linear_indexing": "linear_indexing",
+      "immediate_address_space": "immediate_address_space",
+      "buffer_view": "buffer_view",
+      "swizzle_assignment": "swizzle_assignment",
+      "fragment_depth": "fragment_depth"
+    },
+    "enum.adapter_type": {
+      "discrete_GPU": 1,
+      "integrated_GPU": 2,
+      "CPU": 3,
+      "unknown": 4
+    },
+    "bitflag.map_mode": {
+      "none": 0,
+      "read": 1,
+      "write": 2
     }
   },
   "encoding": {
@@ -3023,7 +3468,21 @@
     "shader_module.set_label": 103,
     "surface.set_label": 104,
     "texture.set_label": 105,
-    "texture_view.set_label": 106
+    "texture_view.set_label": 106,
+    "adapter.get_info": 107,
+    "adapter.get_features": 108,
+    "adapter.has_feature": 109,
+    "adapter.get_limits": 110,
+    "device.get_features": 111,
+    "device.has_feature": 112,
+    "device.get_limits": 113,
+    "device.get_adapter_info": 114,
+    "buffer.map_async": 115,
+    "buffer.unmap": 116,
+    "shader_module.get_compilation_info": 117,
+    "queue.on_submitted_work_done": 118,
+    "instance.get_WGSL_language_features": 119,
+    "instance.has_WGSL_language_feature": 120
   },
   "completionLedger": {
     "adapter": 1,
@@ -3040,7 +3499,11 @@
     "closed": 12,
     "mapped": 13,
     "compilation-info": 14,
-    "work-done": 15
+    "work-done": 15,
+    "map-result": 16,
+    "compilation-result": 17,
+    "queue-work-result": 18,
+    "query-result": 19
   },
   "objectKinds": {
     "instance": 1,
@@ -3446,6 +3909,76 @@
     "texel_copy_buffer_info": {
       "layout": null,
       "buffer": "buffer"
+    },
+    "query_107": {
+      "returned": "returned",
+      "info": "info"
+    },
+    "query_108": {
+      "features": "features"
+    },
+    "query_109": {
+      "returned": "returned"
+    },
+    "query_110": {
+      "returned": "returned",
+      "limits": "limits"
+    },
+    "query_111": {
+      "features": "features"
+    },
+    "query_112": {
+      "returned": "returned"
+    },
+    "query_113": {
+      "returned": "returned",
+      "limits": "limits"
+    },
+    "query_114": {
+      "returned": "returned",
+      "adapter_info": "adapter_info"
+    },
+    "query_119": {
+      "features": "features"
+    },
+    "query_120": {
+      "returned": "returned"
+    },
+    "write_range": {
+      "offset": "offset",
+      "data": "data"
+    },
+    "adapter_info": {
+      "next_in_chain": "next_in_chain",
+      "vendor": "vendor",
+      "architecture": "architecture",
+      "device": "device",
+      "description": "description",
+      "backend_type": "backend_type",
+      "adapter_type": "adapter_type",
+      "vendor_ID": "vendor_ID",
+      "device_ID": "device_ID",
+      "subgroup_min_size": "subgroup_min_size",
+      "subgroup_max_size": "subgroup_max_size"
+    },
+    "supported_features": {
+      "features": "features"
+    },
+    "supported_WGSL_language_features": {
+      "features": "features"
+    },
+    "compilation_info": {
+      "next_in_chain": "next_in_chain",
+      "messages": "messages"
+    },
+    "compilation_message": {
+      "next_in_chain": "next_in_chain",
+      "message": "message",
+      "type": "type",
+      "line_num": "line_num",
+      "line_pos": "line_pos",
+      "offset": "offset",
+      "length": "length"
     }
   },
   "dictionaryRules": {
@@ -3480,6 +4013,163 @@
       "reply": "surface-texture",
       "fields": ["texture", "status"],
       "chain": "guest-local-empty-output-chain"
+    },
+    "adapter.get_info": {
+      "adapter": "info",
+      "reply": "query-result",
+      "payload": "query_107",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "enum.status",
+          "optional": false
+        },
+        {
+          "name": "info",
+          "type": "struct.adapter_info",
+          "optional": false
+        }
+      ]
+    },
+    "adapter.get_features": {
+      "adapter": "features",
+      "reply": "query-result",
+      "payload": "query_108",
+      "fields": [
+        {
+          "name": "features",
+          "type": "struct.supported_features",
+          "optional": false
+        }
+      ]
+    },
+    "adapter.has_feature": {
+      "adapter": "has-feature",
+      "reply": "query-result",
+      "payload": "query_109",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    "adapter.get_limits": {
+      "adapter": "limits",
+      "reply": "query-result",
+      "payload": "query_110",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "enum.status",
+          "optional": false
+        },
+        {
+          "name": "limits",
+          "type": "struct.limits",
+          "optional": false
+        }
+      ]
+    },
+    "device.get_features": {
+      "adapter": "features",
+      "reply": "query-result",
+      "payload": "query_111",
+      "fields": [
+        {
+          "name": "features",
+          "type": "struct.supported_features",
+          "optional": false
+        }
+      ]
+    },
+    "device.has_feature": {
+      "adapter": "has-feature",
+      "reply": "query-result",
+      "payload": "query_112",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "bool",
+          "optional": false
+        }
+      ]
+    },
+    "device.get_limits": {
+      "adapter": "limits",
+      "reply": "query-result",
+      "payload": "query_113",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "enum.status",
+          "optional": false
+        },
+        {
+          "name": "limits",
+          "type": "struct.limits",
+          "optional": false
+        }
+      ]
+    },
+    "device.get_adapter_info": {
+      "adapter": "info",
+      "reply": "query-result",
+      "payload": "query_114",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "enum.status",
+          "optional": false
+        },
+        {
+          "name": "adapter_info",
+          "type": "struct.adapter_info",
+          "optional": false
+        }
+      ]
+    },
+    "instance.get_WGSL_language_features": {
+      "adapter": "wgsl-features",
+      "reply": "query-result",
+      "payload": "query_119",
+      "fields": [
+        {
+          "name": "features",
+          "type": "struct.supported_WGSL_language_features",
+          "optional": false
+        }
+      ]
+    },
+    "instance.has_WGSL_language_feature": {
+      "adapter": "has-wgsl-feature",
+      "reply": "query-result",
+      "payload": "query_120",
+      "fields": [
+        {
+          "name": "returned",
+          "type": "bool",
+          "optional": false
+        }
+      ]
     }
+  },
+  "payloadArena": {
+    "byteLength": 1048576,
+    "headerBytes": 64,
+    "slots": 64,
+    "slotBytes": 32,
+    "directoryOffset": 64,
+    "dataOffset": 2112,
+    "dataBytes": 1046464,
+    "terminalOffset": 0,
+    "stateOffset": 0,
+    "offsetOffset": 8,
+    "lengthOffset": 12,
+    "free": 0,
+    "ready": 1,
+    "reading": 2,
+    "consumed": 3
   }
 }

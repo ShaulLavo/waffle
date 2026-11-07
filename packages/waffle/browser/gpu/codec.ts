@@ -265,7 +265,8 @@ function prepareCompletionField(
   value: WireValue | undefined,
   capacity: number,
 ): CompletionField {
-  if (field.type.startsWith("object.") || field.type === "handle") return wireHandle(value);
+  if (field.type.startsWith("object.") || field.type === "handle")
+    return field.optional && value === null ? { id: 0, generation: 0 } : wireHandle(value);
   if (field.type !== "out_string") return wireNumber(value);
   if (typeof value !== "string") throw new GpuProtocolError("Expected completion string");
   if (value.length > capacity - 4) throw new GpuResourceError("GPU message exceeds capacity");

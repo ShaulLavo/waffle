@@ -21,6 +21,7 @@ const outputs = ["browser/gpu/generated/tables.ts", "tests/fixtures/gpu/waffle_g
 const fixedInputs = [
   schemaPath,
   licensePath,
+  "browser/gpu/upstream/webgpu.h",
   "browser/gpu/stream.json",
   "tooling/gpu-stream.ts",
   "tooling/gpu-stream-model.ts",
@@ -32,6 +33,7 @@ const fixedInputs = [
   "tests/fixtures/gpu/bundle-query-expected.json",
   "tests/fixtures/gpu/copy-draw-expected.json",
   "tests/fixtures/gpu/label-expected.json",
+  "tests/fixtures/gpu/async-expected.json",
 ];
 
 export function sha256(bytes: string | Uint8Array): string {
@@ -75,6 +77,25 @@ function lowering(value: unknown): Lowering {
     case "label":
       if (entry.target === "native" || entry.target === "surface-reference")
         return { kind: entry.kind, target: entry.target };
+      break;
+    case "query":
+      if (
+        entry.adapter === "info" ||
+        entry.adapter === "features" ||
+        entry.adapter === "limits" ||
+        entry.adapter === "has-feature" ||
+        entry.adapter === "wgsl-features" ||
+        entry.adapter === "has-wgsl-feature"
+      )
+        return { kind: "query", adapter: entry.adapter };
+      break;
+    case "async":
+      if (
+        entry.member === "mapAsync" ||
+        entry.member === "getCompilationInfo" ||
+        entry.member === "onSubmittedWorkDone"
+      )
+        return { kind: "async", member: entry.member };
       break;
     case "method":
       return { kind: entry.kind, member: text(entry.member) };
@@ -183,6 +204,7 @@ function compileCall(
   value: unknown,
   objects: Map<string, Record<string, unknown>>,
   callbacks: Map<string, Record<string, unknown>>,
+  outputs: Record<string, unknown>,
 ): CallLayout {
   const entry = record(value);
   const name = text(entry.name);
@@ -224,8 +246,13 @@ function compileCall(
   )
     throw new Error("Descriptor lowering must match the pinned C argument");
   if (adapter.kind === "label") validateLabel(name, context, adapter, args);
+  const output = queryOutput(entry, method, adapter, outputs, callbacks);
   const input =
-    chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
+    chosen.kind === "handle" && chosen.source === "output"
+      ? []
+      : spanArguments(args, adapter).filter(
+          (arg) => !output?.fields.some((out) => out.name === arg.name),
+        );
   return {
     opcode: uint(entry.opcode, 0xfff),
     name,
@@ -238,7 +265,48 @@ function compileCall(
     lowering: adapter,
     omitted,
     fields: prefix.concat(input),
+    ...(output ? { output } : {}),
   };
+}
+
+function queryOutput(
+  entry: Record<string, unknown>,
+  method: Record<string, unknown>,
+  adapter: Lowering,
+  outputs: Record<string, unknown>,
+  callbacks: Map<string, Record<string, unknown>>,
+): CallLayout["output"] {
+  const mutable = (method.args ? list(method.args).map(record) : []).filter(
+    (arg) => arg.pointer === "mutable",
+  );
+  if (adapter.kind === "async") {
+    const callback = record(entry.callback);
+    const source = callbacks.get(text(method.callback).slice(9));
+    const signature = list(source?.args).map((arg) => {
+      const value = record(arg);
+      return { name: text(value.name), type: text(value.type), pointer: value.pointer ?? null };
+    });
+    if (JSON.stringify(callback.args) !== JSON.stringify(signature))
+      throw new Error("Callback signature drift");
+  }
+  if (adapter.kind !== "query") {
+    if (mutable.length && adapter.kind !== "surface-acquire")
+      throw new Error("Undeclared mutable output");
+    return undefined;
+  }
+  const rule = record(outputs[text(entry.name)]);
+  const declared = fields(rule.fields);
+  const expected = mutable.map((arg) => field(text(arg.name), text(arg.type)));
+  if (method.returns) expected.unshift(field("returned", text(record(method.returns).type)));
+  if (
+    rule.adapter !== adapter.adapter ||
+    rule.reply !== entry.token ||
+    rule.payload !== `query_${entry.opcode}` ||
+    JSON.stringify(declared) !== JSON.stringify(expected)
+  )
+    throw new Error("Mutable output/C return contract mismatch");
+  if (!entry.token) throw new Error("Missing output token");
+  return { adapter: adapter.adapter, payload: text(rule.payload), fields: declared };
 }
 
 function validateLabel(
@@ -390,7 +458,10 @@ function collectStruct(
   if (!source) throw new Error(`Unknown struct ${name}`);
   const excluded = omitted[name] === undefined ? [] : list(omitted[name]).map(text);
   const members = fields(source.members).filter((member) => !excluded.includes(member.name));
-  const chain = source.type === "extensible" ? [field("next_in_chain", `chain.${name}`)] : [];
+  const chain =
+    source.type === "extensible" || source.type === "extensible_callback_arg"
+      ? [field("next_in_chain", `chain.${name}`)]
+      : [];
   tables.structs[name] = { fields: chain.concat(members) };
   for (const member of members)
     collectType(member.type, tables, upstream, enums, bitflags, omitted);
@@ -403,7 +474,7 @@ export function compileSchema(yaml: unknown, input: unknown): WireTables {
   const source = record(yaml);
   const selected = record(input);
   const calls = list(selected.calls).map((entry) =>
-    compileCall(entry, named(source.objects), named(source.callbacks)),
+    compileCall(entry, named(source.objects), named(source.callbacks), record(selected.cOutput)),
   );
   const records = list(selected.records).map((value) => {
     const entry = record(value);
@@ -456,6 +527,10 @@ export function compileSchema(yaml: unknown, input: unknown): WireTables {
     name: "surface_source_waffle",
     members: [field("surface_id", "uint32")],
   });
+  structs.set("write_range", { members: [field("offset", "uint64"), field("data", "bytes")] });
+  for (const call of calls) {
+    if (call.output) structs.set(call.output.payload, { members: call.output.fields });
+  }
   const enumSource = named(source.enums);
   const bitflags = named(source.bitflags);
   const omitted = record(selected.omit);
@@ -464,6 +539,12 @@ export function compileSchema(yaml: unknown, input: unknown): WireTables {
     .concat(
       completions.flatMap((entry) => entry.fields),
       records.flatMap((entry) => entry.fields),
+      calls.flatMap((entry) =>
+        entry.output ? [field("payload", `struct.${entry.output.payload}`)] : [],
+      ),
+      calls.some((call) => call.lowering.kind === "async")
+        ? [field("compilation", "struct.compilation_info")]
+        : [],
     );
   for (const member of allFields)
     collectType(member.type, tables, structs, enumSource, bitflags, omitted);
@@ -645,6 +726,7 @@ function cHeader(
   tables: WireTables,
   hashes: Record<string, string>,
   objectKinds: Record<string, unknown>,
+  payload: Record<string, unknown>,
 ): string {
   const constants = tables.calls
     .map((entry) => `#define WAFFLE_GPU_OP_${macro(entry.name)} ${entry.opcode}u`)
@@ -654,6 +736,9 @@ function cHeader(
         (entry) => `#define WAFFLE_GPU_REPLY_${macro(entry.name)} ${entry.kind}u`,
       ),
     );
+  const arena = Object.entries(payload).map(
+    ([name, value]) => `#define WAFFLE_GPU_PAYLOAD_${macro(name)} ${uint(value)}u`,
+  );
   const objects = Object.entries(objectKinds).map(
     ([name, number]) => `#define WAFFLE_GPU_OBJECT_${macro(name)} ${uint(number)}u`,
   );
@@ -673,7 +758,7 @@ function cHeader(
       tables.completions.flatMap((entry) => cFields(`reply_${entry.name}`, entry.fields, 16)),
       tables.records.flatMap((entry) => cFields(entry.name, entry.fields, 8)),
     );
-  return `/* Generated by tooling/gpu-stream.ts. Do not edit.\n * YAML: BSD-3-Clause, webgpu-native/webgpu-headers a1dc77409bb2b8bd80540cbf4b8db219e123e909.\n * Wire layouts, not C ABI struct layouts. Include alongside <webgpu/webgpu.h>.\n * Input digest: ${sha256(JSON.stringify(hashes))}\n */\n#ifndef WAFFLE_GPU_STREAM_H\n#define WAFFLE_GPU_STREAM_H\n#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n#define WAFFLE_GPU_ROOT_ID 1u\n#define WAFFLE_GPU_ROOT_GENERATION 1u\n#define WAFFLE_GPU_SURFACE_SOURCE_WAFFLE 4096u\n#define WAFFLE_GPU_COMMAND_HEADER_SIZE 8u\n#define WAFFLE_GPU_COMPLETION_HEADER_SIZE 16u\n#define WAFFLE_GPU_TOKEN_SIZE 8u\n${constants.concat(objects).join("\n")}\n${values.join("\n")}\n${layouts.join("\n")}\n${cWriter}\n#endif\n`;
+  return `/* Generated by tooling/gpu-stream.ts. Do not edit.\n * YAML: BSD-3-Clause, webgpu-native/webgpu-headers a1dc77409bb2b8bd80540cbf4b8db219e123e909.\n * Wire layouts, not C ABI struct layouts. Include alongside <webgpu/webgpu.h>.\n * Input digest: ${sha256(JSON.stringify(hashes))}\n */\n#ifndef WAFFLE_GPU_STREAM_H\n#define WAFFLE_GPU_STREAM_H\n#include <stddef.h>\n#include <stdint.h>\n#include <string.h>\n#define WAFFLE_GPU_ROOT_ID 1u\n#define WAFFLE_GPU_ROOT_GENERATION 1u\n#define WAFFLE_GPU_SURFACE_SOURCE_WAFFLE 4096u\n#define WAFFLE_GPU_COMMAND_HEADER_SIZE 8u\n#define WAFFLE_GPU_COMPLETION_HEADER_SIZE 16u\n#define WAFFLE_GPU_TOKEN_SIZE 8u\n${constants.concat(objects, arena).join("\n")}\n${values.join("\n")}\n${layouts.join("\n")}\n${cWriter}\n#endif\n`;
 }
 
 const cWriter = `/* Cursors avoid native padding, alignment and endianness assumptions. */
@@ -696,6 +781,10 @@ static inline void waffle_gpu_u16(WaffleGpuWriter *w, uint16_t v) {
 static inline void waffle_gpu_u64(WaffleGpuWriter *w, uint64_t v) {
     waffle_gpu_align(w, 8);
     for (unsigned i = 0; i < 8; ++i) waffle_gpu_u8(w, (uint8_t)(v >> (8 * i)));
+}
+#define WAFFLE_GPU_WHOLE_MAP_SIZE UINT64_MAX
+static inline uint64_t waffle_gpu_map_size(size_t size) {
+    return size == SIZE_MAX ? WAFFLE_GPU_WHOLE_MAP_SIZE : (uint64_t)size;
 }
 static inline void waffle_gpu_f64(WaffleGpuWriter *w, double v) {
     uint64_t bits; memcpy(&bits, &v, sizeof(bits)); waffle_gpu_u64(w, bits);
@@ -780,7 +869,9 @@ export async function generate(root = packageRoot, check = false): Promise<void>
   const license = await Bun.file(resolve(root, licensePath)).bytes();
   if (
     sha256(yamlBytes) !== selection.upstream.sha256 ||
-    sha256(license) !== selection.upstream.licenseSha256
+    sha256(license) !== selection.upstream.licenseSha256 ||
+    sha256(await Bun.file(resolve(root, "browser/gpu/upstream/webgpu.h")).bytes()) !==
+      selection.upstream.headerSha256
   )
     throw new Error("Pinned upstream schema/license hash mismatch");
   const input: unknown = await Bun.file(resolve(root, "browser/gpu/stream.json")).json();
@@ -792,7 +883,7 @@ export async function generate(root = packageRoot, check = false): Promise<void>
       fixedInputs.map(async (path) => [path, sha256(await Bun.file(resolve(root, path)).bytes())]),
     ),
   );
-  const raw = `// Generated by tooling/gpu-stream.ts. Do not edit.\n// YAML and numeric enums: BSD-3-Clause; see ../upstream/LICENSE.\nimport type { Field, WireTables } from "../../../tooling/gpu-stream-model.ts";\n${tableSource(tables)}\nexport const gpuStreamSources = ${JSON.stringify(hashes, null, 2)};\nexport const gpuDescriptorAdapters = ${JSON.stringify(record(input).descriptors, null, 2)};\nexport const gpuEventRoutes = ${JSON.stringify(record(input).events, null, 2)};\nexport const gpuSentinels = ${JSON.stringify(record(input).sentinels, null, 2)};\nexport const gpuDictionaryMembers = ${JSON.stringify(record(input).dictionaryMembers, null, 2)};\nexport const gpuDictionaryRules = ${JSON.stringify(record(input).dictionaryRules, null, 2)};\nexport const gpuObjectKinds = ${JSON.stringify(record(input).objectKinds, null, 2)};\nexport const gpuCOutputs = ${JSON.stringify(record(input).cOutput, null, 2)};\n`;
+  const raw = `// Generated by tooling/gpu-stream.ts. Do not edit.\n// YAML and numeric enums: BSD-3-Clause; see ../upstream/LICENSE.\nimport type { Field, WireTables } from "../../../tooling/gpu-stream-model.ts";\n${tableSource(tables)}\nexport const gpuStreamSources = ${JSON.stringify(hashes, null, 2)};\nexport const gpuDescriptorAdapters = ${JSON.stringify(record(input).descriptors, null, 2)};\nexport const gpuEventRoutes = ${JSON.stringify(record(input).events, null, 2)};\nexport const gpuSentinels = ${JSON.stringify(record(input).sentinels, null, 2)};\nexport const gpuDictionaryMembers = ${JSON.stringify(record(input).dictionaryMembers, null, 2)};\nexport const gpuDictionaryRules = ${JSON.stringify(record(input).dictionaryRules, null, 2)};\nexport const gpuObjectKinds = ${JSON.stringify(record(input).objectKinds, null, 2)};\nexport const gpuCOutputs = ${JSON.stringify(record(input).cOutput, null, 2)};\nexport const gpuPayloadLayout = ${JSON.stringify(record(input).payloadArena, null, 2)};\nexport const gpuWholeMapSize = 0xffffffffffffffffn;\n`;
   const formatter = Bun.spawn(
     [
       "bun",
@@ -806,7 +897,10 @@ export async function generate(root = packageRoot, check = false): Promise<void>
   );
   const formatted = await new Response(formatter.stdout).text();
   if ((await formatter.exited) !== 0) throw new Error(await new Response(formatter.stderr).text());
-  const content = [formatted, cHeader(tables, hashes, record(record(input).objectKinds))];
+  const content = [
+    formatted,
+    cHeader(tables, hashes, record(record(input).objectKinds), record(record(input).payloadArena)),
+  ];
   for (const [index, path] of outputs.entries()) {
     const expected = content[index];
     if (expected === undefined) throw new Error("Missing generated output");
