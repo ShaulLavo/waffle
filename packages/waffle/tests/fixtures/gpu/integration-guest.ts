@@ -6,6 +6,7 @@ import {
 } from "../../../browser/worker.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
 import { poisonProcessIntrinsics } from "../process-intrinsics.js";
+import { importUnwind } from "./import-unwind.js";
 
 const host = globalThis as unknown as {
   onmessage: (event: MessageEvent<RuntimeWorkerRequest>) => Promise<void>;
@@ -53,7 +54,7 @@ function observeImports(
         send({ gpuImport: { token, call, name, phase: "return", result } });
         return result;
       } catch (error) {
-        send({ gpuImport: { token, call, name, phase: "throw" } });
+        send({ gpuImport: { token, call, name, phase: "throw", unwind: importUnwind(error) } });
         throw error;
       } finally {
         waiting = undefined;

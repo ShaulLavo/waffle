@@ -641,8 +641,12 @@ and frame and waits inside the real completions import. The original green peer 
 pixels between fresh native queue and presentation observations before global disposal.
 
 The page calls `runtime.dispose()` without stopping either live guest first. Acceptance requires
-synchronous launch and ring revocation, terminal guest outcomes and import return, all original
-grant retirements and actual worker termination calls. A bounded test-only shared audit records
+synchronous launch and ring revocation, terminal guest outcomes, all original grant retirements
+and actual worker termination calls. A fatal signal can unwind or physically stop the held
+import before it returns an errno. Its original enter/wait history must remain intact. Any
+observed return must be `-64`, and any observed throw must identify an actual runtime termination
+unwind. An unrelated throw, wrong return, missing revocation or incomplete physical stop fails.
+The proof does not require a killed guest to execute another instruction. A bounded test-only shared audit records
 real service snapshots during disposal, before worker termination can discard diagnostic messages.
 Its positive control runs in that same service before the held workload. The original held native
 result then releases after owner retirement without new replay, native calls, submissions or

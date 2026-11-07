@@ -315,15 +315,28 @@ function exitProof(
     events.slice(0, entries(blocked.events).length),
     "guest import history rewritten",
   );
+  const tail = events.slice(entries(blocked.events).length);
+  requireProof(tail.length <= 1, "guest continued GPU imports after its held disposal call");
+  if (tail.length === 0) return;
+  const outcome = tail[0]!;
   requireProof(
-    events.some(
-      (event) =>
-        event.call === last.call &&
-        event.name === "completions" &&
-        event.phase === "return" &&
-        event.result === -64,
-    ),
-    "held import waiter did not return terminal error",
+    outcome.token === blocked.token && outcome.call === last.call && outcome.name === "completions",
+    "held import termination identity changed",
+  );
+  if (outcome.phase === "return") {
+    requireProof(outcome.result === -64, "held import returned a nonterminal result");
+    return;
+  }
+  const unwind = outcome.unwind;
+  requireProof(
+    outcome.phase === "throw" && unwind !== null && typeof unwind === "object",
+    "held import throw was not runtime termination",
+  );
+  const terminal = record(unwind);
+  requireProof(
+    (terminal.kind === "signal" && terminal.code === 9) ||
+      (terminal.kind === "exit" && terminal.code === 1),
+    "held import throw was not runtime termination",
   );
 }
 function retiredHistory(

@@ -329,8 +329,8 @@ test("active disposal requires all original guests and the held waiter to stop",
     r.disposal.exits[2]!.grantRetired = false;
   }, "wrong original guest exit or launch grant retirement");
   rejects((r) => {
-    r.disposal.exits[2]!.events.pop();
-  }, "held import waiter did not return terminal error");
+    r.disposal.exits[2]!.events.splice(-2, 2);
+  }, "guest import history rewritten");
 });
 test("active disposal proves physical worker stops rather than treating absent replies as zero", () => {
   rejects((r) => {
@@ -573,4 +573,42 @@ test("first terminal audit timestamps cannot grandfather post-retirement replay 
         end: 116,
       });
   }, "native work started after owner retirement");
+});
+
+test("physical runtime kill does not require the held import to execute another guest instruction", () => {
+  const value = fixture();
+  value.disposal.exits[2]!.events.pop();
+  expect(validateDisposalResult(value).hardwareQualified).toBe(false);
+});
+
+function killedImport(kind: string, code: number) {
+  const value = fixture();
+  const event = value.disposal.exits[2]!.events.at(-1)!;
+  event.phase = "throw";
+  Reflect.deleteProperty(event, "result");
+  Reflect.set(event, "unwind", { kind, code });
+  return value;
+}
+
+test("the held import may unwind only for the runtime's selected fatal termination", () => {
+  expect(validateDisposalResult(killedImport("signal", 9)).hardwareQualified).toBe(false);
+  expect(validateDisposalResult(killedImport("exit", 1)).hardwareQualified).toBe(false);
+  expect(() => validateDisposalResult(killedImport("signal", 15))).toThrow(
+    "held import throw was not runtime termination",
+  );
+  expect(() => validateDisposalResult(killedImport("unexpected", 9))).toThrow(
+    "held import throw was not runtime termination",
+  );
+});
+
+test("a killed owner cannot conceal an observed bad return or an unclassified exception", () => {
+  rejects((value) => {
+    value.disposal.exits[2]!.events.at(-1)!.result = 0;
+  }, "held import returned a nonterminal result");
+  rejects((value) => {
+    value.disposal.exits[2]!.events.at(-1)!.phase = "throw";
+  }, "held import throw was not runtime termination");
+  rejects((value) => {
+    value.disposal.exits[2]!.events.push({ ...value.blockedGuest.events[0]!, call: 99 });
+  }, "guest continued GPU imports after its held disposal call");
 });
