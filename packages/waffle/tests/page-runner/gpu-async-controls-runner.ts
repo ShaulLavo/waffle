@@ -73,12 +73,36 @@ export async function runGpuAsyncControls(
     if ((await readdir(scratch)).length === 0) await rmdir(scratch);
   }
 }
+async function runGpuAsyncCiControls(engines: readonly string[]): Promise<void> {
+  const { isAbsolute, join } = await import("node:path");
+  const { mkdir, mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { runGpuAsyncFailureControls } = await import("./gpu-async-failure-controls.js");
+  const parent = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
+  if (!isAbsolute(parent) || !engines.length)
+    throw new Error("Pass an absolute scratch parent and at least one engine");
+  await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, "w-ga-"));
+  let completed = false;
+  try {
+    await runGpuAsyncControls(root, join(parent, "g"), engines);
+    await runGpuAsyncFailureControls(root, join(parent, "f"), startedAt);
+    completed = true;
+  } finally {
+    if (completed) await rm(root, { recursive: true, force: true });
+    else console.error(`Retained GPU async control results for outer cleanup: ${root}`);
+  }
+}
 if (import.meta.main) {
-  const [root, scratch, ...engines] = process.argv.slice(2);
-  if (!root || !scratch || !engines.length)
-    throw new Error("Pass absolute report root, new scratch path and engines");
-  if (engines.length === 1 && engines[0] === "--failures") {
-    const { runGpuAsyncFailureControls } = await import("./gpu-async-failure-controls.js");
-    await runGpuAsyncFailureControls(root, scratch, startedAt);
-  } else await runGpuAsyncControls(root, scratch, engines);
+  const args = process.argv.slice(2);
+  if (args[0] === "--ci") await runGpuAsyncCiControls(args.slice(1));
+  else {
+    const [root, scratch, ...engines] = args;
+    if (!root || !scratch || !engines.length)
+      throw new Error("Pass absolute report root, new scratch path and engines, or --ci engines");
+    if (engines.length === 1 && engines[0] === "--failures") {
+      const { runGpuAsyncFailureControls } = await import("./gpu-async-failure-controls.js");
+      await runGpuAsyncFailureControls(root, scratch, startedAt);
+    } else await runGpuAsyncControls(root, scratch, engines);
+  }
 }
