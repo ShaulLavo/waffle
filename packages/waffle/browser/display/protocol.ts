@@ -20,6 +20,7 @@ export interface GraphicsOpen {
   readonly control: SharedArrayBuffer;
   readonly commands: SharedArrayBuffer;
   readonly replies: SharedArrayBuffer;
+  readonly arena: SharedArrayBuffer;
 }
 export interface ServiceSurface {
   readonly id: number;

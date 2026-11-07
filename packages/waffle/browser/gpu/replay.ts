@@ -1,4 +1,3 @@
-import type { WireTables } from "../../tooling/gpu-stream-model.js";
 import { gpuStream } from "./generated/tables.js";
 import {
   decodeCall,
@@ -7,8 +6,11 @@ import {
   wireHandle,
   wireNumber,
   wireBytes,
+  wireObject,
   type DecodedCall,
 } from "./codec.js";
+import { BufferMaps } from "./buffers.js";
+import { NativeMetadata, ShaderSources, cValue, errorMessage } from "./metadata.js";
 import { CompletionOwner } from "./completions.js";
 import { HandleTable, numericObjectKind, objectKind, type ObjectKind } from "./handles.js";
 import {
@@ -20,6 +22,7 @@ import {
 } from "./lowering.js";
 import {
   GPU_TERMINAL,
+  ServiceCredit,
   GpuCallError,
   GpuProtocolError,
   GpuResourceError,
@@ -83,7 +86,10 @@ export class GpuReplay {
   readonly #lower: DescriptorLowering;
   #cursor: Cursor | undefined;
   #waiting: WaitingSurface | undefined;
-  readonly #devices = new Map<object, () => void>();
+  readonly #devices = new Map<object, DeviceObservation>();
+  readonly #buffers = new BufferMaps();
+  readonly #metadata = new NativeMetadata();
+  readonly #sources: ShaderSources;
   readonly #frameTextures = new WeakSet<object>();
   readonly #finished = new Map<number, number>();
   #live = true;
@@ -91,13 +97,27 @@ export class GpuReplay {
     readonly target: ReplayTarget,
     readonly completions: CompletionOwner,
     handleLimit?: number,
+    credit = new ServiceCredit(),
   ) {
+    this.#sources = new ShaderSources(credit);
     this.handles = new HandleTable(
       target.root,
       (kind, value) => this.#disposeObject(kind, value),
       handleLimit,
     );
     this.#lower = new DescriptorLowering(this.handles);
+  }
+  get devicesLive(): number {
+    let count = 0;
+    for (const device of this.#devices.values()) if (device.sink.live) count++;
+    return count;
+  }
+  snapshot() {
+    return {
+      ...this.#buffers.snapshot(),
+      sources: this.#sources.snapshot(),
+      devicesLive: this.devicesLive,
+    };
   }
   get busy(): boolean {
     return this.#cursor !== undefined;
@@ -128,7 +148,9 @@ export class GpuReplay {
     this.#cursor = undefined;
     this.#waiting = undefined;
     this.handles.retire();
-    for (const stop of this.#devices.values()) stop();
+    for (const device of this.#devices.values()) device.stop();
+    this.#buffers.dispose();
+    this.#sources.dispose();
     this.#devices.clear();
     this.#finished.clear();
   }
@@ -144,6 +166,16 @@ export class GpuReplay {
     if (header.opcode === 0x1001 || header.opcode === 0x1002)
       return this.#beginBlob(cursor, record, header.opcode);
     if (header.opcode === 0x1000) return this.#release(cursor, record);
+    if (header.opcode === 0x1003) {
+      const layout = gpuStream.records.find((entry) => entry.opcode === 0x1003);
+      if (!layout) throw new GpuProtocolError("Missing write-back layout");
+      const reader = new WireReader(record, 8);
+      const fields = reader.fields(layout.fields);
+      reader.finish();
+      this.#buffers.writes(this.handles.native(wireHandle(fields.buffer), "buffer"), fields);
+      this.#advance(cursor, header.length);
+      return { kind: "progress", bytes: header.length, presented: false };
+    }
     const call = decodeCall(record);
     if (call.layout.context !== "top") throw new GpuProtocolError("Nested command outside encode");
     const waiting = this.#execute(call);
@@ -243,6 +275,7 @@ export class GpuReplay {
       layout.token &&
       layout.lowering.kind !== "request-adapter" &&
       layout.lowering.kind !== "request-device" &&
+      layout.lowering.kind !== "async" &&
       layout.name !== "device.pop_error_scope"
     )
       this.completions.admit(wireNumber(fields.token));
@@ -261,17 +294,46 @@ export class GpuReplay {
   #exception(call: DecodedCall, result: Handle | undefined, error: unknown): void {
     this.#waiting = undefined;
     const message = errorMessage(error);
+    const requestKind =
+      call.layout.lowering.kind === "request-adapter"
+        ? "adapter"
+        : call.layout.lowering.kind === "request-device"
+          ? "device"
+          : undefined;
+    if (requestKind && result) {
+      const token = wireNumber(call.fields.token);
+      this.completions.admit(token);
+      this.#requestFailure(this.completions, result, requestKind, token, error);
+      return;
+    }
     if (result && call.layout.result.kind === "handle")
       this.handles.bind(result, objectKind(call.layout.result.object), {
         kind: "exception",
         message,
       });
+    if (call.layout.lowering.kind === "async") {
+      const token = wireNumber(call.fields.token);
+      this.completions.admit(token);
+      const name = call.layout.token;
+      const status =
+        name === "map-result"
+          ? cValue("enum.map_async_status", "error")
+          : name === "compilation-result"
+            ? cValue("enum.compilation_info_request_status", "callback_cancelled")
+            : cValue("enum.queue_work_done_status", "error");
+      if (name)
+        this.completions.publish(
+          name,
+          token,
+          -28,
+          name === "queue-work-result"
+            ? { status, message }
+            : { status, message, payload: null, length: 0 },
+        );
+      return;
+    }
     // Even failed adaptation consumes a callback token exactly once.
-    if (
-      call.layout.lowering.kind === "request-adapter" ||
-      call.layout.lowering.kind === "request-device" ||
-      call.layout.name === "device.pop_error_scope"
-    )
+    if (call.layout.name === "device.pop_error_scope")
       this.completions.admit(wireNumber(call.fields.token));
     this.completions.publish(
       "call-exception",
@@ -283,6 +345,12 @@ export class GpuReplay {
   #lowerCall(call: DecodedCall, receiver: object, result: Handle | undefined): boolean {
     const { fields, layout } = call;
     switch (layout.lowering.kind) {
+      case "query":
+        this.#metadata.query(layout, receiver, fields, this.completions);
+        return false;
+      case "async":
+        this.#async(call, receiver);
+        return false;
       case "label":
         if (layout.lowering.target === "surface-reference") surfaceLabel(receiver, fields.label);
         else nativeLabel(receiver, fields.label);
@@ -327,7 +395,7 @@ export class GpuReplay {
         this.#bind(
           call,
           result,
-          nativeCall(receiver, "createShaderModule", [this.#lower.wgsl(fields.descriptor)]),
+          this.#sources.create(receiver, this.#lower.wgsl(fields.descriptor)),
         );
         return false;
       case "render-pipeline":
@@ -340,15 +408,15 @@ export class GpuReplay {
       case "error-scope":
         this.#errorScope(call, receiver);
         return false;
-      case "descriptor-method":
-        this.#bind(
-          call,
-          result,
-          nativeCall(receiver, layout.lowering.member, [
-            this.#lower.dictionary(layout.lowering.descriptor, fields.descriptor),
-          ]),
-        );
+      case "descriptor-method": {
+        const native = nativeCall(receiver, layout.lowering.member, [
+          this.#lower.dictionary(layout.lowering.descriptor, fields.descriptor),
+        ]);
+        this.#bind(call, result, native);
+        if (layout.name === "device.create_buffer")
+          this.#buffers.register(nativeObject(native), receiver, wireObject(fields.descriptor));
         return false;
+      }
       case "set-immediates":
         nativeCall(receiver, layout.lowering.member, [fields.offset, wireBytes(fields.data)]);
         return false;
@@ -603,9 +671,20 @@ export class GpuReplay {
         nativeCall(receiver, "destroy", []);
         this.target.surfaces?.textureDestroyed?.(receiver);
         return;
+      case "buffer.unmap":
+        this.#buffers.unmap(receiver);
+        return;
       case "buffer.destroy":
-      case "query_set.destroy":
+        nativeCall(receiver, "destroy", []);
+        this.#buffers.destroyed(receiver);
+        return;
       case "device.destroy":
+        nativeCall(receiver, "destroy", []);
+        this.#buffers.deviceDestroyed(receiver);
+        const observation = this.#devices.get(receiver);
+        if (observation) observation.sink.live = false;
+        return;
+      case "query_set.destroy":
         nativeCall(receiver, "destroy", []);
         return;
       case "surface.unconfigure":
@@ -669,7 +748,11 @@ export class GpuReplay {
             descriptor,
           ]),
         ),
-      (owner, value) => this.#requestResult(owner, result, kind, token, value),
+      (owner, value) => {
+        this.#requestResult(owner, result, kind, token, value);
+        if (kind === "device" && value && typeof value === "object")
+          this.#metadata.device(value, receiver);
+      },
       (owner, error) => this.#requestFailure(owner, result, kind, token, error),
       kind === "device" ? destroyNative : ignoreResult,
     );
@@ -704,7 +787,8 @@ export class GpuReplay {
       );
       return;
     }
-    if (kind === "device") this.#devices.set(object, observeDevice(owner, result, object));
+    if (kind === "device" && !this.#devices.has(object))
+      this.#devices.set(object, observeDevice(owner, result, object));
     owner.publish(kind, token, 0, {
       status: cValue(`enum.request_${kind}_status`, "success"),
       [kind]: { ...result },
@@ -748,6 +832,34 @@ export class GpuReplay {
           type: cValue("enum.error_type", "unknown"),
           message: errorMessage(error),
         }),
+      ignoreResult,
+    );
+  }
+  #async(call: DecodedCall, receiver: object): void {
+    const token = wireNumber(call.fields.token);
+    if (call.layout.name === "buffer.map_async") {
+      this.#buffers.map(receiver, call.fields, this.completions);
+      return;
+    }
+    if (call.layout.name === "shader_module.get_compilation_info") {
+      this.#sources.compilation(receiver, token, this.completions);
+      return;
+    }
+    this.completions.start(
+      token,
+      () => Promise.resolve(nativeCall(receiver, "onSubmittedWorkDone", [])),
+      (owner) => {
+        owner.publish("queue-work-result", token, 0, {
+          status: cValue("enum.queue_work_done_status", "success"),
+          message: "",
+        });
+      },
+      (owner, error) => {
+        owner.publish("queue-work-result", token, 0, {
+          status: cValue("enum.queue_work_done_status", "error"),
+          message: errorMessage(error),
+        });
+      },
       ignoreResult,
     );
   }
@@ -814,32 +926,30 @@ export class GpuReplay {
       }
       return;
     }
+    if (kind === "buffer") {
+      this.#buffers.release(value);
+      return;
+    }
+    if (kind === "shader_module") {
+      this.#sources.release(value);
+      return;
+    }
     // Releasing a guest handle is not WebGPU destroy(). Native bind groups and
     // command buffers retain ordinary resources. The owning device retires them.
     // Surface frames alone have the explicit discard-on-last-handle contract.
     if (kind !== "device" && !(kind === "texture" && this.#frameTextures.has(value))) return;
-    this.#devices.get(value)?.();
+    this.#devices.get(value)?.stop();
     this.#devices.delete(value);
-    destroyNative(value);
+    try {
+      nativeCall(value, "destroy", []);
+      if (kind === "device") this.#buffers.deviceDestroyed(value);
+    } catch {
+      /* Retirement continues after a native destruction exception. */
+    }
     if (kind === "texture") this.target.surfaces?.textureDestroyed?.(value);
   }
 }
 
-function cValue(type: string, name: string): number {
-  const value = tables.enums[type]?.[name];
-  if (value === undefined) throw new Error(`Missing generated C value ${type}.${name}`);
-  return value;
-}
-function errorMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  )
-    return error.message;
-  return "GPU native call failed";
-}
 function errorType(error: unknown): number {
   if (!error) return cValue("enum.error_type", "no_error");
   const name = typeof error === "object" ? error.constructor.name : "";
@@ -855,20 +965,28 @@ function publishScope(owner: CompletionOwner, token: number, error: unknown): vo
     message: error ? errorMessage(error) : "",
   });
 }
-function observeDevice(owner: CompletionOwner, handle: Handle, device: object): () => void {
-  const sink: { owner: CompletionOwner | undefined } = { owner };
+interface DeviceObservation {
+  sink: { owner: CompletionOwner | undefined; live: boolean };
+  stop(): void;
+}
+function observeDevice(owner: CompletionOwner, handle: Handle, device: object): DeviceObservation {
+  const sink: DeviceObservation["sink"] = { owner, live: true };
   const lost: unknown = Reflect.get(device, "lost");
   if (lost instanceof Promise) watchLoss(lost, sink, handle);
   const listener = deviceListener(sink, handle);
   const listens = typeof Reflect.get(device, "addEventListener") === "function";
   if (listens) nativeCall(device, "addEventListener", ["uncapturederror", listener]);
-  return () => {
-    sink.owner = undefined;
-    try {
-      if (listens) nativeCall(device, "removeEventListener", ["uncapturederror", listener]);
-    } catch {
-      /* A failing native detach cannot keep the owner live. */
-    }
+  return {
+    sink,
+    stop: () => {
+      sink.owner = undefined;
+      sink.live = false;
+      try {
+        if (listens) nativeCall(device, "removeEventListener", ["uncapturederror", listener]);
+      } catch {
+        /* A failing native detach cannot keep the owner live. */
+      }
+    },
   };
 }
 function publishLoss(owner: CompletionOwner | undefined, handle: Handle, info: unknown): void {
@@ -882,15 +1000,16 @@ function publishLoss(owner: CompletionOwner | undefined, handle: Handle, info: u
   });
 }
 
-const tables: WireTables = gpuStream;
-
 function watchLoss(
   lost: Promise<unknown>,
-  sink: { owner: CompletionOwner | undefined },
+  sink: { owner: CompletionOwner | undefined; live: boolean },
   handle: Handle,
 ): void {
   void lost.then(
-    (info: unknown) => publishLoss(sink.owner, handle, info),
+    (info: unknown) => {
+      sink.live = false;
+      publishLoss(sink.owner, handle, info);
+    },
     () => {},
   );
 }

@@ -324,8 +324,14 @@ export class Collector {
     } catch (error) {
       return this.violation(String(error), state);
     }
-    if (!state || message.run !== this.run)
-      return this.violation("Wrong run or no expected document", state);
+    if (!state || message.run !== this.run) {
+      // A consumed token identifies the rejected binding, never an admission.
+      const rejected =
+        message.run === this.run && message.kind === "hello"
+          ? this.documents.find((item) => item.token === message.token)
+          : undefined;
+      return this.violation("Wrong run or no expected document", rejected);
+    }
     const encoded = JSON.stringify(message);
     try {
       if (reportSequence(state, message.seq, encoded) === "retry")

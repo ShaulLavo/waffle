@@ -50,6 +50,11 @@ for (const entry of ["browser/worker.ts", "browser/gpu/guest.ts", "browser/displ
     if (!result.success || !result.metafile) throw new Error(result.logs.join("\n"));
     expect(
       Object.keys(result.metafile.inputs).filter((path) =>
+        path.endsWith("browser/gpu/generated/tables.ts"),
+      ),
+    ).toEqual([]);
+    expect(
+      Object.keys(result.metafile.inputs).filter((path) =>
         /browser\/(?:display\/owner|gpu\/(?:service|service-worker|surfaces|replay|scheduler|completions))\.ts$/.test(
           path,
         ),
@@ -76,4 +81,14 @@ test("all GPU budgets reject a byte beyond the limit", () => {
     expect(() => checkGpuBudget(name, GPU_BUDGETS[name])).not.toThrow();
     expect(() => checkGpuBudget(name, GPU_BUDGETS[name] + 1)).toThrow();
   }
+});
+
+test("display open boundary imports and rejects opens when SharedArrayBuffer is absent", () => {
+  const url = new URL("../browser/display/open.ts", import.meta.url).href;
+  const script = `Reflect.deleteProperty(globalThis, "SharedArrayBuffer");
+    const { validGraphicsOpen } = await import(${JSON.stringify(url)});
+    if (validGraphicsOpen({type:"open",id:1,control:0},64,64)) throw Error("accepted open without SAB");`;
+  const result = Bun.spawnSync([process.execPath, "-e", script]);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.exitCode).toBe(0);
 });

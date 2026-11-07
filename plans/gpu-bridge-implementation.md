@@ -33,27 +33,27 @@ Keep the approved boundaries:
 
 All production code is TypeScript under `packages/waffle/`.
 
-| Path | Responsibility |
-| --- | --- |
-| `browser/display/owner.ts` | Trusted page display, surfaces, grants, resize tracking, rAF credits, pending opens and service ownership. |
-| `browser/display/protocol.ts` | Type-only launch payloads, tagged identities and surface information layout. |
-| `browser/display/guest.ts` | Captured `runtime_window.surfaces` and `surface_info` imports. |
-| `browser/gpu/guest.ts` | Captured blocking `runtime_gpu` imports and local connection state. |
-| `browser/gpu/protocol.ts` | Parsed transport states, records, terminal reasons and limits. |
-| `browser/gpu/ring.ts` | Fixed shared rings, framing, chunk transport and checked counter arithmetic. |
-| `browser/gpu/replay.ts` | Generated-layout decoding and explicit named lowering adapters, with an injected target for tests. |
-| `browser/gpu/service.ts` | Connection owners, object tables, bounded replies and pending operations. |
-| `browser/gpu/scheduler.ts` | Resumable replay and round-robin task scheduling. |
-| `browser/gpu/surfaces.ts` | Stable frame textures, private presentation canvases and retained visible bitmaps. |
-| `browser/gpu/service-worker.ts` | Responsive service entry, connection registry and ordered owner messages. |
-| `browser/gpu/stream.json` | Selected calls, explicit opcodes, lowering metadata, completions and retired values. |
-| `browser/gpu/upstream/` | Pinned `webgpu.yml` and its license. |
-| `browser/gpu/generated/tables.ts` | Checked-in generated layouts and value maps. |
-| `tooling/gpu-stream.ts` | Generator and freshness check. |
-| `tooling/gpu-size.ts` | Display, guest and service bundle gates. |
-| `tooling/gpu-measure.ts` | Portable measurement runner for G0.3 and G4. |
-| `scripts/build-gpu-fixture.ts` | Pinned wasi-sdk C fixture build and verification. |
-| `tests/gpu-*`, `tests/fixtures/gpu/` | Unit tests, browser runner, C programs, generated fixture header and golden vectors. |
+| Path                                 | Responsibility                                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `browser/display/owner.ts`           | Trusted page display, surfaces, grants, resize tracking, rAF credits, pending opens and service ownership. |
+| `browser/display/protocol.ts`        | Type-only launch payloads, tagged identities and surface information layout.                               |
+| `browser/display/guest.ts`           | Captured `runtime_window.surfaces` and `surface_info` imports.                                             |
+| `browser/gpu/guest.ts`               | Captured blocking `runtime_gpu` imports and local connection state.                                        |
+| `browser/gpu/protocol.ts`            | Parsed transport states, records, terminal reasons and limits.                                             |
+| `browser/gpu/ring.ts`                | Fixed shared rings, framing, chunk transport and checked counter arithmetic.                               |
+| `browser/gpu/replay.ts`              | Generated-layout decoding and explicit named lowering adapters, with an injected target for tests.         |
+| `browser/gpu/service.ts`             | Connection owners, object tables, bounded replies and pending operations.                                  |
+| `browser/gpu/scheduler.ts`           | Resumable replay and round-robin task scheduling.                                                          |
+| `browser/gpu/surfaces.ts`            | Stable frame textures, private presentation canvases and retained visible bitmaps.                         |
+| `browser/gpu/service-worker.ts`      | Responsive service entry, connection registry and ordered owner messages.                                  |
+| `browser/gpu/stream.json`            | Selected calls, explicit opcodes, lowering metadata, completions and retired values.                       |
+| `browser/gpu/upstream/`              | Pinned `webgpu.yml` and its license.                                                                       |
+| `browser/gpu/generated/tables.ts`    | Checked-in generated layouts and value maps.                                                               |
+| `tooling/gpu-stream.ts`              | Generator and freshness check.                                                                             |
+| `tooling/gpu-size.ts`                | Display, guest and service bundle gates.                                                                   |
+| `tooling/gpu-measure.ts`             | Portable measurement runner for G0.3 and G4.                                                               |
+| `scripts/build-gpu-fixture.ts`       | Pinned wasi-sdk C fixture build and verification.                                                          |
+| `tests/gpu-*`, `tests/fixtures/gpu/` | Unit tests, browser runner, C programs, generated fixture header and golden vectors.                       |
 
 `await runtime.display()` dynamically imports the owner, without starting a service Worker or
 activating processes. `createSurface(canvas)` retains the element without transferring it yet.
@@ -123,7 +123,7 @@ The initial transport uses fixed buffers, not a growable 64 MiB payload arena:
 - A 64-byte connection control block.
 - A command ring, default 4 MiB plus its 64-byte header.
 - A completion ring, default 256 KiB plus its 64-byte header.
-- A fixed payload arena, default 1 MiB when G2 needs it, absent in the triangle-only slice.
+- A fixed 1 MiB payload backing when G2 is active. Its first 2,112 bytes hold a 64-byte header and 64 fixed 32-byte slot descriptors. The remaining 1,046,464 bytes hold payload data. The guest allocates this backing through `allocateSharedControl` before construction and includes it in the existing open transfer. No extra arena metadata backing or reservation algorithm is introduced. The existing command-ring publication selects the one terminal-reason winner for this connection. Every other terminal field mirrors that returned winner, and payload admission reads the selector rather than relying on mirror timing.
 
 Limits are validated in the trusted launch configuration. Up to eight live connections are
 allowed, but that is not a guarantee that all fit a bounded grant. The existing 64 MiB process
@@ -192,17 +192,17 @@ Each selected call declares receiver kind, result kind, result-handle allocation
 layout, omitted callback fields and a named descriptor adapter where needed. Required special
 cases in the triangle subset are:
 
-| Call or descriptor | Explicit lowering |
-| --- | --- |
-| Connection instance | `open` prebinds the reserved instance handle `(1, 1)`. It names the connection's GPU root; it is not a browser `GPUInstance` object. |
-| `instance.request_adapter` | Guest chooses the adapter result handle before the callback result exists. Record carries it, a token, the root receiver and options. |
-| `adapter.request_device` | Same rule for the device result handle. Callback-info and device-event function pointers never cross the wire. Service handlers publish device loss and uncaptured errors. |
-| `device.get_queue` | Binds a guest-chosen queue handle to the device's `queue` property. |
-| WGSL chained source | Allowlisted WGSL chain becomes the shader descriptor's JavaScript `code` member. |
-| Pipeline layout | A null C layout maps to the browser's `auto`; a nonnull handle resolves to a pipeline layout. |
-| `instance.create_surface` | A `SurfaceSourceWaffle` chain carries a granted surface id, checked against the connection's holder. |
+| Call or descriptor            | Explicit lowering                                                                                                                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connection instance           | `open` prebinds the reserved instance handle `(1, 1)`. It names the connection's GPU root; it is not a browser `GPUInstance` object.                                                                              |
+| `instance.request_adapter`    | Guest chooses the adapter result handle before the callback result exists. Record carries it, a token, the root receiver and options.                                                                             |
+| `adapter.request_device`      | Same rule for the device result handle. Callback-info and device-event function pointers never cross the wire. Service handlers publish device loss and uncaptured errors.                                        |
+| `device.get_queue`            | Binds a guest-chosen queue handle to the device's `queue` property.                                                                                                                                               |
+| WGSL chained source           | Allowlisted WGSL chain becomes the shader descriptor's JavaScript `code` member.                                                                                                                                  |
+| Pipeline layout               | A null C layout maps to the browser's `auto`; a nonnull handle resolves to a pipeline layout.                                                                                                                     |
+| `instance.create_surface`     | A `SurfaceSourceWaffle` chain carries a granted surface id, checked against the connection's holder.                                                                                                              |
 | `surface.get_current_texture` | Guest supplies the texture-result handle explicitly. A surface-result token/completion returns status and the bound handle, so a C client can fill its `surface_texture` output struct without inventing success. |
-| `surface.configure` | Uses the frame policy below, adds copy-source to the ordinary frame texture, and performs native descriptor validation without exposing service-only errors to guest scopes. |
+| `surface.configure`           | Uses the frame policy below, adds copy-source to the ordinary frame texture, and performs native descriptor validation without exposing service-only errors to guest scopes.                                      |
 
 Declare any further scalar or struct return in lowering metadata, rather than treating it as
 void. `surface.present` reports its bounded outcome. A future C client supplies handle allocation,
@@ -260,6 +260,8 @@ bodies cover adapter/device results, surface-texture status, map payloads, error
 compilation info, work done, uncaptured errors, device loss, call exceptions, frame credit,
 present failure, surface loss and terminal closure. Payload results are fixed-arena slot handles
 with an explicit length and generation, copied at most once.
+
+G2 retains native read and write mappings until ordered guest unmap. It uses real `mapAsync` for both modes and preserves `mappedAtCreation` on the original native buffer. Guest shadows never replace native buffer identity or usage. Private record `0x1003` validates every write range before copying any bytes, copies into the active native mapping, and calls native `unmap` only after those copies. Untouched bytes retain their initial mapped values. Plain unmap cancels a pending map through native `unmap`. Explicit device destruction and last device release invalidate their buffers' mapping epochs and views in the ordered destruction step. Epoch checks discard late results without touching a newer mapping. Native validation scopes, not a synthetic error path, report invalid usage and mapped submission.
 
 The shared service never blocks waiting for a guest to drain replies. Publishing a result that
 cannot fit, allocating a payload with no free credit, or exceeding the 64-pending-operation cap
@@ -362,16 +364,16 @@ locally. Build the C fixture once with the existing pinned wasi-sdk path and pas
 browser jobs. A fixture cache miss must participate in SDK restore/install conditions. Cache and
 freshness inputs include the YAML, selection metadata, generator and generated C layouts.
 
-| Slice | Deliverable and required gate |
-| --- | --- |
-| G0.1 | Pinned schema/license; triangle subset and named adapters; independently expected byte vectors before replay; generated TS/C layouts and freshness gate; ring/chunk/control protocol; resumable replay against a recording target; bounded replies and explicit terminal states. Unit tests below and normal quality, tests and size gates. No public runtime GPU entry yet. |
-| G0.2 | Minimal display/grants, accounted allocation, broker cleanup and bootstrap, real responsive service, stable-frame presentation, compiled C triangle, browser runner, authority/loading and CI gates. Foundational admission, pending-open and revocation behavior cannot be postponed. |
-| G0.3 | Mac and iPhone capabilities and measurements from the approved G0 list. Runs alongside G1. Topology failure is an owner decision before G3. |
-| G1 | Complete selected creation/queue/encoder/pass/bundle/query coverage, textured depth-tested scene and coverage classification of every YAML method. Large-blob fairness and multi-connection frame gates. |
-| G2 | Readback, mapping/shadow writes, error scopes, compilation info, work completion and device loss, including pressure and late-settlement cases. |
-| G3 | Full kill matrix, admission stress, surface disposal, runtime disposal and service failure under load. Another connection presents within the measured budget. |
-| G4 | Horizon-sized streams, upload/copy/throughput and ring sizing. Decide on direct guest-memory reads only after measurement. |
-| G5 | Public ABI, architecture, status and troubleshooting docs, qualified browser support and release. Depends on G3 and G0.3. |
+| Slice | Deliverable and required gate                                                                                                                                                                                                                                                                                                                                                |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G0.1  | Pinned schema/license; triangle subset and named adapters; independently expected byte vectors before replay; generated TS/C layouts and freshness gate; ring/chunk/control protocol; resumable replay against a recording target; bounded replies and explicit terminal states. Unit tests below and normal quality, tests and size gates. No public runtime GPU entry yet. |
+| G0.2  | Minimal display/grants, accounted allocation, broker cleanup and bootstrap, real responsive service, stable-frame presentation, compiled C triangle, browser runner, authority/loading and CI gates. Foundational admission, pending-open and revocation behavior cannot be postponed.                                                                                       |
+| G0.3  | Mac and iPhone capabilities and measurements from the approved G0 list. Runs alongside G1. Topology failure is an owner decision before G3.                                                                                                                                                                                                                                  |
+| G1    | Complete selected creation/queue/encoder/pass/bundle/query coverage, textured depth-tested scene and coverage classification of every YAML method. Large-blob fairness and multi-connection frame gates.                                                                                                                                                                     |
+| G2    | Readback, mapping/shadow writes, error scopes, compilation info, work completion and device loss, including pressure and late-settlement cases.                                                                                                                                                                                                                              |
+| G3    | Full kill matrix, admission stress, surface disposal, runtime disposal and service failure under load. Another connection presents within the measured budget.                                                                                                                                                                                                               |
+| G4    | Horizon-sized streams, upload/copy/throughput and ring sizing. Decide on direct guest-memory reads only after measurement.                                                                                                                                                                                                                                                   |
+| G5    | Public ABI, architecture, status and troubleshooting docs, qualified browser support and release. Depends on G3 and G0.3.                                                                                                                                                                                                                                                    |
 
 The triangle subset includes request-adapter/device, surface creation/configure/acquire/present,
 queue lookup/submit, shader and pipeline creation, texture view, device destroy, encoder/pass

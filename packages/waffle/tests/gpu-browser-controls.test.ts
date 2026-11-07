@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { requireIntegrationAdapter, assertScenePixels } from "./gpu-browser-runner.js";
+import {
+  requireIntegrationAdapter,
+  assertScenePixels,
+  assertControlAccounting,
+} from "./gpu-browser-runner.js";
 
 test("Chromium acceptance requires the actual designated SwiftShader adapter", () => {
   expect(
@@ -36,4 +40,25 @@ test("compiled scene pixel gate distinguishes upload, binding and depth controls
   expect(() => assertScenePixels(black)).toThrow("Compiled scene pixel failure");
   expect(() => assertScenePixels({ ...normal, right: normal.left })).toThrow();
   expect(() => assertScenePixels({ ...black, corner: black.left }, "black-texture")).toThrow();
+});
+
+test("compiled guest control accounting includes its one MiB payload arena", () => {
+  const snapshot = (length: number) => ({
+    platform: { kind: "bounded" },
+    holders: [
+      {
+        label: "guest-control",
+        state: "live",
+        shape: { kind: "fixed-buffer", length: 67_108_864 },
+      },
+      { label: "guest-control", state: "debt", shape: { kind: "fixed-buffer", length } },
+    ],
+  });
+  expect(() => assertControlAccounting(snapshot(5_505_220))).not.toThrow();
+  expect(() => assertControlAccounting(snapshot(4_456_644))).toThrow(
+    "GPU fixed backing charge missing",
+  );
+  expect(() => assertControlAccounting(snapshot(5_505_219))).toThrow(
+    "GPU fixed backing charge missing",
+  );
 });

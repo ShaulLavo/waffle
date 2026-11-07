@@ -13,7 +13,13 @@ export default {
   includeEntryExports: true,
   // The schema fixture compiles the generated C header with the host toolchain.
   ignoreBinaries: ["cc"],
-  ignoreIssues: publicIssues,
+  ignoreIssues: {
+    ...publicIssues,
+    // Browser fixtures invoke this export through the routed module name.
+    "tests/fixtures/gpu/async-native.ts": ["exports"],
+    // The CLI runner also exports its entry for aggregate consumers.
+    "tests/gpu-async-browser-runner.ts": ["exports"],
+  },
   tags: ["-@browserEntry", "-@compileFixture", "-@public"],
   workspaces: {
     ".": {
@@ -26,6 +32,7 @@ export default {
         "tests/page-runner/aggregate-error-fixture.ts",
         "tests/page-runner/command-fixtures.ts",
         "tests/page-runner/root-continuity-control-fixture.ts",
+        "tests/page-runner/process-recycling-{fs,error}-control-worker.ts",
         "tests/page-runner/guest-watch-{command,control-phases,stalled-helper}.ts",
         "tests/page-runner/storage-page-control-worker.ts",
         "tests/page-runner/browser-controls-runner.ts",
@@ -33,6 +40,9 @@ export default {
         "tests/page-runner/framework-controls/installed.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",
+        "tests/gpu-async-browser-runner.ts",
+        "tests/fixtures/gpu/async-page.ts",
+        "tests/fixtures/gpu/async-native.ts",
         "tests/fixtures/gpu/integration-{guest,service-worker,page}.ts",
         "tests/fixtures/gpu/lazy-page.ts",
         "tests/fixtures/gpu/qualification-worker.ts",

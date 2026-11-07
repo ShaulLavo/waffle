@@ -1,3 +1,4 @@
+import { validGraphicsOpen } from "./open.js";
 import { allocateSharedControl } from "../../memory/control.js";
 import type {
   GraphicsConnection,
@@ -266,7 +267,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       grants.set(id, grant);
       channel.port1.onmessage = ({ data }: MessageEvent<unknown>) => {
         if (grant.state !== "live") return;
-        if (validOpen(data, commandBytes, completionBytes)) {
+        if (validGraphicsOpen(data, commandBytes, completionBytes)) {
           if (!gpu || grant.opens.has(data.id) || grant.opens.size >= 8) {
             settleOpen(data, -28, 2);
             return;
@@ -323,55 +324,38 @@ function ringSize(bytes: number): number {
     throw new RangeError("Invalid graphics ring size");
   return bytes;
 }
-function validOpen(
-  data: unknown,
-  commandBytes: number,
-  completionBytes: number,
-): data is GraphicsOpen {
-  if (typeof data !== "object" || data === null || !("type" in data) || data.type !== "open")
-    return false;
-  return (
-    "id" in data &&
-    Number.isSafeInteger(data.id) &&
-    Number(data.id) > 0 &&
-    "control" in data &&
-    data.control instanceof SharedArrayBuffer &&
-    data.control.byteLength === 64 &&
-    Reflect.get(data.control, "growable") !== true &&
-    "commands" in data &&
-    data.commands instanceof SharedArrayBuffer &&
-    data.commands.byteLength === commandBytes + 64 &&
-    Reflect.get(data.commands, "growable") !== true &&
-    "replies" in data &&
-    data.replies instanceof SharedArrayBuffer &&
-    data.replies.byteLength === completionBytes + 64 &&
-    Reflect.get(data.replies, "growable") !== true &&
-    data.commands !== data.replies
-  );
-}
 function settleOpen(open: GraphicsOpen, errno: number, reason: number): void {
+  const selected = terminateRing(open.commands, reason);
+  terminateRing(open.replies, selected);
+  Atomics.store(new Int32Array(open.arena), 0, selected);
   const cells = new Int32Array(open.control);
-  const previous = Atomics.compareExchange(cells, 1, 0, reason);
-  if (previous === 0) Atomics.store(cells, 0, errno);
+  Atomics.store(cells, 1, selected);
+  const previous = Atomics.load(cells, 0);
+  if (previous >= 0)
+    Atomics.compareExchange(
+      cells,
+      0,
+      previous,
+      selected === reason ? errno : selected === 3 ? -48 : -64,
+    );
   Atomics.notify(cells, 0);
-  for (const buffer of [open.commands, open.replies]) terminateRing(buffer, reason);
 }
-function terminateRing(buffer: SharedArrayBuffer, reason: number): void {
+function terminateRing(buffer: SharedArrayBuffer, reason: number): number {
   const publication = new BigInt64Array(buffer, 0, 1);
   let seen = Atomics.load(publication, 0);
-  while (seen >> 32n === 0n) {
-    const previous = Atomics.compareExchange(
-      publication,
-      0,
-      seen,
-      (BigInt(reason) << 32n) | (seen & 0xffffffffn),
-    );
-    if (previous === seen) break;
+  while (((seen >> 32n) & 0xffffffffn) === 0n) {
+    const next = (BigInt(reason | 0) << 32n) | (seen & 0xffffffffn);
+    const previous = Atomics.compareExchange(publication, 0, seen, next);
+    if (previous === seen) {
+      seen = next;
+      break;
+    }
     seen = previous;
   }
   const cells = new Int32Array(buffer, 0, 16);
   Atomics.add(cells, 4, 1);
   Atomics.notify(cells, 4);
+  return Number((seen >> 32n) & 0xffffffffn);
 }
 
 function grantId(value: number): GrantId {

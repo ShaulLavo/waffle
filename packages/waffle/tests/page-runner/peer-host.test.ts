@@ -182,3 +182,67 @@ test("uncertain create remains owned after its waiter aborts and cannot navigate
   await Bun.sleep(0);
   expect(driver.navigations).toBe(2);
 });
+
+test("peer admission observes receipt before ACK without granting user commands early", async () => {
+  const driver = new PeerDriverFixture();
+  driver.holdPeerReadyAcknowledgement = true;
+  await fixture(
+    driver,
+    async (host) => {
+      let admitted = false;
+      const opening = host.openPeer();
+      void opening
+        .then(() => {
+          admitted = true;
+        })
+        .catch(() => {});
+      const observed = await bounded(
+        driver.peerAdmissionObserved.promise,
+        300,
+        "peer admission observation",
+      );
+      expect(observed).toEqual({ phase: "admitting", pending: 1 });
+      expect(admitted).toBe(false);
+      expect(driver.actions).toEqual(["create"]);
+      expect(driver.effects).toEqual([]);
+      driver.peerReadyRelease.resolve();
+      const peer = await opening;
+      await peer.script("window.effects.push(1);");
+      return true;
+    },
+    (result) => {
+      expect(result.failures).toEqual([]);
+      expect(result.exit).toBe(0);
+      expect(result.runComplete).toBe(true);
+      expect(driver.effects).toEqual([1]);
+    },
+  );
+});
+
+test("an unacknowledged peer readiness keeps the original operation bound and no capability", async () => {
+  const driver = new PeerDriverFixture();
+  driver.holdPeerReadyAcknowledgement = true;
+  await fixture(
+    driver,
+    async (host) => {
+      const peer = await host.openPeer();
+      await peer.script("window.effects.push(1);");
+      return true;
+    },
+    (result) => {
+      expect(result.exit).toBe(2);
+      expect(result.runComplete).toBe(false);
+      expect(driver.effects).toEqual([]);
+      expect(driver.actions).toEqual(["create"]);
+      expect(
+        result.transitions
+          .filter((transition) => transition.action === "create")
+          .map((transition) => transition.progress),
+      ).toEqual(["executing"]);
+      expect(JSON.stringify(result.results)).toContain("Host operation timed out");
+      expect(result.failures.some((failure) => failure.category === "page-task-unconfirmed")).toBe(
+        true,
+      );
+    },
+  );
+});
