@@ -201,12 +201,21 @@ type Expected = {
 };
 function ownershipProof(service: Record<string, unknown>, index: number, expected: Expected) {
   const count = index === 1 || index === 2 ? 2 : 1;
+  const peer = owner(service, expected.result.peer, "peer");
+  requireProof(typeof peer.frame === "boolean", "missing peer frame observation");
   requireProof(
     service.connections === count &&
       service.devicesLive === count &&
       service.presentCanvasesLive === count &&
-      service.frameTexturesLive === count - 1,
-    "wrong live ownership cohort",
+      service.frameTexturesLive === count - 1 + Number(peer.frame),
+    `wrong live ownership cohort ${JSON.stringify({
+      checkpoint: index,
+      expectedConnections: count,
+      connections: service.connections,
+      devices: service.devicesLive,
+      presenters: service.presentCanvasesLive,
+      frames: service.frameTexturesLive,
+    })}`,
   );
   requireProof(
     integer(service.heapBytes) === (count === 2 ? expected.readyHeap : expected.baseline),
@@ -264,6 +273,21 @@ function heldCheckpoint(
     "selected reader was not held across the armed checkpoint",
   );
   return { ringReads: integer(end.ringReads), length: heldAppend(record(guest)) };
+}
+
+function compiledFailure(value: unknown, mode: Mode): boolean {
+  if (typeof value !== "string") return false;
+  const lines = value.split("\n");
+  const failures = lines.filter((line) => line.startsWith("GPU_FAIL"));
+  if (failures.length !== 1) return false;
+  if (mode !== "nesting") return failures[0] === "GPU_FAIL stage=fairness-append status=-64";
+  const unexpected = lines.filter((line) => line.startsWith("GPU_UNEXPECTED"));
+  return (
+    failures[0] === "GPU_FAIL stage=unexpected-completion status=-28" &&
+    unexpected.length === 1 &&
+    unexpected[0] === "GPU_UNEXPECTED kind=12 token=0" &&
+    lines.includes("GPU_FAIRNESS_PUBLISHED")
+  );
 }
 
 /** Acceptance consumes scalar observations only and checks every screenshot bracket. */
@@ -365,8 +389,7 @@ export function validateMalformedResult(value: unknown) {
       exit.code === 1 &&
       stop.grantRetired === true &&
       stop.physicallyStopped === true &&
-      typeof stop.text === "string" &&
-      stop.text.includes("GPU_FAIL"),
+      compiledFailure(stop.text, mode),
     "missing compiled victim failure and physical retirement",
   );
   authority(stop);

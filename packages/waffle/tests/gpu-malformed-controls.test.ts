@@ -184,7 +184,10 @@ function proof(kind = "header") {
       physicallyStopped: true,
       ownAuthority: [cleanAuthority()],
       snapshot: ledger(2, 2),
-      text: "GPU_FAIL",
+      text:
+        kind === "nesting"
+          ? "GPU_FAIRNESS_PUBLISHED\nGPU_UNEXPECTED kind=12 token=0\nGPU_FAIL stage=unexpected-completion status=-28\n"
+          : "GPU_FAIL stage=fairness-append status=-64\n",
     },
     peerExit: {
       pid: 3,
@@ -222,6 +225,26 @@ test("all three complete malformed proofs are accepted without hardware qualific
       hardwareQualified: false,
       targets: { sliceMs: 8, peerGapMs: 100 },
     });
+  }
+});
+test("the same live peer may acquire its next frame between checkpoint snapshots", () => {
+  for (const mode of ["header", "chunk", "nesting"]) {
+    const value = proof(mode);
+    for (const phase of value.phases) {
+      phase.before.owners[0]!.frame = true;
+      phase.before.frameTexturesLive++;
+    }
+    expect(validateMalformedResult(value).hardwareQualified).toBe(false);
+  }
+});
+test("frame counters must match the peer observation without hiding a retained victim frame", () => {
+  for (const i of all) {
+    rejects((value) => {
+      value.phases[i]!.before.frameTexturesLive++;
+    }, cohort);
+    rejects((value) => {
+      Reflect.deleteProperty(value.phases[i]!.service.owners[0]!, "frame");
+    }, /missing peer frame observation/);
   }
 });
 test("missing service and victim-context observer coverage fails", () => {
@@ -496,4 +519,30 @@ test("the existing complete runner includes malformed isolation before ownership
   expect(source.indexOf("await malformedCases(page")).toBeLessThan(
     source.indexOf("await ownershipCases(page"),
   );
+});
+
+test("the compiled victim must report its exact parser-failure stage and errno", () => {
+  for (const text of [
+    "GPU_FAIL",
+    "GPU_FAIL stage=device status=-64",
+    "GPU_FAIL stage=fairness-append status=-58",
+    "GPU_FAIL stage=fairness-append status=-64 trailing",
+    "GPU_FAIL stage=fairness-append status=-64\nGPU_FAIL stage=device status=-64",
+  ]) {
+    rejects((value) => {
+      value.stop.text = text;
+    }, /compiled victim failure/);
+  }
+});
+
+test("nested parser closure requires the exact compiled closed-completion observation", () => {
+  for (const old of ["GPU_FAIRNESS_PUBLISHED", "kind=12", "token=0", "status=-28"]) {
+    rejects(
+      (value) => {
+        value.stop.text = value.stop.text.replace(old, "unrelated");
+      },
+      /compiled victim failure/,
+      "nesting",
+    );
+  }
 });

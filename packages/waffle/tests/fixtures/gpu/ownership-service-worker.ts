@@ -57,10 +57,14 @@ let nativeHeld = false;
 let nativeReleased = false;
 const gate = Promise.withResolvers<void>();
 let malformedReleased = false;
-let injection: { owner: number; mode: Mode; read: number; offset: number; before: number; after: number } | undefined;
+let injection:
+  | { owner: number; mode: Mode; read: number; offset: number; before: number; after: number }
+  | undefined;
 let late: { reads: number; kind: string; reason: number } | undefined;
 function malformed(): boolean {
-  return selection?.mode === "header" || selection?.mode === "chunk" || selection?.mode === "nesting";
+  return (
+    selection?.mode === "header" || selection?.mode === "chunk" || selection?.mode === "nesting"
+  );
 }
 function selected(owner: Owner): boolean {
   return owner.open.surfaces.some((surface) => surface.id === selection?.surface);
@@ -140,7 +144,6 @@ RecordRing.prototype.readInto = function (destination) {
       owner.chunkBytes = result.bytes;
       owner.logicalBytes = view.getUint32(8, true);
       corrupt(owner, view);
-
     }
   }
   return result;
@@ -174,8 +177,13 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
 const replayStep = GpuReplay.prototype.step;
 GpuReplay.prototype.step = function () {
   const result = replayStep.call(this);
-  if (active && result.kind === "terminal" && active.connection.state.kind === "terminal" &&
-    active.connection.state.reason === 2) active.protocolReplays++;
+  if (
+    active &&
+    result.kind === "terminal" &&
+    active.connection.state.kind === "terminal" &&
+    active.connection.state.reason === 2
+  )
+    active.protocolReplays++;
   return result;
 };
 const requestDevice = globalThis.GPUAdapter?.prototype.requestDevice;
@@ -318,8 +326,14 @@ function arm(data: Command) {
   selection = { token: data.token, surface: data.surface, mode: data.mode };
   if (malformed()) {
     const victim = owners.find(selected);
-    if (!victim || victim.readerReads < 1 || victim.ringReads < 1 || victim.created !== 1 ||
-      victim.connection.state.kind !== "ready" || !victim.surfaces)
+    if (
+      !victim ||
+      victim.readerReads < 1 ||
+      victim.ringReads < 1 ||
+      victim.created !== 1 ||
+      victim.connection.state.kind !== "ready" ||
+      !victim.surfaces
+    )
       throw new Error("Malformed victim observer positive coverage missing");
   }
   enabled = true;
@@ -345,8 +359,11 @@ function command(data: Command) {
       const before = victim.ringReads;
       const result = victim.reader.read();
       victim.connection.replay.step();
-      late = { reads: victim.ringReads - before, kind: result.kind,
-        reason: result.kind === "terminal" ? result.reason : 0 };
+      late = {
+        reads: victim.ringReads - before,
+        kind: result.kind,
+        reason: result.kind === "terminal" ? result.reason : 0,
+      };
     }
     if (data.test === "ownership-release") {
       released = true;
