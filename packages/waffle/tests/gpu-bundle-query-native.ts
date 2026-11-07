@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import type { Page } from "playwright";
 import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
@@ -26,7 +27,7 @@ async function run() {
     console.log(JSON.stringify({ phase: "setup", scratch: lifecycle.scratch, endpoint }));
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(endpoint);
+    await navigateTestPage(page, endpoint);
     for (const control of [
       "direct",
       "indexed",

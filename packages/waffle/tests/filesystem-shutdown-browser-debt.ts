@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import type { Browser, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
 import {
@@ -176,7 +177,7 @@ async function runCell(
       page = await allocated.newPage();
       page.on("worker", (worker) => captureWorker(owners, worker));
       page.on("pageerror", (error) => errors.push(error));
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
       const current = page;
       requireValue(
         await before(deadline - 20_000, "native debt proof", async () => {

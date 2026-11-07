@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { basename } from "node:path";
 import type { Page } from "playwright";
 export async function gpuLazyRoutes() {
@@ -25,7 +26,7 @@ export async function assertGpuLazyBrowser(
   url: string,
   outputInputs: Record<string, string[]>,
 ) {
-  await page.goto(url);
+  await navigateTestPage(page, url);
   const evidence = [];
   for (const stage of ["filesystem", "display", "process", "dispose"] as const) {
     const snapshot = await page.evaluate(async (stage) => {

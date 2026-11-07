@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type { Browser, Page } from "playwright";
@@ -346,7 +347,7 @@ async function runEngine({
   const page = await browser.newPage({ deviceScaleFactor: 1 });
   const evidence: Record<string, unknown> = {};
   try {
-    await page.goto(url);
+    await navigateTestPage(page, url);
     const report = await qualifyGpuBrowser(page, engine, {
       bitmapOnly,
       record: (stage, value) => {

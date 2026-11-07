@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 import { gpuLazyRoutes, assertGpuLazyBrowser } from "./gpu-loading-browser.js";
 import { resolve } from "node:path";
@@ -195,7 +196,7 @@ async function sceneCases(page: Page, url: string, available: boolean) {
   if (!available) return [await unsupportedCase(page, "gpu", true)];
   const results = [];
   for (const mode of ["normal", "no-depth", "black-texture"] satisfies SceneMode[]) {
-    await page.goto(url);
+    await navigateTestPage(page, url);
     results.push(await sceneCase(page, mode));
   }
   return results;
@@ -411,33 +412,33 @@ async function main() {
         page = await context.newPage();
       page.on("pageerror", (error) => console.error(error));
       const loading = await assertGpuLazyBrowser(page, url, lazy.outputInputs);
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
       const fairness = await fairnessCases(page, url, available);
       console.log(JSON.stringify({ engine, stage: "fairness", fairness }));
       const scenes = await sceneCases(page, url, available);
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const guest = available ? await guestCase(page) : await unsupportedCase(page, "gpu");
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const negative = available ? await guestCase(page, true) : undefined;
       const held = available
         ? await Promise.resolve().then(async () => {
             const results = [];
             for (const mode of ["open", "adapter", "device"] as const) {
-              await page.goto(url);
+              await navigateTestPage(page, url);
               results.push(await heldKillCase(page, mode));
             }
             return results;
           })
         : undefined;
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const frames = available ? await frameModes(page) : undefined;
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const forged = available ? await forgedCase(page) : undefined;
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const noGrant = await unsupportedCase(page, "none");
-      await page.goto(url);
+      await navigateTestPage(page, url);
       const surfaceOnly = await unsupportedCase(page, "surface");
       console.log(
         JSON.stringify({
