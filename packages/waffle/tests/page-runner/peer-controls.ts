@@ -155,6 +155,25 @@ export async function peerControl(
       !result.documents.some((state) => state.generation !== null && state.generation > 0),
       "Fault admitted a successor",
     );
+    if (mode === "peer-unexpected-reload") {
+      assert.ok(
+        result.failures.some(
+          (failure) =>
+            failure.document?.doc === peer.doc &&
+            failure.document.generation === 0 &&
+            ((failure.category === "protocol" &&
+              failure.detail === "Wrong run or no expected document") ||
+              (failure.category === "host-command" &&
+                /Host document binding changed|Execution context was destroyed.*navigation/.test(
+                  failure.detail,
+                )) ||
+              failure.category === "page-reloaded"),
+        ),
+        "Reload was not detected by its rejected hello or original document guard",
+      );
+      assert.deepEqual(driver.actions, ["create"], "Fault dispatched a lifecycle action");
+      assert.equal(result.runComplete, false, "Reload fault reached successful finish");
+    }
   }
   assert.equal(result.cleanup.session.status, "confirmed");
   assert.equal(result.cleanup.scratch.status, "confirmed");
