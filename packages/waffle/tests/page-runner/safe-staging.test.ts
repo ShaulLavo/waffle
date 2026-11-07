@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { safeStagingLabels } from "../safe-staging-browser.js";
 import { stagingDatabaseName } from "./safe-staging-allocation.js";
@@ -79,7 +80,7 @@ test("inactive and unknown allocations never reach the reporter", async () => {
 });
 for (const actual of [labels, labels.slice(1)]) {
   test(`whole-command host retains actual labels and exits ${actual.length === labels.length ? 0 : 1}`, async () => {
-    const root = await mkdtemp("/work/tmp/wss-unit-");
+    const root = await mkdtemp(join(tmpdir(), "wss-unit-"));
     const driver = new FakeDriver("pass", { list: { labels }, result: actual });
     try {
       const result = await runPageSuite(adapter, () => driver, {
@@ -103,7 +104,7 @@ for (const actual of [labels, labels.slice(1)]) {
 }
 
 test("native staging preconditions write their own result without allocating a browser", async () => {
-  const root = await mkdtemp("/work/tmp/wss-cli-");
+  const root = await mkdtemp(join(tmpdir(), "wss-cli-"));
   const original = process.env.IOS_UDID;
   try {
     process.env.IOS_UDID = "invalid-control-udid";
@@ -122,7 +123,7 @@ test("native staging preconditions write their own result without allocating a b
 });
 
 test("a requested single staging control stays an explicitly partial run", async () => {
-  const root = await mkdtemp("/work/tmp/wss-filter-");
+  const root = await mkdtemp(join(tmpdir(), "wss-filter-"));
   const selected = labels[0];
   expect(selected).toBeDefined();
   const partial = safeStagingAdapter(selected);
