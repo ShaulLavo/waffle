@@ -1,5 +1,5 @@
 import { IdentityAllocator } from "../fs/file-identity.js";
-import { checkpointDecodeControl } from "./indexeddb-checkpoint-decode-browser.js";
+import { checkpointDecodeControl, type StagingDatabaseName } from "./indexeddb-checkpoint-decode-browser.js";
 import {
   PublicationDomain,
   createPublicationBuffers,
@@ -192,9 +192,16 @@ function failureOnReceipt(cause: unknown) {
   };
 }
 async function fixture(
-  run: (name: string, open: () => Promise<CommittedStorage>) => Promise<void>,
+  run: (
+    name: string,
+    open: () => Promise<CommittedStorage>,
+    databaseName?: StagingDatabaseName,
+  ) => Promise<void>,
+  databaseName?: StagingDatabaseName,
 ): Promise<void> {
-  const name = `waffle-staged-test-${crypto.randomUUID()}`,
+  const name = databaseName
+      ? await databaseName("waffle-staged-test")
+      : `waffle-staged-test-${crypto.randomUUID()}`,
     stores: CommittedStorage[] = [];
   const open = async () => {
     const storage = await IndexedDBStorage.openCommitted(name, { compactEvery: 1 });
@@ -202,7 +209,7 @@ async function fixture(
     return storage;
   };
   try {
-    await run(name, open);
+    await run(name, open, databaseName);
   } finally {
     for (const storage of stores) await storage.close();
     await idbRequest(indexedDB.deleteDatabase(name));
@@ -1148,8 +1155,12 @@ async function observerReentry(
   assert((await driver.submit(next)).kind === "committed", "fresh observer slot allows retry");
   assert(equal(secondPrepared, 1), "refused callback did not stage an extra operation");
 }
-async function checkpointDecodeBounds(): Promise<void> {
-  await checkpointDecodeControl.run();
+async function checkpointDecodeBounds(
+  _name: string,
+  _open: () => Promise<CommittedStorage>,
+  databaseName?: StagingDatabaseName,
+): Promise<void> {
+  await checkpointDecodeControl.run(databaseName);
 }
 const cases = {
   checkpointDecodeBounds,
@@ -1177,13 +1188,19 @@ const cases = {
   splitReceiptMutant,
   corruptEnvelope,
 };
+export function safeStagingLabels(): string[] {
+  return Object.keys(cases);
+}
 /** @browserEntry Invoked by the dedicated native staging runner. */
-export async function safeStagingNative(selected?: string): Promise<string[]> {
+export async function safeStagingNative(
+  selected?: string,
+  databaseName?: StagingDatabaseName,
+): Promise<string[]> {
   if (selected && !(selected in cases)) throw new Error(`Unknown staged control ${selected}`);
   const passed: string[] = [];
   for (const [name, run] of Object.entries(cases)) {
     if (selected && selected !== name) continue;
-    await fixture(run);
+    await fixture(run, databaseName);
     passed.push(name);
     console.log(`staged control passed: ${name}`);
   }
