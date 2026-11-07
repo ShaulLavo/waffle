@@ -15,6 +15,9 @@ import {
   checkpoint,
   current,
   until,
+  nativeCoverage,
+  progress,
+  peerAdvanced,
 } from "./gpu-ownership-browser.js";
 
 type Mode = "header" | "chunk" | "nesting";
@@ -80,26 +83,6 @@ function heldAppend(guest: Record<string, unknown>) {
   );
   return integer(entered[0]!.length);
 }
-function nativeCoverage(value: unknown) {
-  const coverage = record(value);
-  for (const key of [
-    "readerReads",
-    "ringReads",
-    "disposed",
-    "destroyed",
-    "nativeRequests",
-    "presents",
-  ])
-    requireProof(integer(coverage[key]) > 0, "missing observer coverage");
-  for (const key of [
-    "draw",
-    "finish",
-    "submit",
-    "transferToImageBitmap",
-    "transferFromImageBitmap",
-  ])
-    requireProof(integer(record(coverage.native)[key]) > 0, "missing native observer coverage");
-}
 function retiredVictim(victim: Record<string, unknown>, mode: Mode, heap: number, held: Held) {
   requireProof(
     integer(victim.logicalBytes) === held.length,
@@ -150,43 +133,6 @@ function injectionProof(value: unknown, victim: Record<string, unknown>, mode: M
       integer(injection.read) > held.ringReads &&
       integer(injection.read) <= integer(victim.ringReads),
     "missing correlated malformed byte observation",
-  );
-}
-function progress(service: Record<string, unknown>, peer: unknown) {
-  const fairness = record(service.fairness);
-  requireProof(fairness.overflow === false, "observer overflow");
-  const presents = entries(fairness.presents).filter((item) => item.connection === peer);
-  const queue = entries(fairness.queue).filter(
-    (item) => item.connection === peer && record(item.settlement).kind === "completed",
-  );
-  requireProof(presents.length > 0 && queue.length > 0, "missing native peer progress");
-  for (const item of queue)
-    requireProof(
-      number(record(item.settlement).at) >= number(item.start),
-      "invalid native queue progress",
-    );
-  return {
-    presents: presents.length,
-    queue: queue.length,
-    presentAt: presents.reduce((latest, item) => Math.max(latest, number(item.at)), 0),
-    queueAt: queue.reduce(
-      (latest, item) => Math.max(latest, number(record(item.settlement).at)),
-      0,
-    ),
-  };
-}
-function peerAdvanced(
-  service: Record<string, unknown>,
-  peer: unknown,
-  previous: ReturnType<typeof progress>,
-  since = 0,
-): boolean {
-  const next = progress(service, peer);
-  return (
-    next.presents > previous.presents &&
-    next.queue > previous.queue &&
-    next.presentAt >= since &&
-    next.queueAt >= since
   );
 }
 

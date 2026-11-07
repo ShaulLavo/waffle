@@ -31,7 +31,7 @@ function observeImports(
 ): void {
   if (!token || !imports.runtime_gpu) return;
   RecordRing.prototype.wait = observeWait;
-  for (const name of ["append", "completions"]) {
+  for (const name of ["open", "append", "completions"]) {
     const original = imports.runtime_gpu[name];
     if (typeof original !== "function") throw new Error("Missing observed GPU import");
     imports.runtime_gpu[name] = function (this: unknown, ...args: (number | bigint)[]) {

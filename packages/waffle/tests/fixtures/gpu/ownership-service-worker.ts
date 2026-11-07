@@ -1,3 +1,4 @@
+import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
 import { GpuService } from "../../../browser/gpu/service.js";
 import { GpuReplay } from "../../../browser/gpu/replay.js";
 import { GpuConnection, GpuScheduler } from "../../../browser/gpu/scheduler.js";
@@ -8,7 +9,7 @@ import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 
 type Open = Extract<GpuServiceRequest, { type: "open" }>;
-type Mode = "append" | "completions" | "header" | "chunk" | "nesting";
+type Mode = "append" | "completions" | "header" | "chunk" | "nesting" | "admission";
 interface Owner {
   readonly id: number;
   readonly open: Open;
@@ -43,6 +44,17 @@ const host = globalThis as unknown as {
 const fairness = installFairnessObserver();
 const realm = crypto.randomUUID();
 const owners: Owner[] = [];
+interface OpenAttempt {
+  readonly message: Open;
+  readonly beforeConnections: number;
+  readonly beforeHeap: number;
+  readonly beforeNativeRequests: number;
+  afterConnections: number;
+  afterHeap: number;
+  afterNativeRequests: number;
+  retiredAck: boolean;
+}
+const attempts: OpenAttempt[] = [];
 const rings = new WeakMap<RecordRing, Owner>();
 const devices = new WeakMap<GPUDevice, Owner>();
 let receiving: Open | undefined;
@@ -226,6 +238,8 @@ if (destroy) {
 const service = new GpuService((message) => {
   if (message.type === "retired") {
     for (const owner of owners) if (owner.open.grant === message.grant) owner.retiredAck = true;
+    for (const attempt of attempts)
+      if (attempt.message.grant === message.grant) attempt.retiredAck = true;
   }
   host.postMessage(message);
 });
@@ -277,6 +291,32 @@ function ownerSnapshot(owner: Owner) {
     replies: ringSnapshot(owner.open.open.replies),
   };
 }
+function attemptSnapshot(attempt: OpenAttempt) {
+  const { message } = attempt;
+  const control = new Int32Array(message.open.control);
+  const admitted = owners.find((owner) => owner.open === message);
+  return {
+    grant: message.grant,
+    surface: message.surfaces[0]!.id,
+    connection: message.open.id,
+    owner: admitted?.id ?? null,
+    status: Atomics.load(control, 0),
+    reason: Atomics.load(control, 1),
+    arenaTerminal: Atomics.load(
+      new Int32Array(message.open.arena, gpuPayloadLayout.terminalOffset, 1),
+      0,
+    ),
+    commands: ringSnapshot(message.open.commands),
+    replies: ringSnapshot(message.open.replies),
+    retiredAck: attempt.retiredAck,
+    beforeConnections: attempt.beforeConnections,
+    afterConnections: attempt.afterConnections,
+    beforeHeap: attempt.beforeHeap,
+    afterHeap: attempt.afterHeap,
+    beforeNativeRequests: attempt.beforeNativeRequests,
+    afterNativeRequests: attempt.afterNativeRequests,
+  };
+}
 function snapshot(responseId: string) {
   return {
     ...service.snapshot(),
@@ -295,13 +335,12 @@ function snapshot(responseId: string) {
     injection,
     late,
     owners: owners.map(ownerSnapshot),
+    attempts: attempts.map(attemptSnapshot),
+    nativeRequests,
     fairness: fairness.snapshot(),
   };
 }
-function arm(data: Command) {
-  if (!data.token || !Number.isSafeInteger(data.surface) || !data.surface || !data.mode)
-    throw new Error("Ownership selection missing");
-  if (enabled) throw new Error("Ownership selection already armed");
+function coverage() {
   const observed = fairness.snapshot();
   const native = Object.fromEntries(
     ["draw", "finish", "submit", "transferToImageBitmap", "transferFromImageBitmap"].map((name) => [
@@ -311,15 +350,23 @@ function arm(data: Command) {
         .reduce((sum, [, value]) => sum + value.count, 0),
     ]),
   );
-  const coverage = {
+  return {
     readerReads: owners.reduce((sum, owner) => sum + owner.readerReads, 0),
     ringReads: owners.reduce((sum, owner) => sum + owner.ringReads, 0),
     disposed: owners.filter((owner) => owner.readerDisposed && owner.retiredAck).length,
     destroyed: owners.reduce((sum, owner) => sum + owner.destroyed, 0),
     nativeRequests,
     presents: observed.presents.length,
+    native,
   };
-  if (Object.values(coverage).some((count) => count <= 0))
+}
+function arm(data: Command) {
+  if (!data.token || !Number.isSafeInteger(data.surface) || !data.surface || !data.mode)
+    throw new Error("Ownership selection missing");
+  if (enabled) throw new Error("Ownership selection already armed");
+  const observed = coverage();
+  const { native, ...counts } = observed;
+  if (Object.values(counts).some((count) => count <= 0))
     throw new Error("Ownership observer positive coverage missing in this service");
   if (Object.values(native).some((count) => count <= 0))
     throw new Error("Ownership native observer positive coverage missing in this service");
@@ -337,10 +384,18 @@ function arm(data: Command) {
       throw new Error("Malformed victim observer positive coverage missing");
   }
   enabled = true;
-  return { ...coverage, native };
+  return observed;
 }
 function command(data: Command) {
   try {
+    if (data.test === "admission-coverage") {
+      const observed = coverage();
+      host.postMessage({
+        testId: data.id,
+        gpuSnapshot: { ...snapshot(data.id), coverage: observed },
+      });
+      return;
+    }
     if (data.test === "ownership-observe") {
       if (!data.token || !data.surface || !data.mode || selection)
         throw new Error("Ownership correlation missing or repeated");
@@ -380,8 +435,29 @@ host.onmessage = ({ data }) => {
     return;
   }
   receiving = data.type === "open" ? data : undefined;
+  const before = receiving ? service.snapshot() : undefined;
+  const attempt: OpenAttempt | undefined =
+    receiving && before
+      ? {
+          message: receiving,
+          beforeConnections: before.connections,
+          beforeHeap: before.heapBytes,
+          beforeNativeRequests: nativeRequests,
+          afterConnections: 0,
+          afterHeap: 0,
+          afterNativeRequests: 0,
+          retiredAck: false,
+        }
+      : undefined;
+  if (attempt) attempts.push(attempt);
   try {
     service.receive(data);
+    if (attempt) {
+      const after = service.snapshot();
+      attempt.afterConnections = after.connections;
+      attempt.afterHeap = after.heapBytes;
+      attempt.afterNativeRequests = nativeRequests;
+    }
   } finally {
     receiving = undefined;
   }
