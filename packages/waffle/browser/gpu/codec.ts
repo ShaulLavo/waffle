@@ -325,7 +325,9 @@ class OutputWriter {
       : undefined;
   }
   #align(alignment: number): void {
-    this.offset = Math.ceil(this.offset / alignment) * alignment;
+    const length = Math.ceil(this.offset / alignment) * alignment - this.offset;
+    const at = this.#advance(length);
+    this.destination?.fill(0, at, this.offset);
   }
   #advance(length: number): number {
     const at = this.offset;
@@ -388,7 +390,7 @@ class OutputWriter {
 function invalidOutput(): never {
   throw new GpuCallError("Invalid C boolean output");
 }
-export function utf8Length(value: string): number {
+function utf8Length(value: string): number {
   let bytes = 0;
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;

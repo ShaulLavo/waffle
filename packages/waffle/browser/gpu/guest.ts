@@ -3,6 +3,7 @@ import type { GraphicsConnection, GraphicsOpen } from "../display/protocol.js";
 import { createDisplayImports, guestOutput, guestSpan } from "../display/guest.js";
 import {
   atomicsLoad,
+  atomicsCompareExchange,
   atomicsStore,
   atomicsNotify,
   atomicsWait,
@@ -23,7 +24,7 @@ import {
   Uint8ArrayConstructor,
   objectCreate,
 } from "../../proc/intrinsics.js";
-import { gpuPayloadLayout } from "./generated/tables.js";
+import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
 import { PayloadDirectory, terminalErrno } from "./payload.js";
 import { RecordRing } from "./ring.js";
 import { LogicalAppend } from "./transport.js";
@@ -59,9 +60,7 @@ export function createGraphicsGuest(
     const reason = entry.commands.terminate(GPU_TERMINAL.revoked).reason;
     entry.replies.terminate(reason);
     entry.payload.mirror(reason);
-    atomicsStore(entry.control, 1, reason);
-    atomicsStore(entry.control, 0, reason === GPU_TERMINAL.resource ? -48 : -64);
-    atomicsNotify(entry.control, 0);
+    publishTerminal(entry, reason);
   };
   const get = (id: number): GuestGpuConnection => {
     const entry = mapGet(connections, id);
@@ -76,7 +75,7 @@ export function createGraphicsGuest(
     const reason = entry.commands.terminate(GPU_TERMINAL.closed).reason;
     entry.replies.terminate(reason);
     entry.payload.mirror(reason);
-    atomicsStore(entry.control, 1, reason);
+    publishTerminal(entry, reason);
     mapDelete(connections, id);
     send({ __proto__: null, type: "close", id });
     return 0;
@@ -109,9 +108,9 @@ export function createGraphicsGuest(
       const reason = entry.commands.terminate(GPU_TERMINAL.service).reason;
       entry.replies.terminate(reason);
       entry.payload.mirror(reason);
-      atomicsStore(entry.control, 1, reason);
+      publishTerminal(entry, reason);
       mapDelete(connections, id);
-      return -64;
+      return atomicsLoad(entry.control, 0);
     }
     while (atomicsLoad(entry.control, 0) === 0) {
       live();
@@ -257,4 +256,11 @@ function drainReplies(entry: GuestGpuConnection, destination: Uint8Array): numbe
     written += result.bytes;
   }
   return written || -42;
+}
+
+function publishTerminal(entry: GuestGpuConnection, reason: number): void {
+  atomicsStore(entry.control, 1, reason);
+  const previous = atomicsLoad(entry.control, 0);
+  if (previous >= 0) atomicsCompareExchange(entry.control, 0, previous, terminalErrno(reason));
+  atomicsNotify(entry.control, 0);
 }

@@ -1,5 +1,5 @@
-import { gpuPayloadLayout } from "../browser/gpu/generated/tables.js";
-import { validGraphicsOpen } from "../browser/gpu/protocol.js";
+import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
+import { validGraphicsOpen } from "../browser/display/open.js";
 import { afterEach, expect, test } from "bun:test";
 import { createGraphicsGuest } from "../browser/gpu/guest.js";
 import {
@@ -401,4 +401,28 @@ test("native device destruction preserves its result and repeated calls", async 
   rig.lost.resolve({ reason: "destroyed", message: "actual native loss" });
   await settle();
   expect(rig.service.snapshot().devicesLive).toBe(0);
+});
+
+for (const limit of [8384, 1_056_959])
+  test(`arena admission refuses before the fourth construction at quota ${limit}`, () => {
+    const rig = guest({ limit });
+    expect(rig.invoke("open", 0, 0)).toBe(-48);
+    expect(rig.opened()).toBeUndefined();
+    expect(rig.receipts.map((buffer) => buffer.byteLength)).toEqual([64, 4160, 4160]);
+    expect(consumedControlBytes(rig.grant)).toBe(64 + 4160 + 4160);
+  });
+test("exact arena quota admits one open and close/reopen preserves physical backing debt", () => {
+  const exact = guest({ limit: 1_056_960 });
+  expect(exact.invoke("open", 0, 0)).toBe(0);
+  expect(consumedControlBytes(exact.grant)).toBe(64 + 4160 + 4160 + gpuPayloadLayout.byteLength);
+  expect(exact.invoke("close", 1)).toBe(0);
+  expect(consumedControlBytes(exact.grant)).toBe(1_056_960);
+  const repeat = guest();
+  expect(repeat.invoke("open", 0, 0)).toBe(0);
+  expect(repeat.invoke("close", 1)).toBe(0);
+  expect(repeat.invoke("open", 0, 0)).toBe(0);
+  expect(
+    repeat.receipts.filter((backing) => backing.byteLength === gpuPayloadLayout.byteLength),
+  ).toHaveLength(2);
+  expect(consumedControlBytes(repeat.grant)).toBe(2 * 1_056_960);
 });

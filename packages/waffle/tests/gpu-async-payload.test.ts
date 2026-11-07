@@ -1,7 +1,8 @@
+import { validGraphicsOpen } from "../browser/display/open.ts";
 import { expect, test } from "bun:test";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
 import { PayloadDirectory } from "../browser/gpu/payload.ts";
-import { gpuPayloadLayout as layout } from "../browser/gpu/generated/tables.ts";
+import { gpuPayloadLayout as layout } from "../browser/display/generated/graphics-layout.ts";
 import { createGraphicsGuest } from "../browser/gpu/guest.ts";
 import type { GraphicsOpen } from "../browser/display/protocol.ts";
 import {
@@ -190,19 +191,16 @@ test("actual guest payload import validates both spans and snapshots an overlapp
   );
   let open: GraphicsOpen | undefined;
   const channel = new MessageChannel();
-  const port = {
-    postMessage(message: unknown) {
-      if (message && typeof message === "object" && "type" in message && message.type === "open") {
-        open = message as GraphicsOpen;
-        Atomics.store(new Int32Array(open.control), 0, 1);
-      }
-    },
-    close() {},
+  const port = channel.port1;
+  port.postMessage = (message: unknown) => {
+    if (!validGraphicsOpen(message, 4096, 4096)) return;
+    open = message;
+    Atomics.store(new Int32Array(open.control), 0, 1);
   };
   const memory = new WebAssembly.Memory({ initial: 1 });
   const guest = createGraphicsGuest(
     {
-      port: port as unknown as MessagePort,
+      port,
       gpu: true,
       revocation: new SharedArrayBuffer(64),
       surfaces: [],
@@ -267,5 +265,106 @@ test("unexpected service payload fill exceptions are not fabricated resource exh
     expect(rig.owner.failure).toBe("native adaptation failure");
   } finally {
     rig.owner.terminate(1);
+  }
+});
+
+for (const mode of ["winning-unsupported", "winning-invalid", "post-resource"] as const)
+  test(`actual open import preserves ${mode} terminal errno`, () => {
+    const grant = { kind: "bounded" as const, state: new SharedArrayBuffer(8), limit: 1_056_960 };
+    const receipts: SharedArrayBuffer[] = [];
+    const restore = installSharedControlAllocator(
+      createSharedControlAllocator(grant, (buffer) => receipts.push(buffer)),
+    );
+    const channel = new MessageChannel(),
+      revocation = new SharedArrayBuffer(64);
+    let opened: GraphicsOpen | undefined;
+    channel.port1.postMessage = (message: unknown) => {
+      if (!validGraphicsOpen(message, 4096, 4096)) return;
+      opened = message;
+      if (mode !== "post-resource") return;
+      new RecordRing(message.commands, 8).terminate(3);
+      throw new Error("post failed after resource selection");
+    };
+    let selected = false;
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const output = new DataView(memory.buffer);
+    output.setUint32(0, 0xaabbccdd, true);
+    const guest = createGraphicsGuest(
+      {
+        port: channel.port1,
+        gpu: true,
+        revocation,
+        surfaces: [],
+        commandBytes: 4096,
+        completionBytes: 4096,
+      },
+      () => memory,
+      () => {
+        if (!opened || selected || mode === "post-resource") return;
+        selected = true;
+        const reason = mode === "winning-invalid" ? 2 : 5;
+        new RecordRing(opened.commands, 8).terminate(reason);
+        const control = new Int32Array(opened.control);
+        Atomics.store(control, 1, reason);
+        Atomics.store(control, 0, mode === "winning-invalid" ? -28 : -58);
+        Atomics.store(new Int32Array(revocation), 0, 1);
+      },
+    );
+    try {
+      const open = guest.imports.runtime_gpu?.open;
+      if (typeof open !== "function") throw new Error("Missing open import");
+      expect(open(0, 0)).toBe(
+        mode === "post-resource" ? -48 : mode === "winning-invalid" ? -28 : -58,
+      );
+      expect(output.getUint32(0, true)).toBe(0xaabbccdd);
+      expect(receipts.map((buffer) => buffer.byteLength)).toEqual([
+        64,
+        4160,
+        4160,
+        layout.byteLength,
+      ]);
+      expect(consumedControlBytes(grant)).toBe(1_056_960);
+    } finally {
+      guest.dispose();
+      channel.port2.close();
+      restore();
+    }
+  });
+
+test("payload copy failure after admission quarantines reading rather than consuming", () => {
+  const rig = arenaRig();
+  try {
+    const handle = rig.owner.allocatePayload(new Uint8Array([1, 2, 3, 4]));
+    if (!handle) throw new Error("Missing payload");
+    const buffer = new ArrayBuffer(4),
+      destination = new Uint8Array(buffer);
+    let loads = 0;
+    const terminal = () => {
+      if (++loads === 2) structuredClone(buffer, { transfer: [buffer] });
+      return undefined;
+    };
+    expect(rig.directory.copyOnce(handle, destination, terminal, rig.terminate)).toBe(-64);
+    expect(rig.directory.state(handle.id - 1) & 0xffffffffn).toBe(BigInt(layout.reading));
+    expect(rig.owner.state).toEqual({ kind: "terminal", reason: 5 });
+  } finally {
+    rig.owner.terminate(1);
+  }
+});
+test("equal-valued payload handles belong to their supplied connection domains", () => {
+  const first = arenaRig(),
+    second = arenaRig();
+  try {
+    const a = first.owner.allocatePayload(new Uint8Array([1])),
+      b = second.owner.allocatePayload(new Uint8Array([2]));
+    if (!a || !b) throw new Error("Missing domain payload");
+    expect(a).toEqual(b);
+    const output = new Uint8Array(1);
+    expect(second.directory.copyOnce(a, output, second.terminal, second.terminate)).toBe(0);
+    expect(output[0]).toBe(2);
+    expect(first.directory.copyOnce(b, output, first.terminal, first.terminate)).toBe(0);
+    expect(output[0]).toBe(1);
+  } finally {
+    first.owner.terminate(1);
+    second.owner.terminate(1);
   }
 });
