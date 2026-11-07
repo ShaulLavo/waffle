@@ -330,7 +330,14 @@ function settleOpen(open: GraphicsOpen, errno: number, reason: number): void {
   Atomics.store(new Int32Array(open.arena), 0, selected);
   const cells = new Int32Array(open.control);
   Atomics.store(cells, 1, selected);
-  Atomics.store(cells, 0, selected === reason ? errno : selected === 3 ? -48 : -64);
+  const previous = Atomics.load(cells, 0);
+  if (previous >= 0)
+    Atomics.compareExchange(
+      cells,
+      0,
+      previous,
+      selected === reason ? errno : selected === 3 ? -48 : -64,
+    );
   Atomics.notify(cells, 0);
 }
 function terminateRing(buffer: SharedArrayBuffer, reason: number): number {

@@ -130,7 +130,8 @@ export class BufferMaps {
     record.state = { kind: "unmapped" };
   }
   destroyed(native: object): void {
-    this.#record(native).state = { kind: "destroyed" };
+    const record = this.#records.get(native);
+    if (record) record.state = { kind: "destroyed" };
   }
   deviceDestroyed(device: object): void {
     for (const record of this.#devices.get(device) ?? []) record.state = { kind: "unmapped" };

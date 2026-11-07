@@ -170,7 +170,14 @@ export class GpuService {
     const state = owner.connection.state;
     const selected = state.kind === "terminal" ? state.reason : reason;
     Atomics.store(owner.control, 1, selected);
-    Atomics.store(owner.control, 0, selected === GPU_TERMINAL.resource ? -48 : -64);
+    const previous = Atomics.load(owner.control, 0);
+    if (previous >= 0)
+      Atomics.compareExchange(
+        owner.control,
+        0,
+        previous,
+        selected === GPU_TERMINAL.resource ? -48 : -64,
+      );
     Atomics.notify(owner.control, 0);
     this.send({ type: "closed", grant: owner.grant, id: owner.id });
   }
