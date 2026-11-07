@@ -135,6 +135,7 @@ function cumulative(before: Record<string, unknown>, after: Record<string, unkno
     b = record(after.fairness);
   for (const key of ["presents", "slices"])
     prefix(entries(a[key]), entries(b[key]), "native observation history rewritten");
+  blobHistory(entries(a.blobs), entries(b.blobs), number(before.at));
   const queued = entries(a.queue),
     next = entries(b.queue);
   requireProof(next.length >= queued.length, "queue observation history dropped");
@@ -144,6 +145,33 @@ function cumulative(before: Record<string, unknown>, after: Record<string, unkno
       current = record(b[kind]);
     for (const [key, value] of Object.entries(old))
       aggregateHistory(record(value), record(current[key]));
+  }
+}
+function blobHistory(
+  before: readonly Record<string, unknown>[],
+  after: readonly Record<string, unknown>[],
+  at: number,
+) {
+  requireProof(after.length >= before.length, "blob observation history dropped");
+  for (const [index, blob] of before.entries()) {
+    const next = after[index]!;
+    requireProof(
+      ["connection", "commandRingBytes", "bytes", "start"].every((key) => blob[key] === next[key]),
+      "blob identity history rewritten",
+    );
+    if (blob.end !== null) {
+      requireProof(
+        JSON.stringify(blob) === JSON.stringify(next),
+        "completed blob history rewritten",
+      );
+      continue;
+    }
+    requireProof(integer(next.draws) >= integer(blob.draws), "blob progress history regressed");
+    if (next.end !== null)
+      requireProof(
+        number(next.end) >= at && number(next.end) >= number(next.start),
+        "blob completion history predates running observation",
+      );
   }
 }
 function aggregateHistory(before: Record<string, unknown>, after: Record<string, unknown>) {

@@ -103,6 +103,16 @@ function lifecycle(index: number) {
     index >= 6 ? [event("release", 2, 241), event("retired", 2, 242)] : [],
   );
 }
+function blobObservation(end: number | null = 82) {
+  return {
+    connection: 3,
+    bytes: 4800184,
+    commandRingBytes: 4194304,
+    draws: 200000,
+    start: 81,
+    end,
+  };
+}
 function fairness(serial: number, known: number[], index: number) {
   const active = known.filter((id) => id !== 3);
   const counts = (id: number) => (id === 2 ? serial : 1);
@@ -139,19 +149,7 @@ function fairness(serial: number, known: number[], index: number) {
       start: id === 4 ? 124 : 0,
       end: id === 4 ? 125 : 1,
     })),
-    blobs:
-      index >= 2
-        ? [
-            {
-              connection: 3,
-              bytes: 4800184,
-              commandRingBytes: 4194304,
-              draws: 200000,
-              start: 81,
-              end: 82,
-            },
-          ]
-        : [],
+    blobs: index >= 2 ? [blobObservation()] : [],
   };
 }
 function snapshot(index: number, serial: number) {
@@ -453,7 +451,7 @@ test("the old compiled owner must hold a real native scope result after oversize
     v.phases[4]!.service.scopeResult!.at++;
   }, /held native result identity rewritten/);
   rejects((v) => {
-    v.phases[2]!.service.fairness.blobs[0]!.draws--;
+    for (const sample of afterHeld(v)) sample.fairness.blobs[0]!.draws--;
   }, /oversized replay workload/);
 });
 test("retired ownership, credit, rings, imports and physical stops remain strict", () => {
@@ -628,4 +626,55 @@ test("an actual old-presenter release observation cannot be omitted", () => {
         (event) => event.owner !== 3 || event.kind !== "release",
       );
   }, /missing or duplicate lifecycle event/);
+});
+
+test("completed blob history cannot disappear at retirement or the final sample", () => {
+  rejects((value) => {
+    for (const sample of afterReplacement(value)) sample.fairness.blobs = [];
+  }, /blob observation history dropped/);
+  rejects((value) => {
+    value.final.fairness.blobs = [];
+  }, /blob observation history dropped/);
+});
+
+test("completed blob identities and observations cannot be rewritten or reopened", () => {
+  for (const key of ["connection", "commandRingBytes", "bytes", "start", "draws", "end"]) {
+    rejects((value) => {
+      for (const sample of afterReplacement(value)) Reflect.set(sample.fairness.blobs[0]!, key, 1);
+    }, /blob.*history rewritten/);
+  }
+  rejects((value) => {
+    for (const sample of afterReplacement(value)) sample.fairness.blobs[0]!.end = null;
+  }, /completed blob history rewritten/);
+});
+
+function runningBlobProof() {
+  const value = proof();
+  for (const [index, sample] of [value.phases[1]!.before, value.phases[1]!.service].entries()) {
+    const blob = blobObservation(null);
+    blob.start = 50;
+    blob.draws = index + 1;
+    sample.fairness.blobs = [blob];
+    sample.fairness.native["3:draw"]!.count = blob.draws;
+  }
+  for (const sample of afterHeld(value)) sample.fairness.blobs[0]!.start = 50;
+  return value;
+}
+
+test("running blob progress can finish while retaining its original identity", () => {
+  expect(validateRegrantResult(runningBlobProof()).hardwareQualified).toBe(false);
+});
+
+test("running blob history cannot change identity, lose progress or complete retroactively", () => {
+  const changed = runningBlobProof();
+  changed.phases[1]!.service.fairness.blobs[0]!.bytes++;
+  expect(() => validateRegrantResult(changed)).toThrow(/blob identity history rewritten/);
+  const regressed = runningBlobProof();
+  regressed.phases[1]!.service.fairness.blobs[0]!.draws = 0;
+  expect(() => validateRegrantResult(regressed)).toThrow(/blob progress history regressed/);
+  const retroactive = runningBlobProof();
+  retroactive.phases[2]!.before.fairness.blobs[0]!.end = 79;
+  expect(() => validateRegrantResult(retroactive)).toThrow(
+    /blob completion history predates running observation/,
+  );
 });
