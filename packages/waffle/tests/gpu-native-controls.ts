@@ -3,6 +3,8 @@ import { computeNativeControls, computeNativeRoutes } from "./gpu-compute-native
 import { bundleQueryNativeControls, bundleQueryNativeRoutes } from "./gpu-bundle-query-native.js";
 import { copyDrawNativeControls, copyDrawNativeRoutes } from "./gpu-copy-draw-native.js";
 
+import { labelNativeControls, labelNativeRoutes } from "./gpu-label-native.js";
+
 const suites = [
   {
     name: "scene",
@@ -31,6 +33,13 @@ const suites = [
     entry: "copyDrawNativeControl",
     controls: copyDrawNativeControls,
     routes: copyDrawNativeRoutes,
+  },
+  {
+    name: "label",
+    path: "/label.js",
+    entry: "labelNativeControl",
+    controls: labelNativeControls,
+    routes: labelNativeRoutes,
   },
 ] as const;
 

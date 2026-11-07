@@ -2993,6 +2993,518 @@ export const gpuStream = {
         },
       ],
     },
+    {
+      opcode: 89,
+      name: "bind_group.set_label",
+      receiver: "bind_group",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.bind_group",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 90,
+      name: "bind_group_layout.set_label",
+      receiver: "bind_group_layout",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.bind_group_layout",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 91,
+      name: "buffer.set_label",
+      receiver: "buffer",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.buffer",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 92,
+      name: "command_buffer.set_label",
+      receiver: "command_buffer",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.command_buffer",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 93,
+      name: "command_encoder.set_label",
+      receiver: "command_encoder",
+      context: "encoder",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 94,
+      name: "compute_pipeline.set_label",
+      receiver: "compute_pipeline",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.compute_pipeline",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 95,
+      name: "device.set_label",
+      receiver: "device",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.device",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 96,
+      name: "pipeline_layout.set_label",
+      receiver: "pipeline_layout",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.pipeline_layout",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 97,
+      name: "query_set.set_label",
+      receiver: "query_set",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.query_set",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 98,
+      name: "queue.set_label",
+      receiver: "queue",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.queue",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 99,
+      name: "render_bundle.set_label",
+      receiver: "render_bundle",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.render_bundle",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 100,
+      name: "render_pass_encoder.set_label",
+      receiver: "render_pass_encoder",
+      context: "pass",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 101,
+      name: "render_pipeline.set_label",
+      receiver: "render_pipeline",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.render_pipeline",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 102,
+      name: "sampler.set_label",
+      receiver: "sampler",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.sampler",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 103,
+      name: "shader_module.set_label",
+      receiver: "shader_module",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.shader_module",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 104,
+      name: "surface.set_label",
+      receiver: "surface",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "surface-reference",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.surface",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 105,
+      name: "texture.set_label",
+      receiver: "texture",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.texture",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
+    {
+      opcode: 106,
+      name: "texture_view.set_label",
+      receiver: "texture_view",
+      context: "top",
+      result: {
+        kind: "void",
+      },
+      cReturn: "void",
+      callback: null,
+      token: null,
+      lowering: {
+        kind: "label",
+        target: "native",
+      },
+      omitted: [],
+      fields: [
+        {
+          name: "receiver",
+          type: "object.texture_view",
+          optional: false,
+        },
+        {
+          name: "label",
+          type: "string_with_default_empty",
+          optional: false,
+        },
+      ],
+    },
   ],
   structs: {
     request_adapter_options: {
@@ -5257,9 +5769,9 @@ export const gpuStreamSources = {
     "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
   "browser/gpu/upstream/LICENSE":
     "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
-  "browser/gpu/stream.json": "35d45279ae1dd5e3f898f01d1fc7f9bc0ae1beeafd9b6699048c9a0ff893e275",
-  "tooling/gpu-stream.ts": "0eb64c8a161f8d0b60c9e1f5e5c114630254366f1ff24df9c41db73afe9c981d",
-  "tooling/gpu-stream-model.ts": "179bd5498d7e2c06445fc0c659da3519f49d529dc0c4c5794fc8f50e595118ee",
+  "browser/gpu/stream.json": "ef72f3dd9b4bdf52dd546a853ad332886512be18151abf0961eba38caa613817",
+  "tooling/gpu-stream.ts": "ff05fedb57a612c4c2eab5d524468f818bf86a8eaed2f30e5fc434b870c436fe",
+  "tooling/gpu-stream-model.ts": "2d67039d2faa1d35712c4cad7b0a188a05f2c2da290d91081a89259a910b6781",
   "tooling/gpu-stream-layout.ts":
     "e19ea2a0607e9c17a7bf4e0271112f38b008d0e431a12d8c3ff300df4a510c5b",
   "tests/fixtures/gpu/expected.json":
@@ -5274,6 +5786,8 @@ export const gpuStreamSources = {
     "febe5f9caac846f3a995d37fae43c7dfc224fbcd7454289248b87c27adfb08e8",
   "tests/fixtures/gpu/copy-draw-expected.json":
     "8cc1bcc69dd906d339655b2c1b87a7f495511ee248cca8bee453b86a42909851",
+  "tests/fixtures/gpu/label-expected.json":
+    "f43f423154ca50022e6d07cf4b424ff5c2491ee49b144e4ab8bff32e3e7a38cf",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {
