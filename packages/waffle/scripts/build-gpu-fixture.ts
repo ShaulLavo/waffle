@@ -125,10 +125,11 @@ function inspectImports(wasm: Uint8Array<ArrayBuffer>, name: string): void {
     "runtime_gpu.completions",
     "runtime_gpu.open",
     "runtime_gpu.payload",
-  ].concat(name === GPU_ASYNC_FIXTURE_WASM ? [] : [
-    "runtime_window.surface_info",
-    "runtime_window.surfaces",
-  ]);
+  ].concat(
+    name === GPU_ASYNC_FIXTURE_WASM
+      ? []
+      : ["runtime_window.surface_info", "runtime_window.surfaces"],
+  );
   const custom = imports
     .filter((entry) => entry.module !== "wasi_snapshot_preview1")
     .map((entry) => `${entry.module}.${entry.name}`);

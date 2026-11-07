@@ -42,7 +42,11 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
   readonly protocolErrors: string[] = [];
   readonly decoded: ReturnType<typeof decodeCall>[] = [];
   readonly payloadCalls: { capacity: number; status: number }[] = [];
-  constructor(wasm: Uint8Array<ArrayBuffer>, args: readonly string[] = [], readonly asyncFault: AsyncReplyFault = "none") {
+  constructor(
+    wasm: Uint8Array<ArrayBuffer>,
+    args: readonly string[] = [],
+    readonly asyncFault: AsyncReplyFault = "none",
+  ) {
     super(wasm, args);
   }
   private publish(bytes: Uint8Array) {
@@ -81,7 +85,11 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
     if (opcode === 20) {
       const type = [1, 2, 1, 1, 2, 2, 1, 2][this.pops++];
       if (!type) throw new Error("Unexpected C scope pop");
-      this.reply("error-scope", token, { status: 1, type, message: type === 2 ? "controlled native scope reply" : "" });
+      this.reply("error-scope", token, {
+        status: 1,
+        type,
+        message: type === 2 ? "controlled native scope reply" : "",
+      });
       return;
     }
     if ((opcode >= 107 && opcode <= 114) || opcode >= 119) return this.queryReply(opcode, token);
@@ -91,23 +99,39 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
       this.reply("queue-work-result", token, { status: 1, message: "" });
       return;
     }
-    if (opcode === 18) this.reply("device-lost", 0, {
-      device: handle(3), reason: this.asyncFault === "loss-reason" ? 1 : 2, message: "controlled destroy message",
-    });
+    if (opcode === 18)
+      this.reply("device-lost", 0, {
+        device: handle(3),
+        reason: this.asyncFault === "loss-reason" ? 1 : 2,
+        message: "controlled destroy message",
+      });
   }
   private queryReply(opcode: number, token: number): void {
     let value: Record<string, unknown>;
-    if (opcode === 107 || opcode === 114) value = {
-      returned: 1,
-      [opcode === 107 ? "info" : "adapter_info"]: {
-        next_in_chain: this.asyncFault === "output-chain" ? [1] : [], vendor: "controlled", architecture: "protocol-only",
-        device: "fixture", description: "not native acceptance", backend_type: 2,
-        adapter_type: 4, vendor_ID: 0, device_ID: 0, subgroup_min_size: 0, subgroup_max_size: 0,
-      },
-    };
+    if (opcode === 107 || opcode === 114)
+      value = {
+        returned: 1,
+        [opcode === 107 ? "info" : "adapter_info"]: {
+          next_in_chain: this.asyncFault === "output-chain" ? [1] : [],
+          vendor: "controlled",
+          architecture: "protocol-only",
+          device: "fixture",
+          description: "not native acceptance",
+          backend_type: 2,
+          adapter_type: 4,
+          vendor_ID: 0,
+          device_ID: 0,
+          subgroup_min_size: 0,
+          subgroup_max_size: 0,
+        },
+      };
     else if (opcode === 110 || opcode === 113) {
-      const limits = Object.fromEntries(gpuStream.structs.limits.fields.map((field) => [field.name,
-        field.name === "next_in_chain" ? [] : field.type === "uint64" ? 65536n : 1024]));
+      const limits = Object.fromEntries(
+        gpuStream.structs.limits.fields.map((field) => [
+          field.name,
+          field.name === "next_in_chain" ? [] : field.type === "uint64" ? 65536n : 1024,
+        ]),
+      );
       value = { returned: 1, limits };
     } else if (opcode === 109 || opcode === 112 || opcode === 120) value = { returned: true };
     else value = { features: { features: [1] } };
@@ -117,37 +141,79 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
       if (typeof output === "object" && output !== null) Reflect.set(output, "next_in_chain", []);
     }
     let bytes = encodeGpuStruct(gpuStream, `query_${opcode}`, value);
-    if (this.asyncFault === "output-chain" && opcode === 107) new DataView(bytes.buffer).setUint32(4, 1, true);
+    if (this.asyncFault === "output-chain" && opcode === 107)
+      new DataView(bytes.buffer).setUint32(4, 1, true);
     if (this.asyncFault === "query-truncated") bytes = bytes.subarray(0, bytes.length - 1);
-    if (this.asyncFault === "void-scalar" && opcode === 108) bytes = Buffer.concat([new Uint8Array(4), bytes]);
+    if (this.asyncFault === "void-scalar" && opcode === 108)
+      bytes = Buffer.concat([new Uint8Array(4), bytes]);
     this.reply("query-result", token, {
       opcode: this.asyncFault === "query-opcode" ? opcode + 1 : opcode,
-      payload: this.publish(bytes), length: bytes.length,
+      payload: this.publish(bytes),
+      length: bytes.length,
     });
   }
   private mapReply(token: number): void {
-    const previous = writeMap(), partial = writeMap();
+    const previous = writeMap(),
+      partial = writeMap();
     partial.fill(71, 24, 32);
     const initial = this.omittedWrites ? new Uint8Array(64) : creation();
-    const bytes = [initial, new Uint8Array(64), previous, partial.slice(8, 32), new Uint8Array(0), creation(), partial][this.maps++];
+    const bytes = [
+      initial,
+      new Uint8Array(64),
+      previous,
+      partial.slice(8, 32),
+      new Uint8Array(0),
+      creation(),
+      partial,
+    ][this.maps++];
     if (!bytes) throw new Error("Unexpected C map");
     this.reply("map-result", token, {
-      status: this.asyncFault === "map-status" ? 3 : 1, message: "",
-      payload: this.publish(bytes), length: this.asyncFault === "map-length" ? bytes.length + 1 : bytes.length,
+      status: this.asyncFault === "map-status" ? 3 : 1,
+      message: "",
+      payload: this.publish(bytes),
+      length: this.asyncFault === "map-length" ? bytes.length + 1 : bytes.length,
     });
   }
   private compilationReply(token: number): void {
-    const bytes = encodeGpuStruct(gpuStream, "compilation_info", { next_in_chain: [], messages: [
-      { next_in_chain: [], message: "controlled syntax error", type: 1, line_num: 1n,
-        line_pos: this.asyncFault === "compilation-location" ? 59n : 62n, offset: 61n, length: 1n },
-      { next_in_chain: [], message: "controlled no-location note", type: 3, line_num: 0n, line_pos: 0n, offset: 0n, length: 0n },
-    ] });
+    const bytes = encodeGpuStruct(gpuStream, "compilation_info", {
+      next_in_chain: [],
+      messages: [
+        {
+          next_in_chain: [],
+          message: "controlled syntax error",
+          type: 1,
+          line_num: 1n,
+          line_pos: this.asyncFault === "compilation-location" ? 59n : 62n,
+          offset: 61n,
+          length: 1n,
+        },
+        {
+          next_in_chain: [],
+          message: "controlled no-location note",
+          type: 3,
+          line_num: 0n,
+          line_pos: 0n,
+          offset: 0n,
+          length: 0n,
+        },
+      ],
+    });
     if (this.asyncFault === "compilation-chain") new DataView(bytes.buffer).setUint32(8, 1, true);
-    this.reply("compilation-result", token, { status: 1, message: "", payload: this.publish(bytes), length: bytes.length });
+    this.reply("compilation-result", token, {
+      status: 1,
+      message: "",
+      payload: this.publish(bytes),
+      length: bytes.length,
+    });
   }
   override append(ptr: number, length: number): number {
-    try { return super.append(ptr, length); }
-    catch (error) { this.protocolErrors.push(String(error)); this.terminal = -64; return 0; }
+    try {
+      return super.append(ptr, length);
+    } catch (error) {
+      this.protocolErrors.push(String(error));
+      this.terminal = -64;
+      return 0;
+    }
   }
   override completions(ptr: number, capacity: number, timeout: bigint, written: number): number {
     this.timeouts.push(timeout);
@@ -156,7 +222,9 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
     const bytes = Buffer.concat(this.replies.splice(0));
     if (bytes.length > capacity) throw new Error("Short C completion buffer");
     if (bytes.length && this.asyncFault === "token") bytes.writeUInt32LE(99, 8);
-    this.put(ptr, bytes); this.word(written, bytes.length); return 0;
+    this.put(ptr, bytes);
+    this.word(written, bytes.length);
+    return 0;
   }
   private payload(handlePtr: number, ptr: number, capacity: number): number {
     const status = this.copyPayload(handlePtr >>> 0, ptr >>> 0, capacity >>> 0);
@@ -166,20 +234,29 @@ export class AsyncProtocolHost extends FixtureProtocolHost {
   private copyPayload(handlePtr: number, ptr: number, capacity: number): number {
     const size = this.memory.buffer.byteLength;
     if (handlePtr > size || size - handlePtr < 8 || ptr > size || capacity > size - ptr) return -28;
-    const id = this.view.getUint32(handlePtr, true), generation = this.view.getUint32(handlePtr + 4, true);
+    const id = this.view.getUint32(handlePtr, true),
+      generation = this.view.getUint32(handlePtr + 4, true);
     const bytes = this.payloads.get(id);
-    if (!bytes || generation !== 1 || (this.consumed.has(id) && this.asyncFault !== "payload-reusable")) return -8;
+    if (
+      !bytes ||
+      generation !== 1 ||
+      (this.consumed.has(id) && this.asyncFault !== "payload-reusable")
+    )
+      return -8;
     if (capacity < bytes.length) {
       if (this.asyncFault === "short-consumes") this.consumed.add(id);
       return -42;
     }
-    this.put(ptr, bytes); this.consumed.add(id); return 0;
+    this.put(ptr, bytes);
+    this.consumed.add(id);
+    return 0;
   }
   override imports(): WebAssembly.Imports {
     const imports = super.imports();
     imports.runtime_gpu = {
       ...imports.runtime_gpu,
-      payload: (_connection: number, handle: number, ptr: number, capacity: number) => this.payload(handle, ptr, capacity),
+      payload: (_connection: number, handle: number, ptr: number, capacity: number) =>
+        this.payload(handle, ptr, capacity),
     };
     return imports;
   }
