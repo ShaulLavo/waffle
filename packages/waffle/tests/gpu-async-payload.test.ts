@@ -368,3 +368,162 @@ test("equal-valued payload handles belong to their supplied connection domains",
     second.owner.terminate(1);
   }
 });
+
+test("transparent canaries see no private authority during real GPU imports and payload CAS/copy", () => {
+  const NativeInt32 = Int32Array,
+    NativeBytes = Uint8Array,
+    NativeView = DataView;
+  const apply = Reflect.apply,
+    construct = Reflect.construct,
+    define = Object.defineProperty;
+  const descriptors: { object: object; key: string; descriptor: PropertyDescriptor }[] = [];
+  const privateBackings = new Set<ArrayBufferLike>();
+  const grant = { kind: "bounded" as const, state: new SharedArrayBuffer(8), limit: 2_000_000 };
+  const revocation = new SharedArrayBuffer(64);
+  privateBackings.add(grant.state);
+  privateBackings.add(revocation);
+  const restoreAllocator = installSharedControlAllocator(
+    createSharedControlAllocator(grant, (buffer) => privateBackings.add(buffer)),
+  );
+  const channel = new MessageChannel();
+  const nativeStore = Atomics.store;
+  let opened: GraphicsOpen | undefined;
+  channel.port1.postMessage = (message: unknown) => {
+    if (!validGraphicsOpen(message, 4096, 4096)) return;
+    opened = message;
+    nativeStore(new NativeInt32(message.control), 0, 1);
+  };
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const guest = createGraphicsGuest(
+    {
+      port: channel.port1,
+      gpu: true,
+      revocation,
+      surfaces: [],
+      commandBytes: 4096,
+      completionBytes: 4096,
+    },
+    () => memory,
+    () => {},
+  );
+  const calls: number[] = [];
+  const invoke = (name: string, ...args: (number | bigint)[]) => {
+    const fn = guest.imports.runtime_gpu?.[name];
+    if (typeof fn !== "function") throw new Error("Missing actual GPU import");
+    return Number(fn(...args));
+  };
+  let enabled = true,
+    observations = 0,
+    canaries = 0;
+  const observe = (value: unknown): void => {
+    if (!enabled) return;
+    if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
+      if (privateBackings.has(value)) observations++;
+      return;
+    }
+    if (ArrayBuffer.isView(value) && privateBackings.has(value.buffer)) observations++;
+  };
+  const replace = (object: object, key: string, value: unknown): void => {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (!descriptor) throw new Error(`Missing canary target ${key}`);
+    descriptors.push({ object, key, descriptor });
+    define(object, key, { ...descriptor, value });
+  };
+  const service = <T>(fn: () => T): T => {
+    const before = enabled;
+    enabled = false;
+    try {
+      return fn();
+    } finally {
+      enabled = before;
+    }
+  };
+  let owner: CompletionOwner | undefined;
+  try {
+    for (const key of ["load", "store", "compareExchange", "add", "notify"] as const) {
+      const original = Atomics[key];
+      replace(Atomics, key, (...args: unknown[]) => {
+        observe(args[0]);
+        return apply(original, Atomics, args);
+      });
+    }
+    for (const key of ["Uint8Array", "Int32Array", "BigInt64Array", "DataView"] as const) {
+      const original = globalThis[key];
+      replace(
+        globalThis,
+        key,
+        new Proxy(original, {
+          construct(target, args: unknown[]) {
+            observe(args[0]);
+            return construct(target, args, target);
+          },
+        }),
+      );
+    }
+    const set = NativeBytes.prototype.set;
+    const typedPrototype: object = Object.getPrototypeOf(NativeBytes.prototype);
+    replace(
+      typedPrototype,
+      "set",
+      function (this: Uint8Array, source: ArrayLike<number>, offset = 0) {
+        observe(this);
+        observe(source);
+        return apply(set, this, [source, offset]);
+      },
+    );
+    for (const key of ["getUint32", "setUint32"] as const) {
+      const original = NativeView.prototype[key];
+      replace(NativeView.prototype, key, function (this: DataView, ...args: unknown[]) {
+        observe(this);
+        return apply(original, this, args);
+      });
+    }
+    Atomics.load(new NativeInt32(revocation), 0);
+    new DataView(revocation).getUint32(0);
+    new Int32Array(revocation);
+    new BigInt64Array(revocation);
+    new Uint8Array(4).set(new NativeBytes(revocation, 0, 4));
+    canaries = observations;
+    observations = 0;
+    calls.push(invoke("open", 0, 0));
+    if (!opened) throw new Error("Missing actual open");
+    const open = opened;
+    const handle = service(() => {
+      owner = new CompletionOwner({
+        commands: new RecordRing(open.commands, 8),
+        replies: new RecordRing(open.replies, 16),
+        arena: new NativeBytes(open.arena),
+      });
+      owner.publish("queue-work-result", 10, 0, { status: 1, message: "" });
+      return owner.allocatePayload(new NativeBytes([1, 2, 3, 4]));
+    });
+    if (!handle) throw new Error("Missing service payload");
+    const view = new NativeView(memory.buffer);
+    view.setUint32(64, handle.id, true);
+    view.setUint32(68, handle.generation, true);
+    new NativeBytes(memory.buffer, 128, 8).fill(99);
+    calls.push(invoke("payload", 1, 64, 128, 8));
+    new NativeBytes(memory.buffer, 256, 16).set([
+      116, 0, 0, 0, 16, 0, 0, 0, 7, 0, 0, 0, 3, 0, 0, 0,
+    ]);
+    calls.push(invoke("append", 1, 256, 16));
+    calls.push(invoke("completions", 1, 320, 64, 0n, 4));
+    calls.push(invoke("close", 1));
+  } finally {
+    enabled = false;
+    for (let index = descriptors.length - 1; index >= 0; index--) {
+      const saved = descriptors[index];
+      if (saved) define(saved.object, saved.key, saved.descriptor);
+    }
+    owner?.terminate(1);
+    guest.dispose();
+    channel.port2.close();
+    restoreAllocator();
+  }
+  expect(canaries).toBeGreaterThanOrEqual(4);
+  expect(observations).toBe(0);
+  expect(calls).toEqual([0, 0, 0, 0, 0]);
+  expect(Array.from(new NativeBytes(memory.buffer, 128, 8))).toEqual([1, 2, 3, 4, 99, 99, 99, 99]);
+  expect(new NativeView(memory.buffer).getUint32(4, true)).toBe(24);
+  expect(consumedControlBytes(grant)).toBe(1_056_960);
+});
