@@ -3,6 +3,12 @@ import { computeNativeControls, computeNativeRoutes } from "./gpu-compute-native
 import { bundleQueryNativeControls, bundleQueryNativeRoutes } from "./gpu-bundle-query-native.js";
 import { copyDrawNativeControls, copyDrawNativeRoutes } from "./gpu-copy-draw-native.js";
 
+import {
+  asyncNativeControls,
+  asyncNativeRoutes,
+  requireAsyncNativeResult,
+} from "./gpu-async-native.js";
+
 import { labelNativeControls, labelNativeRoutes } from "./gpu-label-native.js";
 
 const suites = [
@@ -41,6 +47,13 @@ const suites = [
     controls: labelNativeControls,
     routes: labelNativeRoutes,
   },
+  {
+    name: "async",
+    path: "/async-native.js",
+    entry: "asyncNativeControl",
+    controls: asyncNativeControls,
+    routes: asyncNativeRoutes,
+  },
 ] as const;
 
 type NativeSuite = (typeof suites)[number]["name"];
@@ -51,7 +64,7 @@ export async function nativeControlRoutes(): Promise<Record<string, Blob | strin
   const routes: Record<string, Blob | string> = {};
   for (const suite of suites) Object.assign(routes, await suite.routes());
   routes["/"] =
-    "<!doctype html><title>G1 native lowering controls, not compiled guest acceptance</title>";
+    "<!doctype html><title>Native lowering controls, not compiled guest acceptance</title>";
   return routes;
 }
 
@@ -60,6 +73,7 @@ export function requireNativeControlResult(
   control: string,
   suite: NativeSuite,
 ): void {
+  if (suite === "async") return requireAsyncNativeResult(result, control);
   if (!result || typeof result !== "object") throw new Error(`Missing native result: ${control}`);
   if (!("control" in result) || result.control !== control)
     throw new Error(`Wrong native control result: ${control}`);

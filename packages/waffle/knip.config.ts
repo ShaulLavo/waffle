@@ -15,6 +15,8 @@ export default {
   ignoreBinaries: ["cc"],
   ignoreIssues: {
     ...publicIssues,
+    // Browser fixtures invoke this export through the routed module name.
+    "tests/fixtures/gpu/async-native.ts": ["exports"],
     // The CLI runner also exports its entry for aggregate consumers.
     "tests/gpu-async-browser-runner.ts": ["exports"],
   },
@@ -37,6 +39,9 @@ export default {
         "tests/page-runner/framework-controls/installed.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",
+        "tests/gpu-async-browser-runner.ts",
+        "tests/fixtures/gpu/async-page.ts",
+        "tests/fixtures/gpu/async-native.ts",
         "tests/fixtures/gpu/integration-{guest,service-worker,page}.ts",
         "tests/fixtures/gpu/lazy-page.ts",
         "tests/fixtures/gpu/qualification-worker.ts",

@@ -1023,7 +1023,7 @@ jobs:
         id: gpu-fixture
         with:
           path: ${{ runner.temp }}/gpu-fixture
-          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/async.c', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/async_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/async-expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/upstream/webgpu.h', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts') }}
+          key: ${{ runner.os }}-gpu-fixture-sdk34-b761e3a0-${{ hashFiles('packages/waffle/tests/fixtures/gpu/triangle.c', 'packages/waffle/tests/fixtures/gpu/scene.c', 'packages/waffle/tests/fixtures/gpu/async.c', 'packages/waffle/tests/fixtures/gpu/async_encode.h', 'packages/waffle/tests/fixtures/gpu/async-expected.json', 'packages/waffle/tests/fixtures/gpu/scene_encode.h', 'packages/waffle/tests/fixtures/gpu/gpu_fixture.h', 'packages/waffle/tests/fixtures/gpu/gpu_encode.h', 'packages/waffle/tests/fixtures/gpu/waffle_gpu_stream.h', 'packages/waffle/tests/fixtures/gpu/expected.json', 'packages/waffle/tests/fixtures/gpu/enums.json', 'packages/waffle/browser/gpu/upstream/LICENSE', 'packages/waffle/browser/gpu/upstream/webgpu.yml', 'packages/waffle/browser/gpu/upstream/webgpu.h', 'packages/waffle/browser/gpu/stream.json', 'packages/waffle/browser/gpu/generated/tables.ts', 'packages/waffle/tooling/gpu-stream*.ts', 'packages/waffle/scripts/build-gpu-fixture.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/browser/gpu/metadata.ts', 'packages/waffle/browser/gpu/codec.ts', 'packages/waffle/tests/fixtures/gpu/scene-expected.json', 'packages/waffle/tests/fixtures/gpu/compute-expected.json', 'packages/waffle/tests/fixtures/gpu/bundle-query-expected.json', 'packages/waffle/tests/fixtures/gpu/copy-draw-expected.json', 'packages/waffle/tests/fixtures/gpu/label-expected.json', 'packages/waffle/browser/display/generated/graphics-layout.ts') }}
       - uses: actions/cache@v4
         id: fixtures
         with:
@@ -1035,19 +1035,32 @@ jobs:
           path: ${{ runner.temp }}/libc-sysroot
           key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
       - uses: actions/cache@v4
-        if: steps.fixtures.outputs.cache-hit != 'true' || steps.group-fixture.outputs.cache-hit != 'true' || steps.gpu-fixture.outputs.cache-hit != 'true'
         id: sdk
         with:
           path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
       - name: Install pinned wasi-sdk 34
-        if: (steps.fixtures.outputs.cache-hit != 'true' || steps.group-fixture.outputs.cache-hit != 'true' || steps.gpu-fixture.outputs.cache-hit != 'true') && steps.sdk.outputs.cache-hit != 'true'
+        if: steps.sdk.outputs.cache-hit != 'true'
         run: |
           cd "$RUNNER_TEMP"
           curl -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
           echo 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz' | sha256sum -c -
           tar -xzf wasi-sdk.tar.gz
           rm wasi-sdk.tar.gz
+      - name: Test the wasm32 source sentinel with the pinned SDK
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+        run: |
+          bun test packages/waffle/tests/gpu-async-stream.test.ts --test-name-pattern '^wasm32 C whole-map sentinel normalizes before widening against pinned header$' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-source-tests.xml"
+          python3 - "$RUNNER_TEMP/gpu-source-tests.xml" <<'PYTHON'
+          import sys
+          import xml.etree.ElementTree as ET
+          name = "wasm32 C whole-map sentinel normalizes before widening against pinned header"
+          cases = [case for case in ET.parse(sys.argv[1]).iter("testcase") if case.get("name") == name]
+          assert len(cases) == 1, "Missing or repeated wasm32 source sentinel control"
+          assert all(cases[0].find(tag) is None for tag in ("skipped", "failure", "error")), "Source sentinel control skipped or failed"
+          print("Verified the pinned wasm32 source sentinel without skips")
+          PYTHON
       - name: Build the memory group fixture once
         if: steps.group-fixture.outputs.cache-hit != 'true'
         run: bun packages/waffle/scripts/build-memory-group-fixture.ts "$RUNNER_TEMP/memory-group-fixture"
@@ -1071,16 +1084,21 @@ jobs:
         env:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
         run: |
-          bun test packages/waffle/tests/gpu-fixture.test.ts packages/waffle/tests/gpu-scene-fixture.test.ts packages/waffle/tests/gpu-fairness-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C completion handling|bounded frame-mode wire controls|compiled textured depth scene|compiled fairness fixture' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
+          bun test packages/waffle/tests/gpu-fixture.test.ts packages/waffle/tests/gpu-scene-fixture.test.ts packages/waffle/tests/gpu-fairness-fixture.test.ts packages/waffle/tests/gpu-async-fixture.test.ts --test-name-pattern 'compiled Preview 1 C fixture|compiled C completion handling|bounded frame-mode wire controls|compiled textured depth scene|compiled fairness fixture|real compiled C decoder under protocol controls, not native acceptance' --reporter=junit --reporter-outfile "$RUNNER_TEMP/gpu-fixture-tests.xml"
           python3 - "$RUNNER_TEMP/gpu-fixture-tests.xml" <<'PYTHON'
           import sys
           import xml.etree.ElementTree as ET
           names = {"compiled Preview 1 C fixture", "compiled C completion handling, not GPU acceptance", "bounded frame-mode wire controls, not native GPU acceptance", "compiled textured depth scene, protocol assertions", "compiled fairness fixture, protocol and deterministic scheduling"}
+          async_name = "real compiled C decoder under protocol controls, not native acceptance"
+          names = names | {async_name}
           suites = [suite for suite in ET.parse(sys.argv[1]).iter("testsuite") if suite.get("name") in names]
           assert {suite.get("name") for suite in suites} == names, "Missing compiled GPU fixture suite"
           assert all(suite.findall("testcase") for suite in suites), "Empty compiled GPU fixture suite"
           cases = [case for suite in suites for case in suite.findall("testcase")]
-          assert len(cases) >= 35, "Compiled GPU fixture tests did not execute"
+          historical = [case for suite in suites if suite.get("name") != async_name for case in suite.findall("testcase")]
+          asynchronous = [case for suite in suites if suite.get("name") == async_name for case in suite.findall("testcase")]
+          assert len(historical) >= 35, "Historical compiled GPU fixture tests did not execute"
+          assert len(asynchronous) >= 20, "Compiled async GPU fixture tests did not execute"
           assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"
           print(f"Verified {len(cases)} compiled GPU fixture tests without skips")
           PYTHON
