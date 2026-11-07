@@ -68,7 +68,7 @@ export function checkProcessControl(result: SuiteResult, mode: Control): void {
 }
 async function control(engine: "chromium" | "webkit", mode: Control, root: string): Promise<void> {
   const startedAt = performance.now();
-  const scratch = join(root, "scratch");
+  const scratch = join(root, "s");
   const signal = AbortSignal.timeout(60_000);
   const assets = await processRecyclingAdapter.assets({ scratch, signal });
   assets["/process-page.js"] = await bundle("process-recycling-controls-page.ts", {
@@ -128,7 +128,7 @@ export async function processRecyclingControls(names: string[]): Promise<void> {
   try {
     for (const engine of names.length ? names : ["chromium"]) await engineControls(engine, root);
   } finally {
-    const remaining = await readdir(join(root, "scratch")).catch((error: unknown) => {
+    const remaining = await readdir(join(root, "s")).catch((error: unknown) => {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
         return [];
       throw error;
