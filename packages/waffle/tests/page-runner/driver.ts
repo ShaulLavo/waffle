@@ -21,6 +21,10 @@ export type DriverCleanup = {
 };
 export interface Driver {
   start(signal: AbortSignal): Promise<void>;
+  createWindow(signal: AbortSignal): Promise<string>;
+  selectWindow(handle: string, signal: AbortSignal): Promise<void>;
+  reloadWindow(signal: AbortSignal): Promise<void>;
+  closeWindow(signal: AbortSignal): Promise<void>;
   navigate(url: string, signal: AbortSignal): Promise<void>;
   handle(signal: AbortSignal): Promise<string>;
   handles(signal: AbortSignal): Promise<string[]>;

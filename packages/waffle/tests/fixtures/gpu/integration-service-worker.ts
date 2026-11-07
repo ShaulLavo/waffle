@@ -8,7 +8,12 @@ const host = globalThis as unknown as {
 };
 const params = new URL(location.href).searchParams;
 const hold = params.get("hold");
-const fairness = hold === "fairness" ? installFairnessObserver() : undefined;
+const desktopCaps = hold === "desktop-on" ? "on" : hold === "desktop-off" ? "off" : undefined;
+const fairness = desktopCaps
+  ? installFairnessObserver({ caps: desktopCaps, blobThreshold: 400000 })
+  : hold === "fairness"
+    ? installFairnessObserver()
+    : undefined;
 const gate = Promise.withResolvers<void>();
 let held: string | undefined;
 let delayedOpen: Extract<GpuServiceRequest, { type: "open" }> | undefined;
@@ -52,6 +57,7 @@ const snapshot = () => ({
   lateCreated,
   lateDestroyed,
   fairness: fairness?.snapshot(),
+  desktopCaps,
 });
 function armFairness(id: string): void {
   try {

@@ -46,8 +46,8 @@ export async function closeMeasuredTriangle() {
   return closeIntegration();
 }
 /** @browserEntry */
-export async function observeTriangleScreenshot(base64: string) {
-  const canvas = document.querySelector("#triangle-0");
+export async function observeTriangleScreenshot(base64: string, slot = 0, colour = "red") {
+  const canvas = document.querySelector(`#triangle-${slot}`);
   if (!(canvas instanceof HTMLCanvasElement)) throw new Error("Triangle canvas missing");
   const image = new Image();
   image.src = `data:image/png;base64,${base64}`;
@@ -66,8 +66,10 @@ export async function observeTriangleScreenshot(base64: string) {
   const center = pixel(32, 32),
     corner = pixel(1, 1);
   if (
-    center[0]! < 247 ||
-    center[1]! > 8 ||
+    center[0]! < (colour === "red" ? 247 : 0) ||
+    center[0]! > (colour === "red" ? 255 : 8) ||
+    center[1]! < (colour === "green" ? 247 : 0) ||
+    center[1]! > (colour === "green" ? 255 : 8) ||
     center[2]! > 8 ||
     center[3]! < 247 ||
     corner.slice(0, 3).some((byte) => byte > 8) ||

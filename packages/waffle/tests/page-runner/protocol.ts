@@ -1,6 +1,14 @@
 import type { StorageEntry } from "../storage-allocation.js";
 export type HostVerdict = { status: "pass"; result: unknown } | { status: "fail"; error: string };
+export type HostPeer = {
+  readonly signal: AbortSignal;
+  script(source: string): Promise<unknown>;
+  task(source: string): Promise<void>;
+  reload(): Promise<HostPeer>;
+  close(): Promise<void>;
+};
 export type HostCase = {
+  openPeer(): Promise<HostPeer>;
   readonly signal: AbortSignal;
   remainingMs(): number;
   script(source: string): Promise<unknown>;
@@ -10,6 +18,8 @@ export type HostCase = {
 };
 export type Body =
   | { kind: "hello"; token: string; group: string }
+  | { kind: "peer-ready" }
+  | { kind: "transition-ready"; transitionId: string }
   | { kind: "list"; cases: unknown }
   | { kind: "allocation"; entry: StorageEntry }
   | { kind: "case-start" | "case-ready" | "case-teardown"; caseId: string }
@@ -25,13 +35,19 @@ export type Outcome =
   | { status: "pass"; provisional: boolean }
   | { status: "fail"; detail: string }
   | { status: "host"; detail: string };
-export type Failure = { group: string; category: string; detail: string };
+export type Failure = {
+  group: string;
+  category: string;
+  detail: string;
+  document?: { doc: string | null; peer: string; generation: number; handle: string };
+};
 export type Budgets = {
   hello: number;
   heartbeat: number;
   case: number;
   group: number;
   run: number;
+  operation?: number;
   teardown?: number;
   caseDocument?: number;
 };
@@ -55,6 +71,10 @@ function validBody(value: Record<string, unknown>): boolean {
   switch (value.kind) {
     case "hello":
       return typeof value.token === "string" && typeof value.group === "string";
+    case "peer-ready":
+      return true;
+    case "transition-ready":
+      return typeof value.transitionId === "string" && value.transitionId.length > 0;
     case "list":
       return "cases" in value;
     case "allocation":
@@ -96,7 +116,7 @@ export function parseMessage(value: unknown): Message {
     value.seq < 0 ||
     !validBody(value)
   )
-    throw new Error("Invalid page report, controls and transitions are unsupported");
+    throw new Error("Invalid page report or unsupported control");
   return value as Message;
 }
 export function exactInventory(required: readonly string[], actual: readonly string[]): void {

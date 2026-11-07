@@ -159,3 +159,143 @@ test("a response interrupted mid-array never exposes a value", async () => {
   await expect(readDriverResponse(response, AbortSignal.timeout(15))).rejects.toThrow();
   expect(cancelled).toBe(true);
 });
+
+test("peer WebDriver operations use the exact session paths and returned new-tab handle", async () => {
+  const calls: { method: string; path: string; body: unknown }[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const path = new URL(request.url).pathname;
+      calls.push({
+        method: request.method,
+        path,
+        body: request.body ? await request.json() : null,
+      });
+      const value = path.endsWith("/window/new")
+        ? { handle: "actual-tab", type: "tab" }
+        : request.method === "DELETE"
+          ? ["root"]
+          : null;
+      return Response.json({ value });
+    },
+  });
+  try {
+    const driver = new SafariDriver(udid, "no-native-resources");
+    Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
+    Reflect.set(driver, "session", "exact/session");
+    const signal = AbortSignal.timeout(2000);
+    expect(await driver.createWindow(signal)).toBe("actual-tab");
+    await driver.selectWindow("actual-tab", signal);
+    await driver.reloadWindow(signal);
+    await driver.closeWindow(signal);
+    expect(calls).toEqual([
+      { method: "POST", path: "/session/exact%2Fsession/window/new", body: { type: "tab" } },
+      { method: "POST", path: "/session/exact%2Fsession/window", body: { handle: "actual-tab" } },
+      { method: "POST", path: "/session/exact%2Fsession/refresh", body: null },
+      { method: "DELETE", path: "/session/exact%2Fsession/window", body: null },
+    ]);
+    expect(driver.uncertain).toBe(false);
+  } finally {
+    await server.stop(true);
+  }
+});
+for (const answer of [
+  null,
+  "guessed",
+  { handle: "", type: "tab" },
+  { handle: "tab", type: "unexpected" },
+]) {
+  test(`malformed new-tab answer stops subsequent destructive dispatch ${JSON.stringify(answer)}`, async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        requests++;
+        return Response.json({ value: answer });
+      },
+    });
+    try {
+      const driver = new SafariDriver(udid, "no-native-resources");
+      Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
+      Reflect.set(driver, "session", "session");
+      await expect(driver.createWindow(AbortSignal.timeout(1000))).rejects.toThrow(
+        "Invalid new window",
+      );
+      await expect(driver.closeWindow(AbortSignal.timeout(1000))).rejects.toThrow("Uncertain");
+      expect(requests).toBe(1);
+    } finally {
+      await server.stop(true);
+    }
+  });
+}
+for (const method of ["createWindow", "reloadWindow", "closeWindow"] as const) {
+  test(`${method} abort owns uncertain transport and prevents another dispatch`, async () => {
+    let requests = 0;
+    const stop = Promise.withResolvers<void>();
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch() {
+        requests++;
+        await stop.promise;
+        return Response.json({ value: null });
+      },
+    });
+    try {
+      const driver = new SafariDriver(udid, "no-native-resources");
+      Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
+      Reflect.set(driver, "session", "owned");
+      await expect(driver[method](AbortSignal.timeout(15))).rejects.toThrow();
+      expect(driver.uncertain).toBe(true);
+      await expect(driver.reloadWindow(AbortSignal.timeout(1000))).rejects.toThrow("Uncertain");
+      expect(requests).toBe(1);
+    } finally {
+      stop.resolve();
+      await server.stop(true);
+    }
+  });
+}
+test("malformed refresh acknowledgement is uncertainty, not confirmed reload", async () => {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => Response.json({ value: { unexpected: true } }),
+  });
+  try {
+    const driver = new SafariDriver(udid, "no-native-resources");
+    Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
+    Reflect.set(driver, "session", "owned");
+    await expect(driver.reloadWindow(AbortSignal.timeout(1000))).rejects.toThrow("Invalid refresh");
+    expect(driver.uncertain).toBe(true);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("the captured successful Safari New Window reply accepts its actual window context type", async () => {
+  // Captured by the parent on November 7, 2026. The requested tab type is a hint.
+  const body = '{"value":{"handle":"page-ED5306A0-6D48-4770-B204-6CB3C1A0A2D7","type":"window"}}';
+  let requested: unknown;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      requested = await request.json();
+      return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  try {
+    const driver = new SafariDriver(udid, "no-native-resources");
+    Reflect.set(driver, "base", `http://127.0.0.1:${server.port}`);
+    Reflect.set(driver, "session", "owned-control");
+    expect(await driver.createWindow(AbortSignal.timeout(1000))).toBe(
+      "page-ED5306A0-6D48-4770-B204-6CB3C1A0A2D7",
+    );
+    expect(requested).toEqual({ type: "tab" });
+    expect(driver.uncertain).toBe(false);
+  } finally {
+    await server.stop(true);
+  }
+});

@@ -8,6 +8,7 @@ import {
   type SuiteAdapter,
   type RunOptions,
   type HostCase,
+  type HostPeer,
   type HostVerdict,
   type SuiteCase,
 } from "waffle/testing/page-runner";
@@ -648,6 +649,20 @@ test("public entries expose authoritative host domain types without widening dri
       host.signal.throwIfAborted();
       await host.script("return null");
       await host.task("await Promise.resolve()");
+      const peer = await host.openPeer();
+      await peer.script("return null");
+      await peer.task("await Promise.resolve()");
+      // @ts-expect-error raw browser authority is not a callback capability
+      void host.driver;
+      // @ts-expect-error peer identities are host assigned
+      peer.generation = 4;
+      // @ts-expect-error peer selection is private to the queue
+      peer.selectWindow("raw");
+      // @ts-expect-error caller IDs cannot construct a generation capability
+      const forged: HostPeer = { peer: "caller", generation: 0 };
+      void forged;
+      const successor = await peer.reload();
+      await successor.close();
       const database: Promise<string> = host.allocateDatabase("consumer");
       await database;
       await host.sleep(0);
@@ -656,6 +671,9 @@ test("public entries expose authoritative host domain types without widening dri
   };
   const run: HostPageRun<null> = {
     kind: "host",
+    peer: async (_request, allocate) => {
+      await allocate({ kind: "indexeddb", name: "typed" });
+    },
     teardown: async (_request, body: HostVerdict) => body.status,
   };
   const suite: PageSuite<null> = {

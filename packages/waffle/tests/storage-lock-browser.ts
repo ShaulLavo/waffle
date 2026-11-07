@@ -1,3 +1,10 @@
+import {
+  observeRetainedWorker,
+  recordFilesystemWorker,
+  retainedWorker,
+  filesystemConstructions,
+} from "./storage-lock-observation.js";
+import type { StorageAllocationHooks } from "./storage-allocation.js";
 import { withVfsImplementation } from "../fs/vfs-internal.js";
 import {
   SharedFilesystem,
@@ -34,6 +41,7 @@ globalThis.Worker = class extends NativeWorker {
     super(url, options);
     // oxlint-disable-next-line typescript/no-this-alias -- This test records the actual callback/Worker receiver.
     filesystemWorker = this;
+    recordFilesystemWorker(this);
     this.addEventListener("message", (event) => {
       if (typeof event.data?.type === "string") {
         probes.push(event.data.type);
@@ -112,6 +120,21 @@ function lockName(backend: Backend, name: string): string {
     : `bun-wasm:filesystem:${name}`;
 }
 
+let allocation: StorageAllocationHooks | undefined;
+let recoveryWorkerURL = "/recovery-fs-worker.js";
+async function allocate(backend: Backend, name: string): Promise<void> {
+  if (!allocation) return;
+  if (allocation.name() !== name)
+    throw new Error("Storage-lock name differs from registered request");
+  await allocation.allocate(
+    backend === "indexeddb"
+      ? { kind: "indexeddb", name }
+      : {
+          kind: "opfs-directory",
+          name: `bun-wasm-${btoa(JSON.stringify(name)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`,
+        },
+  );
+}
 async function start(
   backend: Backend,
   name: string,
@@ -125,9 +148,9 @@ async function start(
     {
       workerURL:
         gatedRecovery === "recovered"
-          ? "/recovery-fs-worker.js?recovered"
+          ? `${recoveryWorkerURL}?recovered`
           : gatedRecovery
-            ? "/recovery-fs-worker.js"
+            ? recoveryWorkerURL
             : "/fs-worker.js",
       name,
       mode: "fast",
@@ -135,11 +158,33 @@ async function start(
     },
   );
   if (whenBusy !== undefined) (options as { whenBusy?: Busy }).whenBusy = whenBusy;
+  await allocate(backend, name);
   fs = new SharedFilesystem(options);
   observeOperationalReadiness(fs);
 }
 
-(globalThis as typeof globalThis & { lockTest?: unknown }).lockTest = {
+export const lockTest = {
+  configure(hooks: StorageAllocationHooks): void {
+    if (fs || allocation) throw new Error("Storage-lock configuration already installed");
+    allocation = hooks;
+  },
+  observeRetainedWorker,
+  constructions: filesystemConstructions,
+  observationFault(mode: string): void {
+    const worker = retainedWorker();
+    if (mode === "retained-worker-terminated" || mode === "retained-worker-replacement")
+      worker.terminate();
+    if (mode === "retained-worker-replacement") new Worker(recoveryWorkerURL, { type: "module" });
+    worker.dispatchEvent(
+      new MessageEvent("message", {
+        data: { nonce: "forged", pathname: "/recovery-fs-worker.js", matches: true },
+      }),
+    );
+  },
+  configureRecoveryURL(url: string): void {
+    if (fs) throw new Error("Recovery URL already in use");
+    recoveryWorkerURL = url;
+  },
   start,
   state: (): StateRecord => {
     const current = (fs as { state?: SharedFilesystemState } | undefined)?.state;
@@ -258,6 +303,7 @@ async function start(
       whenBusy: "takeover",
       onStateChange: record,
     } as SharedFilesystemOptions);
+    await allocate("opfs", name);
     try {
       fs = new SharedFilesystem(invalid);
       observeOperationalReadiness(fs);
@@ -269,5 +315,7 @@ async function start(
     }
   },
 };
+
+(globalThis as typeof globalThis & { lockTest?: typeof lockTest }).lockTest = lockTest;
 
 type LockManagerSnapshot = Awaited<ReturnType<LockManager["query"]>>;
