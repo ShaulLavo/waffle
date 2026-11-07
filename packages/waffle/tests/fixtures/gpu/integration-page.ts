@@ -14,6 +14,7 @@ import { pressureBurst } from "./qualification-contract.js";
 
 interface Run {
   pid: number;
+  surface: number;
   authorityToken: string;
   input: PipeEndpoint;
   output: PipeEndpoint;
@@ -90,7 +91,10 @@ export async function openIntegration(
     runtime.registerProgram(`/bin/${name}`, { adapter: "gpu", source });
     await runtime.filesystem.writeFile(`/bin/${name}`, "registered");
   }
-  return { workers: workers.map((item) => item.url), snapshot: runtime.sharedMemory.snapshot() };
+  return {
+    workers: workers.map((item) => item.url),
+    snapshot: runtime.sharedMemory.snapshot(),
+  };
 }
 /** @browserEntry */
 export async function activateDisplay() {
@@ -127,9 +131,14 @@ async function root() {
     descriptors,
     codec: createWorkerPipeCodec(),
     postMessage: (message) => notices.push(message),
-    prepareSpawn: () => ({ data: { filesystem: runtime!.filesystem.createIdentity() } }),
+    prepareSpawn: () => ({
+      data: { filesystem: runtime!.filesystem.createIdentity() },
+    }),
   });
-  await service.adoptRuntimeRoot(root, { memory: [], stop: () => descriptors.dispose() });
+  await service.adoptRuntimeRoot(root, {
+    memory: [],
+    stop: () => descriptors.dispose(),
+  });
   return service;
 }
 /** @browserEntry */
@@ -140,6 +149,8 @@ export async function launchTriangle(
   poison = false,
   forge = false,
   program: "triangle" | "scene" = "triangle",
+  surfaceSlot = slot,
+  suppliedGrant?: GraphicsGrant,
 ) {
   const service = await root(),
     supervisor = await service.ready();
@@ -150,7 +161,11 @@ export async function launchTriangle(
   currentGrant =
     grant === "none"
       ? undefined
-      : display.grant({ surfaces: [ensureSurface(slot)], gpu: grant === "gpu" });
+      : (suppliedGrant ??
+        display.grant({
+          surfaces: [ensureSurface(surfaceSlot)],
+          gpu: grant === "gpu",
+        }));
   const authorityToken = crypto.randomUUID();
   const imports: unknown[] = [];
   importEvents.set(authorityToken, imports);
@@ -173,7 +188,16 @@ export async function launchTriangle(
       { parent: 2, child: 2 },
     ],
   });
-  runs.set(slot, { pid, authorityToken, input, output, grant: currentGrant, text: "", imports });
+  runs.set(slot, {
+    pid,
+    surface: ensureSurface(surfaceSlot).id,
+    authorityToken,
+    input,
+    output,
+    grant: currentGrant,
+    text: "",
+    imports,
+  });
   while (notices.length) await service.runtimeMessage(notices.shift()!, rootPid);
   await supervisor.start(pid);
   return { pid };
@@ -258,7 +282,11 @@ export async function closeIntegration(captureRetirement = false) {
     runtime = undefined;
   }
   if (workers.some((worker) => !worker.stopped)) throw new Error("Integration worker leaked");
-  return { workers: workers.map(({ url, stopped }) => ({ url, stopped })), errors, snapshot };
+  return {
+    workers: workers.map(({ url, stopped }) => ({ url, stopped })),
+    errors,
+    snapshot,
+  };
 }
 
 /** @browserEntry */
@@ -279,7 +307,7 @@ export async function serviceCommand(
   detail?: {
     token: string;
     surface: number;
-    mode: "append" | "completions" | "header" | "chunk" | "nesting" | "admission";
+    mode: "append" | "completions" | "header" | "chunk" | "nesting" | "admission" | "regrant";
   },
 ) {
   const worker = workers.find(
@@ -334,7 +362,7 @@ export function ownershipGuest(slot = 0) {
   return {
     pid: run.pid,
     token: run.authorityToken,
-    surface: surfaces.get(slot)!.id,
+    surface: run.surface,
     events: run.imports.slice(),
     text: drainTriangle(slot, false).text,
   };
@@ -361,4 +389,36 @@ export function ownershipPeer(pump: boolean) {
     fed = count;
     if (feedTriangle("\n", 1) !== 1) errors.push("Ownership peer input refused");
   }, 20);
+}
+
+/** @browserEntry */
+export async function regrantTriangle() {
+  const previous = runs.get(2)!;
+  if (!previous.grant) throw new Error("Regrant needs the original grant");
+  let retirementObserved = false;
+  void previous.grant.retired().then(() => {
+    retirementObserved = true;
+  });
+  previous.grant.dispose();
+  const replacement = display.grant({
+    surfaces: [ensureSurface(2)],
+    gpu: true,
+  });
+  const retiredBeforeGrant = retirementObserved;
+  const launched = await launchTriangle(
+    ["blue"],
+    "gpu",
+    3,
+    true,
+    false,
+    "triangle",
+    2,
+    replacement,
+  );
+  return {
+    oldPid: previous.pid,
+    replacementPid: launched.pid,
+    surface: previous.surface,
+    retiredBeforeGrant,
+  };
 }

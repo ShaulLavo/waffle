@@ -12,6 +12,7 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { regrantCases } from "./gpu-regrant-browser.js";
 import { admissionCases } from "./gpu-admission-browser.js";
 import { malformedCases } from "./gpu-malformed-browser.js";
 import { ownershipCases } from "./gpu-ownership-browser.js";
@@ -340,7 +341,11 @@ async function heldKillCase(page: Page, hold: "open" | "adapter" | "device") {
 
 export function assertControlAccounting(snapshot: {
   platform: { kind: string };
-  holders: { label: string; state: string; shape: { kind: string; length?: number } }[];
+  holders: {
+    label: string;
+    state: string;
+    shape: { kind: string; length?: number };
+  }[];
 }) {
   const controls = snapshot.holders.filter((holder) => holder.label === "guest-control");
   if (snapshot.platform.kind !== "bounded" || !controls.length)
@@ -411,18 +416,29 @@ async function main() {
       type: "application/wasm",
     });
     const url = runner.serve(routes);
-    for (const requested of process.argv.slice(2).length
-      ? process.argv.slice(2)
+    const regrantOnly = process.argv.includes("--regrant-only");
+    const requestedEngines = process.argv.slice(2).filter((arg) => arg !== "--regrant-only");
+    for (const requested of requestedEngines.length
+      ? requestedEngines
       : ["chromium", "firefox", "webkit"]) {
       const engine = qualificationEngine(requested),
         browser = await runner.launch(engine);
-      const context = await browser.newContext({ viewport: { width: 320, height: 240 } }),
+      const context = await browser.newContext({
+          viewport: { width: 320, height: 240 },
+        }),
         page = await context.newPage();
       page.on("pageerror", (error) => console.error(error));
       const loading = await assertGpuLazyBrowser(page, url, lazy.outputInputs);
       await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const regrant = await regrantCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "regrant", regrant }));
+      if (regrantOnly) {
+        await context.close();
+        await runner.closeBrowser(browser);
+        continue;
+      }
       const admission = await admissionCases(page, url, available);
       console.log(JSON.stringify({ engine, stage: "admission", admission }));
       const malformed = await malformedCases(page, url, available);
@@ -459,6 +475,7 @@ async function main() {
           engine,
           loading,
           qualification,
+          regrant,
           ownership,
           guest,
           scenes,
