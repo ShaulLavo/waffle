@@ -1,5 +1,8 @@
 import { IdentityAllocator } from "../fs/file-identity.js";
-import { checkpointDecodeControl, type StagingDatabaseName } from "./indexeddb-checkpoint-decode-browser.js";
+import {
+  checkpointDecodeControl,
+  type StagingDatabaseName,
+} from "./indexeddb-checkpoint-decode-browser.js";
 import {
   PublicationDomain,
   createPublicationBuffers,
