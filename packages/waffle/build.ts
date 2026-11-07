@@ -303,6 +303,27 @@ export async function buildNodeModules(
       else await emit(path);
     }
   }
+  async function emitFrameworkClosure(): Promise<void> {
+    const pending = ["tests/page-runner/framework.ts", "tests/page-runner/framework-page.ts"];
+    const emitted = new Set<string>();
+    while (pending.length) {
+      const path = pending.pop();
+      if (path === undefined) break;
+      if (emitted.has(path)) continue;
+      emitted.add(path);
+      await emit(path);
+      const imports = transpiler
+        .scanImports(await Bun.file(join(root, path)).text())
+        .filter((entry) => entry.path.startsWith("."));
+      for (const entry of imports) {
+        const target = relative(
+          root,
+          resolve(dirname(join(root, path)), entry.path.replace(/\.js$/, ".ts")),
+        );
+        pending.push(target);
+      }
+    }
+  }
   for (const directory of [
     "core",
     "fs",
@@ -328,7 +349,26 @@ export async function buildNodeModules(
       join(outdir, "tooling/program/program-transformer.json"),
     );
   }
+  if (existsSync(join(root, "tests/page-runner/framework.ts"))) {
+    await emitFrameworkClosure();
+    await buildFrameworkBootstrap(root, outdir);
+  }
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
+}
+
+export async function buildFrameworkBootstrap(
+  root = import.meta.dir,
+  outdir = join(root, "dist"),
+): Promise<void> {
+  const bootstrap = await Bun.build({
+    entrypoints: [join(root, "tests/page-runner/framework-bootstrap-main.ts")],
+    target: "browser",
+    format: "iife",
+    minify: true,
+  });
+  if (!bootstrap.success || !bootstrap.outputs[0])
+    throw new AggregateError(bootstrap.logs, "Framework bootstrap build failed");
+  await Bun.write(join(outdir, "tests/page-runner/framework-bootstrap.js"), bootstrap.outputs[0]);
 }
 
 if (import.meta.main) await buildNodeModules();

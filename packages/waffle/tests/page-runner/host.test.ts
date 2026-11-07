@@ -1,9 +1,11 @@
+import { storagePolicy } from "./storage-policy.js";
 import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeDriver, type FakeMode } from "./fake-driver.js";
-import { runStorage, probeDocument } from "./storage-host.js";
+import { runStorage } from "./storage-host.js";
+import { probeDocument } from "./suite-host.js";
 import { Collector } from "./collector.js";
 import { storageBudgets } from "./protocol.js";
 import { withStorageCleanup } from "../storage-allocation.js";
@@ -80,7 +82,7 @@ test("fixture cleanup preserves its assertion when cleanup also fails", async ()
   throw new Error("Expected both failures");
 });
 test("responsive broken reporting and failed script probes remain different signals", async () => {
-  const collector = new Collector("r", [], []);
+  const collector = new Collector("r", [], [], storagePolicy);
   const state = collector.expect(
     { id: "list", role: "list", caseIds: [] },
     "t",

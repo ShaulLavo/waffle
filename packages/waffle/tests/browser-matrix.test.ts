@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
 const runners = [
+  "browser-navigation",
   "safe-staging",
   "storage",
   "storage-lock",
@@ -51,8 +52,13 @@ if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls]))}.includes(
   process.exit(0);
 }
 if (engines === "chromium,firefox") {
-  writeFileSync(name + ".started", "");
-  while (!names.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
+  const cohort = names.filter((entry) => entry !== "gpu");
+  if (name === "gpu") {
+    if (!cohort.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("GPU overlapped another browser suite");
+  } else {
+    writeFileSync(name + ".started", "");
+    while (!cohort.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
+  }
 } else if (engines === "webkit") {
   if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early WebKit");
   if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
@@ -249,4 +255,8 @@ test("socket Firefox attachment failure remains blocking in its single invocatio
 
 test("page-owned reporter controls fail the matrix without changing existing engine groups", async () => {
   await matrix([`${reporterControls}:chromium,webkit`]);
+}, 15_000);
+
+test("draw-heavy GPU work runs in its own batch without changing engine groups", async () => {
+  await matrix([]);
 }, 15_000);

@@ -9,11 +9,12 @@ test("browser temporary roots are siblings of host scratch under a CI supervisor
     requested = value;
     throw new Error("Stopped at the owned allocation boundary");
   });
+  const driver = new PlaywrightDriver("chromium", `${root}/w-pr-123456`);
   try {
-    const driver = new PlaywrightDriver("chromium", `${root}/w-pr-123456`);
     await expect(driver.start(AbortSignal.timeout(1000))).rejects.toThrow("allocation boundary");
     expect(requested).toBe(root);
   } finally {
+    await driver.stop();
     init.mockRestore();
   }
 });

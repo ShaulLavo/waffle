@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
@@ -17,7 +18,7 @@ async function runComputeNative() {
     console.log(JSON.stringify({ phase: "setup", scratch: lifecycle.scratch, endpoint }));
     const browser = await lifecycle.launch("chromium");
     const page = await browser.newPage();
-    await page.goto(endpoint);
+    await navigateTestPage(page, endpoint);
     const results: unknown[] = [];
     for (const control of [
       "direct",

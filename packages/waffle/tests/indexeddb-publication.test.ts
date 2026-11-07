@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { expect, test } from "bun:test";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 import { recoverIndex } from "../fs/indexeddb.js";
@@ -22,7 +23,7 @@ async function nativeControls(): Promise<void> {
       const browser = await lifecycle.launch(name);
       const page = await browser.newPage();
       page.on("console", (message) => console.log(message.text()));
-      await page.goto(origin);
+      await navigateTestPage(page, origin);
       const passed = await page.evaluate(async (filter) => {
         const path = "/tests.js";
         const suite: typeof import("./indexeddb-publication-browser.js") = await import(path);

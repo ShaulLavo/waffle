@@ -15,7 +15,8 @@ import { CommandCleanupError, runOwned } from "./owned-command.ts";
 const packageRoot = resolve(import.meta.dir, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 export const GPU_FIXTURE_WASM = "triangle.wasm";
-const metadataName = "triangle.inputs.json";
+export const GPU_SCENE_FIXTURE_WASM = "scene.wasm";
+const fixtures = [GPU_FIXTURE_WASM, GPU_SCENE_FIXTURE_WASM];
 const target = "wasm32-wasip1";
 const flags = [
   `--target=${target}`,
@@ -34,6 +35,9 @@ const inputs = [
   "scripts/build-gpu-fixture.ts",
   "scripts/owned-command.ts",
   "tests/fixtures/gpu/triangle.c",
+  "tests/fixtures/gpu/scene.c",
+  "tests/fixtures/gpu/scene_encode.h",
+  "tests/fixtures/gpu/gpu_fixture.h",
   "tests/fixtures/gpu/gpu_encode.h",
   "tests/fixtures/gpu/waffle_gpu_stream.h",
   "tests/fixtures/gpu/expected.json",
@@ -132,7 +136,7 @@ function inspectImports(wasm: Uint8Array<ArrayBuffer>): void {
     throw new Error("GPU fixture has no exported memory");
 }
 
-/** Compile once; the browser caller consumes triangle.wasm without running clang. */
+/** One producer compiles both commands; consumers verify without invoking clang. */
 export async function buildGpuFixture(directory: string, signal?: AbortSignal): Promise<string> {
   const clang = compiler(process.env.WASI_SDK_PATH);
   await generate(packageRoot, true);
@@ -141,27 +145,33 @@ export async function buildGpuFixture(directory: string, signal?: AbortSignal): 
   let safeToRemove = true;
   try {
     const configuration = contract(packageRoot);
-    const artifact = join(scratch, GPU_FIXTURE_WASM);
-    await runOwned(
-      [clang].concat(flags, [
-        `-ffile-prefix-map=${repositoryRoot}=/waffle`,
-        join(packageRoot, "tests/fixtures/gpu/triangle.c"),
-        "-o",
-        artifact,
-      ]),
-      { cwd: packageRoot, env: compilerEnvironment(), signal, timeoutMs: 120_000 },
-    );
+    for (const name of fixtures) {
+      const artifact = join(scratch, name);
+      await runOwned(
+        [clang].concat(flags, [
+          `-ffile-prefix-map=${repositoryRoot}=/waffle`,
+          join(packageRoot, "tests/fixtures/gpu", name.replace(".wasm", ".c")),
+          "-o",
+          artifact,
+        ]),
+        { cwd: packageRoot, env: compilerEnvironment(), signal, timeoutMs: 120_000 },
+      );
+      const wasm = new Uint8Array(readFileSync(artifact));
+      inspectImports(wasm);
+      writeFileSync(
+        join(scratch, name.replace(".wasm", ".inputs.json")),
+        json({
+          contract: configuration,
+          artifact: { size: wasm.length, sha256: digest(wasm) },
+        }),
+      );
+    }
     if (json(configuration) !== json(contract(packageRoot)))
       throw new Error("GPU fixture inputs changed during compilation; rebuild explicitly");
-    const wasm = new Uint8Array(readFileSync(artifact));
-    inspectImports(wasm);
-    const metadata = {
-      contract: configuration,
-      artifact: { size: wasm.length, sha256: digest(wasm) },
-    };
-    writeFileSync(join(scratch, metadataName), json(metadata));
-    renameSync(artifact, join(outdir, GPU_FIXTURE_WASM));
-    renameSync(join(scratch, metadataName), join(outdir, metadataName));
+    for (const name of fixtures.concat(
+      fixtures.map((name) => name.replace(".wasm", ".inputs.json")),
+    ))
+      renameSync(join(scratch, name), join(outdir, name));
     return join(outdir, GPU_FIXTURE_WASM);
   } catch (error) {
     if (error instanceof CommandCleanupError) safeToRemove = false;
@@ -172,19 +182,34 @@ export async function buildGpuFixture(directory: string, signal?: AbortSignal): 
 }
 
 /** Cache freshness check. Deliberately needs neither an SDK nor a compiler. */
-export function verifiedGpuFixture(
+function verifiedFixture(
   directory: string,
-  sourceRoot = packageRoot,
+  name: string,
+  sourceRoot: string,
 ): Uint8Array<ArrayBuffer> {
+  const metadataName = name.replace(".wasm", ".inputs.json");
   const metadata = record(JSON.parse(readFileSync(join(directory, metadataName), "utf8")));
   if (json(metadata.contract) !== json(contract(sourceRoot)))
     throw new Error("GPU fixture inputs changed; rebuild explicitly");
   const artifact = record(metadata.artifact);
-  const wasm = new Uint8Array(readFileSync(join(directory, GPU_FIXTURE_WASM)));
+  const wasm = new Uint8Array(readFileSync(join(directory, name)));
   if (artifact.size !== wasm.length || artifact.sha256 !== digest(wasm))
     throw new Error("GPU fixture artifact changed; rebuild explicitly");
   inspectImports(wasm);
   return wasm;
+}
+
+export function verifiedGpuFixture(
+  directory: string,
+  sourceRoot = packageRoot,
+): Uint8Array<ArrayBuffer> {
+  return verifiedFixture(directory, GPU_FIXTURE_WASM, sourceRoot);
+}
+export function verifiedGpuSceneFixture(
+  directory: string,
+  sourceRoot = packageRoot,
+): Uint8Array<ArrayBuffer> {
+  return verifiedFixture(directory, GPU_SCENE_FIXTURE_WASM, sourceRoot);
 }
 
 if (import.meta.main) {
@@ -195,7 +220,14 @@ if (import.meta.main) {
     throw new Error("usage: build-gpu-fixture.ts [absolute-output-directory] [--verify]");
   const directory = positional[0] ?? process.env.GPU_FIXTURE_DIR;
   if (!directory) throw new Error("Pass an output directory or set GPU_FIXTURE_DIR");
-  if (verify) console.log(json({ verified: true, size: verifiedGpuFixture(directory).length }));
+  if (verify)
+    console.log(
+      json({
+        verified: true,
+        triangle: verifiedGpuFixture(directory).length,
+        scene: verifiedGpuSceneFixture(directory).length,
+      }),
+    );
   else {
     const controller = new AbortController();
     const interrupt = () => controller.abort();
