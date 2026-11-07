@@ -4,7 +4,7 @@ import { RecordRing } from "../../../browser/gpu/ring.js";
 import { PayloadDirectory } from "../../../browser/gpu/payload.js";
 import { ServiceCredit } from "../../../browser/gpu/protocol.js";
 import { LogicalAppend } from "../../../browser/gpu/transport.js";
-import { nativeCall, nativeObject } from "../../../browser/gpu/lowering.js";
+import { nativeObject } from "../../../browser/gpu/lowering.js";
 import {
   WireReader,
   wireHandle,
