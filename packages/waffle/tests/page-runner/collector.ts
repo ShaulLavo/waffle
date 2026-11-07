@@ -21,7 +21,7 @@ export class ObservationClosed extends Error {}
 export class ReportRejected extends Error {}
 export type Group = {
   id: string;
-  role: "list" | "case" | "finish";
+  role: "list" | "case" | "finish" | "peer";
   caseIds: string[];
   execution?: "host";
 };
@@ -31,7 +31,42 @@ export type HostPhase =
   | { kind: "teardown"; enteredAt: number }
   | { kind: "terminal" };
 type PageTask = { status: "pending" } | { status: "pass" } | { status: "fail"; error: string };
+type DocumentOwner =
+  | { kind: "coordinator" }
+  | {
+      kind: "peer";
+      coordinator: DocumentState;
+      peer: string;
+      generation: number;
+      admission: PeerTransition;
+    };
+type PhysicalDisposition = "live" | "transitioning" | "superseded" | "closed" | "unconfirmed";
+type PeerTarget = {
+  readonly peer: string;
+  readonly generation: number;
+  readonly token: string;
+  readonly url: string;
+};
+export type PeerTransition = {
+  readonly run: string;
+  id: string;
+  caseId: string;
+  source: DocumentState;
+  deadline: number;
+  progress:
+    | { kind: "accepted"; watermark: number | null }
+    | { kind: "executing"; watermark: number }
+    | {
+        kind: "completed";
+        handle: string;
+        successor: DocumentState | null;
+        remainingHandles: readonly string[] | null;
+      }
+    | { kind: "failed"; detail: string };
+} & ({ action: "create" | "reload"; target: PeerTarget } | { action: "close"; target: null });
 export type DocumentState = {
+  owner: DocumentOwner;
+  physical: PhysicalDisposition;
   group: Group;
   token: string;
   expectedURL: string;
@@ -56,6 +91,7 @@ export class Collector {
   readonly failures: Failure[] = [];
   readonly ledger: StorageEntry[] = [];
   readonly documents: DocumentState[] = [];
+  readonly transitions: PeerTransition[] = [];
   active: DocumentState | undefined;
   runComplete = false;
   remaining: StorageEntry[] | null = null;
@@ -70,10 +106,23 @@ export class Collector {
     for (const id of required) this.outcomes[id] = { status: "pending" };
   }
   fail(category: string, detail: string, state = this.active): void {
-    this.failures.push({ group: state?.group.id ?? "run", category, detail });
+    const document =
+      state?.owner.kind === "peer"
+        ? {
+            document: {
+              doc: state.doc,
+              peer: state.owner.peer,
+              generation: state.owner.generation,
+              handle: state.handle,
+            },
+          }
+        : {};
+    this.failures.push({ group: state?.group.id ?? "run", category, detail, ...document });
   }
   expect(group: Group, token: string, expectedURL: string, handle: string): DocumentState {
     const state: DocumentState = {
+      owner: { kind: "coordinator" },
+      physical: "live",
       group,
       token,
       expectedURL,
@@ -96,27 +145,165 @@ export class Collector {
     this.active = state;
     return state;
   }
+  expectPeer(
+    coordinator: DocumentState,
+    peer: string,
+    generation: number,
+    token: string,
+    expectedURL: string,
+    handle: string,
+    admission: PeerTransition,
+  ): DocumentState {
+    if (
+      this.active !== coordinator ||
+      admission.progress.kind !== "executing" ||
+      admission.run !== this.run ||
+      admission.caseId !== coordinator.group.caseIds[0] ||
+      !admission.target ||
+      admission.target.peer !== peer ||
+      admission.target.generation !== generation ||
+      admission.target.token !== token ||
+      admission.target.url !== expectedURL ||
+      (admission.action === "reload" && handle !== admission.source.handle) ||
+      this.documents.some(
+        (state) =>
+          state.token === token ||
+          (state.owner.kind === "peer" &&
+            state.owner.peer === peer &&
+            state.owner.generation === generation),
+      )
+    )
+      this.violation("Unauthorized peer registration", coordinator);
+    const state = this.expect({ ...coordinator.group, role: "peer" }, token, expectedURL, handle);
+    this.active = coordinator;
+    state.owner = { kind: "peer", coordinator, peer, generation, admission };
+    state.host = null;
+    return state;
+  }
+  owns(state: DocumentState): boolean {
+    return (
+      state === this.active ||
+      (state.owner.kind === "peer" && state.owner.coordinator === this.active)
+    );
+  }
+  prepareTransition(
+    source: DocumentState,
+    action: PeerTransition["action"],
+    deadline: number,
+  ): PeerTransition {
+    if (
+      !this.owns(source) ||
+      source.cutoff !== null ||
+      source.physical !== "live" ||
+      this.active?.host?.kind !== "driving" ||
+      (action === "create" && source !== this.active) ||
+      (action !== "create" && source.owner.kind !== "peer")
+    )
+      this.violation("Invalid transition source", source);
+    const destination =
+      action === "close"
+        ? { action, target: null }
+        : { action, target: this.peerTarget(source, action) };
+    const transition: PeerTransition = {
+      id: crypto.randomUUID(),
+      run: this.run,
+      caseId: source.group.caseIds[0] ?? "",
+      source,
+      ...destination,
+      deadline,
+      progress: { kind: "accepted", watermark: null },
+    };
+    if (action !== "create") source.physical = "transitioning";
+    this.transitions.push(transition);
+    return transition;
+  }
+  private peerTarget(source: DocumentState, action: "create" | "reload"): PeerTarget {
+    const token = crypto.randomUUID();
+    const url = new URL(source.expectedURL);
+    if (action === "create") url.searchParams.set("token", token);
+    if (action === "reload" && source.owner.kind !== "peer")
+      this.violation("Reload has no predecessor", source);
+    return {
+      peer:
+        action === "reload" && source.owner.kind === "peer"
+          ? source.owner.peer
+          : crypto.randomUUID(),
+      generation:
+        action === "reload" && source.owner.kind === "peer" ? source.owner.generation + 1 : 0,
+      token,
+      url: url.href,
+    };
+  }
+  executeTransition(transition: PeerTransition, watermark: number): void {
+    if (
+      transition.progress.kind !== "accepted" ||
+      transition.progress.watermark !== watermark ||
+      watermark !== transition.source.messages.length - 1 ||
+      this.now() >= transition.deadline ||
+      !this.owns(transition.source) ||
+      this.failures.length
+    )
+      this.violation("Transition missing source acknowledgement", transition.source);
+    transition.progress = { kind: "executing", watermark };
+    if (transition.action !== "create") transition.source.cutoff = watermark;
+  }
+  completeTransition(
+    transition: PeerTransition,
+    handle: string,
+    successor: DocumentState | null,
+    remainingHandles: readonly string[] | null,
+  ): void {
+    if (transition.progress.kind !== "executing" || this.now() >= transition.deadline)
+      this.violation("Transition already consumed or expired", transition.source);
+    if (transition.action === "close") {
+      if (
+        successor !== null ||
+        handle !== transition.source.handle ||
+        !remainingHandles ||
+        remainingHandles.includes(handle)
+      )
+        this.violation("Close lacks exact handle disappearance", transition.source);
+    } else if (
+      !successor?.doc ||
+      !successor.ready ||
+      successor.handle !== handle ||
+      successor.token !== transition.target.token ||
+      successor.expectedURL !== transition.target.url ||
+      successor.owner.kind !== "peer" ||
+      successor.owner.peer !== transition.target.peer ||
+      successor.owner.generation !== transition.target.generation ||
+      (transition.action === "reload" &&
+        (handle !== transition.source.handle || successor.doc === transition.source.doc))
+    )
+      this.violation("Wrong successor transition observation", transition.source);
+    transition.progress = { kind: "completed", handle, successor, remainingHandles };
+    if (transition.action !== "create")
+      transition.source.physical = transition.action === "close" ? "closed" : "superseded";
+  }
+  private transitionReady(state: DocumentState, id: string, seq: number): void {
+    const transition = this.transitions.find((item) => item.id === id);
+    if (
+      !transition ||
+      transition.source !== state ||
+      transition.progress.kind !== "accepted" ||
+      transition.progress.watermark !== null ||
+      this.now() >= transition.deadline
+    )
+      this.violation("Unsolicited or reused transition", state);
+    transition.progress.watermark = seq;
+  }
   private violation(detail: string, state = this.active): never {
     this.fail("protocol", detail, state);
     throw new ReportRejected(detail);
   }
   heartbeat(value: unknown): void {
-    const state = this.active;
-    if (
-      record(value) &&
-      value.run === this.run &&
-      this.documents.some((old) => old.doc === value.doc && old.cutoff !== null)
-    )
-      return;
-    if (
-      !record(value) ||
-      value.kind !== "heartbeat" ||
-      value.run !== this.run ||
-      !state?.doc ||
-      value.doc !== state.doc ||
-      state.cutoff !== null
-    )
-      this.violation("Unbound heartbeat");
+    const state =
+      record(value) && value.run === this.run
+        ? this.documents.find((item) => item.doc !== null && item.doc === value.doc)
+        : undefined;
+    if (state?.cutoff !== null && state?.cutoff !== undefined) return;
+    if (!record(value) || value.kind !== "heartbeat" || !state || !this.owns(state))
+      this.violation("Unbound heartbeat", state);
     state.heartbeatAt = this.now();
   }
   receive(value: unknown): { ackedThrough: number } {
@@ -126,7 +313,11 @@ export class Collector {
         : undefined;
     if (known?.cutoff !== null && known?.cutoff !== undefined)
       throw new ObservationClosed("Report after observation cutoff");
-    const state = known ?? this.active;
+    const pending =
+      record(value) && value.kind === "hello" && value.run === this.run
+        ? this.documents.find((item) => item.doc === null && item.token === value.token)
+        : undefined;
+    const state = known ?? pending;
     let message: Message;
     try {
       message = parseMessage(value);
@@ -142,7 +333,7 @@ export class Collector {
     } catch (error) {
       return this.violation(String(error), state);
     }
-    if (state !== this.active) return this.violation("Report sequence conflict or gap", state);
+    if (!this.owns(state)) return this.violation("Report sequence conflict or gap", state);
     if (!state.doc && message.kind !== "hello") return this.violation("Report before hello", state);
     if (state.doc && state.doc !== message.doc)
       return this.violation("Unexpected new document", state);
@@ -156,12 +347,32 @@ export class Collector {
     return { ackedThrough: message.seq };
   }
   private apply(state: DocumentState, body: Message): void {
+    if (
+      state.owner.kind === "peer" &&
+      !["hello", "peer-ready", "transition-ready", "allocation", "task-end", "error"].includes(
+        body.kind,
+      )
+    )
+      this.violation("Peer has no coordinator verdict authority", state);
     switch (body.kind) {
       case "hello":
-        if (state.doc || body.token !== state.token || body.group !== state.group.id)
+        if (
+          state.doc ||
+          body.token !== state.token ||
+          body.group !== state.group.id ||
+          (state.owner.kind === "peer" && state.owner.admission.progress.kind !== "executing")
+        )
           this.violation("Unauthorized hello", state);
         state.doc = body.doc;
         state.heartbeatAt = this.now();
+        return;
+      case "peer-ready":
+        if (state.owner.kind !== "peer" || state.ready)
+          this.violation("Unexpected peer readiness", state);
+        state.ready = true;
+        return;
+      case "transition-ready":
+        this.transitionReady(state, body.transitionId, body.seq);
         return;
       case "list":
         if (state.group.role !== "list" || state.listed) this.violation("Unexpected list", state);
@@ -225,7 +436,12 @@ export class Collector {
     state.host = { kind: "driving", startedAt: this.now() };
   }
   registerTask(state: DocumentState, operation: string): void {
-    if (state !== this.active || state.host?.kind !== "driving" || state.tasks.has(operation))
+    if (
+      !this.owns(state) ||
+      this.active?.host?.kind !== "driving" ||
+      state.cutoff !== null ||
+      state.tasks.has(operation)
+    )
       this.violation("Invalid host task registration", state);
     if (Array.from(state.tasks.values()).some((task) => task.status === "pending"))
       throw new Error("Only one page task may execute at a time");
@@ -233,11 +449,11 @@ export class Collector {
   }
   private taskEnd(state: DocumentState, body: Extract<Body, { kind: "task-end" }>): void {
     if (
-      state !== this.active ||
-      !state.host ||
+      !this.owns(state) ||
+      (state.owner.kind !== "peer" && !state.host) ||
       state.group.caseIds[0] !== body.caseId ||
       state.tasks.get(body.operation)?.status !== "pending" ||
-      ["awaiting-ready", "ready"].includes(state.host.kind)
+      (state.host && ["awaiting-ready", "ready"].includes(state.host.kind))
     )
       this.violation("Unexpected page task settlement", state);
     state.tasks.set(
@@ -312,7 +528,7 @@ export class Collector {
   private allocate(state: DocumentState, entry: StorageEntry): void {
     if (!this.policy.allocation) this.violation("Suite declares no durable allocations", state);
     const running = state.group.caseIds.filter((id) => this.outcomes[id]?.status === "running");
-    if (state.group.role !== "case" || !running.length)
+    if (!["case", "peer"].includes(state.group.role) || !running.length)
       this.violation("Allocation outside running case", state);
     this.policy.allocation(entry, running, this.run);
     if (!this.ledger.some((saved) => saved.kind === entry.kind && saved.name === entry.name))
@@ -324,8 +540,18 @@ export class Collector {
     );
     const retired = this.documents
       .filter((item) => item !== state)
-      .every((item) => item.cutoff !== null);
-    if (state.group.role !== "finish" || state.final || !casesSettled || !retired)
+      .every(
+        (item) =>
+          item.cutoff !== null &&
+          (item.owner.kind !== "peer" || ["closed", "superseded"].includes(item.physical)),
+      );
+    if (
+      state.group.role !== "finish" ||
+      state.final ||
+      !casesSettled ||
+      !retired ||
+      this.transitions.some((item) => item.progress.kind !== "completed")
+    )
       this.violation("Premature run-complete", state);
     if (remaining.length) this.fail("storage-cleanup", JSON.stringify(remaining), state);
     this.remaining = remaining;
@@ -344,6 +570,16 @@ export class Collector {
   retire(state: DocumentState, watermark: number): void {
     if (!state.ready || watermark !== state.messages.length - 1 || state !== this.active)
       this.violation("Retirement without final acknowledgement", state);
+    const contained = this.documents
+      .filter((item) => item.owner.kind === "peer" && item.owner.coordinator === state)
+      .every((item) => ["closed", "superseded"].includes(item.physical));
+    if (
+      !contained ||
+      this.transitions.some(
+        (item) => item.caseId === state.group.caseIds[0] && item.progress.kind !== "completed",
+      )
+    )
+      this.violation("Case peers not physically contained", state);
     state.cutoff = watermark;
     for (const id of state.group.caseIds) {
       const outcome = this.outcomes[id];
@@ -351,10 +587,22 @@ export class Collector {
     }
   }
   deadline(budgets: Budgets, runStartedAt: number): string | null {
-    const now = this.now(),
-      state = this.active;
+    const now = this.now();
     if (now - runStartedAt >= budgets.run) return "run-timeout";
-    if (!state || state.cutoff !== null) return null;
+    const live = this.documents.filter((item) => this.owns(item) && item.cutoff === null);
+    for (const item of live) {
+      const failure = this.documentDeadline(item, budgets, now);
+      if (failure) return failure;
+    }
+    return null;
+  }
+  overdueDocument(budgets: Budgets): DocumentState | undefined {
+    return this.documents.find(
+      (item) =>
+        this.owns(item) && item.cutoff === null && this.documentDeadline(item, budgets, this.now()),
+    );
+  }
+  private documentDeadline(state: DocumentState, budgets: Budgets, now: number): string | null {
     if (!state.doc && now - state.startedAt >= budgets.hello) return "no-hello";
     if (
       (state.host?.kind === "awaiting-ready" || state.host?.kind === "ready") &&

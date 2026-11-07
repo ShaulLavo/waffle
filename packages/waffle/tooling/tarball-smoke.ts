@@ -184,7 +184,7 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
 import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
@@ -204,6 +204,20 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
     const remaining = host.remainingMs();
     await host.script("window.fixture = 1;");
     await host.task("await Promise.resolve();");
+    const peer = await host.openPeer();
+    await peer.script("return null");
+    await peer.task("await Promise.resolve()");
+    const successor = await peer.reload();
+    await successor.close();
+    // @ts-expect-error raw driver authority is private
+    host.driver;
+    // @ts-expect-error peer identity is host-owned
+    peer.generation = 4;
+    // @ts-expect-error no raw handle selection
+    peer.selectWindow("caller");
+    // @ts-expect-error caller IDs cannot construct a peer capability
+    const forged: HostPeer = { peer: "caller", generation: 0 };
+    void forged;
     const database: Promise<string> = host.allocateDatabase("consumer");
     await database;
     await host.sleep(1);
@@ -212,15 +226,32 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
 };
 const hostAdapter: SuiteAdapter<{ databaseName: string }> = {
   ...adapter, inventory: () => [hostCase],
-  budgets: () => ({ hello: 20_000, heartbeat: 10_000, case: 60_000, teardown: 60_000, caseDocument: 150_000, group: 90_000, run: 2_160_000 }),
+  budgets: () => ({ hello: 20_000, heartbeat: 10_000, case: 60_000, operation: 15_000, teardown: 60_000, caseDocument: 150_000, group: 90_000, run: 2_160_000 }),
 };
 const hostRun: HostPageRun<{ databaseName: string }> = {
-  kind: "host", teardown: async (request, verdict: HostVerdict) => ({ name: request.databaseName, status: verdict.status }),
+  kind: "host", peer: async (request, allocate) => { await allocate({ kind: "indexeddb", name: request.databaseName }); }, teardown: async (request, verdict: HostVerdict) => ({ name: request.databaseName, status: verdict.status }),
 };
 const hostSuite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: [hostCase.id] }), run: hostRun, finish: async ledger => ledger.slice(),
 };
 export { hostAdapter, hostSuite };
+export function customDriver(driver: Driver): Driver {
+  return {
+    start: signal => driver.start(signal),
+    navigate: (url, signal) => driver.navigate(url, signal),
+    createWindow: signal => driver.createWindow(signal),
+    selectWindow: (handle, signal) => driver.selectWindow(handle, signal),
+    reloadWindow: signal => driver.reloadWindow(signal),
+    closeWindow: signal => driver.closeWindow(signal),
+    handle: signal => driver.handle(signal),
+    handles: signal => driver.handles(signal),
+    url: signal => driver.url(signal),
+    script: (source, signal) => driver.script(source, signal),
+    stop: () => driver.stop(),
+    get uncertain() { return driver.uncertain; },
+  };
+}
+
 const options: NativeOptions = { startedAt: performance.now(), port: 4186 };
 const suite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: ["consumer"] }),

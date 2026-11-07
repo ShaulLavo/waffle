@@ -46,6 +46,37 @@ and exact-name cleanup without deleting foreign-prefix storage. They do not coun
 as an iOS storage-suite run. The standard browser matrix and CI run these controls
 on Chromium and WebKit. Unit and fake-driver controls run under `bun run test`.
 
+## Storage-lock peers
+
+```sh
+IOS_UDID=<udid> bun packages/waffle/tests/storage-lock-browser-runner.ts ios-safari --result /absolute/storage-lock.json
+```
+
+Storage-lock keeps all nineteen original ordered cases, including both backends and the
+retained recovery Worker observation. `STORAGE_LOCK_TEST_FILTER` matches the original
+backend-qualified identity. Filtered runs retain omitted rows and exit 4, not whole-command
+success. Each operation has its original 15-second bound. The command has one 600-second
+clock starting before fixture preparation, not a new clock per case or peer.
+
+A host case can call required `host.openPeer()` and retain its returned `HostPeer`.
+Its `script`, `task`, `reload`, and `close` methods bind to that exact document generation.
+Reload returns a successor and revokes the old capability. Close does not dispose a fixture.
+The page's `HostPageRun.peer(request, allocate)` hook installs its allocation bookkeeping
+before construction. `budgets.operation` limits each operation separately from the case.
+
+One command queue owns actual handle selection. Every create, refresh, and close waits for
+its source document's actual ordered HTTP acknowledgement. Peers report and heartbeat
+independently. Case pass stays provisional until all peers are physically contained and
+exact registered storage deletion is acknowledged. An uncertain operation stops dispatch
+and preserves storage debt instead of opening another cleanup session.
+
+The driver requires same-session new-window, switch-window, refresh, and close-window support.
+The requested tab type is a hint; a valid returned tab or window is accepted.
+An unsupported native operation fails the command. Desktop controls do not prove installed
+Safari support. Case 18 additionally requires a fresh private-port location reply from its
+sole original retained recovery Worker. A timeout, replay, wrong location, or replacement
+fails that row. The original desktop Worker enumeration oracle remains unchanged.
+
 ## Other page-owned Safari commands
 
 Each command runs its original exported body once and writes its actual result to a separate file. Only storage uses `STORAGE_TEST_FILTER`.
