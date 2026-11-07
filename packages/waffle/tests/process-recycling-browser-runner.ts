@@ -1,9 +1,24 @@
-import { navigateTestPage } from "./browser-navigation.js";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { resolve } from "node:path";
-import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
-import { installClientWorker } from "./process-recycling-browser.js";
-import {
+// Type-only imports are erased. The command clock precedes every runtime import.
+import type { Browser, BrowserContext } from "playwright";
+type NavigationObservation = import("./process-navigation-observer.js").NavigationObservation;
+
+const startedAt = performance.now();
+if (process.argv[2] === "ios-safari") {
+  const { processRecyclingNative } = await import("./page-runner/process-recycling-native.js");
+  process.exit(await processRecyclingNative(process.argv.slice(3), startedAt));
+}
+if (process.argv[2] === "--page-controls") {
+  const { processRecyclingControls } = await import("./page-runner/process-recycling-controls.js");
+  await processRecyclingControls(process.argv.slice(3));
+  process.exit(0);
+}
+
+const { navigateTestPage } = await import("./browser-navigation.js");
+const { mkdir, mkdtemp, rm } = await import("node:fs/promises");
+const { resolve } = await import("node:path");
+const { chromium, firefox, webkit } = await import("playwright");
+const { installClientWorker } = await import("./process-recycling-browser.js");
+const {
   NavigationObservation,
   finishNavigationEngine,
   failNavigationEngine,
@@ -14,11 +29,9 @@ import {
   startNavigationCapture,
   stopNavigationCapture,
   startNavigationEngine,
-} from "./process-navigation-observer.js";
-import {
-  closeBrowserResources,
-  stopBrowserResource,
-} from "./process-recycling-browser-runner-control.js";
+} = await import("./process-navigation-observer.js");
+const { closeBrowserResources, stopBrowserResource } =
+  await import("./process-recycling-browser-runner-control.js");
 
 // Run from the repository with Bun. Defaults to the full Chromium/Firefox/WebKit matrix.
 // PROCESS_SCRATCH_ROOT selects the parent of a disposable wproc-* tree.
