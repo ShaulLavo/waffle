@@ -631,3 +631,34 @@ the replacement. Permanent negative controls reject each missing proof independe
 The 8 ms service-slice and 100 ms peer-gap targets stay unchanged. All raw timing samples,
 including misses, remain evidence. This is not hardware qualification or memory-reclamation
 proof. The async runner and its page-owned adapter extraction are separate work.
+
+## G3 active runtime disposal checkpoint, November 7, 2026
+
+Status: Approved. The compiled Chromium gate now includes active runtime disposal, separate
+from routine fixture cleanup. The original selected guest holds its actual native error-scope
+result after the unchanged oversized draw blob completes. It still owns its device, presenter
+and frame and waits inside the real completions import. The original green peer presents real
+pixels between fresh native queue and presentation observations before global disposal.
+
+The page calls `runtime.dispose()` without stopping either live guest first. Acceptance requires
+synchronous launch and ring revocation, terminal guest outcomes, all original grant retirements
+and actual worker termination calls. A fatal signal can unwind or physically stop the held
+import before it returns an errno. Its original enter/wait history must remain intact. Any
+observed return must be `-64`, and any observed throw must identify an actual runtime termination
+unwind. An unrelated throw, wrong return, missing revocation or incomplete physical stop fails.
+The proof does not require a killed guest to execute another instruction. A bounded test-only shared audit records
+real service snapshots during disposal, before worker termination can discard diagnostic messages.
+Its positive control runs in that same service before the held workload. The original held native
+result then releases after owner retirement without new replay, native calls, submissions or
+publications. Cumulative histories, including completed blobs, remain immutable.
+
+After disposal, only actual retained shared controls, conservative ledger debt, grant retirement
+promises and worker-stop observations are available. No post-termination native snapshot or
+physical-memory reclamation is claimed. The process facade itself rejects observations once
+disposed. Every connection, including the green peer, stops at the global boundary. There is no
+second runtime, replacement peer, recreation or continuous presentation across shutdown.
+
+The existing single-worker topology, 8 ms slice and 100 ms peer targets are unchanged.
+`hardwareQualified` remains false and all historical not-met samples remain. This bounded proof
+does not complete broader G3 or qualify hardware. Production, async command and adapter fixtures,
+C producer, workload, deadlines, versions, workflow and budgets are unchanged.

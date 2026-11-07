@@ -12,6 +12,7 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { disposalCases } from "./gpu-disposal-browser.js";
 import { regrantCases } from "./gpu-regrant-browser.js";
 import { admissionCases } from "./gpu-admission-browser.js";
 import { malformedCases } from "./gpu-malformed-browser.js";
@@ -416,8 +417,11 @@ async function main() {
       type: "application/wasm",
     });
     const url = runner.serve(routes);
+    const disposalOnly = process.argv.includes("--disposal-only");
     const regrantOnly = process.argv.includes("--regrant-only");
-    const requestedEngines = process.argv.slice(2).filter((arg) => arg !== "--regrant-only");
+    const requestedEngines = process.argv
+      .slice(2)
+      .filter((arg) => arg !== "--regrant-only" && arg !== "--disposal-only");
     for (const requested of requestedEngines.length
       ? requestedEngines
       : ["chromium", "firefox", "webkit"]) {
@@ -432,6 +436,13 @@ async function main() {
       await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const disposal = regrantOnly ? undefined : await disposalCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "disposal", disposal }));
+      if (disposalOnly) {
+        await context.close();
+        await runner.closeBrowser(browser);
+        continue;
+      }
       const regrant = await regrantCases(page, url, available);
       console.log(JSON.stringify({ engine, stage: "regrant", regrant }));
       if (regrantOnly) {

@@ -42,7 +42,7 @@ function image(value: unknown, colour: string) {
     colour,
   );
 }
-function guest(value: unknown) {
+export function guest(value: unknown) {
   const item = record(value);
   requireProof(
     integer(item.pid) > 0 &&
@@ -66,7 +66,7 @@ function guest(value: unknown) {
   );
   return item;
 }
-function identity(service: Record<string, unknown>, compiled: Record<string, unknown>) {
+export function identity(service: Record<string, unknown>, compiled: Record<string, unknown>) {
   const matches = entries(service.attempts).filter(
     (item) =>
       item.grant !== undefined &&
@@ -84,7 +84,7 @@ function identity(service: Record<string, unknown>, compiled: Record<string, unk
     requireProof(integer(native[key]) > 0, "missing native identity");
   return native;
 }
-function live(native: Record<string, unknown>, expected: Record<string, unknown>) {
+export function live(native: Record<string, unknown>, expected: Record<string, unknown>) {
   peerProof(native, expected);
   requireProof(
     native.presenter === true &&
@@ -98,7 +98,7 @@ function live(native: Record<string, unknown>, expected: Record<string, unknown>
     "live presenter or device replaced",
   );
 }
-function retired(native: Record<string, unknown>, reason: number) {
+export function retired(native: Record<string, unknown>, reason: number) {
   requireProof(
     native.state === "terminal" &&
       native.terminalReason === reason &&
@@ -127,7 +127,7 @@ function prefix(previous: readonly unknown[], next: readonly unknown[], message:
     message,
   );
 }
-function cumulative(before: Record<string, unknown>, after: Record<string, unknown>) {
+export function cumulative(before: Record<string, unknown>, after: Record<string, unknown>) {
   if (before.scopeResult !== undefined)
     scopeHistory(record(before.scopeResult), record(after.scopeResult));
   prefix(entries(before.lifecycle), entries(after.lifecycle), "lifecycle history rewritten");
@@ -206,7 +206,7 @@ function activity(service: Record<string, unknown>, id: unknown) {
     records: aggregates("records"),
   };
 }
-function noRetiredWork(
+export function noRetiredWork(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
   id: unknown,
@@ -728,22 +728,27 @@ function checkOwners(service: Record<string, unknown>, expected: Owners) {
   }
 }
 
+export async function startOwnershipPeer(page: Page) {
+  await invoke(page, "launchTriangle", [[], "gpu", 0, true]);
+  await checkpoint(page, "GPU_FRAME colour=red frame=1 validation=none");
+  assertTrianglePixels(await pixels(page, 0, false));
+  const controlGuest = await invoke(page, "ownershipGuest");
+  const controlExit = await invoke(page, "stopTriangle");
+  assertRetired(controlExit.service);
+  await invoke(page, "launchTriangle", [["green", "--fairness-peer"], "gpu", 1, true]);
+  await checkpoint(page, "GPU_WAIT_STDIN stage=fairness-peer frame=1", 1);
+  const peerGuest = record(await invoke(page, "ownershipGuest", [1]));
+  await invoke(page, "ownershipPeer", [true]);
+  return { controlGuest, controlExit, peerGuest };
+}
+
 async function regrantCase(page: Page) {
   await invoke(page, "openIntegration", [false, "ownership", true]);
   await invoke(page, "activateDisplay");
   let closed = false;
   try {
     const token = crypto.randomUUID();
-    await invoke(page, "launchTriangle", [[], "gpu", 0, true]);
-    await checkpoint(page, "GPU_FRAME colour=red frame=1 validation=none");
-    assertTrianglePixels(await pixels(page, 0, false));
-    const controlGuest = await invoke(page, "ownershipGuest");
-    const controlExit = await invoke(page, "stopTriangle");
-    assertRetired(controlExit.service);
-    await invoke(page, "launchTriangle", [["green", "--fairness-peer"], "gpu", 1, true]);
-    await checkpoint(page, "GPU_WAIT_STDIN stage=fairness-peer frame=1", 1);
-    const peerGuest = record(await invoke(page, "ownershipGuest", [1]));
-    await invoke(page, "ownershipPeer", [true]);
+    const { controlGuest, controlExit, peerGuest } = await startOwnershipPeer(page);
     const surface = await invoke(page, "ownershipSurface", [2]);
     const observed = record(
       await invoke(page, "serviceCommand", [

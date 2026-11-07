@@ -2,6 +2,10 @@ import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.j
 import { validGraphicsOpen } from "../browser/display/open.js";
 import { afterEach, expect, test } from "bun:test";
 import { createGraphicsGuest } from "../browser/gpu/guest.js";
+import { RuntimeWorkerSignal } from "../browser/worker.js";
+import { WasiExit } from "../core/index.js";
+import { ProcessSignalExit } from "../proc/abi.js";
+import { importUnwind } from "./fixtures/gpu/import-unwind.js";
 import {
   createSharedControlAllocator,
   installSharedControlAllocator,
@@ -30,7 +34,13 @@ function openRecord(id = 1): GraphicsOpen {
   };
 }
 function guest(
-  options: { gpu?: boolean; limit?: number; failPost?: boolean; revokeOnPost?: boolean } = {},
+  options: {
+    gpu?: boolean;
+    limit?: number;
+    failPost?: boolean;
+    revokeOnPost?: boolean;
+    live?: () => void;
+  } = {},
 ) {
   const receipts: SharedArrayBuffer[] = [];
   const grant: SharedControlGrant = {
@@ -71,7 +81,7 @@ function guest(
       completionBytes: 4096,
     },
     () => memory,
-    () => {},
+    options.live ?? (() => {}),
   );
   cleanups.push(() => imports.dispose());
   const gpu = imports.imports.runtime_gpu!;
@@ -425,4 +435,34 @@ test("exact arena quota admits one open and close/reopen preserves physical back
     repeat.receipts.filter((backing) => backing.byteLength === gpuPayloadLayout.byteLength),
   ).toHaveLength(2);
   expect(consumedControlBytes(repeat.grant)).toBe(2 * 1_056_960);
+});
+
+test("actual GPU waits preserve fatal liveness unwinds instead of returning an errno", () => {
+  const killed = new RuntimeWorkerSignal(9);
+  let waiting = false,
+    checks = 0;
+  const rig = guest({
+    live() {
+      if (waiting && ++checks >= 3) throw killed;
+    },
+  });
+  expect(rig.invoke("open", 0, 0)).toBe(0);
+  waiting = true;
+  let thrown: unknown;
+  try {
+    rig.invoke("completions", 1, 64, 64, -1n, 4);
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBe(killed);
+  expect(checks).toBe(4);
+  expect(importUnwind(thrown)).toEqual({ kind: "signal", code: 9 });
+});
+
+test("the import observer classifies only actual runtime unwind objects", () => {
+  expect(importUnwind(new RuntimeWorkerSignal(9))).toEqual({ kind: "signal", code: 9 });
+  expect(importUnwind(new ProcessSignalExit(9))).toEqual({ kind: "signal", code: 9 });
+  expect(importUnwind(new WasiExit(1))).toEqual({ kind: "exit", code: 1 });
+  expect(importUnwind(new TypeError("unrelated native error"))).toBeUndefined();
+  expect(importUnwind({ signal: 9 })).toBeUndefined();
 });
