@@ -62,6 +62,7 @@ function service(at: number) {
   const ids = at < 10 ? [1] : at < 50 ? [1, 2] : [1, 2, 3];
   const points = [10, 30, 50, 70, 90].filter((time) => time <= at);
   const aggregate = { maxMs: 1, totalMs: 1, count: 1 };
+  const calls: Record<string, typeof aggregate> = { "2:draw": aggregate };
   return {
     at,
     serial: at,
@@ -91,7 +92,7 @@ function service(at: number) {
     fairness: {
       overflow: false,
       records: { "2:draw": aggregate },
-      native: { "2:draw": aggregate },
+      native: calls,
       presents: points.map((point) => ({ at: point + 2, connection: 2 })),
       slices: points.map((point) => ({ start: point, end: point + 1, connection: 2 })),
       queue: points.map((point) => ({
