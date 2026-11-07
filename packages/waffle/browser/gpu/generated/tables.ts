@@ -6673,7 +6673,7 @@ export const gpuStreamSources = {
   "tooling/gpu-stream-model.ts": "870f7f760af925a1a6b9c3afea31b9b944127df20c78d9ddaa4f8111157ead47",
   "tooling/gpu-stream-layout.ts":
     "02a5038bc7411a5b99cadbe54d74815494fddf74cd15940a9d0e59bdb81dc5c6",
-  "browser/gpu/metadata.ts": "d95703776329e8a691dba18736fdc4d9c386cc12a64c96fbba6818e1d78438c1",
+  "browser/gpu/metadata.ts": "e10598f34d3517aa9818aa7e864f909c1abccd4600a2cdb0a2f3da4b15d271af",
   "browser/gpu/codec.ts": "bfe969d6379e86a5ea70afa9ffc7880177de19e4bfa49e87f5b64035088db2e5",
   "tests/fixtures/gpu/expected.json":
     "16a708a48026a3ac5ea0bd3ba38614953e2124bb4105b67eb591951560132350",
