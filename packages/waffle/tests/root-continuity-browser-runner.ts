@@ -1,3 +1,16 @@
+if (import.meta.main && process.argv[2] === "ios-safari") {
+  const startedAt = performance.now();
+  const { tmpdir } = await import("node:os");
+  const { nativeMain } = await import("./page-runner/native.js");
+  const { rootContinuityAdapter } = await import("./page-runner/root-continuity-suite.js");
+  process.env.STORAGE_SCRATCH_ROOT ??= tmpdir();
+  process.exit(await nativeMain(rootContinuityAdapter, process.argv.slice(3), { startedAt }));
+}
+if (import.meta.main && process.argv[2] === "--page-controls") {
+  const { runRootContinuityControls } = await import("./page-runner/root-continuity-controls.js");
+  await runRootContinuityControls(process.argv[3] ?? "chromium");
+  process.exit(0);
+}
 import { navigateTestPage } from "./browser-navigation.js";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 
