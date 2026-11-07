@@ -290,6 +290,8 @@ for (const field of ["token", "peer", "generation", "url"] as const) {
 test("an unsolicited reload hello fails against its consumed peer token without admitting it", () => {
   const f = peersFixture();
   const peer = f.add("owner");
+  if (peer.owner.kind !== "peer") throw new Error("Expected peer owner");
+  f.collector.registerTask(peer, "unfinished");
   f.clock(100);
   const messages = peer.messages.slice();
   const transitions = f.collector.transitions.length;
@@ -310,7 +312,7 @@ test("an unsolicited reload hello fails against its consumed peer token without 
       detail: "Wrong run or no expected document",
       document: {
         doc: peer.doc,
-        peer: peer.owner.kind === "peer" ? peer.owner.peer : null,
+        peer: peer.owner.peer,
         generation: 0,
         handle: peer.handle,
       },
@@ -324,6 +326,31 @@ test("an unsolicited reload hello fails against its consumed peer token without 
   expect(peer.heartbeatAt).toBe(0);
   expect(peer.cutoff).toBeNull();
   expect(peer.physical).toBe("live");
+  expect(peer.tasks.get("unfinished")).toEqual({ status: "pending" });
   expect(f.collector.outcomes.case?.status).toBe("running");
   expect(f.collector.ledger).toEqual([]);
 });
+
+for (const fault of ["wrong-run", "unknown-token"] as const) {
+  test(`an unbound ${fault} hello cannot claim peer failure attribution`, () => {
+    const f = peersFixture();
+    const peer = f.add("owner");
+    expect(() =>
+      f.collector.receive({
+        run: fault === "wrong-run" ? "foreign" : "run",
+        doc: "unannounced",
+        seq: 0,
+        kind: "hello",
+        token: fault === "unknown-token" ? "unknown" : peer.token,
+        group: peer.group.id,
+      }),
+    ).toThrow("Wrong run or no expected document");
+    expect(f.collector.failures).toEqual([
+      { group: "case", category: "protocol", detail: "Wrong run or no expected document" },
+    ]);
+    expect(f.collector.documents).toHaveLength(2);
+    expect(peer.doc).toBe("owner");
+    expect(peer.messages).toHaveLength(2);
+    expect(f.collector.ledger).toEqual([]);
+  });
+}
