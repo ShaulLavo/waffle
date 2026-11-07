@@ -1,4 +1,5 @@
-import { gpuPayloadLayout, gpuStream } from "../../../browser/gpu/generated/tables.js";
+import { gpuStream } from "../../../browser/gpu/generated/tables.js";
+import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
 import { GpuConnection } from "../../../browser/gpu/scheduler.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
 import { PayloadDirectory } from "../../../browser/gpu/payload.js";

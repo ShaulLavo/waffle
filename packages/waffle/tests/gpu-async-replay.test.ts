@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { GpuConnection } from "../browser/gpu/scheduler.ts";
-import { gpuObjectKinds, gpuPayloadLayout, gpuStream } from "../browser/gpu/generated/tables.ts";
+import { gpuObjectKinds, gpuStream } from "../browser/gpu/generated/tables.ts";
+import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.ts";
 import { PayloadDirectory } from "../browser/gpu/payload.ts";
 import { WireReader } from "../browser/gpu/codec.ts";
 import { compilationMessages } from "../browser/gpu/metadata.ts";
@@ -75,7 +76,7 @@ class NativeBuffer {
     this.invalidate();
   }
 }
-function setup(mapped = false) {
+function setup(mapped = false, heapLimit?: number) {
   const buffer = new NativeBuffer(mapped);
   const buffers = [buffer];
   const compilation = deferred<unknown>();
@@ -118,7 +119,7 @@ function setup(mapped = false) {
   const backing = new SharedArrayBuffer(gpuPayloadLayout.byteLength);
   const commands = ring(65536),
     replies = ring(65536, 16),
-    credit = new ServiceCredit();
+    credit = new ServiceCredit(heapLimit);
   const connection = new GpuConnection(commands, replies, { root }, credit, {
     arena: new Uint8Array(backing),
   });
@@ -184,8 +185,8 @@ function setup(mapped = false) {
     create,
   };
 }
-async function opened(mapped = false) {
-  const rig = setup(mapped);
+async function opened(mapped = false, heapLimit?: number) {
+  const rig = setup(mapped, heapLimit);
   rig.publish("instance.request_adapter", {
     result: handle(2),
     token: 1,
@@ -582,3 +583,72 @@ for (const mode of ["release", "close", "reject", "oversize"] as const)
       expect(rig.credit.used).toBe(0);
     }
   });
+
+test("a declared unsupported C feature fails the device future once without dropping the request", async () => {
+  const rig = await opened();
+  let calls = 0;
+  rig.adapter.requestDevice = () => {
+    calls++;
+    return Promise.resolve(rig.device);
+  };
+  try {
+    rig.publish("adapter.request_device", {
+      result: handle(6),
+      token: 3,
+      receiver: handle(2),
+      descriptor: {
+        next_in_chain: [],
+        label: "unsupported feature",
+        required_features: [1],
+        required_limits: null,
+        default_queue: { next_in_chain: [], label: "" },
+      },
+    });
+    expect(calls).toBe(0);
+    expect(rig.responses()).toMatchObject([
+      {
+        kind: 2,
+        token: 3,
+        bridge: -28,
+        fields: { status: gpuStream.enums["enum.request_device_status"].error },
+      },
+    ]);
+    expect(rig.connection.replay.handles.get(handle(6), "device").kind).toBe("exception");
+    rig.publish("adapter.has_feature", { token: 4, receiver: handle(2), feature: 1 });
+    expect(rig.responses()).toHaveLength(1);
+    expect(rig.connection.state.kind).toBe("ready");
+  } finally {
+    rig.connection.close();
+  }
+});
+
+test("compilation projection scratch is charged before retaining native message fields", async () => {
+  const rig = await opened(false, 66_000);
+  let reads = 0;
+  try {
+    rig.publish("device.create_shader_module", {
+      result: handle(5),
+      receiver: handle(3),
+      descriptor: { next_in_chain: [{ sType: 2, value: { code: "x" } }], label: "" },
+    });
+    rig.publish("shader_module.get_compilation_info", { token: 3, receiver: handle(5) });
+    const native = Object.create({
+      get message() {
+        reads++;
+        return "native";
+      },
+      type: "error",
+      lineNum: 0,
+      linePos: 0,
+      offset: 0,
+      length: 0,
+    });
+    rig.compilation.resolve({ messages: [native] });
+    await settle();
+    expect(reads).toBe(0);
+    expect(rig.connection.state).toEqual({ kind: "terminal", reason: 3 });
+    expect(rig.credit.used).toBe(0);
+  } finally {
+    rig.connection.close();
+  }
+});

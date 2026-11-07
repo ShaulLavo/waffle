@@ -294,6 +294,18 @@ export class GpuReplay {
   #exception(call: DecodedCall, result: Handle | undefined, error: unknown): void {
     this.#waiting = undefined;
     const message = errorMessage(error);
+    const requestKind =
+      call.layout.lowering.kind === "request-adapter"
+        ? "adapter"
+        : call.layout.lowering.kind === "request-device"
+          ? "device"
+          : undefined;
+    if (requestKind && result) {
+      const token = wireNumber(call.fields.token);
+      this.completions.admit(token);
+      this.#requestFailure(this.completions, result, requestKind, token, error);
+      return;
+    }
     if (result && call.layout.result.kind === "handle")
       this.handles.bind(result, objectKind(call.layout.result.object), {
         kind: "exception",
@@ -321,11 +333,7 @@ export class GpuReplay {
       return;
     }
     // Even failed adaptation consumes a callback token exactly once.
-    if (
-      call.layout.lowering.kind === "request-adapter" ||
-      call.layout.lowering.kind === "request-device" ||
-      call.layout.name === "device.pop_error_scope"
-    )
+    if (call.layout.name === "device.pop_error_scope")
       this.completions.admit(wireNumber(call.fields.token));
     this.completions.publish(
       "call-exception",

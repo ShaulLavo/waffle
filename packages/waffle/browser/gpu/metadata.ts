@@ -178,6 +178,7 @@ export class ShaderSources {
   compilation(native: object, token: number, owner: CompletionOwner): void {
     const source = this.#sources.get(native);
     if (!source) throw new GpuCallError("Missing shader source owner");
+    const credit = this.credit;
     owner.start(
       token,
       () => {
@@ -186,7 +187,7 @@ export class ShaderSources {
       },
       (sink, result) => {
         try {
-          publishCompilation(sink, token, result, source);
+          publishCompilation(sink, token, result, source, credit);
         } finally {
           finishSource(source);
         }
@@ -238,6 +239,7 @@ function publishCompilation(
   token: number,
   result: unknown,
   source: ShaderSource,
+  credit: ServiceCredit,
 ): void {
   if (source.state.kind !== "owned") throw new GpuCallError("Retired shader source");
   const info = nativeObject(result);
@@ -245,22 +247,28 @@ function publishCompilation(
   if (!Array.isArray(messages)) throw new GpuCallError("Invalid native compilation messages");
   if (messages.length > 16384)
     throw new GpuResourceError("Compilation message count exceeds payload capacity");
-  const input = messages.map(readMessage);
-  const value: WireObject = {
-    next_in_chain: [],
-    messages: compilationMessages(source.state.text, input),
-  };
-  const length = outputStruct("compilation_info", value);
-  const payload = owner.fillPayload(length, (destination) => {
-    outputStruct("compilation_info", value, destination);
-  });
-  if (payload)
-    owner.publish("compilation-result", token, 0, {
-      status: cValue("enum.compilation_info_request_status", "success"),
-      message: "",
-      payload: { ...payload },
-      length,
+  // Covers projected messages and both bounded location indexes before constructing either.
+  const release = credit.reserve(messages.length * 1024);
+  try {
+    const input = messages.map(readMessage);
+    const value: WireObject = {
+      next_in_chain: [],
+      messages: compilationMessages(source.state.text, input),
+    };
+    const length = outputStruct("compilation_info", value);
+    const payload = owner.fillPayload(length, (destination) => {
+      outputStruct("compilation_info", value, destination);
     });
+    if (payload)
+      owner.publish("compilation-result", token, 0, {
+        status: cValue("enum.compilation_info_request_status", "success"),
+        message: "",
+        payload: { ...payload },
+        length,
+      });
+  } finally {
+    release();
+  }
 }
 interface NativeMessage {
   message: string;

@@ -75,21 +75,30 @@ async function complete(page: Page, slot = 1) {
   return result;
 }
 async function lifecycle(page: Page, stage: string, action: "kill" | "revoke") {
-  await invoke(page, "launchAsync", [[`--pause-${stage}`], 0]);
+  await invoke(page, "launchAsync", [
+    action === "revoke" ? [`--pause-${stage}`, "--expect-revoke"] : [`--pause-${stage}`],
+    0,
+  ]);
   await marker(page, `GPU_ASYNC_PAUSED stage=${stage}`);
   await complete(page);
   if (action === "revoke") {
     await invoke(page, "revokeAsync", [0]);
     await invoke(page, "resumeAsync", [0]);
-    await marker(page, "GPU_ASYNC_FAIL", 0, true);
+    await marker(page, `GPU_ASYNC_REVOKED stage=${stage}`, 0);
   }
   const stopped = await invoke(page, "finishAsync", [0, action === "kill"]);
   if (action === "kill" && (stopped.exit.kind !== "signaled" || stopped.exit.code !== 9))
     throw new Error("Compiled async kill did not select SIGKILL");
-  if (action === "revoke" && (stopped.exit.kind !== "exited" || stopped.exit.code !== 1))
-    throw new Error("Revoked compiled async guest did not fail its import assertion");
+  if (stopped.errors.length) throw new Error("Lifecycle guest has host errors");
+  if (action === "revoke") requireCompiledAsyncRevocation(stopped, stage);
   await complete(page);
-  return { stage, action, status: "passed", compiledGuest: true };
+  return {
+    stage,
+    action,
+    status: "passed",
+    compiledGuest: true,
+    termination: { exit: stopped.exit, text: stopped.text, errors: stopped.errors },
+  };
 }
 type NegativeControl =
   | "--suppress-writes"
@@ -120,13 +129,50 @@ export function requireCompiledAsyncNegative(result: unknown, control: NegativeC
       : control === "--reuse-payload"
         ? "payload-once"
         : "completion-correlation";
-  if (!value.text.includes(`GPU_ASYNC_FAIL stage=${stage}`))
+  const lines = value.text.split(/\r?\n/);
+  const failures = lines.filter((line) => line.startsWith("GPU_ASYNC_FAIL"));
+  if (failures.length !== 1 || failures[0] !== `GPU_ASYNC_FAIL stage=${stage}`)
     throw new Error(`Wrong negative C assertion: ${control}`);
+  const terminals = lines.filter((line) => line.startsWith("GPU_ASYNC_TERMINAL"));
+  const protocol = control === "--corrupt-range" || control === "--malformed-map";
   if (
-    (control === "--corrupt-range" || control === "--malformed-map") &&
-    !value.text.includes("GPU_ASYNC_TERMINAL reason=2")
+    protocol
+      ? terminals.length !== 1 || terminals[0] !== "GPU_ASYNC_TERMINAL reason=2"
+      : terminals.length !== 0
   )
-    throw new Error(`Missing protocol terminal for ${control}`);
+    throw new Error(`Missing protocol terminal or unexpected terminal for ${control}`);
+}
+export function requireCompiledAsyncRevocation(result: unknown, stage: string): void {
+  const value = qualificationRecord(result),
+    exit = qualificationRecord(value.exit);
+  if (
+    !["map-pending", "payload-published", "work-pending"].includes(stage) ||
+    exit.kind !== "exited" ||
+    exit.code !== 0 ||
+    typeof value.text !== "string" ||
+    !Array.isArray(value.errors) ||
+    value.errors.length ||
+    value.text.includes("GPU_ASYNC_FAIL") ||
+    value.text.includes("GPU_ASYNC_OK") ||
+    value.text.includes("GPU_ASYNC_TERMINAL")
+  )
+    throw new Error("Invalid compiled revocation result");
+  const lines = value.text.split(/\r?\n/);
+  const paused = lines.filter((line) => line.startsWith("GPU_ASYNC_PAUSED"));
+  const revoked = lines.filter((line) => line.startsWith("GPU_ASYNC_REVOKED"));
+  const expected = new RegExp(
+    `^GPU_ASYNC_REVOKED stage=${stage} errno=-64 repeated=2 append=-64 drained=(0|[1-9][0-9]*)$`,
+  );
+  const line = revoked[0];
+  const match = revoked.length === 1 && line !== undefined ? expected.exec(line) : null;
+  if (
+    paused.length !== 1 ||
+    paused[0] !== `GPU_ASYNC_PAUSED stage=${stage}` ||
+    !match ||
+    !Number.isSafeInteger(Number(match[1])) ||
+    Number(match[1]) > 64
+  )
+    throw new Error("Missing exact compiled revocation proof");
 }
 async function negative(page: Page, flag: NegativeControl) {
   await invoke(page, "launchAsync", [[flag], 0]);

@@ -1,8 +1,9 @@
+import { validGraphicsOpen } from "../display/open.js";
 import type { GraphicsOpen, GpuServiceRequest, GpuServiceReply } from "../display/protocol.js";
 import { GpuConnection, GpuScheduler } from "./scheduler.js";
 import { RecordRing } from "./ring.js";
-import { gpuPayloadLayout } from "./generated/tables.js";
-import { GPU_TERMINAL, ServiceCredit, validGraphicsOpen } from "./protocol.js";
+import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
+import { GPU_TERMINAL, ServiceCredit } from "./protocol.js";
 import { GpuSurfaces, type SurfaceConnection } from "./surfaces.js";
 import type { SurfaceTarget } from "./replay.js";
 
@@ -170,7 +171,14 @@ export class GpuService {
     const state = owner.connection.state;
     const selected = state.kind === "terminal" ? state.reason : reason;
     Atomics.store(owner.control, 1, selected);
-    Atomics.store(owner.control, 0, selected === GPU_TERMINAL.resource ? -48 : -64);
+    const previous = Atomics.load(owner.control, 0);
+    if (previous >= 0)
+      Atomics.compareExchange(
+        owner.control,
+        0,
+        previous,
+        selected === GPU_TERMINAL.resource ? -48 : -64,
+      );
     Atomics.notify(owner.control, 0);
     this.send({ type: "closed", grant: owner.grant, id: owner.id });
   }
