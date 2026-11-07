@@ -620,3 +620,12 @@ test("releasing the old result cannot publish to replacement rings or add pendin
     v.phases[4]!.service.owners[3]!.payloadBytes++;
   }, /replacement gained results or work/);
 });
+
+test("an actual old-presenter release observation cannot be omitted", () => {
+  rejects((v) => {
+    for (const service of afterReplacement(v))
+      service.lifecycle = service.lifecycle.filter(
+        (event) => event.owner !== 3 || event.kind !== "release",
+      );
+  }, /missing or duplicate lifecycle event/);
+});

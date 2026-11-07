@@ -241,13 +241,24 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
   life("configure", owner, presenterId(this.visible.get(owner.open.surfaces[0]!.id)?.presenter));
   return result;
 };
+function releasedPresenter(connection: SurfaceConnection, release: () => void) {
+  const owner = owners.find((entry) => entry.connection.completions === connection.completions);
+  const visible = owner ? connection.visible.get(owner.open.surfaces[0]!.id) : undefined;
+  const presenter = visible?.presenter;
+  const result = release();
+  if (!owner || !presenter || presenter.owner !== connection) return result;
+  if (visible?.presenter === presenter)
+    throw new Error("Ownership presenter release did not occur");
+  life("release", owner, presenterId(presenter));
+  return result;
+}
+const unconfigure = SurfaceConnection.prototype.unconfigure;
+SurfaceConnection.prototype.unconfigure = function (surface) {
+  return releasedPresenter(this, () => unconfigure.call(this, surface));
+};
 const disposeSurfaces = SurfaceConnection.prototype.dispose;
 SurfaceConnection.prototype.dispose = function () {
-  const owner = owners.find((entry) => entry.connection.completions === this.completions);
-  const presenter = owner ? this.visible.get(owner.open.surfaces[0]!.id)?.presenter : undefined;
-  const result = disposeSurfaces.call(this);
-  if (owner) life("release", owner, presenterId(presenter?.owner === this ? presenter : undefined));
-  return result;
+  return releasedPresenter(this, () => disposeSurfaces.call(this));
 };
 const popScope = globalThis.GPUDevice?.prototype.popErrorScope;
 if (popScope) {
