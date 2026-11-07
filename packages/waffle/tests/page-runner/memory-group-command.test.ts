@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkMemoryGroupResult, memoryGroupAdapter } from "./memory-group-command.js";
 import { checkedMemoryGroupControl } from "./memory-group-controls-runner.js";
 import { FakeDriver, type FakeCommand } from "./fake-driver.js";
 import { runPageSuite } from "./suite-host.js";
+import { retireCommandGroup } from "../../scripts/owned-command.js";
 
 const disposal = "memory group members | guard: A live page runtime already owns this page";
 const ids = memoryGroupAdapter.inventory().map((entry) => entry.id);
@@ -147,4 +149,79 @@ test("browser control checker rejects a disposal-only fake result as full covera
   expect(() => checkedMemoryGroupControl(result, "complete")).toThrow(
     "original phase results are missing",
   );
+});
+
+function restoreVariable(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+async function retireTestProducer(parentFile: string): Promise<void> {
+  if (!(await Bun.file(parentFile).exists())) return;
+  const pid = Number(await Bun.file(parentFile).text());
+  if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid) await retireCommandGroup(pid);
+}
+
+test("automatic fixture cancellation remains live and joins its producer before scratch removal", async () => {
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "mg-cancel-"));
+  const sdk = join(root, "sdk");
+  const parentFile = join(root, "compiler-parent");
+  const finishedFile = join(root, "compiler-finished");
+  const previousSDK = process.env.WASI_SDK_PATH;
+  const previousFixture = process.env.MEMORY_GROUP_FIXTURE_DIR;
+  const controller = new AbortController();
+  let abortedBeforeFinish = false;
+  let driverAllocations = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await mkdir(join(sdk, "bin"), { recursive: true });
+    const compiler = join(sdk, "bin", "clang");
+    await writeFile(
+      compiler,
+      `#!/bin/sh
+printf '%s' "$PPID" > ${JSON.stringify(parentFile)}
+sleep 3
+printf finished > ${JSON.stringify(finishedFile)}
+exit 1
+`,
+    );
+    await chmod(compiler, 0o755);
+    process.env.WASI_SDK_PATH = sdk;
+    delete process.env.MEMORY_GROUP_FIXTURE_DIR;
+    timer = setInterval(() => {
+      if (!existsSync(parentFile)) return;
+      abortedBeforeFinish = !existsSync(finishedFile);
+      controller.abort(new Error("cancel fixture producer"));
+      clearInterval(timer);
+    }, 5);
+    guard = setTimeout(() => controller.abort(new Error("compiler did not start")), 2000);
+    const result = await runPageSuite(
+      memoryGroupAdapter,
+      () => {
+        driverAllocations++;
+        return new FakeDriver("pass");
+      },
+      {
+        resultPath: join(root, "result.json"),
+        scratchRoot: root,
+        signal: controller.signal,
+        budgets: { hello: 1000, heartbeat: 1000, case: 1000, group: 1000, run: 5000 },
+      },
+    );
+    expect(abortedBeforeFinish).toBe(true);
+    expect(await Bun.file(finishedFile).exists()).toBe(false);
+    expect(driverAllocations).toBe(0);
+    expect(result.exit).toBe(2);
+    expect(result.cleanup.scratch.status).toBe("confirmed");
+    expect((await readdir(root)).filter((name) => name.startsWith("w-pr-"))).toEqual([]);
+  } finally {
+    clearInterval(timer);
+    clearTimeout(guard);
+    controller.abort(new Error("test cleanup"));
+    restoreVariable("WASI_SDK_PATH", previousSDK);
+    restoreVariable("MEMORY_GROUP_FIXTURE_DIR", previousFixture);
+    await retireTestProducer(parentFile);
+    await rm(root, { recursive: true, force: true });
+  }
 });

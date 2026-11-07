@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
-import { buildFixture, verifiedFixture } from "../../scripts/build-memory-group-fixture.js";
+import { verifiedFixture } from "../../scripts/build-memory-group-fixture.js";
+import { runOwned } from "../../scripts/owned-command.js";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { commandPageBundle, type CommandRequest } from "./command-suites.js";
 import { record, strings } from "./protocol.js";
@@ -46,7 +47,14 @@ export const memoryGroupAdapter: SuiteAdapter<CommandRequest> = {
     let directory = process.env.MEMORY_GROUP_FIXTURE_DIR;
     if (!directory) {
       directory = join(scratch, "fixture");
-      buildFixture(directory);
+      await runOwned(
+        [
+          process.execPath,
+          resolve(import.meta.dir, "../../scripts/build-memory-group-fixture.ts"),
+          directory,
+        ],
+        { cwd: resolve(import.meta.dir, "../.."), env: process.env, signal },
+      );
     }
     signal.throwIfAborted();
     const assets: Record<string, Blob | string> = {
