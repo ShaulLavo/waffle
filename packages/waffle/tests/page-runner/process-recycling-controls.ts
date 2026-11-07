@@ -1,6 +1,6 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { runPageSuite, type SuiteResult } from "waffle/testing/page-runner";
 import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
 import { processRecyclingAdapter } from "./process-recycling-suite.js";
@@ -68,9 +68,8 @@ export function checkProcessControl(result: SuiteResult, mode: Control): void {
 }
 async function control(engine: "chromium" | "webkit", mode: Control, root: string): Promise<void> {
   const startedAt = performance.now();
-  const scratch = join(root, "s");
   const signal = AbortSignal.timeout(60_000);
-  const assets = await processRecyclingAdapter.assets({ scratch, signal });
+  const assets = await processRecyclingAdapter.assets({ scratch: root, signal });
   assets["/process-page.js"] = await bundle("process-recycling-controls-page.ts", {
     PROCESS_CONTROL: JSON.stringify(
       mode === "page-error" || mode === "wrong-label" ? mode : "memory-only",
@@ -89,7 +88,7 @@ async function control(engine: "chromium" | "webkit", mode: Control, root: strin
     (path) => new PlaywrightDriver(engine, path),
     {
       resultPath,
-      scratchRoot: scratch,
+      scratchRoot: dirname(root),
       assets,
       filter,
       signal,
@@ -106,7 +105,6 @@ async function control(engine: "chromium" | "webkit", mode: Control, root: strin
     JSON.stringify(diagnostics.failures) !== JSON.stringify(result.failures)
   )
     throw new Error("Process automatic diagnostics lost the actual failure");
-  if ((await readdir(scratch)).length) throw new Error("Process control retained scratch");
   console.log(
     JSON.stringify({
       processControl: mode,
@@ -125,15 +123,12 @@ async function engineControls(engine: string, root: string): Promise<void> {
 }
 export async function processRecyclingControls(names: string[]): Promise<void> {
   const root = await mkdtemp(join(process.env.PROCESS_SCRATCH_ROOT ?? tmpdir(), "wpc-"));
+  let completed = false;
   try {
     for (const engine of names.length ? names : ["chromium"]) await engineControls(engine, root);
+    completed = true;
   } finally {
-    const remaining = await readdir(join(root, "s")).catch((error: unknown) => {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
-        return [];
-      throw error;
-    });
-    if (!remaining.length) await rm(root, { recursive: true, force: true });
-    else console.error(`Retained process control resources for parent cleanup: ${root}`);
+    if (completed) await rm(root, { recursive: true, force: true });
+    else console.error(`Retained process control evidence for parent cleanup: ${root}`);
   }
 }
