@@ -78,18 +78,7 @@ async function admissionCase(page: Page) {
       assertTrianglePixels(image, "green");
       const recoveryPixels = name === "recovered" ? await pixels(page, 10, false) : undefined;
       if (recoveryPixels) assertTrianglePixels(recoveryPixels);
-      const start = progress(before, peer);
-      const after = await until(
-        page,
-        (service) =>
-          peerAdvanced(service, peer, start, number(before.at)) &&
-          entries(record(service.fairness).queue).some(
-            (work) =>
-              work.connection === peer &&
-              number(work.start) >= number(before.at) &&
-              record(work.settlement).kind === "completed",
-          ),
-      );
+      const after = await screenshotEnd(page, peer, before);
       phases.push({
         name,
         peerPid: peerGuest.pid,
@@ -297,7 +286,7 @@ function retired(native: Record<string, unknown>) {
     "unretired admitted owner",
   );
 }
-function immutableRetired(previous: Record<string, unknown>, next: Record<string, unknown>) {
+export function immutableRetired(previous: Record<string, unknown>, next: Record<string, unknown>) {
   stableRetirement(previous, previous, next);
   for (const key of [
     "readerReads",
@@ -380,7 +369,7 @@ function snapshotProof(service: Record<string, unknown>, observed: Observation) 
   observed.at = number(service.at);
   observed.responses.add(service.responseId);
 }
-function bracketProof(
+export function bracketProof(
   phase: Record<string, unknown>,
   peer: unknown,
   previous: { presents: number; queue: number },
@@ -452,7 +441,7 @@ function retiredActivity(service: Record<string, unknown>, id: unknown) {
   requireProof(Object.keys(calls).length > 0, "missing retired native call observations");
   return { at: number(service.at), presents, queue, slices: owned("slices"), calls };
 }
-function unchangedSubmissions(
+export function unchangedSubmissions(
   previous: readonly Record<string, unknown>[],
   current: readonly Record<string, unknown>[],
   previousAt: number,
@@ -756,4 +745,19 @@ export function validateAdmissionResult(value: unknown) {
   validateStops(result, cohort, recovery);
   disposalProof(result.runtimeStop);
   return timing(record(phases.at(-1)!.service), result.peer);
+}
+
+export async function screenshotEnd(page: Page, peer: unknown, before: Record<string, unknown>) {
+  const start = progress(before, peer);
+  return until(
+    page,
+    (service) =>
+      peerAdvanced(service, peer, start, number(before.at)) &&
+      entries(record(service.fairness).queue).some(
+        (work) =>
+          work.connection === peer &&
+          number(work.start) >= number(before.at) &&
+          record(work.settlement).kind === "completed",
+      ),
+  );
 }
