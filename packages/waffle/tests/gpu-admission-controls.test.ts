@@ -127,6 +127,12 @@ function attempt(surface: number, live: boolean) {
 function fairness(serial: number, surfaces: readonly number[]) {
   return {
     overflow: false,
+    native: Object.fromEntries(
+      surfaces.map((surface) => [
+        `${surface === 11 ? 10 : surface}:submit`,
+        { count: 1, totalMs: 1, maxMs: 1 },
+      ]),
+    ),
     slices: surfaces.map((surface) => ({
       connection: surface === 11 ? 10 : surface,
       start: 1,
@@ -449,7 +455,7 @@ test("later service turns cannot revive retired ownership or publish late work",
 });
 test("all original latency misses remain not-met and never become hardware qualification", () => {
   const value = proof();
-  value.phases[6]!.service.fairness.slices[0]!.end = 20;
+  value.phases[6]!.service.fairness.slices.find((slice) => slice.connection === 2)!.end = 20;
   const measured = validateAdmissionResult(value);
   expect(measured).toMatchObject({
     sliceTargetMet: false,
@@ -500,4 +506,87 @@ test("recovery must retain its actual new compiled guest pixels", () => {
   rejects((value) => {
     value.phases[5]!.recoveryPixels.center = [0, 255, 0, 255];
   }, /pixel failure/);
+});
+
+function afterCapacity(value: Proof) {
+  return value.phases
+    .slice(5)
+    .flatMap((phase) => [phase.before, phase.service])
+    .concat([value.final]);
+}
+function appendLateQueue(value: Proof, settlement: unknown) {
+  for (const service of afterCapacity(value)) {
+    const queue = service.fairness.queue;
+    Reflect.set(queue, queue.length, { connection: 3, start: 200, settlement });
+  }
+}
+test("retired owners cannot start pending or rejected submissions later", () => {
+  rejects((value) => appendLateQueue(value, { kind: "pending" }), /late retired native work/);
+  rejects(
+    (value) => appendLateQueue(value, { kind: "rejected", at: 201 }),
+    /late retired native work/,
+  );
+});
+test("retired owners cannot replay another slice", () => {
+  rejects((value) => {
+    for (const service of afterCapacity(value))
+      Reflect.set(service.fairness.slices, service.fairness.slices.length, {
+        connection: 3,
+        start: 200,
+        end: 201,
+        records: 1,
+        draws: 1,
+        bytes: 12,
+        kind: "progress",
+      });
+  }, /late retired native work/);
+});
+test("retired owners cannot invoke existing or newly observed native methods", () => {
+  rejects((value) => {
+    for (const service of afterCapacity(value)) service.fairness.native["3:submit"]!.count++;
+  }, /late retired native work/);
+  rejects((value) => {
+    for (const service of afterCapacity(value))
+      service.fairness.native["3:draw"] = { count: 1, totalMs: 1, maxMs: 1 };
+  }, /late retired native work/);
+});
+function pendingAtRetirement(kind: "completed" | "rejected") {
+  const value = proof();
+  for (const phase of value.phases.slice(1)) {
+    for (const service of [phase.before, phase.service]) {
+      const settled = phase.name === "recovered" || phase.name === "retired";
+      Reflect.set(service.fairness.queue, service.fairness.queue.length, {
+        connection: 3,
+        start: 3,
+        settlement: settled ? { kind, at: 210 } : { kind: "pending" },
+      });
+    }
+  }
+  Reflect.set(value.final.fairness.queue, value.final.fairness.queue.length, {
+    connection: 3,
+    start: 3,
+    settlement: { kind, at: 210 },
+  });
+  return value;
+}
+test("an already recorded pending submission may settle after its owner retires", () => {
+  for (const kind of ["completed", "rejected"] as const)
+    expect(validateAdmissionResult(pendingAtRetirement(kind)).hardwareQualified).toBe(false);
+});
+
+test("retired submission identity and already-settled results cannot be rewritten", () => {
+  rejects((value) => {
+    for (const service of afterCapacity(value))
+      service.fairness.queue.find((work) => work.connection === 3)!.start = 0.5;
+  }, /late retired native work/);
+  rejects((value) => {
+    for (const service of afterCapacity(value))
+      service.fairness.queue.find((work) => work.connection === 3)!.settlement.at = 199;
+  }, /settlement changed after completion/);
+});
+
+test("retired observations cannot hide work behind overflow", () => {
+  rejects((value) => {
+    value.final.fairness.overflow = true;
+  }, /retired native observation overflow/);
 });

@@ -422,13 +422,70 @@ function bracketProof(
   );
   return end;
 }
+function retiredActivity(service: Record<string, unknown>, id: unknown) {
+  const observed = record(service.fairness);
+  requireProof(observed.overflow === false, "retired native observation overflow");
+  const owned = (name: string) => entries(observed[name]).filter((item) => item.connection === id);
+  const queue = owned("queue"),
+    presents = owned("presents");
+  requireProof(
+    presents.length > 0 && queue.some((work) => record(work.settlement).kind === "completed"),
+    "missing native peer progress",
+  );
+  for (const work of queue) {
+    const settlement = record(work.settlement),
+      start = number(work.start);
+    requireProof(
+      settlement.kind === "pending" ||
+        settlement.kind === "completed" ||
+        settlement.kind === "rejected",
+      "invalid retired queue settlement",
+    );
+    if (settlement.kind !== "pending")
+      requireProof(number(settlement.at) >= start, "invalid retired queue settlement");
+  }
+  const calls = Object.fromEntries(
+    Object.entries(record(observed.native))
+      .filter(([key]) => key.startsWith(`${id}:`))
+      .map(([key, value]) => [key, integer(record(value).count)]),
+  );
+  requireProof(Object.keys(calls).length > 0, "missing retired native call observations");
+  return { at: number(service.at), presents, queue, slices: owned("slices"), calls };
+}
+function unchangedSubmissions(
+  previous: readonly Record<string, unknown>[],
+  current: readonly Record<string, unknown>[],
+  previousAt: number,
+) {
+  requireProof(current.length === previous.length, "late retired native work");
+  for (let index = 0; index < previous.length; index++) {
+    const before = previous[index]!,
+      after = current[index]!;
+    requireProof(
+      before.connection === after.connection && number(before.start) === number(after.start),
+      "late retired native work",
+    );
+    if (record(before.settlement).kind === "pending") {
+      const settled = record(after.settlement);
+      requireProof(
+        settled.kind === "pending" || number(settled.at) >= previousAt,
+        "retired queue settlement predates its pending observation",
+      );
+      continue;
+    }
+    requireProof(
+      JSON.stringify(before.settlement) === JSON.stringify(after.settlement),
+      "retired queue settlement changed after completion",
+    );
+  }
+}
 interface Cohort {
   readonly all: readonly Identity[];
   readonly live: readonly Identity[];
   readonly heapUnit: number;
   readonly retired: Map<
     unknown,
-    { native: Record<string, unknown>; presents: number; queue: number }
+    { native: Record<string, unknown>; activity: ReturnType<typeof retiredActivity> }
   >;
 }
 function retiredProgress(
@@ -437,16 +494,20 @@ function retiredProgress(
   history: Cohort["retired"],
 ) {
   const previous = history.get(native.id),
-    counters = progress(service, native.id);
+    activity = retiredActivity(service, native.id);
   if (previous) {
     immutableRetired(previous.native, native);
     requireProof(
-      counters.presents === previous.presents && counters.queue === previous.queue,
+      JSON.stringify(activity.presents) === JSON.stringify(previous.activity.presents) &&
+        JSON.stringify(activity.slices) === JSON.stringify(previous.activity.slices) &&
+        JSON.stringify(activity.calls) === JSON.stringify(previous.activity.calls),
       "late retired native work",
     );
+    unchangedSubmissions(previous.activity.queue, activity.queue, previous.activity.at);
   }
-  history.set(native.id, { native, presents: counters.presents, queue: counters.queue });
+  history.set(native.id, { native, activity });
 }
+
 function cohortProof(service: Record<string, unknown>, cohort: Cohort) {
   const natives = entries(service.owners);
   const known = new Set(cohort.all.map((entry) => entry.native.id));

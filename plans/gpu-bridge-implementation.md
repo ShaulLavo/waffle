@@ -598,6 +598,13 @@ presenter, frame and heap credit returns to zero. Routine teardown also checks e
 worker stopped, no live shared admission remains, and the ledger retains its separate
 conservative backing debt. This is teardown coverage, not the later active-disposal case.
 
+Retired owners' submission identities, replay slices, presents and per-method native-call
+counts stay fixed independently of queue completion status. A pending submission already
+recorded before retirement may settle afterward; it is not a new submission. A settled result
+cannot revert or change. Runtime disposal releases only the unused 64 MiB adopted-root control
+reservation and its zero-byte guest-memory row. The separate eight-byte grant-state backing
+and all eleven consumed 5,505,220-byte guest debts remain accounted for.
+
 Permanent invalid-result controls reject missing positive coverage, wrong cap, refusal stage,
 errno or terminal reason, unrelated C failure, changed cohort identities, missing presenters,
 stale snapshots, missing new in-bracket work, stale queue work, unretired resources or credits,
