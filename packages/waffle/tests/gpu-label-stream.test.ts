@@ -9,8 +9,8 @@ for (const vector of expected.vectors) {
     const literal = Uint8Array.from(Buffer.from(vector.hex.replaceAll(/\s/g, ""), "hex"));
     expect(encodeGpuCommand(gpuStream, vector.command, vector.input)).toEqual(literal);
     const decoded = decodeCall(literal);
-    expect(decoded.layout.context).toBe(vector.context);
-    expect(decoded.fields).toEqual(vector.input);
+    expect<string>(decoded.layout.context).toBe(vector.context);
+    expect<unknown>(decoded.fields).toEqual(vector.input);
     expect(decoded.layout.fields).toEqual(
       (vector.context === "top"
         ? [{ name: "receiver", type: `object.${decoded.layout.receiver}`, optional: false }]

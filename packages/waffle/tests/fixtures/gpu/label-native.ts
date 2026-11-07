@@ -1,4 +1,4 @@
-import { objectKind, type ObjectKind } from "../../../browser/gpu/handles.js";
+import type { ObjectKind } from "../../../browser/gpu/handles.js";
 import { nativeCall, nativeObject } from "../../../browser/gpu/lowering.js";
 import { GpuSurfaces } from "../../../browser/gpu/surfaces.js";
 import type { Handle } from "../../../browser/gpu/protocol.js";
@@ -71,7 +71,8 @@ function resources(connection: GpuConnection, device: object): LabeledObject[] {
     ["render_bundle", nativeObject(nativeCall(bundleEncoder, "finish", []))],
     ["command_encoder", create("createCommandEncoder", {})],
   ];
-  return [{ kind: "device", handle: h(3), native: device }].concat(
+  const deviceObject: LabeledObject = { kind: "device", handle: h(3), native: device };
+  return [deviceObject].concat(
     objects.map(([kind, native], index) => bind(connection, kind, native, index + 4)),
   );
 }
