@@ -1,3 +1,17 @@
+if (process.argv[2] === "ios-safari") {
+  const startedAt = performance.now();
+  const { nativeMain } = await import("./page-runner/native.js");
+  const { memoryGroupAdapter } = await import("./page-runner/memory-group-command.js");
+  process.exit(await nativeMain(memoryGroupAdapter, process.argv.slice(3), { startedAt }));
+}
+if (process.argv[2] === "--controls") {
+  const { runMemoryGroupControls } = await import("./page-runner/memory-group-controls-runner.js");
+  const [root, scratch] = process.argv.slice(3);
+  if (!root || !scratch) throw new Error("Use --controls /absolute/results /short/owned/scratch");
+  await runMemoryGroupControls(root, scratch);
+  process.exit(0);
+}
+import { checkMemoryGroupResult } from "./page-runner/memory-group-command.js";
 import { navigateTestPage } from "./browser-navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -101,12 +115,7 @@ try {
     )) as typeof import("./memory-group-browser.js");
     return tests.memoryGroupBrowser();
   });
-  if (
-    typeof report.disposal !== "string" ||
-    !report.disposal.includes("memory group members") ||
-    !report.disposal.includes("A live page runtime already owns this page")
-  )
-    throw new Error(`disposal released the page with unsettled group debt: ${report.disposal}`);
+  checkMemoryGroupResult(report);
   console.log(JSON.stringify({ memoryGroups: report }, null, 1));
   await context.close();
 } finally {
