@@ -286,3 +286,44 @@ for (const field of ["token", "peer", "generation", "url"] as const) {
     expect(f.collector.ledger).toEqual([]);
   });
 }
+
+test("an unsolicited reload hello fails against its consumed peer token without admitting it", () => {
+  const f = peersFixture();
+  const peer = f.add("owner");
+  f.clock(100);
+  const messages = peer.messages.slice();
+  const transitions = f.collector.transitions.length;
+  expect(() =>
+    f.collector.receive({
+      run: "run",
+      doc: "unannounced-reload",
+      seq: 0,
+      kind: "hello",
+      token: peer.token,
+      group: peer.group.id,
+    }),
+  ).toThrow("Wrong run or no expected document");
+  expect(f.collector.failures).toEqual([
+    {
+      group: peer.group.id,
+      category: "protocol",
+      detail: "Wrong run or no expected document",
+      document: {
+        doc: peer.doc,
+        peer: peer.owner.kind === "peer" ? peer.owner.peer : null,
+        generation: 0,
+        handle: peer.handle,
+      },
+    },
+  ]);
+  expect(f.collector.active).toBe(f.root);
+  expect(f.collector.documents).toHaveLength(2);
+  expect(f.collector.transitions).toHaveLength(transitions);
+  expect(peer.doc).toBe("owner");
+  expect(peer.messages).toEqual(messages);
+  expect(peer.heartbeatAt).toBe(0);
+  expect(peer.cutoff).toBeNull();
+  expect(peer.physical).toBe("live");
+  expect(f.collector.outcomes.case?.status).toBe("running");
+  expect(f.collector.ledger).toEqual([]);
+});
