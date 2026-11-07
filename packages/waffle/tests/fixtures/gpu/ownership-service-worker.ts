@@ -1,4 +1,5 @@
 import { GpuService } from "../../../browser/gpu/service.js";
+import { GpuReplay } from "../../../browser/gpu/replay.js";
 import { GpuConnection, GpuScheduler } from "../../../browser/gpu/scheduler.js";
 import { LogicalReader } from "../../../browser/gpu/transport.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
@@ -24,6 +25,9 @@ interface Owner {
   created: number;
   destroyed: number;
   retiredAck: boolean;
+  protocolReads: number;
+  protocolReplays: number;
+  peakHeap: number;
 }
 interface Command {
   readonly test: string;
@@ -85,6 +89,9 @@ GpuScheduler.prototype.add = function (connection) {
     created: 0,
     destroyed: 0,
     retiredAck: false,
+    protocolReads: 0,
+    protocolReplays: 0,
+    peakHeap: 0,
   };
   owners.push(owner);
   rings.set(connection.commands, owner);
@@ -117,7 +124,10 @@ LogicalReader.prototype.read = function () {
     this.lastReadBytes = 0;
     return { kind: "empty" };
   }
-  return read.call(this);
+  const result = read.call(this);
+  owner.peakHeap = Math.max(owner.peakHeap, this.credit.used);
+  if (result.kind === "terminal" && result.reason === 2) owner.protocolReads++;
+  return result;
 };
 const readInto = RecordRing.prototype.readInto;
 RecordRing.prototype.readInto = function (destination) {
@@ -159,6 +169,13 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
   const owner = owners.find((entry) => entry.connection.completions === this.completions);
   if (!owner) throw new Error("Ownership surface observer missing");
   owner.surfaces = this;
+  return result;
+};
+const replayStep = GpuReplay.prototype.step;
+GpuReplay.prototype.step = function () {
+  const result = replayStep.call(this);
+  if (active && result.kind === "terminal" && active.connection.state.kind === "terminal" &&
+    active.connection.state.reason === 2) active.protocolReplays++;
   return result;
 };
 const requestDevice = globalThis.GPUAdapter?.prototype.requestDevice;
@@ -236,6 +253,9 @@ function ownerSnapshot(owner: Owner) {
     chunkBytes: owner.chunkBytes,
     logicalBytes: owner.logicalBytes,
     readerDisposed: owner.readerDisposed,
+    protocolReads: owner.protocolReads,
+    protocolReplays: owner.protocolReplays,
+    peakHeap: owner.peakHeap,
     terminalReason: connection.state.kind === "terminal" ? connection.state.reason : 0,
     partial: owner.reader?.assembling ?? false,
     heldReads: owner.heldReads,
