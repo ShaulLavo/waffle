@@ -32,6 +32,14 @@ const serial = runners
   .concat(
     [[{ runner: "tests/workspace-continuity-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],
+    [
+      [
+        {
+          runner: "tests/root-continuity-browser-runner.ts",
+          engines: ["--page-controls", "chromium"],
+        },
+      ],
+    ],
     [[{ runner: "tests/memory-group-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/fs-socket-browser-runner.ts", engines: ["firefox"] }]],
     [[{ runner: "tests/page-runner/browser-controls-runner.ts", engines: ["chromium", "webkit"] }]],
