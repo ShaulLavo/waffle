@@ -39,6 +39,9 @@ test("GPU source freshness covers schema, generated C layouts and the handwritte
     "webgpu.yml",
     "stream.json",
     "tables.ts",
+    "browser/gpu/codec.ts",
+    "browser/gpu/metadata.ts",
+    "browser/display/generated/graphics-layout.ts",
     "gpu-stream*.ts",
     "build-gpu-fixture.ts",
   ])
@@ -61,13 +64,21 @@ test("browser jobs consume and verify the one producer artifact without recompil
   expect(suites).toContain('"tests/gpu-browser-runner.ts"');
 });
 
-test("GPU cache inputs match every source input in the fixture receipt", () => {
+test("GPU cache inputs match the fixture receipt and all generator freshness inputs and outputs", () => {
   const builder = readFileSync(new URL("../scripts/build-gpu-fixture.ts", import.meta.url), "utf8");
   const inventory = builder.match(/const inputs = \[([\s\S]*?)\n\];/)?.[1];
-  if (!inventory) throw new Error("GPU fixture input inventory missing");
+  const generator = readFileSync(new URL("../tooling/gpu-stream.ts", import.meta.url), "utf8");
+  const fixed = generator.match(/const fixedInputs = \[([\s\S]*?)\n\];/)?.[1];
+  const outputs = generator.match(/const outputs:[\s\S]*?= \[([\s\S]*?)\n\];/)?.[1];
+  if (!inventory || !fixed || !outputs)
+    throw new Error("GPU fixture or generator inventory missing");
   const expected = Array.from(
-    inventory.matchAll(/"([^"]+)"/g),
-    (match) => `packages/waffle/${match[1]}`,
+    new Set(
+      Array.from(
+        (inventory + fixed + outputs).matchAll(/"([^"]+)"/g),
+        (match) => `packages/waffle/${match[1]}`,
+      ),
+    ),
   );
   const key = producer.match(/key: [^\n]*gpu-fixture-sdk34[^\n]*/)?.[0];
   if (!key) throw new Error("GPU fixture cache key missing");
