@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { navigateTestPage } from "./browser-navigation.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
@@ -7,7 +8,7 @@ export async function labelNativeRoutes() {
   return {
     "/": "<!doctype html><title>Label native lowering control, not compiled guest acceptance</title>",
     "/label.js": await browserBundle(
-      new URL("./fixtures/gpu/label-native.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/label-native.ts", import.meta.url)),
     ),
   };
 }

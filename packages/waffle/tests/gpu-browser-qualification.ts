@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { navigateTestPage } from "./browser-navigation.js";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -140,10 +141,10 @@ export async function qualificationRoutes(): Promise<Record<string, Blob | strin
   return {
     "/": "<!doctype html><title>Native GPU qualification, not guest acceptance</title>",
     "/qualification-page.js": await browserBundle(
-      new URL("./fixtures/gpu/qualification-page.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/qualification-page.ts", import.meta.url)),
     ),
     "/qualification-worker.js": await browserBundle(
-      new URL("./fixtures/gpu/qualification-worker.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/qualification-worker.ts", import.meta.url)),
     ),
   };
 }

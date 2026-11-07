@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { navigateTestPage } from "./browser-navigation.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
 import { GpuQualificationLifecycle } from "./gpu-browser-qualification.js";
@@ -12,7 +13,7 @@ export async function asyncNativeRoutes() {
   return {
     "/": "<!doctype html><title>G2 native controls, not compiled guest acceptance</title>",
     "/async-native.js": await browserBundle(
-      new URL("./fixtures/gpu/async-native.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("./fixtures/gpu/async-native.ts", import.meta.url)),
     ),
   };
 }
