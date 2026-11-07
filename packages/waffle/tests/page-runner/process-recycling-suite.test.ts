@@ -168,12 +168,15 @@ test("page-owned producers match every original normal Bun bundle and Worker IIF
   }
 }, 30_000);
 
-test("the original desktop implementation is a byte-preserving move", async () => {
+test("the original desktop body and options are byte-preserved after lazy imports", async () => {
   const { createHash } = await import("node:crypto");
-  const source = await Bun.file(new URL("../process-recycling-desktop-runner.ts", import.meta.url)).bytes();
-  // Audited main runner, before adding the native dispatch entry. No body or option changed.
-  expect(createHash("sha256").update(source).digest("hex")).toBe(
-    "9badf34a429bda0e54edeb46308901451eef4aede753e041a5ae9bbd3715a51f",
+  const source = await Bun.file(
+    new URL("../process-recycling-browser-runner.ts", import.meta.url),
+  ).text();
+  // The import prelude is lazy; the complete original desktop body stays byte-identical.
+  const body = source.slice(source.indexOf("// Run from the repository"));
+  expect(createHash("sha256").update(body).digest("hex")).toBe(
+    "a6c19166b07c07cbb954d55e8398e6dbd470767ac30f22b99434ad8742777a5f",
   );
 });
 
@@ -182,7 +185,11 @@ test("failure diagnostics retain actual case results and errors without claiming
   const root = await mkdtemp(join(tmpdir(), "w-process-diagnostic-"));
   try {
     const path = join(root, "result.json");
-    const actual = { results: { [first]: "wrong" }, outcomes: { [first]: { status: "fail", detail: "REAL_BODY_STACK" } }, failures: [{ group: first, category: "page-error", detail: "REAL_PAGE_ERROR" }] };
+    const actual = {
+      results: { [first]: "wrong" },
+      outcomes: { [first]: { status: "fail", detail: "REAL_BODY_STACK" } },
+      failures: [{ group: first, category: "page-error", detail: "REAL_PAGE_ERROR" }],
+    };
     await Bun.write(path, JSON.stringify(actual));
     await writeProcessDiagnostics(path);
     const diagnostics = await Bun.file(`${path}.diagnostics.json`).json();

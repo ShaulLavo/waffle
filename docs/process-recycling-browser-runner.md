@@ -27,4 +27,4 @@ PROCESS_SCRATCH_ROOT="$TMPDIR" \
 
 These controls run representative original bodies, not another complete campaign. They reject wrong returned labels, missing Worker assets, uncaught Worker errors, and actual page errors. Successful cell-clone and startup-pool controls forbid durable storage opens in both the page and filesystem Worker. Normal `bun run test:browser` runs the controls after the reporter controls. Normal unit tests cover discovery order, fake host failures, the original command clock, storage rejection, and byte parity with every original Bun producer.
 
-The desktop command still defaults to Chromium, Firefox, and WebKit. Its original runner and navigation diagnostics are unchanged. Playwright WebKit is not actual iOS Safari evidence.
+The desktop command still defaults to Chromium, Firefox, and WebKit. Its original body, options, and navigation diagnostics are unchanged; only the imports wait until desktop dispatch. Playwright WebKit is not actual iOS Safari evidence.

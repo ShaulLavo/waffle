@@ -11,7 +11,8 @@ export async function processRecyclingNative(args: string[], startedAt: number):
     return 3;
   }
   const previousScratch = process.env.STORAGE_SCRATCH_ROOT;
-  if (process.env.PROCESS_SCRATCH_ROOT) process.env.STORAGE_SCRATCH_ROOT = process.env.PROCESS_SCRATCH_ROOT;
+  if (process.env.PROCESS_SCRATCH_ROOT)
+    process.env.STORAGE_SCRATCH_ROOT = process.env.PROCESS_SCRATCH_ROOT;
   let exit: number;
   try {
     exit = await nativeMain(processRecyclingAdapter, args, {
@@ -39,6 +40,7 @@ export async function writeProcessDiagnostics(resultPath: string): Promise<void>
   if (!record(result)) throw new Error("Missing process command result");
   await writeResult(`${resultPath}.diagnostics.json`, {
     ...result,
-    observation: "Actual page reports and fixture stacks only; no native navigation, network or Worker-close trace is available",
+    observation:
+      "Actual page reports and fixture stacks only; no native navigation, network or Worker-close trace is available",
   });
 }

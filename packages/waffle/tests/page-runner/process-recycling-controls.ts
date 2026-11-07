@@ -101,12 +101,21 @@ async function control(engine: "chromium" | "webkit", mode: Control, root: strin
   checked(result, mode);
   await writeProcessDiagnostics(resultPath);
   const diagnostics = await Bun.file(`${resultPath}.diagnostics.json`).json();
-  if (JSON.stringify(diagnostics.outcomes) !== JSON.stringify(result.outcomes) ||
-      JSON.stringify(diagnostics.failures) !== JSON.stringify(result.failures))
+  if (
+    JSON.stringify(diagnostics.outcomes) !== JSON.stringify(result.outcomes) ||
+    JSON.stringify(diagnostics.failures) !== JSON.stringify(result.failures)
+  )
     throw new Error("Process automatic diagnostics lost the actual failure");
   if ((await readdir(scratch)).length) throw new Error("Process control retained scratch");
   console.log(
-    JSON.stringify({ processControl: mode, engine, exit: result.exit, selected: result.selected, outcomes: result.selected.map((id) => result.outcomes[id]), cleanup: result.cleanup }),
+    JSON.stringify({
+      processControl: mode,
+      engine,
+      exit: result.exit,
+      selected: result.selected,
+      outcomes: result.selected.map((id) => result.outcomes[id]),
+      cleanup: result.cleanup,
+    }),
   );
 }
 async function engineControls(engine: string, root: string): Promise<void> {
@@ -120,7 +129,8 @@ export async function processRecyclingControls(names: string[]): Promise<void> {
     for (const engine of names.length ? names : ["chromium"]) await engineControls(engine, root);
   } finally {
     const remaining = await readdir(join(root, "scratch")).catch((error: unknown) => {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+        return [];
       throw error;
     });
     if (!remaining.length) await rm(root, { recursive: true, force: true });

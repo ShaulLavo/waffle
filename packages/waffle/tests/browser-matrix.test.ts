@@ -37,7 +37,7 @@ const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
 const file = process.argv[1].includes("/page-runner/") ? "reporter-controls" : process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
-const modes = ${JSON.stringify({"root-continuity": "root-continuity-controls", "process-recycling": "process-recycling-controls"})};
+const modes = ${JSON.stringify({ "root-continuity": "root-continuity-controls", "process-recycling": "process-recycling-controls" })};
 const name = process.argv[2] === "--page-controls" ? modes[file] : file;
 const engines = process.argv.slice(2).join(",");
 if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls, processControls]))}.includes(name)) {
@@ -178,7 +178,9 @@ async function matrix(failing: readonly string[]): Promise<void> {
       ).toBe(true);
     }
     expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
-      [recovery, nativeGpu].concat(chromiumOnly, [socket, reporterControls, processControls]).join("\n") + "\n",
+      [recovery, nativeGpu]
+        .concat(chromiumOnly, [socket, reporterControls, processControls])
+        .join("\n") + "\n",
     );
     for (const runner of chromiumOnly.concat([socket, reporterControls, processControls])) {
       const engine = isolatedEngines(runner);
@@ -198,7 +200,11 @@ async function matrix(failing: readonly string[]): Promise<void> {
         [`${recovery}:chromium`, `${nativeGpu}:chromium`],
         runners.map((runner) => `${runner}:webkit`),
         chromiumOnly.map((runner) => `${runner}:${isolatedEngines(runner)}`),
-        [`${socket}:firefox`, `${reporterControls}:chromium,webkit`, `${processControls}:--page-controls,chromium`],
+        [
+          `${socket}:firefox`,
+          `${reporterControls}:chromium,webkit`,
+          `${processControls}:--page-controls,chromium`,
+        ],
       );
     expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
       order
@@ -209,8 +215,8 @@ async function matrix(failing: readonly string[]): Promise<void> {
             : entry.startsWith(`${processControls}:`)
               ? "tests/process-recycling-browser-runner.ts failed"
               : entry.startsWith(`${rootControls}:`)
-              ? `tests/${rootContinuity}-browser-runner.ts failed`
-              : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
+                ? `tests/${rootContinuity}-browser-runner.ts failed`
+                : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
         ),
     );
     for (const runner of runners) {
@@ -355,5 +361,8 @@ test("process page controls fail separately after reporter controls without repe
 }, 15_000);
 
 test("both process modes retain their independent failures in normal discovery order", async () => {
-  await matrix(["process-recycling:chromium,firefox", `${processControls}:--page-controls,chromium`]);
+  await matrix([
+    "process-recycling:chromium,firefox",
+    `${processControls}:--page-controls,chromium`,
+  ]);
 }, 15_000);
