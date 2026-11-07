@@ -42,14 +42,29 @@ for (const returned of [undefined, "invented", { label: first }, [first]])
 test("process policy forbids durable allocations before ledger insertion or acknowledgement", () => {
   const collector = new Collector("run", labels, [first], processRecyclingAdapter.policy);
   const state = collector.expect(
-    { id: first, role: "case", caseIds: [first] }, "token", "http://test/", "root",
+    { id: first, role: "case", caseIds: [first] },
+    "token",
+    "http://test/",
+    "root",
   );
-  collector.receive({ run: "run", doc: "doc", seq: 0, kind: "hello", token: "token", group: first });
+  collector.receive({
+    run: "run",
+    doc: "doc",
+    seq: 0,
+    kind: "hello",
+    token: "token",
+    group: first,
+  });
   collector.receive({ run: "run", doc: "doc", seq: 1, kind: "case-start", caseId: first });
-  expect(() => collector.receive({
-    run: "run", doc: "doc", seq: 2, kind: "allocation",
-    entry: { kind: "indexeddb", name: "unowned" },
-  })).toThrow("no durable allocations");
+  expect(() =>
+    collector.receive({
+      run: "run",
+      doc: "doc",
+      seq: 2,
+      kind: "allocation",
+      entry: { kind: "indexeddb", name: "unowned" },
+    }),
+  ).toThrow("no durable allocations");
   expect(collector.ledger).toEqual([]);
   expect(state.messages).toHaveLength(2);
 });
@@ -61,7 +76,11 @@ async function fake(mode: FakeMode, command: FakeCommand, startedAt?: number) {
   try {
     const resultPath = join(root, "result.json");
     const result = await runPageSuite(processRecyclingAdapter, () => driver, {
-      resultPath, scratchRoot: scratch, filter: first, startedAt, assets: {},
+      resultPath,
+      scratchRoot: scratch,
+      filter: first,
+      startedAt,
+      assets: {},
     });
     expect(await Bun.file(resultPath).json()).toEqual(result);
     expect(result.required).toEqual(labels);
@@ -69,8 +88,12 @@ async function fake(mode: FakeMode, command: FakeCommand, startedAt?: number) {
     expect(result.omitted).toEqual(labels.slice(1));
     expect(result.ledger).toEqual([]);
     expect(result.cleanup.storage.status).toBe("not-created");
-    expect(result.cleanup.session.status).toBe("confirmed");
-    expect(result.cleanup.scratch.status).toBe(startedAt === undefined ? "confirmed" : "not-created");
+    expect(result.cleanup.session.status).toBe(
+      startedAt === undefined ? "confirmed" : "not-created",
+    );
+    expect(result.cleanup.scratch.status).toBe(
+      startedAt === undefined ? "confirmed" : "not-created",
+    );
     if (startedAt === undefined) expect(await readdir(scratch)).toEqual([]);
     return { result, driver };
   } finally {
@@ -91,7 +114,7 @@ for (const mode of ["assertion", "finish-error", "close", "reload", "driver-lost
   test(`process host retains ${mode} as failure and tears down`, async () => {
     const { result } = await fake(mode, { list: labels, result: first });
     expect(result.exit).not.toBe(0);
-    expect(result.exit).not.toBe(4);
+    expect(result.outcomes[first]?.status === "fail" || result.failures.length > 0).toBe(true);
   });
 
 test("process host retains the actual wrong label rather than substituting the request", async () => {
@@ -102,8 +125,45 @@ test("process host retains the actual wrong label rather than substituting the r
 });
 
 test("absolute process deadline includes time spent before native imports and setup", async () => {
-  const { result, driver } = await fake("pass", { list: labels, result: first }, performance.now() - 600_001);
+  const { result, driver } = await fake(
+    "pass",
+    { list: labels, result: first },
+    performance.now() - 600_001,
+  );
   expect(result.exit).toBe(2);
   expect(result.failures.some((entry) => entry.category === "run-timeout")).toBe(true);
   expect(driver.navigations).toBe(0);
 });
+
+test("page-owned producers match every original normal Bun bundle and Worker IIFE", async () => {
+  const { installClientWorker } = await import("../process-recycling-browser.js");
+  const { resolve } = await import("node:path");
+  const assets = await processRecyclingAdapter.assets({
+    scratch: tmpdir(),
+    signal: new AbortController().signal,
+  });
+  const originals = {
+    "/tests.js": "process-recycling-browser.ts",
+    "/cell-worker.js": "fixtures/browser-cell-clone.ts",
+    "/cell-fs-worker.js": "../browser/fs-worker.ts",
+    "/startup-diagnostic-worker.js": "fixtures/startup-diagnostic-worker.ts",
+    "/start-failure-quiet-worker.js": "fixtures/start-failure-quiet-worker.ts",
+    "/child-diagnostic-worker.js": "child-diagnostic-worker.ts",
+    "/startup-pool-worker.js": "fixtures/startup-pool-worker.ts",
+    "/pipe-filestat-worker.js": "fixtures/pipe-filestat-worker.ts",
+  };
+  expect(Object.keys(assets).sort()).toEqual(
+    Object.keys(originals).concat(["/process-client.js", "/process-page.js"]).sort(),
+  );
+  expect(assets["/process-client.js"]).toBe(`(${installClientWorker.toString()})();`);
+  for (const [route, source] of Object.entries(originals)) {
+    const built = await Bun.build({
+      entrypoints: [resolve(import.meta.dir, "..", source)],
+      target: "browser",
+    });
+    expect(built.success).toBe(true);
+    const actual = assets[route];
+    if (!actual || typeof actual === "string") throw new Error("Missing original producer");
+    expect(await actual.text()).toBe(await built.outputs[0]!.text());
+  }
+}, 30_000);
