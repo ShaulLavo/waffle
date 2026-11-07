@@ -184,6 +184,13 @@ function noRetiredWork(
   id: unknown,
 ) {
   immutableRetired(owner(before, id, "retired"), owner(after, id, "retired"));
+  stableActivity(before, after, id);
+}
+function stableActivity(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  id: unknown,
+) {
   const a = activity(before, id),
     b = activity(after, id);
   requireProof(
@@ -522,6 +529,31 @@ function lateResultProof(phases: readonly Record<string, unknown>[], expected: R
     "replacement presented before configure",
   );
 }
+function replacementResults(
+  phases: readonly Record<string, unknown>[],
+  replacement: Record<string, unknown>,
+) {
+  const before = record(phases[3]!.service),
+    baseline = owner(before, replacement.id, "replacement");
+  for (const service of [record(phases[4]!.before), record(phases[4]!.service)]) {
+    const next = owner(service, replacement.id, "replacement");
+    requireProof(
+      next.pending === 0 &&
+        next.payloadBytes === 0 &&
+        next.replayBusy === false &&
+        next.frame === false,
+      "replacement gained results or work after original release",
+    );
+    for (const name of ["commands", "replies"])
+      requireProof(
+        ["head", "tail", "terminal"].every(
+          (key) => integer(record(next[name])[key]) === integer(record(baseline[name])[key]),
+        ),
+        "late original result mutated replacement rings",
+      );
+    stableActivity(before, service, replacement.id);
+  }
+}
 function finalProof(
   result: Record<string, unknown>,
   expected: RegrantIdentity,
@@ -615,6 +647,7 @@ export function validateRegrantResult(value: unknown) {
   }
   heldProof(result, phases, expected);
   lateResultProof(phases, expected);
+  replacementResults(phases, expected.replacement);
   finalProof(result, expected, state);
   return timing(record(phases.at(-1)!.service), expected.peer.id);
 }

@@ -605,3 +605,18 @@ test("native pending settlements and aggregate timings retain their recorded mea
   value.phases[4]!.before.fairness.queue.find((work) => work.connection === 3)!.settlement.at = 100;
   expect(() => validateRegrantResult(value)).toThrow(/settlement predates its pending observation/);
 });
+
+test("releasing the old result cannot publish to replacement rings or add pending results", () => {
+  rejects((v) => {
+    v.phases[4]!.service.owners[3]!.replies.head++;
+  }, /mutated replacement rings/);
+  rejects((v) => {
+    v.phases[4]!.service.owners[3]!.commands.tail++;
+  }, /mutated replacement rings/);
+  rejects((v) => {
+    v.phases[4]!.service.owners[3]!.pending++;
+  }, /replacement gained results or work/);
+  rejects((v) => {
+    v.phases[4]!.service.owners[3]!.payloadBytes++;
+  }, /replacement gained results or work/);
+});
