@@ -9,7 +9,7 @@ import {
 } from "../../../proc/worker-client.js";
 import { createWorkerPipeCodec } from "../../../proc/worker-pipes.js";
 import type { RuntimeDisplay, DisplaySurface } from "../../../browser/display/owner.js";
-import type { GraphicsGrant } from "../../../browser/display/protocol.js";
+import type { GraphicsGrant, GraphicsOpen } from "../../../browser/display/protocol.js";
 import { pressureBurst } from "./qualification-contract.js";
 
 interface Run {
@@ -41,6 +41,11 @@ let lastServiceSnapshot: unknown;
 let suppress = false;
 let holdMode = "";
 const importEvents = new Map<string, unknown[]>();
+const disposalGuests = new Map<Worker, { pid: number; token: string; surface: number }>();
+const disposalOpens: { grant: number; open: GraphicsOpen }[] = [];
+let disposalAudit: SharedArrayBuffer | undefined;
+const workerStops: { id: number; url: string; at: number }[] = [];
+let disposalArmed = false;
 let peerPump: ReturnType<typeof setInterval> | undefined;
 
 /** @browserEntry */
@@ -58,6 +63,10 @@ export async function openIntegration(
   authority.length = 0;
   ownAuthority.clear();
   importEvents.clear();
+  disposalOpens.length = workerStops.length = 0;
+  disposalAudit = undefined;
+  disposalArmed = false;
+  disposalGuests.clear();
   globalThis.Worker = class extends nativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       const path = String(url).includes("/gpu/service-worker.ts")
@@ -76,9 +85,18 @@ export async function openIntegration(
         }
       });
     }
+    override postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      captureDisposalOpen(message);
+      captureDisposalGuest(this, message);
+      if (Array.isArray(options)) return super.postMessage(message, options);
+      return super.postMessage(message, options);
+    }
     override terminate() {
       const found = workers.find((item) => item.worker === this);
-      if (found) found.stopped = true;
+      if (found) {
+        found.stopped = true;
+        workerStops.push({ id: workers.indexOf(found) + 1, url: found.url, at: performance.now() });
+      }
       return super.terminate();
     }
   };
@@ -278,6 +296,9 @@ export async function closeIntegration(captureRetirement = false) {
     surfaces.clear();
     for (const canvas of canvases.values()) canvas.remove();
     canvases.clear();
+    disposalGuests.clear();
+    disposalOpens.length = 0;
+    disposalAudit = undefined;
     globalThis.Worker = nativeWorker;
     runtime = undefined;
   }
@@ -307,7 +328,15 @@ export async function serviceCommand(
   detail?: {
     token: string;
     surface: number;
-    mode: "append" | "completions" | "header" | "chunk" | "nesting" | "admission" | "regrant";
+    mode:
+      | "append"
+      | "completions"
+      | "header"
+      | "chunk"
+      | "nesting"
+      | "admission"
+      | "regrant"
+      | "disposal";
   },
 ) {
   const worker = workers.find(
@@ -334,7 +363,12 @@ export async function serviceCommand(
       reject(new Error("Service command deadline"));
     }, 10000);
     worker.addEventListener("message", done);
-    worker.postMessage({ test, id, ...detail });
+    worker.postMessage({
+      test,
+      id,
+      ...detail,
+      audit: test === "ownership-arm" && detail?.mode === "disposal" ? disposalAudit : undefined,
+    });
   });
 }
 
@@ -421,4 +455,173 @@ export async function regrantTriangle() {
     surface: previous.surface,
     retiredBeforeGrant,
   };
+}
+
+function captureDisposalOpen(message: unknown) {
+  if (!disposalArmed || typeof message !== "object" || message === null) return;
+  if (!("type" in message) || message.type !== "open" || !("open" in message)) return;
+  if (!("grant" in message) || typeof message.grant !== "number") return;
+  const open = message.open;
+  if (typeof open !== "object" || open === null || !("id" in open)) return;
+  if (typeof open.id !== "number" || !("control" in open) || !("commands" in open)) return;
+  if (!("replies" in open) || !("arena" in open)) return;
+  const { control, commands, replies, arena } = open;
+  if (
+    !(control instanceof SharedArrayBuffer) ||
+    !(commands instanceof SharedArrayBuffer) ||
+    !(replies instanceof SharedArrayBuffer) ||
+    !(arena instanceof SharedArrayBuffer)
+  )
+    throw new Error("Disposal open observer needs actual shared buffers");
+  disposalOpens.push({
+    grant: message.grant,
+    open: { type: "open", id: open.id, control, commands, replies, arena },
+  });
+}
+/** @browserEntry */
+export function observeActiveDisposal() {
+  disposalArmed = true;
+  disposalAudit = new SharedArrayBuffer(2 * 1024 * 1024);
+}
+function disposalRing(buffer: SharedArrayBuffer) {
+  const publication = Atomics.load(new BigInt64Array(buffer, 0, 1), 0);
+  return {
+    head: Number(publication & 0xffffffffn),
+    tail: Atomics.load(new Int32Array(buffer), 2),
+    terminal: Number((publication >> 32n) & 0xffffffffn),
+  };
+}
+function disposalControls() {
+  return disposalOpens.map(({ grant, open }) => ({
+    grant,
+    connection: open.id,
+    status: Atomics.load(new Int32Array(open.control), 0),
+    reason: Atomics.load(new Int32Array(open.control), 1),
+    arenaTerminal: Atomics.load(new Int32Array(open.arena), 0),
+    commands: disposalRing(open.commands),
+    replies: disposalRing(open.replies),
+  }));
+}
+/** @browserEntry */
+export async function disposeActiveIntegration() {
+  if (!runtime || !disposalArmed) throw new Error("Active disposal observer not armed");
+  const retained = runtime,
+    processes = await retained.processes(),
+    supervisor = await processes.ready();
+  const guests = Array.from(runs.entries(), ([slot, run]) => ({
+    slot,
+    pid: run.pid,
+    token: run.authorityToken,
+    surface: run.surface,
+    grant: run.grant,
+    exit: supervisor.waitForExit(rootPid, run.pid),
+  }));
+  const workersBefore = disposalWorkers();
+  const memoryBefore = processes.workerMemory();
+  const controlsBefore = disposalControls();
+  clearInterval(peerPump);
+  peerPump = undefined;
+  const startedAt = performance.now();
+  const disposal = retained.dispose();
+  const synchronous = {
+    disposed: retained.disposed,
+    controls: disposalControls(),
+    revocations: guests.map(({ pid, grant }) => ({
+      pid,
+      value: grant ? Atomics.load(new Int32Array(grant.connection.revocation), 0) : -1,
+    })),
+  };
+  await disposal;
+  const finishedAt = performance.now();
+  const exits = await Promise.all(
+    guests.map(async ({ slot, pid, token, surface, grant, exit }) => {
+      await grant?.retired();
+      return {
+        slot,
+        pid,
+        token,
+        surface,
+        exit: await exit,
+        grantRetired: grant !== undefined,
+        events: importEvents.get(token)?.slice() ?? [],
+      };
+    }),
+  );
+  const stopped = {
+    disposed: retained.disposed,
+    workers: disposalWorkers(),
+    controls: disposalControls(),
+    snapshot: retained.sharedMemory.snapshot(),
+    audits: readDisposalAudits(),
+  };
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  pressureBurst();
+  const after = {
+    workers: disposalWorkers(),
+    controls: disposalControls(),
+    snapshot: retained.sharedMemory.snapshot(),
+    audits: readDisposalAudits(),
+  };
+  return {
+    startedAt,
+    finishedAt,
+    workersBefore,
+    memoryBefore,
+    controlsBefore,
+    synchronous,
+    exits,
+    stopped,
+    after,
+    workerStops: workerStops.slice(),
+    errors: errors.slice(),
+  };
+}
+
+function readDisposalAudit(slot: number): unknown {
+  const buffer = disposalAudit;
+  if (!buffer) throw new Error("Missing disposal audit backing");
+  const length = Atomics.load(new Int32Array(buffer, slot * 1048576, 1), 0);
+  if (length <= 0 || length > 1048572) throw new Error(`Missing disposal audit ${slot}: ${length}`);
+  const copy = new Uint8Array(buffer, slot * 1048576 + 4, length).slice();
+  return JSON.parse(new TextDecoder().decode(copy));
+}
+function readDisposalAudits(): unknown[] {
+  return [0, 1].map(readDisposalAudit);
+}
+/** @browserEntry */
+export function activeDisposalAuditControl() {
+  return readDisposalAudit(0);
+}
+
+function disposalWorkers() {
+  return workers.map(({ url, stopped, worker }, index) => ({
+    id: index + 1,
+    url,
+    stopped,
+    ...disposalGuests.get(worker),
+  }));
+}
+function captureDisposalGuest(worker: Worker, message: unknown) {
+  if (!disposalArmed || typeof message !== "object" || message === null) return;
+  if (!("runtimeProcess" in message) || !("env" in message) || !("graphics" in message)) return;
+  const process = message.runtimeProcess,
+    env = message.env,
+    graphics = message.graphics;
+  if (typeof process !== "object" || process === null || !("pid" in process)) return;
+  if (typeof env !== "object" || env === null || !("GPU_AUTHORITY_TOKEN" in env)) return;
+  if (typeof graphics !== "object" || graphics === null || !("surfaces" in graphics)) return;
+  if (!Array.isArray(graphics.surfaces) || graphics.surfaces.length !== 1) return;
+  const surface: unknown = graphics.surfaces[0];
+  if (typeof surface !== "object" || surface === null || !("id" in surface)) return;
+  if (
+    typeof process.pid !== "number" ||
+    typeof env.GPU_AUTHORITY_TOKEN !== "string" ||
+    typeof surface.id !== "number"
+  )
+    return;
+  disposalGuests.set(worker, {
+    pid: process.pid,
+    token: env.GPU_AUTHORITY_TOKEN,
+    surface: surface.id,
+  });
 }

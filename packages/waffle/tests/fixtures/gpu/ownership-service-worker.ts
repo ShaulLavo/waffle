@@ -1,4 +1,5 @@
 import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
+import { CompletionOwner } from "../../../browser/gpu/completions.js";
 import { GpuService } from "../../../browser/gpu/service.js";
 import { GpuReplay } from "../../../browser/gpu/replay.js";
 import { GpuConnection, GpuScheduler } from "../../../browser/gpu/scheduler.js";
@@ -9,7 +10,15 @@ import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 
 type Open = Extract<GpuServiceRequest, { type: "open" }>;
-type Mode = "append" | "completions" | "header" | "chunk" | "nesting" | "admission" | "regrant";
+type Mode =
+  | "append"
+  | "completions"
+  | "header"
+  | "chunk"
+  | "nesting"
+  | "admission"
+  | "regrant"
+  | "disposal";
 interface Owner {
   readonly id: number;
   readonly open: Open;
@@ -36,6 +45,7 @@ interface Command {
   readonly token?: string;
   readonly surface?: number;
   readonly mode?: Mode;
+  readonly audit?: SharedArrayBuffer;
 }
 const host = globalThis as unknown as {
   postMessage(message: unknown): void;
@@ -108,6 +118,32 @@ let released = false;
 let nativeHeld = false;
 let nativeReleased = false;
 const gate = Promise.withResolvers<void>();
+let disposalAudit: SharedArrayBuffer | undefined;
+let heldCompletion: { owner: number; token: number } | undefined;
+let lateCallback:
+  | { owner: number; device: number; token: number; kind: "none" | "error"; at: number }
+  | undefined;
+const startCompletion = CompletionOwner.prototype.start;
+CompletionOwner.prototype.start = function (token, start, settle, reject, abandon) {
+  const owner = owners.find((owner) => owner.connection.completions === this);
+  if (!enabled || selection?.mode !== "disposal" || !owner || !selected(owner))
+    return Reflect.apply(startCompletion, this, [token, start, settle, reject, abandon]);
+  if (heldCompletion) throw new Error("Repeated selected disposal completion");
+  heldCompletion = { owner: owner.id, token };
+  const observedAbandon = function (this: unknown, value: Parameters<typeof abandon>[0]) {
+    const result = Reflect.apply(abandon, this, [value]);
+    lateCallback = {
+      owner: owner.id,
+      device: owner.device,
+      token,
+      kind: value === null ? "none" : "error",
+      at: performance.now(),
+    };
+    writeDisposalAudit(1, "late");
+    return result;
+  };
+  return Reflect.apply(startCompletion, this, [token, start, settle, reject, observedAbandon]);
+};
 let malformedReleased = false;
 let injection:
   | {
@@ -265,7 +301,13 @@ if (popScope) {
   GPUDevice.prototype.popErrorScope = function () {
     const owner = devices.get(this);
     const pending = popScope.call(this);
-    if (!owner || !enabled || selection?.mode !== "regrant" || !selected(owner) || held)
+    if (
+      !owner ||
+      !enabled ||
+      (selection?.mode !== "regrant" && selection?.mode !== "disposal") ||
+      !selected(owner) ||
+      held
+    )
       return pending;
     held = true;
     return pending.then(async (result) => {
@@ -445,6 +487,8 @@ function snapshot(responseId: string) {
     fairness: fairness.snapshot(),
     lifecycle: lifecycle.slice(),
     scopeResult,
+    lateCallback,
+    heldCompletion,
   };
 }
 function coverage() {
@@ -478,7 +522,7 @@ function arm(data: Command) {
   if (Object.values(native).some((count) => count <= 0))
     throw new Error("Ownership native observer positive coverage missing in this service");
   selection = { token: data.token, surface: data.surface, mode: data.mode };
-  if (malformed() || data.mode === "regrant") {
+  if (malformed() || data.mode === "regrant" || data.mode === "disposal") {
     const victim = owners.find(selected);
     if (
       !victim ||
@@ -489,6 +533,12 @@ function arm(data: Command) {
       !victim.surfaces
     )
       throw new Error("Malformed victim observer positive coverage missing");
+  }
+  if (data.mode === "disposal") {
+    if (!(data.audit instanceof SharedArrayBuffer) || data.audit.byteLength !== 2 * 1024 * 1024)
+      throw new Error("Disposal audit backing missing");
+    disposalAudit = data.audit;
+    writeDisposalAudit(0, "armed");
   }
   enabled = true;
   return observed;
@@ -565,6 +615,7 @@ host.onmessage = ({ data }) => {
   if (attempt) attempts.push(attempt);
   try {
     service.receive(data);
+    observeDisposalRetirement(data);
     if (attempt) {
       const after = service.snapshot();
       attempt.afterConnections = after.connections;
@@ -575,3 +626,21 @@ host.onmessage = ({ data }) => {
     receiving = undefined;
   }
 };
+
+function writeDisposalAudit(slot: number, name: string) {
+  if (!disposalAudit) throw new Error("Missing armed disposal audit");
+  const bytes = new TextEncoder().encode(
+    JSON.stringify({ name, service: snapshot(`disposal-${name}`) }),
+  );
+  if (bytes.length > 1048572) throw new Error("Disposal audit overflow");
+  new Uint8Array(disposalAudit, slot * 1048576 + 4, bytes.length).set(bytes);
+  Atomics.store(new Int32Array(disposalAudit, slot * 1048576, 1), 0, bytes.length);
+}
+
+function observeDisposalRetirement(message: GpuServiceRequest) {
+  if (message.type !== "revoke" || selection?.mode !== "disposal") return;
+  if (!owners.some((owner) => selected(owner) && owner.open.grant === message.grant)) return;
+  writeDisposalAudit(0, "retired");
+  released = true;
+  gate.resolve();
+}
