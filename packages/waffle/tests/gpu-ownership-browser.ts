@@ -6,21 +6,21 @@ import { qualificationRecord as record } from "./fixtures/gpu/qualification-cont
 type Mode = "append" | "completions";
 type PhaseName = "live" | "armed" | "blocked" | "retired" | "released";
 const phaseNames: readonly PhaseName[] = ["live", "armed", "blocked", "retired", "released"];
-function entries(value: unknown): Record<string, unknown>[] {
+export function entries(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) throw new Error("Missing ownership observation array");
   return value.map(record);
 }
-function number(value: unknown): number {
+export function number(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
     throw new Error("Invalid ownership observation number");
   return value;
 }
-function owner(service: Record<string, unknown>, id: unknown, label: string) {
+export function owner(service: Record<string, unknown>, id: unknown, label: string) {
   const found = entries(service.owners).filter((item) => item.id === id);
   if (found.length !== 1) throw new Error(`Missing or duplicate ownership ${label}`);
   return found[0]!;
 }
-function authority(value: Record<string, unknown>) {
+export function authority(value: Record<string, unknown>) {
   const reports = entries(value.ownAuthority);
   if (!reports.length) throw new Error("Missing own-guest authority report");
   for (const report of reports) {
@@ -33,7 +33,7 @@ function authority(value: Record<string, unknown>) {
       throw new Error("Ownership authority canaries failed");
   }
 }
-function importControls(phase: Record<string, unknown>) {
+export function importControls(phase: Record<string, unknown>) {
   const events = entries(phase.events);
   if (!events.length || events.some((event) => event.token !== phase.token))
     throw new Error("Missing correlated ownership import observations");
@@ -127,7 +127,7 @@ function retiredProof(victim: Record<string, unknown>, mode: Mode, late: boolean
       late ? "Late native result survived release" : "Victim native device did not retire",
     );
 }
-function peerProof(value: Record<string, unknown>, expected: Record<string, unknown>) {
+export function peerProof(value: Record<string, unknown>, expected: Record<string, unknown>) {
   if (
     ["id", "grant", "surface", "device"].some(
       (key) =>
@@ -144,7 +144,7 @@ function peerProof(value: Record<string, unknown>, expected: Record<string, unkn
   )
     throw new Error("Ownership peer disappeared or was replaced");
 }
-function timing(service: Record<string, unknown>, peer: unknown) {
+export function timing(service: Record<string, unknown>, peer: unknown) {
   const observed = record(service.fairness);
   if (observed.overflow !== false) throw new Error("Ownership observer overflow");
   const slices = entries(observed.slices).map((slice) => ({
@@ -218,7 +218,7 @@ function validatePhases(result: Record<string, unknown>, mode: Mode) {
   }
   return phases;
 }
-function accounting(value: unknown, liveCount: number, retiredCount: number) {
+export function accounting(value: unknown, liveCount: number, retiredCount: number) {
   const snapshot = record(value);
   const controls = entries(snapshot.holders).filter((holder) => holder.label === "guest-control");
   const live = controls.filter((holder) => holder.state === "live");
@@ -239,7 +239,7 @@ function accounting(value: unknown, liveCount: number, retiredCount: number) {
   )
     throw new Error("Ownership shared-control monotonic debt was reset or mischarged");
 }
-function stableRetirement(
+export function stableRetirement(
   blocked: Record<string, unknown>,
   retired: Record<string, unknown>,
   released: Record<string, unknown>,
@@ -373,7 +373,7 @@ function numericArray(value: unknown): number[] {
   if (!Array.isArray(value)) throw new Error("Missing ownership pixels");
   return value.map(number);
 }
-async function checkpoint(page: Page, marker: string, slot = 0) {
+export async function checkpoint(page: Page, marker: string, slot = 0) {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
     const value = await invoke(page, "drainTriangle", [slot, false]);
@@ -383,12 +383,12 @@ async function checkpoint(page: Page, marker: string, slot = 0) {
   }
   throw new Error(`Ownership guest checkpoint deadline: ${marker}`);
 }
-async function current(page: Page) {
+export async function current(page: Page) {
   const value = record(await invoke(page, "serviceCommand", ["ownership-snapshot"]));
   if (value.observerError) throw new Error(String(value.observerError));
   return value;
 }
-async function until(page: Page, ready: (value: Record<string, unknown>) => boolean) {
+export async function until(page: Page, ready: (value: Record<string, unknown>) => boolean) {
   const deadline = Date.now() + 15000;
   let last: unknown;
   while (Date.now() < deadline) {
