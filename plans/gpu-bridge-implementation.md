@@ -631,3 +631,13 @@ the replacement. Permanent negative controls reject each missing proof independe
 The 8 ms service-slice and 100 ms peer-gap targets stay unchanged. All raw timing samples,
 including misses, remain evidence. This is not hardware qualification or memory-reclamation
 proof. The async runner and its page-owned adapter extraction are separate work.
+
+## G3 active runtime disposal checkpoint, November 7, 2026
+
+Status: Approved. A bounded test unit will call the page runtime's real `dispose()` while
+original compiled GPU guests still own native resources and the selected guest is held inside
+native work. The original green peer must present correct pixels and start and finish fresh
+queue work before global disposal. Every connection stops at that boundary. Post-termination
+service observations are unavailable, so acceptance uses actual stop and retirement contracts,
+retained shared controls and conservative ledger accounting instead of invented zero snapshots.
+This unit does not qualify hardware, recreate a runtime, or complete broader G3.
