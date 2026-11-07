@@ -19,6 +19,7 @@ interface Run {
   output: PipeEndpoint;
   grant: GraphicsGrant | undefined;
   text: string;
+  imports: unknown[];
 }
 let runtime: Runtime | undefined;
 let display: RuntimeDisplay;
@@ -38,6 +39,8 @@ const canvases = new Map<number, HTMLCanvasElement>();
 let lastServiceSnapshot: unknown;
 let suppress = false;
 let holdMode = "";
+const importEvents = new Map<string, unknown[]>();
+let peerPump: ReturnType<typeof setInterval> | undefined;
 
 /** @browserEntry */
 export async function openIntegration(
@@ -53,16 +56,18 @@ export async function openIntegration(
   workers.length = 0;
   authority.length = 0;
   ownAuthority.clear();
+  importEvents.clear();
   globalThis.Worker = class extends nativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       const path = String(url).includes("/gpu/service-worker.ts")
-        ? `${url}?suppress=${suppress ? "1" : "0"}&hold=${holdMode}`
+        ? `${holdMode === "ownership" ? "/gpu/service-worker.ts/ownership" : url}?suppress=${suppress ? "1" : "0"}&hold=${holdMode}`
         : url;
       super(path, options);
       workers.push({ url: String(path), worker: this, stopped: false });
       this.addEventListener("message", ({ data }: MessageEvent<unknown>) => {
         if (typeof data !== "object" || data === null) return;
         if ("gpuSnapshot" in data && !freezeSnapshots) lastServiceSnapshot = data.gpuSnapshot;
+        if ("gpuImport" in data) recordImport(data.gpuImport);
         if ("gpuAuthority" in data) {
           authority.push(data.gpuAuthority);
           if ("gpuAuthorityToken" in data && typeof data.gpuAuthorityToken === "string")
@@ -147,6 +152,8 @@ export async function launchTriangle(
       ? undefined
       : display.grant({ surfaces: [ensureSurface(slot)], gpu: grant === "gpu" });
   const authorityToken = crypto.randomUUID();
+  const imports: unknown[] = [];
+  importEvents.set(authorityToken, imports);
   ownAuthority.set(authorityToken, []);
   const pid = client.spawn(rootPid, {
     executable: `/bin/${program}`,
@@ -155,6 +162,8 @@ export async function launchTriangle(
       GPU_POISON: poison ? "1" : "0",
       GPU_FORGE: forge ? "1" : "0",
       GPU_AUTHORITY_TOKEN: authorityToken,
+      GPU_OWNERSHIP_TOKEN: holdMode === "ownership" ? authorityToken : "",
+      GPU_OWNERSHIP_VICTIM: holdMode === "ownership" && slot === 2 ? "1" : "0",
     },
     cwd: "/",
     job: -1,
@@ -164,7 +173,7 @@ export async function launchTriangle(
       { parent: 2, child: 2 },
     ],
   });
-  runs.set(slot, { pid, authorityToken, input, output, grant: currentGrant, text: "" });
+  runs.set(slot, { pid, authorityToken, input, output, grant: currentGrant, text: "", imports });
   while (notices.length) await service.runtimeMessage(notices.shift()!, rootPid);
   await supervisor.start(pid);
   return { pid };
@@ -212,6 +221,8 @@ export async function stopTriangle(kill = false, slot = 0, feed = true) {
   const snapshot = await serviceCommand("snapshot");
   return {
     exit,
+    grantRetired: true,
+    physicallyStopped: true,
     pid: run.pid,
     ownAuthority: ownAuthority.get(run.authorityToken) ?? [],
     snapshot: runtime!.sharedMemory.snapshot(),
@@ -227,6 +238,8 @@ export function pressure() {
 /** @browserEntry */
 export async function closeIntegration() {
   try {
+    clearInterval(peerPump);
+    peerPump = undefined;
     await runtime?.dispose();
   } finally {
     for (const run of runs.values()) {
@@ -235,6 +248,7 @@ export async function closeIntegration() {
     }
     runs.clear();
     ownAuthority.clear();
+    importEvents.clear();
     surfaces.clear();
     for (const canvas of canvases.values()) canvas.remove();
     canvases.clear();
@@ -247,7 +261,17 @@ export async function closeIntegration() {
 
 /** @browserEntry */
 export async function serviceCommand(
-  test: "snapshot" | "release" | "pressure" | "fairness-arm" | "fairness-settled",
+  test:
+    | "snapshot"
+    | "release"
+    | "pressure"
+    | "fairness-arm"
+    | "fairness-settled"
+    | "ownership-observe"
+    | "ownership-arm"
+    | "ownership-snapshot"
+    | "ownership-release",
+  detail?: { token: string; surface: number; mode: "append" | "completions" },
 ) {
   const worker = workers.find(
     (entry) => entry.url.includes("/gpu/service-worker.ts") && !entry.stopped,
@@ -273,11 +297,58 @@ export async function serviceCommand(
       reject(new Error("Service command deadline"));
     }, 10000);
     worker.addEventListener("message", done);
-    worker.postMessage({ test, id });
+    worker.postMessage({ test, id, ...detail });
   });
 }
 
 /** @browserEntry */
 export function canvasBackground(colour: string, slot = 0) {
   canvases.get(slot)!.style.backgroundColor = colour;
+}
+
+function recordImport(value: unknown): void {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("token" in value) ||
+    typeof value.token !== "string"
+  )
+    throw new Error("Uncorrelated GPU import observation");
+  const events = importEvents.get(value.token);
+  if (!events || events.length >= 32768)
+    throw new Error("Missing or overflowing GPU import observer");
+  events.push(value);
+}
+/** @browserEntry */
+export function ownershipGuest(slot = 0) {
+  const run = runs.get(slot)!;
+  return {
+    pid: run.pid,
+    token: run.authorityToken,
+    events: run.imports.slice(),
+    text: drainTriangle(slot, false).text,
+  };
+}
+/** @browserEntry */
+export function ownershipSurface(slot = 0) {
+  return ensureSurface(slot).id;
+}
+/** @browserEntry */
+export function ownershipPeer(pump: boolean) {
+  clearInterval(peerPump);
+  peerPump = undefined;
+  if (!pump) return;
+  let fed = 0;
+  peerPump = setInterval(() => {
+    const text = drainTriangle(1, false).text;
+    const count = text.split("GPU_WAIT_STDIN stage=fairness-peer frame=").length - 1;
+    if (count <= fed) return;
+    if (count >= 240) {
+      errors.push("Ownership peer exceeded its bounded continuous workload");
+      clearInterval(peerPump);
+      return;
+    }
+    fed = count;
+    if (feedTriangle("\n", 1) !== 1) errors.push("Ownership peer input refused");
+  }, 20);
 }
