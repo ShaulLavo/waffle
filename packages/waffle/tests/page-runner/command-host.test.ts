@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandAdapter, type CommandRequest } from "./command-suites.js";
+import { checkedGuestWatchControl } from "./guest-watch-controls-runner.js";
 import { FakeDriver, type FakeCommand, type FakeMode } from "./fake-driver.js";
 import { runPageSuite, type RunOptions, type SuiteAdapter } from "./suite-host.js";
 
@@ -37,7 +38,7 @@ async function control(
 }
 const guest = commandAdapter("guest-watch");
 test("one command retains the actual result and retires every document", async () => {
-  const actual = { early: 101, late: 99, quietWakes: 4 };
+  const actual = { early: 101, late: 99, quietWakes: 4, relay: { iterations: 200_000 } };
   const result = await control(guest, { result: actual });
   expect(result.suite).toBe("guest-watch");
   expect(result.required).toHaveLength(1);
@@ -93,7 +94,10 @@ for (const list of [
   { ids: ["x", "x"] },
 ]) {
   test(`malformed or incomplete command inventory fails ${JSON.stringify(list)}`, async () => {
-    const result = await control(guest, { list, result: { early: 100, late: 100 } });
+    const result = await control(guest, {
+      list,
+      result: { early: 100, late: 100, relay: { iterations: 200_000 } },
+    });
     expect(result.exit).toBe(2);
     expect(result.results).toEqual({});
     expect(result.failures.some((item) => item.category === "protocol")).toBe(true);
@@ -114,13 +118,17 @@ test("direct multibyte overflow cannot bypass the collector result bound", async
   expect(result.failures.some((item) => item.detail.includes("oversized"))).toBe(true);
 });
 test("a pass without retirement is not final success", async () => {
-  const result = await control(guest, { result: { early: 100, late: 100 } }, "unretired");
+  const result = await control(
+    guest,
+    { result: { early: 100, late: 100, relay: { iterations: 200_000 } } },
+    "unretired",
+  );
   expect(result.exit).toBe(2);
   expect(Object.values(result.outcomes)).toEqual([{ status: "pass", provisional: true }]);
 });
 test("command allocations are rejected and interrupted finish grants no cleanup authority", async () => {
   const result = await control(guest, {
-    result: { early: 100, late: 100 },
+    result: { early: 100, late: 100, relay: { iterations: 200_000 } },
     allocation: { kind: "indexeddb", name: "foreign" },
   });
   expect(result.exit).toBe(2);
@@ -134,3 +142,26 @@ test("pre-entry interruption creates no command storage or driver", async () => 
   expect(result.documents).toEqual([]);
   expect(result.cleanup.session.status).toBe("not-created");
 });
+
+for (const relay of [
+  undefined,
+  null,
+  {},
+  { iterations: 0 },
+  { iterations: 199_999 },
+  { iterations: "200000" },
+]) {
+  test(`guest watch cannot pass without complete relay result ${JSON.stringify(relay)}`, async () => {
+    const actual = { early: 100, late: 100, relay };
+    const result = await control(guest, { result: actual });
+    expect(result.exit).toBe(1);
+    expect(() => checkedGuestWatchControl(result, "missing-relay")).not.toThrow();
+    expect(result.runComplete).toBe(true);
+    expect(Object.values(result.results)).toEqual([actual]);
+    expect(result.failures).toEqual([]);
+    expect(Object.values(result.outcomes)[0]).toMatchObject({
+      status: "fail",
+      detail: expect.stringContaining("relay proof did not finish"),
+    });
+  });
+}

@@ -24,6 +24,7 @@ export default {
         "tests/page-runner/consumer-control-worker.ts",
         "tests/page-runner/aggregate-error-fixture.ts",
         "tests/page-runner/command-fixtures.ts",
+        "tests/page-runner/guest-watch-{command,control-phases,stalled-helper}.ts",
         "tests/page-runner/storage-page-control-worker.ts",
         "tests/page-runner/browser-controls-runner.ts",
         "tests/page-runner/framework-bootstrap-main.ts",
