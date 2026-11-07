@@ -7,7 +7,7 @@ import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 
 type Open = Extract<GpuServiceRequest, { type: "open" }>;
-type Mode = "append" | "completions";
+type Mode = "append" | "completions" | "header" | "chunk" | "nesting";
 interface Owner {
   readonly id: number;
   readonly open: Open;
@@ -52,6 +52,12 @@ let released = false;
 let nativeHeld = false;
 let nativeReleased = false;
 const gate = Promise.withResolvers<void>();
+let malformedReleased = false;
+let injection: { owner: number; mode: Mode; read: number; offset: number; before: number; after: number } | undefined;
+let late: { reads: number; kind: string; reason: number } | undefined;
+function malformed(): boolean {
+  return selection?.mode === "header" || selection?.mode === "chunk" || selection?.mode === "nesting";
+}
 function selected(owner: Owner): boolean {
   return owner.open.surfaces.some((surface) => surface.id === selection?.surface);
 }
@@ -99,6 +105,12 @@ LogicalReader.prototype.read = function () {
   if (!owner) throw new Error("Ownership reader correlation missing");
   owner.reader = this;
   owner.readerReads++;
+  if (enabled && malformed() && selected(owner) && !malformedReleased) {
+    owner.heldReads++;
+    held = true;
+    this.lastReadBytes = 0;
+    return { kind: "empty" };
+  }
   if (enabled && selection?.mode === "append" && selected(owner) && this.assembling && !released) {
     owner.heldReads++;
     held = true;
@@ -117,10 +129,23 @@ RecordRing.prototype.readInto = function (destination) {
     if (view.getUint16(0, true) === 0x1004) {
       owner.chunkBytes = result.bytes;
       owner.logicalBytes = view.getUint32(8, true);
+      corrupt(owner, view);
+
     }
   }
   return result;
 };
+function corrupt(owner: Owner, view: DataView) {
+  if (!enabled || !malformedReleased || !malformed() || !selected(owner) || injection) return;
+  const chunkOffset = view.getUint32(12, true);
+  const mode = selection!.mode;
+  if (mode === "chunk" && chunkOffset === 0) return;
+  const offset = mode === "header" ? 0 : mode === "chunk" ? 12 : 44;
+  const before = view.getUint32(offset, true);
+  const after = mode === "header" ? 0xffff0001 : mode === "chunk" ? chunkOffset + 8 : 0x1001;
+  view.setUint32(offset, after, true);
+  injection = { owner: owner.id, mode, read: owner.ringReads, offset, before, after };
+}
 const disposeReader = LogicalReader.prototype.dispose;
 LogicalReader.prototype.dispose = function () {
   const result = disposeReader.call(this);
@@ -211,6 +236,7 @@ function ownerSnapshot(owner: Owner) {
     chunkBytes: owner.chunkBytes,
     logicalBytes: owner.logicalBytes,
     readerDisposed: owner.readerDisposed,
+    terminalReason: connection.state.kind === "terminal" ? connection.state.reason : 0,
     partial: owner.reader?.assembling ?? false,
     heldReads: owner.heldReads,
     pending: connection.completions.pendingCount,
@@ -237,6 +263,9 @@ function snapshot(responseId: string) {
     released,
     nativeHeld,
     nativeReleased,
+    malformedReleased,
+    injection,
+    late,
     owners: owners.map(ownerSnapshot),
     fairness: fairness.snapshot(),
   };
@@ -267,6 +296,12 @@ function arm(data: Command) {
   if (Object.values(native).some((count) => count <= 0))
     throw new Error("Ownership native observer positive coverage missing in this service");
   selection = { token: data.token, surface: data.surface, mode: data.mode };
+  if (malformed()) {
+    const victim = owners.find(selected);
+    if (!victim || victim.readerReads < 1 || victim.ringReads < 1 || victim.created !== 1 ||
+      victim.connection.state.kind !== "ready" || !victim.surfaces)
+      throw new Error("Malformed victim observer positive coverage missing");
+  }
   enabled = true;
   return { ...coverage, native };
 }
@@ -281,6 +316,17 @@ function command(data: Command) {
       const coverage = arm(data);
       host.postMessage({ testId: data.id, gpuSnapshot: { ...snapshot(data.id), coverage } });
       return;
+    }
+    if (data.test === "malformed-release") malformedReleased = true;
+    if (data.test === "malformed-late") {
+      const victim = owners.find(selected);
+      if (!victim?.reader || victim.connection.state.kind !== "terminal")
+        throw new Error("Malformed late probe needs the original retired reader");
+      const before = victim.ringReads;
+      const result = victim.reader.read();
+      victim.connection.replay.step();
+      late = { reads: victim.ringReads - before, kind: result.kind,
+        reason: result.kind === "terminal" ? result.reason : 0 };
     }
     if (data.test === "ownership-release") {
       released = true;

@@ -270,8 +270,10 @@ export async function serviceCommand(
     | "ownership-observe"
     | "ownership-arm"
     | "ownership-snapshot"
-    | "ownership-release",
-  detail?: { token: string; surface: number; mode: "append" | "completions" },
+    | "ownership-release"
+    | "malformed-release"
+    | "malformed-late",
+  detail?: { token: string; surface: number; mode: "append" | "completions" | "header" | "chunk" | "nesting" },
 ) {
   const worker = workers.find(
     (entry) => entry.url.includes("/gpu/service-worker.ts") && !entry.stopped,
