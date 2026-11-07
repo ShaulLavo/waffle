@@ -2,7 +2,10 @@ import type { FairnessSnapshot, FairnessSlice } from "./fairness-observer.js";
 import { qualificationRecord } from "./qualification-contract.js";
 
 function numbers(value: Record<string, unknown>, keys: readonly string[]) {
-  return keys.every((key) => typeof value[key] === "number");
+  return keys.every(
+    (key) =>
+      typeof value[key] === "number" && Number.isFinite(value[key]) && Number(value[key]) >= 0,
+  );
 }
 function slice(value: unknown): value is FairnessSlice {
   const item = qualificationRecord(value);

@@ -8,9 +8,24 @@ import {
   closeIntegration,
   serviceCommand,
 } from "./integration-page.js";
+import { desktopExit } from "./desktop-arm-contract.js";
+import { observeTriangleScreenshot } from "./measurement-runtime.js";
 import { qualificationRecord } from "./qualification-contract.js";
 import type { DesktopCaps, DesktopDraws } from "./desktop-fairness-contract.js";
 
+let identity:
+  | {
+      token: string;
+      caps: DesktopCaps;
+      document: {
+        url: string;
+        timeOrigin: number;
+        isolated: boolean;
+        userAgent: string;
+      };
+    }
+  | undefined;
+const result = (value: Record<string, unknown>) => ({ ...value, identity });
 async function checkpoint(text: string, slot = 0) {
   const deadline = performance.now() + 20000;
   while (performance.now() < deadline) {
@@ -22,23 +37,20 @@ async function checkpoint(text: string, slot = 0) {
   }
   throw new Error(`Desktop compiled checkpoint deadline: ${slot} ${text}`);
 }
-function exit(value: Awaited<ReturnType<typeof stopTriangle>>) {
-  if (value.exit.kind !== "exited" || value.exit.code !== 0 || value.text.includes("GPU_FAIL"))
-    throw new Error(`Desktop compiled exit failed: ${JSON.stringify(value)}`);
-  for (const item of value.authority) {
-    const report = qualificationRecord(item);
-    if (
-      !Array.isArray(report.canaries) ||
-      report.canaries.length < 10 ||
-      !Array.isArray(report.leaks) ||
-      report.leaks.length
-    )
-      throw new Error("Desktop guest authority control failed");
-  }
-  if (!value.authority.length) throw new Error("Missing desktop guest authority controls");
-}
 /** @browserEntry */
-export async function openDesktopArm(caps: DesktopCaps) {
+export async function openDesktopArm(caps: DesktopCaps, token: string) {
+  if (typeof token !== "string" || new URL(location.href).searchParams.get("arm") !== token)
+    throw new Error("Wrong desktop arm document");
+  identity = {
+    token,
+    caps,
+    document: {
+      url: location.href,
+      timeOrigin: performance.timeOrigin,
+      isolated: crossOriginIsolated,
+      userAgent: navigator.userAgent,
+    },
+  };
   if (caps !== "on" && caps !== "off") throw new Error("Unknown desktop caps arm");
   await openIntegration(false, `desktop-${caps}`, true);
   await activateDisplay();
@@ -50,7 +62,7 @@ export async function openDesktopArm(caps: DesktopCaps) {
     throw new Error("Incomplete native observer coverage incorrectly armed");
   if (feedTriangle("\n") !== 1) throw new Error("Desktop control stdin refused");
   const frame = await checkpoint("GPU_FRAME colour=red frame=1 validation=none");
-  return {
+  return result({
     firstCompiledFrameMarkerMs: performance.now() - start,
     incomplete,
     frame,
@@ -60,13 +72,13 @@ export async function openDesktopArm(caps: DesktopCaps) {
       isolated: crossOriginIsolated,
       userAgent: navigator.userAgent,
     },
-  };
+  });
 }
 /** @browserEntry */
 export async function armDesktopWorkload(draws: DesktopDraws, caps: DesktopCaps) {
   if (draws !== 20000 && draws !== 50000) throw new Error("Unbounded desktop draw workload");
   const controlExit = await stopTriangle();
-  exit(controlExit);
+  desktopExit(controlExit);
   await serviceCommand("fairness-settled");
   const armed = qualificationRecord(await serviceCommand("fairness-arm"));
   if (armed.observerError || !armed.coverage || armed.desktopCaps !== caps)
@@ -80,7 +92,7 @@ export async function armDesktopWorkload(draws: DesktopDraws, caps: DesktopCaps)
   await checkpoint("GPU_WAIT_STDIN stage=fairness-heavy-ready");
   await launchTriangle(["green", "--fairness-peer"], "gpu", 1, true);
   await checkpoint("GPU_WAIT_STDIN stage=fairness-peer frame=1", 1);
-  return { controlExit, armed, ready: await serviceCommand("snapshot") };
+  return result({ controlExit, armed, ready: await serviceCommand("snapshot") });
 }
 /** @browserEntry */
 export async function runDesktopWorkload(draws: DesktopDraws) {
@@ -90,15 +102,20 @@ export async function runDesktopWorkload(draws: DesktopDraws) {
   await checkpoint(`GPU_FAIRNESS_REPLAYED draws=${draws}`);
   await checkpoint("GPU_FRAME colour=red frame=1 validation=none");
   await checkpoint("GPU_STAGE closed", 1);
-  return serviceCommand("fairness-settled");
+  return result(qualificationRecord(await serviceCommand("fairness-settled")));
 }
 /** @browserEntry */
 export async function retireDesktopArm() {
   const exits = [await stopTriangle(), await stopTriangle(false, 1, false)];
-  for (const value of exits) exit(value);
-  return { exits, service: await serviceCommand("fairness-settled") };
+  for (const value of exits) desktopExit(value);
+  return result({ exits, service: await serviceCommand("fairness-settled") });
 }
 /** @browserEntry */
 export async function closeDesktopArm() {
-  return closeIntegration();
+  return result(await closeIntegration());
+}
+
+/** @browserEntry */
+export async function observeDesktopPixels(base64: string, slot: number, colour: string) {
+  return result({ pixels: await observeTriangleScreenshot(base64, slot, colour) });
 }

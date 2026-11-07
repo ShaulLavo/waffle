@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { desktopSchedule, desktopMeasurements } from "./fixtures/gpu/desktop-fairness-contract.js";
-import { measured } from "./fixtures/gpu/fairness-test-data.js";
+import { desktopRetired } from "./fixtures/gpu/desktop-arm-contract.js";
+import { measured, measuredExpectation } from "./fixtures/gpu/fairness-test-data.js";
 import {
   runDesktopMeasurements,
   type MeasurementController,
@@ -66,13 +68,13 @@ test("bounded desktop validator keeps workload, native, queue, and epoch control
     { slices: [false] },
   ])
     expect(() => desktopObservation({ fairness: { ...snapshot, ...patch } })).toThrow();
-  expect(desktopMeasurements(snapshot, 20000, "on")).toMatchObject({
+  expect(desktopMeasurements(snapshot, 20000, "on", measuredExpectation)).toMatchObject({
     draws: 20000,
     drawSlices: 20,
     targetStatus: "met",
     nativeQueueExecutionMeasured: false,
   });
-  expect(() => desktopMeasurements(snapshot, 20000, "off")).toThrow("cap arm");
+  expect(() => desktopMeasurements(snapshot, 20000, "off", measuredExpectation)).toThrow("cap arm");
   for (const invalid of [
     { ...snapshot, epoch: 0 },
     { ...snapshot, blobs: [] },
@@ -81,9 +83,11 @@ test("bounded desktop validator keeps workload, native, queue, and epoch control
     { ...snapshot, presents: [] },
     { ...snapshot, armed: false },
   ])
-    expect(() => desktopMeasurements(invalid, 20000, "on")).toThrow();
-  expect(() => desktopMeasurements(snapshot, 50000, "on")).toThrow("workload");
-  expect(() => desktopMeasurements(measured(), 20000, "on")).toThrow("workload");
+    expect(() => desktopMeasurements(invalid, 20000, "on", measuredExpectation)).toThrow();
+  expect(() => desktopMeasurements(snapshot, 50000, "on", measuredExpectation)).toThrow("workload");
+  expect(() => desktopMeasurements(measured(), 20000, "on", measuredExpectation)).toThrow(
+    "workload",
+  );
 });
 test("failed controls retain their raw sample, clean up, and stop later timed arms", async () => {
   const calls: string[] = [];
@@ -108,12 +112,7 @@ test("failed controls retain their raw sample, clean up, and stop later timed ar
     control: { positive: "raw" },
     cleanup: { stopped: true },
   });
-  expect(calls).toEqual([
-    "reset",
-    "openDesktopArm",
-    "observeTriangleScreenshot",
-    "closeDesktopArm",
-  ]);
+  expect(calls).toEqual(["reset", "openDesktopArm", "closeDesktopArm"]);
 });
 test("host memory is explicitly process RSS rather than physical GPU or logical image bytes", () => {
   const sample = processMemorySample();
@@ -148,3 +147,198 @@ live(
   },
   300000,
 );
+
+test("desktop validation rejects a peer with presents but no actual draws", () => {
+  const source = boundedObservation();
+  const invalid = {
+    ...source,
+    records: Object.fromEntries(
+      Object.entries(source.records)
+        .filter(([key]) => key !== "2:nested:14")
+        .map(([key, value]) => [key, key === "2:nested:13" ? { ...value, count: 256 } : value]),
+    ),
+    native: Object.fromEntries(Object.entries(source.native).filter(([key]) => key !== "2:draw")),
+    slices: source.slices.map((slice) => (slice.connection === 2 ? { ...slice, draws: 0 } : slice)),
+  };
+  expect(() => desktopMeasurements(invalid, 20000, "on", measuredExpectation)).toThrow();
+});
+test("desktop measurement Playwright navigation always uses the shared helper", () => {
+  const source = readFileSync(new URL("../tooling/gpu-measure.ts", import.meta.url), "utf8");
+  expect(source).not.toMatch(/[.]goto\s*[(]/);
+  expect(source).toContain("navigateTestPage");
+});
+test("desktop driver refuses missing positive controls before measuring any arm", async () => {
+  const result = await runDesktopMeasurements(
+    {
+      reset: async () => {},
+      screenshot: async () => "unused",
+      call: async (_module, method) =>
+        method === "runDesktopWorkload"
+          ? { fairness: boundedObservation() }
+          : method === "retireDesktopArm"
+            ? {
+                service: {
+                  connections: 0,
+                  devicesLive: 0,
+                  heapBytes: 0,
+                  frameTexturesLive: 0,
+                  presentCanvasesLive: 0,
+                },
+              }
+            : undefined,
+    },
+    1,
+  );
+  expect(result.samples).toHaveLength(1);
+  expect(result.samples[0]).toHaveProperty("kind", "failed");
+});
+
+function desktopController() {
+  let token = "",
+    resets = 0;
+  let caps: "on" | "off" = "on";
+  const ownAuthority = [
+    { canaries: Array.from({ length: 10 }, (_, i) => `canary-${i}`), leaks: [] },
+  ];
+  const exit = () => ({
+    exit: { kind: "exited", code: 0 },
+    text: "GPU_STAGE closed",
+    ownAuthority,
+  });
+  const identity = () => ({
+    token,
+    caps,
+    document: {
+      url: `http://localhost/?arm=${token}`,
+      timeOrigin: 1000 + resets,
+      isolated: true,
+      userAgent: "test",
+    },
+  });
+  const zero = {
+    connections: 0,
+    devicesLive: 0,
+    heapBytes: 0,
+    frameTexturesLive: 0,
+    presentCanvasesLive: 0,
+  };
+  const service = (connections: number) => ({
+    ...zero,
+    connections,
+    devicesLive: connections,
+    desktopCaps: caps,
+    fairness: boundedObservation(),
+  });
+  const calls: string[] = [];
+  const controller: MeasurementController = {
+    reset: async (value) => {
+      token = value;
+      resets++;
+    },
+    screenshot: async () => "pixels",
+    call: async (_module, method, args = []) => {
+      calls.push(method);
+      if (method === "openDesktopArm") {
+        if (args[0] !== "on" && args[0] !== "off") throw new Error("caps");
+        caps = args[0];
+        return {
+          identity: identity(),
+          firstCompiledFrameMarkerMs: 1,
+          incomplete: { observerError: "positive coverage missing" },
+          frame: { text: "GPU_FRAME colour=red frame=1 validation=none", errors: [] },
+        };
+      }
+      if (method === "armDesktopWorkload")
+        return {
+          identity: identity(),
+          controlExit: exit(),
+          armed: { ...service(0), coverage: { ...boundedObservation(), epoch: 0, armed: false } },
+          ready: service(2),
+        };
+      if (method === "observeDesktopPixels")
+        return {
+          identity: identity(),
+          pixels: {
+            center: args[2] === "green" ? [0, 255, 0, 255] : [255, 0, 0, 255],
+            corner: [0, 0, 0, 255],
+          },
+        };
+      if (method === "runDesktopWorkload") return { identity: identity(), ...service(1) };
+      if (method === "retireDesktopArm")
+        return { identity: identity(), exits: [exit(), exit()], service: service(0) };
+      if (method === "closeDesktopArm")
+        return { identity: identity(), errors: [], workers: [{ url: "owned", stopped: true }] };
+      throw new Error(method);
+    },
+  };
+  return { controller, calls, identity, exit, service };
+}
+test("desktop driver validates a complete current arm before starting another", async () => {
+  const { controller } = desktopController();
+  const result = await runDesktopMeasurements(controller, 1);
+  expect(result.samples[0]).toHaveProperty("kind", "measured");
+});
+for (const method of [
+  "openDesktopArm",
+  "observeDesktopPixels",
+  "armDesktopWorkload",
+  "runDesktopWorkload",
+  "retireDesktopArm",
+  "closeDesktopArm",
+]) {
+  test(`desktop driver rejects missing ${method} result`, async () => {
+    const { controller } = desktopController(),
+      call = controller.call;
+    controller.call = async (module, name, args) =>
+      name === method ? undefined : call(module, name, args);
+    const result = await runDesktopMeasurements(controller, 1);
+    expect(result.samples).toHaveLength(1);
+    expect(result.samples[0]).toHaveProperty("kind", "failed");
+  });
+}
+for (const patch of [{ identity: { token: "wrong" } }, { firstCompiledFrameMarkerMs: NaN }]) {
+  test("desktop driver rejects wrong-document or nonfinite control observations", async () => {
+    const { controller } = desktopController(),
+      call = controller.call;
+    controller.call = async (module, name, args) => {
+      const value = await call(module, name, args);
+      return name === "openDesktopArm" ? { ...Object(value), ...patch } : value;
+    };
+    const result = await runDesktopMeasurements(controller, 1);
+    expect(result.samples).toHaveLength(1);
+    expect(result.samples[0]).toHaveProperty("kind", "failed");
+  });
+}
+for (const missing of [0, 1]) {
+  test(`desktop retirement rejects missing measured guest ${missing} authority despite control report`, () => {
+    const fixture = desktopController(),
+      exits = [fixture.exit(), fixture.exit()];
+    exits[missing] = { ...fixture.exit(), ownAuthority: [] };
+    const identity = fixture.identity();
+    expect(() =>
+      desktopRetired(
+        { identity, exits, service: fixture.service(0), authority: fixture.exit().ownAuthority },
+        identity,
+      ),
+    ).toThrow("authority");
+  });
+}
+
+for (const patch of [
+  { desktopCaps: "off" },
+  { connections: Infinity },
+  { devicesLive: -1 },
+  { fairness: { ...boundedObservation(), epoch: 2 } },
+]) {
+  test("desktop final result must retain ready caps, finite resources and epoch", async () => {
+    const { controller } = desktopController(),
+      call = controller.call;
+    controller.call = async (module, name, args) => {
+      const value = await call(module, name, args);
+      return name === "runDesktopWorkload" ? { ...Object(value), ...patch } : value;
+    };
+    const result = await runDesktopMeasurements(controller, 1);
+    expect(result.samples).toHaveLength(1);
+    expect(result.samples[0]).toHaveProperty("kind", "failed");
+  });
+}

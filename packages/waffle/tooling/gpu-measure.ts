@@ -16,6 +16,7 @@ import {
 import { verifiedGpuFixture, verifiedGpuSceneFixture } from "../scripts/build-gpu-fixture.js";
 
 import { runDesktopMeasurements, type MeasurementController } from "./gpu-desktop-measure.js";
+import { navigateTestPage } from "../tests/browser-navigation.js";
 import { sampleProcessMemory } from "./gpu-measure-host.js";
 
 type Controller = MeasurementController;
@@ -34,6 +35,7 @@ const desktopMethods = [
   "runDesktopWorkload",
   "retireDesktopArm",
   "closeDesktopArm",
+  "observeDesktopPixels",
 ];
 /** The same prepared routes work in Playwright and actual desktop Safari. */
 export async function gpuMeasurementRoutes(
@@ -175,10 +177,10 @@ export async function runGpuMeasurementBrowser(
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
-    await page.goto(url);
+    await navigateTestPage(page, url);
     const controller: Controller = {
-      reset: async () => {
-        await page.goto(`${url}?arm=${crypto.randomUUID()}`);
+      reset: async (token) => {
+        await navigateTestPage(page, `${url}?arm=${token}`);
       },
       call: (module, method, args = []) =>
         page.evaluate(
@@ -298,8 +300,8 @@ export async function runGpuMeasurementSafari(
     await webdriver(driver, `${path}/timeouts`, { script: 120_000 });
     await webdriver(driver, `${path}/url`, { url });
     const controller: Controller = {
-      reset: async () => {
-        await webdriver(driver, `${path}/url`, { url: `${url}?arm=${crypto.randomUUID()}` });
+      reset: async (token) => {
+        await webdriver(driver, `${path}/url`, { url: `${url}?arm=${token}` });
       },
       call: async (module, method, args = []) => {
         if (

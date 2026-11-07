@@ -1,8 +1,8 @@
 import type { FairnessSnapshot } from "./fairness-observer.js";
 import {
-  fairnessConnectionIds,
   validateFairnessObservation,
   wireCount,
+  type ObservationExpectation,
 } from "./fairness-validation.js";
 import { distribution } from "./measurement-contract.js";
 
@@ -22,10 +22,11 @@ export function desktopMeasurements(
   snapshot: FairnessSnapshot,
   draws: DesktopDraws,
   caps: DesktopCaps,
+  expected: Omit<ObservationExpectation, "phase">,
 ) {
-  const connections = fairnessConnectionIds(snapshot);
+  const connections = Array.from(expected.connections);
   const totals = validateFairnessObservation(snapshot, {
-    epoch: 1,
+    epoch: expected.epoch,
     connections,
     phase: "complete",
   });
@@ -44,6 +45,7 @@ export function desktopMeasurements(
   if (
     totals.get(blob.connection)?.records !== draws + 23 ||
     totals.get(peer)?.records !== 7 + 20 * 128 ||
+    totals.get(peer)?.draws !== 128 ||
     wireCount(snapshot, peer, 6) !== 128 ||
     wireCount(snapshot, blob.connection, 6) !== 1
   )
