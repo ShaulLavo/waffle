@@ -6,9 +6,11 @@ import {
 } from "../../proc/intrinsics.js";
 import { descriptor } from "../../proc/intrinsics/core.js";
 import { gpuPayloadLayout } from "./generated/graphics-layout.js";
-const growableGetter = descriptor(SharedArrayBufferConstructor.prototype, "growable")?.get;
+const growableGetter = SharedArrayBufferConstructor
+  ? descriptor(SharedArrayBufferConstructor.prototype, "growable")?.get
+  : undefined;
 function fixedBuffer(value: unknown, bytes: number): value is SharedArrayBuffer {
-  if (!(value instanceof SharedArrayBufferConstructor)) return false;
+  if (!SharedArrayBufferConstructor || !(value instanceof SharedArrayBufferConstructor)) return false;
   return (
     sharedArrayBufferByteLength(value) === bytes &&
     (!growableGetter || reflectApply(growableGetter, value, []) !== true)
