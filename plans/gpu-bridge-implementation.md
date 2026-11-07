@@ -662,3 +662,12 @@ The existing single-worker topology, 8 ms slice and 100 ms peer targets are unch
 `hardwareQualified` remains false and all historical not-met samples remain. This bounded proof
 does not complete broader G3 or qualify hardware. Production, async command and adapter fixtures,
 C producer, workload, deadlines, versions, workflow and budgets are unchanged.
+
+## G3 whole-service failure proof in progress
+
+Status: Approved. Add one compiled active-load failure and serial recovery case. The original
+green peer must present correct pixels and new native queue work before the actual service
+Worker fails. The normal page owner must terminate that worker and settle retained connections
+and opening waiters. Recovery uses the same live runtime, a fresh eligible canvas and a new
+service incarnation. No original peer survives this global boundary. Production code, producer
+inputs, workloads, latency targets and hardware qualification are unchanged.
