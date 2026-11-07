@@ -182,3 +182,33 @@ test("uncertain create remains owned after its waiter aborts and cannot navigate
   await Bun.sleep(0);
   expect(driver.navigations).toBe(2);
 });
+
+test("peer admission observes receipt before ACK without granting user commands early", async () => {
+  const driver = new PeerDriverFixture();
+  driver.holdPeerReadyAcknowledgement = true;
+  await fixture(
+    driver,
+    async (host) => {
+      const opening = host.openPeer();
+      void opening.catch(() => {});
+      const observed = await bounded(
+        driver.peerAdmissionObserved.promise,
+        300,
+        "peer admission observation",
+      );
+      expect(observed).toEqual({ phase: "admitting", pending: 1 });
+      expect(driver.actions).toEqual(["create"]);
+      expect(driver.effects).toEqual([]);
+      driver.release.resolve();
+      const peer = await opening;
+      await peer.script("window.effects.push(1);");
+      return true;
+    },
+    (result) => {
+      expect(result.failures).toEqual([]);
+      expect(result.exit).toBe(0);
+      expect(result.runComplete).toBe(true);
+      expect(driver.effects).toEqual([1]);
+    },
+  );
+});

@@ -50,6 +50,13 @@ class PeerDocument {
     const origin = new URL(url).origin;
     this.reporter = new OrderedReporter(String(config.run), async (path, init) => {
       const response = await fetch(origin + path, init);
+      if (
+        driver.holdPeerReadyAcknowledgement &&
+        String(init.body).includes('"kind":"peer-ready"')
+      ) {
+        driver.peerReadyReceived.resolve();
+        await driver.release.promise;
+      }
       if (String(init.body).includes('"kind":"transition-ready"')) {
         driver.prepared.resolve();
         if (driver.holdAcknowledgement) await driver.release.promise;
@@ -135,6 +142,10 @@ export class PeerDriverFixture extends FakeDriver {
   prepared = Promise.withResolvers<void>();
   readonly release = Promise.withResolvers<void>();
   holdAcknowledgement = false;
+  holdPeerReadyAcknowledgement = false;
+  readonly peerReadyReceived = Promise.withResolvers<void>();
+  readonly peerAdmissionObserved = Promise.withResolvers<{ phase: string; pending: number }>();
+  private readonly peerStarts: Promise<void>[] = [];
   selectionGate: Promise<void> | undefined;
   selected = "root";
   constructor(readonly fault: PeerFault = "none") {
@@ -180,7 +191,14 @@ export class PeerDriverFixture extends FakeDriver {
     if (!record(value)) throw new Error("No fake configuration");
     const page = new PeerDocument(value, url, this);
     this.windows.set(this.selected, page);
-    await page.start();
+    const started = page.start();
+    if (value.role === "peer" && this.holdPeerReadyAcknowledgement) {
+      this.peerStarts.push(started);
+      void started.catch(() => {});
+      await this.peerReadyReceived.promise;
+      return;
+    }
+    await started;
   }
   override async reloadWindow(): Promise<void> {
     this.actions.push("reload");
@@ -197,10 +215,20 @@ export class PeerDriverFixture extends FakeDriver {
   }
   override async script(source: string): Promise<unknown> {
     const page = this.document();
-    return new Function("window", "location", source)(page.window, { href: page.url });
+    const value: unknown = new Function("window", "location", source)(page.window, {
+      href: page.url,
+    });
+    if (source.includes("return h.phase === 'driving' && window.__pageRunner.pending === 0;"))
+      this.peerAdmissionObserved.resolve({
+        phase: page.host.phase,
+        pending: page.reporter.observation.pending,
+      });
+    return value;
   }
-  override stop() {
+  override async stop() {
+    this.release.resolve();
     for (const page of this.windows.values()) page?.stop();
+    await Promise.all(this.peerStarts);
     return super.stop();
   }
 }
