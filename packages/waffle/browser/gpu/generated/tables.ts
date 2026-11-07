@@ -5787,7 +5787,7 @@ export const gpuStreamSources = {
   "tests/fixtures/gpu/copy-draw-expected.json":
     "8cc1bcc69dd906d339655b2c1b87a7f495511ee248cca8bee453b86a42909851",
   "tests/fixtures/gpu/label-expected.json":
-    "8317d5ab8d1bc69d89550aa3ca6bb6ba17938142d038d579c33e452cb67fcc2e",
+    "f43f423154ca50022e6d07cf4b424ff5c2491ee49b144e4ab8bff32e3e7a38cf",
 };
 export const gpuDescriptorAdapters = {
   "adapter-options": {

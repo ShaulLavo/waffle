@@ -208,5 +208,12 @@
       },
       "hex": "6a000000 18000000 07000000 03000000 01000000 4c000000"
     }
-  ]
+  ],
+  "prior88": {
+    "calls": "922b2981bea71d85394cd690163c919f5d711bd2dd46b9a19a5d6497d4d5567d",
+    "records": "950c24748b0067b8eae5aa99fa5cc3a3c59c7062a9bb14699f81eb9095659331",
+    "structs": "aadd0a7117a18a25afe135105c6165c90f34781a3eb0ae788feeeb527b97e8a3",
+    "enums": "15c7d6ed5095ec5d9aa4d7bd20dcb1fb55a79c626b41cf4eb95210d6d99187b2",
+    "root": "8e52bf8802ec331ff9c9bb9dbf583a6a52a3bac44edd85ee37c0aa1ed3bb22e9"
+  }
 }

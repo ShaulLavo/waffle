@@ -19,7 +19,7 @@ test("copy/draw selection preserves pinned argument order and exactly 20 append-
   const yaml: unknown = Bun.YAML.parse(
     await Bun.file(new URL("../browser/gpu/upstream/webgpu.yml", import.meta.url)).text(),
   );
-  const calls = gpuStream.calls.filter((call) => call.opcode >= 69);
+  const calls = gpuStream.calls.filter((call) => call.opcode >= 69 && call.opcode <= 88);
   expect(calls.map((call) => call.name)).toEqual(expected.vectors.map((vector) => vector.command));
   expect(calls.map((call) => call.opcode)).toEqual(Array.from({ length: 20 }, (_, i) => 69 + i));
   const objects = list(record(yaml).objects).map(record);

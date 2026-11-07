@@ -93,3 +93,13 @@ test("generator rejects altered label target, receiver context and optional C ar
   Reflect.set(record(list(label.args)[0]), "optional", true);
   expect(() => compileSchema(changed, selection)).toThrow("required YAML label");
 });
+
+test("all prior 88 layouts, private records and numeric enums stay unchanged", async () => {
+  const { sha256 } = await import("../tooling/gpu-stream.ts");
+  const digest = (value: unknown) => sha256(JSON.stringify(value));
+  expect(digest(gpuStream.calls.filter((call) => call.opcode <= 88))).toBe(expected.prior88.calls);
+  expect(digest(gpuStream.records)).toBe(expected.prior88.records);
+  expect(digest(gpuStream.structs)).toBe(expected.prior88.structs);
+  expect(digest(gpuStream.enums)).toBe(expected.prior88.enums);
+  expect(digest(gpuStream.root)).toBe(expected.prior88.root);
+});
