@@ -297,7 +297,7 @@ function retired(native: Record<string, unknown>) {
     "unretired admitted owner",
   );
 }
-function immutableRetired(previous: Record<string, unknown>, next: Record<string, unknown>) {
+export function immutableRetired(previous: Record<string, unknown>, next: Record<string, unknown>) {
   stableRetirement(previous, previous, next);
   for (const key of [
     "readerReads",
@@ -380,7 +380,7 @@ function snapshotProof(service: Record<string, unknown>, observed: Observation) 
   observed.at = number(service.at);
   observed.responses.add(service.responseId);
 }
-function bracketProof(
+export function bracketProof(
   phase: Record<string, unknown>,
   peer: unknown,
   previous: { presents: number; queue: number },
@@ -452,7 +452,7 @@ function retiredActivity(service: Record<string, unknown>, id: unknown) {
   requireProof(Object.keys(calls).length > 0, "missing retired native call observations");
   return { at: number(service.at), presents, queue, slices: owned("slices"), calls };
 }
-function unchangedSubmissions(
+export function unchangedSubmissions(
   previous: readonly Record<string, unknown>[],
   current: readonly Record<string, unknown>[],
   previousAt: number,

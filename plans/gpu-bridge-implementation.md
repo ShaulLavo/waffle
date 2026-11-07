@@ -621,9 +621,11 @@ service failure, physical iPhone acceptance and full G0.3/G4 qualification remai
 ## G3 same-canvas regrant checkpoint, November 7, 2026
 
 Status: Approved. This bounded unit adds immediate revoke and regrant of the same canvas while
-an original unrelated native peer continues presenting. The proof holds the old owner's
-oversized compiled append, orders replacement configuration after service retirement and
-presenter release, and checks that later original work cannot revive old ownership or mutate
+an original unrelated native peer continues presenting. The old owner replays the compiled 200,000-draw blob and waits inside its real completions
+import while a native error-scope result is held. The page revokes its grant and creates the
+replacement grant in the same task, before observing old retirement. The replacement configures
+and presents blue pixels on the exact original surface after old service retirement and presenter
+release. Releasing the unchanged native scope result must not revive old ownership or mutate
 the replacement. Permanent negative controls reject each missing proof independently.
 
 The 8 ms service-slice and 100 ms peer-gap targets stay unchanged. All raw timing samples,

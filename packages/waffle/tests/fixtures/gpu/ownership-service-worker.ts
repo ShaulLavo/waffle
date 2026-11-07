@@ -9,7 +9,7 @@ import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 
 type Open = Extract<GpuServiceRequest, { type: "open" }>;
-type Mode = "append" | "completions" | "header" | "chunk" | "nesting" | "admission";
+type Mode = "append" | "completions" | "header" | "chunk" | "nesting" | "admission" | "regrant";
 interface Owner {
   readonly id: number;
   readonly open: Open;
@@ -57,6 +57,46 @@ interface OpenAttempt {
 const attempts: OpenAttempt[] = [];
 const rings = new WeakMap<RecordRing, Owner>();
 const devices = new WeakMap<GPUDevice, Owner>();
+const presenters = new WeakMap<object, number>();
+let nextPresenter = 0;
+const lifecycle: {
+  kind: string;
+  owner: number;
+  grant: number;
+  surface: number;
+  device: number;
+  presenter: number;
+  at: number;
+}[] = [];
+function presenterId(value: object | undefined): number {
+  if (!value) return 0;
+  const existing = presenters.get(value);
+  if (existing) return existing;
+  const id = ++nextPresenter;
+  presenters.set(value, id);
+  return id;
+}
+function life(kind: string, owner: Owner, presenter = 0) {
+  if (lifecycle.length >= 8192) throw new Error("Ownership lifecycle overflow");
+  lifecycle.push({
+    kind,
+    owner: owner.id,
+    grant: owner.open.grant,
+    surface: owner.open.surfaces[0]!.id,
+    device: owner.device,
+    presenter,
+    at: performance.now(),
+  });
+}
+let scopeResult:
+  | {
+      owner: number;
+      device: number;
+      kind: "none" | "error";
+      at: number;
+      releasedAt: number | null;
+    }
+  | undefined;
 let receiving: Open | undefined;
 let active: Owner | undefined;
 let serial = 0;
@@ -70,7 +110,14 @@ let nativeReleased = false;
 const gate = Promise.withResolvers<void>();
 let malformedReleased = false;
 let injection:
-  | { owner: number; mode: Mode; read: number; offset: number; before: number; after: number }
+  | {
+      owner: number;
+      mode: Mode;
+      read: number;
+      offset: number;
+      before: number;
+      after: number;
+    }
   | undefined;
 let late: { reads: number; kind: string; reason: number } | undefined;
 function malformed(): boolean {
@@ -169,7 +216,14 @@ function corrupt(owner: Owner, view: DataView) {
   const before = view.getUint32(offset, true);
   const after = mode === "header" ? 0xffff0001 : mode === "chunk" ? chunkOffset + 8 : 0x1001;
   view.setUint32(offset, after, true);
-  injection = { owner: owner.id, mode, read: owner.ringReads, offset, before, after };
+  injection = {
+    owner: owner.id,
+    mode,
+    read: owner.ringReads,
+    offset,
+    before,
+    after,
+  };
 }
 const disposeReader = LogicalReader.prototype.dispose;
 LogicalReader.prototype.dispose = function () {
@@ -184,8 +238,42 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
   const owner = owners.find((entry) => entry.connection.completions === this.completions);
   if (!owner) throw new Error("Ownership surface observer missing");
   owner.surfaces = this;
+  life("configure", owner, presenterId(this.visible.get(owner.open.surfaces[0]!.id)?.presenter));
   return result;
 };
+const disposeSurfaces = SurfaceConnection.prototype.dispose;
+SurfaceConnection.prototype.dispose = function () {
+  const owner = owners.find((entry) => entry.connection.completions === this.completions);
+  const presenter = owner ? this.visible.get(owner.open.surfaces[0]!.id)?.presenter : undefined;
+  const result = disposeSurfaces.call(this);
+  if (owner) life("release", owner, presenterId(presenter?.owner === this ? presenter : undefined));
+  return result;
+};
+const popScope = globalThis.GPUDevice?.prototype.popErrorScope;
+if (popScope) {
+  GPUDevice.prototype.popErrorScope = function () {
+    const owner = devices.get(this);
+    const pending = popScope.call(this);
+    if (!owner || !enabled || selection?.mode !== "regrant" || !selected(owner) || held)
+      return pending;
+    held = true;
+    return pending.then(async (result) => {
+      scopeResult = {
+        owner: owner.id,
+        device: owner.device,
+        kind: result === null ? "none" : "error",
+        at: performance.now(),
+        releasedAt: null,
+      };
+      nativeHeld = true;
+      await gate.promise;
+      scopeResult.releasedAt = performance.now();
+      nativeHeld = false;
+      nativeReleased = true;
+      return result;
+    });
+  };
+}
 const replayStep = GpuReplay.prototype.step;
 GpuReplay.prototype.step = function () {
   const result = replayStep.call(this);
@@ -237,7 +325,11 @@ if (destroy) {
 }
 const service = new GpuService((message) => {
   if (message.type === "retired") {
-    for (const owner of owners) if (owner.open.grant === message.grant) owner.retiredAck = true;
+    for (const owner of owners)
+      if (owner.open.grant === message.grant) {
+        owner.retiredAck = true;
+        life("retired", owner);
+      }
     for (const attempt of attempts)
       if (attempt.message.grant === message.grant) attempt.retiredAck = true;
   }
@@ -285,6 +377,8 @@ function ownerSnapshot(owner: Owner) {
     payloadBytes: connection.completions.payloadBytes,
     replayBusy: connection.replay.busy,
     presenter: presenter !== undefined,
+    presenterId: presenterId(presenter),
+    presenterDevice: presenter ? (devices.get(presenter.device)?.device ?? 0) : 0,
     frame: presenter?.frame !== undefined,
     retiredAck: owner.retiredAck,
     commands: ringSnapshot(owner.open.open.commands),
@@ -338,6 +432,8 @@ function snapshot(responseId: string) {
     attempts: attempts.map(attemptSnapshot),
     nativeRequests,
     fairness: fairness.snapshot(),
+    lifecycle: lifecycle.slice(),
+    scopeResult,
   };
 }
 function coverage() {
@@ -371,7 +467,7 @@ function arm(data: Command) {
   if (Object.values(native).some((count) => count <= 0))
     throw new Error("Ownership native observer positive coverage missing in this service");
   selection = { token: data.token, surface: data.surface, mode: data.mode };
-  if (malformed()) {
+  if (malformed() || data.mode === "regrant") {
     const victim = owners.find(selected);
     if (
       !victim ||
@@ -403,7 +499,10 @@ function command(data: Command) {
     }
     if (data.test === "ownership-arm") {
       const coverage = arm(data);
-      host.postMessage({ testId: data.id, gpuSnapshot: { ...snapshot(data.id), coverage } });
+      host.postMessage({
+        testId: data.id,
+        gpuSnapshot: { ...snapshot(data.id), coverage },
+      });
       return;
     }
     if (data.test === "malformed-release") malformedReleased = true;
@@ -426,7 +525,10 @@ function command(data: Command) {
     }
     host.postMessage({ testId: data.id, gpuSnapshot: snapshot(data.id) });
   } catch (error) {
-    host.postMessage({ testId: data.id, gpuSnapshot: { observerError: String(error) } });
+    host.postMessage({
+      testId: data.id,
+      gpuSnapshot: { observerError: String(error) },
+    });
   }
 }
 host.onmessage = ({ data }) => {
