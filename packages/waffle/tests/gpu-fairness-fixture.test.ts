@@ -76,6 +76,20 @@ describe.skipIf(!directory)(
       expect(host.output.join("")).toContain("GPU_FAIRNESS_REPLAYED draws=200000");
     });
 
+    test.each([20000, 50000])(
+      "desktop mode %i publishes one distinct bounded blob without changing G1",
+      (draws) => {
+        const host = run([draws === 20000 ? "--desktop-heavy-20k" : "--desktop-heavy-50k"]);
+        const blobs = host.commands.filter((bytes) => opcode(bytes) === 0x1001);
+        expect(blobs).toHaveLength(1);
+        expect(blobs[0]!.byteLength).toBe(draws * 24 + 184);
+        expect(blobs[0]!.byteLength).toBeLessThan(4 * 1024 * 1024);
+        expect(blobRecords(blobs[0]!).filter((bytes) => opcode(bytes) === 14)).toHaveLength(draws);
+        expect(host.output.join("")).toContain(`GPU_FAIRNESS_REPLAYED draws=${draws}`);
+        expect(host.readPresentCounts).toEqual([0, 1]);
+      },
+    );
+
     test("the actual compiled blob yields inside its open pass while a second connection presents", () => {
       const { blob } = largeBlob();
       const target = new RecordingTarget();

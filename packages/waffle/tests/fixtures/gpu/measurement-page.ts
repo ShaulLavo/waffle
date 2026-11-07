@@ -208,6 +208,7 @@ async function extraDevices(options: MeasurementOptions) {
       const owner = await openWorker(options.timeoutMs);
       cohort.push(owner);
       devices.push({
+        observedAt: new Date().toISOString(),
         workerStartupMs: owner.startupMs,
         device: await request(owner, { kind: "device" }, options.timeoutMs),
       });
@@ -319,11 +320,11 @@ export async function runGpuMeasurement(input: unknown = defaultMeasurementOptio
         lightGuestFairness: {
           kind: "unmet",
           reason:
-            "Requires real compiled 20,000–50,000-draw guest workload and caps-on/off comparison; G1 workload not implemented. No page-authored stream substitute.",
+            "Requested desktop comparison is reported separately by the portable runner using real compiled 20,000 and 50,000-draw modes. No page-authored stream substitute.",
         },
         replayPerDraw: {
           kind: "unmet",
-          reason: "Requires the real compiled high-draw guest workload.",
+          reason: "See the portable runner desktopFairness result when explicitly requested.",
         },
         physicalIphoneDeviceCount: {
           kind: "unmet",
