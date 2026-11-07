@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { buildNetwork, verifyNetwork } from "../tooling/build-network";
-import { buildNodeModules, rewriteNodeImports } from "../build";
+import { buildFrameworkBootstrap, buildNodeModules, rewriteNodeImports } from "../build";
 import { assertWasiLibcBuildInputs } from "../tooling/package-inputs";
 
 test("Node emission rewrites import syntax, never matching strings, comments or regexes", async () => {
@@ -48,6 +48,22 @@ const pattern = /import('keep')/;`;
     expect(() => rewriteNodeImports("import '../outside';", join(root, "index.ts"), root)).toThrow(
       "outside package",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("framework browser controls prepare only their bootstrap in a clean output", async () => {
+  const root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "framework-bootstrap-"));
+  try {
+    const source = new URL("../", import.meta.url).pathname;
+    await buildFrameworkBootstrap(source, root);
+    const output = join(root, "tests/page-runner/framework-bootstrap.js");
+    const script = await Bun.file(output).text();
+    expect(script).toContain("__waffleFrameworkConfiguration");
+    expect(new Bun.Transpiler({ loader: "js" }).scanImports(script)).toEqual([]);
+    expect(existsSync(join(root, "index.js"))).toBe(false);
+    expect(existsSync(join(root, "browser/net/network.wasm"))).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

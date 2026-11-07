@@ -1,7 +1,7 @@
 /** @browserEntry Called only by the production command page through its module URL. */
 export function objectResult(...args: string[]) {
   if (!crossOriginIsolated) throw new Error("Command page lost cross-origin isolation");
-  return { early: 110, late: 90, args };
+  return { early: 110, late: 90, args, relay: { iterations: 200_000 } };
 }
 /** @browserEntry Called only by the production command page through its module URL. */
 export function arrayResult() {
@@ -38,7 +38,7 @@ export function multibyteResult() {
 /** @browserEntry Called only by the production command page through its module URL. */
 export function snapshotResult() {
   let calls = 0;
-  return { toJSON: () => ({ early: ++calls, late: 199, calls }) };
+  return { toJSON: () => ({ early: ++calls, late: 199, calls, relay: { iterations: 200_000 } }) };
 }
 /** @browserEntry Called only by the production command page through its module URL. */
 export function wrongResult() {
