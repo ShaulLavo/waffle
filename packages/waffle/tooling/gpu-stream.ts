@@ -31,6 +31,7 @@ const fixedInputs = [
   "tests/fixtures/gpu/compute-expected.json",
   "tests/fixtures/gpu/bundle-query-expected.json",
   "tests/fixtures/gpu/copy-draw-expected.json",
+  "tests/fixtures/gpu/label-expected.json",
 ];
 
 export function sha256(bytes: string | Uint8Array): string {
@@ -71,6 +72,10 @@ function result(value: unknown): Result {
 function lowering(value: unknown): Lowering {
   const entry = record(value);
   switch (entry.kind) {
+    case "label":
+      if (entry.target === "native" || entry.target === "surface-reference")
+        return { kind: entry.kind, target: entry.target };
+      break;
     case "method":
       return { kind: entry.kind, member: text(entry.member) };
     case "descriptor-method":
@@ -218,6 +223,7 @@ function compileCall(
     !args.some((arg) => arg.name === "descriptor" && arg.type === `struct.${adapter.descriptor}`)
   )
     throw new Error("Descriptor lowering must match the pinned C argument");
+  if (adapter.kind === "label") validateLabel(name, context, adapter, args);
   const input =
     chosen.kind === "handle" && chosen.source === "output" ? [] : spanArguments(args, adapter);
   return {
@@ -233,6 +239,27 @@ function compileCall(
     omitted,
     fields: prefix.concat(input),
   };
+}
+
+function validateLabel(
+  name: string,
+  context: CallLayout["context"],
+  adapter: Extract<Lowering, { kind: "label" }>,
+  args: Field[],
+): void {
+  const expectedContext =
+    name === "command_encoder.set_label"
+      ? "encoder"
+      : name === "render_pass_encoder.set_label"
+        ? "pass"
+        : "top";
+  if (
+    !name.endsWith(".set_label") ||
+    context !== expectedContext ||
+    adapter.target !== (name === "surface.set_label" ? "surface-reference" : "native") ||
+    JSON.stringify(args) !== JSON.stringify([field("label", "string_with_default_empty")])
+  )
+    throw new Error("Label lowering must preserve required YAML label and receiver context");
 }
 
 function spanArguments(args: Field[], adapter: Lowering): Field[] {

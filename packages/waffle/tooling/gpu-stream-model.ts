@@ -15,6 +15,7 @@ export type Result =
   | { kind: "scalar"; type: string };
 
 export type Lowering =
+  | { kind: "label"; target: "native" | "surface-reference" }
   | { kind: "method"; member: string }
   | { kind: "descriptor-method"; member: string; descriptor: string }
   | {

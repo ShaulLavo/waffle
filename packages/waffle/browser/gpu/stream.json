@@ -28,13 +28,21 @@
         "kind": "request-adapter",
         "descriptor": "adapter-options"
       },
-      "omitted": ["callback_info"],
+      "omitted": [
+        "callback_info"
+      ],
       "cReturn": "struct.future",
       "callback": {
         "type": "callback.request_adapter",
         "future": "token-as-future-id",
         "delivery": "guest-local-completion-pump",
-        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
+        "omitted": [
+          "next_in_chain",
+          "mode",
+          "callback",
+          "userdata1",
+          "userdata2"
+        ]
       }
     },
     {
@@ -52,13 +60,21 @@
         "kind": "request-device",
         "descriptor": "device-descriptor"
       },
-      "omitted": ["callback_info"],
+      "omitted": [
+        "callback_info"
+      ],
       "cReturn": "struct.future",
       "callback": {
         "type": "callback.request_device",
         "future": "token-as-future-id",
         "delivery": "guest-local-completion-pump",
-        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
+        "omitted": [
+          "next_in_chain",
+          "mode",
+          "callback",
+          "userdata1",
+          "userdata2"
+        ]
       }
     },
     {
@@ -382,13 +398,21 @@
         "kind": "error-scope",
         "member": "popErrorScope"
       },
-      "omitted": ["callback_info"],
+      "omitted": [
+        "callback_info"
+      ],
       "cReturn": "struct.future",
       "callback": {
         "type": "callback.pop_error_scope",
         "future": "token-as-future-id",
         "delivery": "guest-local-completion-pump",
-        "omitted": ["next_in_chain", "mode", "callback", "userdata1", "userdata2"]
+        "omitted": [
+          "next_in_chain",
+          "mode",
+          "callback",
+          "userdata1",
+          "userdata2"
+        ]
       }
     },
     {
@@ -1603,6 +1627,312 @@
       "omitted": [],
       "cReturn": "void",
       "callback": null
+    },
+    {
+      "opcode": 89,
+      "name": "bind_group.set_label",
+      "receiver": "bind_group",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 90,
+      "name": "bind_group_layout.set_label",
+      "receiver": "bind_group_layout",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 91,
+      "name": "buffer.set_label",
+      "receiver": "buffer",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 92,
+      "name": "command_buffer.set_label",
+      "receiver": "command_buffer",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 93,
+      "name": "command_encoder.set_label",
+      "receiver": "command_encoder",
+      "context": "encoder",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 94,
+      "name": "compute_pipeline.set_label",
+      "receiver": "compute_pipeline",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 95,
+      "name": "device.set_label",
+      "receiver": "device",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 96,
+      "name": "pipeline_layout.set_label",
+      "receiver": "pipeline_layout",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 97,
+      "name": "query_set.set_label",
+      "receiver": "query_set",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 98,
+      "name": "queue.set_label",
+      "receiver": "queue",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 99,
+      "name": "render_bundle.set_label",
+      "receiver": "render_bundle",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 100,
+      "name": "render_pass_encoder.set_label",
+      "receiver": "render_pass_encoder",
+      "context": "pass",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 101,
+      "name": "render_pipeline.set_label",
+      "receiver": "render_pipeline",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 102,
+      "name": "sampler.set_label",
+      "receiver": "sampler",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 103,
+      "name": "shader_module.set_label",
+      "receiver": "shader_module",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 104,
+      "name": "surface.set_label",
+      "receiver": "surface",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "surface-reference"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 105,
+      "name": "texture.set_label",
+      "receiver": "texture",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
+    },
+    {
+      "opcode": 106,
+      "name": "texture_view.set_label",
+      "receiver": "texture_view",
+      "context": "top",
+      "result": {
+        "kind": "void"
+      },
+      "token": null,
+      "lowering": {
+        "kind": "label",
+        "target": "native"
+      },
+      "omitted": [],
+      "cReturn": "void",
+      "callback": null
     }
   ],
   "records": [
@@ -1947,7 +2277,10 @@
     ]
   },
   "omit": {
-    "device_descriptor": ["device_lost_callback_info", "uncaptured_error_callback_info"]
+    "device_descriptor": [
+      "device_lost_callback_info",
+      "uncaptured_error_callback_info"
+    ]
   },
   "events": {
     "device_descriptor.device_lost_callback_info": "device-lost",
@@ -2589,11 +2922,27 @@
   },
   "encoding": {
     "integers": "little-endian",
-    "commandHeader": ["u16 opcode", "u16 flags", "u32 length"],
-    "completionHeader": ["u16 kind", "u16 flags", "u32 length", "u32 token", "i32 status"],
+    "commandHeader": [
+      "u16 opcode",
+      "u16 flags",
+      "u32 length"
+    ],
+    "completionHeader": [
+      "u16 kind",
+      "u16 flags",
+      "u32 length",
+      "u32 token",
+      "i32 status"
+    ],
     "recordAlignment": 8,
-    "handle": ["u32 id", "u32 generation"],
-    "token": ["u32 token", "u32 zero"],
+    "handle": [
+      "u32 id",
+      "u32 generation"
+    ],
+    "token": [
+      "u32 token",
+      "u32 zero"
+    ],
     "optionalStruct": "u32 presence followed by members if present",
     "strings": "u32 UTF-8 length, bytes, pad4; nullable_string permits 0xffffffff",
     "arrays": "u32 count then element alignment then elements",
@@ -2699,7 +3048,25 @@
     "render_pass_encoder.set_viewport": 85,
     "render_pass_encoder.set_scissor_rect": 86,
     "buffer.destroy": 87,
-    "texture.destroy": 88
+    "texture.destroy": 88,
+    "bind_group.set_label": 89,
+    "bind_group_layout.set_label": 90,
+    "buffer.set_label": 91,
+    "command_buffer.set_label": 92,
+    "command_encoder.set_label": 93,
+    "compute_pipeline.set_label": 94,
+    "device.set_label": 95,
+    "pipeline_layout.set_label": 96,
+    "query_set.set_label": 97,
+    "queue.set_label": 98,
+    "render_bundle.set_label": 99,
+    "render_pass_encoder.set_label": 100,
+    "render_pipeline.set_label": 101,
+    "sampler.set_label": 102,
+    "shader_module.set_label": 103,
+    "surface.set_label": 104,
+    "texture.set_label": 105,
+    "texture_view.set_label": 106
   },
   "completionLedger": {
     "adapter": 1,
@@ -3154,7 +3521,10 @@
       "parameter": "surface_texture",
       "type": "struct.surface_texture",
       "reply": "surface-texture",
-      "fields": ["texture", "status"],
+      "fields": [
+        "texture",
+        "status"
+      ],
       "chain": "guest-local-empty-output-chain"
     }
   }

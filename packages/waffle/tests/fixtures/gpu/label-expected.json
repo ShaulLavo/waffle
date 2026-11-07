@@ -1,0 +1,212 @@
+{
+  "vectors": [
+    {
+      "command": "bind_group.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "59000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "bind_group_layout.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "5a000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "buffer.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "5b000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "command_buffer.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "5c000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "command_encoder.set_label",
+      "context": "encoder",
+      "input": {
+        "label": "L"
+      },
+      "hex": "5d000000 10000000 01000000 4c000000"
+    },
+    {
+      "command": "compute_pipeline.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "5e000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "device.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "5f000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "pipeline_layout.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "60000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "query_set.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "61000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "queue.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "62000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "render_bundle.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "63000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "render_pass_encoder.set_label",
+      "context": "pass",
+      "input": {
+        "label": "L"
+      },
+      "hex": "64000000 10000000 01000000 4c000000"
+    },
+    {
+      "command": "render_pipeline.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "65000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "sampler.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "66000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "shader_module.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "67000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "surface.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "68000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "texture.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "69000000 18000000 07000000 03000000 01000000 4c000000"
+    },
+    {
+      "command": "texture_view.set_label",
+      "context": "top",
+      "input": {
+        "receiver": {
+          "id": 7,
+          "generation": 3
+        },
+        "label": "L"
+      },
+      "hex": "6a000000 18000000 07000000 03000000 01000000 4c000000"
+    }
+  ]
+}
