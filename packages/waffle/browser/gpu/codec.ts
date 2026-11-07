@@ -379,8 +379,7 @@ class OutputWriter {
     const length = utf8Length(value);
     this.#u32(length);
     const at = this.#advance(length);
-    if (this.destination)
-      new TextEncoder().encodeInto(value, this.destination.subarray(at, at + length));
+    if (this.destination) writeUtf8(value, this.destination, at);
     this.#align(4);
     if (this.destination && this.offset > this.destination.byteLength)
       throw new GpuProtocolError("Output padding exceeds capacity");
@@ -396,4 +395,30 @@ export function utf8Length(value: string): number {
     bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
   }
   return bytes;
+}
+
+function writeUtf8(text: string, destination: Uint8Array, at: number): void {
+  for (const character of text) {
+    const original = character.codePointAt(0) ?? 0;
+    const code = original >= 0xd800 && original <= 0xdfff ? 0xfffd : original;
+    if (code < 0x80) {
+      destination[at++] = code;
+      continue;
+    }
+    if (code < 0x800) {
+      destination[at++] = 0xc0 | (code >> 6);
+      destination[at++] = 0x80 | (code & 63);
+      continue;
+    }
+    if (code < 0x10000) {
+      destination[at++] = 0xe0 | (code >> 12);
+      destination[at++] = 0x80 | ((code >> 6) & 63);
+      destination[at++] = 0x80 | (code & 63);
+      continue;
+    }
+    destination[at++] = 0xf0 | (code >> 18);
+    destination[at++] = 0x80 | ((code >> 12) & 63);
+    destination[at++] = 0x80 | ((code >> 6) & 63);
+    destination[at++] = 0x80 | (code & 63);
+  }
 }

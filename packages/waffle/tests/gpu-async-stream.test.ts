@@ -152,3 +152,15 @@ int check(void) {
     }
   },
 );
+
+test("production output sizing and direct shared-arena UTF-8 writing match independent C layouts", async () => {
+  const { outputStruct } = await import("../browser/gpu/codec.ts");
+  const { wireObject } = await import("../browser/gpu/codec.ts");
+  for (const vector of expected.structs) {
+    const value = wireObject(vector.input);
+    const length = outputStruct(vector.name, value);
+    const output = new Uint8Array(new SharedArrayBuffer(length));
+    outputStruct(vector.name, value, output);
+    expect(output).toEqual(literal(vector.hex));
+  }
+});

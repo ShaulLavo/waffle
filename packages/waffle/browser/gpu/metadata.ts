@@ -1,6 +1,6 @@
 import type { CallLayout, WireTables } from "../../tooling/gpu-stream-model.js";
 import { gpuDictionaryMembers, gpuStream } from "./generated/tables.js";
-import { outputStruct, wireNumber, type WireObject, type WireValue } from "./codec.js";
+import { outputStruct, wireNumber, type WireObject } from "./codec.js";
 import { nativeCall, nativeObject, type Dictionary } from "./lowering.js";
 import type { CompletionOwner } from "./completions.js";
 import { GpuCallError, GpuResourceError, ServiceCredit } from "./protocol.js";
@@ -37,7 +37,9 @@ export class NativeMetadata {
             ? (Reflect.get(receiver, "adapterInfo") ??
               Reflect.get(this.#adapters.get(receiver) ?? receiver, "info"))
             : Reflect.get(receiver, "info");
-        value.info = adapterInfo(nativeObject(native));
+        const output = call.output.fields.find((field) => field.type === "struct.adapter_info");
+        if (!output) throw new GpuCallError("Missing adapter-info output argument");
+        value[output.name] = adapterInfo(nativeObject(native));
       } else if (adapter === "limits")
         value.limits = limits(nativeObject(Reflect.get(receiver, "limits")));
       else

@@ -433,10 +433,11 @@ test("metadata uses prototype getters, actual adapter and granted device sets", 
       ["adapter.get_limits", 2, 6],
       ["device.get_limits", 3, 7],
       ["instance.get_WGSL_language_features", 1, 8],
+      ["device.get_adapter_info", 3, 9],
     ] as const)
       rig.publish(name, { token, receiver: handle(id) });
     const replies = rig.responses();
-    expect(replies).toHaveLength(6);
+    expect(replies).toHaveLength(7);
     const decoded = replies.map((reply) => {
       const output = rig.copy(mappedHandle(reply), Number(reply.fields.length));
       return new WireReader(output).type(`struct.query_${reply.fields.opcode}`);
@@ -465,6 +466,10 @@ test("metadata uses prototype getters, actual adapter and granted device sets", 
       },
     });
     expect(decoded[5]).toMatchObject({ features: { features: [5] } });
+    expect(decoded[6]).toMatchObject({
+      returned: 1,
+      adapter_info: { vendor: "native", architecture: "cpu" },
+    });
     expect(rig.connection.replay.handles.native(handle(2), "adapter")).toBe(rig.adapter);
   } finally {
     rig.connection.close();
