@@ -136,13 +136,13 @@ test("pass then window error cannot become a clean pass", () => {
   });
 });
 test("list and finish page errors have run/group failures without a running case", () => {
-  const collector = new Collector("run", [], [], storagePolicy);
   for (const role of ["list", "finish"] as const) {
+    const collector = new Collector("run", [], [], storagePolicy);
     collector.expect({ id: role, role, caseIds: [] }, role, "http://runner/", "root");
     collector.receive({ run: "run", doc: role, seq: 0, kind: "hello", token: role, group: role });
     collector.receive({ run: "run", doc: role, seq: 1, kind: "error", message: `${role} failed` });
+    expect(collector.failures.map((failure) => failure.group)).toEqual([role]);
   }
-  expect(collector.failures.map((failure) => failure.group)).toEqual(["list", "finish"]);
 });
 test("case pass remains provisional through doc-complete until acknowledged retirement", () => {
   const f = passed();

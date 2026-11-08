@@ -147,7 +147,7 @@ function retirementCommand(collector: Collector, url: URL): ReturnType<Collector
     url.searchParams.get("doc") !== state.doc
   )
     throw new Error("Unbound retirement poll");
-  return collector.reply(state.retiring);
+  return collector.reply(state.retiring, state);
 }
 export type RunOptions = {
   resultPath: string;
@@ -450,7 +450,7 @@ export async function runPageSuite<R>(
     const handle = await driver.handle(operationSignal);
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
-    const state = collector.expect(group, token, url, handle);
+    const state = collector.expect(group, token, url, handle, cleanupOnly);
     const configuration = pageConfiguration(group, item, run);
     fixture.configurations.set(token, {
       run,
@@ -528,7 +528,7 @@ export async function runPageSuite<R>(
       teardown.deadline,
     );
     if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
-    if (collector.reply().kind === "cancelled")
+    if (collector.reply(false, state).kind === "cancelled")
       throw new Error("Reporting cancelled before retirement");
     state.retiring = true;
     await awaitState(

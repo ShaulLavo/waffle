@@ -132,13 +132,25 @@ export class Collector {
       throw new ObservationClosed("Fixture capability is not the live exact case document");
     return state;
   }
-  private cancelled = false;
+  private reporting:
+    | { kind: "live" | "cancelled" | "cleanup-failed" }
+    | { kind: "cleanup"; document: DocumentState } = { kind: "live" };
   private readonly reportingFailed = new Set<DocumentState>();
   cancel(): void {
-    this.cancelled = true;
+    this.reporting = {
+      kind:
+        this.reporting.kind === "cleanup" || this.reporting.kind === "cleanup-failed"
+          ? "cleanup-failed"
+          : "cancelled",
+    };
   }
-  reply(retire = false): HostReply {
-    return this.cancelled ? { kind: "cancelled" } : { kind: "live", retire };
+  reply(retire = false, state?: DocumentState): HostReply {
+    if (this.reporting.kind === "live") return { kind: "live", retire };
+    if (this.reporting.kind !== "cleanup") return { kind: "cancelled" };
+    const cleanup = this.reporting.document;
+    return state === cleanup && this.owns(cleanup) && cleanup.cutoff === null
+      ? { kind: "live", retire }
+      : { kind: "cancelled" };
   }
   active: DocumentState | undefined;
   runComplete = false;
@@ -168,7 +180,23 @@ export class Collector {
         : {};
     this.failures.push({ group: state?.group.id ?? "run", category, detail, ...document });
   }
-  expect(group: Group, token: string, expectedURL: string, handle: string): DocumentState {
+  expect(
+    group: Group,
+    token: string,
+    expectedURL: string,
+    handle: string,
+    cleanupOnly = false,
+  ): DocumentState {
+    if (!cleanupOnly && this.reporting.kind !== "live")
+      throw new Error("Document admission cancelled");
+    if (
+      cleanupOnly &&
+      (this.reporting.kind !== "cancelled" ||
+        group.role !== "finish" ||
+        group.caseIds.length !== 0 ||
+        group.execution !== undefined)
+    )
+      throw new Error("Invalid fresh cleanup document admission");
     const state: DocumentState = {
       owner: { kind: "coordinator" },
       physical: "live",
@@ -192,6 +220,7 @@ export class Collector {
     };
     this.documents.push(state);
     this.active = state;
+    if (cleanupOnly) this.reporting = { kind: "cleanup", document: state };
     return state;
   }
   expectPeer(
@@ -364,7 +393,7 @@ export class Collector {
       this.reportingFailed.add(state);
       this.fail("page-reporting", value.failure, state);
     }
-    return this.reply();
+    return this.reply(false, state);
   }
   receive(value: unknown): { ackedThrough: number } {
     const known =
