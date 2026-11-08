@@ -20,12 +20,13 @@ for (const failed of [null, 0, 3])
     const original = host.runPageSuite;
     const calls: { suite: string; options: host.RunOptions }[] = [];
     const clock = spyOn(globalThis, "setTimeout");
+    const output = spyOn(console, "log").mockImplementation(() => {});
     const run = spyOn(host, "runPageSuite").mockImplementation(
       async (adapter, _create, options) => {
         const index = calls.length;
         calls.push({ suite: adapter.suite, options });
         const id = adapter.inventory()[0]!.id;
-        return original(
+        const result = await original(
           {
             suite: adapter.suite,
             inventory: () => [{ id, label: "clock control", request: () => ({}) }],
@@ -42,6 +43,12 @@ for (const failed of [null, 0, 3])
           () => new FakeDriver("pass", { list: { ids: [id] }, result: true }),
           options,
         );
+        if (index === failed) {
+          result.outcomes[id] = { status: "fail", detail: "" };
+          result.failures.push({ group: id, category: "case", detail: "Controlled phase failure" });
+          result.cleanup.fixture = { status: "unconfirmed", detail: "Controlled cleanup failure" };
+        }
+        return result;
       },
     );
     const previous = process.env.NETWORK_SCRATCH_ROOT;
@@ -77,10 +84,33 @@ for (const failed of [null, 0, 3])
       const result = JSON.parse(await readFile(path, "utf8"));
       expect(result.complete).toBe(failed === null);
       expect(result.phases).toHaveLength(calls.length);
+      const terminal = JSON.parse(String(output.mock.calls.at(-1)?.[0]));
+      expect(terminal.complete).toBe(failed === null);
+      if (failed === null) expect(terminal.phases).toBeUndefined();
+      else {
+        const phase = result.phases[failed];
+        expect(terminal.phases).toEqual([
+          {
+            target: phase.target,
+            phase: phase.phase,
+            confirmed: false,
+            exit: phase.exit,
+            result: {
+              runComplete: phase.result.runComplete,
+              omitted: phase.result.omitted,
+              failures: phase.result.failures,
+              outcomes: { [Object.keys(phase.result.outcomes)[0]!]: { status: "fail", detail: "" } },
+              cleanup: { fixture: { status: "unconfirmed", detail: "Controlled cleanup failure" } },
+            },
+          },
+        ]);
+        expect(phase.result.failures[0].detail).toContain("Controlled phase failure");
+      }
       expect(calls.every((call) => call.options.startedAt! <= performance.now())).toBe(true);
     } finally {
       run.mockRestore();
       clock.mockRestore();
+      output.mockRestore();
       if (previous === undefined) delete process.env.NETWORK_SCRATCH_ROOT;
       else process.env.NETWORK_SCRATCH_ROOT = previous;
       if (previousPort === undefined) delete process.env.NETWORK_TEST_PORT;
