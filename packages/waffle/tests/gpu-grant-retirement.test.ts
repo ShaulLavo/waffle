@@ -5,8 +5,10 @@ import { RecordRing } from "../browser/gpu/ring.js";
 import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import type { GraphicsOpen } from "../browser/display/protocol.js";
 import type { GpuServiceReply } from "../browser/display/service-protocol.js";
-import { command, deferred, handle, ROOT, settle } from "./fixtures/gpu/core-fixture.js";
-import { serviceAccess } from "./fixtures/gpu/service-access.js";
+import { command, deferred, handle, ROOT, settle, words } from "./fixtures/gpu/core-fixture.js";
+import { gpuObjectKinds } from "../browser/gpu/generated/tables.js";
+import type { ServiceAccess } from "../browser/display/service-readers.js";
+import { serviceAccess, serviceReaderOwner } from "./fixtures/gpu/service-access.js";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -31,7 +33,7 @@ function write(open: GraphicsOpen, name: string, fields: unknown) {
     writer.writer.release();
   }
 }
-function taskService(root: object) {
+function taskService(root: object, access: ServiceAccess = serviceAccess()) {
   const tasks: (() => void)[] = [];
   const replies: GpuServiceReply[] = [];
   const connections: GpuConnection[] = [];
@@ -56,7 +58,7 @@ function taskService(root: object) {
   let service: GpuService;
   globalThis.MessageChannel = Tasks;
   try {
-    service = new GpuService((message) => replies.push(message), { root, access: serviceAccess() });
+    service = new GpuService((message) => replies.push(message), { root, access });
   } finally {
     globalThis.MessageChannel = original;
   }
@@ -228,3 +230,139 @@ test("reentrant open setup belongs to the original sealed grant before queued se
   rig.service.receive({ type: "open", grant: 1, open: original, surfaces: [] });
   expect(Array.from(new Uint8Array(original.commands))).toEqual(frozen);
 });
+
+function writeBytes(open: GraphicsOpen, bytes: Uint8Array): void {
+  const writer = new RecordRing(open.commands, 8).tryAcquireWriter();
+  if (writer.kind !== "acquired") throw new Error("writer missing");
+  try {
+    expect(writer.writer.tryWrite(bytes).kind).toBe("written");
+  } finally {
+    writer.writer.release();
+  }
+}
+async function turns(rig: ReturnType<typeof taskService>, count = 6): Promise<void> {
+  for (let index = 0; index < count; index++) await rig.turn();
+}
+function failures(error: unknown): unknown[] {
+  return error instanceof AggregateError ? error.errors.flatMap(failures) : [error];
+}
+for (const mode of ["close", "revoke", "dispose"] as const) {
+  test(`healthy real surface handle ${mode} does not stop its peer service`, async () => {
+    const rig = taskService({ requestAdapter: async () => ({}) });
+    const original = open(),
+      peer = open(2);
+    const canvas = {
+      getContext: () => ({ transferFromImageBitmap() {} }),
+    } as unknown as OffscreenCanvas;
+    rig.service.receive({ type: "open", grant: 1, open: original, surfaces: [{ id: 7, canvas }] });
+    rig.service.receive({ type: "open", grant: 2, open: peer, surfaces: [] });
+    write(original, "instance.create_surface", {
+      receiver: ROOT,
+      result: handle(7),
+      descriptor: { next_in_chain: [{ sType: 4096, value: { surface_id: 7 } }], label: "surface" },
+    });
+    await rig.turn();
+    expect(rig.service.snapshot().connections).toBe(2);
+    const disposal = mode === "dispose" ? rig.service.dispose() : undefined;
+    void disposal?.catch(() => {});
+    if (mode === "close") rig.service.receive({ type: "close", grant: 1, id: 1 });
+    if (mode === "revoke") rig.service.receive({ type: "revoke", grant: 1 });
+    await turns(rig);
+    expect(rig.service.snapshot().cleanupFailures).toBe(0);
+    expect(rig.replies.some((reply) => reply.type === "retirement-failed")).toBe(false);
+    expect(rig.replies).toContainEqual({ type: "closed", grant: 1, id: 1 });
+    if (mode === "dispose") {
+      await disposal;
+      return;
+    }
+    if (mode === "close") {
+      rig.service.receive({ type: "revoke", grant: 1 });
+      await turns(rig);
+    }
+    expect(rig.replies).toContainEqual({ type: "retired", grant: 1 });
+    const before = Atomics.load(new Int32Array(peer.commands), 2);
+    write(peer, "instance.request_adapter", {
+      receiver: ROOT,
+      result: handle(2),
+      token: 1,
+      options: null,
+    });
+    await Bun.sleep(0);
+    await turns(rig);
+    expect(Atomics.load(new Int32Array(peer.commands), 2)).toBeGreaterThan(before);
+    expect(rig.service.snapshot().connections).toBe(1);
+    expect(rig.replies.some((reply) => reply.type === "retired" && reply.grant === 2)).toBe(false);
+  });
+}
+const cleanupReasons = [
+  undefined,
+  null,
+  false,
+  0,
+  "",
+  new Error("original destruction failure"),
+  { failed: true },
+];
+for (const mode of ["release", "retirement"] as const) {
+  for (const reason of cleanupReasons) {
+    test(`failed native device ${mode} retains original cleanup reason ${String(reason)}`, async () => {
+      let attempts = 0;
+      const device = {
+        lost: new Promise(() => {}),
+        addEventListener() {},
+        removeEventListener() {},
+        destroy() {
+          attempts++;
+          throw reason;
+        },
+      };
+      const reader = serviceReaderOwner();
+      const rig = taskService(
+        { requestAdapter: async () => ({ requestDevice: async () => device }) },
+        reader.access,
+      );
+      const original = open();
+      rig.service.receive({ type: "open", grant: 1, open: original, surfaces: [] });
+      write(original, "instance.request_adapter", {
+        receiver: ROOT,
+        result: handle(2),
+        token: 1,
+        options: null,
+      });
+      await turns(rig, 1);
+      write(original, "adapter.request_device", {
+        receiver: handle(2),
+        result: handle(3),
+        token: 2,
+        descriptor: null,
+      });
+      await turns(rig, 1);
+      if (mode === "release") {
+        writeBytes(original, words(0x1000, [gpuObjectKinds.device, 3, 1]));
+        await turns(rig, 1);
+      }
+      rig.service.receive({ type: "revoke", grant: 1 });
+      await turns(rig);
+      expect(attempts).toBe(1);
+      expect(rig.replies.some((reply) => reply.type === "retirement-failed")).toBe(true);
+      expect(rig.replies.some((reply) => reply.type === "retired" || reply.type === "closed")).toBe(
+        false,
+      );
+      expect(rig.service.snapshot().connections).toBe(1);
+      expect(rig.service.snapshot().cleanupFailures).toBe(1);
+      if (reason === undefined) await reader.readers.close().join();
+      const disposal = rig.service.dispose().then(
+        () => ({ kind: "fulfilled" as const }),
+        (error: unknown) => ({ kind: "rejected" as const, error }),
+      );
+      await turns(rig);
+      const result = await disposal;
+      expect(result.kind).toBe("rejected");
+      if (result.kind !== "rejected") throw new Error("Lost native cleanup failure");
+      expect(failures(result.error).some((error) => Object.is(error, reason))).toBe(true);
+      await turns(rig);
+      expect(rig.service.snapshot().connections).toBe(1);
+      expect(attempts).toBe(1);
+    });
+  }
+}

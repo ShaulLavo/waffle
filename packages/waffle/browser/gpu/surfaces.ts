@@ -226,9 +226,12 @@ export class SurfaceConnection implements SurfaceTarget {
     this.unconfigure(surface);
     this.#references.delete(this.#reference(surface));
   }
+  stopPublishing(): void {
+    this.#sink.owner = undefined;
+  }
   dispose(): void {
     if (!this.#live) return;
-    this.#sink.owner = undefined;
+    this.stopPublishing();
     this.#live = false;
     const failures: unknown[] = [];
     for (const reference of this.#references) {

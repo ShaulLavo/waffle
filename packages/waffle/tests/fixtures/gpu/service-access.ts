@@ -10,15 +10,20 @@ import { defaultSharedMemoryPlatform } from "../../../memory/platform.js";
 const page = new SharedMemoryLedger(defaultSharedMemoryPlatform).openRuntime(
   defaultSharedMemoryPlatform,
 );
-export function serviceAccess() {
+export function serviceReaderOwner() {
   const restore = installSharedControlAllocator((length) =>
     page.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
   );
   try {
-    return attachServiceAccess(createServiceReaders().bootstrap);
+    const readers = createServiceReaders();
+    return { readers, access: attachServiceAccess(readers.bootstrap) };
   } finally {
     restore();
   }
+}
+
+export function serviceAccess() {
+  return serviceReaderOwner().access;
 }
 
 export function enrollGraphics(grant: GraphicsGrant): void {

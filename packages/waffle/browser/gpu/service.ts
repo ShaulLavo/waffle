@@ -327,22 +327,7 @@ export class GpuService {
     owner.phase = "settling";
     const reason = owner.reason ?? GPU_TERMINAL.closed;
     try {
-      // The sealed lease stays closed. Only this queued owner has final settlement authority.
-      const failures: unknown[] = [];
-      try {
-        owner.surfaces.dispose();
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        owner.access.settle(() => {
-          owner.connection.completions.finishRetirement(reason);
-          return undefined;
-        });
-      } catch (error) {
-        failures.push(error);
-      }
-      if (failures.length) throw new AggregateError(failures, "GPU connection cleanup failed");
+      this.#cleanupConnection(owner, reason);
       const selected = new RecordRing(owner.open.commands, 8).terminal()?.reason ?? reason;
       Atomics.store(owner.control, 1, selected);
       const previous = Atomics.load(owner.control, 0);
@@ -362,6 +347,25 @@ export class GpuService {
       this.#failures.push(error);
       this.send({ type: "retirement-failed", grant: owner.grant });
     }
+  }
+  #cleanupConnection(owner: ConnectionOwner, reason: number): void {
+    // Detach callbacks before cleanup, but keep surface handles valid for replay release.
+    owner.surfaces.stopPublishing();
+    const failures: unknown[] = [];
+    try {
+      owner.access.settle(() => {
+        owner.connection.completions.finishRetirement(reason);
+        return undefined;
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      owner.surfaces.dispose();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length) throw new AggregateError(failures, "GPU connection cleanup failed");
   }
   snapshot() {
     return {
@@ -393,19 +397,21 @@ export class GpuService {
     });
     if (admitted === "closed") {
       // No transport access is allowed here, including effectful completion getters.
-      for (const owner of this.#connections.values()) {
-        owner.access.seal();
-        try {
-          owner.connection.completions.abandon();
-          this.#connections.delete(key(owner.grant, owner.id));
-        } catch (error) {
-          owner.phase = "retained";
-          this.#failures.push(error);
-        }
-      }
+      for (const owner of this.#connections.values()) this.#abandonOwner(owner);
       this.#finishDispose();
     }
     return this.#disposal;
+  }
+  #abandonOwner(owner: ConnectionOwner): void {
+    if (owner.phase === "retained") return;
+    owner.access.seal();
+    try {
+      owner.connection.completions.abandon();
+      this.#connections.delete(key(owner.grant, owner.id));
+    } catch (error) {
+      owner.phase = "retained";
+      this.#failures.push(error);
+    }
   }
   #finishDispose(): void {
     this.#live = false;
