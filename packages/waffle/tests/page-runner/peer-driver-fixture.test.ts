@@ -59,3 +59,52 @@ test("peer driver stop joins a retirement poll before the collector closes", asy
     await server.stop(true);
   }
 });
+
+for (const action of ["navigate", "close"] as const) {
+  test(`peer driver ${action} joins the predecessor retirement poll`, async () => {
+    const fixture = retirementFixture();
+    const { driver, server, entered, response } = fixture;
+    try {
+      await driver.navigate(server.url.href);
+      await bounded(entered.promise, 1000, "predecessor retirement poll entered");
+      const predecessor = driver.windows.get("root");
+      let completed = false;
+      const operation =
+        action === "navigate" ? driver.navigate(server.url.href) : driver.closeWindow();
+      const changing = operation.then(() => {
+        completed = true;
+      });
+      await Bun.sleep(0);
+      expect(completed).toBe(false);
+      expect(driver.windows.get("root")).toBe(predecessor);
+      response.resolve(Response.json(false));
+      await bounded(changing, 1000, "predecessor retirement poll joined");
+      expect(driver.windows.get("root")).not.toBe(predecessor);
+    } finally {
+      response.resolve(Response.json(false));
+      await driver.stop();
+      await server.stop(true);
+    }
+  });
+}
+
+test("peer driver stop preserves a failed retirement request", async () => {
+  const fixture = retirementFixture();
+  const { driver, server, entered, response } = fixture;
+  try {
+    await driver.navigate(server.url.href);
+    await bounded(entered.promise, 1000, "failing retirement poll entered");
+    const stopping = driver.stop().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await server.stop(true);
+    const error = await bounded(stopping, 1000, "failed retirement poll joined");
+    expect(error).toBeInstanceOf(Error);
+    await expect(driver.stop()).rejects.toBe(error);
+    expect(fixture.polls()).toBe(1);
+  } finally {
+    response.resolve(Response.json(false));
+    await server.stop(true);
+  }
+});
