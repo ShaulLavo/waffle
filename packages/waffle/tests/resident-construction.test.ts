@@ -199,8 +199,8 @@ test("resident retains all 118 allocation/reference records and two holding leas
   try {
     await owner.ready;
     expect(allocator.specs).toHaveLength(117);
-    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(35_270_148);
-    expect(budget.snapshot().allocated - before.allocated).toBe(35_270_660);
+    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(35_270_156);
+    expect(budget.snapshot().allocated - before.allocated).toBe(35_270_668);
     expect(budget.snapshot().producerFree).toEqual({ allocations: 0, references: 0, leases: 0 });
     expect(budget.snapshot().obligations).toBe(0);
     const published = budget.snapshot();
@@ -249,7 +249,7 @@ const fixedBytes =
   limits.pins * 12 +
   limits.pinBytes +
   32 +
-  64 +
+  72 +
   4096 * 12;
 const startupCharge = rootCharge();
 function exactCapacity() {

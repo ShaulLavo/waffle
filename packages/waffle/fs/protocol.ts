@@ -22,11 +22,11 @@ import { FilesystemError } from "../core/filesystem.js";
 import {
   createRequestBudget,
   FilesystemRequestPool,
+  REQUEST_ARENA_BYTES,
   REQUEST_BUDGET_BYTES,
   REQUEST_CONTROL_BYTES,
   REQUEST_HEADER,
   type FilesystemRequestMemory,
-  FILESYSTEM_REQUEST_LIMITS,
 } from "./request-memory.js";
 import type { ArenaSource, Headroom } from "../memory/reservations.js";
 import {
@@ -368,7 +368,7 @@ export function createFilesystemConnection(
   const pool = construction?.arenas
     ? new FilesystemRequestPool(
         identity.requestBudget,
-        FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+        REQUEST_ARENA_BYTES,
         construction.arenas,
         construction.allocateShared,
       )
@@ -531,7 +531,7 @@ function transportBytes(value: unknown): Uint8Array {
   return new Uint8ArrayConstructor(value);
 }
 export type RequestMessage =
-  | { id: number; generation: number; offset: number; length: number }
+  | { id: number; generation: number; offset: number; length: number; payload?: ArrayBuffer }
   | { transportClosed: true }
   | { sweep: true }
   | { trim: true }

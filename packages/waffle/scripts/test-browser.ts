@@ -17,6 +17,7 @@ const runners = [
   "tests/publication-cross-tab-browser-runner.ts",
   "tests/search-executor-browser-runner.ts",
   "tests/guest-watch-browser-runner.ts",
+  "tests/filesystem-transport-browser-runner.ts",
   gpuRunner,
 ];
 const parallel = [

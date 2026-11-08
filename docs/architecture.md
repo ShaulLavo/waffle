@@ -541,10 +541,20 @@ but unrecoverable storage raises an error rather than silently creating an empty
 `name` selects an isolated database for tests/workspaces. Closing a page without a completed
 flush may lose its uncommitted edits; browser persistence is not a power-loss-safe host filesystem.
 
-Ports schedule requests; each request owns a SharedArrayBuffer with a 32-byte completion header,
-JSON operation/arguments and optional binary input. Results overwrite the data region. Large
-results are read in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
+Ports schedule requests; each request owns a block in its connection's stable shared arena with a
+32-byte completion header and a response room of at most 64 KiB. Inputs up to 64 KiB share that block.
+A larger input is copied once into a private ArrayBuffer and transferred before the guest parks, so a
+blocked guest keeps the same arena and the same `Atomics.wait` notification. An explicit `capacity`
+above 64 KiB is clamped to that room. Results that do not fit use the overflow path and are read
+in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
 its buffer until `release()`; buffers and revocation words are never recycled between guests.
+
+Every request debits the connection's logical limit of 2,147,479,552 bytes, inline or private, and
+is refused synchronously with errno 48 when it cannot fit. A private input also reserves its full
+byte length from the namespace before the buffer exists; that charge ends when the service gives
+up the request, or at successful connection retirement if the message never arrived. The arena
+itself reserves 134,316,032 bytes, enough for 1,024 live blocks under first-fit placement. Those
+figures are logical accounting and declared address space, not measured physical memory.
 
 ```ts
 const request = client.submit("read", [handle, 4096, 0]); // does not block
