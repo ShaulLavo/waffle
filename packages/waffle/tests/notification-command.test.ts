@@ -100,3 +100,13 @@ test("stock and hosted commands use the shared complete function and original se
     "/helper.js": "../browser/notification-worker.ts",
   });
 });
+
+test("stock notification setup uses portable scratch and decoded filesystem paths", async () => {
+  const source = await Bun.file(
+    new URL("./notification-browser-runner.ts", import.meta.url),
+  ).text();
+  expect(source).toContain('mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "wnotify-"))');
+  expect(source).toContain("entrypoints: [fileURLToPath(new URL(entry, import.meta.url))]");
+  expect(source).not.toContain('mkdtemp("/work/tmp/');
+  expect(source).not.toContain("new URL(entry, import.meta.url).pathname");
+});

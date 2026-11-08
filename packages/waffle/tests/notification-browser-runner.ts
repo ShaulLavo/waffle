@@ -2,6 +2,9 @@ import { notificationSources } from "./notification-command.js";
 import { navigateTestPage } from "./browser-navigation.js";
 import { chromium } from "playwright";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   closeBrowserResources,
   type BrowserResourceOwner,
@@ -31,7 +34,7 @@ process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
 const deadline = setTimeout(stop, 60000);
 try {
-  scratch = await mkdtemp("/work/tmp/wnotify-");
+  scratch = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "wnotify-"));
   console.log(
     JSON.stringify({
       resources: "notification-browser",
@@ -44,7 +47,7 @@ try {
   const scripts = new Map<string, Blob>();
   for (const [path, entry] of entries) {
     const built = await Bun.build({
-      entrypoints: [new URL(entry, import.meta.url).pathname],
+      entrypoints: [fileURLToPath(new URL(entry, import.meta.url))],
       target: "browser",
     });
     if (!built.success) throw new AggregateError(built.logs, `bundle ${entry}`);
