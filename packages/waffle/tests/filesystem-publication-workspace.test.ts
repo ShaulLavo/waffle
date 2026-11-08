@@ -4,6 +4,8 @@ import {
   requestCells,
   requestBytes,
   releaseRequestBuffer,
+  requestMemoryResources,
+  requestMemoryRetired,
   REQUEST_CLIENT,
 } from "../fs/request-memory.js";
 import { expect, test } from "bun:test";
@@ -73,12 +75,16 @@ const limits: PublicationLimits = {
 async function fixture(
   backend = new MemoryBackend(),
   guard = { release: () => Promise.resolve() },
+  publicationLimits: PublicationLimits = limits,
 ) {
   backend.fs.mkdirp("/dir");
   backend.fs.writeFile("/dir/a", new Uint8Array([1, 2, 3]));
   backend.fs.writeFile("/dir/b", new Uint8Array([4, 5]));
   const service = new FilesystemService(backend);
-  const pair = createFilesystemConnection(undefined, { limits, observe: true });
+  const pair = createFilesystemConnection(undefined, {
+    limits: publicationLimits,
+    observe: true,
+  });
   service.connect(pair.server);
   const root = new FilesystemClient(pair.client);
   const directory: number = await root.asyncCall("preopen", ["/"]);
@@ -255,6 +261,210 @@ test("service-side queued cancellation has no effects and stop joins its prepara
   } finally {
     backend.released.resolve();
     if (!stopped) await f.stop();
+  }
+});
+
+const PAGE = 65_536;
+const privateLimits: PublicationLimits = {
+  ...limits,
+  operations: 64,
+  inputBytes: PAGE,
+  argumentBytes: 8192,
+  effectBytes: 2 * PAGE,
+  resultBytes: 4 * PAGE,
+  logBytes: 32 * PAGE,
+};
+class HeldWrites extends MemoryBackend {
+  gate = Promise.withResolvers<void>();
+  entered = 0;
+  held = true;
+  prepare(operation: string): void | Promise<void> {
+    if (!this.held || operation !== "writeFile") return;
+    this.entered++;
+    return this.gate.promise.then(() => {
+      this.held = false;
+    });
+  }
+}
+async function privateWorkspace(backend: MemoryBackend = new MemoryBackend()) {
+  const f = await fixture(backend, undefined, privateLimits);
+  const host = workspaceFilesystemHost(f.session.descriptor);
+  const connection = host.connection;
+  const client = new FilesystemClient({ ...connection, residentPublication: undefined });
+  await client.asyncCall("workspaceBind", [f.session]);
+  await client.asyncCall("preopen", ["/"]);
+  return {
+    f,
+    connection,
+    client,
+    memory: connection.requests,
+    allocator: Reflect.get(client, "requests") as FilesystemRequestAllocator,
+    async close(stopped = false) {
+      if (!stopped) await stopWorkspaceBridge(connection);
+      client.dispose();
+      await f.stop();
+    },
+  };
+}
+function privateCharge(memory: FilesystemConnection["requests"]): number {
+  return requestMemoryResources(memory).privateBytes;
+}
+function postPrivate(
+  connection: FilesystemConnection,
+  allocator: FilesystemRequestAllocator,
+  packed: Uint8Array,
+  dataLength: number,
+) {
+  const length = packed.length + dataLength;
+  const buffer = allocator.allocate(1024, length);
+  const cells = requestCells(buffer);
+  cells[1] = packed.length;
+  cells[2] = dataLength;
+  const payload = new ArrayBuffer(length);
+  new Uint8Array(payload).set(packed);
+  connection.port.postMessage(
+    {
+      id: buffer.id,
+      generation: buffer.memory.generation,
+      offset: buffer.offset,
+      length: buffer.length,
+      payload,
+    },
+    [payload],
+  );
+  return { buffer, cells };
+}
+function packedOfLength(length: number): Uint8Array {
+  const base = pack({ operation: "workspaceNext", args: [""] }).length;
+  const packed = pack({ operation: "workspaceNext", args: ["x".repeat(length - base)] });
+  expect(packed.length).toBe(length);
+  return packed;
+}
+async function settled(cells: Int32Array): Promise<number> {
+  for (;;) {
+    const state = Atomics.load(cells, 0);
+    if (state !== State.Pending) return state;
+    const waiting = Atomics.waitAsync(cells, 0, state);
+    if (waiting.async) await waiting.value;
+  }
+}
+test("a page of workspace data plus packed metadata crosses the bridge privately", async () => {
+  const w = await privateWorkspace();
+  let stopped = false;
+  try {
+    const data = new Uint8Array(PAGE).fill(5);
+    await w.client.asyncCall("writeFile", ["/dir/page"], data);
+    const page: { node: number } = await w.client.asyncCall("resolve", [
+      w.f.directory,
+      "dir/page",
+    ]);
+    const stored: Uint8Array = await w.client.asyncCall("read", [page.node, PAGE, 0]);
+    expect(Buffer.compare(stored, data)).toBe(0);
+    expect(privateCharge(w.memory)).toBe(0);
+    expect(requestMemoryResources(w.memory).requests).toBe(0);
+    await stopWorkspaceBridge(w.connection);
+    stopped = true;
+    expect(requestMemoryRetired(w.memory)).toBe(true);
+  } finally {
+    await w.close(stopped);
+  }
+});
+test("workspace argument and data bounds apply to the private input", async () => {
+  const w = await privateWorkspace();
+  try {
+    const accepted = postPrivate(w.connection, w.allocator, packedOfLength(8192 - 32), PAGE);
+    expect(await settled(accepted.cells)).toBe(State.Complete);
+    releaseRequestBuffer(accepted.buffer, REQUEST_CLIENT);
+
+    const refused = postPrivate(w.connection, w.allocator, packedOfLength(8192), PAGE);
+    expect(await settled(refused.cells)).toBe(State.Failed);
+    expect(refused.cells[3]).toBe(6);
+    releaseRequestBuffer(refused.buffer, REQUEST_CLIENT);
+
+    const hugeData = postPrivate(w.connection, w.allocator, packedOfLength(1024), PAGE + 1);
+    expect(await settled(hugeData.cells)).toBe(State.Failed);
+    expect(hugeData.cells[3]).toBe(28);
+    releaseRequestBuffer(hugeData.buffer, REQUEST_CLIENT);
+
+    const hugeInput = postPrivate(w.connection, w.allocator, packedOfLength(8193), 60_000);
+    expect(await settled(hugeInput.cells)).toBe(State.Failed);
+    expect(hugeInput.cells[3]).toBe(28);
+    releaseRequestBuffer(hugeInput.buffer, REQUEST_CLIENT);
+
+    await Bun.sleep(0);
+    expect(privateCharge(w.memory)).toBe(0);
+    expect(requestMemoryResources(w.memory).requests).toBe(0);
+  } finally {
+    await w.close();
+  }
+});
+test("workspace pressure refuses the seventeenth private request and refunds it", async () => {
+  const backend = new HeldWrites();
+  const w = await privateWorkspace(backend);
+  try {
+    const data = new Uint8Array(PAGE).fill(1);
+    const parked = Array.from({ length: 16 }, (_, index) =>
+      w.client.asyncCall("writeFile", [`/dir/held-${index}`], data),
+    );
+    while (backend.entered < 1) await Bun.sleep(0);
+    await Bun.sleep(5);
+    const charged = privateCharge(w.memory);
+    expect(charged).toBeGreaterThan(16 * PAGE);
+    await rejectsErrno(w.client.asyncCall("writeFile", ["/dir/over"], data), 6);
+    expect(privateCharge(w.memory)).toBe(charged);
+    backend.gate.resolve();
+    await Promise.all(parked);
+    expect(privateCharge(w.memory)).toBe(0);
+  } finally {
+    backend.gate.resolve();
+    await w.close();
+  }
+});
+test("cancelling and stopping parked workspace inputs settle every private charge", async () => {
+  const backend = new HeldWrites();
+  const w = await privateWorkspace(backend);
+  let stopped = false;
+  try {
+    const data = new Uint8Array(PAGE).fill(2);
+    const cancelled = w.client.submit("writeFile", ["/dir/cancel"], data);
+    while (backend.entered < 1) await Bun.sleep(0);
+    expect(privateCharge(w.memory)).toBeGreaterThan(PAGE);
+    cancelled.cancel();
+    cancelled.release();
+    while (privateCharge(w.memory)) await Bun.sleep(0);
+    const parked = w.client.submit("writeFile", ["/dir/stop"], data);
+    await Bun.sleep(1);
+    expect(privateCharge(w.memory)).toBeGreaterThan(PAGE);
+    const stopping = stopWorkspaceBridge(w.connection);
+    backend.gate.resolve();
+    await stopping;
+    stopped = true;
+    expect(requestMemoryRetired(w.memory)).toBe(true);
+    expect(privateCharge(w.memory)).toBe(0);
+    parked.release();
+  } finally {
+    backend.gate.resolve();
+    await w.close(stopped);
+  }
+});
+test("workspace reads with oversized capacity stay bounded and complete through overflow", async () => {
+  const w = await privateWorkspace();
+  try {
+    const bytes = new Uint8Array(PAGE).fill(3);
+    await w.client.asyncCall("writeFile", ["/dir/large"], bytes);
+    const resolved: { node: number } = await w.client.asyncCall("resolve", [
+      w.f.directory,
+      "dir/large",
+    ]);
+    const big = w.client.submit("read", [resolved.node, PAGE, 0], undefined, 8 * PAGE);
+    expect(big.buffer.length).toBe(32 + PAGE);
+    expect(Bun.hash(await big.value())).toBe(Bun.hash(bytes));
+    big.release();
+    const small = w.client.submit("read", [resolved.node, PAGE, 0], undefined, 1024);
+    expect(Bun.hash(await small.value())).toBe(Bun.hash(bytes));
+    small.release();
+  } finally {
+    await w.close();
   }
 });
 

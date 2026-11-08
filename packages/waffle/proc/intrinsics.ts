@@ -52,6 +52,8 @@ export {
   DataViewConstructor,
   SharedArrayBufferConstructor,
   ArrayBufferConstructor,
+  RangeErrorConstructor,
+  symbolIterator,
   arrayBufferLength,
   createGrowableSharedArrayBuffer,
   sharedArrayBufferByteLength,

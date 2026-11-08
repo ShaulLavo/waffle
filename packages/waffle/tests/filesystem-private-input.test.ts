@@ -547,6 +547,8 @@ class ProbeBackend extends MemoryBackend {
   sliceFailure = false;
   override prepare(operation: string, args: any[], data: Uint8Array): void | Promise<void> {
     if (this.gatePrepare && operation === "gated") {
+      // The service prepares again after this resolves; gate only the first preparation.
+      this.gatePrepare = false;
       this.held = data;
       this.prepareEntered.resolve();
       return this.prepareGate.promise;
@@ -751,6 +753,7 @@ test("stopping while parked keeps the charge until the work is joined", async ()
     const memory = peer.connection.requests;
     expect(privateOf(memory)).toBeGreaterThanOrEqual(70_000);
     expect(completion.ready).toBe(false);
+    const session = f.session(peer.connection);
     peer.dispose();
     reapFilesystem(peer.connection);
     f.service.sweep();
@@ -758,7 +761,6 @@ test("stopping while parked keeps the charge until the work is joined", async ()
     expect(isRevoked(peer.connection)).toBe(true);
     expect(requestMemoryRetired(memory)).toBe(false);
     expect(privateOf(memory)).toBeGreaterThanOrEqual(70_000);
-    const session = f.session(peer.connection);
     expect(session.pending.size).toBe(0);
     expect(session.privateInputs.size).toBe(1);
     f.backend.prepareGate.resolve();
@@ -848,10 +850,11 @@ for (const [name, operation, length] of [
       const completion = f.client.submit(operation, [], new Uint8Array(70_000).fill(4));
       await until(() => completion.ready, "overflow response");
       const before = requestBudgetBytes(f.memory.budget);
+      const charged = completion.buffer.privateBytes;
       completion.release();
       await until(() => f.session().responses.size === 0, "discard");
       await until(() => privateOf(f.memory) === 0, "private refund");
-      expect(requestBudgetBytes(f.memory.budget)).toBe(before - 70_000 - length);
+      expect(requestBudgetBytes(f.memory.budget)).toBe(before - charged - length);
     } finally {
       f.cleanup();
     }
@@ -949,14 +952,15 @@ test("explicit oversized response capacity keeps physical blocks bounded and res
     const listed: Uint8Array = await big.value();
     expect(listed.length).toBeGreaterThan(PAGE);
     big.release();
-    const small = f.client.readdirPage(directory, 0n, pageBytes);
-    expect(Buffer.compare(listed, small)).toBe(0);
+    const bounded = f.client.submit("readdirPage", [directory, 0n, pageBytes], undefined, PAGE);
+    expect(Buffer.compare(listed, await bounded.value())).toBe(0);
+    bounded.release();
 
     const cursor = await f.client.asyncCall("walkOpen", [
       directory,
       { include: [], exclude: [], excludeDirectories: [], hidden: true, maxDepth: null },
     ]);
-    const options = { grant: false, maxEntries: 900 };
+    const options = { grant: false, maxEntries: 128 };
     const walk = f.client.submit("walkPage", [cursor, options], undefined, 4_000_000);
     expect(walk.buffer.length).toBe(32 + PAGE);
     const page = await walk.value();
@@ -997,8 +1001,11 @@ test("a mismatched payload closes the transport without a per-message refund", a
     postRaw(peer.connection, buffer, wrong, [wrong]);
     await until(() => !!requestTransportError(memory), "protocol close");
     expect(requestTransportError(memory)?.reason).toBe("protocol");
-    expect(requestBudgetBytes(memory.budget)).toBe(charged);
+    // Only retirement settles the abandoned credit, and a late release cannot repeat it.
+    await until(() => requestMemoryRetired(memory), "retirement");
+    expect(requestBudgetBytes(memory.budget)).toBe(charged - 70_000);
     release(buffer);
+    expect(requestBudgetBytes(memory.budget)).toBe(charged - 70_000);
   } finally {
     f.cleanup();
   }
@@ -1099,8 +1106,10 @@ test("a replayed private message after completion and block reuse is stale", asy
     postRaw(peer.connection, buffer, replay, [replay]);
     await until(() => !!requestTransportError(memory), "stale close");
     expect(requestTransportError(memory)?.reason).toBe("protocol");
-    expect(requestBudgetBytes(memory.budget)).toBe(charged);
+    await until(() => requestMemoryRetired(memory), "retirement");
+    expect(requestBudgetBytes(memory.budget)).toBe(charged - 70_000);
     release(reused);
+    expect(requestBudgetBytes(memory.budget)).toBe(charged - 70_000);
   } finally {
     f.cleanup();
   }

@@ -223,6 +223,8 @@ const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLengt
 const arrayBufferByteLength = (buffer: ArrayBuffer): number =>
   apply(arrayBufferByteLengthGetter, buffer, []);
 export const ArrayBufferConstructor = ArrayBuffer;
+export const RangeErrorConstructor = RangeError;
+export const symbolIterator: typeof Symbol.iterator = Symbol.iterator;
 /** The native byte length of a genuine non-shared ArrayBuffer, or undefined for anything else. */
 export function arrayBufferLength(value: unknown): number | undefined {
   try {

@@ -53,7 +53,7 @@ globalThis.SharedArrayBuffer = new Proxy(nativeShared, {
       growable: maximum !== undefined,
     };
     record("SharedArrayBuffer", descriptor, "attempt");
-    if (fallback && maximum === 2147479552) {
+    if (fallback && (maximum === 134316032 || maximum === 2147479552)) {
       record("SharedArrayBuffer", descriptor, "arena-fallback-refusal");
       throw new RangeError("pinned per-object fallback control");
     }

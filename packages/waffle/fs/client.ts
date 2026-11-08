@@ -15,7 +15,9 @@ import {
   releaseRequestBuffer,
   requestTransportError,
   closeRequestMemory,
+  requestMemoryExhausted,
   REQUEST_CLIENT,
+  REQUEST_INLINE_BYTES,
   REQUEST_SERVICE,
   type FilesystemRequestBuffer,
 } from "./request-memory.js";
@@ -28,8 +30,11 @@ import {
 } from "./publication.js";
 import { permissionsFor, type WatchFileSystem } from "../core/filesystem.js";
 import {
+  ArrayBufferConstructor,
   Int32ArrayConstructor,
+  RangeErrorConstructor,
   Uint8ArrayConstructor,
+  symbolIterator,
   atomicsLoad,
   atomicsStore,
   atomicsAdd,
@@ -114,6 +119,44 @@ export function resolveWriteFileMode(mode: WriteFileMode = false): {
   const exclusive = mode.exclusive ?? false;
   if (append && exclusive) throw new TypeError("writeFile cannot append and create exclusively");
   return { append, exclusive };
+}
+
+/** Physical response room is at most one page; a larger result completes through overflow. */
+function validateResponseCapacity(capacity: number): number {
+  if (!Number.isSafeInteger(capacity) || capacity < 0) throw new FilesystemError(28);
+  return capacity;
+}
+function privateInput(
+  length: number,
+  input: Uint8Array,
+  data: Uint8Array,
+  inputLength: number,
+): ArrayBuffer {
+  let payload: ArrayBuffer;
+  try {
+    payload = new ArrayBufferConstructor(length);
+  } catch (error) {
+    if (error instanceof RangeErrorConstructor) throw requestMemoryExhausted();
+    throw error;
+  }
+  const bytes = new Uint8ArrayConstructor(payload);
+  typedArraySet(bytes, input);
+  typedArraySet(bytes, data, inputLength);
+  return payload;
+}
+/** A transfer list whose conversion never reaches a guest-replaceable array iterator. */
+function transferList(payload: ArrayBuffer): Transferable[] {
+  let done = false;
+  const iterator = {
+    __proto__: null,
+    next() {
+      const value = done ? undefined : payload;
+      const result = { __proto__: null, done, value };
+      done = true;
+      return result;
+    },
+  };
+  return { __proto__: null, [symbolIterator]: () => iterator } as unknown as Transferable[];
 }
 
 export class FilesystemCompletion {
@@ -584,20 +627,34 @@ export class FilesystemClient implements FileSystem {
     capacity: number,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
-    const buffer = this.requests.allocate(Math.max(input.length + data.length, capacity));
+    const inputLength = typedArrayLength(input);
+    const total = inputLength + typedArrayLength(data);
+    const privateLength = total > REQUEST_INLINE_BYTES ? total : 0;
+    const room = Math.min(validateResponseCapacity(capacity), PAGE);
+    const buffer = this.requests.allocate(
+      privateLength ? room : Math.max(total, room),
+      privateLength,
+    );
     try {
       const completion = new FilesystemCompletion(buffer.id, buffer, this, publication);
-      completion.cells[1] = input.length;
-      completion.cells[2] = data.length;
-      typedArraySet(requestBytes(buffer), input);
-      typedArraySet(requestBytes(buffer), data, input.length);
-      mapSet(this.completions, completion.id, completion);
-      this.connection.port.postMessage({
+      completion.cells[1] = inputLength;
+      completion.cells[2] = total - inputLength;
+      const descriptor = {
         id: completion.id,
         generation: buffer.memory.generation,
         offset: buffer.offset,
         length: buffer.length,
-      });
+      };
+      if (!privateLength) {
+        typedArraySet(requestBytes(buffer), input);
+        typedArraySet(requestBytes(buffer), data, inputLength);
+        mapSet(this.completions, completion.id, completion);
+        this.connection.port.postMessage(descriptor);
+        return completion;
+      }
+      const payload = privateInput(privateLength, input, data, inputLength);
+      mapSet(this.completions, completion.id, completion);
+      this.connection.port.postMessage({ ...descriptor, payload }, transferList(payload));
       return completion;
     } catch (error) {
       mapDelete(this.completions, buffer.id);

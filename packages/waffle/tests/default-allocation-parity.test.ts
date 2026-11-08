@@ -41,6 +41,19 @@ function withoutStorageRoot(value: Parameters<typeof multiset>[0], bytes: number
   }
   return events;
 }
+/** Private large inputs shrank the arena maximum and added one word to each request control. */
+function withPrivateInputArena(expected: string[]) {
+  return expected
+    .map((event) =>
+      event
+        .replaceAll('"maximum":2147479552', '"maximum":134316032')
+        .replaceAll(
+          '"initial":64,"maximum":64,"growable":false',
+          '"initial":72,"maximum":72,"growable":false',
+        ),
+    )
+    .sort();
+}
 function withoutIdleWorkers(expected: string[]) {
   for (const outcome of ["attempt", "success"]) {
     const idle = JSON.stringify({
@@ -86,7 +99,7 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 33_289_256)).toEqual(
-        withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+        withPrivateInputArena(withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024))),
       );
     } finally {
       await rm(scratch, { recursive: true, force: true });
