@@ -537,6 +537,7 @@ test("a failed post rolls back both ownership bits and the private charge", () =
 });
 
 class ProbeBackend extends MemoryBackend {
+  echoExecutions = 0;
   held: Uint8Array | undefined;
   readonly prepareEntered = Promise.withResolvers<void>();
   readonly prepareGate = Promise.withResolvers<void>();
@@ -578,6 +579,7 @@ class ProbeBackend extends MemoryBackend {
         this.held = data;
         return data;
       case "echo-other":
+        this.echoExecutions++;
         return new Uint8Array(4096).fill(8);
       case "fail-after-input":
         this.held = data;
@@ -1081,6 +1083,41 @@ test("a duplicate pending private request is a protocol failure and earns no ref
     f.cleanup();
   }
 });
+
+for (const length of [0, 70_000]) {
+  test(`a completed undrained ${length ? "private" : "inline"} request cannot execute again`, async () => {
+    const f = served();
+    const peer = f.peer();
+    try {
+      const memory = peer.connection.requests;
+      const completion = peer.submit("echo-other", [], new Uint8Array(length));
+      await until(() => completion.ready, "retained overflow");
+      expect(completion.cells[0]).toBe(State.Overflow);
+      expect(f.backend.echoExecutions).toBe(1);
+      expect(f.session(peer.connection).pending.has(completion.id)).toBe(false);
+      expect(f.session(peer.connection).responses.has(completion.id)).toBe(true);
+      expect(requestMemoryResources(memory).requests).toBe(1);
+      const packed = pack({ operation: "echo-other", args: [], publication: undefined });
+      const payload = completion.buffer.privateBytes
+        ? new ArrayBuffer(completion.buffer.privateBytes)
+        : undefined;
+      const input = payload ? new Uint8Array(payload) : requestBytes(completion.buffer);
+      input.set(packed);
+      completion.cells[1] = packed.length;
+      completion.cells[2] = length;
+      postRaw(peer.connection, completion.buffer, payload, payload ? [payload] : []);
+      await until(
+        () => f.backend.echoExecutions > 1 || !!requestTransportError(memory),
+        "replay rejection or execution",
+      );
+      expect(f.backend.echoExecutions).toBe(1);
+      expect(requestTransportError(memory)?.reason).toBe("protocol");
+      completion.release();
+    } finally {
+      f.cleanup();
+    }
+  });
+}
 
 test("a replayed private message after completion and block reuse is stale", async () => {
   const f = served();

@@ -360,7 +360,8 @@ export class FilesystemService {
       this.cancelRequest(session, data.id, buffer);
       return;
     }
-    if (session.pending.has(data.id)) throw new FilesystemError(28, "duplicate filesystem request");
+    if (session.pending.has(data.id) || session.retainedRequests.has(data.id))
+      throw new FilesystemError(28, "duplicate filesystem request");
     session.pending.set(data.id, buffer);
     if (data.payload) session.privateInputs.set(data.id, new Uint8Array(data.payload));
     this.enqueue(session, data.id, buffer);
