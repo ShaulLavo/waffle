@@ -38,7 +38,7 @@ export class FakeDriver implements Driver {
   };
   private retirement: ReturnType<typeof setInterval> | undefined;
   private retirementBusy = false;
-  private configuration: Record<string, unknown> = {};
+  protected configuration: Record<string, unknown> = {};
   constructor(
     readonly mode: FakeMode,
     readonly command?: FakeCommand,

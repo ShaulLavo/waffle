@@ -97,6 +97,9 @@ test("pre-aborted command does not import, qualify or launch a guest", async () 
     signal,
     remainingMs: () => 0,
     setTimeout: () => signal.throwIfAborted(),
+    holdAsset: () => {
+      throw new Error("No asset holds");
+    },
     task: async () => {
       calls++;
     },

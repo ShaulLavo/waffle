@@ -8,6 +8,8 @@ import {
   type SuiteAdapter,
   type RunOptions,
   type HostCase,
+  type AssetHoldCallback,
+  type HeldAssetRequest,
   type HostPeer,
   type HostVerdict,
   type SuiteCase,
@@ -648,6 +650,19 @@ test("public entries expose authoritative host domain types without widening dri
     request: () => null,
     drive: async (host: HostCase) => {
       host.signal.throwIfAborted();
+      const callback: AssetHoldCallback = async (request: HeldAssetRequest) => {
+        const continued: Promise<void> = request.continue();
+        await continued;
+        // @ts-expect-error ordinary requests cannot be replaced
+        request.continue({ body: "replacement" });
+        // @ts-expect-error private HTTP authority never enters the callback
+        void request.headers;
+      };
+      host.holdAsset("/programs/shell-engine.wasm", callback);
+      // @ts-expect-error a response-valued callback cannot replace the ordinary response
+      host.holdAsset("/programs/test-guest.wasm", async () => new Response("replacement"));
+      // @ts-expect-error synchronous replacements are not held callbacks
+      host.holdAsset("/programs/test-guest.wasm", () => {});
       const updated: void = host.setTimeout(60_000);
       void updated;
       await host.script("return null");

@@ -41,12 +41,7 @@ class HostDriver extends FakeDriver {
   }
   override async navigate(url: string): Promise<void> {
     await super.navigate(url);
-    const html = await (await fetch(url)).text();
-    const config: unknown = JSON.parse(
-      /window\.__suiteConfiguration=(.+?)<\/script>/.exec(html)?.[1] ?? "null",
-    );
-    if (!record(config)) throw new Error("Missing control config");
-    this.config = config;
+    this.config = this.configuration;
   }
   protected override async run(role: unknown, request: unknown): Promise<void> {
     if (role !== "case") return super.run(role, request);
@@ -217,7 +212,7 @@ for (const late of [false, true]) {
               host.signal.addEventListener(
                 "abort",
                 () => {
-                  timer = setTimeout(release.resolve, 300);
+                  timer = setTimeout(release.resolve, budgets.teardown + 300);
                 },
                 { once: true },
               );
@@ -1235,5 +1230,226 @@ test(
     );
     expect(checked).toBe(true);
     expect(result.exit).toBe(1);
+  }),
+);
+
+test(
+  "public holdAsset registers before evaluation and original finally releases after body failure",
+  withHostFixture(async (root) => {
+    const driver = new HostDriver();
+    const release = Promise.withResolvers<void>(),
+      entered = Promise.withResolvers<void>();
+    let request: Promise<Response> | undefined;
+    const a = adapter(async (host) => {
+      host.holdAsset("/programs/shell-engine.wasm", async (held) => {
+        entered.resolve();
+        await release.promise;
+        await held.continue();
+      });
+      try {
+        request = fetch(`${driver.origin}/programs/shell-engine.wasm`, {
+          headers: { Referer: driver.currentURL },
+        });
+        await entered.promise;
+        throw new Error("ORIGINAL_BODY_ASSERTION");
+      } finally {
+        release.resolve();
+      }
+    });
+    a.assets = async () => ({
+      "/programs/shell-engine.wasm": new Blob(["original"], { type: "application/wasm" }),
+    });
+    try {
+      const result = await runPageSuite(a, () => driver, options(root));
+      expect(result.exit).toBe(1);
+      expect(JSON.stringify(result.results)).toContain("ORIGINAL_BODY_ASSERTION");
+      expect(request).toBeDefined();
+      expect(await (await request)?.text()).toBe("original");
+      expect(driver.navigations).toBe(3);
+      expect(result.cleanup.scratch.status).toBe("confirmed");
+    } finally {
+      release.resolve();
+      await request?.catch(() => {});
+    }
+  }),
+);
+
+for (const interrupted of [false, true]) {
+  test(
+    `actual asset callback debt forbids next case and finish after ${interrupted ? "interruption" : "response handoff"}`,
+    withHostFixture(async (root) => {
+      const driver = new HostDriver(),
+        controller = new AbortController();
+      const release = Promise.withResolvers<void>(),
+        entered = Promise.withResolvers<void>();
+      let request: Promise<Response> | undefined;
+      const a = adapter(async (host) => {
+        host.holdAsset("/programs/test-guest.wasm", async (held) => {
+          await held.continue();
+          entered.resolve();
+          await release.promise;
+        });
+        request = fetch(`${driver.origin}/programs/test-guest.wasm`, {
+          headers: { Referer: driver.currentURL },
+        });
+        expect(await (await request).text()).toBe("guest");
+        await entered.promise;
+        if (interrupted) controller.abort("original interruption");
+        return true;
+      });
+      a.assets = async () => ({
+        "/programs/test-guest.wasm": new Blob(["guest"], { type: "application/wasm" }),
+      });
+      a.budgets = () => ({ ...budgets, teardown: 80 });
+      try {
+        const result = await runPageSuite(a, () => driver, {
+          ...options(root),
+          signal: controller.signal,
+        });
+        expect(result.exit).toBe(2);
+        expect(driver.navigations).toBe(2);
+        expect(result.runComplete).toBe(false);
+        expect(result.cleanup.scratch.status).toBe("unconfirmed");
+        expect(
+          result.failures.some((failure) => failure.category === "host-work-unconfirmed"),
+        ).toBe(true);
+      } finally {
+        release.resolve();
+        await request?.catch(() => {});
+      }
+    }),
+  );
+}
+
+test(
+  "verdict delivery and actual body join share the deadline from synchronous revocation",
+  withHostFixture(async (root) => {
+    const driver = new HostDriver(),
+      controller = new AbortController();
+    const release = Promise.withResolvers<void>();
+    let deadline = 0,
+      revokedAt = 0;
+    const script = driver.script.bind(driver);
+    driver.script = async (source) => {
+      if (source.includes("h.verdict(")) {
+        await Bun.sleep(70);
+        const match = /h\.verdict\(.+, ([\d.]+)\);/.exec(source);
+        deadline = Number(match?.[1]);
+      }
+      return script(source);
+    };
+    const a = adapter(async () => {
+      revokedAt = performance.timeOrigin + performance.now();
+      controller.abort("body cancellation");
+      await release.promise;
+      return true;
+    });
+    a.budgets = () => ({ ...budgets, teardown: 110 });
+    const started = performance.now();
+    try {
+      const result = await runPageSuite(a, () => driver, {
+        ...options(root),
+        signal: controller.signal,
+      });
+      expect(deadline - revokedAt).toBeGreaterThan(100);
+      expect(deadline - revokedAt).toBeLessThan(125);
+      expect(performance.now() - started).toBeLessThan(450);
+      expect(result.cleanup.scratch.status).toBe("unconfirmed");
+      expect(driver.navigations).toBe(2);
+    } finally {
+      release.resolve();
+    }
+  }),
+);
+
+test("heartbeat liveness probe shares the teardown deadline and joins its command", async () => {
+  const limits = {
+    hello: 1000,
+    heartbeat: 70,
+    case: 6000,
+    caseDocument: 8000,
+    group: 8000,
+    teardown: 90,
+    run: 10_000,
+  };
+  const f = unitDrive(limits);
+  let revokedAt = 0;
+  let probeAbortedAt = 0;
+  f.d.handles = async (signal?: AbortSignal) => {
+    if (!signal) throw new Error("Missing probe signal");
+    const stopped = Promise.withResolvers<never>();
+    const abort = () => {
+      probeAbortedAt = performance.now();
+      stopped.reject(signal.reason);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    return stopped.promise;
+  };
+  try {
+    await f.host
+      .drive(async (host) => {
+        const revoked = Promise.withResolvers<void>();
+        const abort = () => {
+          revokedAt = performance.now();
+          revoked.resolve();
+        };
+        host.signal.addEventListener("abort", abort, { once: true });
+        await revoked.promise;
+        return null;
+      })
+      .catch(() => {});
+    expect(revokedAt).toBeGreaterThan(0);
+    expect(probeAbortedAt).toBeGreaterThanOrEqual(revokedAt);
+    expect(probeAbortedAt - f.host.teardownDeadline()).toBeLessThan(150);
+    expect(performance.now() - revokedAt).toBeLessThan(500);
+    expect(await f.consumers.join(50)).toBe(true);
+    expect(f.c.failures.some((failure) => failure.category === "heartbeat-lost")).toBe(true);
+  } finally {
+    f.consumers.revoke();
+    await f.d.stop();
+    expect(await f.consumers.join(100)).toBe(true);
+  }
+}, 10_000);
+
+test(
+  "settled asset work permits final cleanup without erasing its teardown failure",
+  withHostFixture(async (root) => {
+    const driver = new HostDriver();
+    const entered = Promise.withResolvers<void>();
+    let request: Promise<Response> | undefined;
+    const a = adapter(async (host) => {
+      host.holdAsset("/programs/test-guest.wasm", async (held) => {
+        await held.continue();
+        entered.resolve();
+        await Bun.sleep(200);
+      });
+      request = fetch(`${driver.origin}/programs/test-guest.wasm`, {
+        headers: { Referer: driver.currentURL },
+      });
+      expect(await (await request).text()).toBe("guest");
+      await entered.promise;
+      return true;
+    });
+    a.assets = async () => ({
+      "/programs/test-guest.wasm": new Blob(["guest"], { type: "application/wasm" }),
+    });
+    a.budgets = () => ({ ...budgets, teardown: 40 });
+    try {
+      const result = await runPageSuite(a, () => driver, {
+        ...options(root),
+        cleanupTimeoutMs: 1000,
+      });
+      expect(result.exit).toBe(2);
+      expect(result.runComplete).toBe(false);
+      expect(result.failures.some((failure) => failure.category === "host-work-unconfirmed")).toBe(
+        true,
+      );
+      expect(driver.navigations).toBe(2);
+      expect(result.cleanup.server.status).toBe("confirmed");
+      expect(result.cleanup.scratch.status).toBe("confirmed");
+    } finally {
+      await request?.catch(() => {});
+    }
   }),
 );
