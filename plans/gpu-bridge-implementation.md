@@ -903,3 +903,9 @@ regressions cover all terminal reasons, normal wait sites, invalid records and u
 modes. The old failed regrant record remains rejected. A fresh normal fixture is required because
 this test-only C input changed. No browser assertion, production code, workload, clock, topology
 or 8 ms and 100 ms target changed.
+
+Independent review found that ordinary CI skipped the new closed-reply regressions. The
+existing compiled-fixture step now selects their file and suite using the same verified
+producer output. Its JUnit guard requires all 83 cases without skips or failures, separately
+from the unchanged historical and async requirements. Permanent guard controls reject missing,
+empty, short, skipped and failed suites. No additional producer or browser job is added.

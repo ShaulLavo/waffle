@@ -109,6 +109,8 @@ test("the producer runs only the compiled fixture suites with its verified artif
   expect(step).toContain("compiled textured depth scene");
   expect(step).toContain("gpu-fairness-fixture.test.ts");
   expect(step).toContain("compiled fairness fixture");
+  expect(step).toContain("gpu-fixture-closed.test.ts");
+  expect(step).toContain("compiled C closed replies during waits");
   expect(step).toContain("gpu-async-fixture.test.ts");
   expect(step).toContain("real compiled C decoder under protocol controls, not native acceptance");
   expect(step).toContain("--reporter=junit");
@@ -117,6 +119,23 @@ test("the producer runs only the compiled fixture suites with its verified artif
   expect(step).not.toContain("WASI_SDK_PATH");
   expect(producer.indexOf("build-gpu-fixture.ts --verify")).toBeLessThan(producer.indexOf(step!));
 });
+
+function checkRequiredSuite(
+  check: (xml: string) => number,
+  passing: string,
+  name: string,
+  count: number,
+): void {
+  const suite = `<testsuite name="${name}">${"<testcase/>".repeat(count)}</testsuite>`;
+  expect(passing).toContain(suite);
+  expect(check(passing.replace(suite, ""))).not.toBe(0);
+  expect(check(passing.replace(suite, `<testsuite name="${name}"/>`))).not.toBe(0);
+  expect(check(passing.replace(suite, suite.replace("<testcase/>", "")))).not.toBe(0);
+  for (const tag of ["skipped", "failure", "error"])
+    expect(
+      check(passing.replace(suite, suite.replace("<testcase/>", `<testcase><${tag}/></testcase>`))),
+    ).not.toBe(0);
+}
 
 test("compiled-suite report guard rejects missing, empty, filtered or failed assertions", () => {
   const step = producer
@@ -135,11 +154,12 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
     "compiled textured depth scene, protocol assertions",
     "compiled fairness fixture, protocol and deterministic scheduling",
     "real compiled C decoder under protocol controls, not native acceptance",
+    "compiled C closed replies during waits",
   ];
   const passing = suites
     .map(
       (name, index) =>
-        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 31 : index === 5 ? 20 : 1)}</testsuite>`,
+        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 31 : index === 5 ? 20 : index === 6 ? 83 : 1)}</testsuite>`,
     )
     .join("");
   const root = mkdtempSync(join(tmpdir(), "gpu-ci-report-"));
@@ -154,20 +174,12 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
     expect(check(passing.replace("<testcase/>", ""))).not.toBe(0);
     for (const tag of ["skipped", "failure", "error"])
       expect(check(passing.replace("<testcase/>", `<testcase><${tag}/></testcase>`))).not.toBe(0);
-    const asyncSuite = `<testsuite name="${suites[5]}">${"<testcase/>".repeat(20)}</testsuite>`;
-    expect(passing).toContain(asyncSuite);
-    expect(check(passing.replace(asyncSuite, ""))).not.toBe(0);
-    expect(check(passing.replace(asyncSuite, `<testsuite name="${suites[5]}"/>`))).not.toBe(0);
-    expect(check(passing.replace(asyncSuite, asyncSuite.replace("<testcase/>", "")))).not.toBe(0);
-    for (const tag of ["skipped", "failure", "error"])
-      expect(
-        check(
-          passing.replace(
-            asyncSuite,
-            asyncSuite.replace("<testcase/>", `<testcase><${tag}/></testcase>`),
-          ),
-        ),
-      ).not.toBe(0);
+    for (const [index, count] of [
+      [5, 20],
+      [6, 83],
+    ] satisfies [number, number][]) {
+      checkRequiredSuite(check, passing, suites[index]!, count);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
