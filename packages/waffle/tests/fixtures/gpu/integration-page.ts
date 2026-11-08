@@ -429,7 +429,7 @@ export function ownershipSurface(slot = 0) {
   return ensureSurface(slot).id;
 }
 /** @browserEntry */
-export function ownershipPeer(pump: boolean) {
+export function ownershipPeer(pump: boolean, interval: 20 | 40 = 20) {
   clearInterval(peerPump);
   peerPump = undefined;
   if (!pump) return;
@@ -448,7 +448,7 @@ export function ownershipPeer(pump: boolean) {
     }
     fed = count;
     if (feedTriangle("\n", 1) !== 1) errors.push("Ownership peer input refused");
-  }, 20);
+  }, interval);
 }
 
 /** @browserEntry */
