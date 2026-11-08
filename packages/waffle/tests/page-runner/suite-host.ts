@@ -137,7 +137,7 @@ async function fixtureResponse(
   collector.admitFixture(token, doc, application.declaration.caseId);
   return new Response(encoded, { headers: { ...headers, "Content-Type": "application/json" } });
 }
-function retirementCommand(collector: Collector, url: URL): boolean {
+function retirementCommand(collector: Collector, url: URL): ReturnType<Collector["reply"]> {
   const state = collector.documents.find(
     (item) => item.doc !== null && item.doc === url.searchParams.get("doc"),
   );
@@ -147,7 +147,7 @@ function retirementCommand(collector: Collector, url: URL): boolean {
     url.searchParams.get("doc") !== state.doc
   )
     throw new Error("Unbound retirement poll");
-  return state.retiring;
+  return collector.reply(state.retiring, state);
 }
 export type RunOptions = {
   resultPath: string;
@@ -349,6 +349,7 @@ export async function runPageSuite<R>(
   };
   const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
+    collector.cancel();
     application?.revoke("execution stopped");
     consumers.revoke();
     collector.abandon("execution stopped");
@@ -449,7 +450,7 @@ export async function runPageSuite<R>(
     const handle = await driver.handle(operationSignal);
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
-    const state = collector.expect(group, token, url, handle);
+    const state = collector.expect(group, token, url, handle, cleanupOnly);
     const configuration = pageConfiguration(group, item, run);
     fixture.configurations.set(token, {
       run,
@@ -527,6 +528,8 @@ export async function runPageSuite<R>(
       teardown.deadline,
     );
     if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
+    if (collector.reply(false, state).kind === "cancelled")
+      throw new Error("Reporting cancelled before retirement");
     state.retiring = true;
     await awaitState(
       state,

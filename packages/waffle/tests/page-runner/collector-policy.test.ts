@@ -188,7 +188,7 @@ for (const command of commands) {
     f.send({ kind: "case-start", caseId: f.id });
     for (const now of [budgets.case - 1, budgets.case]) {
       f.clock(now);
-      f.collector.heartbeat({ run: "run", doc: "doc", kind: "heartbeat" });
+      f.collector.heartbeat({ run: "run", doc: "doc", kind: "heartbeat", failure: null });
       expect(f.collector.deadline(budgets, 0)).toBe(now === budgets.case ? "case-hang" : null);
     }
   });

@@ -151,7 +151,9 @@ async function execute(state: DOMState, payload: unknown): Promise<unknown> {
   if (state.mode === "between-cutoffs" && source.includes("bridge.testerCutoff"))
     await state.page?.evaluate(() => {
       const observation = Reflect.get(globalThis, Symbol.for("waffle.framework.observation"))();
-      observation.error("BETWEEN_DOCUMENT_CUTOFFS", "synthetic-top");
+      void observation
+        .error(() => ({ error: "BETWEEN_DOCUMENT_CUTOFFS", source: "synthetic-top" }))
+        .catch(() => {});
     });
   return value;
 }
@@ -290,14 +292,20 @@ async function closeContent(state: DOMState): Promise<void> {
     if (!(frame instanceof HTMLIFrameElement) || !frame.contentWindow) throw new Error("No tester");
     const target = mode === "operation-top-cleanup-held" ? window : frame.contentWindow;
     const observe = Reflect.get(target, Symbol.for("waffle.framework.observation"))();
-    if (target === window) observe.error("held predecessor", "synthetic-closure-control");
+    if (target === window)
+      void observe
+        .error(() => ({ error: "held predecessor", source: "synthetic-closure-control" }))
+        .catch(() => {});
     else
-      observe.taskUpdate([
-        { id: "actual-synthetic-task", state: "pass", errors: [], hooks: null, retryCount: 0 },
-      ]);
-    if (mode === "operation-top-cleanup-held") observe.cleanupResponseReceived();
-    else if (mode === "operation-cleanup-held") observe.testerCleanupSettled();
-    else observe.executionFlushed();
+      void observe
+        .taskUpdate(() => [
+          { id: "actual-synthetic-task", state: "pass", errors: [], hooks: null, retryCount: 0 },
+        ])
+        .catch(() => {});
+    if (mode === "operation-top-cleanup-held")
+      void observe.cleanupResponseReceived().catch(() => {});
+    else if (mode === "operation-cleanup-held") void observe.testerCleanupSettled().catch(() => {});
+    else void observe.executionFlushed().catch(() => {});
     if (target.__waffleFramework?.snapshot().contentClosed !== true)
       throw new Error("Closure was not synchronous");
   }, state.mode);
