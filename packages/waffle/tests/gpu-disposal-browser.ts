@@ -307,6 +307,37 @@ function physicalProof(disposal: Record<string, unknown>) {
     "runtime disposal did not finish",
   );
 }
+function naturalRevocationExit(
+  observed: Record<string, unknown>,
+  compiled: Record<string, unknown>,
+): boolean {
+  const exit = record(observed.exit);
+  if (exit.kind !== "exited" || exit.code !== 1 || exit.status !== 1) return false;
+  const events = entries(observed.events),
+    original = entries(compiled.events),
+    last = events.at(-1);
+  if (
+    !last ||
+    last.phase !== "return" ||
+    last.result !== -64 ||
+    (last.name !== "append" && last.name !== "completions") ||
+    !Number.isSafeInteger(last.call) ||
+    number(last.call) <= 0 ||
+    !events.every((event) => event.token === compiled.token) ||
+    JSON.stringify(events.slice(0, original.length)) !== JSON.stringify(original)
+  )
+    return false;
+  const call = events.filter((event) => event.call === last.call),
+    phases = call.map((event) => event.phase).join(",");
+  return (
+    ["enter,return", "enter,wait,return"].includes(phases) &&
+    call[0]!.connection === 1 &&
+    call.every((event) => event.name === last.name) &&
+    events.filter(
+      (event) => event.phase === "return" && typeof event.result === "number" && event.result < 0,
+    ).length === 1
+  );
+}
 function exitProof(
   disposal: Record<string, unknown>,
   guests: readonly Record<string, unknown>[],
@@ -324,11 +355,13 @@ function exitProof(
     requireProof(matches.length === 1, "missing original guest exit");
     const observed = matches[0]!,
       exit = record(observed.exit);
+    const expected =
+      index === 0
+        ? exit.kind === "exited" && exit.code === 0 && exit.status === 0
+        : (exit.kind === "signaled" && exit.code === 9 && exit.status === 137) ||
+          naturalRevocationExit(observed, compiled);
     requireProof(
-      observed.grantRetired === true &&
-        exit.kind === (index === 0 ? "exited" : "signaled") &&
-        exit.code === (index === 0 ? 0 : 9) &&
-        exit.status === (index === 0 ? 0 : 137),
+      observed.grantRetired === true && expected,
       "wrong original guest exit or launch grant retirement",
     );
   }
