@@ -437,7 +437,8 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
   workerHistory(before, stopped);
   workerHistory(stopped, after);
   const terminalControls = originalControls(stopped, original.grants),
-    stoppedWorkers = entries(stopped.workers);
+    stoppedWorkers = entries(stopped.workers),
+    stoppedIds = new Set(entries(stopped.workerStops).map((stop) => stop.id));
   for (const item of terminalControls)
     terminal(item, item.grant === original.control.grant ? 1 : 5);
   for (const state of [stopped, after]) {
@@ -446,7 +447,11 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
     for (const [index, control] of terminalControls.entries()) {
       const originalWorker = consumers.get(control.grant)!,
         worker = stoppedWorkers.find((worker) => worker.id === originalWorker.id)!;
-      retiredReplyDrain(control, controls[index]!, worker.stopped === false);
+      retiredReplyDrain(
+        control,
+        controls[index]!,
+        worker.stopped === false && !stoppedIds.has(worker.id),
+      );
     }
     const current = entries(state.workers);
     requireProof(

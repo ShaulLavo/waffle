@@ -875,3 +875,7 @@ heads remain u32. A permanent control uses the real RecordRing and exact collect
 across rollover, including ring padding, rather than an unsigned synthetic tail. Additional
 controls reject consumption after physical stop and invalid signed counters. Both unchanged
 genuine service captures still validate, and both incomplete historical captures still reject.
+
+A native stop receipt at that first checkpoint also establishes the consumer cutoff. A
+contradictory still-running flag cannot permit later consumption once that receipt exists.
+Permanent controls cover both forms of recorded physical death.

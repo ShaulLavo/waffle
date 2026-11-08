@@ -959,25 +959,26 @@ test("committed reply consumption accepts the real observer's signed rollover ta
   expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
 });
 
-test("an original peer already physically stopped cannot drain committed replies", () => {
-  const value = committedReplyDrain(),
-    peer = value.peerGuest,
-    worker = value.failure.stopped.workers.find(
-      (worker) =>
-        "pid" in worker &&
-        worker.pid === peer.pid &&
-        "token" in worker &&
-        worker.token === peer.token &&
-        "surface" in worker &&
-        worker.surface === peer.surface,
-    )!;
-  worker.stopped = true;
-  const stop = value.failure.after.workerStops.find((stop) => stop.id === worker.id)!;
-  value.failure.stopped.workerStops = value.failure.stopped.workerStops.concat([stop]);
-  expect(() => validateServiceFailureResult(value)).toThrow(
-    "physically stopped guest changed old controls",
-  );
-});
+for (const stopped of [true, false])
+  test(`an original peer already physically stopped cannot drain committed replies, flag=${stopped}`, () => {
+    const value = committedReplyDrain(),
+      peer = value.peerGuest,
+      worker = value.failure.stopped.workers.find(
+        (worker) =>
+          "pid" in worker &&
+          worker.pid === peer.pid &&
+          "token" in worker &&
+          worker.token === peer.token &&
+          "surface" in worker &&
+          worker.surface === peer.surface,
+      )!;
+    worker.stopped = stopped;
+    const stop = value.failure.after.workerStops.find((stop) => stop.id === worker.id)!;
+    value.failure.stopped.workerStops = value.failure.stopped.workerStops.concat([stop]);
+    expect(() => validateServiceFailureResult(value)).toThrow(
+      "physically stopped guest changed old controls",
+    );
+  });
 
 for (const tail of [-0x80000001, 0x80000000, -15, -16.5])
   test(`observed signed tail ${tail} is rejected before normalization`, () => {
