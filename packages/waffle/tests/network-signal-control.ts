@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runPageSuite, type SuiteAdapter } from "waffle/testing/page-runner";
 import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
 
@@ -87,7 +87,7 @@ async function bootstrap(): Promise<Blob> {
 }
 const result = await runPageSuite(adapter, (scratch) => new PlaywrightDriver("chromium", scratch), {
   resultPath: join(root, "result.json"),
-  scratchRoot: root,
+  scratchRoot: dirname(root),
   port: "ephemeral",
 });
 if (

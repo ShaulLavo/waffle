@@ -15,10 +15,12 @@ export async function signalControl(signal: "SIGINT" | "SIGTERM"): Promise<void>
   async function until(text: string): Promise<void> {
     while (!output.includes(text)) {
       const next = await reader.read();
-      if (next.done)
+      if (next.done) {
+        const saved = await readFile(join(root, "result.json"), "utf8").catch(String);
         throw new Error(
-          `Signal child exited before ${text}: ${output}\n${await new Response(child.stderr).text()}`,
+          `Signal child exited before ${text}: ${output}\n${await new Response(child.stderr).text()}\nSaved result: ${saved.slice(0, 8192)}`,
         );
+      }
       output += new TextDecoder().decode(next.value);
     }
   }
