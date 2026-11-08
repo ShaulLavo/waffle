@@ -40,7 +40,9 @@ export function validateFrameworkOptions(options: FrameworkOptions): void {
       item.file !== file ||
       !item.fullName ||
       !item.sourceKey ||
-      item.timeoutMs !== 15000 ||
+      typeof item.timeoutMs !== "number" ||
+      !Number.isFinite(item.timeoutMs) ||
+      item.timeoutMs <= 0 ||
       item.retries !== 0
     )
       throw new Error("Invalid expected case identity or original clock");

@@ -12,7 +12,7 @@ export type ExpectedCase = {
   readonly file: string;
   readonly fullName: string;
   readonly sourceKey: string;
-  readonly timeoutMs: 15000;
+  readonly timeoutMs: number;
   readonly retries: 0;
 };
 /** @public */

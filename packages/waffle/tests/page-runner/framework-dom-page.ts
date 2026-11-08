@@ -1,6 +1,7 @@
 import { getFrameworkObservation } from "waffle/testing/page-runner/framework-page";
 declare const FRAMEWORK_DOM_MODE: string;
 declare const FRAMEWORK_DOM_FILE: string;
+declare const FRAMEWORK_DOM_TIMEOUT: number;
 const observation = getFrameworkObservation();
 if (!observation) throw new Error("Synthetic document was not instrumented");
 const observer = observation;
@@ -85,7 +86,7 @@ async function tester(): Promise<void> {
     file: FRAMEWORK_DOM_FILE,
     fullName: "synthetic case",
     mode: "run",
-    timeoutMs: 15000,
+    timeoutMs: FRAMEWORK_DOM_TIMEOUT,
     retries: 0,
   } as const;
   await observer.collected([task]);

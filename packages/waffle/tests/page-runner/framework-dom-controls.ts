@@ -14,6 +14,7 @@ import { record } from "./protocol.js";
 export const frameworkControlModes = [
   "pass",
   "delayed-admission",
+  "declared-clock",
   "entry-tester",
   "known-frame-error",
   "replace",
@@ -477,6 +478,14 @@ function assertOperations(state: DOMState, mode: string): void {
   )
     throw new Error("Denied operation invoked its callback");
 }
+function assertDeclaredClock(result: FrameworkResult, mode: string): void {
+  if (mode !== "declared-clock") return;
+  if (
+    result.cases[0]?.expected.timeoutMs !== 20000 ||
+    result.collection.find((item) => item.type === "test")?.timeoutMs !== 20000
+  )
+    throw new Error("Declared case clock was not preserved through collection");
+}
 function assertResult(state: DOMState, result: FrameworkResult, mode: string): void {
   if (state.sessionPosts !== 1 || state.sessionDeletes !== 1)
     throw new Error("DOM control did not retain one session owner");
@@ -491,7 +500,8 @@ function assertResult(state: DOMState, result: FrameworkResult, mode: string): v
     mode === "delayed-admission" ||
     mode === "entry-tester" ||
     mode === "operation-pass" ||
-    mode === "operation-correlation";
+    mode === "operation-correlation" ||
+    mode === "declared-clock";
   if (
     pass &&
     (result.exit !== 4 ||
@@ -518,6 +528,7 @@ function assertResult(state: DOMState, result: FrameworkResult, mode: string): v
   )
     throw new Error("Accepted reports were mislabeled as received page ACKs");
   assertOperations(state, mode);
+  assertDeclaredClock(result, mode);
   if (result.rootBrowserSuiteComplete) throw new Error("Synthetic observer claimed root scope");
   if (pass && result.events.filter((event) => event.kind === "task-update").length !== 2)
     throw new Error("Repeated actual updates lost");
@@ -528,10 +539,15 @@ export async function frameworkDOMControl(
   root: string,
 ): Promise<void> {
   const file = "synthetic-observer.browser.test.ts";
+  const timeoutMs = mode === "declared-clock" ? 20000 : 15000;
   const built = await Bun.build({
     entrypoints: [join(import.meta.dir, "framework-dom-page.ts")],
     target: "browser",
-    define: { FRAMEWORK_DOM_MODE: JSON.stringify(mode), FRAMEWORK_DOM_FILE: JSON.stringify(file) },
+    define: {
+      FRAMEWORK_DOM_MODE: JSON.stringify(mode),
+      FRAMEWORK_DOM_FILE: JSON.stringify(file),
+      FRAMEWORK_DOM_TIMEOUT: JSON.stringify(timeoutMs),
+    },
   });
   if (!built.success || !built.outputs[0])
     throw new AggregateError(built.logs, "Synthetic observer bundle failed");
@@ -575,7 +591,7 @@ export async function frameworkDOMControl(
             file,
             fullName: "synthetic case",
             sourceKey: "synthetic:1",
-            timeoutMs: 15000,
+            timeoutMs,
             retries: 0,
           },
         ],

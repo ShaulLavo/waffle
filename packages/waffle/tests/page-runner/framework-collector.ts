@@ -201,24 +201,28 @@ export class FrameworkCollector {
     const tests = tasks.filter((item) => item.type === "test");
     if (tests.length !== this.expected.length)
       throw new Error("Independent inventory count mismatch");
-    const matches = this.expected.map((expected) =>
-      tests.filter(
-        (actual) => actual.file === expected.file && actual.fullName === expected.fullName,
+    const matches = this.cases.map((item) => ({
+      item,
+      actual: tests.filter(
+        (actual) =>
+          actual.file === item.expected.file && actual.fullName === item.expected.fullName,
       ),
-    );
-    if (matches.some((items) => items.length !== 1))
+    }));
+    if (matches.some(({ actual }) => actual.length !== 1))
       throw new Error("Independent inventory identity mismatch");
-    if (tests.some((item) => item.mode !== "run" || item.timeoutMs !== 15000 || item.retries !== 0))
+    if (
+      matches.some(
+        ({ item, actual }) =>
+          actual[0]?.mode !== "run" ||
+          actual[0]?.timeoutMs !== item.expected.timeoutMs ||
+          actual[0]?.retries !== item.expected.retries,
+      )
+    )
       throw new Error("Original case options changed");
     if (tasks.some((item) => item.parentId !== null && !ids.has(item.parentId)))
       throw new Error("Unknown actual task parent");
     this.collection = tasks;
-    for (const item of this.cases)
-      item.actualId =
-        tests.find(
-          (actual) =>
-            actual.file === item.expected.file && actual.fullName === item.expected.fullName,
-        )?.id ?? null;
+    for (const { item, actual } of matches) item.actualId = actual[0]?.id ?? null;
   }
   private updates(event: Extract<FrameworkEvent, { kind: "task-update" | "case-settled" }>): void {
     for (const value of event.updates) {

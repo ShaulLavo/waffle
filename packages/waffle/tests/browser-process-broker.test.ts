@@ -2149,6 +2149,10 @@ for (const completion of [
       // certify the adapter's critical section. Terminate-first would hang this fence.
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(events).not.toContain("terminate");
+      for (const worker of workers) {
+        expect(worker.onmessage).not.toBeNull();
+        expect(worker.onerror).not.toBeNull();
+      }
       expect(record.result).toBeNull();
       expect(controlLoad(workerProcessState(transport).confirmed, 0)).toBe(0);
       releaseAdapter();
@@ -2163,6 +2167,10 @@ for (const completion of [
         completion === "constructor-failure" || completion === "connect-failure" ? 0 : 1,
       );
       expect(events.filter((event) => event === "cleanup")).toHaveLength(1);
+      for (const worker of workers) {
+        expect(worker.onmessage).toBeNull();
+        expect(worker.onerror).toBeNull();
+      }
       if (completion !== "dispose") {
         expect(record.result).not.toBeNull();
         expect(controlLoad(workerProcessState(transport).confirmed, 0)).toBe(1);
