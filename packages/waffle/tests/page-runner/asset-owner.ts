@@ -13,6 +13,7 @@ type Delivery = { kind: "counting"; count: number } | { kind: "protected" } | { 
 type Scope = {
   state: DocumentState;
   doc: string;
+  url: string;
   admission: { kind: "open"; check: () => void } | { kind: "revoked" };
   callbacks: Map<string, AssetHoldCallback>;
   pending: Set<Promise<void>>;
@@ -26,12 +27,14 @@ export class AssetOwner {
   private readonly scopes = new Map<DocumentState, Scope>();
   private readonly protectedPaths = new Set<string>();
   private sealed = false;
+  private readonly assets: Readonly<Record<string, Blob | string>>;
   constructor(
     private readonly collector: Collector,
-    private readonly assets: Readonly<Record<string, Blob | string>>,
+    assets: Readonly<Record<string, Blob | string>>,
     private readonly page: { path: string; script: string },
     private readonly consumers: HostConsumers,
   ) {
+    this.assets = Object.freeze({ ...assets });
     consumers.register(() => this.revokeAll());
   }
   bind(state: DocumentState, check: () => void): void {
@@ -40,6 +43,7 @@ export class AssetOwner {
     this.scopes.set(state, {
       state,
       doc: state.doc,
+      url: state.expectedURL,
       admission: { kind: "open", check },
       callbacks: new Map(),
       pending: new Set(),
@@ -51,10 +55,10 @@ export class AssetOwner {
     localPath(path);
     if (
       reservedPath(path) ||
-      /[*?{}\[\]]/u.test(path) ||
+      /[*?{}[\]]/u.test(path) ||
       [this.page.path, this.page.script].includes(path) ||
       !Object.hasOwn(this.assets, path) ||
-      this.collector.workerScriptScope(new URL(path, state.expectedURL))
+      this.collector.isWorkerScript(path)
     )
       throw new Error("Hold requires an existing ordinary asset path");
     if (typeof callback !== "function") throw new Error("Asset callback must be a function");
@@ -74,6 +78,7 @@ export class AssetOwner {
       scope.admission.kind !== "open" ||
       state !== this.collector.active ||
       scope.doc !== state.doc ||
+      scope.url !== state.expectedURL ||
       state.owner.kind !== "coordinator" ||
       state.group.role !== "case" ||
       state.group.execution !== "host" ||
@@ -120,7 +125,7 @@ export class AssetOwner {
       !state ||
       new URL(state.expectedURL).origin !== url.origin ||
       request.method !== "GET" ||
-      url.search
+      url.href !== `${url.origin}${url.pathname}`
     )
       throw new ObservationClosed("Missing or invalid exact asset document context");
     const scope = this.admit(state);
@@ -238,7 +243,7 @@ export class AssetOwner {
           Math.max(0, until - performance.now()),
           "asset work join",
         );
-      return true;
+      return performance.now() <= until;
     } catch {
       return false;
     }

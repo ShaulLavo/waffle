@@ -104,6 +104,20 @@ export function serveCollector(
   });
   return { server, configurations, assetOwner, origin: `http://127.0.0.1:${server.port}` };
 }
+function sealAssets(fixture: ReturnType<typeof serveCollector> | undefined): void {
+  fixture?.assetOwner.seal();
+}
+function documentTeardown(
+  host: HostDrive | undefined,
+  deadline: number | undefined,
+  signal: AbortSignal,
+) {
+  if (!host) return { deadline, signal };
+  return {
+    deadline: Math.min(deadline ?? Infinity, host.teardownDeadline()),
+    signal: AbortSignal.any([signal, host.teardownSignal()]),
+  };
+}
 async function fixtureResponse(
   request: Request,
   collector: Collector,
@@ -358,7 +372,7 @@ export async function runPageSuite<R>(
     const stopped =
       producerStopped &&
       hostStopped &&
-      !hostCases.some(host => host.uncontainedPageWork()) &&
+      !hostCases.some((host) => host.uncontainedPageWork()) &&
       applicationCleanup.fixture.status !== "unconfirmed" &&
       applicationCleanup.callbacks.status !== "unconfirmed" &&
       driverCleanup.session.status !== "unconfirmed" &&
@@ -501,6 +515,7 @@ export async function runPageSuite<R>(
       await host.drive(item.drive);
       priorFailures = collector.failures.length;
     }
+    const teardown = documentTeardown(host, resultDeadline, operationSignal);
     await awaitState(
       state,
       () => state.complete,
@@ -508,17 +523,11 @@ export async function runPageSuite<R>(
       documentDriver,
       budgets,
       cleanupOnly ? performance.now() : started,
-      operationSignal,
+      teardown.signal,
       priorFailures,
-      host ? Math.min(resultDeadline ?? Infinity, host.teardownDeadline()) : resultDeadline,
+      teardown.deadline,
     );
     if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
-    const retirementSignal = host
-      ? AbortSignal.any([
-          operationSignal,
-          AbortSignal.timeout(Math.max(1, Math.ceil(host.teardownDeadline() - performance.now()))),
-        ])
-      : operationSignal;
     state.retiring = true;
     await awaitState(
       state,
@@ -527,10 +536,11 @@ export async function runPageSuite<R>(
       documentDriver,
       budgets,
       cleanupOnly ? performance.now() : started,
-      operationSignal,
+      teardown.signal,
       priorFailures,
+      teardown.deadline,
     );
-    await retireDocument(state, collector, documentDriver, retirementSignal, priorFailures);
+    await retireDocument(state, collector, documentDriver, teardown.signal, priorFailures);
     operationSignal.throwIfAborted();
     if (!cleanupOnly) checkDeadline();
     operationSignal.throwIfAborted();
@@ -652,7 +662,7 @@ export async function runPageSuite<R>(
     options.signal?.removeEventListener("abort", interrupted);
   }
   sealed = true;
-  fixture?.assetOwner.seal();
+  sealAssets(fixture);
   if (!adapter.policy.allocation && !adapter.serviceWorker)
     storage = { status: "not-created", detail: "suite declares no durable allocations" };
   const cleanup = {

@@ -1,7 +1,6 @@
 import type { AssetOwner } from "./asset-owner.js";
-import { bounded } from "./driver.js";
+import { bounded, type Driver } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
-import { type Driver } from "./driver.js";
 import {
   record,
   formatHostError,
@@ -338,7 +337,7 @@ try {
     if (this.teardownUntil === undefined) throw new Error("Host teardown has not started");
     return this.teardownUntil;
   }
-  private teardownSignal(): AbortSignal {
+  teardownSignal(): AbortSignal {
     return AbortSignal.timeout(Math.max(1, Math.ceil(this.teardownDeadline() - performance.now())));
   }
   private async joinBodyAndAssets(): Promise<void> {
@@ -357,7 +356,7 @@ try {
       ),
       this.assets?.join(this.state, until) ?? true,
     ]);
-    if (joined.every(Boolean)) return;
+    if (joined.every(Boolean) && performance.now() <= until) return;
     this.containmentFailed = true;
     this.collector.fail(
       "host-work-unconfirmed",
@@ -421,6 +420,8 @@ try {
       caseId: this.state.group.caseIds[0],
       body: this.bodyFailure,
       assets: this.assets?.errors(this.state),
+      pendingBody: this.bodyWork.kind === "pending",
+      pendingAssets: this.assets?.pending(this.state) ?? false,
       containmentFailed: this.containmentFailed,
     };
   }
@@ -501,14 +502,22 @@ try {
       this.revoke();
     }
     this.collector.results[caseId] = { body: verdict, teardown: { status: "not-entered" } };
-    if (this.uncontainedPageTasks())
-      this.collector.fail("page-task-unconfirmed", "Page task outlived its host waiter", this.state);
-    const delivery = this.deliver(verdict).then(async () => {
+    const delivery = this.closeRemainingPeers().then(async () => {
+      if (this.uncontainedPageTasks())
+        this.collector.fail(
+          "page-task-unconfirmed",
+          "Page task outlived its host waiter",
+          this.state,
+        );
+      await this.deliver(verdict);
       if (this.signal.aborted || this.collector.failures.length) await this.recoverTeardown();
     });
-    const peers = this.closeRemainingPeers();
-    const completed = await Promise.allSettled([delivery, peers, this.livenessProbe, this.joinBodyAndAssets()]);
-    const failure = completed.find(result => result.status === "rejected");
+    const completed = await Promise.allSettled([
+      delivery,
+      this.livenessProbe,
+      this.joinBodyAndAssets(),
+    ]);
+    const failure = completed.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
     if (this.uncontainedPageWork())
       this.collector.fail(
