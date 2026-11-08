@@ -58,10 +58,10 @@ guest inline. `ExecutableRegistry` maps any executable name to a compiled module
 asynchronous loader) and an opaque guest-adapter key. The Bun adapter uses its existing slots
 12–15, while the same worker bootstrap can execute an ordinary preview1 module.
 
-The borrowed process service's `isIdleWorker(worker)` reports whether an already-observed worker
-is still inert in that service's precreated pool. Membership ends before a worker is leased.
-The query exposes no worker references or termination controls; process ownership and cleanup
-checks apply after the worker receives its process request.
+The borrowed process service's `isIdleWorker(worker)` returns false. The service creates workers
+only for a requested launch and retains no idle workers. The query exposes no worker references
+or termination controls; process ownership and cleanup checks apply after the worker receives
+its process request.
 
 `reserveSpawn` synchronously snapshots argv/env/cwd and retains descriptor bindings (including
 nonstandard fds); `start` asynchronously resolves the module and launches the worker. `spawn`
@@ -120,12 +120,11 @@ Revocation hooks connect logical process death to host capabilities. Filesystem 
 not proof of physical teardown: an exit acknowledgement or the filesystem's admission fence
 must prove host critical sections quiescent before reaping and physical termination.
 Each process has fresh interrupt/revocation/transport buffers;
-killed buffers are never assigned to another process. After the first worker launch, the broker
-precreates up to two unused workers across all worker URLs. A consumer that launches its own root
-worker takes one from the same pool with `takeWorker(url)`. Each worker runs at most one process;
-used workers follow the existing quiescence and termination path. The registry already caches
+killed buffers are never assigned to another process. The broker creates a fresh worker only
+when a process launches. A consumer that launches its own root worker requests a fresh worker
+with `takeWorker(url)` and owns its termination. Each worker runs at most one process;
+broker-launched workers follow the existing quiescence and termination path. The registry caches
 compiled modules per registration, and source registrations share a bounded content cache.
-Paired Chromium command timings for worker precreation remain pending.
 
 The generic service's registry, process table and supervisor are dynamically imported on first
 spawn. Small identity, typed-outcome and signal-state leaves are available earlier for synchronous

@@ -9,6 +9,7 @@ import { poisonProcessIntrinsics } from "../process-intrinsics.js";
 import { sharedArrayBufferByteLength } from "../../../proc/intrinsics.js";
 import { consumedControlBytes } from "../../../memory/control.js";
 import { importUnwind } from "./import-unwind.js";
+import { thrownObservation } from "./thrown-observation.js";
 
 const host = globalThis as unknown as {
   onmessage: (event: MessageEvent<RuntimeWorkerRequest>) => Promise<void>;
@@ -27,46 +28,129 @@ function observeWait(this: RecordRing, seen: number, timeout: number, live: () =
   }
   return apply(wait, this, [seen, timeout, live]);
 }
+type PayloadObservation = { enabled: boolean; memory: () => WebAssembly.Memory | undefined };
+type QuotaObservation =
+  | (() => { consumed: number; limit: number; receiptBytes: number; lengths: number[] })
+  | undefined;
+type AuthorityObservation = () =>
+  | ReturnType<ReturnType<typeof poisonProcessIntrinsics>["restore"]>
+  | undefined;
 function observeImports(
   imports: WebAssembly.Imports,
   token: string | undefined,
-  quota:
-    | (() => { consumed: number; limit: number; receiptBytes: number; lengths: number[] })
-    | undefined,
-  authority: () => ReturnType<ReturnType<typeof poisonProcessIntrinsics>["restore"]> | undefined,
+  quota: QuotaObservation,
+  payload: PayloadObservation,
+  authority: AuthorityObservation,
 ): void {
   if (!token || !imports.runtime_gpu) return;
   RecordRing.prototype.wait = observeWait;
-  for (const name of ["open", "append", "completions"].concat(quota ? ["close"] : [])) {
+  for (const name of ["open", "append", "completions"].concat(
+    payload.enabled ? ["payload", "close"] : quota ? ["close"] : [],
+  )) {
     const original = imports.runtime_gpu[name];
     if (typeof original !== "function") throw new Error("Missing observed GPU import");
-    imports.runtime_gpu[name] = function (this: unknown, ...args: (number | bigint)[]) {
-      const call = ++importCall;
-      waiting = { token, call, name, reported: false };
+    imports.runtime_gpu[name] = observedImport(original, token, name, quota, payload, authority);
+  }
+}
+function observeThrow(
+  error: unknown,
+  site: "import" | "return-observer",
+  call: { token: string; call: number; name: string },
+): void {
+  let unwind: ReturnType<typeof importUnwind>;
+  try {
+    if (site === "import") unwind = importUnwind(error);
+  } catch {}
+  try {
+    const gpuImport = { ...call, phase: "throw", unwind };
+    send({
+      gpuImport: unwind ? gpuImport : { ...gpuImport, exception: thrownObservation(error, site) },
+    });
+  } catch {}
+}
+export function observedImport(
+  original: Function,
+  token: string,
+  name: string,
+  quota: QuotaObservation,
+  payload: PayloadObservation,
+  authority: AuthorityObservation,
+) {
+  return function (this: unknown, ...args: (number | bigint)[]) {
+    const call = ++importCall;
+    waiting = { token, call, name, reported: false };
+    send({
+      gpuImport: {
+        token,
+        call,
+        name,
+        phase: "enter",
+        connection: args[0],
+        length: args[2],
+        authority: authority(),
+        quota: quota?.(),
+        payload:
+          payload.enabled && name === "payload" ? payloadHandle(payload.memory(), args) : undefined,
+      },
+    });
+    let site: "import" | "return-observer" = "import";
+    try {
+      const result = apply(original, this, args);
+      site = "return-observer";
       send({
         gpuImport: {
           token,
           call,
           name,
-          phase: "enter",
-          connection: args[0],
-          length: args[2],
-          authority: authority(),
+          phase: "return",
+          result,
           quota: quota?.(),
+          records:
+            payload.enabled && name === "completions" && result === 0
+              ? completionRecords(payload.memory(), args)
+              : undefined,
         },
       });
-      try {
-        const result = apply(original, this, args);
-        send({ gpuImport: { token, call, name, phase: "return", result, quota: quota?.() } });
-        return result;
-      } catch (error) {
-        send({ gpuImport: { token, call, name, phase: "throw", unwind: importUnwind(error) } });
-        throw error;
-      } finally {
-        waiting = undefined;
-      }
-    };
+      return result;
+    } catch (error) {
+      observeThrow(error, site, { token, call, name });
+      throw error;
+    } finally {
+      waiting = undefined;
+    }
+  };
+}
+function payloadHandle(memory: WebAssembly.Memory | undefined, args: readonly (number | bigint)[]) {
+  if (!memory || typeof args[1] !== "number") throw new Error("Missing payload import memory");
+  const view = new DataView(memory.buffer, args[1], 8);
+  return { handle: view.getUint32(0, true), generation: view.getUint32(4, true) };
+}
+function completionRecords(
+  memory: WebAssembly.Memory | undefined,
+  args: readonly (number | bigint)[],
+) {
+  if (!memory || typeof args[1] !== "number" || typeof args[4] !== "number")
+    throw new Error("Missing completion import memory");
+  const written = new DataView(memory.buffer).getUint32(args[4], true);
+  const view = new DataView(memory.buffer, args[1], written);
+  const records: { kind: number; bytes: number; token: number; status: number; words: number[] }[] =
+    [];
+  for (let offset = 0; offset < written;) {
+    const bytes = view.getUint32(offset + 4, true);
+    if (bytes < 16 || offset + bytes > written)
+      throw new Error("Invalid observed completion framing");
+    records.push({
+      kind: view.getUint16(offset, true),
+      bytes,
+      token: view.getUint32(offset + 8, true),
+      status: view.getInt32(offset + 12, true),
+      words: Array.from({ length: (bytes - 16) / 4 }, (_, index) =>
+        view.getUint32(offset + 16 + index * 4, true),
+      ),
+    });
+    offset += bytes;
   }
+  return records;
 }
 const add = globalThis.addEventListener.bind(globalThis),
   remove = globalThis.removeEventListener.bind(globalThis);
@@ -105,16 +189,22 @@ host.onmessage = async ({ data }) => {
     {
       ...preview1Executor,
       imports(imports) {
-        observeImports(imports, data.env.GPU_OWNERSHIP_TOKEN, quota, () => {
-          if (data.env.GPU_OWNERSHIP_VICTIM !== "1" || !poison) return undefined;
-          const report = poison.restore();
-          const buffers = receipts.concat(
-            data.graphics?.surfaces.map((surface) => surface.info) ?? [],
-            data.graphics ? [data.graphics.revocation] : [],
-          );
-          poison = poisonProcessIntrinsics(buffers);
-          return report;
-        });
+        observeImports(
+          imports,
+          data.env.GPU_OWNERSHIP_TOKEN,
+          quota,
+          { enabled: data.args.includes("--payload-pressure"), memory: () => memory },
+          () => {
+            if (data.env.GPU_OWNERSHIP_VICTIM !== "1" || !poison) return undefined;
+            const report = poison.restore();
+            const buffers = receipts.concat(
+              data.graphics?.surfaces.map((surface) => surface.info) ?? [],
+              data.graphics ? [data.graphics.revocation] : [],
+            );
+            poison = poisonProcessIntrinsics(buffers);
+            return report;
+          },
+        );
         if (data.env.GPU_FORGE !== "1" || !imports.runtime_window) return;
         const originalSurfaces = imports.runtime_window.surfaces,
           originalInfo = imports.runtime_window.surface_info;

@@ -262,9 +262,8 @@ function compiledFailure(value: unknown, mode: Mode): boolean {
   if (mode !== "nesting") return failures[0] === "GPU_FAIL stage=fairness-append status=-64";
   const unexpected = lines.filter((line) => line.startsWith("GPU_UNEXPECTED"));
   return (
-    failures[0] === "GPU_FAIL stage=unexpected-completion status=-28" &&
-    unexpected.length === 1 &&
-    unexpected[0] === "GPU_UNEXPECTED kind=12 token=0" &&
+    failures[0] === "GPU_FAIL stage=completions status=-64" &&
+    unexpected.length === 0 &&
     lines.includes("GPU_FAIRNESS_PUBLISHED")
   );
 }

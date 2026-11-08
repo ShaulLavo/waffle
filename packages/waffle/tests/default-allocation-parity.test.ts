@@ -41,12 +41,26 @@ function withoutStorageRoot(value: Parameters<typeof multiset>[0], bytes: number
   }
   return events;
 }
+function withoutIdleWorkers(expected: string[]) {
+  for (const outcome of ["attempt", "success"]) {
+    const idle = JSON.stringify({
+      realm: "page-owned-javascript",
+      purpose: "guest",
+      constructor: "Worker",
+      descriptor: { url: "guest-worker", options: { type: "module" } },
+      outcome,
+    });
+    expect(expected.filter((event) => event === idle)).toHaveLength(3);
+    expected.splice(expected.indexOf(idle), 2);
+  }
+  return expected;
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
   ["normal", "ios"],
 ] as const)
-  test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match ledger-free main, ${mode}, ${agent} user agent`, async () => {
+  test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match the reference apart from storage-root and idle-worker changes, ${mode}, ${agent} user agent`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "waffle-parity-reference-"));
     try {
       const repository =
@@ -72,7 +86,7 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 88_098_640)).toEqual(
-        withoutStorageRoot(baseline, 64 * 1024 * 1024),
+        withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
       );
     } finally {
       await rm(scratch, { recursive: true, force: true });

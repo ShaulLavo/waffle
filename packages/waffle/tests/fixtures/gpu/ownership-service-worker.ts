@@ -8,6 +8,7 @@ import { RecordRing } from "../../../browser/gpu/ring.js";
 import { SurfaceConnection } from "../../../browser/gpu/surfaces.js";
 import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
+import { ringSnapshot, captureRingSnapshots } from "./ring-snapshot.js";
 
 type Open = Extract<GpuServiceRequest, { type: "open" }>;
 type Mode =
@@ -154,6 +155,219 @@ CompletionOwner.prototype.start = function (token, start, settle, reject, abando
   };
   return Reflect.apply(startCompletion, this, [token, start, settle, reject, observedAbandon]);
 };
+/**
+ * Scalar, append-only payload observations written by the real calls. Only a compilation
+ * entry changes later, when its own native promise settles.
+ */
+interface PayloadSubject {
+  readonly order: number;
+  readonly owner: number;
+  readonly grant: number;
+  readonly connection: number;
+  readonly device: number;
+  readonly at: number;
+}
+const payloadLimit = 1024;
+interface PayloadCompilation extends PayloadSubject {
+  call: number;
+  settled: "pending" | "fulfilled" | "rejected";
+  settledAt: number | null;
+  pending: number;
+}
+interface PayloadAllocation extends PayloadSubject {
+  length: number;
+  readyBefore: number;
+  readyAfter: number;
+  repliesUsedBefore: number;
+  pendingBefore: number;
+  outcome: "handle" | "refused" | "empty" | "threw";
+  handle: number;
+  generation: number;
+  terminalReason: number;
+  failure: string | null;
+}
+interface PayloadPublication extends PayloadSubject {
+  token: number;
+  status: number;
+  handle: number;
+  generation: number;
+  length: number;
+  published: boolean;
+  repliesUsed: number;
+}
+interface PayloadTermination extends PayloadSubject {
+  requested: number;
+  terminalBefore: number;
+  selected: number;
+}
+const payloadPressure: {
+  compilations: PayloadCompilation[];
+  allocations: PayloadAllocation[];
+  publications: PayloadPublication[];
+  terminations: PayloadTermination[];
+  uncorrelatedCompilations: number;
+  dropped: number;
+} = {
+  compilations: [],
+  allocations: [],
+  publications: [],
+  terminations: [],
+  uncorrelatedCompilations: 0,
+  dropped: 0,
+};
+let payloadOrder = 0;
+function payloadOwner(completions: CompletionOwner): Owner | undefined {
+  return owners.find((owner) => owner.connection.completions === completions);
+}
+function payloadSubject(owner: Owner): PayloadSubject {
+  return {
+    order: ++payloadOrder,
+    owner: owner.id,
+    grant: owner.open.grant,
+    connection: owner.open.open.id,
+    device: owner.device,
+    at: performance.now(),
+  };
+}
+function payloadRecord<T>(list: T[], entry: T): void {
+  const total =
+    payloadPressure.compilations.length +
+    payloadPressure.allocations.length +
+    payloadPressure.publications.length +
+    payloadPressure.terminations.length;
+  if (total >= payloadLimit) payloadPressure.dropped++;
+  else list.push(entry);
+}
+function readySlots(owner: Owner): number {
+  const words = new BigInt64Array(
+    owner.open.open.arena,
+    gpuPayloadLayout.directoryOffset,
+    (gpuPayloadLayout.slots * gpuPayloadLayout.slotBytes) / 8,
+  );
+  let ready = 0;
+  for (let index = 0; index < gpuPayloadLayout.slots; index++) {
+    const word = Atomics.load(words, (index * gpuPayloadLayout.slotBytes) / 8);
+    if (Number(word & 0xffffffffn) === gpuPayloadLayout.ready) ready++;
+  }
+  return ready;
+}
+/** Selected reason of a termination the wrapped call itself caused, or zero. */
+function terminatedSince(owner: Owner, before: number): number {
+  const entry = payloadPressure.terminations.findLast(
+    (candidate) => candidate.order > before && candidate.owner === owner.id,
+  );
+  return entry?.selected ?? 0;
+}
+function wireNumber(value: unknown, key: string): number {
+  if (!value || typeof value !== "object") return 0;
+  const field: unknown = Reflect.get(value, key);
+  return typeof field === "number" ? field : 0;
+}
+const terminateCompletion = CompletionOwner.prototype.terminate;
+CompletionOwner.prototype.terminate = function (reason) {
+  const owner = payloadOwner(this);
+  // A plain atomic read; the state getter would synchronize before the real call.
+  const terminalBefore = owner ? ringSnapshot(owner.open.open.commands).terminal : 0;
+  const result = Reflect.apply(terminateCompletion, this, [reason]);
+  if (!owner) return result;
+  // The state getter does not synchronize once the owner is terminal.
+  const state = this.state;
+  payloadRecord(payloadPressure.terminations, {
+    ...payloadSubject(owner),
+    requested: reason,
+    terminalBefore,
+    selected: state.kind === "terminal" ? state.reason : 0,
+  });
+  return result;
+};
+const fillPayload = CompletionOwner.prototype.fillPayload;
+CompletionOwner.prototype.fillPayload = function (length, fill) {
+  const owner = payloadOwner(this);
+  if (!owner) return Reflect.apply(fillPayload, this, [length, fill]);
+  const readyBefore = readySlots(owner);
+  const before = {
+    order: payloadOrder,
+    replies: ringSnapshot(owner.open.open.replies).used,
+    pending: this.pendingCount,
+  };
+  let handle: ReturnType<typeof fillPayload>;
+  try {
+    handle = Reflect.apply(fillPayload, this, [length, fill]);
+  } catch (error) {
+    recordAllocation(this, owner, length, readyBefore, before, undefined, true);
+    throw error;
+  }
+  recordAllocation(this, owner, length, readyBefore, before, handle, false);
+  return handle;
+};
+function recordAllocation(
+  completions: CompletionOwner,
+  owner: Owner,
+  length: number,
+  readyBefore: number,
+  before: { order: number; replies: number; pending: number },
+  handle: ReturnType<typeof fillPayload>,
+  threw: boolean,
+) {
+  const terminalReason = terminatedSince(owner, before.order);
+  const outcome = threw ? "threw" : handle ? "handle" : terminalReason ? "refused" : "empty";
+  payloadRecord(payloadPressure.allocations, {
+    ...payloadSubject(owner),
+    length,
+    readyBefore,
+    readyAfter: readySlots(owner),
+    repliesUsedBefore: before.replies,
+    pendingBefore: before.pending,
+    outcome,
+    handle: handle?.id ?? 0,
+    generation: handle?.generation ?? 0,
+    terminalReason,
+    failure: outcome === "refused" || outcome === "threw" ? (completions.failure ?? null) : null,
+  });
+}
+const publishCompletion = CompletionOwner.prototype.publish;
+CompletionOwner.prototype.publish = function (name, token, status, value) {
+  const published = Reflect.apply(publishCompletion, this, [name, token, status, value]);
+  const owner = payloadOwner(this);
+  if (!owner || name !== "compilation-result") return published;
+  payloadRecord(payloadPressure.publications, {
+    ...payloadSubject(owner),
+    token,
+    status,
+    handle: wireNumber(value.payload, "id"),
+    generation: wireNumber(value.payload, "generation"),
+    length: wireNumber(value, "length"),
+    published,
+    repliesUsed: ringSnapshot(owner.open.open.replies).used,
+  });
+  return published;
+};
+const getCompilationInfo = globalThis.GPUShaderModule?.prototype.getCompilationInfo;
+if (getCompilationInfo) {
+  GPUShaderModule.prototype.getCompilationInfo = function () {
+    const pending = Reflect.apply(getCompilationInfo, this, []);
+    const owner = active;
+    if (!owner) {
+      payloadPressure.uncorrelatedCompilations++;
+      return pending;
+    }
+    const entry: PayloadCompilation = {
+      ...payloadSubject(owner),
+      call: payloadPressure.compilations.filter((call) => call.owner === owner.id).length + 1,
+      settled: "pending",
+      settledAt: null,
+      pending: owner.connection.completions.pendingCount,
+    };
+    payloadRecord(payloadPressure.compilations, entry);
+    const settle = (kind: "fulfilled" | "rejected") => () => {
+      entry.settled = kind;
+      entry.settledAt = performance.now();
+    };
+    // Observes settlement without touching the native result; the original promise is returned.
+    void pending.then(settle("fulfilled"), settle("rejected"));
+    return pending;
+  };
+}
 let malformedReleased = false;
 let injection:
   | {
@@ -406,21 +620,7 @@ const service = new GpuService((message) => {
   }
   host.postMessage(message);
 });
-function ringSnapshot(backing: SharedArrayBuffer) {
-  const publication = Atomics.load(new BigInt64Array(backing, 0, 1), 0);
-  const cells = new Int32Array(backing, 0, 16);
-  const head = Number(publication & 0xffffffffn);
-  const tail = Atomics.load(cells, 2) >>> 0;
-  return {
-    capacity: backing.byteLength - 64,
-    head,
-    tail,
-    used: (head - tail) >>> 0,
-    writer: Atomics.load(cells, 3),
-    terminal: Number((publication >> 32n) & 0xffffffffn),
-  };
-}
-function ownerSnapshot(owner: Owner) {
+function ownerSnapshot(owner: Owner, capture: typeof ringSnapshot) {
   const connection = owner.connection;
   const visible = owner.surfaces?.visible.get(owner.open.surfaces[0]!.id);
   const presenter = visible?.presenter?.owner === owner.surfaces ? visible?.presenter : undefined;
@@ -446,17 +646,18 @@ function ownerSnapshot(owner: Owner) {
     heldReads: owner.heldReads,
     pending: connection.completions.pendingCount,
     payloadBytes: connection.completions.payloadBytes,
+    payloadReadySlots: readySlots(owner),
     replayBusy: connection.replay.busy,
     presenter: presenter !== undefined,
     presenterId: presenterId(presenter),
     presenterDevice: presenter ? (devices.get(presenter.device)?.device ?? 0) : 0,
     frame: presenter?.frame !== undefined,
     retiredAck: owner.retiredAck,
-    commands: ringSnapshot(owner.open.open.commands),
-    replies: ringSnapshot(owner.open.open.replies),
+    commands: capture(owner.open.open.commands),
+    replies: capture(owner.open.open.replies),
   };
 }
-function attemptSnapshot(attempt: OpenAttempt) {
+function attemptSnapshot(attempt: OpenAttempt, capture: typeof ringSnapshot) {
   const { message } = attempt;
   const control = new Int32Array(message.open.control);
   const admitted = owners.find((owner) => owner.open === message);
@@ -471,8 +672,8 @@ function attemptSnapshot(attempt: OpenAttempt) {
       new Int32Array(message.open.arena, gpuPayloadLayout.terminalOffset, 1),
       0,
     ),
-    commands: ringSnapshot(message.open.commands),
-    replies: ringSnapshot(message.open.replies),
+    commands: capture(message.open.commands),
+    replies: capture(message.open.replies),
     retiredAck: attempt.retiredAck,
     beforeConnections: attempt.beforeConnections,
     afterConnections: attempt.afterConnections,
@@ -483,6 +684,7 @@ function attemptSnapshot(attempt: OpenAttempt) {
   };
 }
 function snapshot(responseId: string) {
+  const capture = captureRingSnapshots();
   return {
     ...service.snapshot(),
     realm,
@@ -499,14 +701,22 @@ function snapshot(responseId: string) {
     malformedReleased,
     injection,
     late,
-    owners: owners.map(ownerSnapshot),
-    attempts: attempts.map(attemptSnapshot),
+    owners: owners.map((owner) => ownerSnapshot(owner, capture)),
+    attempts: attempts.map((attempt) => attemptSnapshot(attempt, capture)),
     nativeRequests,
     fairness: fairness.snapshot(),
     lifecycle: lifecycle.slice(),
     scopeResult,
     lateCallback,
     heldCompletion,
+    payloadPressure: {
+      compilations: payloadPressure.compilations.slice(),
+      allocations: payloadPressure.allocations.slice(),
+      publications: payloadPressure.publications.slice(),
+      terminations: payloadPressure.terminations.slice(),
+      uncorrelatedCompilations: payloadPressure.uncorrelatedCompilations,
+      dropped: payloadPressure.dropped,
+    },
     pendingOpen: pendingOpen
       ? {
           grant: pendingOpen.grant,
