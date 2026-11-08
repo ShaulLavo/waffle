@@ -876,11 +876,7 @@ export class SharedMemoryLedger {
     let settled = false;
     let received = 0;
     return {
-      retain: () => {
-        const obligation = retain();
-        holder.state = "debt";
-        return obligation;
-      },
+      retain,
       grant,
       receipt: (buffer: SharedArrayBuffer) => {
         receiptsStarted = true;

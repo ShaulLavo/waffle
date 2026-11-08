@@ -118,3 +118,85 @@ test("late enrollment cannot retrofit provenance after an allocation receipt", (
   ticket.launched().stopped();
   runtime.dispose();
 });
+
+function boundedControls() {
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(256 * 1024 * 1024),
+    counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+  });
+  return new SharedMemoryLedger(platform).openRuntime(platform);
+}
+function controlTicket(runtime: ReturnType<typeof boundedControls>, pid: number) {
+  return runtime.admit({
+    pid,
+    executable: "accounting fixture",
+    guest: { kind: "declared", memories: [] },
+    group: "none",
+    connection: false,
+    controls: true,
+  });
+}
+function allocateControls(ticket: ReturnType<typeof controlTicket>, length: number) {
+  const launched = ticket.launched();
+  const allocate = createSharedControlAllocator(ticket.control, (buffer) =>
+    launched.controlAllocated(structuredClone(buffer)),
+  );
+  allocate(length);
+  return launched;
+}
+test("bounded graphics enrollment preserves the live full grant until physical stop", () => {
+  const runtime = boundedControls(),
+    ticket = controlTicket(runtime, 1);
+  const before = runtime.snapshot();
+  ticket.retainControlsForGraphics();
+  const enrolled = runtime.snapshot();
+  expect(enrolled.reservedBytes).toBe(before.reservedBytes);
+  expect(enrolled.debtBytes).toBe(0);
+  expect(enrolled.holders.filter((holder) => holder.label === "guest-control")).toMatchObject([
+    { state: "live", declaredBytes: 64 * 1024 * 1024 },
+  ]);
+  const launched = allocateControls(ticket, 64);
+  runtime.dispose();
+  expect(
+    runtime.snapshot().holders.filter((holder) => holder.label === "guest-control"),
+  ).toMatchObject([{ state: "debt", declaredBytes: 64 * 1024 * 1024 }]);
+  launched.stopped();
+  expect(runtime.snapshot().debtBytes).toBe(64);
+  expect(
+    runtime.snapshot().holders.filter((holder) => holder.label === "guest-control"),
+  ).toMatchObject([{ state: "debt", declaredBytes: 64 }]);
+});
+test("real bounded graphics ledger preserves exact active-grant and consumed-debt accounting", () => {
+  const runtime = boundedControls(),
+    root = controlTicket(runtime, 1);
+  const seed = controlTicket(runtime, 2);
+  seed.retainControlsForGraphics();
+  const stopped = allocateControls(seed, 5_505_220);
+  stopped.stopped();
+  const peer = controlTicket(runtime, 3);
+  peer.retainControlsForGraphics();
+  const running = allocateControls(peer, 5_505_220);
+  const controls = () =>
+    runtime
+      .snapshot()
+      .holders.filter((holder) => holder.label === "guest-control")
+      .map((holder) => ({ state: holder.state, declaredBytes: holder.declaredBytes }));
+  try {
+    expect(controls()).toEqual([
+      { state: "live", declaredBytes: 67_108_864 },
+      { state: "debt", declaredBytes: 5_505_220 },
+      { state: "live", declaredBytes: 67_108_864 },
+    ]);
+    running.stopped();
+    expect(controls()).toEqual([
+      { state: "live", declaredBytes: 67_108_864 },
+      { state: "debt", declaredBytes: 5_505_220 },
+      { state: "debt", declaredBytes: 5_505_220 },
+    ]);
+  } finally {
+    running.stopped();
+    root.launched().stopped();
+    runtime.dispose();
+  }
+});
