@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { NetRequest } from "../browser/net/protocol.js";
 import { createPreview1Network } from "../browser/preview1-network.js";
 import {
   createRuntimeNetwork,
@@ -57,7 +58,7 @@ test("a queued relay socket request cannot enter a disposed Preview 1 helper", a
     ).toThrow(ownerFailure);
     ownerFailure = undefined;
     launch.dispose();
-    const late = new MessageEvent("message", { data: { type: "close", id: 1 } });
+    const late = new MessageEvent<NetRequest>("message", { data: { type: "close", id: 1 } });
     expect(() => callback.call(port, late)).not.toThrow();
     expect(() => launchHelper.handle(late.data)).toThrow("Network helper is disposed");
     launch.dispose();
