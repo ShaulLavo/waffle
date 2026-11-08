@@ -1,11 +1,22 @@
-import { startPage, type HostPageRun } from "waffle/testing/page-runner/page";
+import { startPage, cleanupStorage, type HostPageRun } from "waffle/testing/page-runner/page";
 
 declare const HOST_CONTROL: string;
 type Request = { mode: string };
 declare global {
   interface Window {
+    __queryInitial?: string;
+    __queryOpens?: number;
     __hostFixture?: { value: number; disposed: number };
   }
+}
+if (HOST_CONTROL.startsWith("query-deadline")) {
+  window.__queryInitial = location.search;
+  window.__queryOpens = 0;
+  const open = indexedDB.open.bind(indexedDB);
+  indexedDB.open = (...args) => {
+    window.__queryOpens = (window.__queryOpens ?? 0) + 1;
+    return open(...args);
+  };
 }
 const originalFetch = globalThis.fetch.bind(globalThis);
 let lostTaskAck = false;
@@ -46,9 +57,13 @@ const run: HostPageRun<Request> = {
       while (performance.now() < until) performance.now();
     }
     if (
-      ["separate-hook", "verdict-delivery", "teardown-report", "interruption"].includes(
-        request.mode,
-      )
+      [
+        "separate-hook",
+        "verdict-delivery",
+        "teardown-report",
+        "interruption",
+        "deadline-teardown",
+      ].includes(request.mode)
     )
       await new Promise((resolve) => setTimeout(resolve, 80));
     if (request.mode === "late-error")
@@ -66,6 +81,6 @@ startPage<Request>({
   run,
   finish: async (ledger) => {
     if (window.__hostFixture) throw new Error("Finish installed fixture");
-    return ledger.slice();
+    return HOST_CONTROL.startsWith("query-deadline") ? cleanupStorage(ledger) : ledger.slice();
   },
 });

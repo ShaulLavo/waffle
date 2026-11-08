@@ -11,6 +11,7 @@ export type HostCase = {
   openPeer(): Promise<HostPeer>;
   readonly signal: AbortSignal;
   remainingMs(): number;
+  setTimeout(timeoutMs: number): void;
   script(source: string): Promise<unknown>;
   task(source: string): Promise<void>;
   allocateDatabase(prefix: string): Promise<string>;
