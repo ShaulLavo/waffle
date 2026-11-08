@@ -834,3 +834,14 @@ interval, C workload, fresh native screenshot brackets, deadlines and empty-erro
 are unchanged. A deterministic helper test fails at the old exact-cap branch and passes after
 the correction. A case requiring progress after the cap still fails its original progress check.
 The failed packet is retained unchanged; this correction does not reclassify it as passing.
+
+
+The coordinator's review correction also has a permanent reply-tail regression control. The
+native retirement checks retain their step-by-step baseline, so the one permitted C drain
+cannot later roll back. Payload history freezes at every terminal transition and therefore
+stays fixed from the first one onward. No original ring or completed-history check is removed.
+
+An unrelated full-unit attempt on the corrected source reported terminal-deadholder.test.ts:609
+as an early worker exit instead of its final held-section message. Two unchanged focused
+invocations of that exact test passed. Its cause remains unproved, the failed log stays in the
+coordinator report, and no terminal source, assertion or clock changed for this observation.

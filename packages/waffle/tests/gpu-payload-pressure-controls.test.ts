@@ -763,3 +763,11 @@ test("repeated original terminal notifications remain allowed", () => {
   });
   expect(validatePayloadPressureResult(value).hardwareQualified).toBe(false);
 });
+
+test("the original reply tail cannot regress after its admitted C drain", () => {
+  rejects((value) => {
+    const reply = value.final.owners[2]!.replies;
+    reply.tail = value.terminal.owners[2]!.replies.tail;
+    reply.used = reply.head - reply.tail;
+  }, /Late work published to retired victim rings/);
+});

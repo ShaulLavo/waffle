@@ -995,7 +995,7 @@ function validateNativeHistory(
   if (native.state !== "terminal") return;
   const reason = native.id === victim.id ? 3 : 1;
   if (native.id !== victim.id) retired(native, reason);
-  if (!before) retiredAt.set(native.id, service);
+  retiredAt.set(native.id, service);
 }
 
 function nativeCohort(service: Record<string, unknown>, previous?: Record<string, unknown>) {
