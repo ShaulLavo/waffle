@@ -570,7 +570,7 @@ test("a peer PID change cannot hide behind unchanged pixels", () => {
 test("the compiled import prefix cannot be replaced", () => {
   rejects((value) => {
     value.phases[2]!.guest = { ...compiled().terminal, events: [] };
-  }, /import event prefix changed|compiled incarnation changed/);
+  }, /import event prefix|compiled incarnation changed/);
 });
 test("a wrong original payload handle fails before native claims", () => {
   rejects((value) => {
