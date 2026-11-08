@@ -436,6 +436,7 @@ try {
       if (overdue && !this.livenessProbe) {
         const state = this.collector.overdueDocument(this.budgets) ?? this.state;
         this.collector.fail(overdue, "Host case infrastructure deadline", state);
+        this.body.abort(new Error(overdue));
         this.livenessProbe = this.probe(state).then((category) => {
           if (category !== "responsive") this.collector.fail(category, overdue, state);
         });
@@ -576,6 +577,7 @@ try {
     const until = Math.min(
       performance.now() + 4000,
       this.deadline,
+      this.teardownUntil ?? Infinity,
       this.started + this.budgets.run,
     );
     const signal = AbortSignal.any([

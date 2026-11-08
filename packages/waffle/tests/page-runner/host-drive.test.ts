@@ -1361,3 +1361,52 @@ test(
     }
   }),
 );
+
+
+test("heartbeat liveness probe shares the teardown deadline and joins its command", async () => {
+  const limits = {
+    hello: 1000,
+    heartbeat: 70,
+    case: 6000,
+    caseDocument: 8000,
+    group: 8000,
+    teardown: 90,
+    run: 10_000,
+  };
+  const f = unitDrive(limits);
+  let revokedAt = 0;
+  let probeAbortedAt = 0;
+  f.d.handles = async (signal?: AbortSignal) => {
+    if (!signal) throw new Error("Missing probe signal");
+    const stopped = Promise.withResolvers<never>();
+    const abort = () => {
+      probeAbortedAt = performance.now();
+      stopped.reject(signal.reason);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    return stopped.promise;
+  };
+  try {
+    await f.host.drive(async (host) => {
+      const revoked = Promise.withResolvers<void>();
+      const abort = () => {
+        revokedAt = performance.now();
+        revoked.resolve();
+      };
+      host.signal.addEventListener("abort", abort, { once: true });
+      await revoked.promise;
+      return null;
+    }).catch(() => {});
+    expect(revokedAt).toBeGreaterThan(0);
+    expect(probeAbortedAt).toBeGreaterThanOrEqual(revokedAt);
+    expect(probeAbortedAt - f.host.teardownDeadline()).toBeLessThan(150);
+    expect(performance.now() - revokedAt).toBeLessThan(500);
+    expect(await f.consumers.join(50)).toBe(true);
+    expect(f.c.failures.some((failure) => failure.category === "heartbeat-lost")).toBe(true);
+  } finally {
+    f.consumers.revoke();
+    await f.d.stop();
+    expect(await f.consumers.join(100)).toBe(true);
+  }
+}, 10_000);
