@@ -54,8 +54,11 @@ export async function createPreview1Network(
         throw new Error("Preview 1 fetch is unavailable");
       },
     });
-    channel.port1.onmessage = ({ data }: MessageEvent<NetRequest>) => helper.handle(data);
     let disposed = false;
+    channel.port1.onmessage = ({ data }: MessageEvent<NetRequest>) => {
+      if (disposed) return;
+      helper.handle(data);
+    };
     return {
       connection: { ring, port: channel.port2, sockets },
       dispose() {
