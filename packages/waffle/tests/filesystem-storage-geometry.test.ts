@@ -279,6 +279,26 @@ test("the pinned page count follows distinct reader-held physical pages", () => 
   expect(state.resources().usedBytes).toBe(3 * storagePage);
 });
 
+test("replacing a cold file past the direct region skips pages it never backed", () => {
+  const identity = createFilesystemIdentity(undefined, undefined, { workspace: true });
+  const state = new SharedFilesystemState(
+    identity.shared,
+    identity.maxBytes,
+    undefined,
+    identity.segments,
+    undefined,
+    identity.publication!.buffers,
+  );
+  const coldBytes = 449 * storagePage;
+  state.register(1, stat(coldBytes), undefined, false);
+  const prepared = state.prepareVersionWrite(1, 0, coldBytes, 1);
+  expect(state.info(1)?.capacity).toBe(storagePage);
+  expect(state.resources().usedBytes).toBe(storagePage);
+  prepared.rollback();
+  expect(state.info(1)?.capacity).toBe(0);
+  expect(state.resources().usedBytes).toBe(0);
+});
+
 test("the final physical page has a reader counter and stays pinned until release", () => {
   const identity = createFilesystemIdentity(undefined, undefined, { workspace: true });
   const state = new SharedFilesystemState(
