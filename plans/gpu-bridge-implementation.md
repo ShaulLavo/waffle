@@ -909,3 +909,19 @@ existing compiled-fixture step now selects their file and suite using the same v
 producer output. Its JUnit guard requires all 83 cases without skips or failures, separately
 from the unchanged historical and async requirements. Permanent guard controls reject missing,
 empty, short, skipped and failed suites. No additional producer or browser job is added.
+
+Run 42448959356 attempt 1 passed payload, then its final quota screenshot bracket lacked
+fresh peer progress. The retained 253 total presents are consistent with one control frame,
+twelve quota frames and the peer's unchanged 240-frame cap. The exhausted counter was not
+printed, so this is a source/count deduction, not a proven scheduling cause. The assertion
+remains blocking. No cap, deadline or workload changed.
+
+The one normal unchanged retry failed an earlier payload comparison. Its complete result
+shows two views of the same live command ring disagree only on the writer bit, zero in the
+owner view and one in the original-open view. The observer sampled that shared ring twice
+while its guest could acquire the writer. A checkpoint now reads each original backing once
+and reuses that exact sample across owner and attempt. Every later checkpoint samples afresh.
+The atomic reader is unchanged; no atomic multi-field or cross-ring snapshot is claimed.
+Deterministic shared-buffer controls reproduce the old two-read disagreement and require
+per-checkpoint reuse, fresh later reads and distinct original ring identities. The validator
+and failed historical record remain unchanged. No new local GPU capture is part of this fix.

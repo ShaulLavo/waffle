@@ -8,6 +8,7 @@ import { RecordRing } from "../../../browser/gpu/ring.js";
 import { SurfaceConnection } from "../../../browser/gpu/surfaces.js";
 import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
+import { ringSnapshot, captureRingSnapshots } from "./ring-snapshot.js";
 
 type Open = Extract<GpuServiceRequest, { type: "open" }>;
 type Mode =
@@ -619,21 +620,7 @@ const service = new GpuService((message) => {
   }
   host.postMessage(message);
 });
-function ringSnapshot(backing: SharedArrayBuffer) {
-  const publication = Atomics.load(new BigInt64Array(backing, 0, 1), 0);
-  const cells = new Int32Array(backing, 0, 16);
-  const head = Number(publication & 0xffffffffn);
-  const tail = Atomics.load(cells, 2) >>> 0;
-  return {
-    capacity: backing.byteLength - 64,
-    head,
-    tail,
-    used: (head - tail) >>> 0,
-    writer: Atomics.load(cells, 3),
-    terminal: Number((publication >> 32n) & 0xffffffffn),
-  };
-}
-function ownerSnapshot(owner: Owner) {
+function ownerSnapshot(owner: Owner, capture: typeof ringSnapshot) {
   const connection = owner.connection;
   const visible = owner.surfaces?.visible.get(owner.open.surfaces[0]!.id);
   const presenter = visible?.presenter?.owner === owner.surfaces ? visible?.presenter : undefined;
@@ -666,11 +653,11 @@ function ownerSnapshot(owner: Owner) {
     presenterDevice: presenter ? (devices.get(presenter.device)?.device ?? 0) : 0,
     frame: presenter?.frame !== undefined,
     retiredAck: owner.retiredAck,
-    commands: ringSnapshot(owner.open.open.commands),
-    replies: ringSnapshot(owner.open.open.replies),
+    commands: capture(owner.open.open.commands),
+    replies: capture(owner.open.open.replies),
   };
 }
-function attemptSnapshot(attempt: OpenAttempt) {
+function attemptSnapshot(attempt: OpenAttempt, capture: typeof ringSnapshot) {
   const { message } = attempt;
   const control = new Int32Array(message.open.control);
   const admitted = owners.find((owner) => owner.open === message);
@@ -685,8 +672,8 @@ function attemptSnapshot(attempt: OpenAttempt) {
       new Int32Array(message.open.arena, gpuPayloadLayout.terminalOffset, 1),
       0,
     ),
-    commands: ringSnapshot(message.open.commands),
-    replies: ringSnapshot(message.open.replies),
+    commands: capture(message.open.commands),
+    replies: capture(message.open.replies),
     retiredAck: attempt.retiredAck,
     beforeConnections: attempt.beforeConnections,
     afterConnections: attempt.afterConnections,
@@ -697,6 +684,7 @@ function attemptSnapshot(attempt: OpenAttempt) {
   };
 }
 function snapshot(responseId: string) {
+  const capture = captureRingSnapshots();
   return {
     ...service.snapshot(),
     realm,
@@ -713,8 +701,8 @@ function snapshot(responseId: string) {
     malformedReleased,
     injection,
     late,
-    owners: owners.map(ownerSnapshot),
-    attempts: attempts.map(attemptSnapshot),
+    owners: owners.map((owner) => ownerSnapshot(owner, capture)),
+    attempts: attempts.map((attempt) => attemptSnapshot(attempt, capture)),
     nativeRequests,
     fairness: fairness.snapshot(),
     lifecycle: lifecycle.slice(),
