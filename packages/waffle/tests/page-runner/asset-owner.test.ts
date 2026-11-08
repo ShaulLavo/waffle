@@ -303,13 +303,19 @@ for (const failure of [undefined, null, false, 0, "", new Error("exact callback 
 }
 
 test(
-  "callback return without continue rejects handoff, after-continue failure cannot retract bytes",
+  "callback return without continue rejects handoff",
   withAssets(async (f) => {
     const a = await f.document();
     hold(f, a, async () => {});
     expect((await f.get(a)).status).toBe(409);
     expect(String(f.assetOwner.errors(a)[0])).toContain("without continue");
     f.assetOwner.revoke(a);
+  }),
+);
+
+test(
+  "after-continue failure cannot retract handed-off bytes",
+  withAssets(async (f) => {
     const b = await f.document("B");
     const failure = new Error("after handoff");
     hold(f, b, async (request) => {

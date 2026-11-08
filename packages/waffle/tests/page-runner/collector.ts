@@ -1,3 +1,4 @@
+import { reportingFailure, type HostReply } from "./report-control.js";
 import { reportSequence } from "./report-stream.js";
 import {
   exactInventory,
@@ -131,6 +132,26 @@ export class Collector {
       throw new ObservationClosed("Fixture capability is not the live exact case document");
     return state;
   }
+  private reporting:
+    | { kind: "live" | "cancelled" | "cleanup-failed" }
+    | { kind: "cleanup"; document: DocumentState } = { kind: "live" };
+  private readonly reportingFailed = new Set<DocumentState>();
+  cancel(): void {
+    this.reporting = {
+      kind:
+        this.reporting.kind === "cleanup" || this.reporting.kind === "cleanup-failed"
+          ? "cleanup-failed"
+          : "cancelled",
+    };
+  }
+  reply(retire = false, state?: DocumentState): HostReply {
+    if (this.reporting.kind === "live") return { kind: "live", retire };
+    if (this.reporting.kind !== "cleanup") return { kind: "cancelled" };
+    const cleanup = this.reporting.document;
+    return state === cleanup && this.owns(cleanup) && cleanup.cutoff === null
+      ? { kind: "live", retire }
+      : { kind: "cancelled" };
+  }
   active: DocumentState | undefined;
   runComplete = false;
   remaining: StorageEntry[] | null = null;
@@ -145,6 +166,7 @@ export class Collector {
     for (const id of required) this.outcomes[id] = { status: "pending" };
   }
   fail(category: string, detail: string, state = this.active): void {
+    this.cancel();
     const document =
       state?.owner.kind === "peer"
         ? {
@@ -158,7 +180,23 @@ export class Collector {
         : {};
     this.failures.push({ group: state?.group.id ?? "run", category, detail, ...document });
   }
-  expect(group: Group, token: string, expectedURL: string, handle: string): DocumentState {
+  expect(
+    group: Group,
+    token: string,
+    expectedURL: string,
+    handle: string,
+    cleanupOnly = false,
+  ): DocumentState {
+    if (!cleanupOnly && this.reporting.kind !== "live")
+      throw new Error("Document admission cancelled");
+    if (
+      cleanupOnly &&
+      (this.reporting.kind !== "cancelled" ||
+        group.role !== "finish" ||
+        group.caseIds.length !== 0 ||
+        group.execution !== undefined)
+    )
+      throw new Error("Invalid fresh cleanup document admission");
     const state: DocumentState = {
       owner: { kind: "coordinator" },
       physical: "live",
@@ -182,6 +220,7 @@ export class Collector {
     };
     this.documents.push(state);
     this.active = state;
+    if (cleanupOnly) this.reporting = { kind: "cleanup", document: state };
     return state;
   }
   expectPeer(
@@ -335,15 +374,26 @@ export class Collector {
     this.fail("protocol", detail, state);
     throw new ReportRejected(detail);
   }
-  heartbeat(value: unknown): void {
+  heartbeat(value: unknown): HostReply {
     const state =
       record(value) && value.run === this.run
         ? this.documents.find((item) => item.doc !== null && item.doc === value.doc)
         : undefined;
-    if (state?.cutoff !== null && state?.cutoff !== undefined) return;
-    if (!record(value) || value.kind !== "heartbeat" || !state || !this.owns(state))
+    if (state?.cutoff !== null && state?.cutoff !== undefined) return { kind: "cancelled" };
+    if (
+      !record(value) ||
+      value.kind !== "heartbeat" ||
+      !reportingFailure(value.failure) ||
+      !state ||
+      !this.owns(state)
+    )
       this.violation("Unbound heartbeat", state);
     state.heartbeatAt = this.now();
+    if (value.failure !== null && !this.reportingFailed.has(state)) {
+      this.reportingFailed.add(state);
+      this.fail("page-reporting", value.failure, state);
+    }
+    return this.reply(false, state);
   }
   receive(value: unknown): { ackedThrough: number } {
     const known =

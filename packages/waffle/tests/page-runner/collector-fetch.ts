@@ -1,5 +1,6 @@
 import { bounded } from "./driver.js";
 import { ObservationClosed, ReportRejected } from "./collector.js";
+import type { HostReply } from "./report-control.js";
 const collectorHeaders = {
   "Cache-Control": "no-store",
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -7,8 +8,8 @@ const collectorHeaders = {
 };
 export type ReportSink = {
   receive(body: unknown): { ackedThrough: number };
-  heartbeat(body: unknown): void;
-  retirement(url: URL): boolean;
+  heartbeat(body: unknown): HostReply;
+  retirement(url: URL): HostReply;
   fail(category: string, detail: string): void;
 };
 export function reservedReportPath(path: string): boolean {
@@ -51,8 +52,7 @@ export async function dispatchReports(
     const body = await bounded(readReportBody(request), 2000, "collector request body");
     if (url.pathname === "/report")
       return Response.json(sink.receive(body), { headers: collectorHeaders });
-    sink.heartbeat(body);
-    return Response.json(true, { headers: collectorHeaders });
+    return Response.json(sink.heartbeat(body), { headers: collectorHeaders });
   } catch (error) {
     if (error instanceof ObservationClosed)
       return Response.json({ error: error.message }, { status: 410, headers: collectorHeaders });

@@ -166,7 +166,7 @@ Both domain operations require exact collection admission and live file content,
 
 Ordinary viewport completion supports sequential calls. The framework's unchanged events match only an iframe ID, so concurrent page calls can both resolve on the first done event. Provider serialization does not fix that correlation limit. The synthetic DOM controls exercise a matching CSS/event route, not the installed framework's ordinary page method. A combined admitted real-DOM, official-provider and SDK control remains a consumer integration gate. Separate DOM controls and null-binding installed SDK controls do not satisfy it.
 
-The browser-only `waffle/testing/page-runner/framework-page` entry exposes `getFrameworkObservation()`. The consumer instruments both actual framework documents before modules, preserves original lifecycle calls and RPC, and converts its installed task types into `FrameworkTask` and `FrameworkUpdate` records. List each original case's effective `timeoutMs` in the independent `ExpectedCase` inventory, including an explicit per-case or inherited suite timeout. It must be a positive finite number. Collection requires the actual clock to equal that case's declared clock by file and full name, with `mode: "run"` and zero retries. This metadata does not change the 15,000 ms default test clock, 30,000 ms hook clock, 600,000 ms file deadline or 900,000 ms run deadline. Collection awaits the independent inventory ACK. Other lifecycle methods enqueue without adding time to hooks or bodies. Execution flush and cleanup observations close content synchronously before their queued reports. This does not retire reporting or prevent final ACKs and cutoffs. Removed or replaced retained frames and ancestors, and pagehide in either document, permanently invalidate content authority; restoring the same objects cannot revive it. At the automatic viewport call site, await `waitForInitialViewport()` outside the command queue and send its one-use request to `host.initialViewport`. At the original matched cleanup response, call `cleanupResponseReceived()` and await `waitForRetirement()` before returning the isolated run. `catcherInstalled()` removes the temporary early listeners before the consumer's catcher tee takes over.
+The browser-only `waffle/testing/page-runner/framework-page` entry exposes `getFrameworkObservation()`. The consumer instruments both actual framework documents before modules, preserves original lifecycle calls and RPC, and converts its installed task types into `FrameworkTask` and `FrameworkUpdate` records. List each original case's effective `timeoutMs` in the independent `ExpectedCase` inventory, including an explicit per-case or inherited suite timeout. It must be a positive finite number. Collection requires the actual clock to equal that case's declared clock by file and full name, with `mode: "run"` and zero retries. This metadata does not change the 15,000 ms default test clock, 30,000 ms hook clock, 600,000 ms file deadline or 900,000 ms run deadline. Collection awaits the independent inventory ACK. All record methods return a delivery promise and take synchronous snapshot factories for external data. The adapter awaits genuine lifecycle boundaries outside body and hook timeout wrappers. Update and error tees separately observe reporting rejection while preserving each official callback, RPC and original return expression. Execution flush and cleanup observations close content synchronously before their queued reports. This does not retire reporting or prevent final ACKs and cutoffs. Removed or replaced retained frames and ancestors, and pagehide in either document, permanently invalidate content authority; restoring the same objects cannot revive it. At the automatic viewport call site, await `waitForInitialViewport()` outside the command queue and send its one-use request to `host.initialViewport`. At the original matched cleanup response, await `cleanupResponseReceived()` and then await `waitForRetirement()` before returning the isolated run. `catcherInstalled()` removes the temporary early listeners before the consumer's catcher tee takes over.
 
 The host retains both actual documents through separate acknowledged cutoffs. A complete selected file still has `rootBrowserSuiteComplete: false` and exits 4. Reporting, binding, timeout, or unconfirmed cleanup failures exit 2. `createFrameworkControl` is only for owned loopback HTTP controls and grants no native credit. The existing reporter-controls job discovers the focused `framework-` DOM controls; the installed-package gate runs the real SDK fake separately. Neither proves Safari or the consumer's original tests.
 
@@ -181,3 +181,25 @@ deadline. Times observe host boundaries, not native execution or wire completion
 Records contain no headers, bodies, script source, rejection text, or private identifiers.
 Transport faults retain their original rejection identity and use a fixed diagnostic message
 without inspecting the rejection. These facts do not establish a native cause.
+
+### Framework reporting admission and failure
+
+Snapshot factories run immediately after Waffle reserves one of the same 64 outbox slots.
+A null case-settlement snapshot releases its slot without a record. Conversion and encoding
+reentry fails explicitly. Waffle encodes the complete envelope once, checks its 48 KiB UTF-8
+limit, and then commits its sequence. Retries reuse those exact bytes. This bounds additional
+reporting state, including active conversion, rather than the framework's own RPC promise list
+or the collector's retained output history.
+
+Admission failure closes `observation.signal` and refuses further conversion. Already admitted
+healthy records can still drain under their original budgets. The existing single-flight
+heartbeat carries one sticky failure category independently of report ACKs and provider roots.
+Both ordinary and framework collectors return tagged live or cancelled control replies. Host
+cancellation or document invalidation can end delivery, leaving admitted but unacknowledged
+records incomplete. Abort does not release a slot until actual transport and ACK parsing settle.
+Collector acceptance, page ACK, cleanup and both actual document cutoffs remain separate facts.
+
+The CPU controls in `reporting-contract.test.ts`, `framework-reporting.test.ts` and
+`reporting-host.test.ts` exercise the actual reporter, bootstrap accessor, collector and host.
+Their isolated CPU realm is not an installed Vitest runner or browser qualification. A consumer
+must also qualify its exact official patch with real installed synthetic cases before native use.

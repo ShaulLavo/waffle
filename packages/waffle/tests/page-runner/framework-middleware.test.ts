@@ -12,8 +12,8 @@ async function fixture(
       count++;
       return { ackedThrough: 0 };
     },
-    heartbeat() {},
-    retirement: () => false,
+    heartbeat: () => ({ kind: "live", retire: false }),
+    retirement: () => ({ kind: "live", retire: false }),
     fail: (category, detail) => failures.push(`${category}: ${detail}`),
   });
   const server: Server = createServer((request, response) =>

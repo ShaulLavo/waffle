@@ -18,7 +18,7 @@ function retirementFixture(driver = new PeerDriverFixture()) {
         entered.resolve();
         return response.promise;
       }
-      if (path === "/heartbeat") return Response.json(true);
+      if (path === "/heartbeat") return Response.json({ kind: "live", retire: true });
       if (path === "/report") {
         const body: unknown = await request.json();
         if (!record(body) || typeof body.seq !== "number" || typeof body.kind !== "string")
@@ -45,7 +45,7 @@ test("peer driver stop joins a retirement poll before the collector closes", asy
     });
     await Bun.sleep(0);
     expect(stopped).toBe(false);
-    response.resolve(Response.json(false));
+    response.resolve(Response.json({ kind: "live", retire: false }));
     await bounded(stopping, 1000, "retirement poll joined");
     await server.stop(true);
     await Bun.sleep(5);
@@ -53,7 +53,7 @@ test("peer driver stop joins a retirement poll before the collector closes", asy
     expect(fixture.polls()).toBe(1);
     expect(fixture.reports).toEqual(["hello", "list", "doc-complete"]);
   } finally {
-    response.resolve(Response.json(false));
+    response.resolve(Response.json({ kind: "live", retire: false }));
     await driver.stop();
     await server.stop(true);
   }
@@ -76,11 +76,11 @@ for (const action of ["navigate", "close"] as const) {
       await Bun.sleep(0);
       expect(completed).toBe(false);
       expect(driver.windows.get("root")).toBe(predecessor);
-      response.resolve(Response.json(false));
+      response.resolve(Response.json({ kind: "live", retire: false }));
       await bounded(changing, 1000, "predecessor retirement poll joined");
       expect(driver.windows.get("root")).not.toBe(predecessor);
     } finally {
-      response.resolve(Response.json(false));
+      response.resolve(Response.json({ kind: "live", retire: false }));
       await driver.stop();
       await server.stop(true);
     }
@@ -103,7 +103,7 @@ test("peer driver stop preserves a failed retirement request", async () => {
     await expect(driver.stop()).rejects.toBe(error);
     expect(fixture.polls()).toBe(1);
   } finally {
-    response.resolve(Response.json(false));
+    response.resolve(Response.json({ kind: "live", retire: false }));
     await server.stop(true);
   }
 });
@@ -144,11 +144,11 @@ test("peer driver joins every document before surfacing a retirement failure", a
     await Bun.sleep(0);
     expect(settled).toBe(false);
     expect(second.polls()).toBe(1);
-    second.response.resolve(Response.json(false));
+    second.response.resolve(Response.json({ kind: "live", retire: false }));
     expect(await bounded(stopping, 1000, "all retirement polls joined")).toStrictEqual(failed);
   } finally {
-    first.response.resolve(Response.json(false));
-    second.response.resolve(Response.json(false));
+    first.response.resolve(Response.json({ kind: "live", retire: false }));
+    second.response.resolve(Response.json({ kind: "live", retire: false }));
     await driver.stop().catch(() => {});
     await first.server.stop(true);
     await second.server.stop(true);
@@ -170,7 +170,7 @@ for (const reason of [undefined, null, false, 0, ""]) {
         () => ({ fulfilled: true }),
         (error: unknown) => ({ rejected: error }),
       );
-      response.resolve(Response.json(true));
+      response.resolve(Response.json({ kind: "live", retire: true }));
       expect(await bounded(stopped, 1000, "falsy poll joined")).toStrictEqual({ rejected: reason });
       expect(
         await driver.stop().then(
@@ -179,9 +179,41 @@ for (const reason of [undefined, null, false, 0, ""]) {
         ),
       ).toStrictEqual({ rejected: reason });
     } finally {
-      response.resolve(Response.json(false));
+      response.resolve(Response.json({ kind: "live", retire: false }));
       await driver.stop().catch(() => {});
       await server.stop(true);
+    }
+  });
+}
+
+for (const reply of [
+  () => new Response("{not json"),
+  () => Response.json({ kind: "live", retire: "invalid" }),
+  () => Response.json({ kind: "live", retire: true }, { status: 503 }),
+]) {
+  test("peer stop preserves genuine invalid control reply after reporter abort", async () => {
+    const fixture = retirementFixture();
+    try {
+      await fixture.driver.navigate(fixture.server.url.href);
+      await bounded(fixture.entered.promise, 1000, "invalid control poll entry");
+      const stopping = fixture.driver.stop();
+      fixture.response.resolve(reply());
+      const settled = await bounded(
+        stopping.then(
+          () => ({ fulfilled: true }),
+          (error: unknown) => ({ rejected: error }),
+        ),
+        1000,
+        "invalid control joined",
+      );
+      expect(settled).toHaveProperty("rejected");
+      if (!("rejected" in settled)) throw new Error("Invalid control was accepted");
+      expect(settled.rejected).toBeInstanceOf(Error);
+      await expect(fixture.driver.stop()).rejects.toBe(settled.rejected);
+    } finally {
+      fixture.response.resolve(Response.json({ kind: "cancelled" }));
+      await fixture.driver.stop().catch(() => {});
+      await fixture.server.stop(true);
     }
   });
 }

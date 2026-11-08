@@ -45,7 +45,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/gpu/{buffers,payload,metadata}.ts`, `browser/display/{open.ts,generated/graphics-layout.ts}`, `tests/gpu-async-*`                 | Original adapter      | Native mapping epochs, fixed payload ownership, checked C output projection, direct UTF-8 encoding and async controls. No upstream runtime implementation was copied. Geometry constants are generated from original Waffle selection metadata.                                                                                                                                                                              |
 | `browser/display/{service-readers,service-protocol,launch-retention}.ts`, `browser/gpu/{access,command-reader}.ts`                         | Original adapter      | Exact-service counted admission, queued grant retirement and original-ticket control charge retention. Original Waffle lifecycle code; no upstream implementation copied.                                                                                                                                                                                                                                                    |
 | `browser/gpu/method-coverage.json`                                                                                                         | Mechanical derivation | Individual object method and global function names from the pinned webgpu-headers YAML above, BSD-3-Clause. Coverage categories, pending slices, reasons and selected-call metadata are original Waffle policy; no method implementations copied.                                                                                                                                                                            |
-| `tests/page-runner/framework-dom-page.ts`                                                                                                  | Adapted control       | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit, not to replace the installed framework. See [Framework operation controls](#framework-operation-controls).                                                                                                                                       |
+| `tests/page-runner/framework-dom-page.ts`                                                                                                  | Adapted control       | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit and uses the synchronous snapshot reporting contract, not an installed framework replacement. See [Framework operation controls](#framework-operation-controls).                                                                                  |
 
 ## GNU diffutils
 
@@ -558,7 +558,9 @@ renamed window-message events instead of the framework's BroadcastChannel and
 RPC. It retains iframe-only completion matching, CSS resizing and done/fail
 ordering. These adaptations isolate sequential sizing, same-size completion,
 restoration and the concurrent-call correlation limit without importing original
-tests. They do not qualify the installed ordinary page method or an official
+tests. Its reporting calls now use snapshot factories and await real synthetic lifecycle
+boundaries. This changes only the local observation adapter, not the upstream viewport
+algorithm or clocks. They do not qualify the installed ordinary page method or an official
 screenshot callback. Fixture callback bytes are explicitly not a DOM image.
 
 The shared host operation boundary, callback scopes, recursive joins, local
@@ -566,6 +568,11 @@ closure fact, document invalidation and transport ownership checks are original
 Waffle adapters. They copy no SDK screenshot, image conversion or filesystem
 implementation. Consumer registration and mutable-context integration remain
 consumer-owned work.
+
+The reporting reservation, scalar heartbeat failure/cancellation protocol and CPU realm controls
+are original Waffle adapters. They copy no Vitest hooks or RPC implementation. The CPU controls
+promote the retained reporter-fault reproducer's use of actual reporter, collector and owned host
+paths. The later paired consumer owns the exact installed Vitest patch and its provenance.
 
 ## GPU reader retirement
 

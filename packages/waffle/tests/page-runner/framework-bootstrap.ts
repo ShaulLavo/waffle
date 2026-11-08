@@ -1,4 +1,3 @@
-import { resultByteLimit } from "./protocol.js";
 import { OrderedReporter } from "./ordered-reporter.js";
 import type { FrameworkObservation } from "./framework-page.js";
 import type { FrameworkEvent } from "./framework-types.js";
@@ -11,7 +10,10 @@ type Body = { token: string } & (
 );
 export function installFrameworkBootstrap(config: Configuration): void {
   const capturedDocument = document;
-  const reporter = new OrderedReporter<Body>(config.run);
+  const reporter = new OrderedReporter<Body>(config.run, undefined, undefined, {
+    token: config.token,
+    role: config.kind,
+  });
   const state = reporter.observation;
   let admitted = false,
     permit: string | null = null,
@@ -21,36 +23,46 @@ export function installFrameworkBootstrap(config: Configuration): void {
     tester: Document | null = null;
   const admission = Promise.withResolvers<{ permit: string; width: 414; height: 896 }>();
   const retired = Promise.withResolvers<void>();
-  const send = (event: FrameworkEvent): Promise<void> => {
-    try {
-      if (new TextEncoder().encode(JSON.stringify(event)).byteLength > resultByteLimit)
-        throw new Error("Framework observation exceeds 48 KiB");
-      return reporter.send({ token: config.token, kind: "event", event });
-    } catch (error) {
-      state.failure ??= String(error);
-      return Promise.reject(error);
-    }
-  };
-  const enqueue = (event: FrameworkEvent): void => {
-    void send(event).catch(() => {});
+  void admission.promise.catch(() => {});
+  void retired.promise.catch(() => {});
+  reporter.signal.addEventListener(
+    "abort",
+    () => {
+      admission.reject(reporter.signal.reason);
+      retired.reject(reporter.signal.reason);
+    },
+    { once: true },
+  );
+  const send = (snapshot: () => FrameworkEvent | null): Promise<void> =>
+    reporter.sendSnapshot(() => {
+      const event = snapshot();
+      return event === null ? null : { token: config.token, kind: "event", event };
+    });
+  const enqueue = (snapshot: () => FrameworkEvent): void => {
+    void send(snapshot).catch(() => {});
   };
   const removeEarlyListener = window.removeEventListener.bind(window);
   const error = (event: ErrorEvent) =>
-    enqueue({ kind: "error", source: "early-error", error: event.message });
+    enqueue(() => ({ kind: "error", source: "early-error", error: event.message }));
   const rejection = (event: PromiseRejectionEvent) =>
-    enqueue({ kind: "error", source: "early-rejection", error: String(event.reason) });
+    enqueue(() => ({ kind: "error", source: "early-rejection", error: String(event.reason) }));
   addEventListener("error", error);
   addEventListener("unhandledrejection", rejection);
-  const closeContent = (event: FrameworkEvent): void => {
+  const closeContent = (event: FrameworkEvent): Promise<void> => {
     contentClosed = true;
-    enqueue(event);
+    return send(() => event);
   };
   const observation: FrameworkObservation = {
-    collected: (tasks) => send({ kind: "collected", tasks }),
-    taskStarted: (id) => enqueue({ kind: "task-started", id }),
-    taskUpdate: (updates) => enqueue({ kind: "task-update", updates }),
-    caseSettled: (updates) => enqueue({ kind: "case-settled", updates }),
-    error: (error, source) => enqueue({ kind: "error", error, source }),
+    signal: reporter.signal,
+    collected: (snapshot) => send(() => ({ kind: "collected", tasks: snapshot() })),
+    taskStarted: (snapshot) => send(() => ({ kind: "task-started", id: snapshot() })),
+    taskUpdate: (snapshot) => send(() => ({ kind: "task-update", updates: snapshot() })),
+    caseSettled: (snapshot) =>
+      send(() => {
+        const updates = snapshot();
+        return updates === null ? null : { kind: "case-settled", updates };
+      }),
+    error: (snapshot) => send(() => ({ kind: "error", ...snapshot() })),
     executionFlushed: () => closeContent({ kind: "execution-flushed" }),
     testerCleanupSettled: () => closeContent({ kind: "tester-cleanup-settled" }),
     cleanupResponseReceived: () => closeContent({ kind: "cleanup-response-received" }),
@@ -80,12 +92,14 @@ export function installFrameworkBootstrap(config: Configuration): void {
   };
   const pagehide = (): void => {
     invalidated = true;
+    reporter.cancelDelivery("Document hidden");
     releaseIdentity();
   };
   addEventListener("pagehide", pagehide);
   const valid = () => {
     inspectMutations(mutations.takeRecords());
     if (document !== capturedDocument || location.href !== config.url) invalidated = true;
+    if (invalidated) reporter.cancelDelivery("Document identity invalidated");
     return !invalidated && !state.retired;
   };
   const paired = () => {
@@ -167,7 +181,13 @@ export function installFrameworkBootstrap(config: Configuration): void {
       };
     },
     cutoff: (watermark: number) => {
-      if (!valid() || state.pending !== 0 || state.failure || state.ackedThrough !== watermark)
+      if (
+        !valid() ||
+        reporter.controlsPending !== 0 ||
+        state.pending !== 0 ||
+        state.failure ||
+        state.ackedThrough !== watermark
+      )
         throw new Error("Document not drained at cutoff");
       state.retired = true;
       releaseIdentity();
@@ -200,8 +220,12 @@ export function installFrameworkBootstrap(config: Configuration): void {
     await hello;
     const url = `/retire?run=${encodeURIComponent(config.run)}&doc=${encodeURIComponent(state.doc)}`;
     while (!state.retired) {
-      const response = await reporter.post(url, { signal: reporter.clock.abortTimeout(2000) });
-      if ((await response.json()) === true) {
+      reporter.signal.throwIfAborted();
+      const command = await reporter.control(url, { signal: reporter.clock.abortTimeout(2000) });
+      reporter.signal.throwIfAborted();
+      if (command.kind === "live" && command.retire) {
+        await reporter.stop();
+        reporter.signal.throwIfAborted();
         await reporter.drain();
         await reporter.send({ token: config.token, kind: "retire-ready" });
         return;
@@ -210,7 +234,9 @@ export function installFrameworkBootstrap(config: Configuration): void {
     }
   };
   void retirement().catch((error) => {
-    state.failure ??= String(error);
+    if (!reporter.signal.aborted) reporter.cancelDelivery(String(error));
+    admission.reject(error);
+    retired.reject(error);
   });
 }
 declare global {
