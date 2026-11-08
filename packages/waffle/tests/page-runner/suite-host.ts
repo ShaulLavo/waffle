@@ -528,6 +528,8 @@ export async function runPageSuite<R>(
       teardown.deadline,
     );
     if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
+    if (collector.reply().kind === "cancelled")
+      throw new Error("Reporting cancelled before retirement");
     state.retiring = true;
     await awaitState(
       state,

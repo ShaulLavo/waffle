@@ -148,7 +148,7 @@ test("ordinary retirement stops on collector cancellation and rejects old boolea
     for (const command of [{ kind: "cancelled" }, true]) {
       let polls = 0;
       const reporter = new Reporter("run", async () => {
-        polls++;
+        if (++polls > 1) throw new Error("Unexpected replacement retirement poll");
         return Response.json(command);
       });
       await expect(reporter.readyForRetirement()).rejects.toThrow();

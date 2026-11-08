@@ -1,7 +1,6 @@
 import { createContext, runInContext } from "node:vm";
 import { installFrameworkBootstrap } from "./framework-bootstrap.js";
-import { getFrameworkObservation } from "./framework-page.js";
-import type { FrameworkObservation } from "./framework-page.js";
+import { getFrameworkObservation, type FrameworkObservation } from "./framework-page.js";
 import { record } from "./protocol.js";
 
 // Execute the actual bootstrap/accessor in an isolated CPU realm. This is not a browser or Vitest runner.
@@ -18,10 +17,12 @@ export async function reportingPage(
       failure: string | null;
     };
     pagehide: () => void;
+    cutoff: (watermark: number) => boolean;
   }) => Promise<void>,
+  release: () => void = () => {},
 ): Promise<void> {
   const build = await Bun.build({
-    entrypoints: [import.meta.dir + "/reporting-realm.ts"],
+    entrypoints: [new URL("./reporting-realm.ts", import.meta.url).pathname],
     format: "iife",
     target: "browser",
   });
@@ -30,7 +31,15 @@ export async function reportingPage(
   const hide = new Set<() => void>();
   const retirement = Promise.withResolvers<Response>();
   const document = {};
-  const page = {
+  const requests = new Set<Promise<Response>>();
+  const fetch = (url: string, init: RequestInit): Promise<Response> => {
+    const request = url.startsWith("/retire") ? retirement.promise : post(url, init);
+    requests.add(request);
+    void request.finally(() => requests.delete(request)).catch(() => {});
+    return request;
+  };
+  const bridgeHolder: Pick<Window, "__waffleFramework"> = {};
+  const page = Object.assign(bridgeHolder, {
     performance,
     crypto,
     AbortController,
@@ -39,8 +48,7 @@ export async function reportingPage(
     Promise,
     document,
     location: { href: "http://fixture/tester" },
-    fetch: (url: string, init: RequestInit) =>
-      url.startsWith("/retire") ? retirement.promise : post(url, init),
+    fetch,
     setTimeout,
     clearTimeout,
     setInterval(callback: () => void, ms: number) {
@@ -67,8 +75,7 @@ export async function reportingPage(
     },
     install: installFrameworkBootstrap,
     accessor: getFrameworkObservation,
-    __waffleFramework: undefined as Window["__waffleFramework"],
-  };
+  });
   const context = createContext(page);
   context.window = page;
   try {
@@ -80,15 +87,18 @@ export async function reportingPage(
     await use({
       observation,
       snapshot: bridge.snapshot,
+      cutoff: bridge.cutoff,
       pagehide: () => {
         for (const listener of hide) listener();
       },
     });
   } finally {
+    release();
     for (const listener of hide) listener();
     retirement.resolve(Response.json({ kind: "cancelled" }));
     for (const timer of timers) clearInterval(timer);
-    await Promise.resolve();
+    await Promise.allSettled(Array.from(requests));
+    await waitUntil(() => (page.__waffleFramework?.snapshot().pending ?? 0) === 0);
   }
 }
 export async function waitUntil(check: () => boolean): Promise<void> {

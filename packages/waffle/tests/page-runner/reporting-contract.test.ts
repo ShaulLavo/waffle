@@ -16,15 +16,15 @@ test("reservation includes the last slot before conversion and rejects reentry w
   const prefix = Array.from({ length: 63 }, (_, value) => reporter.send({ value }));
   let nested: Promise<void> | undefined;
   let converted = 0;
-  const outer = reporter.sendSnapshot(() => {
-    expect(reporter.observation.pending).toBe(64);
-    nested = reporter.sendSnapshot(() => {
-      converted++;
-      return { value: 65 };
-    });
-    return { value: 64 };
-  });
   try {
+    const outer = reporter.sendSnapshot(() => {
+      expect(reporter.observation.pending).toBe(64);
+      nested = reporter.sendSnapshot(() => {
+        converted++;
+        return { value: 65 };
+      });
+      return { value: 64 };
+    });
     await expect(outer).rejects.toThrow("reentry");
     await expect(nested).rejects.toThrow("reentry");
     expect(converted).toBe(0);
@@ -171,3 +171,43 @@ for (const response of [
     expect(reporter.signal.aborted).toBe(true);
   });
 }
+
+test("envelope limit includes run and document bytes before sequence allocation", async () => {
+  let attempts = 0;
+  const reporter = new OrderedReporter<{ value: string }>(
+    "r".repeat(resultByteLimit - 10),
+    async (_url, init) => {
+      attempts++;
+      return ack(init);
+    },
+  );
+  await expect(reporter.sendSnapshot(() => ({ value: "tiny event" }))).rejects.toThrow("48 KiB");
+  expect(attempts).toBe(0);
+  expect(reporter.observation.pending).toBe(0);
+  expect(reporter.observation.ackedThrough).toBe(-1);
+});
+
+test("malformed exact ACK failure is sticky and future snapshots never run", async () => {
+  let attempts = 0;
+  const reporter = new OrderedReporter<{ value: number }>(
+    "run",
+    async () => {
+      attempts++;
+      return Response.json({ ackedThrough: 99 });
+    },
+    1,
+  );
+  await expect(reporter.send({ value: 1 })).rejects.toThrow("acknowledgement lost");
+  expect(attempts).toBe(1);
+  expect(reporter.observation.ackedThrough).toBe(-1);
+  expect(reporter.observation.pending).toBe(0);
+  expect(reporter.signal.aborted).toBe(true);
+  let reads = 0;
+  await expect(
+    reporter.sendSnapshot(() => {
+      reads++;
+      return { value: 2 };
+    }),
+  ).rejects.toThrow();
+  expect(reads).toBe(0);
+});

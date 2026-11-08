@@ -167,7 +167,13 @@ export class OrderedReporter<B extends object> {
     }
   }
   async hostReply(response: Response): Promise<HostReply> {
-    const reply: unknown = await response.json();
+    let reply: unknown;
+    try {
+      reply = await response.json();
+    } catch {
+      this.cancelDelivery("Invalid collector control reply");
+      throw new Error("Invalid collector control reply");
+    }
     if (!response.ok || !hostReply(reply)) {
       this.cancelDelivery("Invalid collector control reply");
       throw new Error("Invalid collector control reply");

@@ -33,13 +33,15 @@ class PeerDocument {
       const task: Promise<unknown> = new Function("window", `return (async () => {${source}\n})()`)(
         this.window,
       );
-      void task.then(() =>
-        this.reporter.send({ kind: "task-end", caseId: "peer", operation, status: "pass" }),
-      );
+      void task
+        .then(() =>
+          this.reporter.send({ kind: "task-end", caseId: "peer", operation, status: "pass" }),
+        )
+        .catch(() => {});
     },
     verdict: (body: { status: "pass" | "fail"; result?: unknown; error?: string }) => {
       this.host.phase = "teardown";
-      void this.terminal(body);
+      void this.terminal(body).catch(() => {});
     },
   };
   constructor(
@@ -143,7 +145,11 @@ class PeerDocument {
   async stop(): Promise<void> {
     clearInterval(this.retiring);
     this.reporter.stop();
-    await this.polling;
+    try {
+      await this.polling;
+    } catch (error) {
+      if (!this.reporter.signal.aborted) throw error;
+    }
   }
 }
 export class PeerDriverFixture extends FakeDriver {
@@ -205,7 +211,11 @@ export class PeerDriverFixture extends FakeDriver {
     this.windows.set(this.selected, page);
     const started = page.start();
     if (value.role === "peer" && this.holdPeerReadyAcknowledgement) {
-      this.peerStarts.push(started);
+      this.peerStarts.push(
+        started.catch((error: unknown) => {
+          if (!page.reporter.signal.aborted) throw error;
+        }),
+      );
       void started.catch(() => {});
       await this.peerReadyReceived.promise;
       return;
