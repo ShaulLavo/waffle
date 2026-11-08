@@ -30,6 +30,30 @@ import { cumulative, identity, live, retired } from "./gpu-regrant-browser.js";
 function proof(ok: boolean, message: string): asserts ok {
   if (!ok) throw new Error(`GPU payload pressure ${message}`);
 }
+function payloadRefusal(service: Record<string, unknown>) {
+  return entries(record(service.payloadPressure).allocations).find(
+    (entry) => entry.outcome === "refused" && entry.terminalReason === 3,
+  );
+}
+export function payloadTerminalReady(service: Record<string, unknown>): boolean {
+  const refused = payloadRefusal(service);
+  if (!refused) return false;
+  const matches = entries(service.attempts).filter(
+    (attempt) =>
+      attempt.owner === refused.owner &&
+      attempt.grant === refused.grant &&
+      attempt.connection === refused.connection,
+  );
+  if (matches.length !== 1) return false;
+  const attempt = matches[0]!;
+  return (
+    attempt.status === -48 &&
+    attempt.reason === 3 &&
+    attempt.arenaTerminal === 3 &&
+    record(attempt.commands).terminal === 3 &&
+    record(attempt.replies).terminal === 3
+  );
+}
 async function payloadCase(page: Page) {
   await invoke(page, "openIntegration", [false, "ownership", true]);
   await invoke(page, "activateDisplay");
@@ -111,11 +135,10 @@ async function payloadCase(page: Page) {
     await capture("committed");
     await invoke(page, "feedTriangle", ["\n", 2]);
     await checkpoint(page, "GPU_WAIT_STDIN stage=payload-refusal-requested", 2);
-    const terminal = await until(page, (service) =>
-      entries(record(service.payloadPressure).allocations).some(
-        (entry) => entry.outcome === "refused" && entry.terminalReason === 3,
-      ),
-    );
+    const refusal = await until(page, (service) => payloadRefusal(service) !== undefined);
+    const terminal = payloadTerminalReady(refusal)
+      ? refusal
+      : await until(page, payloadTerminalReady);
     await capture("terminal");
     await invoke(page, "feedTriangle", ["\n", 2]);
     await checkpoint(page, "GPU_WAIT_STDIN stage=payload-terminal", 2);
@@ -144,6 +167,7 @@ async function payloadCase(page: Page) {
       controlCoverage,
       committedGuest,
       committed,
+      refusal,
       terminal,
       guest,
       drained,
@@ -626,7 +650,7 @@ function frozen(
       "late retired payload work",
     );
 }
-function controls(
+function originalControls(
   service: Record<string, unknown>,
   native: Record<string, unknown>,
   reason: number,
@@ -638,14 +662,32 @@ function controls(
     attempt.grant === native.grant &&
       attempt.surface === native.surface &&
       attempt.connection === 1 &&
-      attempt.status === (reason === 0 ? 1 : reason === 3 ? -48 : -64) &&
-      attempt.reason === reason &&
       attempt.arenaTerminal === reason &&
       attempt.retiredAck === native.retiredAck,
     "original control/ring/arena reason differs",
   );
   equal(attempt.commands, native.commands, "command control snapshot differs");
   equal(attempt.replies, native.replies, "reply control snapshot differs");
+  return attempt;
+}
+function controls(
+  service: Record<string, unknown>,
+  native: Record<string, unknown>,
+  reason: number,
+) {
+  const attempt = originalControls(service, native, reason);
+  proof(
+    attempt.status === (reason === 0 ? 1 : reason === 3 ? -48 : -64) && attempt.reason === reason,
+    "original control/ring/arena reason differs",
+  );
+}
+function refusalControls(service: Record<string, unknown>, native: Record<string, unknown>) {
+  const attempt = originalControls(service, native, 3);
+  proof(
+    (attempt.status === 1 && attempt.reason === 0) ||
+      (attempt.status === -48 && attempt.reason === 3),
+    "original refusal control publication differs",
+  );
 }
 function topology(service: Record<string, unknown>, connections: number, heap: number) {
   proof(
@@ -737,6 +779,7 @@ export function validatePayloadPressureResult(value: unknown) {
     "missing ordered screenshot brackets",
   );
   const committed = record(result.committed),
+    refusal = record(result.refusal),
     terminal = record(result.terminal),
     drained = record(result.drained),
     stop = physical(result.stop, guest),
@@ -753,6 +796,9 @@ export function validatePayloadPressureResult(value: unknown) {
     !text(record(result.committedGuest)).includes("index=65 "),
     "refusal issued before committed gate",
   );
+  proof(payloadRefusal(refusal) !== undefined, "wrong payload resource refusal");
+  if (refusal.serial === terminal.serial)
+    equal(refusal, terminal, "same refusal/settlement checkpoint changed");
   const sequence = [
     uncovered,
     controlService,
@@ -764,7 +810,7 @@ export function validatePayloadPressureResult(value: unknown) {
     committed,
     record(phases[1]!.before),
     record(phases[1]!.service),
-    terminal,
+  ].concat(refusal.serial === terminal.serial ? [terminal] : [refusal, terminal], [
     record(phases[2]!.before),
     record(phases[2]!.service),
     drained,
@@ -775,8 +821,8 @@ export function validatePayloadPressureResult(value: unknown) {
     record(phases[4]!.service),
     record(peerExit.service),
     final,
-  ];
-  validateSequence(sequence, result, victim, peer, terminal, drained);
+  ]);
+  validateSequence(sequence, result, victim, peer, refusal, terminal, drained);
   const heap = number(observed.heapBytes);
   let previous = { presents: 0, queue: 0 };
   for (const [index, phase] of phases.entries()) {
@@ -800,6 +846,11 @@ export function validatePayloadPressureResult(value: unknown) {
     }
   }
   payloadState(committed, victim, results, requested, false, false, false);
+  const refusedNative = owner(refusal, victim.id, "original refused payload owner");
+  refusalControls(refusal, refusedNative);
+  payloadNative(refusal, refusedNative, results, requested, true);
+  terminalOwner(refusedNative, 3, false);
+  proof(record(refusedNative.replies).used === 64, "refusal lost unread committed replies");
   payloadState(terminal, victim, results, requested, true, false, false);
   payloadState(drained, victim, results, requested, true, true, false);
   terminalOwner(owner(record(stop.service), victim.id, "stopped payload owner"), 3, true);
@@ -916,6 +967,7 @@ function validateSequence(
   result: Record<string, unknown>,
   victim: Record<string, unknown>,
   peer: Record<string, unknown>,
+  refusal: Record<string, unknown>,
   terminal: Record<string, unknown>,
   drained: Record<string, unknown>,
 ) {
@@ -955,7 +1007,16 @@ function validateSequence(
     }
     payloadTimeline(service, previous);
     for (const native of natives)
-      validateNativeHistory(service, native, identities, retiredAt, victim, terminal, drained);
+      validateNativeHistory(
+        service,
+        native,
+        identities,
+        retiredAt,
+        victim,
+        refusal,
+        terminal,
+        drained,
+      );
     if (number(service.serial) >= number(record(result.observed).serial))
       proof(
         owner(service, peer.id, "original peer").surface === peer.surface,
@@ -971,6 +1032,7 @@ function validateNativeHistory(
   identities: Map<unknown, Record<string, unknown>>,
   retiredAt: Map<unknown, Record<string, unknown>>,
   victim: Record<string, unknown>,
+  refusal: Record<string, unknown>,
   terminal: Record<string, unknown>,
   drained: Record<string, unknown>,
 ) {
@@ -981,7 +1043,8 @@ function validateNativeHistory(
       "native identity changed from first ready",
     );
   identities.set(native.id, prior);
-  controls(service, native, native.state === "ready" ? 0 : native.id === victim.id ? 3 : 1);
+  if (service === refusal && native.id === victim.id) refusalControls(service, native);
+  else controls(service, native, native.state === "ready" ? 0 : native.id === victim.id ? 3 : 1);
   const before = retiredAt.get(native.id);
   if (before)
     frozen(
