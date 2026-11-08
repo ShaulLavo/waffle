@@ -305,12 +305,10 @@ export class SharedFilesystemState {
     dirtySize?: number,
   ): () => void {
     if (!this.pageReaders || offset === end) return () => {};
+    // A cold replacement's old size can exceed capacity; unbacked pages have no mapping or pin.
+    const last = Math.min(Math.ceil(end / DATA_PAGE_BYTES), this.slots[this.at(slot, CAPACITY)]!);
     let additional = 0;
-    for (
-      let logical = Math.floor(offset / DATA_PAGE_BYTES);
-      logical < Math.ceil(end / DATA_PAGE_BYTES);
-      logical++
-    ) {
+    for (let logical = Math.floor(offset / DATA_PAGE_BYTES); logical < last; logical++) {
       if (this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1])
         additional += DATA_PAGE_BYTES;
     }
@@ -319,11 +317,7 @@ export class SharedFilesystemState {
     else this.checkDirty(slot, dirtySize, resident);
     const replacements: { entry: number; previous: number; physical: number }[] = [];
     try {
-      for (
-        let logical = Math.floor(offset / DATA_PAGE_BYTES);
-        logical < Math.ceil(end / DATA_PAGE_BYTES);
-        logical++
-      ) {
+      for (let logical = Math.floor(offset / DATA_PAGE_BYTES); logical < last; logical++) {
         const entry = this.pageAt(slot, logical);
         const previous = this.pages[entry]! - 1;
         if (!this.pageReaders[previous]) continue;
