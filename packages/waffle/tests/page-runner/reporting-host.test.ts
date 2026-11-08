@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createServer } from "node:http";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PageFrameworkHost } from "./framework-host.js";
 import { OrderedReporter } from "./ordered-reporter.js";
@@ -10,7 +11,7 @@ import { waitUntil } from "./reporting-fixture.js";
 for (const origin of ["capacity-heartbeat", "collector"] as const) {
   test(`actual host ${origin} fault cancels a held root without a queued probe and joins its physical owner`, async () => {
     const root = await mkdtemp(
-      join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "waffle-reporting-host-"),
+      join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-reporting-host-"),
     );
     const previous = process.env.STORAGE_SCRATCH_ROOT;
     const release = Promise.withResolvers<void>();
