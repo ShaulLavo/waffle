@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { verifiedCThreadFixture } from "../scripts/build-c-thread-fixture.js";
 import { cThreadArtifactSha256, cThreadReceiptSha256 } from "./c-threads-runtime-browser.js";
 
-const sources = {
+export const cThreadBrowserSources = {
   "c-positive.js": new URL("./c-threads-positive-worker.ts", import.meta.url).pathname,
   "runtime-page.js": new URL("./c-threads-runtime-browser.ts", import.meta.url).pathname,
   "fs-worker.js": new URL("../browser/fs-worker.ts", import.meta.url).pathname,
@@ -12,9 +12,11 @@ const sources = {
   "thread-service.js": new URL("../thread/service-worker.ts", import.meta.url).pathname,
   "thread-guest.js": new URL("./c-threads-runtime-guest.ts", import.meta.url).pathname,
 };
+export const cThreadSafariRunner = new URL("./c-threads-safari-runner.ts", import.meta.url)
+  .pathname;
 const packetDigest = (value: Uint8Array | string) =>
   createHash("sha256").update(value).digest("hex");
-const assetNames = Object.keys(sources).concat([
+const assetNames = Object.keys(cThreadBrowserSources).concat([
   "c-threads.wasm",
   "c-threads.receipt.json",
   "runner.mjs",
@@ -48,17 +50,14 @@ export async function prepareCThreadsPacket(directory: string, artifactDirectory
   )
     throw new Error("C packet artifact or receipt changed");
   await mkdir(directory);
-  for (const [path, source] of Object.entries(sources))
+  for (const [path, source] of Object.entries(cThreadBrowserSources))
     await Bun.write(join(directory, path), await bundle(source, "browser"));
   await Bun.write(join(directory, "c-threads.wasm"), wasm);
   await copyFile(
     join(artifactDirectory, "c-threads.receipt.json"),
     join(directory, "c-threads.receipt.json"),
   );
-  await Bun.write(
-    join(directory, "runner.mjs"),
-    await bundle(new URL("./c-threads-safari-runner.ts", import.meta.url).pathname, "bun"),
-  );
+  await Bun.write(join(directory, "runner.mjs"), await bundle(cThreadSafariRunner, "bun"));
   const assets = [];
   for (const path of assetNames)
     assets.push({ path, sha256: packetDigest(await readFile(join(directory, path))) });

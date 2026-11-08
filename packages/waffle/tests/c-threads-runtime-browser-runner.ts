@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readCThreadsPacket } from "./c-threads-packet.js";
+import { cThreadBrowserSources, readCThreadsPacket } from "./c-threads-packet.js";
 import { verifiedCThreadFixture } from "../scripts/build-c-thread-fixture.js";
 import {
   cThreadArtifactSha256,
@@ -79,14 +79,9 @@ if (args[0] === "--embedding") {
     names: args.length ? args : ["chromium"],
     sources: packet
       ? {}
-      : {
-          "/c-positive.js": new URL("./c-threads-positive-worker.ts", import.meta.url).pathname,
-          "/runtime-page.js": new URL("./c-threads-runtime-browser.ts", import.meta.url).pathname,
-          "/fs-worker.js": new URL("../browser/fs-worker.ts", import.meta.url).pathname,
-          "/preview1-worker.js": new URL("../browser/preview1-worker.ts", import.meta.url).pathname,
-          "/thread-service.js": new URL("../thread/service-worker.ts", import.meta.url).pathname,
-          "/thread-guest.js": new URL("./c-threads-runtime-guest.ts", import.meta.url).pathname,
-        },
+      : Object.fromEntries(
+          Object.entries(cThreadBrowserSources).map(([path, source]) => [`/${path}`, source]),
+        ),
     route: (path, headers) => {
       const asset = packet?.assets.find((entry) => path === `/${entry.path}`);
       if (asset)
