@@ -14,7 +14,7 @@ class PeerDocument {
   readonly reporter: OrderedReporter<Body>;
   readonly window: Record<string, unknown>;
   private retiring: ReturnType<typeof setInterval> | undefined;
-  private polling = false;
+  private polling: Promise<void> | undefined;
   readonly host = {
     phase: "admitting",
     transition: null as { id: string; acknowledgedThrough: number | null } | null,
@@ -111,28 +111,34 @@ class PeerDocument {
   }
   private async complete(): Promise<void> {
     await this.reporter.send({ kind: "doc-complete" });
-    this.retiring = setInterval(() => {
-      void this.poll();
-    }, 1);
+    this.retiring = setInterval(() => this.poll(), 1);
   }
-  private async poll(): Promise<void> {
+  private poll(): void {
     if (this.polling) return;
-    this.polling = true;
-    try {
-      const url = new URL(this.url);
-      const response = await fetch(
-        `${url.origin}/retire?run=${String(this.config.run)}&doc=${this.reporter.observation.doc}`,
-      );
-      if ((await response.json()) !== true) return;
-      clearInterval(this.retiring);
-      await this.reporter.send({ kind: "retire-ready" });
-    } finally {
-      this.polling = false;
-    }
+    this.polling = this.pollRetirement();
+    void this.polling.then(
+      () => {
+        this.polling = undefined;
+      },
+      () => {
+        // Keep the rejected promise owned so stop() reports the transport failure.
+        clearInterval(this.retiring);
+      },
+    );
   }
-  stop(): void {
+  private async pollRetirement(): Promise<void> {
+    const url = new URL(this.url);
+    const response = await fetch(
+      `${url.origin}/retire?run=${String(this.config.run)}&doc=${this.reporter.observation.doc}`,
+    );
+    if ((await response.json()) !== true) return;
+    clearInterval(this.retiring);
+    await this.reporter.send({ kind: "retire-ready" });
+  }
+  async stop(): Promise<void> {
     clearInterval(this.retiring);
     this.reporter.stop();
+    await this.polling;
   }
 }
 export class PeerDriverFixture extends FakeDriver {
@@ -184,7 +190,7 @@ export class PeerDriverFixture extends FakeDriver {
   }
   override async navigate(url: string): Promise<void> {
     this.navigations++;
-    this.windows.get(this.selected)?.stop();
+    await this.windows.get(this.selected)?.stop();
     const html = await (await fetch(url)).text();
     const value: unknown = JSON.parse(
       /window\.__suiteConfiguration=(.+?)<\/script>/.exec(html)?.[1] ?? "null",
@@ -211,7 +217,7 @@ export class PeerDriverFixture extends FakeDriver {
     this.actions.push("close");
     if (this.fault === "close-present") return;
     const handle = this.fault === "close-wrong" ? "root" : this.selected;
-    this.windows.get(handle)?.stop();
+    await this.windows.get(handle)?.stop();
     this.windows.delete(handle);
   }
   override async script(source: string): Promise<unknown> {
@@ -227,9 +233,12 @@ export class PeerDriverFixture extends FakeDriver {
     return value;
   }
   override async stop() {
-    for (const page of this.windows.values()) page?.stop();
+    const stopping = Array.from(this.windows.values(), async (page) => page?.stop());
     this.peerReadyRelease.resolve();
-    await Promise.all(this.peerStarts);
+    const settled = await Promise.allSettled(stopping.concat(this.peerStarts));
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
     return super.stop();
   }
 }

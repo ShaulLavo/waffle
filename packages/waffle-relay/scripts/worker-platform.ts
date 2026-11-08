@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import {
-  Miniflare,
-  Response as PlatformResponse,
-} from "../../../site/node_modules/miniflare/dist/src/index.js";
+import { Miniflare, Response as PlatformResponse } from "miniflare";
 
 let calls = 0;
 const mf = new Miniflare({

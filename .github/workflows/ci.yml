@@ -309,6 +309,8 @@ jobs:
               - "packages/waffle/scripts/browser-command.ts"
               - "packages/waffle/scripts/browser-supervisor.ts"
               - "packages/waffle/scripts/owned-command.ts"
+              - "packages/waffle-relay/scripts/prepare-native.ts"
+              - "packages/waffle-relay/tests/prepare-native.test.ts"
               - "packages/waffle-relay/src/**"
               - "packages/waffle-relay/package.json"
               - "packages/waffle/tooling/workspace-safari-runner.ts"
@@ -943,8 +945,22 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Cache standard native relay prebuild downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm/_prebuilds
+          key: ${{ runner.os }}-${{ runner.arch }}-relay-prebuild-v1-${{ hashFiles('bun.lock', 'packages/waffle-relay/package.json', 'packages/waffle-relay/scripts/prepare-native.ts', 'packages/waffle-relay/src/webtransport-integrity.ts') }}
+      - name: Prepare and verify the required native relay prebuild
+        run: bun packages/waffle-relay/scripts/prepare-native.ts
+      - run: bun run prepare:package
+      - name: Prepare the trusted Bun adapter without rerunning native install scripts
+        run: bun run --cwd packages/git/node_modules/bun-wasm prepare
       - run: bun install --cwd site --frozen-lockfile
+      - name: Check native preparation tooling
+        run: |
+          packages/waffle/node_modules/.bin/oxlint --config packages/waffle/.oxlintrc.json --deny-warnings packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
+          packages/waffle/node_modules/.bin/oxfmt --check --config packages/waffle/.oxfmtrc.json packages/waffle-relay/scripts/prepare-native.ts packages/waffle-relay/tests/prepare-native.test.ts
       - run: bun run quality
       - uses: actions/setup-node@v4
         with:
@@ -1160,9 +1176,15 @@ jobs:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Install the declared optional native relay peer for real WebTransport tests
+      - name: Cache standard native relay prebuild downloads
         if: matrix.group == 'parallel'
-        run: bun run --cwd packages/waffle-relay/node_modules/@fails-components/webtransport-transport-http3-quiche install
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm/_prebuilds
+          key: ${{ runner.os }}-${{ runner.arch }}-relay-prebuild-v1-${{ hashFiles('bun.lock', 'packages/waffle-relay/package.json', 'packages/waffle-relay/scripts/prepare-native.ts', 'packages/waffle-relay/src/webtransport-integrity.ts') }}
+      - name: Prepare and verify the required native relay prebuild
+        if: matrix.group == 'parallel'
+        run: bun packages/waffle-relay/scripts/prepare-native.ts
       # Browser directories are named by revision only, so the key carries the OS release too.
       - name: Resolve the Playwright browser cache key
         id: playwright-cache
