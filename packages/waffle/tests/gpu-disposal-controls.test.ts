@@ -612,3 +612,127 @@ test("a killed owner cannot conceal an observed bad return or an unclassified ex
     value.disposal.exits[2]!.events.push({ ...value.blockedGuest.events[0]!, call: 99 });
   }, "guest continued GPU imports after its held disposal call");
 });
+
+function naturalRevocationExit(value: ReturnType<typeof fixture>, index: number) {
+  const observed = value.disposal.exits[index]!;
+  observed.exit = { kind: "exited", code: 1, status: 1 };
+  if (index === 2) return;
+  const entered = {
+    ...observed.events.at(-1)!,
+    name: "completions",
+    call: 4,
+    phase: "enter",
+    result: 0,
+  };
+  observed.events = observed.events.concat([
+    entered,
+    { ...entered, phase: "wait" },
+    { ...entered, phase: "return", result: -64 },
+  ]);
+}
+for (const index of [1, 2])
+  test(`active disposal preserves original guest ${index} terminal-return exit before signal`, () => {
+    const value = fixture();
+    naturalRevocationExit(value, index);
+    expect(validateDisposalResult(value).hardwareQualified).toBe(false);
+  });
+test("natural disposal exit needs the original terminal GPU call, not an unrelated failure", () => {
+  rejects((value) => {
+    value.disposal.exits[1]!.exit = { kind: "exited", code: 1, status: 1 };
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events.at(-1)!.result = -28;
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events.at(-1)!.token = "another-guest";
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events[0] = { ...value.disposal.exits[1]!.events[0]!, call: 99 };
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.exit.status = 137;
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.grantRetired = false;
+  }, "wrong original guest exit or launch grant retirement");
+});
+test("a naturally exiting peer cannot do more GPU work after its terminal return", () => {
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    const observed = value.disposal.exits[1]!;
+    observed.events.push({ ...observed.events.at(-1)!, call: 5, phase: "enter" });
+  }, "wrong original guest exit or launch grant retirement");
+});
+
+test("a natural exit still requires the complete matching import and original successful control", () => {
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events.splice(-3, 1);
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events.at(-3)!.connection = 99;
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events.at(-2)!.phase = "return";
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    const observed = value.disposal.exits[1]!;
+    observed.events.splice(-1, 0, { ...observed.events.at(-1)!, call: 5, result: -28 });
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 1);
+    value.disposal.exits[1]!.events.at(-1)!.phase = "throw";
+  }, "wrong original guest exit or launch grant retirement");
+  rejects((value) => {
+    naturalRevocationExit(value, 0);
+  }, "wrong original guest exit or launch grant retirement");
+});
+
+function interveningSuccessfulImport(value: ReturnType<typeof fixture>) {
+  naturalRevocationExit(value, 1);
+  const observed = value.disposal.exits[1]!;
+  const terminal = observed.events.slice(-3);
+  const successful = terminal.map((event) => ({ ...event, result: 0 }));
+  observed.events = observed.events.slice(0, -3).concat(
+    successful,
+    terminal.map((event) => ({ ...event, call: 5 })),
+  );
+}
+test("natural exit accepts a saved checkpoint inside an intervening successful import", () => {
+  const value = fixture();
+  interveningSuccessfulImport(value);
+  value.peerGuest.events = value.disposal.exits[1]!.events.slice(0, -4);
+  expect(validateDisposalResult(value).hardwareQualified).toBe(false);
+});
+for (const mutation of ["throw", "missing-return", "skipped-call", "interleaved-call"])
+  test(`natural disposal exit rejects intervening ${mutation}`, () => {
+    rejects((value) => {
+      interveningSuccessfulImport(value);
+      corruptInterveningHistory(value, mutation);
+    }, "wrong original guest exit or launch grant retirement");
+  });
+function corruptInterveningHistory(value: ReturnType<typeof fixture>, mutation: string) {
+  const events = value.disposal.exits[1]!.events;
+  if (mutation === "throw") {
+    events[8] = { ...events[8]!, phase: "throw" };
+    return;
+  }
+  if (mutation === "missing-return") {
+    events.splice(8, 1);
+    return;
+  }
+  if (mutation === "skipped-call") {
+    for (const event of events.slice(-3)) event.call = 999999;
+    return;
+  }
+  const entered = { ...events.at(-1)!, name: "append", call: 6, phase: "enter", result: 0 };
+  events.splice(-1, 0, entered, { ...entered, phase: "return" });
+}
