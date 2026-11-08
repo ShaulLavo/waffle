@@ -55,6 +55,22 @@ Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 
+### Run the complete notification command
+
+The notification runner keeps all nine original lifecycle scenarios in one page. Its stock
+command uses Chromium and runs once in the serial CI group, without engine arguments.
+
+```sh
+bun packages/waffle/tests/notification-browser-runner.ts
+STORAGE_SCRATCH_ROOT=/absolute/scratch/root IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/notification-browser-runner.ts ios-safari --result /absolute/result.json
+```
+
+The native command uses the existing page-owned host and the same scenario functions.
+It retains the complete result before page retirement. Normal reporter controls check
+original assertion failures and copied results. Desktop controls do not establish native
+Safari acceptance.
+
 ### Run the complete compiled GPU async command
 
 The GPU async runner requires the existing normal producer output in `GPU_FIXTURE_DIR`.
