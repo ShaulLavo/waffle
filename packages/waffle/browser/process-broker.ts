@@ -2105,8 +2105,12 @@ export class BrowserProcessBroker {
       const notifications = child.notifications;
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(async () => {
-        if (!child.worker) return;
-        await child.worker.terminate();
+        const worker = child.worker;
+        if (!worker) return;
+        await worker.terminate();
+        worker.onmessage = null;
+        worker.onerror = null;
+        child.worker = undefined;
         terminal?.stopped();
       }, errors);
       await settleStop(() => child.cleanup?.(), errors);
