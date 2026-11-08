@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { checkNotificationResult, notificationSources } from "../notification-command.js";
 import { commandControlModes } from "./command-controls.js";
 import { commandAdapter } from "./command-suites.js";
@@ -62,7 +63,7 @@ function originalResult() {
 const adapter = commandAdapter("notification");
 const id = "notification: notificationCommand";
 async function control(actual: unknown) {
-  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "n-host-"));
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "n-host-"));
   const driver = new FakeDriver("pass", { list: { ids: [id] }, result: actual });
   try {
     const result = await runPageSuite(adapter, () => driver, {
@@ -162,7 +163,7 @@ for (const mutate of [
 }
 test("native notification entry rejects this non-Darwin host without resources", async () => {
   if (process.platform === "darwin") return;
-  const root = await mkdtemp("/work/tmp/n-native-");
+  const root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "n-native-"));
   try {
     const path = join(root, "result.json");
     expect(await nativeMain(adapter, ["--result", path])).toBe(3);
