@@ -203,8 +203,9 @@ const rootRejections: readonly unknown[] = [
     },
   }),
 ];
-for (const reason of rootRejections) {
-  test("root rejection retains exact identity over child failure", async () => {
+test.each(rootRejections)(
+  "root rejection retains exact identity over child failure",
+  async (reason) => {
     const { queue } = fixture();
     const result = queue.run(async () => {
       void queue
@@ -215,8 +216,8 @@ for (const reason of rootRejections) {
       throw reason;
     });
     expect(Object.is(await rejection(result), reason)).toBe(true);
-  });
-}
+  },
+);
 test("overlapping sibling frame callbacks are denied", async () => {
   const { queue } = fixture();
   const release = deferred();
