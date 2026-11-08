@@ -46,7 +46,7 @@ function checkResult(_id: string, result: unknown): void {
   )
     throw new Error("Wrong settled consumer result");
 }
-async function controlAssets(
+export async function controlAssets(
   scratch: string,
   mode: string,
 ): Promise<Record<string, Blob | string>> {
@@ -84,12 +84,7 @@ async function controlAssets(
     throw new Error(
       `Control has no real generated chunk: ${built.outputs.map((output) => output.path)}; files=${Object.keys(assets)}`,
     );
-  return Object.assign(assets, {
-    "/current/": "SHADOW",
-    "/report": "SHADOW",
-    "/heartbeat": "SHADOW",
-    "/retire": "SHADOW",
-  });
+  return assets;
 }
 async function seedSentinel(): Promise<void> {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {

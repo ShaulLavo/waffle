@@ -901,7 +901,7 @@ function validateAssets(assets: Record<string, Blob | string>, page: HostedPage)
   for (const path of Object.keys(assets)) {
     localPath(path);
     if (reservedPath(path) || path === page.path)
-      throw new Error("Asset conflicts with host route");
+      throw new Error(`Asset conflicts with host route: ${path}`);
   }
 }
 function validateRoutes(
