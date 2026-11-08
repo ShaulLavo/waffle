@@ -20,3 +20,6 @@ packages/*/public/programs/
 
 # Exact canonical program-tool sources staged by package preparation
 packages/waffle/tooling/program/
+
+# Durable browser control reports, outside disposable profiles
+.browser-controls/
