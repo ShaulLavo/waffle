@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { validateServiceFailureResult } from "./gpu-service-failure-browser.js";
+import { RecordRing } from "../browser/gpu/ring.js";
 
 const audit = { canaries: Array.from({ length: 33 }, () => "native-canary"), leaks: [] };
 const green = { corner: [0, 0, 0, 255], center: [0, 255, 0, 255] };
@@ -848,3 +849,142 @@ test("recovery pixel negatives do not mutate the original peer's observations", 
   ).toBe(true);
   expect(() => validateServiceFailureResult(value)).toThrow("Compiled guest pixel failure");
 });
+
+function committedReplyDrain() {
+  const value = fixture();
+  for (const state of [
+    value.failure.before,
+    value.failure.stopped,
+    value.failure.after,
+    value.recovery.state,
+    value.recovery.after,
+  ]) {
+    state.controls = state.controls.map((control) =>
+      control.grant !== 2
+        ? control
+        : {
+            ...control,
+            replies: {
+              ...control.replies,
+              head: 48,
+              tail: state === value.failure.before || state === value.failure.stopped ? 24 : 48,
+            },
+          },
+    );
+  }
+  return value;
+}
+
+test("an original guest may drain committed replies between service stop and physical exit", () => {
+  expect(validateServiceFailureResult(committedReplyDrain()).hardwareQualified).toBe(false);
+});
+
+test("an unchanged unread tail remains allowed if the original guest fails before reading it", () => {
+  const value = committedReplyDrain();
+  for (const state of [value.failure.after, value.recovery.state, value.recovery.after])
+    state.controls[1]!.replies.tail = 24;
+  expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
+});
+
+for (const [field, next, message] of [
+  ["tail", 16, "old reply consumer escaped committed bytes"],
+  ["tail", 56, "old reply consumer escaped committed bytes"],
+  ["tail", 25, "old reply consumer escaped committed bytes"],
+  ["tail", 1.5, "old reply consumer escaped committed bytes"],
+  ["head", 56, "late old publication changed"],
+  ["terminal", 0, "late old publication changed"],
+] satisfies [string, number, string][])
+  test(`old reply ${field} cannot become ${next} during failure`, () => {
+    const value = committedReplyDrain();
+    Reflect.set(value.failure.after.controls[1]!.replies, field, next);
+    expect(() => validateServiceFailureResult(value)).toThrow(message);
+  });
+
+test("command consumption cannot change after the service worker stops", () => {
+  const value = committedReplyDrain();
+  value.failure.after.controls[1]!.commands.tail = 16;
+  expect(() => validateServiceFailureResult(value)).toThrow("late old publication changed");
+});
+
+test("old reply consumption is frozen once the original guest workers have stopped", () => {
+  const value = committedReplyDrain();
+  value.recovery.state.controls[1]!.replies.tail = 24;
+  expect(() => validateServiceFailureResult(value)).toThrow(
+    "old publication revived through recovery",
+  );
+});
+
+test("committed reply consumption accepts the real observer's signed rollover tail", () => {
+  const backing = new SharedArrayBuffer(128),
+    cells = new Int32Array(backing),
+    publication = new BigInt64Array(backing, 0, 1);
+  Atomics.store(publication, 0, 0xfffffff0n);
+  Atomics.store(cells, 2, -16);
+  const ring = new RecordRing(backing, 16),
+    acquired = ring.tryAcquireWriter();
+  expect(acquired.kind).toBe("acquired");
+  if (acquired.kind !== "acquired") throw new Error("Missing actual ring writer");
+  const bytes = new Uint8Array(24),
+    view = new DataView(bytes.buffer);
+  view.setUint16(0, 1, true);
+  view.setUint32(4, 24, true);
+  expect(acquired.writer.tryWrite(bytes).kind).toBe("written");
+  acquired.writer.release();
+  ring.terminate(5);
+  const observed = () => ({
+    head: Number(Atomics.load(publication, 0) & 0xffffffffn),
+    tail: Atomics.load(cells, 2),
+    terminal: Number((Atomics.load(publication, 0) >> 32n) & 0xffffffffn),
+  });
+  const before = observed();
+  expect(before).toEqual({ head: 24, tail: -16, terminal: 5 });
+  expect(ring.readInto(new Uint8Array(24)).kind).toBe("record");
+  const after = observed();
+  expect(after).toEqual({ head: 24, tail: 24, terminal: 5 });
+  expect(ring.readInto(new Uint8Array(24)).kind).toBe("terminal");
+  const value = committedReplyDrain();
+  for (const state of [
+    value.failure.before,
+    value.failure.stopped,
+    value.failure.after,
+    value.recovery.state,
+    value.recovery.after,
+  ])
+    Object.assign(
+      state.controls[1]!.replies,
+      state === value.failure.before || state === value.failure.stopped
+        ? { head: before.head, tail: before.tail }
+        : { head: after.head, tail: after.tail },
+    );
+  expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
+});
+
+for (const stopped of [true, false])
+  test(`an original peer already physically stopped cannot drain committed replies, flag=${stopped}`, () => {
+    const value = committedReplyDrain(),
+      peer = value.peerGuest,
+      worker = value.failure.stopped.workers.find(
+        (worker) =>
+          "pid" in worker &&
+          worker.pid === peer.pid &&
+          "token" in worker &&
+          worker.token === peer.token &&
+          "surface" in worker &&
+          worker.surface === peer.surface,
+      )!;
+    worker.stopped = stopped;
+    const stop = value.failure.after.workerStops.find((stop) => stop.id === worker.id)!;
+    value.failure.stopped.workerStops = value.failure.stopped.workerStops.concat([stop]);
+    expect(() => validateServiceFailureResult(value)).toThrow(
+      "physically stopped guest changed old controls",
+    );
+  });
+
+for (const tail of [-0x80000001, 0x80000000, -15, -16.5])
+  test(`observed signed tail ${tail} is rejected before normalization`, () => {
+    const value = committedReplyDrain();
+    value.failure.after.controls[1]!.replies.tail = tail;
+    expect(() => validateServiceFailureResult(value)).toThrow(
+      "old reply consumer escaped committed bytes",
+    );
+  });

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import {
   existsSync,
   mkdirSync,
@@ -66,7 +67,7 @@ test("disabled compiler tests discover without a scratch root or SDK", async () 
     [
       "bun",
       "test",
-      new URL("../scripts/c-threads-fixture-producer.test.ts", import.meta.url).pathname,
+      fileURLToPath(new URL("../scripts/c-threads-fixture-producer.test.ts", import.meta.url)),
     ],
     {
       env: {

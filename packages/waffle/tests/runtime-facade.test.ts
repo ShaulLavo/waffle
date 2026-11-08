@@ -733,6 +733,51 @@ test("runtime-owned source admission avoids a second byte snapshot", async () =>
   }
 });
 
+test("compiled program loaders release their owned source while registration stays live", async () => {
+  const source = new Uint8Array(1024 * 1024 + 13);
+  source.set(bytes);
+  source.set([0, 0x81, 0x80, 0x40, 0], bytes.length);
+  const Bytes = globalThis.Uint8Array;
+  let owned: WeakRef<ArrayBuffer> | undefined;
+  globalThis.Uint8Array = new Proxy(Bytes, {
+    construct(target, args) {
+      const result = Reflect.construct(target, args, target);
+      if (args[0] === source) owned = new WeakRef(result.buffer);
+      return result;
+    },
+  });
+  let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+  const factory = processHost();
+  const runtime = create({
+    processHost: (options) => {
+      registry = options.registry;
+      return factory(options);
+    },
+  });
+  runtime.registerAdapter("test", () => ({ terminate() {} }));
+  try {
+    runtime.registerProgram("/snapshot", { adapter: "test", source });
+  } finally {
+    globalThis.Uint8Array = Bytes;
+  }
+  expect(owned!.deref()?.byteLength).toBe(source.byteLength);
+  await runtime.processes();
+  const first = await registry!.resolve("/snapshot");
+  let released = false;
+  for (let round = 0; round < 20 && !released; round++) {
+    await Bun.sleep(5);
+    Bun.gc(true);
+    released = owned!.deref() === undefined;
+  }
+  expect(released).toBe(true);
+  expect((await registry!.resolve("/snapshot")).module).toBe(first.module);
+  const executable = await registry!.check("/snapshot");
+  if ("command" in executable) throw new Error("Expected a compiled program loader");
+  const reloaded =
+    typeof executable.module === "function" ? await executable.module() : executable.module;
+  expect(reloaded).toBe(first.module);
+});
+
 test("disposal blocks previously borrowed capabilities and never activates unused processes", async () => {
   const runtime = create({
     processHost: () => {
@@ -1865,7 +1910,7 @@ test("source registrations compile once across concurrent spawns and replace by 
   expect(modules[4]).toBe(modules[3]);
 });
 
-test("the borrowed process service queries exact idle ownership without exposing the pool", async () => {
+test("the borrowed process service creates demand-only workers without exposing the pool", async () => {
   const BaseWorker = globalThis.Worker;
   const observed: Worker[] = [];
   globalThis.Worker = class extends BaseWorker {
@@ -1881,14 +1926,19 @@ test("the borrowed process service queries exact idle ownership without exposing
   try {
     expect(service.isIdleWorker(first)).toBe(false);
     await Bun.sleep(10);
-    const idle = observed[2]!;
-    expect(service.isIdleWorker(idle)).toBe(true);
+    expect(observed).toHaveLength(2);
     expect(Reflect.get(service, "workers")).toBeUndefined();
     leased = service.takeWorker("https://example.test/process.js");
-    expect(leased).toBe(idle);
+    expect(leased).not.toBe(first);
+    expect(observed).toHaveLength(3);
     expect(service.isIdleWorker(leased)).toBe(false);
+    await Bun.sleep(10);
+    expect(observed).toHaveLength(3);
     await runtime.dispose();
-    expect(() => service.isIdleWorker(idle)).toThrow("disposed");
+    expect(() => service.isIdleWorker(first)).toThrow("disposed");
+    expect(() => service.takeWorker("https://example.test/process.js")).toThrow("disposed");
+    await Bun.sleep(10);
+    expect(observed).toHaveLength(3);
   } finally {
     first.terminate();
     leased?.terminate();

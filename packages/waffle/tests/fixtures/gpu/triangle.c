@@ -46,6 +46,7 @@ static int repeat_acquire;
 static int discard_after_first;
 static int expired_frame_use;
 static int grant_quota;
+static int payload_pressure;
 enum { FAIRNESS_NONE, FAIRNESS_HEAVY, FAIRNESS_PEER, FAIRNESS_SEEDED };
 static int fairness;
 static uint32_t fairness_seed;
@@ -72,6 +73,7 @@ static void options(int argc, char **argv) {
       continue;
     }
     if (!strcmp(argv[i], "--grant-quota")) { grant_quota = 1; continue; }
+    if (!strcmp(argv[i], "--payload-pressure")) { payload_pressure = 1; continue; }
     if (!strcmp(argv[i], "--repeat-acquire")) { repeat_acquire = 1; continue; }
     if (!strcmp(argv[i], "--discard-after-first-frame")) { discard_after_first = 1; continue; }
     if (!strcmp(argv[i], "--expired-frame-use")) { expired_frame_use = 1; continue; }
@@ -315,11 +317,142 @@ static void quota_reopen(void) {
   fail("quota-bound", -48);
 }
 
+/* Header, success status, empty message, payload handle, length and padding. */
+#define PAYLOAD_RECORD_BYTES 40u
+#define PAYLOAD_CLOSED_BYTES 24u
+#define PAYLOAD_RESOURCE_REASON 3u /* GPU_TERMINAL.resource */
+#define PAYLOAD_RESOURCE_ERRNO (-48)
+static const char payload_wgsl[] = "@compute @workgroup_size(1) fn main() {}";
+typedef struct PayloadResult { uint32_t token, id, generation, length; } PayloadResult;
+typedef struct PayloadDrain { unsigned records, successes, closed; uint32_t reason; PayloadResult last; } PayloadDrain;
+static uint64_t payload_seen;
+
+static void payload_request(unsigned index, uint32_t reply_token) {
+  size_t start = waffle_gpu_begin(&writer, WAFFLE_GPU_OP_SHADER_MODULE_GET_COMPILATION_INFO);
+  waffle_gpu_token(&writer, reply_token);
+  gpu_object(&writer, SHADER);
+  waffle_gpu_end(&writer, start);
+  append();
+  printf("GPU_PAYLOAD_REQUESTED index=%u token=%u\n", index, reply_token);
+}
+static PayloadResult payload_success(const uint8_t *p, uint32_t length, uint32_t expected_token) {
+  uint32_t kind = p[0] | (uint32_t)p[1] << 8;
+  if (kind != WAFFLE_GPU_REPLY_COMPILATION_RESULT || p[2] || p[3] || gpu_read_u32(p + 8) != expected_token) {
+    fprintf(stderr, "GPU_UNEXPECTED kind=%u token=%u\n", kind, gpu_read_u32(p + 8));
+    fail("payload-correlation", -28);
+  }
+  if (gpu_read_u32(p + 12)) fail("payload-bridge-status", (int32_t)gpu_read_u32(p + 12));
+  uint32_t status = gpu_read_u32(p + WAFFLE_GPU_REPLY_COMPILATION_RESULT_STATUS_OFFSET);
+  if (status != WAFFLE_GPU_ENUM_COMPILATION_INFO_REQUEST_STATUS_SUCCESS) fail("payload-status", (int32_t)status);
+  if (length != PAYLOAD_RECORD_BYTES || gpu_read_u32(p + WAFFLE_GPU_REPLY_COMPILATION_RESULT_MESSAGE_OFFSET) ||
+      gpu_read_u32(p + 36))
+    fail("payload-record", (int32_t)length);
+  PayloadResult result = {expected_token, gpu_read_u32(p + 24), gpu_read_u32(p + 28), gpu_read_u32(p + 32)};
+  if (!result.id || result.id > WAFFLE_GPU_PAYLOAD_SLOTS || !result.generation ||
+      result.length > WAFFLE_GPU_PAYLOAD_DATABYTES || payload_seen & (UINT64_C(1) << (result.id - 1)))
+    fail("payload-handle", -28);
+  payload_seen |= UINT64_C(1) << (result.id - 1);
+  return result;
+}
+static void payload_print(unsigned index, PayloadResult result, const char *phase) {
+  printf("GPU_PAYLOAD_RESULT index=%u token=%u handle=%u generation=%u length=%u read=0 phase=%s\n",
+         index, result.token, result.id, result.generation, result.length, phase);
+}
+/* Early replies are drained one at a time; their payload handles are deliberately never read. */
+static void payload_wait(unsigned index, uint32_t reply_token) {
+  uint8_t replies[256], written[4] = {0};
+  check("payload-completions",
+        runtime_gpu_completions(connection, replies, sizeof(replies), -1, written));
+  uint32_t total = gpu_read_u32(written);
+  if (total != PAYLOAD_RECORD_BYTES) fail("payload-batch", (int32_t)total);
+  payload_print(index, payload_success(replies, gpu_read_u32(replies + 4), reply_token), "ready");
+}
+static void payload_terminal_record(const uint8_t *p, uint32_t length, uint32_t last_token,
+                                    PayloadDrain *drained) {
+  uint32_t kind = p[0] | (uint32_t)p[1] << 8;
+  drained->records++;
+  if (drained->closed) fail("payload-after-closed", -28);
+  if (kind != WAFFLE_GPU_REPLY_CLOSED) {
+    if (drained->successes) fail("payload-extra-result", -28);
+    drained->last = payload_success(p, length, last_token);
+    drained->successes++;
+    payload_print(WAFFLE_GPU_PAYLOAD_SLOTS, drained->last, "terminal");
+    return;
+  }
+  if (length != PAYLOAD_CLOSED_BYTES || p[2] || p[3] || gpu_read_u32(p + 8) || gpu_read_u32(p + 12))
+    fail("payload-closed-record", -28);
+  drained->reason = gpu_read_u32(p + WAFFLE_GPU_REPLY_CLOSED_REASON_OFFSET);
+  drained->closed++;
+}
+static int32_t payload_terminal_batch(uint32_t last_token, PayloadDrain *drained) {
+  uint8_t replies[256], written[4] = {0};
+  int32_t status = runtime_gpu_completions(connection, replies, sizeof(replies), -1, written);
+  if (status) return status;
+  uint32_t total = gpu_read_u32(written), offset = 0;
+  if (!total || total > sizeof(replies)) fail("payload-terminal-span", (int32_t)total);
+  while (offset < total) {
+    expect_size(total - offset, WAFFLE_GPU_COMPLETION_HEADER_SIZE);
+    uint32_t length = gpu_read_u32(replies + offset + 4);
+    if (length < WAFFLE_GPU_COMPLETION_HEADER_SIZE || length % 8 || length > total - offset)
+      fail("payload-terminal-framing", -28);
+    payload_terminal_record(replies + offset, length, last_token, drained);
+    offset += length;
+  }
+  return 0;
+}
+static void payload_after_terminal(const PayloadDrain *drained) {
+  uint8_t handle[8], destination[64];
+  for (unsigned byte = 0; byte < 4; ++byte) {
+    handle[byte] = (uint8_t)(drained->last.id >> (byte * 8));
+    handle[4 + byte] = (uint8_t)(drained->last.generation >> (byte * 8));
+  }
+  int32_t status = runtime_gpu_payload(connection, handle, destination, sizeof(destination));
+  printf("GPU_PAYLOAD_AFTER_TERMINAL token=%u handle=%u generation=%u read=%d\n",
+         drained->last.token, drained->last.id, drained->last.generation, status);
+  if (status != PAYLOAD_RESOURCE_ERRNO) fail("payload-after-terminal", status);
+}
+/* Serial compilation-info results occupy every fixed payload slot until the next one is refused. */
+static void payload_slots(void) {
+  uint32_t width, height;
+  uint32_t surface = fixture_open(&width, &height);
+  gpu_push_scope(&writer);
+  gpu_shader(&writer, payload_wgsl);
+  finish_scope(WAFFLE_GPU_ENUM_ERROR_TYPE_NO_ERROR);
+  printf("GPU_PAYLOAD_READY connection=%u surface=%u shader=%u slots=%u\n",
+         connection, surface, (unsigned)SHADER, (unsigned)WAFFLE_GPU_PAYLOAD_SLOTS);
+  for (unsigned index = 1; index < WAFFLE_GPU_PAYLOAD_SLOTS; ++index) {
+    uint32_t reply_token = next_token();
+    payload_request(index, reply_token);
+    payload_wait(index, reply_token);
+  }
+  uint32_t last_token = next_token();
+  payload_request(WAFFLE_GPU_PAYLOAD_SLOTS, last_token);
+  wait_stdin("payload-last-committed");
+  payload_request(WAFFLE_GPU_PAYLOAD_SLOTS + 1, next_token());
+  wait_stdin("payload-refusal-requested");
+  PayloadDrain drained = {0};
+  int32_t status = 0;
+  while (!status) status = payload_terminal_batch(last_token, &drained);
+  printf("GPU_PAYLOAD_TERMINAL reason=%u records=%u successes=%u closed=%u status=%d\n",
+         drained.reason, drained.records, drained.successes, drained.closed, status);
+  if (status != PAYLOAD_RESOURCE_ERRNO || drained.successes != 1 || drained.closed != 1 ||
+      drained.reason != PAYLOAD_RESOURCE_REASON)
+    fail("payload-terminal", status);
+  payload_after_terminal(&drained);
+  wait_stdin("payload-terminal");
+  uint32_t closed = connection;
+  check("payload-close", runtime_gpu_close(closed));
+  connection = 0;
+  check("payload-close-idempotent", runtime_gpu_close(closed));
+  puts("GPU_STAGE closed");
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
   options(argc, argv);
   if (grant_quota) { quota_reopen(); return 0; }
+  if (payload_pressure) { payload_slots(); return 0; }
   uint32_t width, height;
   uint32_t surface_id = fixture_open(&width, &height);
   resources(surface_id, width, height);
