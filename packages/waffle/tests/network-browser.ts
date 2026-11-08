@@ -404,7 +404,8 @@ export interface NetworkBrowserEnvironment {
   readonly serviceWorker: OwnedServiceWorker;
 }
 const directServiceWorker: OwnedServiceWorker = {
-  register: () => navigator.serviceWorker.register("/network-sw.js", { scope: "/", type: "module" }),
+  register: () =>
+    navigator.serviceWorker.register("/network-sw.js", { scope: "/", type: "module" }),
   controls: (_registration, controller) => controller !== null,
   unregister: (registration) => registration.unregister(),
 };
@@ -505,13 +506,17 @@ export async function networkBrowserCases(
     registration = await serviceWorker.register();
     await activated(registration);
     await until(
-      () => Promise.resolve(serviceWorker.controls(registration!, navigator.serviceWorker.controller)),
+      () =>
+        Promise.resolve(serviceWorker.controls(registration!, navigator.serviceWorker.controller)),
       (value) => value === true,
     );
     const serving = http.call({ op: "serve", listener });
     void serving.catch(() => {});
     const payload = `request-${crypto.randomUUID()}`;
-    check(serviceWorker.controls(registration, navigator.serviceWorker.controller), "Preview controller identity changed");
+    check(
+      serviceWorker.controls(registration, navigator.serviceWorker.controller),
+      "Preview controller identity changed",
+    );
     const response = await fetch("/_net/32132/render?version=1", { method: "POST", body: payload });
     check(response.status === 200, `Preview returned ${response.status}`);
     const result = await response.json();
@@ -594,11 +599,18 @@ export async function networkBrowserCases(
     primary = { error };
     throw error;
   } finally {
-    await finishNetworkCase(primary, guests.map((item) => () => item.retire()).concat([
-      async () => { if (registration) await serviceWorker.unregister(registration); },
-      () => navigator.serviceWorker.removeEventListener("message", route),
-      () => isolatedNamespace.dispose(),
-      () => runtime.dispose(),
-    ]));
+    await finishNetworkCase(
+      primary,
+      guests
+        .map((item) => () => item.retire())
+        .concat([
+          async () => {
+            if (registration) await serviceWorker.unregister(registration);
+          },
+          () => navigator.serviceWorker.removeEventListener("message", route),
+          () => isolatedNamespace.dispose(),
+          () => runtime.dispose(),
+        ]),
+    );
   }
 }
