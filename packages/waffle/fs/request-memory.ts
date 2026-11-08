@@ -24,9 +24,15 @@ import {
   isSharedArrayBuffer,
 } from "../proc/intrinsics.js";
 
+import { PAGE } from "./shared-capacity.js";
+
 export const REQUEST_HEADER = 32;
 export const REQUEST_BUDGET_BYTES = 32;
 export const REQUEST_CONTROL_BYTES = 64;
+/** Inputs above this size travel as a transferred private buffer. */
+export const REQUEST_INLINE_BYTES = PAGE;
+/** First-fit proof for 1,024 live blocks of at most 65,584 bytes; memory/reservations.ts mirrors it. */
+export const REQUEST_ARENA_BYTES = 134_316_032;
 export const FALLBACK_REQUEST_CONNECTION_BYTES = 64 * 1024 * 1024;
 /** @public Hard transport bounds; retained backing and live request counts are separate quotas. */
 export const FILESYSTEM_REQUEST_LIMITS = objectFreeze({
@@ -62,6 +68,8 @@ export interface FilesystemRequestBuffer {
   readonly id: number;
   readonly offset: number;
   readonly length: number;
+  /** Private input length, zero when the input is inline. Never a reference to the payload. */
+  readonly privateBytes: number;
 }
 export function captureRequestMemory(memory: unknown): FilesystemRequestMemory {
   if (
@@ -474,7 +482,10 @@ export function requestBytes(buffer: FilesystemRequestBuffer): Uint8Array {
 export class FilesystemRequestAllocator {
   private nextId = 1;
   readonly memory: FilesystemRequestMemory;
-  constructor(memory: FilesystemRequestMemory) {
+  constructor(
+    memory: FilesystemRequestMemory,
+    private readonly logicalLimit: number = FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+  ) {
     this.memory = captureRequestMemory(memory);
     const failure = requestTransportError(this.memory);
     if (failure) throw failure;
@@ -485,7 +496,7 @@ export class FilesystemRequestAllocator {
     )
       throw new FilesystemError(28, "filesystem connection already has a client");
   }
-  allocate(capacity: number): FilesystemRequestBuffer {
+  allocate(capacity: number, _privateLength = 0): FilesystemRequestBuffer {
     const failure = requestTransportError(this.memory);
     if (failure) throw failure;
     if (!Number.isSafeInteger(capacity) || capacity < 0) throw new FilesystemError(28);
@@ -568,6 +579,7 @@ export class FilesystemRequestAllocator {
       id,
       offset: at + PREFIX,
       length: REQUEST_HEADER + capacity,
+      privateBytes: 0,
     });
     const cells = requestCells(buffer);
     for (let i = 0; i < REQUEST_HEADER / 4; i++) atomicsStore(cells, i, 0);
@@ -582,6 +594,7 @@ export function receiveRequestBuffer(
   generation: number,
   offset: number,
   length: number,
+  _payload?: unknown,
 ): FilesystemRequestBuffer {
   if (!current(memory) || generation !== memory.generation)
     throw new FilesystemTransportError("stale");
@@ -597,7 +610,7 @@ export function receiveRequestBuffer(
     offset + length > get(memory, C.used)
   )
     throw new FilesystemError(28, "invalid filesystem request descriptor");
-  const buffer = objectFreeze({ memory, id, offset, length });
+  const buffer = objectFreeze({ memory, id, offset, length, privateBytes: 0 });
   const meta = prefix(buffer);
   if (
     atomicsLoad(meta, 0) !== id ||
@@ -646,6 +659,7 @@ export function requestMemoryResources(memory: FilesystemRequestMemory) {
     maximumBytes: sharedArrayBufferMaxByteLength(memory.data),
     requests: stale ? 0 : get(memory, C.count),
     pendingBytes: stale ? 0 : get(memory, C.bytes),
+    privateBytes: 0,
   };
 }
 
@@ -674,7 +688,10 @@ export function requestMemorySections(memory: FilesystemRequestMemory): number {
   return get(memory, C.sections);
 }
 
-export function requestLengths(buffer: FilesystemRequestBuffer): {
+export function requestLengths(
+  buffer: FilesystemRequestBuffer,
+  _input?: Uint8Array,
+): {
   inputLength: number;
   dataLength: number;
 } {

@@ -307,3 +307,10 @@ The cold payload is still the durable bytes, so a metadata-only revision should 
 Keep the explicit refusal for detached or unlinked files whose bytes changed (the existing
 `persistence.test.ts` case after a failed checkpoint). Do not retry errno 6 in general and do not
 hydrate stale payloads. Initial write set: `packages/waffle/fs/persistent.ts` and a focused test.
+
+### Scheduled later: compact storage follow-ons
+
+Status: Approved, scheduled later, owner November 8, 2026. Add inline tiny files in their index
+entry without a block, extents for large files to recover sequential performance, and packed
+small tails. Baseline: Nuxt backing about 510 MB to 288 MB after compact 4 KiB storage, with
+sequential writes 32% slower and reads 54% slower.
