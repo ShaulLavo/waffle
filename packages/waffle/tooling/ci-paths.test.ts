@@ -95,14 +95,9 @@ test("browser relay inputs select the normal gate and only its parallel group in
   if (!Array.isArray(steps)) throw new Error("expected browser steps");
   const native = steps
     .map(record)
-    .find(
-      (step) =>
-        step.name === "Prepare and verify the required native relay prebuild",
-    );
+    .find((step) => step.name === "Prepare and verify the required native relay prebuild");
   expect(native?.if).toBe("matrix.group == 'parallel'");
-  expect(native?.run).toBe(
-    "bun packages/waffle-relay/scripts/prepare-native.ts",
-  );
+  expect(native?.run).toBe("bun packages/waffle-relay/scripts/prepare-native.ts");
 });
 
 const consumerFilters = [
@@ -1431,17 +1426,26 @@ test("normal network matrix uses one complete positive command plus bounded cont
   expect(entry).not.toContain("runIsolatedPages");
 });
 
-
 test("native relay setup requires prebuilt bytes before package and parallel browser checks", () => {
   for (const name of ["package", "browser"]) {
     const steps = stepsFor(name);
-    const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile --ignore-scripts");
-    const prepare = steps.findIndex((step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts");
-    const product = steps.findIndex((step) => typeof step.run === "string" && (step.run.includes("relay:check") || step.run.includes("bun run test:browser")));
+    const install = steps.findIndex(
+      (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+    );
+    const prepare = steps.findIndex(
+      (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
+    );
+    const product = steps.findIndex(
+      (step) =>
+        typeof step.run === "string" &&
+        (step.run.includes("relay:check") || step.run.includes("bun run test:browser")),
+    );
     expect(install).toBeGreaterThanOrEqual(0);
     expect(prepare).toBeGreaterThan(install);
     expect(prepare).toBeLessThan(product);
-    const cache = steps.find((step) => step.name === "Cache standard native relay prebuild downloads");
+    const cache = steps.find(
+      (step) => step.name === "Cache standard native relay prebuild downloads",
+    );
     expect(cache?.uses).toBe("actions/cache@v4");
     expect(record(cache?.with).path).toBe("~/.npm/_prebuilds");
     const key = String(record(cache?.with).key);
@@ -1449,8 +1453,29 @@ test("native relay setup requires prebuilt bytes before package and parallel bro
     expect(key).toContain("bun.lock");
     expect(key).toContain("src/webtransport-integrity.ts");
     expect(record(cache?.with)["restore-keys"]).toBeUndefined();
-    expect(steps.indexOf(cache!)).toBeLessThan(prepare);
+    if (!cache) throw new Error("Missing prebuild cache step");
+    expect(steps.indexOf(cache)).toBeLessThan(prepare);
     expect(cache?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
     expect(steps[prepare]?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
   }
+});
+
+test("package setup explicitly prepares Waffle after the script-free install", () => {
+  const steps = stepsFor("package");
+  const native = steps.findIndex(
+    (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
+  );
+  const prepare = steps.findIndex((step) => step.run === "bun run prepare:package");
+  const quality = steps.findIndex((step) => step.run === "bun run quality");
+  expect(prepare).toBeGreaterThan(native);
+  expect(prepare).toBeLessThan(quality);
+  const adapter = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/git/node_modules/bun-wasm prepare",
+  );
+  expect(adapter).toBeGreaterThan(prepare);
+  expect(adapter).toBeLessThan(quality);
+  const tooling = steps.find((step) => step.name === "Check native preparation tooling");
+  expect(String(tooling?.run)).toContain("oxlint");
+  expect(String(tooling?.run)).toContain("oxfmt --check");
+  expect(String(tooling?.run)).toContain("packages/waffle-relay/tests/prepare-native.test.ts");
 });
