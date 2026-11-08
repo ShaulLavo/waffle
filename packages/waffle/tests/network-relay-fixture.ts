@@ -68,13 +68,22 @@ export function createRelayBrowserFixture() {
   }
   return {
     close,
-    async start(origin: string, native: boolean): Promise<RelayBrowserConfig> {
+    async start(
+      origin: string,
+      native: boolean,
+      signal?: AbortSignal,
+    ): Promise<RelayBrowserConfig> {
+      signal?.throwIfAborted();
       const echoPort = await listen(echo);
+      signal?.throwIfAborted();
       const sslPort = await listen(ssl);
+      signal?.throwIfAborted();
       const refused = createServer();
       servers.add(refused);
       const refusedPort = await listen(refused);
+      signal?.throwIfAborted();
       await stopServer(refused);
+      signal?.throwIfAborted();
       const targets = {
         echo: { host: "echo.waffle.test", port: 9000 },
         ssl: { host: "ssl.waffle.test", port: 5432 },
@@ -99,26 +108,32 @@ export function createRelayBrowserFixture() {
         }: { createNodeWebTransportRelayServer: NodeWebTransportRelayFactory } = await import(
           entry
         );
+        signal?.throwIfAborted();
         nativePort = await udpPort();
+        signal?.throwIfAborted();
         relay = createNodeWebTransportRelayServer({
           ...options,
           tcp: { ...tcp, webtransport: { bind: { host: "127.0.0.1", port: nativePort } } },
         });
       } else relay = createNodeRelayServer(options);
       await relay.tcp?.ready;
+      signal?.throwIfAborted();
       const port = await listen(relay.server);
+      signal?.throwIfAborted();
       const token = await mintRelayToken(secret, {
         exp: Math.floor(Date.now() / 1000) + 600,
         sub: "n5-browser",
         dst: [targets.echo, targets.ssl, targets.refused],
       });
+      signal?.throwIfAborted();
       config = { endpoint: `http://127.0.0.1:${port}/`, token, targets, native };
       return config;
     },
-    async idle(): Promise<Response> {
+    async idle(signal?: AbortSignal): Promise<Response> {
       await waitFor(
         () => sockets.size === 0 && (relay?.tcp?.active ?? 0) === 0,
         "relay and target disposal",
+        signal,
       );
       return Response.json({ sockets: sockets.size, active: relay?.tcp?.active ?? 0 });
     },
@@ -189,9 +204,11 @@ async function udpPort(): Promise<number> {
     await new Promise<void>((resolve) => socket.close(resolve));
   }
 }
-async function waitFor(ready: () => boolean, label: string): Promise<void> {
+async function waitFor(ready: () => boolean, label: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const deadline = Date.now() + 15000;
   while (!ready()) {
+    signal?.throwIfAborted();
     if (Date.now() >= deadline) throw new Error(`${label} timed out`);
     await Bun.sleep(10);
   }

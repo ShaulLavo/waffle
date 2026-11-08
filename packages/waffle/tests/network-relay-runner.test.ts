@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { relayBrowserPageRun } from "./network-relay-browser-runner.js";
+import { relayAdapter } from "./network-page-suite.js";
+import { networkInputs } from "./network-page-inputs.js";
+import { runPageSuite } from "waffle/testing/page-runner";
+import { FakeDriver } from "./page-runner/fake-driver.js";
+import { relayId } from "./network-page-contract.js";
 import { createRelayBrowserFixture } from "./network-relay-fixture.js";
-import { runIsolatedPages } from "./isolated-page-runner.js";
 import { requireCertificateRejection, type RelayProbe } from "./network-relay-contract.js";
 
 function probe(failures: string[]): RelayProbe {
@@ -78,8 +81,17 @@ test("relay page keeps a legitimate competing listener and binds its own address
       fetch: () => new Response("suite control"),
     });
     process.env.NETWORK_RELAY_TEST_PORT = String(owner.port);
-    const run = relayBrowserPageRun("webkit", scratch, new Map());
-    await runIsolatedPages({ ...run, sources: {}, names: [] });
+    const adapter = relayAdapter(networkInputs(), "webkit");
+    await runPageSuite(
+      adapter,
+      () => new FakeDriver("pass", { list: { ids: [relayId] }, result: [] }),
+      {
+        scratchRoot: scratch,
+        resultPath: join(scratch, "relay.json"),
+        port: "ephemeral",
+        assets: {},
+      },
+    );
     expect(await (await fetch(owner.url)).text()).toBe("suite control");
   } finally {
     if (previous === undefined) delete process.env.NETWORK_RELAY_TEST_PORT;
@@ -118,5 +130,42 @@ test("relay fixture admits only the bound page origin and still requires its tok
     await fixture.close();
     await page.stop(true);
     await other.stop(true);
+  }
+});
+
+test("original idle observer remains pending on real sockets, then joins cancellation and release", async () => {
+  const { createRelayConnect } = await import("../../waffle-relay/src/tcp-client.js");
+  const fixture = createRelayBrowserFixture();
+  const page = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("page") });
+  let relay: ReturnType<typeof createRelayConnect> | undefined;
+  try {
+    const config = await fixture.start(page.url.origin, false);
+    const { createNodeWebSocket } = await import("../../waffle-relay/src/node-websocket.js");
+    relay = createRelayConnect({
+      endpoint: config.endpoint,
+      getToken: () => config.token,
+      carriers: ["websocket"],
+      webSocket: createNodeWebSocket(page.url.origin),
+    });
+    const stream = await relay.connect(config.targets.echo, new AbortController().signal);
+    const controller = new AbortController();
+    let completed = false;
+    const pending = fixture.idle(controller.signal).finally(() => {
+      completed = true;
+    });
+    void pending.catch(() => {});
+    await Bun.sleep(25);
+    expect(completed).toBe(false);
+    controller.abort(new Error("idle cancelled"));
+    await expect(pending).rejects.toThrow("idle cancelled");
+    expect(completed).toBe(true);
+    await stream.writable.close();
+    await stream.readable.cancel();
+    await relay.close();
+    expect(await (await fixture.idle()).json()).toEqual({ sockets: 0, active: 0 });
+  } finally {
+    await relay?.close();
+    await fixture.close();
+    await page.stop(true);
   }
 });

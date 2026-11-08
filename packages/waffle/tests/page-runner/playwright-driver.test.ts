@@ -61,3 +61,14 @@ test("GPU controls retain the exact stock SwiftShader flags and order", () => {
     "--disable-vulkan-surface",
   ]);
 });
+
+test("embedded driver construction and repeated stop never acquire process interruption", async () => {
+  const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+  for (let index = 0; index < 5; index++) {
+    const driver = new PlaywrightDriver("chromium", "/unused/host");
+    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+    await driver.stop();
+    await driver.stop();
+  }
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+});
