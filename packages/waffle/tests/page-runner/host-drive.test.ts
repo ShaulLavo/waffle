@@ -8,7 +8,14 @@ import { HostConsumers } from "./owned-consumers.js";
 import { Collector } from "./collector.js";
 import { FakeDriver } from "./fake-driver.js";
 import { runPageSuite, type SuiteAdapter } from "./suite-host.js";
-import { record, formatHostError, type Body, type HostCase, type HostVerdict } from "./protocol.js";
+import {
+  record,
+  formatHostError,
+  type Body,
+  type Budgets,
+  type HostCase,
+  type HostVerdict,
+} from "./protocol.js";
 
 class HostDriver extends FakeDriver {
   readonly verdicts: HostVerdict[] = [];
@@ -26,6 +33,9 @@ class HostDriver extends FakeDriver {
   dispatchGate: Promise<void> | undefined;
   completionBeforeResponse = false;
   readonly allocations: string[] = [];
+  taskGate: Promise<void> | undefined;
+  taskCompletion: Promise<void> | undefined;
+  readonly taskEntered = Promise.withResolvers<void>();
   constructor() {
     super("pass", { list: { ids: ["host"] } });
   }
@@ -86,6 +96,13 @@ class HostDriver extends FakeDriver {
             });
         },
         task: (operation: string) => {
+          this.taskEntered.resolve();
+          if (this.taskGate) {
+            this.taskCompletion = this.taskGate.then(() =>
+              this.send({ kind: "task-end", caseId: "host", operation, status: "pass" }),
+            );
+            return;
+          }
           const reporting = this.send({
             kind: "task-end",
             caseId: "host",
@@ -311,7 +328,7 @@ test("callback and command registration survives synchronous throw", async () =>
   expect(await consumers.join(30)).toBe(true);
 });
 
-function unitDrive() {
+function unitDrive(limits: Budgets = budgets) {
   const c = new Collector("r", ["host"], ["host"], { listIds: () => ["host"], check() {} });
   const state = c.expect(
     { id: "host", role: "case", caseIds: ["host"], execution: "host" },
@@ -336,7 +353,7 @@ function unitDrive() {
       c,
       state,
       consumers,
-      budgets,
+      limits,
       performance.now(),
       new AbortController().signal,
     ),
@@ -937,82 +954,123 @@ test("one overdue operation fails within a still-valid body deadline", () =>
     expect(result.outcomes.host?.status).not.toBe("pass");
   }));
 
-
-test("body timeout uses its original start and two elapsed-only readiness credits accumulate", () =>
-  fixture(async (root) => {
-    const d = new HostDriver();
-    const a = adapter(async (host) => {
-      const now = spyOn(performance, "now");
-      const start = performance.now();
-      try {
-        now.mockReturnValue(start + 10);
-        host.setTimeout(160);
-        expect(host.remainingMs()).toBeCloseTo(150, -1);
-        now.mockReturnValue(start + 30);
-        host.setTimeout(110);
-        expect(host.remainingMs()).toBeCloseTo(80, -1);
-        now.mockReturnValue(start + 35);
-        host.setTimeout(190);
-        now.mockReturnValue(start + 55);
-        host.setTimeout(130);
-        expect(host.remainingMs()).toBeCloseTo(75, -1);
-        now.mockReturnValue(start + 65);
-        expect(host.remainingMs()).toBeCloseTo(65, -1);
-        expect(budgets.case).toBe(80);
-      } finally { now.mockRestore(); }
+function withHostFixture(run: (root: string) => Promise<void>): () => Promise<void> {
+  return () => fixture(run);
+}
+test("original 60-second body credits two storage intervals but no setup or shell polling", async () => {
+  const now = spyOn(performance, "now").mockReturnValue(100);
+  try {
+    const f = unitDrive({
+      hello: 20_000,
+      heartbeat: 200_000,
+      case: 60_000,
+      teardown: 60_000,
+      caseDocument: 260_000,
+      group: 90_000,
+      run: 300_000,
+    });
+    f.d.script = async () => {
+      f.send({ kind: "case-teardown", caseId: "host" });
+      f.send({ kind: "case-end", caseId: "host", status: "pass", result: true });
+      return { kind: "void" };
+    };
+    await f.host.drive(async (host) => {
+      now.mockReturnValue(1100);
+      expect(host.remainingMs()).toBe(59_000);
+      host.setTimeout(120_000);
+      now.mockReturnValue(60_100);
+      host.setTimeout(119_000);
+      expect(host.remainingMs()).toBe(59_000);
+      now.mockReturnValue(65_600);
+      expect(host.remainingMs()).toBe(53_500);
+      host.setTimeout(179_000);
+      now.mockReturnValue(85_600);
+      host.setTimeout(139_000);
+      expect(host.remainingMs()).toBe(53_500);
+      now.mockReturnValue(90_600);
+      expect(host.remainingMs()).toBe(48_500);
       return true;
     });
-    expect((await runPageSuite(a, () => d, options(root))).exit).toBe(0);
-  }));
+    expect(f.c.outcomes.host?.status).toBe("pass");
+    expect(await f.consumers.join(50)).toBe(true);
+  } finally {
+    now.mockRestore();
+  }
+});
 
-test("timeout decrease expires synchronously before the monitor and cannot revive", () =>
-  fixture(async (root) => {
+test(
+  "timeout decrease expires synchronously before the monitor and cannot revive",
+  withHostFixture(async (root) => {
     const d = new HostDriver();
     let checked = false;
-    const result = await runPageSuite(adapter(async (host) => {
-      const now = spyOn(performance, "now").mockReturnValue(performance.now() + 40);
-      try {
-        expect(() => host.setTimeout(20)).toThrow("timed out");
-        expect(host.signal.aborted).toBe(true);
-        expect(() => host.setTimeout(1000)).toThrow("timed out");
-        checked = true;
-      } finally { now.mockRestore(); }
-      return true;
-    }), () => d, options(root));
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        const now = spyOn(performance, "now").mockReturnValue(performance.now() + 40);
+        try {
+          expect(() => host.setTimeout(20)).toThrow("timed out");
+          expect(host.signal.aborted).toBe(true);
+          expect(() => host.setTimeout(1000)).toThrow("timed out");
+          checked = true;
+        } finally {
+          now.mockRestore();
+        }
+        return true;
+      }),
+      () => d,
+      options(root),
+    );
     expect(checked).toBe(true);
     expect(result.exit).toBe(1);
     expect(result.cleanup.scratch.status).toBe("confirmed");
-  }));
+  }),
+);
 
 for (const timeout of [0, -1, NaN, Infinity, -Infinity]) {
-  test(`invalid timeout ${timeout} leaves the body unchanged`, () => fixture(async (root) => {
-    const result = await runPageSuite(adapter(async (host) => {
-      const before = host.remainingMs();
-      expect(() => host.setTimeout(timeout)).toThrow("positive and finite");
-      expect(host.signal.aborted).toBe(false);
-      expect(host.remainingMs()).toBeLessThanOrEqual(before);
-      return true;
-    }), () => new HostDriver(), options(root));
-    expect(result.exit).toBe(0);
-  }));
+  test(
+    `invalid timeout ${timeout} leaves the body unchanged`,
+    withHostFixture(async (root) => {
+      const result = await runPageSuite(
+        adapter(async (host) => {
+          const before = host.remainingMs();
+          expect(() => host.setTimeout(timeout)).toThrow("positive and finite");
+          expect(host.signal.aborted).toBe(false);
+          expect(host.remainingMs()).toBeLessThanOrEqual(before);
+          return true;
+        }),
+        () => new HostDriver(),
+        options(root),
+      );
+      expect(result.exit).toBe(0);
+    }),
+  );
 }
 
-test("an already expired body rejects an extension and a returned capability stays revoked", () =>
-  fixture(async (root) => {
+test(
+  "an already expired body rejects an extension and a returned capability stays revoked",
+  withHostFixture(async (root) => {
     let captured: HostCase | undefined;
-    const result = await runPageSuite(adapter(async (host) => {
-      captured = host;
-      const now = spyOn(performance, "now").mockReturnValue(performance.now() + 81);
-      try { expect(() => host.setTimeout(1000)).toThrow("timed out"); }
-      finally { now.mockRestore(); }
-      return true;
-    }), () => new HostDriver(), options(root));
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        captured = host;
+        const now = spyOn(performance, "now").mockReturnValue(performance.now() + 81);
+        try {
+          expect(() => host.setTimeout(1000)).toThrow("timed out");
+        } finally {
+          now.mockRestore();
+        }
+        return true;
+      }),
+      () => new HostDriver(),
+      options(root),
+    );
     expect(result.exit).toBe(1);
     expect(() => captured?.setTimeout(1000)).toThrow();
-  }));
+  }),
+);
 
-test("in-flight dispatch and sleep follow an extension instead of the old body timer", () =>
-  fixture(async (root) => {
+test(
+  "in-flight dispatch and sleep follow an extension instead of the old body timer",
+  withHostFixture(async (root) => {
     const d = new HostDriver();
     const script = d.script.bind(d);
     const entered = Promise.withResolvers<void>();
@@ -1025,19 +1083,157 @@ test("in-flight dispatch and sleep follow an extension instead of the old body t
       return script(source);
     };
     try {
-      const result = await runPageSuite(adapter(async (host) => {
-        const command = host.script("window.effects.push(23);");
-        await entered.promise;
-        const sleeping = host.sleep(110);
-        host.setTimeout(400);
-        await sleeping;
-        expect(host.signal.aborted).toBe(false);
-        held.resolve();
-        await command;
-        return true;
-      }), () => d, { ...options(root), cleanupTimeoutMs: 500 });
+      const result = await runPageSuite(
+        adapter(async (host) => {
+          const command = host.script("window.effects.push(23);");
+          await entered.promise;
+          const sleeping = host.sleep(110);
+          host.setTimeout(400);
+          await sleeping;
+          expect(host.signal.aborted).toBe(false);
+          held.resolve();
+          await command;
+          return true;
+        }),
+        () => d,
+        { ...options(root), cleanupTimeoutMs: 500 },
+      );
       expect(result.exit).toBe(0);
       expect(d.effects).toEqual([23]);
       expect(result.cleanup.scratch.status).toBe("confirmed");
-    } finally { held.resolve(); }
-  }));
+    } finally {
+      held.resolve();
+    }
+  }),
+);
+
+for (const end of ["extended", "decreased", "cancelled", "operation"] as const) {
+  test(
+    `an actual pending task is owned through ${end} body time`,
+    withHostFixture(async (root) => {
+      const d = new HostDriver(),
+        held = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      d.taskGate = held.promise;
+      const script = d.script.bind(d);
+      d.script = async (source) => {
+        if (source.includes("h.verdict(")) {
+          held.resolve();
+          await d.taskCompletion;
+        }
+        return script(source);
+      };
+      let taskSettled = false;
+      const a = adapter(async (host) => {
+        const task = host.task("await actualPendingTask;");
+        void task.then(
+          () => {
+            taskSettled = true;
+          },
+          () => {
+            taskSettled = true;
+          },
+        );
+        await d.taskEntered.promise;
+        await host.script("return true;");
+        host.setTimeout(400);
+        if (end === "decreased") host.setTimeout(1);
+        if (end === "cancelled") controller.abort("TASK_CANCELLED");
+        if (end !== "extended") return task;
+        await host.sleep(110);
+        expect(taskSettled).toBe(false);
+        await host.script("window.effects.push(29);");
+        held.resolve();
+        await task;
+        return true;
+      });
+      if (end === "operation") a.budgets = () => ({ ...budgets, operation: 35 });
+      try {
+        const result = await runPageSuite(a, () => d, {
+          ...options(root),
+          signal: controller.signal,
+        });
+        expect(result.exit).toBe(end === "extended" ? 0 : 2);
+        expect(d.effects).toEqual(end === "extended" ? [29] : []);
+        if (end !== "extended") {
+          expect(
+            result.failures.some((failure) => failure.category === "page-task-unconfirmed"),
+          ).toBe(true);
+          expect(result.outcomes.host?.status).not.toBe("pass");
+        }
+      } finally {
+        held.resolve();
+        await d.taskCompletion?.catch(() => {});
+      }
+    }),
+  );
+}
+
+for (const limit of ["run", "document", "heartbeat"] as const) {
+  test(
+    `timeout extension never changes the ${limit} clock`,
+    withHostFixture(async (root) => {
+      const d = new HostDriver();
+      let bounded = false;
+      const a = adapter(async (host) => {
+        host.setTimeout(100_000);
+        expect(host.remainingMs()).toBeLessThanOrEqual(
+          limit === "run" ? 300 : limit === "heartbeat" ? 5000 : 2000,
+        );
+        const now = spyOn(performance, "now").mockReturnValue(performance.now() + 2100);
+        try {
+          expect(() => host.setTimeout(200_000)).toThrow();
+          bounded = true;
+        } finally {
+          now.mockRestore();
+        }
+        return true;
+      });
+      if (limit === "run") a.budgets = () => ({ ...budgets, run: 300 });
+      if (limit === "document") a.budgets = () => ({ ...budgets, heartbeat: 5000 });
+      if (limit === "heartbeat") a.budgets = () => ({ ...budgets, caseDocument: 5000 });
+      await runPageSuite(a, () => d, options(root));
+      expect(bounded).toBe(true);
+      expect(budgets.teardown).toBe(1000);
+    }),
+  );
+}
+
+test(
+  "the host command guard retains every initial case query parameter",
+  withHostFixture(async (root) => {
+    const d = new HostDriver();
+    const item = adapter(async (host) => {
+      const changed = new URL(d.currentURL);
+      changed.searchParams.set("renderer", "changed");
+      d.currentURL = changed.href;
+      await host.script("window.effects.push(31);");
+      return true;
+    });
+    const inventory = item.inventory();
+    item.inventory = () =>
+      inventory.map((entry) => ({ ...entry, query: () => ({ test: "1", renderer: "canvas" }) }));
+    const result = await runPageSuite(item, () => d, options(root));
+    expect(result.exit).toBe(2);
+    expect(d.effects).toEqual([]);
+    expect(JSON.stringify(result.failures)).toContain("binding changed");
+  }),
+);
+
+test(
+  "long sleeps cannot overflow the timer into an early successful return",
+  withHostFixture(async (root) => {
+    let checked = false;
+    const result = await runPageSuite(
+      adapter(async (host) => {
+        await expect(host.sleep(2_147_483_648)).rejects.toThrow("timed out");
+        checked = true;
+        return true;
+      }),
+      () => new HostDriver(),
+      options(root),
+    );
+    expect(checked).toBe(true);
+    expect(result.exit).toBe(1);
+  }),
+);

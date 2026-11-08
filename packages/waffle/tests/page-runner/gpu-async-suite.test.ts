@@ -96,6 +96,7 @@ test("pre-aborted command does not import, qualify or launch a guest", async () 
   const host: HostCase = {
     signal,
     remainingMs: () => 0,
+    setTimeout: () => signal.throwIfAborted(),
     task: async () => {
       calls++;
     },
