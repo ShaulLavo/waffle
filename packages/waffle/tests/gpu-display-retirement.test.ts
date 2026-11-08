@@ -164,3 +164,39 @@ test("reentrant factory teardown owns the pending allocation and the returned Wo
   expect(created.state.stops).toBe(1);
   expect(() => owner.display.grant({ gpu: true, surfaces: [] })).toThrow("disposed");
 });
+
+test("a retired grant stays frozen during whole-service failure and its Worker cannot be reused", async () => {
+  animation();
+  const originalWorker = worker();
+  const owner = createDisplayOwner(() => {}, {
+    commandBytes: 64,
+    completionBytes: 64,
+    worker: () => originalWorker.value as unknown as Worker,
+  });
+  cleanups.push(() => owner.dispose());
+  const grant = owner.display.grant({ gpu: true, surfaces: [] });
+  enrollGraphics(grant);
+  cleanups.push(() => grant.connection.port.close());
+  const original = open();
+  grant.connection.port.postMessage(original);
+  await task();
+  grant.dispose();
+  originalWorker.value.onmessage!(
+    new MessageEvent("message", { data: { type: "retired", grant: 1 } }),
+  );
+  await grant.retired();
+  const buffers = [original.control, original.commands, original.replies, original.arena];
+  const frozen = buffers.map((backing) => Array.from(new Uint8Array(backing)));
+  originalWorker.value.onerror!();
+  await task();
+  expect(buffers.map((backing) => Array.from(new Uint8Array(backing)))).toEqual(frozen);
+  expect(originalWorker.state.stops).toBe(1);
+  const next = owner.display.grant({ gpu: true, surfaces: [] });
+  enrollGraphics(next);
+  cleanups.push(() => next.connection.port.close());
+  next.connection.port.postMessage(open());
+  await next.retired();
+  await task();
+  expect(originalWorker.state.opens).toBe(1);
+  expect(originalWorker.state.stops).toBe(1);
+});
