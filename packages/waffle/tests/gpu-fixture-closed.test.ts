@@ -110,22 +110,25 @@ describe.skipIf(!directory)("compiled C closed replies during waits", () => {
     },
   );
 
-  test("revocation during the compiled heavy scope wait reads the actual terminal errno", () => {
-    const host = new ClosedReplyHost(
-      5,
-      [{ kind: "records", records: [closed()] }, terminal(-64)],
-      "none",
-      ["--fairness-heavy"],
-    );
-    failed(host, "completions", -64);
-    expect(host.output.join("")).toContain(
-      "GPU_FAIRNESS_BLOB draws=200000 bytes=4800184 appends=1",
-    );
-    expect(host.output.join("")).toContain("GPU_FAIRNESS_PUBLISHED");
-    expect(host.output.join("")).not.toContain("GPU_FAIRNESS_REPLAYED");
-    expect(host.commands.filter((bytes) => bytes[0] === 17)).toHaveLength(0);
-    expect(host.calls.map((call) => call.status)).toEqual([0, 0, 0, 0, 0, -64]);
-  });
+  test.each([2, 4])(
+    "reason %s during the compiled heavy scope wait reads the actual terminal errno",
+    (reason) => {
+      const host = new ClosedReplyHost(
+        5,
+        [{ kind: "records", records: [closed(reason)] }, terminal(-64)],
+        "none",
+        ["--fairness-heavy"],
+      );
+      failed(host, "completions", -64);
+      expect(host.output.join("")).toContain(
+        "GPU_FAIRNESS_BLOB draws=200000 bytes=4800184 appends=1",
+      );
+      expect(host.output.join("")).toContain("GPU_FAIRNESS_PUBLISHED");
+      expect(host.output.join("")).not.toContain("GPU_FAIRNESS_REPLAYED");
+      expect(host.commands.filter((bytes) => bytes[0] === 17)).toHaveLength(0);
+      expect(host.calls.map((call) => call.status)).toEqual([0, 0, 0, 0, 0, -64]);
+    },
+  );
 
   test("ordinary zero-time close drain cannot ignore closed or report a clean close", () => {
     const host = new ClosedReplyHost(7, [{ kind: "records", records: [closed()] }, terminal(-64)]);

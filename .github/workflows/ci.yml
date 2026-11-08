@@ -1099,7 +1099,7 @@ jobs:
           historical = [case for suite in suites if suite.get("name") not in {async_name, closed_name} for case in suite.findall("testcase")]
           asynchronous = [case for suite in suites if suite.get("name") == async_name for case in suite.findall("testcase")]
           closed = [case for suite in suites if suite.get("name") == closed_name for case in suite.findall("testcase")]
-          assert len(closed) >= 83, "Compiled closed-reply fixture tests did not execute"
+          assert len(closed) >= 84, "Compiled closed-reply fixture tests did not execute"
           assert len(historical) >= 35, "Historical compiled GPU fixture tests did not execute"
           assert len(asynchronous) >= 20, "Compiled async GPU fixture tests did not execute"
           assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error")), "Compiled GPU fixture tests skipped or failed"

@@ -159,7 +159,7 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
   const passing = suites
     .map(
       (name, index) =>
-        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 31 : index === 5 ? 20 : index === 6 ? 83 : 1)}</testsuite>`,
+        `<testsuite name="${name}">${"<testcase/>".repeat(index === 0 ? 31 : index === 5 ? 20 : index === 6 ? 84 : 1)}</testsuite>`,
     )
     .join("");
   const root = mkdtempSync(join(tmpdir(), "gpu-ci-report-"));
@@ -176,7 +176,7 @@ test("compiled-suite report guard rejects missing, empty, filtered or failed ass
       expect(check(passing.replace("<testcase/>", `<testcase><${tag}/></testcase>`))).not.toBe(0);
     for (const [index, count] of [
       [5, 20],
-      [6, 83],
+      [6, 84],
     ] satisfies [number, number][]) {
       checkRequiredSuite(check, passing, suites[index]!, count);
     }

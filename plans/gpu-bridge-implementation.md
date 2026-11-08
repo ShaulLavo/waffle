@@ -925,3 +925,15 @@ The atomic reader is unchanged; no atomic multi-field or cross-ring snapshot is 
 Deterministic shared-buffer controls reproduce the old two-read disagreement and require
 per-checkpoint reuse, fresh later reads and distinct original ring identities. The validator
 and failed historical record remain unchanged. No new local GPU capture is part of this fix.
+
+Run 42451410847 at 90f4474a passed payload, quota, service failure, disposal, regrant and
+admission, then failed malformed acceptance. The old nesting expectation still required
+`GPU_UNEXPECTED kind=12` and `unexpected-completion -28`, which described the common C
+decoder defect already corrected above. It now requires the published heavy command followed
+by exactly one actual `completions -64` failure, with no unexpected-completion output. The
+old broken-decoder output is rejected, not retained as a compatibility alternative. Original
+parser reason, same-peer progress, physical stop, authority and retirement checks remain.
+A real compiled CPU control covers reason 2 in the heavy scope wait alongside reason 4.
+The existing CI gate requires all 84 closed-reply tests and its historical and async suites.
+No C source, producer, production code, clock or workload changed in this follow-up. The
+historical pre-decoder malformed failures remain unresolved; this is not a claim to fix them.
