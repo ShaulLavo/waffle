@@ -167,36 +167,50 @@ interface PayloadSubject {
   readonly at: number;
 }
 const payloadLimit = 1024;
-const payloadPressure = {
-  compilations: [] as (PayloadSubject & {
-    call: number;
-    settled: "pending" | "fulfilled" | "rejected";
-    settledAt: number | null;
-  })[],
-  allocations: [] as (PayloadSubject & {
-    length: number;
-    readyBefore: number;
-    readyAfter: number;
-    outcome: "handle" | "refused" | "empty" | "threw";
-    handle: number;
-    generation: number;
-    terminalReason: number;
-    failure: string | null;
-  })[],
-  publications: [] as (PayloadSubject & {
-    token: number;
-    status: number;
-    handle: number;
-    generation: number;
-    length: number;
-    published: boolean;
-    repliesUsed: number;
-  })[],
-  terminations: [] as (PayloadSubject & {
-    requested: number;
-    terminalBefore: number;
-    selected: number;
-  })[],
+interface PayloadCompilation extends PayloadSubject {
+  call: number;
+  settled: "pending" | "fulfilled" | "rejected";
+  settledAt: number | null;
+  pending: number;
+}
+interface PayloadAllocation extends PayloadSubject {
+  length: number;
+  readyBefore: number;
+  readyAfter: number;
+  repliesUsedBefore: number;
+  pendingBefore: number;
+  outcome: "handle" | "refused" | "empty" | "threw";
+  handle: number;
+  generation: number;
+  terminalReason: number;
+  failure: string | null;
+}
+interface PayloadPublication extends PayloadSubject {
+  token: number;
+  status: number;
+  handle: number;
+  generation: number;
+  length: number;
+  published: boolean;
+  repliesUsed: number;
+}
+interface PayloadTermination extends PayloadSubject {
+  requested: number;
+  terminalBefore: number;
+  selected: number;
+}
+const payloadPressure: {
+  compilations: PayloadCompilation[];
+  allocations: PayloadAllocation[];
+  publications: PayloadPublication[];
+  terminations: PayloadTermination[];
+  uncorrelatedCompilations: number;
+  dropped: number;
+} = {
+  compilations: [],
+  allocations: [],
+  publications: [],
+  terminations: [],
   uncorrelatedCompilations: 0,
   dropped: 0,
 };
@@ -270,7 +284,11 @@ CompletionOwner.prototype.fillPayload = function (length, fill) {
   const owner = payloadOwner(this);
   if (!owner) return Reflect.apply(fillPayload, this, [length, fill]);
   const readyBefore = readySlots(owner);
-  const before = payloadOrder;
+  const before = {
+    order: payloadOrder,
+    replies: ringSnapshot(owner.open.open.replies).used,
+    pending: this.pendingCount,
+  };
   let handle: ReturnType<typeof fillPayload>;
   try {
     handle = Reflect.apply(fillPayload, this, [length, fill]);
@@ -286,17 +304,19 @@ function recordAllocation(
   owner: Owner,
   length: number,
   readyBefore: number,
-  before: number,
+  before: { order: number; replies: number; pending: number },
   handle: ReturnType<typeof fillPayload>,
   threw: boolean,
 ) {
-  const terminalReason = terminatedSince(owner, before);
+  const terminalReason = terminatedSince(owner, before.order);
   const outcome = threw ? "threw" : handle ? "handle" : terminalReason ? "refused" : "empty";
   payloadRecord(payloadPressure.allocations, {
     ...payloadSubject(owner),
     length,
     readyBefore,
     readyAfter: readySlots(owner),
+    repliesUsedBefore: before.replies,
+    pendingBefore: before.pending,
     outcome,
     handle: handle?.id ?? 0,
     generation: handle?.generation ?? 0,
@@ -324,17 +344,18 @@ CompletionOwner.prototype.publish = function (name, token, status, value) {
 const getCompilationInfo = globalThis.GPUShaderModule?.prototype.getCompilationInfo;
 if (getCompilationInfo) {
   GPUShaderModule.prototype.getCompilationInfo = function () {
-    const pending = getCompilationInfo.call(this);
+    const pending = Reflect.apply(getCompilationInfo, this, []);
     const owner = active;
     if (!owner) {
       payloadPressure.uncorrelatedCompilations++;
       return pending;
     }
-    const entry = {
+    const entry: PayloadCompilation = {
       ...payloadSubject(owner),
       call: payloadPressure.compilations.filter((call) => call.owner === owner.id).length + 1,
-      settled: "pending" as "pending" | "fulfilled" | "rejected",
-      settledAt: null as number | null,
+      settled: "pending",
+      settledAt: null,
+      pending: owner.connection.completions.pendingCount,
     };
     payloadRecord(payloadPressure.compilations, entry);
     const settle = (kind: "fulfilled" | "rejected") => () => {
@@ -638,6 +659,7 @@ function ownerSnapshot(owner: Owner) {
     heldReads: owner.heldReads,
     pending: connection.completions.pendingCount,
     payloadBytes: connection.completions.payloadBytes,
+    payloadReadySlots: readySlots(owner),
     replayBusy: connection.replay.busy,
     presenter: presenter !== undefined,
     presenterId: presenterId(presenter),

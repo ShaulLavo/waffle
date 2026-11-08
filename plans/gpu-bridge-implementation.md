@@ -758,8 +758,57 @@ no observation was added to an old record and no timing miss was discarded.
 
 ## G3 unread payload-storage checkpoint, November 8, 2026
 
-Status: Approved and in progress. This bounded test-only unit exercises actual compiled C
-payload-producing calls until unread fixed storage closes that connection with resource reason
-3. The original unrelated compiled green peer must keep presenting through closure and physical
-retirement. Pending-token and reply-ring saturation remain separate later work. Production,
-existing fixture modes, topology, targets and hardware qualification are unchanged.
+Status: Approved. The normal compiled browser gate adds opt-in C payload-slot pressure.
+One original C incarnation obtains native shader compilation results serially and leaves their
+payload handles unread. It drains replies 1 through 63, retains committed success 64, then
+requests result 65. The original native allocation selects resource reason 3 with
+`Payload credit exhausted`. Only 512 payload bytes occupy the fixed 64 slots, far below the
+arena byte limit. Native operations stay bounded and the reply ring has room for the original
+success and the final closed record. Pending-token and reply-ring saturation remain separate work.
+
+The guest's first stdin checkpoint releases only after the original native publication of
+success 64. Its next release waits for actual resource closure. The C guest then drains that
+same success, closed reason 3, and errno `-48` in order. Its real payload import rejects the
+previously held handle with `-48`. Normal and repeated close both succeed. Transparent import
+observation retains original returns and thrown objects. Native compilation observation returns
+the original promise, without reading its result or changing its settlement.
+
+A compiled native positive control runs before measurement in the same runtime and service
+realm. The original unrelated green C peer keeps its PID, guest token, grant, owner, device and
+presenter through local resource closure and physical guest stop. Five actual screenshot brackets
+require new native presents and newly started and completed queue work within service times.
+First-ready identities, cumulative event prefixes, immutable completed blobs, earliest terminal
+cutoffs for every owner, genuine pending settlements and all physical Worker stops are checked.
+The one permitted final C drain advances only the original reply tail. It cannot publish or
+restart native work. Conservative consumed-backing debt remains separate from physical memory
+reclamation. Permanent positive and intended-reason negative controls run in default unit
+coverage, and the ordinary compiled runner discovers the case without a selector.
+
+The first actual compiled path confirmed the source prediction before the full validator was
+built. A fresh observation after the import and native scalar additions passed the strict
+validator at 1.82 ms maximum service slice and 65.485 ms peer gap. These are software-adapter
+observations against unchanged 8 ms and 100 ms targets, with `hardwareQualified: false`.
+All earlier misses remain evidence. Production, prior fixture modes, topology, protected async
+fixtures, workflow, ABI, schema, generator, workload defaults, deadlines, versions and budgets
+are unchanged. This bounded proof does not complete G3, G0.3, G4 or physical iPhone acceptance.
+
+### Retained bounded CI non-reproductions
+
+PR 407 source `38ea1010`, run `42431953158`, failed the existing malformed case's combined
+compiled-failure and physical-retirement assertion. The original packet identifies neither the
+mode nor the failed conjunct. Two exact-source all-mode targeted Chromium passes did not
+reproduce it, and the normal hosted rerun passed. Temporary diagnostics were removed without
+changing an assertion, workload or clock. The same combined assertion later recurred on earlier
+main `25fa61df`, run `42434304501`, job `128589892791`, artifact `13599530613`. This second
+packet likewise supplies no mode, result or new cause. Both occurrences remain under the same
+bounded non-reproduction, and the reporting parent owns its normal rerun. No new diagnostic or
+capture is part of payload work. The full disposition is
+`/work/reports/wave-20261106/waffle-features/gpu/g3-malformed-ci-42431953158/RESULT.md`.
+Recent hosted malformed peer gaps of 112.675 and 118.91 ms remain **not-met**.
+
+PR 406 source `60627243`, run `42432667106`, completed all GPU stages before a separate relay
+pending-write assertion failed. Two unchanged-source relay matrices passed, followed by the
+normal green hosted rerun. The cause remains unproved. No assertion or clock changed. The
+bounded report is `/work/reports/wave-20261108/ios-suites/waffle-relay-pending-write/REPORT.md`.
+PR 406 is merged at `2ca11deb`, and main run `42435162688` is fully green. It is not a dependency
+blocker. Neither historical failure is represented as a proven production fix.
