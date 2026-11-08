@@ -17,11 +17,24 @@ type RequestLease = {
   operation: Operation;
 };
 type Operation = {
-  live: boolean;
   controller: AbortController;
   requests: Set<RequestLease>;
+  pending: Set<Promise<void>>;
+  frame: Scope | null;
+  failure: { reason: unknown } | null;
   id: string;
   phase: string | null;
+};
+type Scope = {
+  operation: Operation;
+  live: boolean;
+  frame: Scope | null;
+};
+type Completion<T> = { kind: "fulfilled"; value: T } | { kind: "rejected"; reason: unknown };
+type RunOptions = {
+  rootOnly?: boolean;
+  finalize?: () => Promise<void>;
+  complete?: () => void;
 };
 export function commandMethod(method: unknown): string | null {
   return typeof method === "string" && /^(GET|POST|DELETE|PUT|PATCH|HEAD|OPTIONS)$/.test(method)
@@ -62,7 +75,7 @@ function failedPerformance(event: object): boolean {
 export class FrameworkQueue {
   readonly commandFailures: CommandFailure[] = [];
   recordFailure(facts: CommandFailure): void {
-    const operation = this.local.getStore();
+    const operation = this.local.getStore()?.operation;
     if (this.commandFailures.length >= 128) return;
     this.commandFailures.push({
       ...facts,
@@ -75,7 +88,7 @@ export class FrameworkQueue {
     phase: "started" | "settled";
     revoked: boolean;
   }[] = [];
-  private readonly local = new AsyncLocalStorage<Operation>();
+  private readonly local = new AsyncLocalStorage<Scope>();
   private tail = Promise.resolve();
   private closed = false;
   private readonly signals = new WeakMap<AbortSignal, RequestLease>();
@@ -89,61 +102,118 @@ export class FrameworkQueue {
     private readonly check: () => void,
     private readonly fault: (detail: string) => void,
   ) {}
-  run<T>(callback: () => Promise<T>, phase: string | null = null): Promise<T> {
+  run<T>(callback: () => Promise<T>, phase: string | null = null, options: RunOptions = {}): Promise<T> {
     const current = this.local.getStore();
-    if (current) {
-      this.assert(current);
-      return this.consumers.invoke(callback);
-    }
-    const next = this.consumers.invoke(() => this.tail.then(() => this.enter(callback, phase)));
-    this.tail = next.then(
-      () => {},
-      () => {},
-    );
+    if (current) return this.child(current, callback, phase, options);
+    const next = this.consumers.invoke(() => this.tail.then(() => this.enter(callback, phase, options)));
+    this.tail = next.then(() => {}, () => {});
     return next;
   }
-  private async enter<T>(callback: () => Promise<T>, phase: string | null): Promise<T> {
-    const operation: Operation = {
-      live: true,
-      controller: new AbortController(),
-      requests: new Set(),
-      id: crypto.randomUUID(),
-      phase,
-    };
-    this.assert(operation);
-    this.active.add(operation);
+  private child<T>(scope: Scope, callback: () => Promise<T>, phase: string | null, options: RunOptions): Promise<T> {
     try {
-      const value = await this.local.run(operation, () => this.consumers.invoke(callback));
-      this.assert(operation);
-      return value;
-    } finally {
-      operation.live = false;
-      try {
-        await bounded(
-          Promise.all(Array.from(operation.requests, (request) => request.done)),
-          6000,
-          "owned HTTP settlement",
-        );
-      } catch (error) {
-        this.fault(String(error));
+      this.assert(scope);
+      if (options.rootOnly) throw this.reject(scope.operation, "Nested framework domain operation");
+      const frame = phase === "test-frame" || phase === "main-frame";
+      if (frame && scope.operation.frame && scope.frame !== scope.operation.frame) throw this.reject(scope.operation, "Overlapping sibling frame transitions");
+      return this.invoke(scope.operation, callback, scope, frame);
+    } catch (reason) {
+      return Promise.reject(reason);
+    }
+  }
+  private invoke<T>(operation: Operation, callback: () => Promise<T>, parent: Scope | null = null, frame = false): Promise<T> {
+    const scope: Scope = { operation, live: true, frame: parent?.frame ?? null };
+    if (frame) {
+      scope.frame = scope;
+      operation.frame = scope;
+    }
+    const result = this.local.run(scope, () => this.consumers.invoke(callback));
+    const settled = result.then(
+      () => this.seal(scope, parent),
+      (reason: unknown) => {
+        operation.failure ??= { reason };
+        this.seal(scope, parent);
+      },
+    );
+    operation.pending.add(settled);
+    void settled.then(() => operation.pending.delete(settled));
+    return result;
+  }
+  private seal(scope: Scope, parent: Scope | null): void {
+    scope.live = false;
+    if (scope.operation.frame === scope) scope.operation.frame = parent?.frame?.live ? parent.frame : null;
+  }
+  private async outcome<T>(operation: Operation, callback: () => Promise<T>): Promise<Completion<T>> {
+    try {
+      return { kind: "fulfilled", value: await this.invoke(operation, callback) };
+    } catch (reason) {
+      return { kind: "rejected", reason };
+    }
+  }
+  private async drain(operation: Operation): Promise<void> {
+    while (operation.pending.size || operation.requests.size) {
+      const callbacks = Array.from(operation.pending);
+      const requests = Array.from(operation.requests, (request) => request.done);
+      await Promise.all(callbacks.concat(requests));
+    }
+  }
+  private async joinOperation(operation: Operation): Promise<void> {
+    try {
+      await bounded(this.drain(operation), 6000, "owned callback and HTTP settlement");
+    } catch {
+      throw this.reject(operation, "Owned callback and HTTP settlement timed out");
+    }
+  }
+  private async enter<T>(callback: () => Promise<T>, phase: string | null, options: RunOptions): Promise<T> {
+    const operation: Operation = {
+      controller: new AbortController(), requests: new Set(), pending: new Set(), failure: null, frame: null,
+      id: crypto.randomUUID(), phase,
+    };
+    this.checkRoot(operation);
+    this.active.add(operation);
+    const outcome = await this.outcome(operation, callback);
+    try {
+      await this.joinOperation(operation);
+      this.checkRoot(operation);
+      if (options.finalize) {
+        await this.outcome(operation, options.finalize);
+        await this.joinOperation(operation);
       }
+      this.checkRoot(operation);
+      options.complete?.();
+    } catch (reason) {
+      operation.failure ??= { reason };
+    } finally {
+      operation.controller.abort(new Error("Framework operation settled"));
       this.active.delete(operation);
     }
+    if (outcome.kind === "rejected") throw outcome.reason;
+    if (operation.failure) throw operation.failure.reason;
+    return outcome.value;
   }
-  private assert(operation: Operation): void {
-    if (this.closed || !operation.live) {
-      this.fault("Unowned or revoked WebDriver dispatch");
-      throw new Error("Unowned or revoked WebDriver dispatch");
-    }
+  private reject(operation: Operation, detail: string): Error {
+    const reason = new Error(detail);
+    operation.failure ??= { reason };
+    operation.controller.abort(reason);
+    this.fault(detail);
+    return reason;
+  }
+  private checkRoot(operation: Operation): void {
+    if (this.closed || operation.controller.signal.aborted)
+      throw this.reject(operation, "Unowned or revoked WebDriver dispatch");
     this.check();
   }
+  private assert(scope: Scope): void {
+    if (!scope.live) throw this.reject(scope.operation, "Unowned or revoked WebDriver dispatch");
+    this.checkRoot(scope.operation);
+  }
   guard<T extends RequestInit>(request: T): T {
-    const operation = this.local.getStore();
-    if (!operation) {
+    const scope = this.local.getStore();
+    if (!scope) {
       this.fault("Unowned WebDriver request");
       throw new Error("Unowned WebDriver request");
     }
-    this.assert(operation);
+    this.assert(scope);
+    const operation = scope.operation;
     const callerSignal = request.signal;
     const signal = AbortSignal.any(
       [operation.controller.signal].concat(callerSignal ? [callerSignal] : []),
@@ -163,6 +233,7 @@ export class FrameworkQueue {
       operation,
     };
     operation.requests.add(lease);
+    void lease.done.then(() => operation.requests.delete(lease));
     this.signals.set(signal, lease);
     return guarded;
   }
@@ -176,23 +247,25 @@ export class FrameworkQueue {
     lease.status = responseStatus(response);
     if (!record(response.body) || !Object.hasOwn(response.body, "value")) {
       this.failedRequest(lease, "envelope", lease.status);
-      this.fault("Malformed WebDriver envelope");
+      this.reject(lease.operation, "Malformed WebDriver envelope");
     }
     lease.finish();
     return response;
   }
   commandStarted(): void {
-    const operation = this.local.getStore();
-    const revoked = !operation || !operation.live || this.closed;
+    const scope = this.local.getStore();
+    const operation = scope?.operation;
+    const revoked = !scope?.live || operation?.controller.signal.aborted === true || this.closed;
     this.commandHooks.push({ operation: operation?.id ?? null, phase: "started", revoked });
     if (revoked) this.fault("Unowned or revoked SDK command hook");
   }
   commandSettled(): void {
-    const operation = this.local.getStore();
+    const scope = this.local.getStore();
+    const operation = scope?.operation;
     this.commandHooks.push({
       operation: operation?.id ?? null,
       phase: "settled",
-      revoked: !operation?.live || this.closed,
+      revoked: !scope?.live || operation?.controller.signal.aborted === true || this.closed,
     });
   }
   observe(value: unknown): void {
@@ -225,7 +298,7 @@ export class FrameworkQueue {
       this.failedRequest(lease, "envelope", lease.status);
     if (!lease.parsed) {
       this.failedRequest(lease, "unknown", null);
-      this.fault("WebDriver transport failed before an observed parsed response");
+      this.reject(lease.operation, "WebDriver transport failed before an observed parsed response");
     }
     lease.finish();
   }

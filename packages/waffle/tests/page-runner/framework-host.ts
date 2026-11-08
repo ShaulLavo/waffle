@@ -151,6 +151,7 @@ export class PageFrameworkHost implements FrameworkHost {
   private fault(category: string, detail: string): void {
     if (this.finalized) return;
     this.collector.fail(category, detail);
+    this.queue.revoke();
     if (!this.controller.signal.aborted) this.controller.abort(new Error(detail));
   }
   private check(): void {
