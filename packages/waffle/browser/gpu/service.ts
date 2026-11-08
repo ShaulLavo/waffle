@@ -55,7 +55,11 @@ export class GpuService {
     readonly send: (message: GpuServiceReply) => void,
     private readonly options: GpuServiceOptions,
   ) {
-    this.#surfaces = new GpuSurfaces(options.suppressTransfer);
+    this.#surfaces = new GpuSurfaces(
+      options.suppressTransfer,
+      () => this.#acceptingSurfaces(),
+      () => this.#surfaceIdle(),
+    );
     this.#root = accessed(
       options.access,
       undefined as object | undefined,
@@ -85,6 +89,9 @@ export class GpuService {
         this.#surfaces.tick();
         this.#schedule();
         return;
+      case "surface-register":
+        this.#surfaces.register(message.id);
+        return;
       case "surface-dispose":
         this.#disposeSurface(message.id);
         return;
@@ -108,7 +115,14 @@ export class GpuService {
   }
   #admitOpen(message: Extract<GpuServiceRequest, { type: "open" }>): void {
     const grant = this.#grant(message.grant);
-    if (grant.phase !== "live") return;
+    if (grant.phase !== "live") {
+      try {
+        this.#surfaces.attach(message.surfaces.filter((surface) => surface.canvas !== undefined));
+      } catch {
+        // Ownership failures never authorize access to the retired command envelope.
+      }
+      return;
+    }
     grant.opening.add(message.open);
     grant.access.run(() => {
       this.#open(message, grant);
@@ -118,16 +132,25 @@ export class GpuService {
   }
   #open(message: Extract<GpuServiceRequest, { type: "open" }>, grant: GrantOwner): void {
     const open = message.open;
-    if (!validGraphicsOpen(open, open.commands.byteLength - 64, open.replies.byteLength - 64))
-      return;
-    const control = new Int32Array(open.control);
+    const valid = validGraphicsOpen(
+      open,
+      open.commands.byteLength - 64,
+      open.replies.byteLength - 64,
+    );
+    if (!valid) grant.opening.delete(open);
+    let attached = true;
     try {
       this.#surfaces.attach(message.surfaces);
     } catch {
-      if (grant.access.live) failOpen(open, -64, GPU_TERMINAL.service);
+      attached = false;
+    }
+    if (!grant.access.live || !this.#acceptingSurfaces()) return;
+    if (!valid) return;
+    if (!attached) {
+      failOpen(open, -64, GPU_TERMINAL.service);
       return;
     }
-    if (!grant.access.live) return;
+    const control = new Int32Array(open.control);
     if (Atomics.load(control, 0) !== 0) {
       failOpen(open, -64, GPU_TERMINAL.revoked);
       return;
@@ -188,6 +211,16 @@ export class GpuService {
       });
       failOpen(open, -64, GPU_TERMINAL.service);
     }
+  }
+  #acceptingSurfaces(): boolean {
+    return this.#live && !this.#disposing && this.options.access.run(() => undefined) === "ran";
+  }
+  #surfaceIdle(): void {
+    if (this.#disposing && this.options.access.run(() => undefined) === "closed") {
+      this.#finishDispose();
+      return;
+    }
+    this.#schedule();
   }
   #schedule(): void {
     if (this.#scheduled || !this.#live) return;
@@ -258,7 +291,7 @@ export class GpuService {
     this.#schedule();
   }
   #disposeSurface(id: number): void {
-    if (this.#surfaceDisposals.has(id)) return;
+    if (!this.#surfaces.invalidate(id) || this.#surfaceDisposals.has(id)) return;
     const owners = Array.from(this.#connections.values()).filter((owner) =>
       owner.surfaceIds.has(id),
     );
@@ -271,11 +304,10 @@ export class GpuService {
   }
   #disposeQueuedSurface(id: number, owners: readonly ConnectionOwner[]): void {
     if (owners.some((owner) => this.#grant(owner.grant).access.active)) return;
-    this.#surfaceDisposals.delete(id);
     try {
-      this.#surfaces.dispose(id);
-    } catch (error) {
-      this.#failures.push(error);
+      if (this.#surfaces.dispose(id)) this.#surfaceDisposals.delete(id);
+    } catch {
+      this.#surfaceDisposals.delete(id);
       for (const owner of owners) this.#retainGrant(owner.grant);
     }
   }
@@ -375,7 +407,7 @@ export class GpuService {
         0,
       ),
       slices: this.#slices,
-      cleanupFailures: this.#failures.length,
+      cleanupFailures: this.#failures.length + this.#surfaces.failures.length,
       heapBytes: this.#credit.used,
       ...this.#surfaces.snapshot(),
     };
@@ -388,11 +420,11 @@ export class GpuService {
     });
     void this.#disposal.catch(() => {});
     this.#disposing = true;
+    this.#surfaces.invalidateAll();
     const admitted = this.options.access.run(() => {
       for (const id of this.#grants.keys()) this.#revoke(id);
       for (const owner of this.#connections.values()) this.#seal(owner, GPU_TERMINAL.service);
-      if (!this.#connections.size) this.#finishDispose();
-      else this.#schedule();
+      this.#schedule();
       return undefined;
     });
     if (admitted === "closed") {
@@ -414,11 +446,15 @@ export class GpuService {
     }
   }
   #finishDispose(): void {
+    if (this.#surfaces.active) return;
+    this.#surfaces.disposeAll();
+    if (this.#surfaces.active) return;
     this.#live = false;
     this.#tasks.port1.close();
     this.#tasks.port2.close();
-    if (this.#failures.length)
-      this.#rejectDispose?.(new AggregateError(this.#failures, "GPU service cleanup retained"));
+    const failures = this.#failures.concat(this.#surfaces.failures);
+    if (failures.length)
+      this.#rejectDispose?.(new AggregateError(failures, "GPU service cleanup retained"));
     else this.#disposed?.();
   }
 }

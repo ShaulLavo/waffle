@@ -28,7 +28,7 @@ interface SurfaceOwner {
   readonly element: HTMLCanvasElement;
   readonly info: SharedArrayBuffer;
   holder: GrantId | undefined;
-  state: "local" | "transferred" | "lost" | "disposed";
+  state: "local" | "transferring" | "transferred" | "lost" | "disposed";
 }
 interface GrantOwner {
   binding: ServiceOwner | undefined;
@@ -133,7 +133,8 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = undefined;
       for (const surface of surfaces.values())
-        if (surface.state === "transferred") surface.state = "lost";
+        if (surface.state === "transferred" || surface.state === "transferring")
+          surface.state = "lost";
       for (const [grant, opens] of owner.exposed) revokeExposed(grant, opens);
       begin();
     } catch (error) {
@@ -238,7 +239,12 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
         if (surface.state === "lost" || surface.state === "disposed")
           throw new Error("Surface lost");
         if (surface.state === "transferred") return { id: surface.surface.id };
+        if (surface.state !== "local") throw new Error("Surface transfer pending");
+        surface.state = "transferring";
+        post({ type: "surface-register", id: surface.surface.id });
+        if (surface.state !== "transferring") throw new Error("Surface lost during registration");
         const canvas = surface.element.transferControlToOffscreen();
+        if (surface.state !== "transferring") throw new Error("Surface lost during transfer");
         surface.state = "transferred";
         transfer.push(canvas);
         return { id: surface.surface.id, canvas };

@@ -14,6 +14,7 @@ export type GpuServiceRequest =
   | { readonly type: "close"; readonly grant: number; readonly id: number }
   | { readonly type: "revoke"; readonly grant: number }
   | { readonly type: "tick" }
+  | { readonly type: "surface-register"; readonly id: number }
   | { readonly type: "surface-dispose"; readonly id: number };
 export type GpuServiceReply =
   | { readonly type: "retirement-failed"; readonly grant: number }
