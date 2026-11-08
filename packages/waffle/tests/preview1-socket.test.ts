@@ -241,15 +241,30 @@ test("empty socket bindings never activate the network owner", async () => {
 });
 
 function socketReadable(socket: Socket) {
+  let detach = () => {};
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      socket.on("data", (chunk) =>
-        controller.enqueue(typeof chunk === "string" ? bytes(chunk) : new Uint8Array(chunk)),
-      );
-      socket.on("end", () => controller.close());
-      socket.on("error", (error) => controller.error(error));
+      const data = (chunk: Buffer | string) =>
+        controller.enqueue(typeof chunk === "string" ? bytes(chunk) : new Uint8Array(chunk));
+      const end = () => {
+        detach();
+        controller.close();
+      };
+      const error = (cause: Error) => {
+        detach();
+        controller.error(cause);
+      };
+      detach = () => {
+        socket.off("data", data);
+        socket.off("end", end);
+        socket.off("error", error);
+      };
+      socket.on("data", data);
+      socket.on("end", end);
+      socket.on("error", error);
     },
     cancel() {
+      detach();
       socket.destroy();
     },
   });
@@ -261,12 +276,60 @@ test("direct connector detaches its readable callbacks on cancellation", async (
   const address = server.address();
   if (!address || typeof address === "string") throw Error("missing test address");
   const socket = createConnection({ host: "127.0.0.1", port: address.port });
+  const endListeners = socket.listenerCount("end");
   try {
     await new Promise<void>((resolve) => socket.once("connect", resolve));
     const readable = socketReadable(socket);
     await readable.cancel();
     expect(socket.listenerCount("data")).toBe(0);
-    expect(socket.listenerCount("end")).toBe(0);
+    expect(socket.listenerCount("end")).toBe(endListeners);
+    expect(socket.listenerCount("error")).toBe(0);
+  } finally {
+    socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("direct connector delivers bytes and detaches its readable callbacks on EOF", async () => {
+  const server = createServer((peer) => peer.end("hello"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("missing test address");
+  const socket = createConnection({ host: "127.0.0.1", port: address.port });
+  const endListeners = socket.listenerCount("end");
+  try {
+    const reader = socketReadable(socket).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+    expect(Buffer.concat(chunks).toString()).toBe("hello");
+    expect(socket.listenerCount("data")).toBe(0);
+    expect(socket.listenerCount("end")).toBe(endListeners);
+    expect(socket.listenerCount("error")).toBe(0);
+  } finally {
+    socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("direct connector forwards socket errors and detaches its readable callbacks", async () => {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("missing test address");
+  const socket = createConnection({ host: "127.0.0.1", port: address.port });
+  const endListeners = socket.listenerCount("end");
+  try {
+    await new Promise<void>((resolve) => socket.once("connect", resolve));
+    const reader = socketReadable(socket).getReader();
+    const failure = Error("socket failure");
+    socket.destroy(failure);
+    await expect(reader.read()).rejects.toBe(failure);
+    expect(socket.listenerCount("data")).toBe(0);
+    expect(socket.listenerCount("end")).toBe(endListeners);
     expect(socket.listenerCount("error")).toBe(0);
   } finally {
     socket.destroy();
