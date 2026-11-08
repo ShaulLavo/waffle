@@ -2,16 +2,74 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { bounded } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
 import { record } from "./protocol.js";
-import type { TransportEvents } from "./framework-types.js";
+import type { CommandFailure, TransportEvents } from "./framework-types.js";
 
-type RequestLease = { done: Promise<void>; finish(): void; parsed: boolean };
+type RequestLease = {
+  done: Promise<void>;
+  finish(): void;
+  parsed: boolean;
+  failureRecorded: boolean;
+  status: number | null;
+  dispatchedAt: number;
+  method: string | null;
+  signal: AbortSignal;
+  callerSignal: AbortSignal | null;
+  operation: Operation;
+};
 type Operation = {
   live: boolean;
   controller: AbortController;
   requests: Set<RequestLease>;
   id: string;
+  phase: string | null;
 };
+export function commandMethod(method: unknown): string | null {
+  return typeof method === "string" && /^(GET|POST|DELETE|PUT|PATCH|HEAD|OPTIONS)$/.test(method)
+    ? method
+    : null;
+}
+export function commandPath(path: string): string | null {
+  const safe = path.replace(/^\/session\/[^/]+/, "/session/:session");
+  return /^\/(status|session|session\/:session(\/(timeouts|url|window(\/(handles|new))?|refresh|execute\/(sync|async)))?)$/.test(
+    safe,
+  )
+    ? safe
+    : null;
+}
+function commandPhase(value: string | null): string | null {
+  return value !== null &&
+    ["attach", "observation", "open", "test-frame", "main-frame", "framework-cleanup"].includes(
+      value,
+    )
+    ? value
+    : null;
+}
+function responseStatus(response: object): number | null {
+  try {
+    const status: unknown = Object.getOwnPropertyDescriptor(response, "statusCode")?.value;
+    return typeof status === "number" && Number.isFinite(status) ? status : null;
+  } catch {
+    return null;
+  }
+}
+function failedPerformance(event: object): boolean {
+  try {
+    return Object.getOwnPropertyDescriptor(event, "success")?.value === false;
+  } catch {
+    return false;
+  }
+}
 export class FrameworkQueue {
+  readonly commandFailures: CommandFailure[] = [];
+  recordFailure(facts: CommandFailure): void {
+    const operation = this.local.getStore();
+    if (this.commandFailures.length >= 128) return;
+    this.commandFailures.push({
+      ...facts,
+      operation: facts.operation ?? operation?.id ?? null,
+      phase: commandPhase(facts.phase ?? operation?.phase ?? null),
+    });
+  }
   readonly commandHooks: {
     operation: string | null;
     phase: "started" | "settled";
@@ -31,25 +89,26 @@ export class FrameworkQueue {
     private readonly check: () => void,
     private readonly fault: (detail: string) => void,
   ) {}
-  run<T>(callback: () => Promise<T>): Promise<T> {
+  run<T>(callback: () => Promise<T>, phase: string | null = null): Promise<T> {
     const current = this.local.getStore();
     if (current) {
       this.assert(current);
       return this.consumers.invoke(callback);
     }
-    const next = this.consumers.invoke(() => this.tail.then(() => this.enter(callback)));
+    const next = this.consumers.invoke(() => this.tail.then(() => this.enter(callback, phase)));
     this.tail = next.then(
       () => {},
       () => {},
     );
     return next;
   }
-  private async enter<T>(callback: () => Promise<T>): Promise<T> {
+  private async enter<T>(callback: () => Promise<T>, phase: string | null): Promise<T> {
     const operation: Operation = {
       live: true,
       controller: new AbortController(),
       requests: new Set(),
       id: crypto.randomUUID(),
+      phase,
     };
     this.assert(operation);
     this.active.add(operation);
@@ -85,19 +144,27 @@ export class FrameworkQueue {
       throw new Error("Unowned WebDriver request");
     }
     this.assert(operation);
-    const signal = AbortSignal.any([
-      operation.controller.signal,
-      ...(request.signal ? [request.signal] : []),
-    ]);
+    const callerSignal = request.signal;
+    const signal = AbortSignal.any(
+      [operation.controller.signal].concat(callerSignal ? [callerSignal] : []),
+    );
+    const guarded = { ...request, signal };
     const completion = Promise.withResolvers<void>();
     const lease: RequestLease = {
       done: this.consumers.invoke(() => completion.promise),
       finish: completion.resolve,
       parsed: false,
+      failureRecorded: false,
+      status: null,
+      dispatchedAt: performance.now(),
+      method: commandMethod(guarded.method),
+      signal,
+      callerSignal: callerSignal ?? null,
+      operation,
     };
     operation.requests.add(lease);
     this.signals.set(signal, lease);
-    return { ...request, signal };
+    return guarded;
   }
   response<T extends { statusCode: number; body?: unknown }>(response: T, request: RequestInit): T {
     const lease = request.signal ? this.signals.get(request.signal) : undefined;
@@ -106,8 +173,11 @@ export class FrameworkQueue {
       throw new Error("Response without owned request");
     }
     lease.parsed = true;
-    if (!record(response.body) || !Object.hasOwn(response.body, "value"))
+    lease.status = responseStatus(response);
+    if (!record(response.body) || !Object.hasOwn(response.body, "value")) {
+      this.failedRequest(lease, "envelope", lease.status);
       this.fault("Malformed WebDriver envelope");
+    }
     lease.finish();
     return response;
   }
@@ -151,8 +221,41 @@ export class FrameworkQueue {
       this.fault("Unowned SDK transport settlement");
       return;
     }
-    if (!lease.parsed) this.fault(`WebDriver transport failed: ${String(event.error)}`);
+    if (lease.parsed && failedPerformance(event))
+      this.failedRequest(lease, "envelope", lease.status);
+    if (!lease.parsed) {
+      this.failedRequest(lease, "unknown", null);
+      this.fault("WebDriver transport failed before an observed parsed response");
+    }
     lease.finish();
+  }
+  private failedRequest(
+    lease: RequestLease,
+    stage: CommandFailure["stage"],
+    status: number | null,
+  ): void {
+    if (lease.failureRecorded) return;
+    lease.failureRecorded = true;
+    const revoked = lease.operation.controller.signal;
+    this.recordFailure({
+      client: "attached",
+      operation: lease.operation.id,
+      phase: lease.operation.phase,
+      method: lease.method,
+      path: null,
+      dispatchedAt: lease.dispatchedAt,
+      settledAt: performance.now(),
+      stage,
+      status,
+      abort:
+        revoked.aborted && lease.signal.reason === revoked.reason
+          ? "revoked"
+          : lease.callerSignal?.aborted && lease.signal.reason === lease.callerSignal.reason
+            ? "caller"
+            : lease.signal.aborted
+              ? "unknown"
+              : null,
+    });
   }
   revoke(): void {
     this.closed = true;
