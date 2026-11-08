@@ -865,3 +865,13 @@ that admitted drain from tail regression, over-consumption, unaligned counters, 
 changes and post-stop movement. The unchanged captured result passes this correction, with its
 7.005 ms service slice and 126.105 ms peer gap preserved as not-met against 8 ms and 100 ms.
 Hardware qualification remains false. No production, workload, clock or local GPU capture changes.
+
+
+The service-drain review found two additional boundaries. The allowance now joins each original
+grant to its original guest Worker and requires that consumer to still be physically running
+at the stopped checkpoint; already-stopped consumers keep exact controls. Reply tails use the
+collector's actual signed int32 representation, validated before u32 distance arithmetic, while
+heads remain u32. A permanent control uses the real RecordRing and exact collector expressions
+across rollover, including ring padding, rather than an unsigned synthetic tail. Additional
+controls reject consumption after physical stop and invalid signed counters. Both unchanged
+genuine service captures still validate, and both incomplete historical captures still reject.

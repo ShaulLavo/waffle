@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { validateServiceFailureResult } from "./gpu-service-failure-browser.js";
+import { RecordRing } from "../browser/gpu/ring.js";
 
 const audit = { canaries: Array.from({ length: 33 }, () => "native-canary"), leaks: [] };
 const green = { corner: [0, 0, 0, 255], center: [0, 255, 0, 255] };
@@ -913,7 +914,34 @@ test("old reply consumption is frozen once the original guest workers have stopp
   );
 });
 
-test("committed reply consumption respects unsigned ring counter rollover", () => {
+test("committed reply consumption accepts the real observer's signed rollover tail", () => {
+  const backing = new SharedArrayBuffer(128),
+    cells = new Int32Array(backing),
+    publication = new BigInt64Array(backing, 0, 1);
+  Atomics.store(publication, 0, 0xfffffff0n);
+  Atomics.store(cells, 2, -16);
+  const ring = new RecordRing(backing, 16),
+    acquired = ring.tryAcquireWriter();
+  expect(acquired.kind).toBe("acquired");
+  if (acquired.kind !== "acquired") throw new Error("Missing actual ring writer");
+  const bytes = new Uint8Array(24),
+    view = new DataView(bytes.buffer);
+  view.setUint16(0, 1, true);
+  view.setUint32(4, 24, true);
+  expect(acquired.writer.tryWrite(bytes).kind).toBe("written");
+  acquired.writer.release();
+  ring.terminate(5);
+  const observed = () => ({
+    head: Number(Atomics.load(publication, 0) & 0xffffffffn),
+    tail: Atomics.load(cells, 2),
+    terminal: Number((Atomics.load(publication, 0) >> 32n) & 0xffffffffn),
+  });
+  const before = observed();
+  expect(before).toEqual({ head: 24, tail: -16, terminal: 5 });
+  expect(ring.readInto(new Uint8Array(24)).kind).toBe("record");
+  const after = observed();
+  expect(after).toEqual({ head: 24, tail: 24, terminal: 5 });
+  expect(ring.readInto(new Uint8Array(24)).kind).toBe("terminal");
   const value = committedReplyDrain();
   for (const state of [
     value.failure.before,
@@ -921,10 +949,41 @@ test("committed reply consumption respects unsigned ring counter rollover", () =
     value.failure.after,
     value.recovery.state,
     value.recovery.after,
-  ]) {
-    state.controls[1]!.replies.head = 8;
-    state.controls[1]!.replies.tail =
-      state === value.failure.before || state === value.failure.stopped ? 0xfffffff0 : 8;
-  }
+  ])
+    Object.assign(
+      state.controls[1]!.replies,
+      state === value.failure.before || state === value.failure.stopped
+        ? { head: before.head, tail: before.tail }
+        : { head: after.head, tail: after.tail },
+    );
   expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
 });
+
+test("an original peer already physically stopped cannot drain committed replies", () => {
+  const value = committedReplyDrain(),
+    peer = value.peerGuest,
+    worker = value.failure.stopped.workers.find(
+      (worker) =>
+        "pid" in worker &&
+        worker.pid === peer.pid &&
+        "token" in worker &&
+        worker.token === peer.token &&
+        "surface" in worker &&
+        worker.surface === peer.surface,
+    )!;
+  worker.stopped = true;
+  const stop = value.failure.after.workerStops.find((stop) => stop.id === worker.id)!;
+  value.failure.stopped.workerStops = value.failure.stopped.workerStops.concat([stop]);
+  expect(() => validateServiceFailureResult(value)).toThrow(
+    "physically stopped guest changed old controls",
+  );
+});
+
+for (const tail of [-0x80000001, 0x80000000, -15, -16.5])
+  test(`observed signed tail ${tail} is rejected before normalization`, () => {
+    const value = committedReplyDrain();
+    value.failure.after.controls[1]!.replies.tail = tail;
+    expect(() => validateServiceFailureResult(value)).toThrow(
+      "old reply consumer escaped committed bytes",
+    );
+  });
