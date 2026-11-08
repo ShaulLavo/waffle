@@ -1,3 +1,5 @@
+import type { ServiceAccess } from "../display/service-readers.js";
+import { accessed } from "./access.js";
 import { PayloadDirectory } from "./payload.js";
 import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
 import { completionBytes, type WireObject } from "./codec.js";
@@ -24,6 +26,8 @@ interface Payload {
   readonly length: number;
 }
 interface CompletionBuffers {
+  readonly access: ServiceAccess;
+  readonly requestRetirement?: (reason: number) => void;
   readonly commands: RecordRing;
   readonly replies: RecordRing;
   readonly arena?: Uint8Array;
@@ -48,7 +52,8 @@ export class CompletionOwner {
   get failure(): string | undefined {
     return this.#failure;
   }
-  constructor({ commands, replies, arena = new Uint8Array(0) }: CompletionBuffers) {
+  constructor(private readonly buffers: CompletionBuffers) {
+    const { commands, replies, arena = new Uint8Array(0) } = buffers;
     if (commands.recordHeaderBytes !== 8 || replies.recordHeaderBytes !== 16)
       throw new RangeError("Expected command and completion rings");
     this.#state = {
@@ -68,20 +73,32 @@ export class CompletionOwner {
     };
   }
   get state(): ConnectionState {
+    return accessed<ConnectionState>(this.buffers.access, { kind: "terminal", reason: GPU_TERMINAL.service }, () => this.#readState());
+  }
+  #readState(): ConnectionState {
     this.#synchronize();
     return this.#state.kind === "ready" ? { kind: "ready" } : this.#state;
   }
   get pendingCount(): number {
+    return accessed<number>(this.buffers.access, 0, () => this.#pendingCount());
+  }
+  #pendingCount(): number {
     this.#synchronize();
     return this.#state.kind === "ready" ? this.#state.pending.size : 0;
   }
   get payloadBytes(): number {
+    return accessed<number>(this.buffers.access, 0, () => this.#payloadBytes());
+  }
+  #payloadBytes(): number {
     this.#synchronize();
     return this.#state.kind === "ready"
       ? this.#state.payloads.reduce((sum, slot) => sum + (slot?.length ?? 0), 0)
       : 0;
   }
   onRetire(retire: () => void): void {
+    return accessed<void>(this.buffers.access, undefined, () => this.#onRetire(retire));
+  }
+  #onRetire(retire: () => void): void {
     this.#synchronize();
     if (this.#state.kind === "terminal") {
       retire();
@@ -91,6 +108,9 @@ export class CompletionOwner {
     this.#state.retire = retire;
   }
   admit(token: number): void {
+    return accessed<void>(this.buffers.access, undefined, () => this.#admit(token));
+  }
+  #admit(token: number): void {
     this.#synchronize();
     if (this.#state.kind === "terminal") throw new GpuProtocolError("Terminal completion owner");
     if (!Number.isInteger(token) || token <= this.#lastToken || token > 0xffffffff)
@@ -98,6 +118,9 @@ export class CompletionOwner {
     this.#lastToken = token;
   }
   publish(name: string, token: number, status: number, value: WireObject): boolean {
+    return accessed<boolean>(this.buffers.access, false, () => this.#publishValue(name, token, status, value));
+  }
+  #publishValue(name: string, token: number, status: number, value: WireObject): boolean {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") return false;
@@ -115,6 +138,15 @@ export class CompletionOwner {
   }
   /** Admit before starting native work. No continuation retains a retired replay or transport. */
   start<T>(
+    token: number,
+    start: () => Promise<T>,
+    settle: (owner: CompletionOwner, value: T) => void,
+    reject: (owner: CompletionOwner, error: unknown) => void,
+    abandon: (value: T) => void,
+  ): void {
+    this.run(() => { this.#start(token, start, settle, reject, abandon); return undefined; });
+  }
+  #start<T>(
     token: number,
     start: () => Promise<T>,
     settle: (owner: CompletionOwner, value: T) => void,
@@ -139,7 +171,11 @@ export class CompletionOwner {
     }
     watchPromise(promise, pending, token);
   }
+  run(work: () => undefined): "ran" | "closed" { return this.buffers.access.run(work); }
   settled(token: number): boolean {
+    return accessed<boolean>(this.buffers.access, false, () => this.#settled(token));
+  }
+  #settled(token: number): boolean {
     this.#synchronize();
     if (this.#state.kind === "terminal") return false;
     return this.#state.pending.delete(token);
@@ -148,6 +184,9 @@ export class CompletionOwner {
     return this.fillPayload(bytes.byteLength, (destination) => destination.set(bytes));
   }
   fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
+    return accessed<Handle | undefined>(this.buffers.access, undefined, () => this.#fillPayload(length, fill));
+  }
+  #fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") return;
@@ -163,6 +202,9 @@ export class CompletionOwner {
     }
   }
   takePayload(handle: Handle, destination: Uint8Array): number {
+    return accessed<number>(this.buffers.access, 0, () => this.#takePayload(handle, destination));
+  }
+  #takePayload(handle: Handle, destination: Uint8Array): number {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") throw new GpuCallClosed();
@@ -189,6 +231,14 @@ export class CompletionOwner {
     return slot.length;
   }
   terminate(reason: number): void {
+    this.run(() => {
+      if (this.buffers.requestRetirement) this.buffers.requestRetirement(reason);
+      else this.finishRetirement(reason);
+      return undefined;
+    });
+  }
+  /** Called only by the queued connection owner under service-wide admission. */
+  finishRetirement(reason: number): void {
     const state = this.#state;
     if (state.kind === "terminal") return;
     if (!Number.isInteger(reason) || reason <= 0 || reason > 0xffffffff)
@@ -202,6 +252,16 @@ export class CompletionOwner {
     state.pending.clear();
     state.payloads.length = 0;
     state.generations.length = 0;
+    const retire = state.retire;
+    state.retire = undefined;
+    retire?.();
+  }
+  abandon(): void {
+    const state = this.#state;
+    if (state.kind === "terminal") return;
+    this.#state = { kind: "terminal", reason: GPU_TERMINAL.service };
+    for (const pending of state.pending.values()) pending.cancel();
+    state.pending.clear();
     const retire = state.retire;
     state.retire = undefined;
     retire?.();
@@ -269,33 +329,27 @@ function detach<T>(pending: Pending<T>): void {
   pending.reject = undefined;
 }
 function complete<T>(pending: Pending<T>, token: number, value: T): void {
-  const owner = pending.owner;
-  const settle = pending.settle;
+  const owner = pending.owner, settle = pending.settle;
   detach(pending);
-  if (!owner?.settled(token) || !settle) {
-    pending.abandon(value);
-    return;
-  }
-  try {
-    settle(owner, value);
-  } catch (error) {
-    owner.terminate(
-      error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
-    );
-  }
+  if (!owner || !settle) { pending.abandon(value); return; }
+  const ran = owner.run(() => {
+    if (!owner.settled(token)) { pending.abandon(value); return undefined; }
+    try { settle(owner, value); }
+    catch (error) { owner.terminate(error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol); }
+    return undefined;
+  });
+  if (ran === "closed") pending.abandon(value);
 }
 function fail<T>(pending: Pending<T>, token: number, error: unknown): void {
-  const owner = pending.owner;
-  const reject = pending.reject;
+  const owner = pending.owner, reject = pending.reject;
   detach(pending);
-  if (!owner?.settled(token) || !reject) return;
-  try {
-    reject(owner, error);
-  } catch (failure) {
-    owner.terminate(
-      failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
-    );
-  }
+  if (!owner || !reject) return;
+  owner.run(() => {
+    if (!owner.settled(token)) return undefined;
+    try { reject(owner, error); }
+    catch (failure) { owner.terminate(failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol); }
+    return undefined;
+  });
 }
 
 function watchPromise<T>(promise: Promise<T>, pending: Pending<T>, token: number): void {

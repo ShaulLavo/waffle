@@ -1,3 +1,4 @@
+import { serviceAccess } from "./fixtures/gpu/service-access.js";
 import { validGraphicsOpen } from "../browser/display/open.ts";
 import { expect, test } from "bun:test";
 import { CompletionOwner } from "../browser/gpu/completions.ts";
@@ -17,7 +18,7 @@ function arenaRig() {
   const backing = new SharedArrayBuffer(layout.byteLength);
   const commands = ring(4096),
     replies = ring(4096, 16);
-  const owner = new CompletionOwner({ commands, replies, arena: new Uint8Array(backing) });
+  const owner = new CompletionOwner({ access: serviceAccess(), commands, replies, arena: new Uint8Array(backing) });
   const directory = new PayloadDirectory(backing);
   return {
     backing,
@@ -226,7 +227,7 @@ test("actual guest payload import validates both spans and snapshots an overlapp
       layout.byteLength,
     ]);
     expect(consumedControlBytes(grant)).toBe(1_056_960);
-    owner = new CompletionOwner({
+    owner = new CompletionOwner({ access: serviceAccess(),
       commands: new RecordRing(open.commands, 8),
       replies: new RecordRing(open.replies, 16),
       arena: new Uint8Array(open.arena),
@@ -489,7 +490,7 @@ test("transparent canaries see no private authority during real GPU imports and 
     if (!opened) throw new Error("Missing actual open");
     const open = opened;
     const handle = service(() => {
-      owner = new CompletionOwner({
+      owner = new CompletionOwner({ access: serviceAccess(),
         commands: new RecordRing(open.commands, 8),
         replies: new RecordRing(open.replies, 16),
         arena: new NativeBytes(open.arena),

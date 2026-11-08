@@ -1,6 +1,8 @@
+import { serviceAccess } from "./fixtures/gpu/service-access.js";
 import { expect, spyOn, test } from "bun:test";
 import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
-import type { GraphicsOpen, GpuServiceReply } from "../browser/display/protocol.js";
+import type { GraphicsOpen } from "../browser/display/protocol.js";
+import type { GpuServiceReply } from "../browser/display/service-protocol.js";
 import { CompletionOwner } from "../browser/gpu/completions.js";
 import { RecordRing } from "../browser/gpu/ring.js";
 import { GpuService } from "../browser/gpu/service.js";
@@ -28,7 +30,7 @@ function controlledTasks() {
     create(root: object, send: (message: GpuServiceReply) => void) {
       globalThis.MessageChannel = ControlledChannel;
       try {
-        return new GpuService(send, { root });
+        return new GpuService(send, { access: serviceAccess(), root });
       } finally {
         globalThis.MessageChannel = NativeChannel;
       }

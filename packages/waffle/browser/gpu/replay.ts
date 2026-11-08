@@ -1,3 +1,4 @@
+import { accessed } from "./access.js";
 import { gpuStream } from "./generated/tables.js";
 import {
   decodeCall,
@@ -123,6 +124,9 @@ export class GpuReplay {
     return this.#cursor !== undefined;
   }
   accept(record: LogicalRecord): void {
+    if (this.completions.run(() => { this.#accept(record); return undefined; }) === "closed") record.release();
+  }
+  #accept(record: LogicalRecord): void {
     if (!this.#live || this.#cursor) {
       record.release();
       throw new GpuProtocolError("Replay cannot accept another record");
@@ -130,6 +134,9 @@ export class GpuReplay {
     this.#cursor = { record, offset: 0, blob: undefined };
   }
   step(): ReplayStep {
+    return accessed<ReplayStep>({ run: (work) => this.completions.run(work) }, { kind: "terminal" }, () => this.#admittedStep());
+  }
+  #admittedStep(): ReplayStep {
     if (!this.#live || this.completions.state.kind === "terminal") return { kind: "terminal" };
     try {
       return this.#step();
@@ -147,8 +154,8 @@ export class GpuReplay {
     this.#cursor?.record.release();
     this.#cursor = undefined;
     this.#waiting = undefined;
-    this.handles.retire();
     for (const device of this.#devices.values()) device.stop();
+    this.handles.retire();
     this.#buffers.dispose();
     this.#sources.dispose();
     this.#devices.clear();
@@ -919,11 +926,7 @@ export class GpuReplay {
   }
   #disposeObject(kind: ObjectKind, value: object): void {
     if (kind === "surface") {
-      try {
-        this.target.surfaces?.release(value);
-      } catch {
-        /* Continue retiring other native objects. */
-      }
+      this.target.surfaces?.release(value);
       return;
     }
     if (kind === "buffer") {
@@ -940,12 +943,8 @@ export class GpuReplay {
     if (kind !== "device" && !(kind === "texture" && this.#frameTextures.has(value))) return;
     this.#devices.get(value)?.stop();
     this.#devices.delete(value);
-    try {
-      nativeCall(value, "destroy", []);
-      if (kind === "device") this.#buffers.deviceDestroyed(value);
-    } catch {
-      /* Retirement continues after a native destruction exception. */
-    }
+    nativeCall(value, "destroy", []);
+    if (kind === "device") this.#buffers.deviceDestroyed(value);
     if (kind === "texture") this.target.surfaces?.textureDestroyed?.(value);
   }
 }

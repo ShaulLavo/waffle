@@ -1,3 +1,6 @@
+import type { ServiceAccess } from "../display/service-readers.js";
+import { FencedCommandReader } from "./command-reader.js";
+import { accessed } from "./access.js";
 import { CompletionOwner } from "./completions.js";
 import { GpuReplay, type ReplayTarget } from "./replay.js";
 import type { RecordRing } from "./ring.js";
@@ -24,15 +27,17 @@ export class GpuConnection {
   readonly completions: CompletionOwner;
   readonly replay: GpuReplay;
   readonly #reader: LogicalReader;
+  readonly commands: FencedCommandReader;
   constructor(
-    readonly commands: RecordRing,
+    commands: RecordRing,
     replies: RecordRing,
     target: ReplayTarget,
     credit: ServiceCredit,
-    options: { maxLogical?: number; arena?: Uint8Array; handles?: number } = {},
+    options: { access: ServiceAccess; requestRetirement?: (reason: number) => void; maxLogical?: number; arena?: Uint8Array; handles?: number },
   ) {
-    this.completions = new CompletionOwner({ commands, replies, arena: options.arena });
-    this.#reader = new LogicalReader(commands, credit, options.maxLogical);
+    this.commands = new FencedCommandReader(commands, options.access);
+    this.completions = new CompletionOwner({ commands, replies, arena: options.arena, access: options.access, requestRetirement: options.requestRetirement });
+    this.#reader = new LogicalReader(this.commands, credit, options.maxLogical);
     try {
       this.replay = new GpuReplay(target, this.completions, options.handles, credit);
     } catch (error) {
@@ -53,6 +58,10 @@ export class GpuConnection {
     this.completions.terminate(reason);
   }
   slice(budget: SliceBudget = DEFAULT_BUDGET): SliceResult {
+    return accessed<SliceResult>(this.completionsAccess, { kind: "terminal", bytes: 0 }, () => this.#slice(budget));
+  }
+  get completionsAccess(): ServiceAccess { return { run: (work) => this.completions.run(work) }; }
+  #slice(budget: SliceBudget): SliceResult {
     if (
       !Number.isFinite(budget.bytes) ||
       budget.bytes < 1 ||
@@ -78,6 +87,7 @@ export class GpuConnection {
       return { kind: step.presented ? "await" : "yield", bytes: step.bytes };
     }
     const read = this.#reader.read();
+    if (read.kind === "reader-closed") return { kind: "terminal", bytes: 0 };
     if (read.kind === "terminal") {
       this.close(read.reason);
       return { kind: "terminal", bytes: 0 };

@@ -1,3 +1,4 @@
+import { serviceAccess } from "./service-access.js";
 import { expect } from "bun:test";
 import { gpuStream } from "../../../browser/gpu/generated/tables.ts";
 import { encodeGpuCommand } from "../../../tooling/gpu-stream-layout.ts";
@@ -63,7 +64,7 @@ export function rig(target: ReplayTarget, capacity = 256, replyCapacity = 4096) 
   const commands = ring(capacity);
   const replies = ring(replyCapacity, 16);
   const credit = new ServiceCredit();
-  const connection = new GpuConnection(commands, replies, target, credit);
+  const connection = new GpuConnection(commands, replies, target, credit, { access: serviceAccess() });
   return { commands, replies, credit, connection };
 }
 export function send(connection: GpuConnection, bytes: Uint8Array): void {

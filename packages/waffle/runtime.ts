@@ -97,7 +97,7 @@ export type RuntimeSupervisor = Omit<
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,
-  "dispose" | "suspend" | "quiesce" | "ready"
+  "dispose" | "suspend" | "quiesce" | "ready" | "retainRootGraphics"
 > & {
   ready(): Promise<RuntimeSupervisor>;
 };
@@ -399,7 +399,7 @@ function sourceTime(): number | undefined {
 
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
-  const token = {};
+  const token: { display?: Promise<RuntimeDisplayOwner | undefined>; disposal?: Promise<void> } = {};
   owners[ownerKey] = token;
   let hostIdentity: ReturnType<typeof snapshotHostIdentity>;
   let reservations: RuntimeReservations;
@@ -715,6 +715,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         displayOwner = createDisplayOwner(assertLive);
         return displayOwner;
       });
+      token.display = ownedDisplay;
       displayActivation ??= ownedDisplay.then((owner) => {
         assertLive();
         if (!owner) throw new Error("Runtime is disposed");
@@ -884,10 +885,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           stops.map(([owner, stop]) => joinStop({ owner, stop, physicalStops, cleanupDebt })),
         );
         failures.push(...stopFailures(stopped));
+        const beforeDisplay = failures.length;
         if (ownedDisplay) {
           const pendingDisplay = ownedDisplay;
           await attempt(async () => (await pendingDisplay)?.dispose());
         }
+        if (failures.length !== beforeDisplay || displayOwner?.retained()) throwFailures();
         let network: RuntimeNetworkOwner | undefined;
         if (ownedNetwork) await attempt(async () => (network = await ownedNetwork));
         if (network) await attempt(() => network?.dispose());
@@ -911,6 +914,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (owners[ownerKey] === token) delete owners[ownerKey];
         throwFailures();
       });
+      token.disposal = disposal;
       // Wake page operations before activation/drain can await startup. Keep the worker
       // and any acquired ownership alive until admitted consumer sections have fenced;
       // the normal final filesystem.dispose() then performs the startup abort handshake.

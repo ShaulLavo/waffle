@@ -1,6 +1,7 @@
+import { serviceAccess } from "./service-access.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 import { GpuService } from "../../../browser/gpu/service.js";
-import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
+import type { GpuServiceRequest } from "../../../browser/display/service-protocol.js";
 import { pressureBurst } from "./qualification-contract.js";
 const host = globalThis as unknown as {
   postMessage(message: unknown): void;
@@ -47,7 +48,7 @@ const root =
         },
       }
     : undefined;
-const service = new GpuService((message) => host.postMessage(message), {
+const service = new GpuService((message) => host.postMessage(message), { access: serviceAccess(),
   root,
   suppressTransfer: params.get("suppress") === "1",
 });

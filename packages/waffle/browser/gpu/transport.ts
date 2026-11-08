@@ -8,7 +8,7 @@ import {
   typedArraySet,
   Uint8ArrayConstructor,
 } from "../../proc/intrinsics.js";
-import type { RecordRing, RingWriter } from "./ring.js";
+import type { RecordRing, RingWriter, RingReadResult } from "./ring.js";
 import {
   GPU_LIMITS,
   GPU_TERMINAL,
@@ -58,7 +58,7 @@ export class LogicalAppend {
   #chunkPayload = 0;
   readonly #chunkBytes: number;
   constructor(
-    readonly ring: RecordRing,
+    readonly ring: Pick<RecordRing, "capacity" | "recordHeaderBytes" | "tryAcquireWriter" | "terminal" | "terminate">,
     bytes: Uint8Array,
     readonly maxLogical: number = GPU_LIMITS.logicalBytes,
   ) {
@@ -162,7 +162,14 @@ export interface LogicalRecord {
   readonly bytes: Uint8Array;
   release(): void;
 }
+export type CommandReadResult = RingReadResult | { readonly kind: "reader-closed" };
+export interface CommandReadSource extends Pick<RecordRing, "capacity" | "recordHeaderBytes" | "terminal" | "terminate"> {
+  readInto(destination: Uint8Array): CommandReadResult;
+}
+
 export type LogicalRead =
+  | { readonly kind: "reader-closed" }
+
   | { kind: "record"; record: LogicalRecord }
   | { kind: "progress" }
   | { kind: "empty" }
@@ -175,7 +182,7 @@ export class LogicalReader {
   #scratch: Uint8Array | undefined;
   readonly #releaseScratch: () => void;
   constructor(
-    readonly ring: RecordRing,
+    readonly ring: CommandReadSource,
     readonly credit: ServiceCredit,
     readonly maxLogical: number = GPU_LIMITS.logicalBytes,
   ) {
@@ -223,7 +230,7 @@ export class LogicalReader {
     if (!scratch) throw new GpuProtocolError("Reader retired");
     const result = this.ring.readInto(scratch);
     if (result.kind === "short") throw new GpuResourceError("Physical record exceeds copy budget");
-    if (result.kind === "empty") return result;
+    if (result.kind === "empty" || result.kind === "reader-closed") return result;
     if (result.kind === "terminal") {
       this.dispose();
       return result;

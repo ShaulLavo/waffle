@@ -1,12 +1,11 @@
+import { createServiceReaders, type ServiceReaderFence, type JoinedServiceReaders } from "./service-readers.js";
+import type { GpuServiceRequest, GpuServiceReply, ServiceSurface } from "./service-protocol.js";
 import { validGraphicsOpen } from "./open.js";
 import { allocateSharedControl } from "../../memory/control.js";
 import type {
   GraphicsConnection,
   GraphicsGrant,
   GraphicsOpen,
-  GpuServiceRequest,
-  GpuServiceReply,
-  ServiceSurface,
 } from "./protocol.js";
 
 export interface DisplaySurface {
@@ -31,6 +30,7 @@ interface SurfaceOwner {
   state: "local" | "transferred" | "lost" | "disposed";
 }
 interface GrantOwner {
+  binding: ServiceOwner | undefined;
   readonly id: GrantId;
   readonly port: MessagePort;
   readonly revocation: Int32Array;
@@ -42,7 +42,15 @@ interface GrantOwner {
 interface ServiceOwner {
   readonly worker: Worker;
   readonly incarnation: ServiceIncarnation;
+  readonly readers: ServiceReaderFence;
+  readonly exposed: Map<GrantOwner, Set<GraphicsOpen>>;
+  retirement: { readonly readers: Promise<JoinedServiceReaders>; readonly settled: Promise<void> } | undefined;
+  phase: "live" | "closing" | "joined" | "retained";
 }
+// Reader join is not alias-release evidence. Keep original wrappers through page destruction.
+const retainedServices = new Set<ServiceOwner>();
+const ownedWorkers = new WeakSet<Worker>();
+
 export interface DisplayOwnerOptions {
   readonly workerUrl?: string | URL;
   readonly worker?: () => Worker;
@@ -61,12 +69,18 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
   let service: ServiceOwner | undefined;
   let disposed = false;
   let frame: number | undefined;
+  let disposal: Promise<void> | undefined;
+  let retained = false;
   const assertLive = () => {
     checkLive();
     if (disposed) throw new Error("Display disposed");
   };
   const post = (message: GpuServiceRequest, transfer: Transferable[] = []) =>
-    service!.worker.postMessage(message, transfer);
+    liveService().worker.postMessage(message, transfer);
+  const liveService = () => {
+    if (!service || service.phase !== "live") throw new Error("GPU service retirement pending");
+    return service;
+  };
   const finish = (grant: GrantOwner) => {
     if (grant.state === "retired") return;
     grant.state = "retired";
@@ -79,20 +93,42 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     grants.delete(grant.id);
     grant.retire();
   };
-  const failService = (owner: ServiceOwner) => {
-    if (service !== owner) return;
-    // Retire the actual failed worker before a future open can replace it.
-    service = undefined;
-    owner.worker.terminate();
+  const retireService = (owner: ServiceOwner) => {
+    if (owner.retirement) return owner.retirement;
+    owner.phase = "closing";
+    const closed = owner.readers.close();
     if (frame !== undefined) cancelAnimationFrame(frame);
     frame = undefined;
     for (const surface of surfaces.values())
       if (surface.state === "transferred") surface.state = "lost";
-    for (const grant of Array.from(grants.values())) {
-      for (const open of grant.opens.values()) settleOpen(open, -64, 5);
-      finish(grant);
+    for (const [grant, opens] of owner.exposed) {
+      grant.state = "revoking";
+      Atomics.store(grant.revocation, 0, 1);
+      Atomics.notify(grant.revocation, 0);
+      for (const open of opens) settleOpen(open, -64, 5);
     }
+    const readers = closed.join().then((proof) => {
+      if (!closed.accepts(proof)) throw new Error("Wrong GPU service reader proof");
+      for (const [grant, opens] of owner.exposed) {
+        for (const open of opens) settleOpen(open, -64, 5);
+        finish(grant);
+      }
+      owner.phase = "joined";
+      return proof;
+    });
+    const settled = readers.then(() => {
+      owner.worker.terminate();
+      if (service === owner) service = undefined;
+    }).catch((error: unknown) => {
+      owner.phase = "retained";
+      retained = true;
+      throw error;
+    });
+    owner.retirement = { readers, settled };
+    void settled.catch(() => {});
+    return owner.retirement;
   };
+  const failService = (owner: ServiceOwner) => { retireService(owner); };
   const tick = () => {
     frame = undefined;
     if (!service || disposed) return;
@@ -105,20 +141,30 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     frame = requestAnimationFrame(tick);
   };
   const activate = (): ServiceOwner => {
-    if (service) return service;
+    if (service) return liveService();
     assertLive();
-    const worker = createGpuWorker(options);
-    const owner = { worker, incarnation: serviceIncarnation(++incarnation) };
+    const readers = createServiceReaders();
+    let worker: Worker;
+    try {
+      worker = createGpuWorker(options);
+      if (ownedWorkers.has(worker)) throw new Error("GPU Worker already owned");
+      ownedWorkers.add(worker);
+    } catch (error) { readers.close(); throw error; }
+    const owner: ServiceOwner = { worker, readers, incarnation: serviceIncarnation(++incarnation), exposed: new Map(), phase: "live", retirement: undefined };
+    retainedServices.add(owner);
     service = owner;
     worker.onerror = () => failService(owner);
     worker.onmessageerror = () => failService(owner);
     worker.onmessage = ({ data }: MessageEvent<GpuServiceReply>) => {
-      if (service !== owner) return;
+      if (service !== owner || owner.phase !== "live") return;
       const grant = grants.get(data.grant);
-      if (!grant) return;
-      if (data.type === "retired") finish(grant);
+      if (!grant || grant.binding !== owner) return;
+      if (data.type === "retirement-failed") failService(owner);
+      else if (data.type === "retired" && grant.state === "revoking") finish(grant);
       else if (data.type === "closed") grant.opens.delete(data.id);
     };
+    try { worker.postMessage({ type: "bootstrap", readers: readers.bootstrap }); }
+    catch (error) { failService(owner); throw error; }
     frame = requestAnimationFrame(tick);
     return owner;
   };
@@ -128,7 +174,12 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     try {
       assertLive();
       if (grant.state !== "live") throw new Error("Revoked grant");
-      activate();
+      const owner = activate();
+      if (grant.binding && grant.binding !== owner) throw new Error("GPU grant belongs to retired service");
+      grant.binding = owner;
+      let exposure = owner.exposed.get(grant);
+      if (!exposure) owner.exposed.set(grant, (exposure = new Set()));
+      exposure.add(open);
       const transfer: Transferable[] = [];
       const attached: ServiceSurface[] = grant.surfaces.map((surface) => {
         if (surface.state === "lost" || surface.state === "disposed")
@@ -143,7 +194,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     } catch {
       settleOpen(open, -64, 5);
       if (service) failService(service);
-      else finish(grant);
+      if (!grant.binding) finish(grant);
     }
   };
   const revoke = (grant: GrantOwner) => {
@@ -154,14 +205,15 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     for (const open of grant.opens.values()) settleOpen(open, -64, 4);
     for (const surface of grant.surfaces)
       if (surface.holder === grant.id) surface.holder = undefined;
-    if (!service) {
+    if (!grant.binding) {
       finish(grant);
       return;
     }
     try {
-      post({ type: "revoke", grant: grant.id });
+      if (grant.binding.phase !== "live") return;
+      grant.binding.worker.postMessage({ type: "revoke", grant: grant.id });
     } catch {
-      failService(service);
+      failService(grant.binding);
     }
   };
   const refresh = (surface: SurfaceOwner) => {
@@ -256,6 +308,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       });
       const grant: GrantOwner = {
         id,
+        binding: undefined,
         port: channel.port1,
         revocation: new Int32Array(revocation),
         surfaces: selected,
@@ -302,20 +355,27 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
   });
   return {
     display,
+    retained: () => retained || (service !== undefined && service.phase !== "joined"),
     suspend() {
+      if (service) retireService(service);
       for (const grant of Array.from(grants.values())) revoke(grant);
     },
-    async dispose() {
-      if (disposed) return;
+    dispose(): Promise<void> {
+      if (disposal) return disposal;
       disposed = true;
+      const retirement = service ? retireService(service) : undefined;
       for (const grant of Array.from(grants.values())) revoke(grant);
-      if (service) failService(service);
-      observer?.disconnect();
-      globalThis.removeEventListener?.("resize", visibility);
-      globalThis.removeEventListener?.("focus", visibility);
-      globalThis.removeEventListener?.("blur", visibility);
-      globalThis.document?.removeEventListener("visibilitychange", visibility);
-      surfaces.clear();
+      disposal = Promise.resolve().then(async () => {
+        await retirement?.settled;
+        observer?.disconnect();
+        globalThis.removeEventListener?.("resize", visibility);
+        globalThis.removeEventListener?.("focus", visibility);
+        globalThis.removeEventListener?.("blur", visibility);
+        globalThis.document?.removeEventListener("visibilitychange", visibility);
+        surfaces.clear();
+      }).catch((error: unknown) => { retained = true; throw error; });
+      void disposal.catch(() => {});
+      return disposal;
     },
   };
 }

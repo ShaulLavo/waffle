@@ -1,7 +1,7 @@
 import type { Dictionary } from "./lowering.js";
 import type { SurfaceTarget } from "./replay.js";
 import type { CompletionOwner } from "./completions.js";
-import type { ServiceSurface } from "../display/protocol.js";
+import type { ServiceSurface } from "../display/service-protocol.js";
 import { GpuCallError, GpuResourceError, type Handle } from "./protocol.js";
 
 interface Frame {
@@ -65,9 +65,10 @@ export class GpuSurfaces {
     for (const visible of this.#visible.values()) {
       const presenter = visible.presenter;
       if (!presenter || presenter.credit) continue;
-      presenter.credit = true;
-      presenter.owner.completions.publish("frame-credit", 0, 0, {
-        surface: { ...presenter.reference.handle },
+      presenter.owner.completions.run(() => {
+        presenter.credit = true;
+        presenter.owner.completions.publish("frame-credit", 0, 0, { surface: { ...presenter.reference.handle } });
+        return undefined;
       });
     }
   }
@@ -225,11 +226,15 @@ export class SurfaceConnection implements SurfaceTarget {
   }
   dispose(): void {
     if (!this.#live) return;
-    for (const reference of this.#references)
-      if (reference.visible.presenter?.owner === this) dropPresenter(reference.visible);
-    this.#references.clear();
     this.#sink.owner = undefined;
     this.#live = false;
+    const failures: unknown[] = [];
+    for (const reference of this.#references) {
+      try { if (reference.visible.presenter?.owner === this) dropPresenter(reference.visible); }
+      catch (error) { failures.push(error); }
+    }
+    this.#references.clear();
+    if (failures.length) throw new AggregateError(failures, "GPU presenter cleanup failed");
   }
   #reference(surface: object): SurfaceReference {
     for (const reference of this.#references)

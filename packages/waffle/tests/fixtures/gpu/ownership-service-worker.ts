@@ -1,3 +1,4 @@
+import { serviceAccess } from "./service-access.js";
 import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
 import { CompletionOwner } from "../../../browser/gpu/completions.js";
 import { GpuService } from "../../../browser/gpu/service.js";
@@ -6,7 +7,7 @@ import { GpuConnection, GpuScheduler } from "../../../browser/gpu/scheduler.js";
 import { LogicalReader } from "../../../browser/gpu/transport.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
 import { SurfaceConnection } from "../../../browser/gpu/surfaces.js";
-import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
+import type { GpuServiceRequest } from "../../../browser/display/service-protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 import { ringSnapshot, captureRingSnapshots } from "./ring-snapshot.js";
 
@@ -68,7 +69,7 @@ interface OpenAttempt {
 const attempts: OpenAttempt[] = [];
 let holdNextOpen = false;
 let pendingOpen: Open | undefined;
-const rings = new WeakMap<RecordRing, Owner>();
+const rings = new WeakMap<object, Owner>();
 const devices = new WeakMap<GPUDevice, Owner>();
 const presenters = new WeakMap<object, number>();
 let nextPresenter = 0;
@@ -619,7 +620,7 @@ const service = new GpuService((message) => {
     return;
   }
   host.postMessage(message);
-});
+}, { access: serviceAccess() });
 function ownerSnapshot(owner: Owner, capture: typeof ringSnapshot) {
   const connection = owner.connection;
   const visible = owner.surfaces?.visible.get(owner.open.surfaces[0]!.id);

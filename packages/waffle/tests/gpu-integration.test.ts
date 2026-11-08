@@ -1,3 +1,4 @@
+import { serviceAccess } from "./fixtures/gpu/service-access.js";
 import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import { validGraphicsOpen } from "../browser/display/open.js";
 import { afterEach, expect, test } from "bun:test";
@@ -199,7 +200,7 @@ test("initial service post failure terminates the failed worker before replaceme
 });
 test("service revocation terminalizes held adapter work and cannot resurrect", async () => {
   let resolve!: (adapter: object) => void;
-  const service = new GpuService(() => {}, {
+  const service = new GpuService(() => {}, { access: serviceAccess(),
     root: {
       requestAdapter: () =>
         new Promise<object>((yes) => {
@@ -235,7 +236,7 @@ test("service revocation terminalizes held adapter work and cannot resurrect", a
 });
 
 test("service setup failure settles open controls and only the offending connection", () => {
-  const service = new GpuService(() => {}, { root: {} });
+  const service = new GpuService(() => {}, { access: serviceAccess(), root: {} });
   cleanups.push(() => service.dispose());
   const invalid = openRecord();
   service.receive({ type: "open", grant: 1, open: invalid, surfaces: [{ id: 999 }] });
@@ -336,7 +337,7 @@ async function trackedNativeDevice(destroy: () => unknown = () => undefined) {
     if (original) Object.defineProperty(globalThis, "navigator", original);
     else Reflect.deleteProperty(globalThis, "navigator");
   });
-  const service = new GpuService(() => {});
+  const service = new GpuService(() => {}, { access: serviceAccess() });
   cleanups.push(() => service.dispose());
   cleanups.push(() => lost.resolve({ reason: "destroyed" }));
   const open = openRecord();

@@ -294,7 +294,10 @@ export interface ProcessPlan {
   readonly connection: boolean;
   readonly controls: boolean;
 }
+const graphicsRetentionBrand: unique symbol = Symbol("graphics control retention");
+export interface GraphicsControlRetention { readonly [graphicsRetentionBrand]: true; }
 export interface Ticket {
+  retainControlsForGraphics(): GraphicsControlRetention;
   readonly control: SharedControlGrant;
   readonly arena: Headroom | null;
   readonly group: Headroom | null;
@@ -531,6 +534,7 @@ export class SharedMemoryLedger {
     scope: Holder["scope"],
     value?: SharedArrayBuffer,
     memory?: WebAssembly.Memory,
+    state: HolderState = "live",
   ): Holder {
     const holder: Holder = {
       id: this.next++,
@@ -540,7 +544,7 @@ export class SharedMemoryLedger {
       scope,
       declaredBytes,
       chargedBytes,
-      state: "live",
+      state,
       receipts: 0,
       ...(memory ? { memory: new WeakRef(memory) } : {}),
       ...(value ? { value: new WeakRef(value) } : {}),
@@ -762,6 +766,10 @@ export class SharedMemoryLedger {
     };
     if (alias) alias.admission = "admitted";
     return {
+      retainControlsForGraphics: () => {
+        if (phase === "settled") throw new Error("Graphics retention must precede exposure");
+        return control.retain();
+      },
       control: control.grant,
       arena,
       group,
@@ -802,14 +810,22 @@ export class SharedMemoryLedger {
       : length;
   }
   private controlGrant(runtime: symbol, enabled: boolean) {
+    let retention: GraphicsControlRetention | undefined;
+    const retain = () => {
+      if (!enabled) throw new Error("Graphics launch needs control accounting");
+      retention ??= Object.freeze({ [graphicsRetentionBrand]: true as const });
+      return retention;
+    };
     if (!enabled || this.effectiveBudget() === null)
       return {
+        retain,
         grant: { kind: "unbounded" as const },
         stopped() {},
         failed() {},
         receipt: (buffer: SharedArrayBuffer) => {
           if (!enabled) return;
-          if (this.values.has(buffer)) return;
+          const existing = this.values.get(buffer);
+          if (existing) { if (retention) existing.state = "debt"; return; }
           this.record(
             runtime,
             "guest-control",
@@ -818,6 +834,8 @@ export class SharedMemoryLedger {
             this.controlCharge(buffer.byteLength),
             "runtime",
             buffer,
+            undefined,
+            retention ? "debt" : "live",
           );
         },
       };
@@ -848,6 +866,7 @@ export class SharedMemoryLedger {
     let settled = false;
     let received = 0;
     return {
+      retain: () => { const obligation = retain(); holder.state = "debt"; return obligation; },
       grant,
       receipt: (buffer: SharedArrayBuffer) => {
         if (seen.has(buffer)) return;

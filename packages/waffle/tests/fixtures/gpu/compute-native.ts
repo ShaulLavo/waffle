@@ -1,3 +1,4 @@
+import { serviceAccess } from "./service-access.js";
 import { gpuStream, gpuObjectKinds } from "../../../browser/gpu/generated/tables.js";
 import { nativeCall, nativeObject } from "../../../browser/gpu/lowering.js";
 import { GpuConnection } from "../../../browser/gpu/scheduler.js";
@@ -321,7 +322,7 @@ export async function computeNativeControl(control: string) {
     new RecordRing(new SharedArrayBuffer(64 + 4096), 8),
     replies,
     { root: gpu },
-    credit,
+    credit, { access: serviceAccess() },
   );
   connection.replay.handles.reserve(identity(3), "device");
   connection.replay.handles.bind(identity(3), "device", { kind: "native", value: device });
