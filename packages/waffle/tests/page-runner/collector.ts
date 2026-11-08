@@ -99,6 +99,9 @@ export class Collector {
     const entry = this.worker?.entry;
     return entry?.scriptURL === url.href ? entry.name : undefined;
   }
+  isWorkerScript(path: string): boolean {
+    return this.worker !== undefined && new URL(this.worker.entry.scriptURL).pathname === path;
+  }
   private workerAttempt: { state: DocumentState; attempt: WorkerAttempt } | undefined;
   declareWorker(caseId: string, entry: ServiceWorkerEntry): void {
     if (this.worker) throw new Error("Duplicate service worker declaration");

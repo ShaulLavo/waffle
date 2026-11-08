@@ -7,7 +7,12 @@ export type HostPeer = {
   reload(): Promise<HostPeer>;
   close(): Promise<void>;
 };
+export type HeldAssetRequest = {
+  continue(): Promise<void>;
+};
+export type AssetHoldCallback = (request: HeldAssetRequest) => Promise<void>;
 export type HostCase = {
+  holdAsset(path: string, callback: AssetHoldCallback): void;
   openPeer(): Promise<HostPeer>;
   readonly signal: AbortSignal;
   remainingMs(): number;
