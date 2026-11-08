@@ -191,7 +191,7 @@ export class AssetOwner {
           selection = { kind: "selected" };
           request.signal.throwIfAborted();
           handoff.resolve(this.ordinary(url));
-          return response.then(() => {});
+          return response.then(() => undefined);
         });
         void operation.catch((error) => {
           handoff.reject(error);
