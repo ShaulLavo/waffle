@@ -122,6 +122,18 @@ window.setTimeout(()=>{},8);`);
   }
   return { ok: true };
 }
+const sharedDeadlineModes = ["verdict-delivery", "teardown-report", "sync-hook"];
+function sharedDeadlineControl(
+  mode: string,
+  result: Awaited<ReturnType<typeof runPageSuite>>,
+): void {
+  if (!sharedDeadlineModes.includes(mode)) return;
+  const timedOut = result.failures.some(
+    (failure) => failure.category === "host" && failure.detail.includes("timed out"),
+  );
+  if (result.runComplete || !timedOut)
+    throw new Error(`Host ${mode} did not enforce its shared teardown deadline`);
+}
 export async function hostControl(
   engine: "chromium" | "webkit",
   mode: string,
@@ -207,6 +219,9 @@ export async function hostControl(
     "final-ack",
     "interruption",
     "deadline-teardown",
+    "verdict-delivery",
+    "teardown-report",
+    "sync-hook",
   ].includes(mode);
   const ordinary = [
     "query-deadline-no-observer",
@@ -216,11 +231,11 @@ export async function hostControl(
     "disposal-fail",
     "array-mismatch",
     "thenable",
-    "sync-hook",
     "large-errors",
   ].includes(mode);
   if (result.exit !== (infra ? 2 : 4))
     throw new Error(`Host ${mode} wrong exit ${JSON.stringify(result)}`);
+  sharedDeadlineControl(mode, result);
   if (!infra && (result.failures.length || !result.runComplete))
     throw new Error(`Host ${mode} infrastructure failure ${JSON.stringify(result)}`);
   if (!infra && result.outcomes.host?.status !== (ordinary ? "fail" : "pass"))
