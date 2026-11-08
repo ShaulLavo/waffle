@@ -507,7 +507,11 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
   const owner = owners.find((entry) => entry.connection.completions === this.completions);
   if (!owner) throw new Error("Ownership surface observer missing");
   owner.surfaces = this;
-  life("configure", owner, presenterId(this.surfaceOwner.resource(owner.open.surfaces[0]!.id)?.presenter));
+  life(
+    "configure",
+    owner,
+    presenterId(this.surfaceOwner.resource(owner.open.surfaces[0]!.id)?.presenter),
+  );
   return result;
 };
 function releasedPresenter(connection: SurfaceConnection, release: () => void) {

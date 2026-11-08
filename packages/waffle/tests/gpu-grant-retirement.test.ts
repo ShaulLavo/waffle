@@ -2,10 +2,17 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { GpuService } from "../browser/gpu/service.js";
 import { GpuScheduler, type GpuConnection } from "../browser/gpu/scheduler.js";
 import { RecordRing } from "../browser/gpu/ring.js";
-import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import type { GraphicsOpen } from "../browser/display/protocol.js";
 import type { GpuServiceReply } from "../browser/display/service-protocol.js";
-import { command, deferred, handle, ROOT, settle, words } from "./fixtures/gpu/core-fixture.js";
+import {
+  command,
+  deferred,
+  graphicsOpen as open,
+  handle,
+  ROOT,
+  settle,
+  words,
+} from "./fixtures/gpu/core-fixture.js";
 import { gpuObjectKinds } from "../browser/gpu/generated/tables.js";
 import type { ServiceAccess } from "../browser/display/service-readers.js";
 import { serviceAccess, serviceReaderOwner } from "./fixtures/gpu/service-access.js";
@@ -14,16 +21,6 @@ const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
 });
-function open(id = 1): GraphicsOpen {
-  return {
-    type: "open",
-    id,
-    control: new SharedArrayBuffer(64),
-    commands: new SharedArrayBuffer(4160),
-    replies: new SharedArrayBuffer(4160),
-    arena: new SharedArrayBuffer(gpuPayloadLayout.byteLength),
-  };
-}
 function write(open: GraphicsOpen, name: string, fields: unknown) {
   const writer = new RecordRing(open.commands, 8).tryAcquireWriter();
   if (writer.kind !== "acquired") throw new Error("writer missing");
@@ -369,7 +366,6 @@ for (const mode of ["release", "retirement"] as const) {
   }
 }
 
-
 test("late first surface transfer remains available to a fresh grant after original retirement", async () => {
   const rig = taskService({});
   const original = open(),
@@ -395,5 +391,7 @@ test("late first surface transfer remains available to a fresh grant after origi
   expect(attached).toBe(1);
   expect(rig.service.snapshot()).toMatchObject({ connections: 1, surfaces: 1 });
   expect(buffers.map((buffer) => Array.from(new Uint8Array(buffer)))).toEqual(frozen);
-  expect(rig.replies.filter((reply) => reply.type === "retired" && reply.grant === 1)).toHaveLength(1);
+  expect(rig.replies.filter((reply) => reply.type === "retired" && reply.grant === 1)).toHaveLength(
+    1,
+  );
 });

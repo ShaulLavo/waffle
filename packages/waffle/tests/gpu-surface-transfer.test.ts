@@ -2,30 +2,19 @@ import { afterEach, expect, test } from "bun:test";
 import { createDisplayOwner, type DisplaySurface } from "../browser/display/owner.js";
 import { GpuSurfaces } from "../browser/gpu/surfaces.js";
 import { GpuService } from "../browser/gpu/service.js";
-import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import type { GraphicsOpen } from "../browser/display/protocol.js";
 import type {
   GpuServiceRequest,
   GpuServiceReply,
   ServiceBootstrap,
 } from "../browser/display/service-protocol.js";
-import { rig as coreRig } from "./fixtures/gpu/core-fixture.js";
+import { graphicsOpen as open, rig as coreRig } from "./fixtures/gpu/core-fixture.js";
 import { enrollGraphics, serviceReaderOwner } from "./fixtures/gpu/service-access.js";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
 });
-function open(id = 1): GraphicsOpen {
-  return {
-    type: "open",
-    id,
-    control: new SharedArrayBuffer(64),
-    commands: new SharedArrayBuffer(4160),
-    replies: new SharedArrayBuffer(4160),
-    arena: new SharedArrayBuffer(gpuPayloadLayout.byteLength),
-  };
-}
 function transport(open: GraphicsOpen) {
   return [open.control, open.commands, open.replies, open.arena].map((buffer) =>
     Array.from(new Uint8Array(buffer)),
