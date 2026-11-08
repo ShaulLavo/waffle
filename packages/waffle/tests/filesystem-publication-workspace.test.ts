@@ -354,10 +354,7 @@ test("a page of workspace data plus packed metadata crosses the bridge privately
   try {
     const data = new Uint8Array(PAGE).fill(5);
     await w.client.asyncCall("writeFile", ["/dir/page"], data);
-    const page: { node: number } = await w.client.asyncCall("resolve", [
-      w.f.directory,
-      "dir/page",
-    ]);
+    const page: { node: number } = await w.client.asyncCall("resolve", [w.f.directory, "dir/page"]);
     const stored: Uint8Array = await w.client.asyncCall("read", [page.node, PAGE, 0]);
     expect(Buffer.compare(stored, data)).toBe(0);
     expect(privateCharge(w.memory)).toBe(0);

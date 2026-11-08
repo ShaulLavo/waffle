@@ -124,7 +124,9 @@ test("private input fills the logical limit and refuses a later inline request",
   const held = f.allocator.allocate(1024, 130_000);
   expect(requestMemoryResources(f.memory).pendingBytes).toBe(130_048);
   const before = counters(f.memory);
-  expect(() => f.allocator.allocate(2000)).toThrow("filesystem connection request memory exhausted");
+  expect(() => f.allocator.allocate(2000)).toThrow(
+    "filesystem connection request memory exhausted",
+  );
   expect(errnoOf(() => f.allocator.allocate(2000))).toBe(48);
   expect(counters(f.memory)).toEqual(before);
   release(held);
@@ -644,8 +646,7 @@ function bytesOfInput(length: number): Uint8Array {
 async function nextTurn(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
-const privateOf = (memory: FilesystemRequestMemory) =>
-  requestMemoryResources(memory).privateBytes;
+const privateOf = (memory: FilesystemRequestMemory) => requestMemoryResources(memory).privateBytes;
 
 test("a 70 MiB write with metadata keeps the arena small", async () => {
   const f = served(new MemoryBackend());
@@ -944,7 +945,11 @@ test("explicit oversized response capacity keeps physical blocks bounded and res
 
     await f.client.asyncCall("mkdirp", ["/listing"]);
     for (let index = 0; index < 900; index++)
-      await f.client.asyncCall("writeFile", [`/listing/entry-${index}-${"n".repeat(180)}`], new Uint8Array([1]));
+      await f.client.asyncCall(
+        "writeFile",
+        [`/listing/entry-${index}-${"n".repeat(180)}`],
+        new Uint8Array([1]),
+      );
     const directory: number = (await f.client.asyncCall("resolve", [root, "listing"])).node;
     const pageBytes = 500_000;
     const big = f.client.submit("readdirPage", [directory, 0n, pageBytes], undefined, pageBytes);

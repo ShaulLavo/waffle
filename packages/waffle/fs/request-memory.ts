@@ -609,11 +609,7 @@ export class FilesystemRequestAllocator {
       throw error;
     }
   }
-  private place(
-    capacity: number,
-    needed: number,
-    privateLength: number,
-  ): FilesystemRequestBuffer {
+  private place(capacity: number, needed: number, privateLength: number): FilesystemRequestBuffer {
     const used = get(this.memory, C.used);
     let at = 0;
     while (at < used) {

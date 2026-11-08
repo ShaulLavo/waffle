@@ -137,13 +137,17 @@ interface Session {
 function sessionRevoked(session: Session): boolean {
   return isRevoked(session.connection) || !!requestTransportError(session.requests);
 }
-/** A retained reply must not keep a refunded private input reachable through a shared backing. */
+function requestInput(session: Session, id: number, response: Uint8Array): Uint8Array {
+  return session.privateInputs.get(id) ?? response;
+}
+/** A retained reply must not keep a refunded private input reachable through a shared backing.
+ * An inline input cannot alias an overflowing result: it fits the response room by construction. */
 function independentResponse(
   result: Uint8Array,
-  privateInput: Uint8Array | undefined,
+  input: Uint8Array,
   release: () => void,
 ): Uint8Array {
-  if (!privateInput || typedArrayBuffer(result) !== typedArrayBuffer(privateInput)) return result;
+  if (typedArrayBuffer(result) !== typedArrayBuffer(input)) return result;
   try {
     return result.slice();
   } catch (error) {
@@ -437,8 +441,7 @@ export class FilesystemService {
     let barrier = false;
     try {
       const cells = requestCells(buffer);
-      const bytes = session.privateInputs.get(id) ?? requestBytes(buffer);
-      const input = unpack(bytes.subarray(0, cells[1]!));
+      const input = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, cells[1]!));
       barrier = input.operation === "flush" || input.operation === "sync";
     } catch {
       /* request() reports malformed input through its completion */
@@ -1028,8 +1031,7 @@ export class FilesystemService {
   ): Promise<void> {
     const cells = requestCells(buffer);
     const response = requestBytes(buffer);
-    const privateInput = session.privateInputs.get(id);
-    const bytes = privateInput ?? response;
+    const bytes = requestInput(session, id, response);
     let state = State.Complete;
     let mutation = false;
     let preparing = false;
@@ -1079,7 +1081,7 @@ export class FilesystemService {
       for (const segment of segments)
         for (const peer of this.sessions)
           peer.connection.port.postMessage({ segment: segment.index });
-      state = this.writeResponse(session, id, cells, response, value, privateInput);
+      state = this.writeResponse(session, id, cells, response, value, bytes);
     } catch (error) {
       this.discardResponse(session, id);
       if (
@@ -1173,7 +1175,7 @@ export class FilesystemService {
     cells: Int32Array,
     bytes: Uint8Array,
     value: unknown,
-    privateInput: Uint8Array | undefined,
+    input: Uint8Array,
   ): State {
     const binary = value instanceof Uint8Array;
     const result = binary ? value : pack(value);
@@ -1182,7 +1184,7 @@ export class FilesystemService {
     const response = session.responses.get(id);
     if (result.length > bytes.length) {
       const release = retainResponseBytes(session.requests, result.length);
-      const stored = independentResponse(result, privateInput, release);
+      const stored = independentResponse(result, input, release);
       this.holdResponseMemory(session, id, release);
       if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: stored };
       else session.responses.set(id, { kind: "bytes", bytes: stored });
