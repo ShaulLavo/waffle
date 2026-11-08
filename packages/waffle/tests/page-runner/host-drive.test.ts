@@ -936,3 +936,108 @@ test("one overdue operation fails within a still-valid body deadline", () =>
     expect(driver.effects).toEqual([]);
     expect(result.outcomes.host?.status).not.toBe("pass");
   }));
+
+
+test("body timeout uses its original start and two elapsed-only readiness credits accumulate", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    const a = adapter(async (host) => {
+      const now = spyOn(performance, "now");
+      const start = performance.now();
+      try {
+        now.mockReturnValue(start + 10);
+        host.setTimeout(160);
+        expect(host.remainingMs()).toBeCloseTo(150, -1);
+        now.mockReturnValue(start + 30);
+        host.setTimeout(110);
+        expect(host.remainingMs()).toBeCloseTo(80, -1);
+        now.mockReturnValue(start + 35);
+        host.setTimeout(190);
+        now.mockReturnValue(start + 55);
+        host.setTimeout(130);
+        expect(host.remainingMs()).toBeCloseTo(75, -1);
+        now.mockReturnValue(start + 65);
+        expect(host.remainingMs()).toBeCloseTo(65, -1);
+        expect(budgets.case).toBe(80);
+      } finally { now.mockRestore(); }
+      return true;
+    });
+    expect((await runPageSuite(a, () => d, options(root))).exit).toBe(0);
+  }));
+
+test("timeout decrease expires synchronously before the monitor and cannot revive", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    let checked = false;
+    const result = await runPageSuite(adapter(async (host) => {
+      const now = spyOn(performance, "now").mockReturnValue(performance.now() + 40);
+      try {
+        expect(() => host.setTimeout(20)).toThrow("timed out");
+        expect(host.signal.aborted).toBe(true);
+        expect(() => host.setTimeout(1000)).toThrow("timed out");
+        checked = true;
+      } finally { now.mockRestore(); }
+      return true;
+    }), () => d, options(root));
+    expect(checked).toBe(true);
+    expect(result.exit).toBe(1);
+    expect(result.cleanup.scratch.status).toBe("confirmed");
+  }));
+
+for (const timeout of [0, -1, NaN, Infinity, -Infinity]) {
+  test(`invalid timeout ${timeout} leaves the body unchanged`, () => fixture(async (root) => {
+    const result = await runPageSuite(adapter(async (host) => {
+      const before = host.remainingMs();
+      expect(() => host.setTimeout(timeout)).toThrow("positive and finite");
+      expect(host.signal.aborted).toBe(false);
+      expect(host.remainingMs()).toBeLessThanOrEqual(before);
+      return true;
+    }), () => new HostDriver(), options(root));
+    expect(result.exit).toBe(0);
+  }));
+}
+
+test("an already expired body rejects an extension and a returned capability stays revoked", () =>
+  fixture(async (root) => {
+    let captured: HostCase | undefined;
+    const result = await runPageSuite(adapter(async (host) => {
+      captured = host;
+      const now = spyOn(performance, "now").mockReturnValue(performance.now() + 81);
+      try { expect(() => host.setTimeout(1000)).toThrow("timed out"); }
+      finally { now.mockRestore(); }
+      return true;
+    }), () => new HostDriver(), options(root));
+    expect(result.exit).toBe(1);
+    expect(() => captured?.setTimeout(1000)).toThrow();
+  }));
+
+test("in-flight dispatch and sleep follow an extension instead of the old body timer", () =>
+  fixture(async (root) => {
+    const d = new HostDriver();
+    const script = d.script.bind(d);
+    const entered = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    d.script = async (source) => {
+      if (source.includes("window.effects.push(23)")) {
+        entered.resolve();
+        await held.promise;
+      }
+      return script(source);
+    };
+    try {
+      const result = await runPageSuite(adapter(async (host) => {
+        const command = host.script("window.effects.push(23);");
+        await entered.promise;
+        const sleeping = host.sleep(110);
+        host.setTimeout(400);
+        await sleeping;
+        expect(host.signal.aborted).toBe(false);
+        held.resolve();
+        await command;
+        return true;
+      }), () => d, { ...options(root), cleanupTimeoutMs: 500 });
+      expect(result.exit).toBe(0);
+      expect(d.effects).toEqual([23]);
+      expect(result.cleanup.scratch.status).toBe("confirmed");
+    } finally { held.resolve(); }
+  }));
