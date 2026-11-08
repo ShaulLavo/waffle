@@ -185,6 +185,7 @@ export class LogicalReader {
   #assembly: Assembly | undefined;
   lastReadBytes = 0;
   #scratch: Uint8Array | undefined;
+  #terminalReason: number | undefined;
   readonly #releaseScratch: () => void;
   constructor(
     readonly ring: CommandReadSource,
@@ -213,15 +214,19 @@ export class LogicalReader {
   read(): LogicalRead {
     this.lastReadBytes = 0;
     if (!this.#scratch)
-      return { kind: "terminal", reason: this.ring.terminal()?.reason ?? GPU_TERMINAL.closed };
+      return {
+        kind: "terminal",
+        reason: this.#terminalReason ?? this.ring.terminal()?.reason ?? GPU_TERMINAL.closed,
+      };
     try {
       return this.#read();
     } catch (error) {
       const reason =
         error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol;
       this.ring.terminate(reason);
+      this.#terminalReason = this.ring.terminal()?.reason ?? reason;
       this.dispose();
-      return { kind: "terminal", reason: this.ring.terminal()?.reason ?? reason };
+      return { kind: "terminal", reason: this.#terminalReason };
     }
   }
   dispose(): void {
@@ -237,6 +242,7 @@ export class LogicalReader {
     if (result.kind === "short") throw new GpuResourceError("Physical record exceeds copy budget");
     if (result.kind === "empty" || result.kind === "reader-closed") return result;
     if (result.kind === "terminal") {
+      this.#terminalReason = result.reason;
       this.dispose();
       return result;
     }
