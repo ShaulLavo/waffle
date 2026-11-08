@@ -169,3 +169,26 @@ test("abandonment keeps a previously selected local terminal without reading clo
     terminal.mockRestore();
   }
 });
+
+test("installed ownership disposal observer preserves every selected terminal", async () => {
+  const worker = new Worker(
+    new URL("./fixtures/gpu/ownership-reader-terminal-worker.ts", import.meta.url),
+  );
+  try {
+    const result = await new Promise<unknown>((resolve, reject) => {
+      worker.onmessage = ({ data }) => resolve(data);
+      worker.onerror = (event) => reject(new Error(event.message));
+    });
+    expect(result).toEqual({
+      results: Object.values(GPU_TERMINAL).map((reason) => ({
+        expected: reason,
+        result: { kind: "terminal", reason },
+        readBytes: 0,
+        credit: 0,
+        unchanged: true,
+      })),
+    });
+  } finally {
+    await worker.terminate();
+  }
+});

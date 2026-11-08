@@ -495,8 +495,8 @@ function corrupt(owner: Owner, view: DataView) {
   };
 }
 const disposeReader = LogicalReader.prototype.dispose;
-LogicalReader.prototype.dispose = function () {
-  const result = disposeReader.call(this);
+LogicalReader.prototype.dispose = function (reason) {
+  const result = disposeReader.call(this, reason);
   const owner = rings.get(this.ring);
   if (owner) owner.readerDisposed = true;
   return result;
