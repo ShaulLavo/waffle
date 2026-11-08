@@ -44,6 +44,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/gpu/{codec,lowering,replay}.ts`, `tests/gpu-scene-*`, `tests/fixtures/gpu/scene-*.ts`                                             | Original adapter      | Creation, byte-span uploads, resource unions, explicit layouts, indexed bindings, copy/draw-state and depth/stencil controls against the pinned C schema and browser API. No upstream replay implementation copied.                                                                                                                                                                                                          |
 | `browser/gpu/{buffers,payload,metadata}.ts`, `browser/display/{open.ts,generated/graphics-layout.ts}`, `tests/gpu-async-*`                 | Original adapter      | Native mapping epochs, fixed payload ownership, checked C output projection, direct UTF-8 encoding and async controls. No upstream runtime implementation was copied. Geometry constants are generated from original Waffle selection metadata.                                                                                                                                                                              |
 | `browser/gpu/method-coverage.json`                                                                                                         | Mechanical derivation | Individual object method and global function names from the pinned webgpu-headers YAML above, BSD-3-Clause. Coverage categories, pending slices, reasons and selected-call metadata are original Waffle policy; no method implementations copied.                                                                                                                                                                            |
+| `tests/page-runner/framework-dom-page.ts` | Adapted control | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit, not to replace the installed framework. See [Framework operation controls](#framework-operation-controls). |
 
 ## GNU diffutils
 
@@ -541,3 +542,26 @@ kinds 16 through 19 and output structures from the same YAML. Mutable C outputs 
 signatures are checked before pointer removal. Both kinds of extensible output structure
 encode an explicit empty chain. Payload-directory constants and source-size sentinel
 normalization are original Waffle protocol rules. Independent literals cover these bytes.
+
+## Framework operation controls
+
+The synthetic viewport controls in `tests/page-runner/framework-dom-page.ts` adapt
+`page.viewport` in `@vitest/browser` 5.0.2 `dist/context.js` and the CSS/done/fail
+route in `dist/client/__vitest_browser__/orchestrator-M9828UZ-.js`. The exact npm
+archive is pinned in `bun.lock` with SHA-512
+`nX9xXZ/j8YfU7KTeFa+tpSP331SbI81qBQTASRlcopYeaTgBerNmJryzHXHrFOW0NYldd3Dn5gw651zGnmaQzw==`.
+The upstream package uses the MIT license.
+
+The fixture uses a synthetic iframe identifier, local HTTP provider dispatch and
+renamed window-message events instead of the framework's BroadcastChannel and
+RPC. It retains iframe-only completion matching, CSS resizing and done/fail
+ordering. These adaptations isolate sequential sizing, same-size completion,
+restoration and the concurrent-call correlation limit without importing original
+tests. They do not qualify the installed ordinary page method or an official
+screenshot callback. Fixture callback bytes are explicitly not a DOM image.
+
+The shared host operation boundary, callback scopes, recursive joins, local
+closure fact, document invalidation and transport ownership checks are original
+Waffle adapters. They copy no SDK screenshot, image conversion or filesystem
+implementation. Consumer registration and mutable-context integration remain
+consumer-owned work.

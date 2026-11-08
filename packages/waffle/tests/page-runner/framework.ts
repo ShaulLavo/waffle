@@ -11,6 +11,8 @@ export type {
   FrameworkHost,
   FrameworkResult,
   ProviderOperation,
+  ViewportOperation,
+  ScreenshotOperation,
   VitestEnd,
   FrameAdapter,
   TransportEvents,

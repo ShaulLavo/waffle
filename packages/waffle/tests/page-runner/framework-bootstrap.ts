@@ -14,7 +14,9 @@ export function installFrameworkBootstrap(config: Configuration): void {
   const reporter = new OrderedReporter<Body>(config.run);
   const state = reporter.observation;
   let admitted = false,
-    permit: string | null = null;
+    permit: string | null = null,
+    contentClosed = false,
+    invalidated = false;
   let iframe: HTMLIFrameElement | null = null,
     tester: Document | null = null;
   const admission = Promise.withResolvers<{ permit: string; width: 414; height: 896 }>();
@@ -39,15 +41,19 @@ export function installFrameworkBootstrap(config: Configuration): void {
     enqueue({ kind: "error", source: "early-rejection", error: String(event.reason) });
   addEventListener("error", error);
   addEventListener("unhandledrejection", rejection);
+  const closeContent = (event: FrameworkEvent): void => {
+    contentClosed = true;
+    enqueue(event);
+  };
   const observation: FrameworkObservation = {
     collected: (tasks) => send({ kind: "collected", tasks }),
     taskStarted: (id) => enqueue({ kind: "task-started", id }),
     taskUpdate: (updates) => enqueue({ kind: "task-update", updates }),
     caseSettled: (updates) => enqueue({ kind: "case-settled", updates }),
     error: (error, source) => enqueue({ kind: "error", error, source }),
-    executionFlushed: () => enqueue({ kind: "execution-flushed" }),
-    testerCleanupSettled: () => enqueue({ kind: "tester-cleanup-settled" }),
-    cleanupResponseReceived: () => enqueue({ kind: "cleanup-response-received" }),
+    executionFlushed: () => closeContent({ kind: "execution-flushed" }),
+    testerCleanupSettled: () => closeContent({ kind: "tester-cleanup-settled" }),
+    cleanupResponseReceived: () => closeContent({ kind: "cleanup-response-received" }),
     catcherInstalled: () => {
       removeEarlyListener("error", error);
       removeEarlyListener("unhandledrejection", rejection);
@@ -55,19 +61,51 @@ export function installFrameworkBootstrap(config: Configuration): void {
     waitForInitialViewport: () => admission.promise,
     waitForRetirement: () => retired.promise,
   };
-  const valid = () =>
-    document === capturedDocument && location.href === config.url && !state.retired;
-  const paired = () =>
-    valid() &&
-    iframe?.isConnected === true &&
-    iframe.contentDocument === tester &&
-    document.querySelectorAll("iframe[data-vitest]").length === 1;
+  const ancestors = new Set<Node>();
+  const inspectMutations = (records: MutationRecord[]): void => {
+    if (!iframe) return;
+    for (const record of records) inspectRemoved(record.removedNodes);
+  };
+  const inspectRemoved = (nodes: NodeList): void => {
+    for (const node of nodes) {
+      if (ancestors.has(node) || node === iframe || (iframe && node.contains(iframe)))
+        invalidated = true;
+    }
+  };
+  const mutations = new MutationObserver(inspectMutations);
+  mutations.observe(capturedDocument, { childList: true, subtree: true });
+  const releaseIdentity = (): void => {
+    mutations.disconnect();
+    removeEarlyListener("pagehide", pagehide);
+  };
+  const pagehide = (): void => {
+    invalidated = true;
+    releaseIdentity();
+  };
+  addEventListener("pagehide", pagehide);
+  const valid = () => {
+    inspectMutations(mutations.takeRecords());
+    if (document !== capturedDocument || location.href !== config.url) invalidated = true;
+    return !invalidated && !state.retired;
+  };
+  const paired = () => {
+    if (!valid()) return false;
+    if (!iframe) return false;
+    if (
+      !iframe.isConnected ||
+      iframe.contentDocument !== tester ||
+      document.querySelectorAll("iframe[data-vitest]").length !== 1
+    )
+      invalidated = true;
+    return !invalidated;
+  };
   const bridge = {
     snapshot: () => ({
       ...state,
       kind: config.kind,
       token: config.token,
       admitted,
+      contentClosed,
       valid: valid(),
       paired: config.kind === "tester" || paired(),
     }),
@@ -86,6 +124,7 @@ export function installFrameworkBootstrap(config: Configuration): void {
       if (!candidate.contentWindow?.__waffleFramework?.snapshot().doc) return null;
       iframe = candidate;
       tester = candidate.contentDocument;
+      for (let node = candidate.parentNode; node; node = node.parentNode) ancestors.add(node);
       return {
         doc: state.doc,
         frame: candidate,
@@ -131,6 +170,7 @@ export function installFrameworkBootstrap(config: Configuration): void {
       if (!valid() || state.pending !== 0 || state.failure || state.ackedThrough !== watermark)
         throw new Error("Document not drained at cutoff");
       state.retired = true;
+      releaseIdentity();
       reporter.stop();
       retired.resolve();
       return true;
@@ -181,6 +221,7 @@ declare global {
         kind: string;
         token: string;
         admitted: boolean;
+        contentClosed: boolean;
         valid: boolean;
         paired: boolean;
         ackedThrough: number;

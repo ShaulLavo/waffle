@@ -79,10 +79,12 @@ test("malformed responses caught by an SDK caller remain sticky via actual trans
     },
     off() {},
   });
-  await expect(queue.run(async () => {
-    const request = queue.guard({});
-    settle?.({ request, success: false, error: new Error("Could not parse response") });
-  })).rejects.toThrow("transport failed");
+  await expect(
+    queue.run(async () => {
+      const request = queue.guard({});
+      settle?.({ request, success: false, error: new Error("Could not parse response") });
+    }),
+  ).rejects.toThrow("transport failed");
   expect(faults).toContain("WebDriver transport failed before an observed parsed response");
   expect(queue.commandFailures[0]).toMatchObject({ client: "attached", stage: "unknown" });
   expect(JSON.stringify(queue.commandFailures)).not.toContain("Could not parse");
@@ -128,28 +130,41 @@ function deferred() {
   return Promise.withResolvers<void>();
 }
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
-  return promise.then(() => { throw new Error("Unexpected fulfillment"); }, (reason: unknown) => reason);
+  return promise.then(
+    () => {
+      throw new Error("Unexpected fulfillment");
+    },
+    (reason: unknown) => reason,
+  );
 }
 test("sealed parent cannot dispatch while its admitted child and grandchild remain live", async () => {
   const { queue } = fixture();
-  const parentDone = deferred(), childGo = deferred(), grandchildGo = deferred(), grandchildStarted = deferred();
+  const parentDone = deferred(),
+    childGo = deferred(),
+    grandchildGo = deferred(),
+    grandchildStarted = deferred();
   let late: Promise<unknown> | undefined;
+  const dispatchLate = () => {
+    late = rejection(queue.run(async () => queue.guard({})));
+  };
+  const grandchild = async () => {
+    grandchildStarted.resolve();
+    await grandchildGo.promise;
+    const request = queue.guard({});
+    queue.response({ statusCode: 200, body: { value: null } }, request);
+  };
+  const child = async () => {
+    await childGo.promise;
+    void queue.run(grandchild);
+  };
   const first = queue.run(async () => {
-    void parentDone.promise.then(() => {
-      late = rejection(queue.run(async () => queue.guard({})));
-    });
-    void queue.run(async () => {
-      await childGo.promise;
-      void queue.run(async () => {
-        grandchildStarted.resolve();
-        await grandchildGo.promise;
-        const request = queue.guard({});
-        queue.response({ statusCode: 200, body: { value: null } }, request);
-      });
-    });
+    void parentDone.promise.then(dispatchLate);
+    void queue.run(child);
   });
   let probed = false;
-  const next = queue.run(async () => { probed = true; });
+  const next = queue.run(async () => {
+    probed = true;
+  });
   await Promise.resolve();
   childGo.resolve();
   await grandchildStarted.promise;
@@ -165,16 +180,38 @@ test("discarded child rejection prevents fulfilled root success", async () => {
   const { queue } = fixture();
   const reason = Object.freeze({ marker: "exact child rejection" });
   const result = queue.run(async () => {
-    await queue.run(async () => { throw reason; }).catch(() => {});
+    await queue
+      .run(async () => {
+        throw reason;
+      })
+      .catch(() => {});
     return "not success";
   });
   expect(await rejection(result)).toBe(reason);
 });
-for (const reason of [undefined, null, false, 0, "", Object.create(null, { message: { get() { throw new Error("hostile"); } } })]) {
+const rootRejections: readonly unknown[] = [
+  undefined,
+  null,
+  false,
+  0,
+  "",
+  Object.create(null, {
+    message: {
+      get() {
+        throw new Error("hostile");
+      },
+    },
+  }),
+];
+for (const reason of rootRejections) {
   test("root rejection retains exact identity over child failure", async () => {
     const { queue } = fixture();
     const result = queue.run(async () => {
-      void queue.run(async () => { throw new Error("secondary child"); }).catch(() => {});
+      void queue
+        .run(async () => {
+          throw new Error("secondary child");
+        })
+        .catch(() => {});
       throw reason;
     });
     expect(Object.is(await rejection(result), reason)).toBe(true);
@@ -195,19 +232,25 @@ test("overlapping sibling frame callbacks are denied", async () => {
 
 test("live descendants admit new requests during recursive draining", async () => {
   const { queue } = fixture();
-  const childGo = deferred(), requestReady = deferred();
+  const childGo = deferred(),
+    requestReady = deferred();
   let request: RequestInit = {};
+  const grandchild = async () => {
+    request = queue.guard({});
+    requestReady.resolve();
+  };
+  const child = async () => {
+    await childGo.promise;
+    void queue.run(grandchild);
+  };
   const first = queue.run(async () => {
-    void queue.run(async () => {
-      await childGo.promise;
-      void queue.run(async () => {
-        request = queue.guard({});
-        requestReady.resolve();
-      });
-    });
+    void queue.run(child);
   });
   let nextEntered = false;
-  const next = queue.run(async () => { nextEntered = true; });
+  const next = queue.run(async () => {
+    nextEntered = true;
+  });
+  await Bun.sleep(0);
   childGo.resolve();
   await requestReady.promise;
   expect(nextEntered).toBe(false);
@@ -220,23 +263,43 @@ test("nested domain entry is rejected before callback invocation", async () => {
   const { queue } = fixture();
   let invoked = false;
   const root = queue.run(async () => {
-    await queue.run(async () => { invoked = true; }, "screenshot", { rootOnly: true }).catch(() => {});
+    await queue
+      .run(
+        async () => {
+          invoked = true;
+        },
+        "screenshot",
+        { rootOnly: true },
+      )
+      .catch(() => {});
   });
   await expect(root).rejects.toThrow("Nested framework domain");
   expect(invoked).toBe(false);
 });
 test("private finalizer gets its own scope and joins restoration before completion", async () => {
   const { queue } = fixture();
-  const restore = deferred(), restoring = deferred(), late = deferred();
+  const restore = deferred(),
+    restoring = deferred(),
+    late = deferred();
   let lateResult: Promise<unknown> | undefined;
-  const result = queue.run(async () => {
-    void late.promise.then(() => { lateResult = rejection(queue.run(async () => {})); });
-    return 42;
-  }, "screenshot", {
-    finalize: async () => {
-      void queue.run(async () => { restoring.resolve(); await restore.promise; }, "test-frame");
+  const dispatchLate = () => {
+    lateResult = rejection(queue.run(async () => {}));
+  };
+  const result = queue.run(
+    async () => {
+      void late.promise.then(dispatchLate);
+      return 42;
     },
-  });
+    "screenshot",
+    {
+      finalize: async () => {
+        void queue.run(async () => {
+          restoring.resolve();
+          await restore.promise;
+        }, "test-frame");
+      },
+    },
+  );
   await restoring.promise;
   late.resolve();
   await Bun.sleep(0);
@@ -246,18 +309,27 @@ test("private finalizer gets its own scope and joins restoration before completi
 });
 test("revocation cancels requests immediately but still waits for actual restoration", async () => {
   const { queue } = fixture();
-  const restoring = deferred(), release = deferred();
+  const restoring = deferred(),
+    release = deferred();
   let request: RequestInit = {};
   let finished = false;
   const result = queue.run(async () => 42, null, {
-    finalize: () => queue.run(async () => {
-      request = queue.guard({});
-      restoring.resolve();
-      await release.promise;
-      queue.response({ statusCode: 200, body: { value: null } }, request);
-    }, "test-frame"),
+    finalize: () =>
+      queue.run(async () => {
+        request = queue.guard({});
+        restoring.resolve();
+        await release.promise;
+        queue.response({ statusCode: 200, body: { value: null } }, request);
+      }, "test-frame"),
   });
-  void result.then(() => { finished = true; }, () => { finished = true; });
+  void result.then(
+    () => {
+      finished = true;
+    },
+    () => {
+      finished = true;
+    },
+  );
   await restoring.promise;
   queue.revoke();
   expect(request.signal?.aborted).toBe(true);
@@ -268,13 +340,59 @@ test("revocation cancels requests immediately but still waits for actual restora
 test("a fulfilled body cannot survive an expired actual HTTP join", async () => {
   const { queue, consumers } = fixture();
   let request: RequestInit = {};
-  const result = queue.run(async () => { request = queue.guard({}); return 42; });
+  const result = queue.run(async () => {
+    request = queue.guard({});
+    return 42;
+  });
+  let dispatched = false;
+  const next = rejection(
+    queue.run(async () => {
+      dispatched = true;
+    }),
+  );
   try {
     await expect(result).rejects.toThrow("settlement timed out");
+    expect(String(await next)).toContain("revoked");
+    expect(dispatched).toBe(false);
     expect(request.signal?.aborted).toBe(true);
     expect(await consumers.join(1)).toBe(false);
   } finally {
     queue.response({ statusCode: 200, body: { value: null } }, request);
     expect(await consumers.join(100)).toBe(true);
   }
+}, 8000);
+
+test("the actual observed SDK session is checked before requests and final success", async () => {
+  const { queue } = fixture();
+  queue.bindSession("owned-session");
+  const client = { sessionId: "owned-session", on() {}, off() {} };
+  const result = queue.run(async () => {
+    queue.observe(client);
+    client.sessionId = "replacement-session";
+    return "not success";
+  });
+  await expect(result).rejects.toThrow("SDK session identity changed");
+});
+test("transport observers remain until an unjoined actual request settles", async () => {
+  const { queue } = fixture();
+  let request: RequestInit = {},
+    removed = 0;
+  let settle: ((value: unknown) => void) | undefined;
+  const result = queue.run(async () => {
+    queue.observe({
+      on(_event: string, listener: (event: unknown) => void) {
+        settle = listener;
+      },
+      off() {
+        removed++;
+      },
+    });
+    request = queue.guard({});
+  });
+  await expect(result).rejects.toThrow("settlement timed out");
+  queue.releaseObservers();
+  expect(removed).toBe(0);
+  settle?.({ request, success: false });
+  await Bun.sleep(0);
+  expect(removed).toBe(1);
 }, 8000);
