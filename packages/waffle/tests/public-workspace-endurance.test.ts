@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DATA_PAGE_BYTES } from "../fs/storage-geometry";
 import { PAGE } from "../fs/protocol";
 import type { ReadOutcome, ReadValue, WorkspaceVfs } from "../fs/workspace-types";
 import { residentReadFixture } from "./fixtures/workspace-read";
@@ -93,7 +94,9 @@ async function cancellationCycle(value: Fixture, cycle: number): Promise<void> {
     expect(active.readerOperations).toBe(0);
     expect(active.readerTickets).toBe(1);
     expect(active.readerLeases).toBe(0);
-    expect(active.readerPinBytes).toBe(PAGE * 2);
+    expect(active.readerPinBytes).toBe(
+      Math.ceil(((cycle % PAGE) + PAGE + 17) / DATA_PAGE_BYTES) * DATA_PAGE_BYTES,
+    );
     expect(active.readerResultBytes).toBeGreaterThan(0);
     controller.abort();
     held.gate.resolve();

@@ -1,4 +1,5 @@
 import { FilesystemError } from "./protocol.js";
+import { DATA_PAGE_BYTES } from "./storage-geometry.js";
 import type { CheckpointLimits, CheckpointCost } from "./checkpoint-pressure.js";
 
 export interface DirtyLimits {
@@ -30,7 +31,6 @@ const NAMESPACE = 8,
 const REVISION = 13,
   REJECTED = 14,
   BASE_NAMESPACE = 15;
-export const DIRTY_HEADER_WORDS = 48;
 const DIRTY_PIN_UNITS = 2048;
 export const DIRTY_NODE_UNITS = 1024;
 const BASE_UNITS = 1024;
@@ -90,7 +90,7 @@ export class DirtyAdmission {
     if (!this.enabled) return;
     if (
       size * 2 > this.values[CAPTURE_BYTES]! ||
-      Math.ceil(size / 65536) * 65536 + size * 4 > this.values[MAX_BYTES]!
+      Math.ceil(size / DATA_PAGE_BYTES) * DATA_PAGE_BYTES + size * 4 > this.values[MAX_BYTES]!
     )
       this.reject(true);
     this.check(resident, Math.max(0, size - previous) * 2, first ? DIRTY_NODE_UNITS : 0);

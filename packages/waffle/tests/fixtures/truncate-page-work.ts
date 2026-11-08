@@ -1,5 +1,5 @@
 import type { SharedFilesystemState } from "../../fs/shared";
-import { PAGE } from "../../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE } from "../../fs/storage-geometry";
 
 export function measureTruncatePages(shared: SharedFilesystemState) {
   const counts = { reserved: 0, copied: 0 };

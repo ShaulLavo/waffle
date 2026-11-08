@@ -26,6 +26,21 @@ function capture(root: string, fallback: string, agent = "desktop") {
 function multiset(capture: { events: { rawURL?: string }[] }) {
   return capture.events.map(({ rawURL: _rawURL, ...event }) => JSON.stringify(event)).sort();
 }
+function withoutStorageRoot(value: Parameters<typeof multiset>[0], bytes: number) {
+  const events = multiset(value);
+  for (const outcome of ["attempt", "success"]) {
+    const root = JSON.stringify({
+      realm: "page-owned-javascript",
+      purpose: "startup",
+      constructor: "SharedArrayBuffer",
+      descriptor: { initial: bytes, maximum: bytes, growable: false },
+      outcome,
+    });
+    expect(events.filter((event) => event === root)).toHaveLength(1);
+    events.splice(events.indexOf(root), 1);
+  }
+  return events;
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
@@ -56,7 +71,9 @@ for (const [mode, agent] of [
         );
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
-      expect(multiset(current)).toEqual(multiset(baseline));
+      expect(withoutStorageRoot(current, 88_098_640)).toEqual(
+        withoutStorageRoot(baseline, 64 * 1024 * 1024),
+      );
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
