@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { cpSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { cThreadSafariRunner } from "./c-threads-packet.js";
 
 const packageRoot = resolve(import.meta.dir, "..");
 const omitted = new Set(["node_modules", "dist", "target"]);
@@ -71,6 +72,9 @@ for (const location of locations) {
       expect(result.outputs).toHaveLength(1);
       expect(result.outputs[0]!.size).toBeGreaterThan(0);
     }
+    expect(packet.cThreadSafariRunner).toBe(
+      join(scratch, location, relative(packageRoot, cThreadSafariRunner)),
+    );
     const safari = await Bun.build({ entrypoints: [packet.cThreadSafariRunner], target: "bun" });
     expect(safari.success, safari.logs.map(String).join("\n")).toBe(true);
     expect(safari.outputs).toHaveLength(1);

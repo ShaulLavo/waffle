@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { bytes } from "../memory/index.ts";
 import { cThreadControlDebt } from "./c-threads-runtime-browser.ts";
 
 const directory = process.env.C_THREAD_FIXTURE_DIR;
-const runner = new URL("./c-threads-runtime-browser-runner.ts", import.meta.url).pathname;
+const runner = fileURLToPath(new URL("./c-threads-runtime-browser-runner.ts", import.meta.url));
 
 test("the C Runtime runner requires an explicit artifact and never builds one", async () => {
   const child = Bun.spawn([process.execPath, runner, "--bun"], {
