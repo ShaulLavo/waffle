@@ -15,6 +15,7 @@ import { browserBundle } from "./browser-runner-lifecycle.js";
 import { serviceFailureCases } from "./gpu-service-failure-browser.js";
 import { disposalCases } from "./gpu-disposal-browser.js";
 import { regrantCases } from "./gpu-regrant-browser.js";
+import { grantQuotaCases } from "./gpu-grant-quota-browser.js";
 import { admissionCases } from "./gpu-admission-browser.js";
 import { malformedCases } from "./gpu-malformed-browser.js";
 import { ownershipCases } from "./gpu-ownership-browser.js";
@@ -418,6 +419,7 @@ async function main() {
       type: "application/wasm",
     });
     const url = runner.serve(routes);
+    const quotaOnly = process.argv.includes("--grant-quota-only");
     const priorOnly = process.argv.includes("--prior-only");
     const serviceFailureOnly = process.argv.includes("--service-failure-only");
     const disposalOnly = process.argv.includes("--disposal-only");
@@ -426,6 +428,7 @@ async function main() {
       .slice(2)
       .filter(
         (arg) =>
+          arg !== "--grant-quota-only" &&
           arg !== "--regrant-only" &&
           arg !== "--disposal-only" &&
           arg !== "--service-failure-only" &&
@@ -445,6 +448,16 @@ async function main() {
       await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const grantQuota =
+        priorOnly || serviceFailureOnly || disposalOnly || regrantOnly
+          ? undefined
+          : await grantQuotaCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "grant-quota", grantQuota }));
+      if (quotaOnly) {
+        await context.close();
+        await runner.closeBrowser(browser);
+        continue;
+      }
       const serviceFailure =
         priorOnly || disposalOnly || regrantOnly
           ? undefined

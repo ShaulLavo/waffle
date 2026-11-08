@@ -6,6 +6,8 @@ import {
 } from "../../../browser/worker.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
 import { poisonProcessIntrinsics } from "../process-intrinsics.js";
+import { sharedArrayBufferByteLength } from "../../../proc/intrinsics.js";
+import { consumedControlBytes } from "../../../memory/control.js";
 import { importUnwind } from "./import-unwind.js";
 
 const host = globalThis as unknown as {
@@ -28,11 +30,14 @@ function observeWait(this: RecordRing, seen: number, timeout: number, live: () =
 function observeImports(
   imports: WebAssembly.Imports,
   token: string | undefined,
+  quota:
+    | (() => { consumed: number; limit: number; receiptBytes: number; lengths: number[] })
+    | undefined,
   authority: () => ReturnType<ReturnType<typeof poisonProcessIntrinsics>["restore"]> | undefined,
 ): void {
   if (!token || !imports.runtime_gpu) return;
   RecordRing.prototype.wait = observeWait;
-  for (const name of ["open", "append", "completions"]) {
+  for (const name of ["open", "append", "completions"].concat(quota ? ["close"] : [])) {
     const original = imports.runtime_gpu[name];
     if (typeof original !== "function") throw new Error("Missing observed GPU import");
     imports.runtime_gpu[name] = function (this: unknown, ...args: (number | bigint)[]) {
@@ -47,11 +52,12 @@ function observeImports(
           connection: args[0],
           length: args[2],
           authority: authority(),
+          quota: quota?.(),
         },
       });
       try {
         const result = apply(original, this, args);
-        send({ gpuImport: { token, call, name, phase: "return", result } });
+        send({ gpuImport: { token, call, name, phase: "return", result, quota: quota?.() } });
         return result;
       } catch (error) {
         send({ gpuImport: { token, call, name, phase: "throw", unwind: importUnwind(error) } });
@@ -67,6 +73,17 @@ const add = globalThis.addEventListener.bind(globalThis),
 host.onmessage = async ({ data }) => {
   let poison: ReturnType<typeof poisonProcessIntrinsics> | undefined;
   const receipts: SharedArrayBuffer[] = [];
+  const receiptLengths: number[] = [];
+  let receiptBytes = 0;
+  const quota =
+    data.env.GPU_GRANT_QUOTA === "1"
+      ? () => ({
+          consumed: consumedControlBytes(data.controlGrant),
+          limit: data.controlGrant.kind === "bounded" ? data.controlGrant.limit : 0,
+          receiptBytes,
+          lengths: receiptLengths.slice(),
+        })
+      : undefined;
   let memory: WebAssembly.Memory | undefined;
   let actualId = 0;
   const embedding: RuntimeWorkerHost = {
@@ -74,6 +91,8 @@ host.onmessage = async ({ data }) => {
     postMessage(message, transfer) {
       if (message.type === "shared-control-allocation") {
         receipts[receipts.length] = message.buffer;
+        receiptLengths.push(sharedArrayBufferByteLength(message.buffer));
+        receiptBytes += sharedArrayBufferByteLength(message.buffer);
         poison?.track(message.buffer);
       }
       send(message, transfer ?? []);
@@ -86,7 +105,7 @@ host.onmessage = async ({ data }) => {
     {
       ...preview1Executor,
       imports(imports) {
-        observeImports(imports, data.env.GPU_OWNERSHIP_TOKEN, () => {
+        observeImports(imports, data.env.GPU_OWNERSHIP_TOKEN, quota, () => {
           if (data.env.GPU_OWNERSHIP_VICTIM !== "1" || !poison) return undefined;
           const report = poison.restore();
           const buffers = receipts.concat(
