@@ -23,6 +23,7 @@ function result(): SuiteResult {
     documents: [],
     transitions: [],
     ledger: [],
+    registrationAttempts: [],
     storageRemaining: [],
     cleanup: {
       session: confirmed,
@@ -30,6 +31,8 @@ function result(): SuiteResult {
       serviceDisposition: "No service created",
       server: confirmed,
       scratch: confirmed,
+      fixture: { status: "not-created", detail: "No fixture" },
+      callbacks: { status: "not-created", detail: "No callbacks" },
       storage: { status: "not-created", detail: "Memory only" },
     },
     exit: 1,

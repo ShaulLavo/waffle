@@ -16,4 +16,10 @@ export type { Driver, DriverCleanup } from "./driver.js";
 export type { StorageEntry } from "../storage-allocation.js";
 
 export type { WorkerDeclaration } from "./service-worker-page.js";
-export type { FixtureContext, FixtureRequest, FixtureRoute, SuiteFixture, FixtureDeclaration } from "./fixture-owner.js";
+export type {
+  FixtureContext,
+  FixtureRequest,
+  FixtureRoute,
+  SuiteFixture,
+  FixtureDeclaration,
+} from "./fixture-owner.js";

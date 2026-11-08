@@ -69,9 +69,15 @@ async function boundedDelete(entry: StorageEntry, timeout: number): Promise<void
 
 function deleteEntry(entry: StorageEntry, timeout: number): Promise<void> {
   switch (entry.kind) {
-    case "indexeddb": return deleteDatabase(entry.name, timeout);
-    case "opfs-directory": return deleteDirectory(entry.name);
-    case "service-worker": return cleanupServiceWorker(entry);
-    default: { const exhaustive: never = entry; return exhaustive; }
+    case "indexeddb":
+      return deleteDatabase(entry.name, timeout);
+    case "opfs-directory":
+      return deleteDirectory(entry.name);
+    case "service-worker":
+      return cleanupServiceWorker(entry);
+    default: {
+      const exhaustive: never = entry;
+      return exhaustive;
+    }
   }
 }

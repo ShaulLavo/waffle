@@ -6,7 +6,9 @@ export interface FixtureContext {
   readonly scratch: string;
   readonly signal: AbortSignal;
 }
-export interface FixtureRequest { readonly signal: AbortSignal }
+export interface FixtureRequest {
+  readonly signal: AbortSignal;
+}
 export interface FixtureRoute {
   readonly path: string;
   readonly get: (request: FixtureRequest) => Promise<unknown>;
@@ -15,40 +17,59 @@ export interface SuiteFixture {
   start(context: FixtureContext): Promise<readonly FixtureRoute[]>;
   close(): Promise<void>;
 }
+/** create must be inert. The host owns close before any listener or asynchronous acquisition. */
 export interface FixtureDeclaration {
   readonly caseId: string;
   readonly create: () => SuiteFixture;
 }
 export function localPath(path: string): void {
   const url = new URL(path, "http://localhost");
-  if (!path.startsWith("/") || path.startsWith("//") || url.origin !== "http://localhost" ||
-      url.pathname !== path || url.search || url.hash || /[%\\\s<>"']/u.test(path))
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    url.origin !== "http://localhost" ||
+    url.pathname !== path ||
+    url.search ||
+    url.hash ||
+    /[%\\\s<>"']/u.test(path)
+  )
     throw new Error("Expected a canonical same-origin local path");
 }
 export function reservedPath(path: string): boolean {
-  return ["/report", "/heartbeat", "/retire", "/favicon.ico"].includes(path) ||
-    path.startsWith("/_waffle_owned/");
+  return (
+    ["/report", "/heartbeat", "/retire", "/favicon.ico"].includes(path) ||
+    path === "/_waffle_owned" ||
+    path.startsWith("/_waffle_owned/")
+  );
 }
 /** Owns real promises, including JSON serialization. A deadline never settles them. */
 export class FixtureOwner {
   private readonly fixture: SuiteFixture;
   private readonly controller = new AbortController();
-  private readonly pending = new Set<Promise<void>>();
-  private routes: readonly FixtureRoute[] = [];
+  private readonly pending = new Map<Promise<void>, string>();
+  private readonly routes = new Map<string, FixtureRoute["get"]>();
   private startup: Promise<void> | undefined;
   private startupSettled = true;
   private completion: Promise<void> | undefined;
   private callbacksJoined = false;
-  private closeSettled = false;
-  private closeFailure: unknown;
+  private closeState:
+    | { kind: "pending" }
+    | { kind: "closed" }
+    | { kind: "failed"; error: unknown } = { kind: "pending" };
   private revoked = false;
   private readonly done = Promise.withResolvers<void>();
   readonly closed = this.done.promise;
-  constructor(readonly declaration: FixtureDeclaration, private readonly fail: (detail: string) => void = () => {}) {
+  constructor(
+    readonly declaration: FixtureDeclaration,
+    private readonly fail: (detail: string) => void = () => {},
+  ) {
     this.fixture = declaration.create();
     void this.closed.catch(() => {});
   }
-  start(context: FixtureContext, validate: (routes: readonly FixtureRoute[]) => void = () => {}): Promise<void> {
+  start(
+    context: FixtureContext,
+    validate: (routes: readonly FixtureRoute[]) => void = () => {},
+  ): Promise<void> {
     if (this.startup || this.revoked) throw new Error("Fixture start already consumed or revoked");
     this.startupSettled = false;
     this.startup = Promise.resolve().then(async () => {
@@ -57,31 +78,45 @@ export class FixtureOwner {
       const routes = await this.fixture.start({ ...context, signal });
       signal.throwIfAborted();
       validate(routes);
-      this.routes = routes;
+      for (const route of routes) this.routes.set(route.path, route.get);
     });
-    void this.startup.then(() => { this.startupSettled = true; }, (error: unknown) => {
-      this.startupSettled = true;
-      this.fail(String(error));
-    });
+    void this.startup.then(
+      () => {
+        this.startupSettled = true;
+      },
+      (error: unknown) => {
+        this.startupSettled = true;
+        this.fail(String(error));
+      },
+    );
     return this.startup;
   }
-  paths(): string[] { return this.routes.map((route) => route.path); }
-  has(path: string): boolean { return this.routes.some((route) => route.path === path); }
+  paths(): string[] {
+    return Array.from(this.routes.keys());
+  }
+  has(path: string): boolean {
+    return this.routes.has(path);
+  }
   get(path: string, requestSignal: AbortSignal): Promise<string> {
     if (this.revoked) return Promise.reject(new Error("Fixture admission revoked"));
-    const route = this.routes.find((item) => item.path === path);
+    const route = this.routes.get(path);
     if (!route) return Promise.reject(new Error("Unknown fixture route"));
     const signal = AbortSignal.any([requestSignal, this.controller.signal]);
     const operation = Promise.resolve().then(async () => {
       signal.throwIfAborted();
-      const value = await route.get({ signal });
+      const value = await route({ signal });
       signal.throwIfAborted();
       const encoded = jsonSnapshot(value);
       signal.throwIfAborted();
       return encoded;
     });
-    const settled = operation.then(() => {}, (error: unknown) => { this.fail(String(error)); });
-    this.pending.add(settled);
+    const settled = operation.then(
+      () => {},
+      (error: unknown) => {
+        this.fail(String(error));
+      },
+    );
+    this.pending.set(settled, path);
     void settled.then(() => this.pending.delete(settled));
     return operation;
   }
@@ -91,23 +126,46 @@ export class FixtureOwner {
   }
   private async closeWhenJoined(): Promise<void> {
     await this.startup?.catch(() => {});
-    await Promise.all(this.pending);
+    await Promise.all(this.pending.keys());
     this.callbacksJoined = true;
-    try { await this.fixture.close(); }
-    catch (error) { this.closeFailure = error; throw error; }
-    finally { this.closeSettled = true; }
+    try {
+      await this.fixture.close();
+      this.closeState = { kind: "closed" };
+    } catch (error) {
+      this.closeState = { kind: "failed", error };
+      throw error;
+    }
   }
   async finish(deadline: number): Promise<{ callbacks: CleanupStep; fixture: CleanupStep }> {
     this.revoke("fixture teardown");
     this.completion ??= this.closeWhenJoined();
     void this.completion.then(this.done.resolve, this.done.reject);
-    try { await bounded(this.completion, Math.max(1, deadline - performance.now()), "fixture containment"); }
-    catch { /* The actual completion remains owned by this instance. */ }
+    try {
+      await bounded(
+        this.completion,
+        Math.max(1, deadline - performance.now()),
+        "fixture containment",
+      );
+    } catch {
+      /* The actual completion remains owned by this instance. */
+    }
     return {
-      callbacks: this.callbacksJoined ? { status: "confirmed", detail: "Startup and callback serialization joined" } :
-        { status: "unconfirmed", detail: `Startup settled=${this.startupSettled}; ${this.pending.size} callbacks still owned; late close owner retained` },
-      fixture: this.closeSettled && !this.closeFailure ? { status: "confirmed", detail: "Single fixture close settled" } :
-        { status: "unconfirmed", detail: this.closeFailure ? String(this.closeFailure) : "Single close waits for actual startup/callback settlement" },
+      callbacks: this.callbacksJoined
+        ? { status: "confirmed", detail: "Startup and callback serialization joined" }
+        : {
+            status: "unconfirmed",
+            detail: `Fixture ${this.declaration.caseId}: startup settled=${this.startupSettled}; callbacks ${JSON.stringify(Array.from(this.pending.values()))} still owned; one late close owner retained`,
+          },
+      fixture:
+        this.closeState.kind === "closed"
+          ? { status: "confirmed", detail: "Single fixture close settled" }
+          : {
+              status: "unconfirmed",
+              detail:
+                this.closeState.kind === "failed"
+                  ? String(this.closeState.error)
+                  : "Single close waits for actual startup/callback settlement",
+            },
     };
   }
 }

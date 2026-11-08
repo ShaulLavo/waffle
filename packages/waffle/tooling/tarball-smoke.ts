@@ -179,7 +179,7 @@ const pageRunnerScript = `
   const built = await Bun.build({ entrypoints: [resolve("page.ts")], target: "browser", metafile: true });
   if (!built.success || !built.metafile) throw new Error("installed page build failed");
   for (const path of Object.keys(built.metafile.inputs)) {
-    if (path.startsWith("node:") || /playwright|browser-runner-lifecycle|storage-browser|host-storage-control|\\/(core|fs|proc|browser|network)\\//.test(path)) throw new Error("installed page graph leak " + path);
+    if (path.startsWith("node:") || /playwright|network-relay|native-peer|browser-runner-lifecycle|storage-browser|host-storage-control|\\/(core|fs|proc|browser|network)\\//.test(path)) throw new Error("installed page graph leak " + path);
     if (!resolve(path).startsWith(process.cwd() + "/")) throw new Error("checkout dependency leak " + path);
   }
 `;
@@ -252,10 +252,30 @@ export function customDriver(driver: Driver): Driver {
   };
 }
 
-const options: NativeOptions = { startedAt: performance.now(), port: 4186 };
+const options: NativeOptions = { startedAt: performance.now(), port: "ephemeral", signal: new AbortController().signal, scratchRoot: "/configured/scratch" };
+const declared: SuiteAdapter<null> = {
+  ...adapter, inventory: () => [{ id: "consumer", label: "worker", request: () => null }],
+  serviceWorker: { caseId: "consumer", script: "/worker.js" },
+  fixture: { caseId: "consumer", create: () => ({
+    start: async ({ origin, signal, scratch, run }) => [{ path: "/config", get: async ({ signal: requestSignal }) => { signal.throwIfAborted(); requestSignal.throwIfAborted(); return { origin, scratch, run }; } }],
+    close: async () => {},
+  }) },
+};
+export { declared };
+const durable: import("waffle/testing/page-runner").StorageEntry = { kind: "service-worker", name: "http://localhost/scope/", clientURL: "http://localhost/scope/client", scriptURL: "http://localhost/sw.js" };
+void durable;
 const suite: PageSuite<{ databaseName: string }> = {
   list: async () => ({ ids: ["consumer"] }),
-  run: async (request, allocate) => { await allocate({ kind: "indexeddb", name: request.databaseName }); return { ok: true }; },
+  run: async (request, allocate, context) => {
+    await allocate({ kind: "indexeddb", name: request.databaseName });
+    if (context.serviceWorker) {
+      const registration = await context.serviceWorker.register();
+      context.serviceWorker.controls(registration, navigator.serviceWorker.controller);
+      await context.serviceWorker.unregister(registration);
+    }
+    await context.fetchFixture("/config");
+    return { ok: true };
+  },
   finish: ledger => cleanupStorage(ledger),
 };
 if (isHostedPage()) startPage(suite);
@@ -275,8 +295,10 @@ async function pageRunnerConsumer(directory: string): Promise<void> {
     "--input-type=module",
     "--eval",
     `
-    try { await import("waffle/testing/page-runner"); throw new Error("Node accepted Bun-only host"); }
-    catch (error) { if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; }
+    for (const path of ["waffle/testing/page-runner", "waffle/testing/page-runner/page", "waffle/testing/page-runner/playwright"]) {
+      try { await import(path); throw new Error("Node accepted Bun-only entry " + path); }
+      catch (error) { if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; }
+    }
   `,
   ]);
   const manifestPath = join(directory, "package.json");

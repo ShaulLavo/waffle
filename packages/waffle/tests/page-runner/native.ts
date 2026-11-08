@@ -1,7 +1,10 @@
 import { isAbsolute } from "node:path";
 import { SafariDriver } from "./safari-driver.js";
 import { runPageSuite, writeResult, type RunOptions, type SuiteAdapter } from "./suite-host.js";
-export type NativeOptions = Pick<RunOptions, "filter" | "startedAt" | "port" | "signal" | "scratchRoot">;
+export type NativeOptions = Pick<
+  RunOptions,
+  "filter" | "startedAt" | "port" | "signal" | "scratchRoot"
+>;
 export async function nativeMain<R>(
   adapter: SuiteAdapter<R>,
   args: string[],

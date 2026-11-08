@@ -63,25 +63,46 @@ function absoluteURL(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 4096) return false;
   try {
     const url = new URL(value);
-    return ["http:", "https:"].includes(url.protocol) && !url.hash && !url.username && !url.password && url.href === value;
-  } catch { return false; }
+    return (
+      ["http:", "https:"].includes(url.protocol) &&
+      !url.hash &&
+      !url.username &&
+      !url.password &&
+      url.href === value
+    );
+  } catch {
+    return false;
+  }
 }
-export function storageEntry(value: unknown): value is StorageEntry {
-  if (!record(value) || typeof value.name !== "string" || !value.name || value.name.length >= 4096) return false;
+function storageEntry(value: unknown): value is StorageEntry {
+  if (!record(value) || typeof value.name !== "string" || !value.name || value.name.length >= 4096)
+    return false;
   switch (value.kind) {
     case "indexeddb":
-    case "opfs-directory": return value.name.length < 1024;
-    case "service-worker": return absoluteURL(value.name) && absoluteURL(value.clientURL) && absoluteURL(value.scriptURL);
-    default: return false;
+    case "opfs-directory":
+      return value.name.length < 1024;
+    case "service-worker":
+      return (
+        absoluteURL(value.name) && absoluteURL(value.clientURL) && absoluteURL(value.scriptURL)
+      );
+    default:
+      return false;
   }
 }
 export function sameStorageEntry(a: StorageEntry, b: StorageEntry): boolean {
   if (a.kind !== b.kind || a.name !== b.name) return false;
   switch (a.kind) {
     case "indexeddb":
-    case "opfs-directory": return true;
-    case "service-worker": return b.kind === "service-worker" && a.clientURL === b.clientURL && a.scriptURL === b.scriptURL;
-    default: { const exhaustive: never = a; return exhaustive; }
+    case "opfs-directory":
+      return true;
+    case "service-worker":
+      return (
+        b.kind === "service-worker" && a.clientURL === b.clientURL && a.scriptURL === b.scriptURL
+      );
+    default: {
+      const exhaustive: never = a;
+      return exhaustive;
+    }
   }
 }
 function validBody(value: Record<string, unknown>): boolean {
@@ -97,8 +118,11 @@ function validBody(value: Record<string, unknown>): boolean {
     case "allocation":
       return storageEntry(value.entry);
     case "worker-settled":
-      return storageEntry(value.entry) && value.entry.kind === "service-worker" &&
-        (value.outcome === "registered" || value.outcome === "rejected");
+      return (
+        storageEntry(value.entry) &&
+        value.entry.kind === "service-worker" &&
+        (value.outcome === "registered" || value.outcome === "rejected")
+      );
     case "case-start":
     case "case-ready":
     case "case-teardown":
@@ -155,9 +179,17 @@ export function validateWorkerLabel(returned: unknown, expected: string): void {
 export const resultByteLimit = 48 * 1024;
 
 export function formatHostError(error: unknown): string {
-  let text = String(error).slice(0, 16_384);
+  let text = errorDetail(error).slice(0, 16_384);
   const encoder = new TextEncoder();
   while (encoder.encode(JSON.stringify(text)).byteLength > 8192)
     text = text.slice(0, Math.floor(text.length / 2));
   return text;
+}
+
+function errorDetail(error: unknown, depth = 0): string {
+  if (!(error instanceof AggregateError) || depth >= 3) return String(error);
+  const causes = error.errors
+    .slice(0, 8)
+    .map((cause: unknown) => errorDetail(cause, depth + 1).slice(0, 1600));
+  return `${String(error)}\nCauses, primary first:\n${causes.join("\n")}`;
 }

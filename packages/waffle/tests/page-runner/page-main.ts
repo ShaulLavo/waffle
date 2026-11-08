@@ -1,8 +1,13 @@
 import { runPeerPage, runHostPage, type HostPageRun } from "./host-page.js";
 import { Reporter } from "./reporter.js";
 import { jsonSnapshot } from "./json-snapshot.js";
-import { ownedServiceWorker, bindFinishAttempts, type PageContext, type WorkerAttempt } from "./service-worker-page.js";
-import { type Body } from "./protocol.js";
+import {
+  ownedServiceWorker,
+  bindFinishAttempts,
+  type PageContext,
+  type WorkerAttempt,
+} from "./service-worker-page.js";
+import { formatHostError, type Body } from "./protocol.js";
 import type { ServiceWorkerEntry, StorageEntry } from "../storage-allocation.js";
 
 export type Configuration<R> = {
@@ -28,7 +33,11 @@ export type Configuration<R> = {
 export type PageSuite<R> = {
   list(): Promise<unknown>;
   run:
-    | ((request: R, allocate: (entry: StorageEntry) => Promise<void>, context: PageContext) => Promise<unknown>)
+    | ((
+        request: R,
+        allocate: (entry: StorageEntry) => Promise<void>,
+        context: PageContext,
+      ) => Promise<unknown>)
     | HostPageRun<R>;
   finish(ledger: readonly StorageEntry[]): Promise<StorageEntry[]>;
 };
@@ -51,17 +60,28 @@ async function runCase<R>(
   let outcome: Body;
   try {
     const context: PageContext = {
-      serviceWorker: config.serviceWorker ? ownedServiceWorker(config.serviceWorker, reporter) : null,
+      serviceWorker: config.serviceWorker
+        ? ownedServiceWorker(config.serviceWorker, reporter)
+        : null,
       async fetchFixture(path) {
         if (!config.fixturePaths?.includes(path) || reporter.observation.retired)
           throw new Error("Undeclared fixture path or retired document");
-        return reporter.post(path, { headers: { "X-Waffle-Fixture": config.token, "X-Waffle-Document": reporter.observation.doc } });
+        return reporter.post(path, {
+          headers: {
+            "X-Waffle-Fixture": config.token,
+            "X-Waffle-Document": reporter.observation.doc,
+          },
+        });
       },
     };
-    const returned = await suite.run(config.request, (entry) => reporter.send({ kind: "allocation", entry }), context);
+    const returned = await suite.run(
+      config.request,
+      (entry) => reporter.send({ kind: "allocation", entry }),
+      context,
+    );
     outcome = { kind: "case-end", caseId, status: "pass", result: resultSnapshot(returned) };
   } catch (error) {
-    outcome = { kind: "case-end", caseId, status: "fail", error: String(error).slice(0, 16_384) };
+    outcome = { kind: "case-end", caseId, status: "fail", error: formatHostError(error) };
   }
   await reporter.send(outcome);
 }
@@ -106,7 +126,10 @@ export function startPage<R>(suite: PageSuite<R>): void {
     if (reporter.observation.retired) return;
     void reporter.send({ kind: "error", message }).catch(() => {});
   }
-  window.addEventListener("pagehide", () => { reporter.observation.retired = true; reporter.stop(); });
+  window.addEventListener("pagehide", () => {
+    reporter.observation.retired = true;
+    reporter.stop();
+  });
   window.addEventListener("error", (event) => pageError(event.message));
   window.addEventListener("unhandledrejection", (event) => pageError(String(event.reason)));
   void runPage(config, suite, reporter).catch((error: unknown) => pageError(String(error)));
