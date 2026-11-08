@@ -235,7 +235,10 @@ export class PeerDriverFixture extends FakeDriver {
   override async stop() {
     const stopping = Array.from(this.windows.values(), async (page) => page?.stop());
     this.peerReadyRelease.resolve();
-    await Promise.all(stopping.concat(this.peerStarts));
+    const settled = await Promise.allSettled(stopping.concat(this.peerStarts));
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
     return super.stop();
   }
 }

@@ -3,7 +3,7 @@ import { bounded } from "./driver.js";
 import { PeerDriverFixture } from "./peer-driver-fixture.js";
 import { record } from "./protocol.js";
 
-function retirementFixture() {
+function retirementFixture(driver = new PeerDriverFixture()) {
   const entered = Promise.withResolvers<void>();
   const response = Promise.withResolvers<Response>();
   const reports: string[] = [];
@@ -30,7 +30,6 @@ function retirementFixture() {
       return new Response(`<script>window.__suiteConfiguration=${JSON.stringify(config)}</script>`);
     },
   });
-  const driver = new PeerDriverFixture();
   return { driver, server, entered, response, reports, polls: () => polls };
 }
 
@@ -108,3 +107,81 @@ test("peer driver stop preserves a failed retirement request", async () => {
     await server.stop(true);
   }
 });
+
+test("peer driver joins every document before surfacing a retirement failure", async () => {
+  const first = retirementFixture();
+  const second = retirementFixture(first.driver);
+  const driver = first.driver;
+  try {
+    await driver.navigate(first.server.url.href);
+    await bounded(first.entered.promise, 1000, "first poll entry");
+    const other = await driver.createWindow();
+    await driver.selectWindow(other);
+    await driver.navigate(second.server.url.href);
+    await bounded(second.entered.promise, 1000, "second poll entry");
+    const firstPage = driver.windows.get("root");
+    if (!firstPage) throw new Error("Missing first document");
+    let settled = false;
+    const stopping = driver
+      .stop()
+      .then(
+        () => ({ fulfilled: true }),
+        (reason: unknown) => ({ rejected: reason }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    await first.server.stop(true);
+    const failed = await bounded(
+      firstPage.stop().then(
+        () => ({ fulfilled: true }),
+        (reason: unknown) => ({ rejected: reason }),
+      ),
+      1000,
+      "first poll failure",
+    );
+    expect(failed).toHaveProperty("rejected");
+    await Bun.sleep(0);
+    expect(settled).toBe(false);
+    expect(second.polls()).toBe(1);
+    second.response.resolve(Response.json(false));
+    expect(await bounded(stopping, 1000, "all retirement polls joined")).toStrictEqual(failed);
+  } finally {
+    first.response.resolve(Response.json(false));
+    second.response.resolve(Response.json(false));
+    await driver.stop().catch(() => {});
+    await first.server.stop(true);
+    await second.server.stop(true);
+  }
+});
+
+for (const reason of [undefined, null, false, 0, ""]) {
+  test(`peer driver joined stop preserves falsy rejection ${String(reason)}`, async () => {
+    const { driver, server, entered, response } = retirementFixture();
+    try {
+      await driver.navigate(server.url.href);
+      await bounded(entered.promise, 1000, "falsy poll entry");
+      const page = driver.windows.get("root");
+      if (!page) throw new Error("Missing document");
+      const send = page.reporter.send.bind(page.reporter);
+      page.reporter.send = (body) =>
+        body.kind === "retire-ready" ? Promise.reject(reason) : send(body);
+      const stopped = driver.stop().then(
+        () => ({ fulfilled: true }),
+        (error: unknown) => ({ rejected: error }),
+      );
+      response.resolve(Response.json(true));
+      expect(await bounded(stopped, 1000, "falsy poll joined")).toStrictEqual({ rejected: reason });
+      expect(
+        await driver.stop().then(
+          () => ({ fulfilled: true }),
+          (error: unknown) => ({ rejected: error }),
+        ),
+      ).toStrictEqual({ rejected: reason });
+    } finally {
+      response.resolve(Response.json(false));
+      await driver.stop().catch(() => {});
+      await server.stop(true);
+    }
+  });
+}
