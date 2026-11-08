@@ -120,6 +120,7 @@ let released = false;
 let nativeHeld = false;
 let nativeReleased = false;
 const gate = Promise.withResolvers<void>();
+const disposalSettled = Promise.withResolvers<void>();
 let disposalAudit: SharedArrayBuffer | undefined;
 let heldCompletion: { owner: number; token: number } | undefined;
 let lateCallback:
@@ -148,6 +149,7 @@ CompletionOwner.prototype.start = function (token, start, settle, reject, abando
       at: performance.now(),
     };
     writeDisposalAudit(1, "late");
+    disposalSettled.resolve();
     return result;
   };
   return Reflect.apply(startCompletion, this, [token, start, settle, reject, observedAbandon]);
@@ -393,6 +395,14 @@ const service = new GpuService((message) => {
       }
     for (const attempt of attempts)
       if (attempt.message.grant === message.grant) attempt.retiredAck = true;
+  }
+  if (
+    message.type === "retired" &&
+    selection?.mode === "disposal" &&
+    owners.some((owner) => selected(owner) && owner.open.grant === message.grant)
+  ) {
+    void disposalSettled.promise.then(() => host.postMessage(message));
+    return;
   }
   host.postMessage(message);
 });

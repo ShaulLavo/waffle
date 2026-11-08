@@ -706,3 +706,52 @@ The single-worker topology, 8 ms service slice and 100 ms live-peer gap targets 
 iPhone limits remain. This bounded case is not full G3 or hardware qualification. Production,
 protected async command and adapter fixtures, C inputs, workloads, deadlines, versions, workflow
 and budgets are unchanged.
+
+## G3 same-grant quota checkpoint, November 8, 2026
+
+Status: Approved. The normal C fixture's opt-in `--grant-quota` mode keeps one process,
+canvas and grant across twelve successful open, render and normal-close cycles. Its
+thirteenth and fourteenth opens return `-48` with an unchanged output sentinel. Each
+refused open consumes only its initial 64-byte control backing. No refused attempt
+reaches service admission or requests a native device. The service has at most two
+live connections, so its eight-connection cap cannot supply this result.
+
+The import observer reads the existing shared-control counter and allocation receipt
+lengths. Close does not refund them. The full 67,108,864-byte reservation stays live
+through both refusals. Physical guest stop replaces it with 66,062,724 bytes of
+conservative consumed-backing debt and releases only the 1,046,140 unused bytes.
+This is accounting, not proof of physical memory reclamation.
+
+Seven screenshot brackets cover the first open, first close, reopen, last close,
+refusal, repeated refusal and physical stop. Each requires fresh native presents and
+newly started and completed queue work from the original green C peer inside actual
+service times. Its pid, guest token, service realm, grant, owner, device and presenter
+remain correlated. Earliest retired-owner observations, immutable completed history,
+legitimate pending settlement, authority canaries and worker-stop audits remain checked.
+The default compiled runner discovers this case alongside all earlier cases.
+
+Development evidence retains a failed coverage placement, an over-instrumented run
+that reached the unchanged peer frame bound, and the first completed observation's
+101.86 ms peer gap against the unchanged 100 ms target. Its maximum service slice was
+0.99 ms against 8 ms. Later scalar validation reuses this capture rather than adding
+fields to it. Final canonical gate results are recorded in the coordinator report.
+Production code, existing fixture modes, workflows and budgets are unchanged. This is
+one single-worker functional proof, not complete G3 or hardware qualification;
+`hardwareQualified` remains false.
+
+The first ready-PR hosted run passed this quota proof, then exposed an older active-disposal
+observer race. Its service posted the selected grant's retirement reply before the genuine
+held native callback published its late audit. The page could terminate that Worker first,
+leaving the audit absent. The test observer now withholds that reply until the existing late
+callback and shared-audit publication finish. Production disposal and retirement are unchanged.
+The original failure remains in the coordinator report. The targeted compiled disposal case
+passes with both real audits and all seven physical Worker stops; no assertion or bound changed.
+
+Independent review corrections require native draw, submit, completed queue and presentation
+coverage for every admitted quota connection. A live render may still have pending queue work;
+its terminal observation must show completed work. The peer guest's surface must match its
+original native owner. Each native identity is fixed at its first ready observation. Retired
+submissions may settle once, but their first settled result cannot change or return to pending.
+The peer's own first terminal snapshot now starts its frozen history, before the final audit.
+Permanent negative controls cover all five gaps. Existing genuine captures supply these fields;
+no observation was added to an old record and no timing miss was discarded.
