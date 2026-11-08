@@ -666,6 +666,7 @@
     "@vitest/browser-webdriverio": "5.0.0",
     "jscpd": "5.4.1",
     "knip": "6.41.0",
+    "oxc-parser": "0.153.0",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",
     "playwright": "^1.64.1",
