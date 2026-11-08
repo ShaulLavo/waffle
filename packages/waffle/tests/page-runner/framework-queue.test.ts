@@ -83,7 +83,9 @@ test("malformed responses caught by an SDK caller remain sticky via actual trans
     const request = queue.guard({});
     settle?.({ request, success: false, error: new Error("Could not parse response") });
   });
-  expect(faults.some((fault) => fault.includes("Could not parse"))).toBe(true);
+  expect(faults).toEqual(["WebDriver transport failed before an observed parsed response"]);
+  expect(queue.commandFailures[0]).toMatchObject({ client: "attached", stage: "unknown" });
+  expect(JSON.stringify(queue.commandFailures)).not.toContain("Could not parse");
 });
 test("the request guard composes the original SDK signal instead of replacing it", async () => {
   const { queue } = fixture();

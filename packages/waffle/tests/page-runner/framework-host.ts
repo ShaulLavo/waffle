@@ -219,7 +219,7 @@ export class PageFrameworkHost implements FrameworkHost {
       const browser = await this.consumers.invoke(() => input.connect(driver.connection()));
       this.check();
       return browser;
-    });
+    }, "attach");
   }
   async openPage(actualUrl: string, open: () => Promise<void>): Promise<void> {
     this.check();
@@ -231,12 +231,12 @@ export class PageFrameworkHost implements FrameworkHost {
       await this.consumers.invoke(open);
       if (!this.frames || this.handle === null)
         throw new Error("Provider navigation did not attach the owned session");
-    });
+    }, "open");
     // No admission wait inside navigation. The monitor owns the next queue entry.
   }
   provider<T>(_kind: ProviderOperation, operation: () => Promise<T>): Promise<T> {
     this.check();
-    return this.queue.run(operation);
+    return this.queue.run(operation, _kind);
   }
   guardRequest<T extends RequestInit>(request: T): T {
     return this.queue.guard(request);
@@ -448,7 +448,7 @@ export class PageFrameworkHost implements FrameworkHost {
     if (this.monitorBusy || this.controller.signal.aborted) return;
     this.monitorBusy = true;
     void this.queue
-      .run(() => this.main(() => (this.bound ? this.probe() : this.admission())))
+      .run(() => this.main(() => (this.bound ? this.probe() : this.admission())), "observation")
       .catch((error) => this.fault("observation", String(error)))
       .finally(() => {
         this.monitorBusy = false;
@@ -482,7 +482,9 @@ export class PageFrameworkHost implements FrameworkHost {
         this.scratch = await mkdtemp(join(root, "waffle-framework-"));
       });
       this.check();
-      this.driver = new SafariDriver(this.options.native.udid, this.scratch);
+      this.driver = new SafariDriver(this.options.native.udid, this.scratch, (facts) =>
+        this.queue.recordFailure(facts),
+      );
       this.executing = this.consumers.invoke(() => this.executeFramework(execute));
       const failed = new Promise<never>((_, reject) =>
         this.controller.signal.addEventListener(
@@ -537,6 +539,8 @@ export class PageFrameworkHost implements FrameworkHost {
       }
     };
     await step(this.detach(), "Provider queue stopped");
+    const faultStop = this.controller.signal.aborted ? this.driver?.stop() : undefined;
+    void faultStop?.catch(() => {});
     if (this.disconnect)
       provider = await step(
         this.consumers.invoke(this.disconnect),
@@ -562,7 +566,11 @@ export class PageFrameworkHost implements FrameworkHost {
     };
     if (this.driver) {
       try {
-        driverCleanup = await bounded(this.driver.stop(), remaining(), "Parent driver stop");
+        driverCleanup = await bounded(
+          faultStop ?? this.driver.stop(),
+          remaining(),
+          "Parent driver stop",
+        );
       } catch (error) {
         driverCleanup.session = { status: "unconfirmed", detail: String(error) };
       }
@@ -613,6 +621,7 @@ export class PageFrameworkHost implements FrameworkHost {
       })),
       binding: this.binding,
       commandHooks: this.queue.commandHooks.slice(),
+      commandFailures: this.queue.commandFailures.slice(),
       geometry: this.geometryValue,
       framework: this.framework,
       failures: this.collector.failures,

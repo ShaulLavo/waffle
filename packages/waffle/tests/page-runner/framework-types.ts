@@ -105,6 +105,18 @@ export type FrameworkGeometry = {
     readonly height: number;
   };
 };
+export type CommandFailure = {
+  readonly client: "direct" | "attached";
+  readonly operation: string | null;
+  readonly phase: string | null;
+  readonly method: string | null;
+  readonly path: string | null;
+  readonly dispatchedAt: number;
+  readonly settledAt: number;
+  readonly stage: "headers" | "body" | "envelope" | "unknown";
+  readonly status: number | null;
+  readonly abort: "caller" | "deadline" | "revoked" | "unknown" | null;
+};
 export type FrameworkResult = {
   suite: string;
   run: string;
@@ -131,6 +143,7 @@ export type FrameworkResult = {
     topUrl: string;
     testerUrl: string;
   } | null;
+  commandFailures: readonly CommandFailure[];
   commandHooks: { operation: string | null; phase: "started" | "settled"; revoked: boolean }[];
   geometry: FrameworkGeometry | null;
   framework: VitestEnd | null;
