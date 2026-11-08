@@ -34,7 +34,7 @@ type Fault =
 
 function sizes(observe: boolean): number[] {
   const fixed = [44, 32, 72, 640, 256, 24, 2048, 24, 128, 49_152];
-  return observe ? [98_304, 16].concat(fixed) : fixed;
+  return observe ? [393_216, 16].concat(fixed) : fixed;
 }
 function demand(observe: boolean) {
   const fields = sizes(observe);
@@ -106,7 +106,7 @@ function rig(options: { room?: number; records?: MemoryRecords; serialLimit?: nu
   const overhead = probe.snapshot().allocated;
   probe.close();
   const budget = new MemoryBudget(
-    { ...configuration, bytes: overhead + (options.room ?? 512 * 1024) },
+    { ...configuration, bytes: overhead + (options.room ?? 1024 * 1024) },
     allocator,
   );
   allocator.budget = budget;
@@ -197,7 +197,7 @@ test.each([false, true])("publication fixed backing plan and precharge, observe=
     const before = budget.snapshot();
     const buffers = construct(budget, observe);
     const plan = demand(observe);
-    expect(plan.bytes).toBeLessThan(256 * 1024);
+    expect(plan.bytes).toBeLessThan(512 * 1024);
     expect(admit.mock.calls).toEqual([[plan]]);
     expect(allocator.specs).toEqual(
       sizes(observe).map((bytes) => ({ kind: "shared", bytes, maximum: bytes })),

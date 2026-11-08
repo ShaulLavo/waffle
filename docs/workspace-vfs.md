@@ -147,9 +147,12 @@ A whole-file read over 1 MiB returns `pressure/result-bytes` before payload I/O.
 Use `openWorkspaceRead` for demand-driven chunks, or read ranges through a lease instead. Budgets are shared by all
 public projections of the same root. Duplicate leases share physical backing
 charges but each owns metadata and a lease slot. Public roots allocate a fixed
-64 KiB shared page-reference table and 512 bytes of serial-qualified reader
+393,216-byte shared page-reference table and 512 bytes of serial-qualified reader
 lifetime state; private roots allocate neither. Guest forks share that
-table without receiving the observer grant.
+table without receiving the observer grant. Resident pages are 16 KiB, independently
+of the 64 KiB output chunk. One aligned 256 MiB pin fits the reader metadata limit;
+two independent overlapping pins of that size can return `pressure/metadata`.
+Closing a pin releases its descriptor charge and allows a later pin.
 
 Result reservations include protocol buffers, service chunks, and the final
 caller array. These deterministic charges are not exact JS heap measurements or

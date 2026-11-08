@@ -70,6 +70,7 @@ The native command uses the existing page-owned host and the same scenario funct
 It retains the complete result before page retirement. Normal reporter controls check
 original assertion failures and copied results. Desktop controls do not establish native
 Safari acceptance.
+[Host case queries and timeouts](host-case-query-timeouts.md) describes initial query binding and live body-relative deadlines for page-owned consumers.
 
 ### Run the complete compiled GPU async command
 

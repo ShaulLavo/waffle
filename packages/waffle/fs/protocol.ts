@@ -74,7 +74,8 @@ export const CAPABILITY_HEADER = 1;
 export const FILESYSTEM_SECTION_BYTES = 8;
 export const CAPABILITY_WORDS = 3;
 export const MAX_CONNECTION_OWNERS = 65536;
-export const CONNECTION_SHARED_BYTES = 64 * 1024 * 1024;
+export { SHARED_ROOT_BYTES as CONNECTION_SHARED_BYTES } from "./storage-geometry.js";
+import { SHARED_ROOT_BYTES } from "./storage-geometry.js";
 export const CAPABILITY_LENGTH = CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS;
 export const enum State {
   Pending,
@@ -167,8 +168,7 @@ export function createFilesystemIdentity(
   const allocate = (bytes: number) =>
     construction ? construction.allocateShared(bytes) : allocateSharedControl(bytes);
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
-  const shared =
-    parent?.shared ?? construction?.shared ?? allocateSharedControl(CONNECTION_SHARED_BYTES);
+  const shared = parent?.shared ?? construction?.shared ?? allocateSharedControl(SHARED_ROOT_BYTES);
   const segments = identitySegments(parent, maxBytes, construction);
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)

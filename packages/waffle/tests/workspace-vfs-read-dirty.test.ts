@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { CheckpointPressure } from "../fs/checkpoint-pressure";
-import { PAGE } from "../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 import { residentReadFixture, publicReadFixture } from "./fixtures/workspace-read";
 import { PersistentBackend } from "../fs/persistent";
 import { RangeFixture } from "./fixtures/opfs-range-storage";
@@ -57,9 +57,13 @@ test("persistent service dirty refusal rolls back complete retained writeFile re
     if (old.kind !== "ok") throw new Error(old.kind);
     const before = backend.shared.snapshot(handle);
     const identity = backend.identity(handle);
-    await expect(
-      value.client.asyncCall("writeFile", ["/file"], new Uint8Array(PAGE * 3)),
-    ).rejects.toMatchObject({ errno: 6 });
+    const refused = await value.client
+      .asyncCall("writeFile", ["/file"], new Uint8Array(PAGE * 3))
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    expect(refused).toMatchObject({ errno: 6 });
     expect(backend.shared.resources().usedBytes).toBe(PAGE * 2);
     expect(backend.shared.snapshot(handle)).toEqual(before);
     expect(backend.identity(handle)).toEqual(identity);

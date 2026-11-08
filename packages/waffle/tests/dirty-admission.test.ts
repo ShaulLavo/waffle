@@ -7,13 +7,15 @@ import { FilesystemService } from "../fs/service";
 import { DescriptorTable } from "../core/descriptors";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
 import type { PublicationConfiguration } from "../fs/publication-internal";
-import { createFilesystemConnection, reapFilesystem, FilesystemError, PAGE } from "../fs/protocol";
+import { createFilesystemConnection, reapFilesystem, FilesystemError } from "../fs/protocol";
 import {
   snapshotBatch,
   type PersistedIndex,
   type PersistenceBatch,
   type StorageBackend,
 } from "../fs/storage";
+
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 
 const data = (length: number, value = 65) => new Uint8Array(length).fill(value);
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 2));
@@ -447,7 +449,7 @@ test("clean detached descriptor reload preserves the captured length", async () 
       await client.asyncCall("remove", ["/file"]);
       await backend.checkpoint(true);
       await client.asyncCall("mkdirp", ["/many"]);
-      for (let index = 0; index < 1100; index++) {
+      for (let index = 0; index < 4200; index++) {
         await client.asyncCall("writeFile", [`/many/f${index}`], data(1));
         if (index % 200 === 199) await backend.checkpoint(true);
       }
@@ -541,6 +543,25 @@ test("directory metadata reserves the complete dirty child list before mutation"
     );
   } finally {
     await Promise.allSettled([backend.close()]);
+    backend.dispose();
+  }
+});
+
+test("a one-byte write fits a 20,000-byte dirty budget", async () => {
+  const storage = new ControlledStorage();
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 0,
+    dirtyLimits: { maxBytes: 20000, maxMetadataBytes: 1024 * 1024 },
+    checkpointLimits: { maxBytes: 1024, maxMetadataBytes: 128 * 1024 },
+  });
+  try {
+    backend.execute("writeFile", ["/tiny"], new Uint8Array([91]));
+    expect(backend.shared.resources().usedBytes).toBe(16384);
+    expect(backend.dirtyPressure().accountedBytes).toBeLessThanOrEqual(20000);
+    await backend.checkpoint(true);
+    expect(backend.execute("readFile", ["/tiny"], new Uint8Array())).toEqual(new Uint8Array([91]));
+  } finally {
+    await backend.close();
     backend.dispose();
   }
 });

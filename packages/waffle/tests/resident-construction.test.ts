@@ -23,7 +23,7 @@ const limits = {
   pinBytes: 256,
 };
 function memory(
-  bytes = 64 * MiB,
+  bytes = 128 * MiB,
   allocator?: MemoryAllocator,
   producers = { allocations: 128, references: 256, leases: 16 },
 ) {
@@ -172,7 +172,7 @@ for (const producers of [
   test(`resident refuses insufficient holding records before allocation ${JSON.stringify(producers)}`, async () => {
     const env = environment();
     const allocator = controlledAllocator();
-    const budget = memory(64 * MiB, allocator, producers);
+    const budget = memory(128 * MiB, allocator, producers);
     const before = budget.snapshot();
     const owner = env.owner(budget);
     try {
@@ -193,14 +193,14 @@ for (const producers of [
 test("resident retains all 118 allocation/reference records and two holding leases after close", async () => {
   const env = environment();
   const allocator = controlledAllocator();
-  const budget = memory(64 * MiB, allocator, { allocations: 118, references: 118, leases: 2 });
+  const budget = memory(128 * MiB, allocator, { allocations: 118, references: 118, leases: 2 });
   const before = budget.snapshot();
   const owner = env.owner(budget);
   try {
     await owner.ready;
     expect(allocator.specs).toHaveLength(117);
-    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(62_848_172);
-    expect(budget.snapshot().allocated - before.allocated).toBe(62_848_684);
+    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(88_899_884);
+    expect(budget.snapshot().allocated - before.allocated).toBe(88_900_396);
     expect(budget.snapshot().producerFree).toEqual({ allocations: 0, references: 0, leases: 0 });
     expect(budget.snapshot().obligations).toBe(0);
     const published = budget.snapshot();
@@ -237,7 +237,7 @@ const fixedBytes =
   49156 +
   12 +
   FILESYSTEM_SECTION_BYTES +
-  98304 +
+  393216 +
   limits.sessions * 8 +
   44 +
   limits.sessions * 16 +
@@ -329,7 +329,7 @@ test("resident real open borrows one physical backend root and charges the whole
     expect(allocator.specs).toHaveLength(117);
     expect(allocator.specs.filter((spec) => spec.bytes > MiB)).toHaveLength(1);
     expect(allocator.specs.filter((spec) => spec.bytes === 0)).toHaveLength(96);
-    expect(arena.pageReaders?.byteLength).toBe(98304);
+    expect(arena.pageReaders?.byteLength).toBe(393216);
     expect(arena.readerLifetimes?.byteLength).toBe(limits.sessions * 8);
     expect(arena.versions.byteLength).toBe(49152);
     expect(budget.snapshot().backingBytes - before.backingBytes).toBe(

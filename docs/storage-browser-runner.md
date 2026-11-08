@@ -156,8 +156,20 @@ of navigating away and treating cleanup as complete.
 
 `waffle/testing/page-runner/framework` is a separate, test-only Node host. Node resolves prepared JavaScript after normal package preparation. The existing Bun host remains Bun-only. The framework host mounts its collector on the real Vite server, retains the exact provider URL, and owns one attached session and one command queue. It does not depend on a framework or browser SDK at runtime.
 
-Call `host.mount(server.middlewares)` in the Vite plugin before creating a session. It rejects duplicate and conflicting reserved routes. The attached provider registers public frame callbacks before connecting. Its command hook calls `host.requestStarted(this)`. Its transport uses `host.guardRequest` and `host.observeResponse`, so swallowed command-hook errors cannot permit HTTP dispatch or erase an uncertain response. Only navigation, frame, and cleanup callbacks receive `host.provider` authority. Consumer glue rejects unsupported input, screenshot, CDP, and ordinary viewport operations. Provider close awaits `host.detach()` without deleting the session. The parent deletes it once after joining consumers.
+Call `host.mount(server.middlewares)` in the Vite plugin before creating a session. It rejects duplicate and conflicting reserved routes. The attached provider registers public frame callbacks before connecting. Its command hook calls `host.requestStarted(this)`. Its transport uses `host.guardRequest` and `host.observeResponse`, so swallowed command-hook errors cannot permit HTTP dispatch or erase an uncertain response. Only navigation, frame, and cleanup callbacks receive `host.provider` authority. Consumer glue rejects unsupported input, screenshot, CDP, and ordinary viewport operations. Provider close awaits `host.detach()` without deleting the session. The parent deletes it once after joining consumers on success. After a fault, it starts session deletion before joining execution-dependent context close. Cleanup still requires actual consumer settlement; cancelling a wait does not confirm cleanup.
 
 The browser-only `waffle/testing/page-runner/framework-page` entry exposes `getFrameworkObservation()`. The consumer instruments both actual framework documents before modules, preserves original lifecycle calls and RPC, and converts its installed task types into `FrameworkTask` and `FrameworkUpdate` records. Collection awaits the independent inventory ACK. Other lifecycle methods enqueue without adding time to hooks or bodies. At the automatic viewport call site, await `waitForInitialViewport()` outside the command queue and send its one-use request to `host.initialViewport`. At the original matched cleanup response, call `cleanupResponseReceived()` and await `waitForRetirement()` before returning the isolated run. `catcherInstalled()` removes the temporary early listeners before the consumer's catcher tee takes over.
 
 The host retains both actual documents through separate acknowledged cutoffs. A complete selected file still has `rootBrowserSuiteComplete: false` and exits 4. Reporting, binding, timeout, or unconfirmed cleanup failures exit 2. `createFrameworkControl` is only for owned loopback HTTP controls and grants no native credit. The existing reporter-controls job discovers the focused `framework-` DOM controls; the installed-package gate runs the real SDK fake separately. Neither proves Safari or the consumer's original tests.
+
+Framework results add up to 128 `commandFailures`, retaining the first failures. Each records
+the direct or attached client, queue operation and phase when known, safe method and route,
+host monotonic dispatch-boundary and failure-observation times, response stage, status, and
+abort source. Direct routes replace the session identifier with `:session`. Unknown routes
+are null. Attached request hooks provide no URL or headers/body split, so those facts remain
+null or `unknown`. Their original signal is reported as `caller`, not assumed to be an SDK
+deadline. Times observe host boundaries, not native execution or wire completion.
+
+Records contain no headers, bodies, script source, rejection text, or private identifiers.
+Transport faults retain their original rejection identity and use a fixed diagnostic message
+without inspecting the rejection. These facts do not establish a native cause.

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AttachedConnection } from "./framework-types.js";
+import type { AttachedConnection, CommandFailure } from "./framework-types.js";
 import { parseCapabilities } from "./framework-validation.js";
 import { openSync, closeSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
   type CleanupStep,
 } from "./driver.js";
 import { record } from "./protocol.js";
+import { commandMethod, commandPath } from "./framework-queue.js";
 const navigationTimeoutMs = 30_000;
 export const driverResponseLimit = 4 * 1024 * 1024;
 export async function readDriverResponse(
@@ -188,6 +189,7 @@ export class SafariDriver implements Driver {
   constructor(
     private readonly udid: string,
     private readonly scratch: string,
+    private readonly observeFailure?: (facts: CommandFailure) => void,
   ) {}
   async start(signal: AbortSignal): Promise<void> {
     this.port = await availablePort();
@@ -334,15 +336,22 @@ export class SafariDriver implements Driver {
     ms = 5000,
     marksUncertain = true,
   ): Promise<unknown> {
+    const dispatchedAt = this.observeFailure ? performance.now() : 0;
+    const deadline = AbortSignal.timeout(ms);
+    const requestSignal = AbortSignal.any([signal, deadline]);
+    let stage: CommandFailure["stage"] = "headers";
+    let status: number | null = null;
     try {
-      const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(ms)]);
       const response = await fetch(this.base + path, {
         method,
         body: body === undefined ? undefined : JSON.stringify(body),
         headers: { "Content-Type": "application/json" },
         signal: requestSignal,
       });
+      stage = "body";
+      if (this.observeFailure) status = response.status;
       const answer: unknown = await readDriverResponse(response, requestSignal);
+      stage = "envelope";
       if (!record(answer) || !Object.hasOwn(answer, "value"))
         throw new Error(`WebDriver ${path}: ${JSON.stringify(answer)}`);
       if (record(answer.value) && typeof answer.value.error === "string")
@@ -356,7 +365,35 @@ export class SafariDriver implements Driver {
       return answer.value;
     } catch (error) {
       if (marksUncertain) this.uncertain = true;
+      if (this.observeFailure) {
+        this.reportFailure({
+          client: "direct",
+          operation: null,
+          phase: null,
+          method: commandMethod(method),
+          path: commandPath(path),
+          dispatchedAt,
+          settledAt: performance.now(),
+          stage,
+          status,
+          abort:
+            signal.aborted && requestSignal.reason === signal.reason
+              ? "caller"
+              : deadline.aborted && requestSignal.reason === deadline.reason
+                ? "deadline"
+                : requestSignal.aborted
+                  ? "unknown"
+                  : null,
+        });
+      }
       throw error;
+    }
+  }
+  private reportFailure(facts: CommandFailure): void {
+    try {
+      this.observeFailure?.(facts);
+    } catch {
+      // Observation cannot replace the operation's rejection.
     }
   }
   private command(
