@@ -546,18 +546,15 @@ class ProbeBackend extends MemoryBackend {
   dirtyOnce = false;
   dirtyEntered = Promise.withResolvers<void>();
   dirtyGate = Promise.withResolvers<void>();
-  sliceFailure = false;
-  override prepare(operation: string, args: any[], data: Uint8Array): void | Promise<void> {
-    if (this.gatePrepare && operation === "gated") {
-      // The service prepares again after this resolves; gate only the first preparation.
-      this.gatePrepare = false;
-      this.held = data;
-      this.prepareEntered.resolve();
-      return this.prepareGate.promise;
-    }
-    return super.prepare?.(operation, args, data);
+  prepare(operation: string, _args: any[], data: Uint8Array): void | Promise<void> {
+    if (!this.gatePrepare || operation !== "gated") return;
+    // The service prepares again after this resolves; gate only the first preparation.
+    this.gatePrepare = false;
+    this.held = data;
+    this.prepareEntered.resolve();
+    return this.prepareGate.promise;
   }
-  override waitForDirtyCapacity(_changed: number, _cancelled: () => boolean): Promise<void> {
+  waitForDirtyCapacity(_changed: number, _cancelled: () => boolean): Promise<void> {
     this.dirtyEntered.resolve();
     return this.dirtyGate.promise;
   }

@@ -263,6 +263,7 @@ test("browser selects runners, shared controls and guest fixtures", () => {
     "packages/waffle/scripts/owned-command.ts",
     "packages/waffle/tests/storage-browser-runner.ts",
     "packages/waffle/tests/publication-browser-runner.ts",
+    "packages/waffle/tests/filesystem-transport-browser-runner.ts",
     "packages/waffle/tests/workspace-browser.ts",
     "packages/waffle/tests/fixtures/publication-guest.ts",
   ])
