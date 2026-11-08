@@ -44,6 +44,7 @@ for (const failed of [null, 0, 3])
           options,
         );
         if (index === failed) {
+          result.runComplete = false;
           result.outcomes[id] = { status: "fail", detail: "" };
           result.failures.push({ group: id, category: "case", detail: "Controlled phase failure" });
           result.cleanup.fixture = { status: "unconfirmed", detail: "Controlled cleanup failure" };
@@ -99,7 +100,9 @@ for (const failed of [null, 0, 3])
               runComplete: phase.result.runComplete,
               omitted: phase.result.omitted,
               failures: phase.result.failures,
-              outcomes: { [Object.keys(phase.result.outcomes)[0]!]: { status: "fail", detail: "" } },
+              outcomes: {
+                [Object.keys(phase.result.outcomes)[0]!]: { status: "fail", detail: "" },
+              },
               cleanup: { fixture: { status: "unconfirmed", detail: "Controlled cleanup failure" } },
             },
           },
@@ -118,6 +121,27 @@ for (const failed of [null, 0, 3])
       await rm(root, { recursive: true, force: true });
     }
   });
+
+test("command logs a failure raised outside a phase", async () => {
+  const root = await mkdtemp(join(process.env.NETWORK_SCRATCH_ROOT ?? tmpdir(), "u-"));
+  const path = join(root, "command.json");
+  const output = spyOn(console, "log").mockImplementation(() => {});
+  const previous = process.env.NETWORK_TEST_PORT;
+  process.env.NETWORK_TEST_PORT = "invalid";
+  try {
+    expect(await completeNetworkCommand(["chromium"], { resultPath: path })).toBe(2);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    const terminal = JSON.parse(String(output.mock.calls.at(-1)?.[0]));
+    expect(terminal.failure).toBe(saved.failure);
+    expect(terminal.failure).toContain("NETWORK_TEST_PORT");
+    expect(terminal.phases).toEqual([]);
+  } finally {
+    output.mockRestore();
+    if (previous === undefined) delete process.env.NETWORK_TEST_PORT;
+    else process.env.NETWORK_TEST_PORT = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("network target, port and budget policy cannot widen or silently downgrade", () => {
   expect(networkTargets(["chromium", "firefox", "webkit", "ios-safari"])).toEqual([
