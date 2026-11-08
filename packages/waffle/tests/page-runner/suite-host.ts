@@ -95,13 +95,15 @@ export function serveCollector(
           return pageResponse(configurations.get(token), page.script);
         if (url.pathname === page.path || url.pathname.startsWith("/_waffle_owned/"))
           return new Response("Unknown document binding", { status: 404, headers });
-        if (url.searchParams.has("waffle-run") && !collector.ownsWorkerScript(url))
+        const workerScope = collector.workerScriptScope(url);
+        if (url.searchParams.has("waffle-run") && !workerScope)
           return new Response("Unknown worker script binding", { status: 404, headers });
         const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
         return new Response(asset ?? "Not found", {
           status: asset === undefined ? 404 : 200,
           headers: {
             ...headers,
+            ...(workerScope ? { "Service-Worker-Allowed": workerScope } : {}),
             "Content-Type":
               typeof asset === "string"
                 ? "application/javascript"

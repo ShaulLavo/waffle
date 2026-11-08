@@ -1,5 +1,6 @@
 import { bounded, type CleanupStep } from "./driver.js";
 import { jsonSnapshot } from "./json-snapshot.js";
+import { formatHostError } from "./protocol.js";
 export interface FixtureContext {
   readonly origin: string;
   readonly run: string;
@@ -86,7 +87,7 @@ export class FixtureOwner {
       },
       (error: unknown) => {
         this.startupSettled = true;
-        this.fail(String(error));
+        this.fail(formatHostError(error));
       },
     );
     return this.startup;
@@ -113,7 +114,7 @@ export class FixtureOwner {
     const settled = operation.then(
       () => {},
       (error: unknown) => {
-        this.fail(String(error));
+        this.fail(formatHostError(error));
       },
     );
     this.pending.set(settled, path);
@@ -163,7 +164,7 @@ export class FixtureOwner {
               status: "unconfirmed",
               detail:
                 this.closeState.kind === "failed"
-                  ? String(this.closeState.error)
+                  ? formatHostError(this.closeState.error)
                   : "Single close waits for actual startup/callback settlement",
             },
     };

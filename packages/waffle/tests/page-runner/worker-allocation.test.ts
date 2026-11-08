@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Collector, ObservationClosed } from "./collector.js";
+import { serveCollector } from "./suite-host.js";
 import { parseMessage, sameStorageEntry, type Body } from "./protocol.js";
 import type { ServiceWorkerEntry } from "../storage-allocation.js";
 const entry: ServiceWorkerEntry = {
@@ -126,4 +127,32 @@ test("aggregate page failures preserve primary and cleanup causes", async () => 
   expect(text).toContain("UNREGISTER");
   expect(text).toContain("RUNTIME");
   expect(text.indexOf("PRIMARY")).toBeLessThan(text.indexOf("UNREGISTER"));
+});
+
+
+test("nested worker scope allowance belongs only to the exact declared script", async () => {
+  const collector = new Collector("r", ["c"], ["c"], {
+    listIds: () => ["c"],
+    check() {},
+  });
+  const host = serveCollector(collector, { "/assets/sw.js": "", "/other.js": "" }, undefined, 0);
+  const owned: ServiceWorkerEntry = {
+    kind: "service-worker",
+    name: `${host.origin}/_waffle_owned/r/`,
+    clientURL: `${host.origin}/_waffle_owned/r/client.html?token=t`,
+    scriptURL: `${host.origin}/assets/sw.js?waffle-run=r`,
+  };
+  collector.declareWorker("c", owned);
+  try {
+    const response = await fetch(owned.scriptURL);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Service-Worker-Allowed")).toBe(owned.name);
+    for (const path of ["/assets/sw.js", "/other.js", "/assets/sw.js?waffle-run=foreign"]) {
+      const other = await fetch(host.origin + path);
+      expect(other.headers.get("Service-Worker-Allowed")).toBeNull();
+      if (path.includes("foreign")) expect(other.status).toBe(404);
+    }
+  } finally {
+    await host.server.stop(true);
+  }
 });

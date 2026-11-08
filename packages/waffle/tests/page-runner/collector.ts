@@ -95,8 +95,9 @@ export class Collector {
   readonly documents: DocumentState[] = [];
   readonly transitions: PeerTransition[] = [];
   private worker: { caseId: string; entry: ServiceWorkerEntry } | undefined;
-  ownsWorkerScript(url: URL): boolean {
-    return this.worker?.entry.scriptURL === url.href;
+  workerScriptScope(url: URL): string | undefined {
+    const entry = this.worker?.entry;
+    return entry?.scriptURL === url.href ? entry.name : undefined;
   }
   private workerAttempt: { state: DocumentState; attempt: WorkerAttempt } | undefined;
   declareWorker(caseId: string, entry: ServiceWorkerEntry): void {

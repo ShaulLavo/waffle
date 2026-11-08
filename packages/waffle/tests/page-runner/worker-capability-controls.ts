@@ -7,6 +7,7 @@ import { record } from "./protocol.js";
 
 export const workerControlModes = [
   "success",
+  "nested-script",
   "delayed-ack",
   "missing-ack",
   "collision-before",
@@ -175,17 +176,18 @@ export async function workerCapabilityControl(
   root: string,
 ): Promise<void> {
   let driver: ControlDriver | undefined;
+  const script = mode === "nested-script" ? "/assets/owned-sw.js" : "/owned-sw.js";
   const a: SuiteAdapter<{ mode: string }> = {
     suite: "worker-capability",
     inventory: () => [{ id: "worker", label: mode, request: () => ({ mode }) }],
-    serviceWorker: { caseId: "worker", script: "/owned-sw.js" },
+    serviceWorker: { caseId: "worker", script },
     policy: { listIds: () => ["worker"], check() {} },
     assets: async () => ({
       "/page.js": await browserBundle(join(import.meta.dir, "worker-capability-control-page.ts")),
       "/foreign.html": new Blob(["<!doctype html>"], { type: "text/html" }),
       "/root-sw.js": foreignWorker,
       "/foreign-sw.js": foreignWorker,
-      "/owned-sw.js":
+      [script]:
         mode === "controller-mismatch"
           ? "self.addEventListener('install',e=>e.waitUntil(self.skipWaiting()));"
           : installingWorker,
@@ -209,7 +211,7 @@ export async function workerCapabilityControl(
     result.cleanup.storage.status !== "not-created",
     "Worker declaration bypassed durable cleanup",
   );
-  const passing = ["success", "delayed-ack", "controller-mismatch", "absent-current"].includes(
+  const passing = ["success", "nested-script", "delayed-ack", "controller-mismatch", "absent-current"].includes(
     mode,
   );
   assert(

@@ -273,3 +273,63 @@ test("noncooperative callback keeps immutable debt and scratch until test-owned 
       await response?.catch(() => {});
     }
   }));
+
+
+test("saved fixture diagnostics preserve simultaneous startup and close aggregate causes", () =>
+  withRoot(async (root) => {
+    let closes = 0;
+    const a = adapter([]);
+    a.fixture = {
+      caseId: id,
+      create: () => ({
+        start: async () => {
+          throw new AggregateError(
+            [new Error("PRIMARY_START"), new Error("START_CLEANUP")],
+            "START_AGGREGATE",
+          );
+        },
+        close: async () => {
+          closes++;
+          throw new AggregateError(
+            [new Error("CLOSE_LISTENER"), new Error("CLOSE_SOCKET")],
+            "CLOSE_AGGREGATE",
+          );
+        },
+      }),
+    };
+    const path = join(root, "causes.json");
+    const result = await runPageSuite(
+      a,
+      () => { throw new Error("Unexpected driver"); },
+      { scratchRoot: root, resultPath: path, port: "ephemeral" },
+    );
+    expect(result.exit).toBe(2);
+    expect(closes).toBe(1);
+    const saved = await Bun.file(path).text();
+    for (const cause of ["PRIMARY_START", "START_CLEANUP", "CLOSE_LISTENER", "CLOSE_SOCKET"])
+      expect(saved).toContain(cause);
+  }));
+
+for (const stage of ["callback", "serialization"]) {
+  test(`saved fixture ${stage} diagnostics preserve aggregate causes`, () =>
+    withRoot(async (root) => {
+      const fail = () => {
+        throw new AggregateError([new Error("INNER_PRIMARY"), false], "OBSERVATION_FAILURE");
+      };
+      const route = {
+        path: "/idle",
+        get: async () => stage === "callback" ? fail() : { toJSON: fail },
+      };
+      const d = new RouteDriver(async (driver) => {
+        expect((await fetch(driver.origin + "/idle", { headers: driver.headers() })).status).toBe(409);
+      });
+      const path = join(root, "observation.json");
+      const result = await runPageSuite(adapter([route]), () => d, {
+        scratchRoot: root, resultPath: path, port: "ephemeral",
+      });
+      expect(result.exit).toBe(2);
+      const saved = await Bun.file(path).text();
+      expect(saved).toContain("INNER_PRIMARY");
+      expect(saved).toContain("false");
+    }));
+}
