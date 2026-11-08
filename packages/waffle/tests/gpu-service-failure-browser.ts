@@ -160,6 +160,40 @@ function terminal(control: Record<string, unknown>, reason: number) {
     "open waiter or rings not terminal",
   );
 }
+function observedReplyTail(value: unknown): number {
+  requireProof(
+    typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= -0x80000000 &&
+      value <= 0x7fffffff &&
+      value % 8 === 0,
+    "old reply consumer escaped committed bytes",
+  );
+  return value;
+}
+function retiredReplyDrain(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  consumerRunning: boolean,
+) {
+  const old = record(before.replies),
+    next = record(after.replies),
+    head = number(old.head),
+    tail = observedReplyTail(old.tail),
+    consumed = observedReplyTail(next.tail);
+  requireProof(
+    Number.isSafeInteger(head) &&
+      head <= 0xffffffff &&
+      head % 8 === 0 &&
+      (consumed - tail) >>> 0 <= (head - tail) >>> 0,
+    "old reply consumer escaped committed bytes",
+  );
+  requireProof(
+    consumerRunning || consumed === tail,
+    "physically stopped guest changed old controls",
+  );
+  equal({ ...before, replies: { ...old, tail: consumed } }, after, "late old publication changed");
+}
 function liveRuntime(state: Record<string, unknown>, epoch: unknown) {
   requireProof(
     number(state.runtimeEpoch) > 0 && state.runtimeEpoch === epoch && state.disposed === false,
@@ -359,6 +393,7 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
     services.length === 1 && services[0]!.stopped === false && fault.worker === services[0]!.id,
     "wrong failed service worker",
   );
+  const consumers = new Map<unknown, Record<string, unknown>>();
   for (const [index, compiled] of original.guests.entries()) {
     const matches = workers.filter(
       (worker) =>
@@ -372,6 +407,7 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
         matches[0]!.stopped === (index === 0),
       "original physical worker correlation missing",
     );
+    consumers.set(original.grants[index], matches[0]!);
   }
   const service = services[0]!,
     stops = entries(stopped.workerStops).filter((item) => item.id === service.id);
@@ -398,16 +434,25 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
         record(item.replies).terminal === 0,
       "connection or opening waiter already terminal",
     );
-  const terminalControls = originalControls(stopped, original.grants);
+  workerHistory(before, stopped);
+  workerHistory(stopped, after);
+  const terminalControls = originalControls(stopped, original.grants),
+    stoppedWorkers = entries(stopped.workers),
+    stoppedIds = new Set(entries(stopped.workerStops).map((stop) => stop.id));
   for (const item of terminalControls)
     terminal(item, item.grant === original.control.grant ? 1 : 5);
   for (const state of [stopped, after]) {
     liveRuntime(state, before.runtimeEpoch);
-    equal(
-      terminalControls,
-      originalControls(state, original.grants),
-      "late old publication changed",
-    );
+    const controls = originalControls(state, original.grants);
+    for (const [index, control] of terminalControls.entries()) {
+      const originalWorker = consumers.get(control.grant)!,
+        worker = stoppedWorkers.find((worker) => worker.id === originalWorker.id)!;
+      retiredReplyDrain(
+        control,
+        controls[index]!,
+        worker.stopped === false && !stoppedIds.has(worker.id),
+      );
+    }
     const current = entries(state.workers);
     requireProof(
       current.find((item) => item.id === service.id)?.stopped === true &&
@@ -425,8 +470,6 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
       "original grant revocation missing",
     );
   }
-  workerHistory(before, stopped);
-  workerHistory(stopped, after);
   equal(result.auditControl, failure.audit, "terminated service audit rewritten");
   failureExits(failure, original);
   accounting(after.snapshot, 1, 4);
@@ -436,7 +479,7 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
     after,
     service,
     stopAt: number(stops[0]!.at),
-    controls: terminalControls,
+    controls: originalControls(after, original.grants),
   };
 }
 function failureExits(failure: Record<string, unknown>, original: ReturnType<typeof preFailure>) {

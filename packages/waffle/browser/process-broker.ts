@@ -223,7 +223,7 @@ export interface RuntimeRootOptions {
   prepareDescendant?: RootDescendantPreparation;
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
-  /** Module entry stays inert until its first request; unused workers may be prestarted. */
+  /** Module entry stays inert until its first request. A fresh worker is created on demand. */
   workerUrl: string;
   notificationWorkerUrl?: string;
   /** Explicit internal proof profile. Source admission is still mandatory. */
@@ -1447,9 +1447,8 @@ export class BrowserProcessBroker {
     this.supervisor?.reapJob(record.ownerPid, job);
   }
   /**
-   * A single-use module worker for a root the consumer launches itself, from the same precreated
-   * pool as broker-launched children. It stays inert until the consumer posts its request; the
-   * consumer owns its termination. Idle pool workers stop when the broker is disposed.
+   * A fresh single-use module worker for a root the consumer launches itself.
+   * It stays inert until the consumer posts its request; the consumer owns its termination.
    */
   takeWorker(workerUrl: string): Worker {
     if (this.suspended) throw new Error("Process broker is disposed");
@@ -1472,7 +1471,7 @@ export class BrowserProcessBroker {
     if (!ticket) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
     ticket.controlAllocated(buffer);
   }
-  /** Whether this already-observed worker is still inert and owned by this broker's pool. */
+  /** Always false: workers transfer to their caller immediately, with no idle residency. */
   isIdleWorker(worker: Worker): boolean {
     return this.workers.isIdle(worker);
   }
