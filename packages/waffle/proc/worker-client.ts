@@ -48,7 +48,7 @@ import {
   type Stream,
 } from "../core/descriptors.js";
 import { ProcessIdentityAllocator } from "./identity.js";
-import { claimOutcome, readOutcome, markStarted, startStatus } from "./outcome.js";
+import { claimOutcome, readOutcome, markStarted, startStatus, OutcomeCell } from "./outcome.js";
 import { defaultSignalTerminates, requestSignal, type SignalTransport } from "./signals.js";
 import {
   ProcessErrno,
@@ -765,17 +765,37 @@ export class WorkerProcessClient {
       kind: "signaled",
       code: controlLoad(this.signals.requestedSignal, 0) === 9 ? 9 : signal,
     });
+    this.completeSelectedDefaultSignal(winner);
+  }
+  /** @internal Bootstrap already authenticated this immutable outcome before bookkeeping. */
+  completeSelectedDefaultSignal(winner: ProcessExit): boolean {
+    try {
+      // These captured controls can be collected after the caller selected its winner.
+      // Keep callback errors outside this catch, even when they use the same errno.
+      readOutcome(this.signals.outcome);
+      controlLoad(this.signals.requestedSignal, 0);
+    } catch (error) {
+      if (
+        !isCollectedProcess(error) ||
+        !isInstance(this.signals.outcome, OutcomeCell) ||
+        this.signals.outcome.valid()
+      )
+        throw error;
+      this.retireAccesses();
+      return false;
+    }
     settleDirectoryJobLifetimes(this.options.transport.directory);
     this.retireAccesses();
-    if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
+    if (winner.kind === "signaled") this.options.revokeProcess?.(this.pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);
     settleDirectoryJobLifetimes(this.options.transport.directory);
     this.options.postMessage({
       type: "runtime-proc",
       operation: "exit",
       transport: this.options.transport,
-      targets: [pid],
+      targets: [this.pid],
     });
+    return true;
   }
   exit(code: number): void {
     claimOutcome(this.signals.outcome, { kind: "exited", code });
