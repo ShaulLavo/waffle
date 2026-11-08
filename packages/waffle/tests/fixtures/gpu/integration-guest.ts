@@ -9,6 +9,7 @@ import { poisonProcessIntrinsics } from "../process-intrinsics.js";
 import { sharedArrayBufferByteLength } from "../../../proc/intrinsics.js";
 import { consumedControlBytes } from "../../../memory/control.js";
 import { importUnwind } from "./import-unwind.js";
+import { thrownObservation } from "./thrown-observation.js";
 
 const host = globalThis as unknown as {
   onmessage: (event: MessageEvent<RuntimeWorkerRequest>) => Promise<void>;
@@ -51,7 +52,23 @@ function observeImports(
     imports.runtime_gpu[name] = observedImport(original, token, name, quota, payload, authority);
   }
 }
-function observedImport(
+function observeThrow(
+  error: unknown,
+  site: "import" | "return-observer",
+  call: { token: string; call: number; name: string },
+): void {
+  let unwind: ReturnType<typeof importUnwind>;
+  try {
+    if (site === "import") unwind = importUnwind(error);
+  } catch {}
+  try {
+    const gpuImport = { ...call, phase: "throw", unwind };
+    send({
+      gpuImport: unwind ? gpuImport : { ...gpuImport, exception: thrownObservation(error, site) },
+    });
+  } catch {}
+}
+export function observedImport(
   original: Function,
   token: string,
   name: string,
@@ -76,8 +93,10 @@ function observedImport(
           payload.enabled && name === "payload" ? payloadHandle(payload.memory(), args) : undefined,
       },
     });
+    let site: "import" | "return-observer" = "import";
     try {
       const result = apply(original, this, args);
+      site = "return-observer";
       send({
         gpuImport: {
           token,
@@ -94,7 +113,7 @@ function observedImport(
       });
       return result;
     } catch (error) {
-      send({ gpuImport: { token, call, name, phase: "throw", unwind: importUnwind(error) } });
+      observeThrow(error, site, { token, call, name });
       throw error;
     } finally {
       waiting = undefined;
