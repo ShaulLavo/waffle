@@ -1,5 +1,6 @@
 import { parseSync } from "oxc-parser";
 import { createHash } from "node:crypto";
+import hookPositions from "./fixtures/network-hook-positions.json";
 
 type Node = Record<string, unknown>;
 function object(value: unknown): value is Node {
@@ -178,6 +179,7 @@ function occurrences(value: unknown, key: string): number {
   );
 }
 function requireAdaptations(statements: Node[]): void {
+  requireHookPositions(statements);
   const names = statements.map((statement) => functionName(functionNode(statement)));
   const network = names.includes("networkBrowserCases"),
     relay = names.includes("networkRelayBrowserCases");
@@ -199,4 +201,40 @@ function requireAdaptations(statements: Node[]): void {
       occurrences(statements, canonical(finalBlock)) !== 1)
   )
     throw new Error("Unexpected network finalizer or original primary error handler");
+}
+
+const hookKinds = new Map([
+  [
+    canonical(
+      source(
+        'check(serviceWorker.controls(registration, navigator.serviceWorker.controller), "Preview controller identity changed");',
+      )[0],
+    ),
+    "controller",
+  ],
+  [canonical(source("signal?.throwIfAborted();")[0]), "cancellation"],
+]);
+function hookLocations(value: unknown, path: string, found: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    value.forEach((child, index) => hookLocations(child, `${path}[${index}]`, found));
+    return found;
+  }
+  if (!object(value)) return found;
+  const kind = value.type === "ExpressionStatement" ? hookKinds.get(canonical(value)) : undefined;
+  if (kind) found.push(`${path}:${kind}`);
+  for (const [key, child] of Object.entries(value)) hookLocations(child, `${path}.${key}`, found);
+  return found;
+}
+function requireHookPositions(statements: Node[]): void {
+  let checked = 0;
+  for (const [owner, expected] of Object.entries(hookPositions)) {
+    const node = statements.map(functionNode).find((value) => functionName(value) === owner);
+    if (!node) continue;
+    const actual = hookLocations(node, owner);
+    if (JSON.stringify(actual) !== JSON.stringify(expected))
+      throw new Error(`Unexpected network hook position in ${owner}: ${JSON.stringify(actual)}`);
+    checked += actual.length;
+  }
+  if (hookLocations(statements, "module").length !== checked)
+    throw new Error("Network hook has an unapproved owner");
 }

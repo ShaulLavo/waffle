@@ -64,3 +64,32 @@ for (const [file, from, to] of [
     expect(text).toContain(from);
     expect(() => assertParity(text.replace(from, to), baseline[file])).toThrow();
   });
+
+test("parity rejects moving controller identity check after the original POST", async () => {
+  const text = await Bun.file(new URL("./network-browser.ts", import.meta.url)).text();
+  const guard = `    check(
+      serviceWorker.controls(registration, navigator.serviceWorker.controller),
+      "Preview controller identity changed",
+    );
+`;
+  const post = `    const response = await fetch("/_net/32132/render?version=1", { method: "POST", body: payload });
+`;
+  expect(text).toContain(guard);
+  expect(text).toContain(post);
+  const changed = text.replace(guard, "").replace(post, post + guard);
+  expect(() => assertParity(changed, baseline["network-browser.ts"])).toThrow();
+});
+
+test("parity rejects delaying cancellation until after the next listener acquisition", async () => {
+  const text = await Bun.file(new URL("./network-relay-fixture.ts", import.meta.url)).text();
+  const original = `      const echoPort = await listen(echo);
+      signal?.throwIfAborted();
+      const sslPort = await listen(ssl);`;
+  const changed = `      const echoPort = await listen(echo);
+      const sslPort = await listen(ssl);
+      signal?.throwIfAborted();`;
+  expect(text).toContain(original);
+  expect(() =>
+    assertParity(text.replace(original, changed), baseline["network-relay-fixture.ts"]),
+  ).toThrow();
+});
