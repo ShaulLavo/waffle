@@ -10,9 +10,19 @@ import { disposalRetirementReady } from "./fixtures/gpu/disposal-retirement.js";
 
 const task = () => new Promise<void>((resolve) => setImmediate(resolve));
 function open(): GraphicsOpen {
-  return { type: "open", id: 1, control: new SharedArrayBuffer(64), commands: new SharedArrayBuffer(4160), replies: new SharedArrayBuffer(4160), arena: new SharedArrayBuffer(gpuPayloadLayout.byteLength) };
+  return {
+    type: "open",
+    id: 1,
+    control: new SharedArrayBuffer(64),
+    commands: new SharedArrayBuffer(4160),
+    replies: new SharedArrayBuffer(4160),
+    arena: new SharedArrayBuffer(gpuPayloadLayout.byteLength),
+  };
 }
-for (const order of [[1, 2], [2, 1]])
+for (const order of [
+  [1, 2],
+  [2, 1],
+])
   test(`disposal audit waits for actual cleanup and all grant acknowledgements (${order.join(",")})`, async () => {
     const owners = order.map((grant) => ({ open: { grant }, retiredAck: false }));
     const connections = new Map<number, GpuConnection>();
@@ -20,7 +30,10 @@ for (const order of [[1, 2], [2, 1]])
     const held = deferred<number>();
     let receiving = 0;
     const add = GpuScheduler.prototype.add;
-    const observer = spyOn(GpuScheduler.prototype, "add").mockImplementation(function (this: GpuScheduler, connection) {
+    const observer = spyOn(GpuScheduler.prototype, "add").mockImplementation(function (
+      this: GpuScheduler,
+      connection,
+    ) {
       connections.set(receiving, connection);
       return add.call(this, connection);
     });
@@ -30,20 +43,36 @@ for (const order of [[1, 2], [2, 1]])
       events.push("retired");
       held.resolve(42);
     };
-    const service = new GpuService((message) => {
-      if (message.type === "retired") {
-        const owner = owners.find((owner) => owner.open.grant === message.grant);
-        if (!owner) throw new Error("unknown grant");
-        owner.retiredAck = true;
-      }
-      audit(message);
-    }, { access: serviceAccess(), root: {} });
+    const service = new GpuService(
+      (message) => {
+        if (message.type === "retired") {
+          const owner = owners.find((owner) => owner.open.grant === message.grant);
+          if (!owner) throw new Error("unknown grant");
+          owner.retiredAck = true;
+        }
+        audit(message);
+      },
+      { access: serviceAccess(), root: {} },
+    );
     try {
       for (const owner of owners) {
         receiving = owner.open.grant;
         service.receive({ type: "open", grant: receiving, open: open(), surfaces: [] });
       }
-      connections.get(2)!.completions.start(1, () => held.promise, () => { throw new Error("live native callback"); }, () => { throw new Error("unexpected native error"); }, (value) => { expect(value).toBe(42); events.push("late"); });
+      connections.get(2)!.completions.start(
+        1,
+        () => held.promise,
+        () => {
+          throw new Error("live native callback");
+        },
+        () => {
+          throw new Error("unexpected native error");
+        },
+        (value) => {
+          expect(value).toBe(42);
+          events.push("late");
+        },
+      );
       for (const grant of [2, 1]) {
         const message = { type: "revoke", grant } as const;
         service.receive(message);
@@ -64,7 +93,10 @@ for (const order of [[1, 2], [2, 1]])
   });
 
 test("disposal audit rejects request-only, unknown, partial and missing-selected retirement", () => {
-  const owners = [{ open: { grant: 1 }, retiredAck: true }, { open: { grant: 2 }, retiredAck: false }];
+  const owners = [
+    { open: { grant: 1 }, retiredAck: true },
+    { open: { grant: 2 }, retiredAck: false },
+  ];
   expect(disposalRetirementReady({ type: "revoke", grant: 2 }, owners, 2)).toBe(false);
   expect(disposalRetirementReady({ type: "retired", grant: 2 }, owners, 2)).toBe(false);
   owners[1]!.retiredAck = true;

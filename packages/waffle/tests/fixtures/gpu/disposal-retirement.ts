@@ -1,4 +1,7 @@
-import type { GpuServiceRequest, GpuServiceReply } from "../../../browser/display/service-protocol.js";
+import type {
+  GpuServiceRequest,
+  GpuServiceReply,
+} from "../../../browser/display/service-protocol.js";
 
 interface DisposalOwner {
   readonly open: { readonly grant: number };
