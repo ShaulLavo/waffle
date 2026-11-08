@@ -74,6 +74,11 @@ export async function browserStartupPool(): Promise<void> {
     demandConstructions.push(created.length - before);
     return handle;
   });
+  const assertIdle = async (expected: number) => {
+    await pause();
+    assert(created.length === expected, `idle workers created after ${expected} launches`);
+    assert(stopped.size === expected, `workers retained after ${expected} exits`);
+  };
   const source = program();
   const remove = runtime.registerProgram("/app", {
     adapter: "fixture",
@@ -129,8 +134,7 @@ export async function browserStartupPool(): Promise<void> {
     await service.adoptRuntimeRoot(root, { memory: [] });
     supervisor = await service.ready();
     await wait(await spawn("first"));
-    await pause();
-    assert(created.length === 1 && stopped.size === 1, "idle after first launch created extra workers");
+    await assertIdle(1);
     const second = await spawn("second"),
       third = await spawn("third");
     assert(
@@ -142,8 +146,7 @@ export async function browserStartupPool(): Promise<void> {
       loads === 1 && modules[0] === modules[1] && modules[0] === modules[2],
       "module cache missed concurrent/repeated launches",
     );
-    await pause();
-    assert(created.length === 3 && stopped.size === 3, "idle after concurrent launches created extra workers");
+    await assertIdle(3);
     for (const signal of [2, 9]) {
       const token = `loop-${signal}`;
       const loop = await spawn(token, "/loop");
