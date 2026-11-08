@@ -382,3 +382,91 @@ test("guest stack formatters are not called to collect native error frames", () 
   expect(stack).toBeUndefined();
   expect(calls).toBe(0);
 });
+
+const nativeOwnDescriptor = Object.getOwnPropertyDescriptor;
+const nativeDefine = Object.defineProperty;
+const nativeDelete = Reflect.deleteProperty;
+const nativeSetPrototype = Object.setPrototypeOf;
+function installOwnDescriptor(target: object, key: PropertyKey, field: PropertyDescriptor) {
+  nativeSetPrototype(field, null);
+  nativeDefine(target, key, field);
+}
+function restorePrototypeField(key: PropertyKey, field: PropertyDescriptor | undefined) {
+  nativeDelete(Object.prototype, key);
+  if (field) installOwnDescriptor(Object.prototype, key, field);
+}
+
+test("inherited descriptor fields cannot run getters or forge exception metadata", () => {
+  const error = new Error("safe message");
+  let nameCalls = 0,
+    descriptorCalls = 0;
+  installOwnDescriptor(error, "name", {
+    configurable: true,
+    get() {
+      nameCalls++;
+      return "name-hook";
+    },
+  });
+  const saved = nativeOwnDescriptor(Object.prototype, "value"),
+    { events, invoke } = rig(() => {
+      throw error;
+    });
+  let result: ReturnType<typeof thrownObservation>, original: unknown;
+  installOwnDescriptor(Object.prototype, "value", {
+    configurable: true,
+    get() {
+      descriptorCalls++;
+      return "descriptor-hook";
+    },
+  });
+  try {
+    result = thrownObservation(error, "import");
+    original = caught(invoke);
+  } finally {
+    restorePrototypeField("value", saved);
+  }
+  expect(original).toBe(error);
+  expect(nameCalls).toBe(0);
+  expect(descriptorCalls).toBe(0);
+  expect(result.name).toBeUndefined();
+  expect(result.stack).toBeUndefined();
+  expect(JSON.stringify(events)).not.toContain("descriptor-hook");
+});
+
+for (const field of ["name", "message", "stack"] as const)
+  test(`inherited output ${field} setters cannot insert arbitrary objects or views`, () => {
+    const error = new TypeError("safe message"),
+      saved = nativeOwnDescriptor(Object.prototype, field),
+      arbitrary = { marker: "not a scalar", view: new Int32Array(new SharedArrayBuffer(16)) },
+      { events, invoke } = rig(() => {
+        throw error;
+      });
+    let calls = 0,
+      original: unknown,
+      result: ReturnType<typeof thrownObservation>;
+    installOwnDescriptor(Object.prototype, field, {
+      configurable: true,
+      set(this: object) {
+        calls++;
+        installOwnDescriptor(this, field, {
+          configurable: true,
+          enumerable: true,
+          value: arbitrary,
+        });
+      },
+    });
+    try {
+      result = thrownObservation(error, "import");
+      original = caught(invoke);
+    } finally {
+      restorePrototypeField(field, saved);
+    }
+    expect(original).toBe(error);
+    expect(calls).toBe(0);
+    expect(Object.getPrototypeOf(result)).toBeNull();
+    expect(typeof result[field]).toBe("string");
+    expect(events.at(-1)).toMatchObject({
+      gpuImport: { exception: { [field]: expect.any(String) } },
+    });
+    expect(JSON.stringify(events)).not.toContain("not a scalar");
+  });
