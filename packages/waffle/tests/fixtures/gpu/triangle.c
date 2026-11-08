@@ -45,6 +45,7 @@ static int pause_acquired;
 static int repeat_acquire;
 static int discard_after_first;
 static int expired_frame_use;
+static int grant_quota;
 enum { FAIRNESS_NONE, FAIRNESS_HEAVY, FAIRNESS_PEER, FAIRNESS_SEEDED };
 static int fairness;
 static uint32_t fairness_seed;
@@ -70,6 +71,7 @@ static void options(int argc, char **argv) {
       fairness_seed = parse_seed(argv[++i]);
       continue;
     }
+    if (!strcmp(argv[i], "--grant-quota")) { grant_quota = 1; continue; }
     if (!strcmp(argv[i], "--repeat-acquire")) { repeat_acquire = 1; continue; }
     if (!strcmp(argv[i], "--discard-after-first-frame")) { discard_after_first = 1; continue; }
     if (!strcmp(argv[i], "--expired-frame-use")) { expired_frame_use = 1; continue; }
@@ -280,10 +282,44 @@ static void fairness_seeded(void) {
   }
 }
 
+static void quota_reopen(void) {
+  uint8_t surfaces[32] = {0}, info[16] = {0};
+  int32_t count = window_surfaces(surfaces, sizeof(surfaces));
+  if (count != 1) fail("quota-surfaces", count);
+  uint32_t surface = gpu_read_u32(surfaces);
+  check("quota-surface-info", window_surface_info(surface, info));
+  printf("GPU_STAGE surface id=%u width=%u height=%u\n",
+         surface, gpu_read_u32(info), gpu_read_u32(info + 4));
+  unsigned refusals = 0;
+  for (unsigned cycle = 1; cycle <= 16; ++cycle) {
+    uint32_t opened = 0xdeadbeef;
+    int32_t status = runtime_gpu_open(0, &opened);
+    printf("GPU_QUOTA_OPEN cycle=%u status=%d output=%u\n", cycle, status, opened);
+    if (status != 0) {
+      if (status != -48 || opened != 0xdeadbeef) fail("quota-refusal", status);
+      printf("GPU_QUOTA_REFUSED index=%u\n", ++refusals);
+      wait_stdin("quota-refused");
+      if (refusals == 2) return;
+      continue;
+    }
+    if (refusals || !opened || opened != cycle) fail("quota-connection", -28);
+    connection = opened;
+    request_device();
+    resources(surface, gpu_read_u32(info), gpu_read_u32(info + 4));
+    render();
+    wait_stdin("quota-open");
+    fixture_close();
+    printf("GPU_QUOTA_CLOSED cycle=%u\n", cycle);
+    wait_stdin("quota-close");
+  }
+  fail("quota-bound", -48);
+}
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
   options(argc, argv);
+  if (grant_quota) { quota_reopen(); return 0; }
   uint32_t width, height;
   uint32_t surface_id = fixture_open(&width, &height);
   resources(surface_id, width, height);

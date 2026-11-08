@@ -209,6 +209,7 @@ export async function launchTriangle(
     argv: Array.of<string>(program).concat(args),
     env: {
       GPU_POISON: poison ? "1" : "0",
+      GPU_GRANT_QUOTA: args.includes("--grant-quota") ? "1" : "0",
       GPU_FORGE: forge ? "1" : "0",
       GPU_AUTHORITY_TOKEN: authorityToken,
       GPU_OWNERSHIP_TOKEN: holdMode === "ownership" ? authorityToken : "",
@@ -406,6 +407,10 @@ function recordImport(value: unknown): void {
   if (!events || events.length >= 32768)
     throw new Error("Missing or overflowing GPU import observer");
   events.push(value);
+}
+/** @browserEntry */
+export function quotaAccounting() {
+  return runtime!.sharedMemory.snapshot();
 }
 /** @browserEntry */
 export function ownershipGuest(slot = 0) {

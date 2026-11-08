@@ -709,9 +709,32 @@ and budgets are unchanged.
 
 ## G3 same-grant quota checkpoint, November 8, 2026
 
-Status: Approved, implementation in progress. This bounded proof covers one compiled C
-incarnation closing and reopening under its original monotonic shared-control grant.
-It must distinguish allocator refusal from the service connection cap and retain the
-original green peer's actual queue and presentation progress. Production code and the
-8 ms slice and 100 ms peer targets stay unchanged. This is not full G3, physical memory
-reclamation or hardware qualification.
+Status: Approved. The normal C fixture's opt-in `--grant-quota` mode keeps one process,
+canvas and grant across twelve successful open, render and normal-close cycles. Its
+thirteenth and fourteenth opens return `-48` with an unchanged output sentinel. Each
+refused open consumes only its initial 64-byte control backing. No refused attempt
+reaches service admission or requests a native device. The service has at most two
+live connections, so its eight-connection cap cannot supply this result.
+
+The import observer reads the existing shared-control counter and allocation receipt
+lengths. Close does not refund them. The full 67,108,864-byte reservation stays live
+through both refusals. Physical guest stop replaces it with 66,062,724 bytes of
+conservative consumed-backing debt and releases only the 1,046,140 unused bytes.
+This is accounting, not proof of physical memory reclamation.
+
+Seven screenshot brackets cover the first open, first close, reopen, last close,
+refusal, repeated refusal and physical stop. Each requires fresh native presents and
+newly started and completed queue work from the original green C peer inside actual
+service times. Its pid, guest token, service realm, grant, owner, device and presenter
+remain correlated. Earliest retired-owner observations, immutable completed history,
+legitimate pending settlement, authority canaries and worker-stop audits remain checked.
+The default compiled runner discovers this case alongside all earlier cases.
+
+Development evidence retains a failed coverage placement, an over-instrumented run
+that reached the unchanged peer frame bound, and the first completed observation's
+101.86 ms peer gap against the unchanged 100 ms target. Its maximum service slice was
+0.99 ms against 8 ms. Later scalar validation reuses this capture rather than adding
+fields to it. Final canonical gate results are recorded in the coordinator report.
+Production code, existing fixture modes, workflows and budgets are unchanged. This is
+one single-worker functional proof, not complete G3 or hardware qualification;
+`hardwareQualified` remains false.
