@@ -1,9 +1,17 @@
 import { join } from "node:path";
-import { runPageSuite, type HostCase, type SuiteAdapter } from "waffle/testing/page-runner";
+import {
+  runPageSuite,
+  ownedDatabase,
+  type HostCase,
+  type SuiteAdapter,
+} from "waffle/testing/page-runner";
 import { PlaywrightDriver } from "waffle/testing/page-runner/playwright";
 import { record } from "./protocol.js";
 
 export const hostControlModes = [
+  "deadline-teardown",
+  "query-deadline",
+  "query-deadline-no-observer",
   "pass",
   "assertion",
   "setup-fail",
@@ -30,7 +38,51 @@ function equal(actual: unknown, expected: unknown): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
     throw new Error("HOST_FULL_EQUALITY_FAILED");
 }
+async function queryDeadline(host: HostCase, mode: string): Promise<unknown> {
+  const workspace = await host.allocateDatabase("host-query");
+  const query = await host.script(`const q=new URLSearchParams(window.__queryInitial);
+return {workspace:q.get('workspace'),test:q.get('test'),renderer:q.get('renderer'),opens:window.__queryOpens};`);
+  equal(query, { workspace, test: "1", renderer: "canvas", opens: 0 });
+  await host.script(`window.__queryDeadline={count:0,started:false,finished:false,events:[]};
+const timer=window.setTimeout.bind(window);
+${mode === "query-deadline-no-observer" ? "" : "window.setTimeout=function(fn,ms,...args){if(ms===8)window.__queryDeadline.count++;return timer(fn,ms,...args);};"}
+window.setTimeout(()=>{},8);`);
+  equal(await host.script("return window.__queryDeadline.count;"), 1);
+  const pending = host.task(`const s=window.__queryDeadline;
+s.started=true;s.events.push('start');
+await new Promise(resolve=>{s.release=resolve;});
+s.finished=true;s.events.push('end');`);
+  let settled = false;
+  void pending.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  while ((await host.script("return window.__queryDeadline.started;")) !== true)
+    await host.sleep(10);
+  await host.script("window.__queryDeadline.events.push('readiness');");
+  host.setTimeout(3000);
+  await host.sleep(1100);
+  equal(settled, false);
+  equal(await host.script("return window.__queryDeadline.finished;"), false);
+  host.setTimeout(2200);
+  await host.script("const s=window.__queryDeadline;s.events.push('release');s.release();");
+  await pending;
+  equal(await host.script("return window.__queryDeadline.events;"), [
+    "start",
+    "readiness",
+    "release",
+    "end",
+  ]);
+  equal(await host.script("return window.__queryDeadline.count;"), 1);
+  return { ok: true };
+}
 async function drive(host: HostCase, mode: string): Promise<unknown> {
+  if (mode.startsWith("query-deadline")) return queryDeadline(host, mode);
+  if (mode === "deadline-teardown") host.setTimeout(100_000);
   if (host.signal.aborted || host.remainingMs() <= 0) throw new Error("Host clock unavailable");
   if (mode === "setup-fail") await host.task("throw new Error('SETUP_FAILURE');");
   if (mode === "late-init")
@@ -90,6 +142,9 @@ export async function hostControl(
         id: "host",
         label: "selected host",
         request: () => ({ mode }),
+        query: mode.startsWith("query-deadline")
+          ? (run) => ({ test: "1", renderer: "canvas", workspace: `host-query-${run}` })
+          : undefined,
         drive: async (host) => {
           if (mode !== "interruption") return drive(host, mode);
           await host.task("window.__hostFixture = {value:7,disposed:0};");
@@ -112,14 +167,19 @@ export async function hostControl(
         return value.ids;
       },
       requireResult: true,
+      allocation: mode.startsWith("query-deadline") ? ownedDatabase("host-query") : undefined,
       check() {},
     },
     assets: async () => ({}),
     budgets: () => ({
       hello: 4000,
       heartbeat: 2000,
-      case: ["separate-hook", "admission-ack", "late-init"].includes(mode) ? 150 : 4000,
-      teardown: ["disposal-hang", "sync-hook"].includes(mode)
+      case: mode.startsWith("query-deadline")
+        ? 1000
+        : ["separate-hook", "admission-ack", "late-init"].includes(mode)
+          ? 150
+          : 4000,
+      teardown: ["disposal-hang", "sync-hook", "deadline-teardown"].includes(mode)
         ? 60
         : ["verdict-delivery", "teardown-report"].includes(mode)
           ? 120
@@ -140,10 +200,16 @@ export async function hostControl(
       assets: { "/page.js": built.outputs[0] },
     },
   );
-  const infra = ["disposal-hang", "late-error", "late-init", "final-ack", "interruption"].includes(
-    mode,
-  );
+  const infra = [
+    "disposal-hang",
+    "late-error",
+    "late-init",
+    "final-ack",
+    "interruption",
+    "deadline-teardown",
+  ].includes(mode);
   const ordinary = [
+    "query-deadline-no-observer",
     "assertion",
     "setup-fail",
     "expression",
@@ -163,6 +229,11 @@ export async function hostControl(
     throw new Error("Host selection changed inventory");
   if (Object.values(result.cleanup).some((step) => record(step) && step.status === "unconfirmed"))
     throw new Error(`Host ${mode} cleanup unconfirmed ${JSON.stringify(result.cleanup)}`);
+  if (
+    mode === "deadline-teardown" &&
+    !JSON.stringify(result.results).includes('"status":"timeout"')
+  )
+    throw new Error("Body timeout extension changed the independent teardown clock");
   if (mode === "interruption" && !JSON.stringify(result.results).includes('"disposed":1'))
     throw new Error("Interrupted command skipped settled original teardown");
   if (mode === "disposal-twice" && !JSON.stringify(result.results).includes('"disposed":2'))
