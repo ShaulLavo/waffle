@@ -41,4 +41,4 @@ NETWORK_SCRATCH_ROOT=/work/tmp \
   bun packages/waffle/tests/network-browser-runner.ts --page-controls chromium
 ```
 
-It checks process-level SIGINT and SIGTERM while a real fixture callback owns a held TCP socket, the scope-only registration negative, and primary plus cleanup errors through saved page diagnostics. Existing public-host controls cover registration replacement, lost operations, callback serialization, and unconfirmed cleanup. They are not duplicate complete positive network commands.
+It checks process-level SIGINT and SIGTERM while a real fixture callback owns a held TCP socket, the scope-only registration negative, slow sentinel initialization under the existing navigation deadline, and primary plus cleanup errors through saved page diagnostics. Existing public-host controls cover registration replacement, lost operations, callback serialization, and unconfirmed cleanup. They are not duplicate complete positive network commands.

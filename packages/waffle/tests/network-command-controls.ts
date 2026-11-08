@@ -13,7 +13,7 @@ export async function networkCommandControls(): Promise<void> {
   const inputs = networkInputs();
   try {
     for (const signal of ["SIGINT", "SIGTERM"] as const) await signalControl(signal);
-    for (const mode of ["scope-only", "cleanup-all"]) {
+    for (const mode of ["scope-only", "cleanup-all", "slow-sentinel"]) {
       const adapter: SuiteAdapter<string> = {
         suite: "network-control",
         inventory: () => [{ id: "network-control", label: mode, request: () => mode }],
@@ -26,7 +26,17 @@ export async function networkCommandControls(): Promise<void> {
             target: "browser",
           });
           if (!build.success || !build.outputs[0]) throw new AggregateError(build.logs);
-          return { ...assets, "/page.js": build.outputs[0] };
+          const worker = assets["/sentinel-sw.js"];
+          if (typeof worker !== "string") throw new Error("Missing root sentinel input");
+          return {
+            ...assets,
+            "/page.js": build.outputs[0],
+            "/sentinel-sw.js":
+              mode === "slow-sentinel"
+                ? worker +
+                  ";self.addEventListener('install',e=>e.waitUntil(new Promise(resolve=>setTimeout(resolve,3500))));"
+                : worker,
+          };
         },
       };
       const result = await runPageSuite(
@@ -38,6 +48,15 @@ export async function networkCommandControls(): Promise<void> {
           port: "ephemeral",
         },
       );
+      if (mode === "slow-sentinel") {
+        assert.equal(
+          result.exit,
+          0,
+          `Sentinel setup escaped the normal navigation budget: ${JSON.stringify(result.failures)}`,
+        );
+        console.log(JSON.stringify({ control: mode, passed: true }));
+        continue;
+      }
       assert.equal(result.exit, 1);
       const outcome = result.outcomes["network-control"];
       assert.ok(outcome?.status === "fail");

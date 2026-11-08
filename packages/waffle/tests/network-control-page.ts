@@ -5,6 +5,7 @@ import { finishNetworkCase } from "./network-finalizer.js";
 startPage<string>({
   list: async () => ["network-control"],
   async run(mode) {
+    if (mode === "slow-sentinel") return "ready";
     if (mode === "scope-only")
       return networkBrowserCases({
         serviceWorker: {
