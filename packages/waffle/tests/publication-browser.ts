@@ -15,7 +15,8 @@ import {
   type PublicationLimits,
 } from "../fs/publication-internal.js";
 import { SLOT_WORDS } from "../fs/shared.js";
-import { PAGE, type FilesystemConnection } from "../fs/protocol.js";
+import type { FilesystemConnection } from "../fs/protocol.js";
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry.js";
 import type { PublicationCut } from "../fs/publication.js";
 
 const limits: PublicationLimits = {
