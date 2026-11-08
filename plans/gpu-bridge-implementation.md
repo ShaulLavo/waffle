@@ -706,3 +706,12 @@ The single-worker topology, 8 ms service slice and 100 ms live-peer gap targets 
 iPhone limits remain. This bounded case is not full G3 or hardware qualification. Production,
 protected async command and adapter fixtures, C inputs, workloads, deadlines, versions, workflow
 and budgets are unchanged.
+
+## G3 same-grant quota checkpoint, November 8, 2026
+
+Status: Approved, implementation in progress. This bounded proof covers one compiled C
+incarnation closing and reopening under its original monotonic shared-control grant.
+It must distinguish allocator refusal from the service connection cap and retain the
+original green peer's actual queue and presentation progress. Production code and the
+8 ms slice and 100 ms peer targets stay unchanged. This is not full G3, physical memory
+reclamation or hardware qualification.
