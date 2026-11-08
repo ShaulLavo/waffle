@@ -36,6 +36,7 @@ export class HostDrive {
   private pending = 0;
   private readonly body = new AbortController();
   private deadline = Infinity;
+  private bodyStartedAt = 0;
   private active = false;
   private uncertain = false;
   private delivered = false;
@@ -167,10 +168,12 @@ try {
     transitioning = false,
   ): Promise<unknown> {
     const user = mode !== "host";
-    const operationSignal = AbortSignal.any([
+    const signals = [
       signal,
       AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
-    ]);
+    ];
+    if (user) signals.push(this.body.signal);
+    const operationSignal = AbortSignal.any(signals);
     const queued = this.enqueue(async () => {
       if (user) this.checkBody();
       try {
@@ -211,11 +214,23 @@ try {
     });
     return abortable(queued, operationSignal);
   }
+  private bodyLimit(): number {
+    return Math.min(
+      this.started + this.budgets.run,
+      this.state.startedAt + (this.budgets.caseDocument ?? this.budgets.group),
+    );
+  }
+  private setTimeout(timeoutMs: number): void {
+    this.checkBody();
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error("Host timeout must be positive and finite");
+    this.deadline = Math.min(this.bodyStartedAt + timeoutMs, this.bodyLimit());
+    this.checkBody();
+  }
   private operationDeadline(): number {
     return Math.min(
-      performance.now() + (this.budgets.operation ?? this.budgets.case),
-      this.deadline,
-      this.started + this.budgets.run,
+      this.budgets.operation === undefined ? Infinity : performance.now() + this.budgets.operation,
+      this.bodyLimit(),
     );
   }
   private checkTarget(state: DocumentState, until: number, transitioning = false): void {
@@ -286,18 +301,23 @@ try {
       await this.sleep(10);
     }
   }
-  private sleep(ms: number): Promise<void> {
+  private async sleep(ms: number): Promise<void> {
     this.checkBody();
-    if (!Number.isFinite(ms) || ms < 0) return Promise.reject(new Error("Invalid host sleep"));
-    const waiting = Promise.withResolvers<void>();
-    const timer = setTimeout(
-      waiting.resolve,
-      Math.min(ms, Math.max(0, this.deadline - performance.now())),
-    );
-    return abortable(waiting.promise, this.body.signal)
-      .then(() => this.checkBody())
-      .finally(() => clearTimeout(timer));
+    if (!Number.isFinite(ms) || ms < 0) throw new Error("Invalid host sleep");
+    const wakeAt = performance.now() + ms;
+    do {
+      const waiting = Promise.withResolvers<void>();
+      const delay = Math.max(0, Math.min(wakeAt, this.deadline) - performance.now());
+      const timer = setTimeout(waiting.resolve, Math.min(delay, 2_147_483_647));
+      try {
+        await abortable(waiting.promise, this.body.signal);
+      } finally {
+        clearTimeout(timer);
+      }
+      this.checkBody();
+    } while (performance.now() < wakeAt);
   }
+
   revoke(): void {
     this.active = false;
     for (const controller of this.peerSignals.values())
@@ -367,15 +387,13 @@ try {
       this.infrastructure();
       this.active = true;
       this.collector.beginHost(this.state, caseId);
-      this.deadline = Math.min(
-        performance.now() + this.budgets.case,
-        this.started + this.budgets.run,
-      );
+      this.bodyStartedAt = performance.now();
+      this.deadline = Math.min(this.bodyStartedAt + this.budgets.case, this.bodyLimit());
       const host: HostCase = {
         openPeer: () => this.openPeer(),
         signal: this.body.signal,
-        remainingMs: () =>
-          Math.max(0, Math.min(this.deadline, this.started + this.budgets.run) - performance.now()),
+        remainingMs: () => Math.max(0, this.deadline - performance.now()),
+        setTimeout: (timeoutMs) => this.setTimeout(timeoutMs),
         script: (source) => {
           this.checkBody();
           return abortable(this.execute(source, "body"), this.body.signal);

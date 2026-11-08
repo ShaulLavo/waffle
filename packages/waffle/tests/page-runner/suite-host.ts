@@ -263,6 +263,7 @@ export type SuiteCase<R> = {
   id: string;
   label: string;
   request: (run: string) => R;
+  query?: (run: string) => Readonly<Record<string, string>>;
   drive?: (host: HostCase) => Promise<unknown>;
 };
 export type SuiteAdapter<R> = {
@@ -961,7 +962,12 @@ function documentCapabilities<R>({
 }) {
   const owned = item && adapter.serviceWorker && item.id === adapter.serviceWorker.caseId && worker;
   const path = owned ? `/_waffle_owned/${run}/client.html` : page;
-  const url = `${origin}${path}?token=${token}`;
+  const url = documentURL(
+    origin,
+    path,
+    token,
+    !item || item.query === undefined ? {} : item.query(run),
+  );
   const serviceWorker = owned ? { ...owned, clientURL: url } : undefined;
   if (serviceWorker && item) collector.declareWorker(item.id, serviceWorker);
   const fixturePaths =
@@ -969,4 +975,43 @@ function documentCapabilities<R>({
       ? application.paths()
       : undefined;
   return { url, serviceWorker, fixturePaths };
+}
+
+function documentURL(origin: string, path: string, token: string, query: unknown): string {
+  const url = new URL(path, origin);
+  copyQuery(url.searchParams, query);
+  url.searchParams.set("token", token);
+  return url.href;
+}
+function copyQuery(parameters: URLSearchParams, query: unknown): void {
+  if (!record(query) || ![Object.prototype, null].includes(Object.getPrototypeOf(query)))
+    throw new Error("Case query must be a string record");
+  const reserved = new Set([
+    "token",
+    "url",
+    "path",
+    "href",
+    "origin",
+    "protocol",
+    "host",
+    "hostname",
+    "port",
+    "pathname",
+    "search",
+    "hash",
+    "username",
+    "password",
+  ]);
+  for (const key of Reflect.ownKeys(query)) {
+    if (!Object.prototype.propertyIsEnumerable.call(query, key)) continue;
+    if (
+      typeof key !== "string" ||
+      !/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(key) ||
+      reserved.has(key.toLowerCase())
+    )
+      throw new Error("Invalid or reserved case query key");
+    const value = query[key];
+    if (typeof value !== "string") throw new Error("Case query values must be strings");
+    parameters.set(key, value);
+  }
 }

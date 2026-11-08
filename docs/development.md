@@ -55,6 +55,8 @@ Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 
+[Host case queries and timeouts](host-case-query-timeouts.md) describes initial query binding and live body-relative deadlines for page-owned consumers.
+
 ### Run the complete compiled GPU async command
 
 The GPU async runner requires the existing normal producer output in `GPU_FIXTURE_DIR`.

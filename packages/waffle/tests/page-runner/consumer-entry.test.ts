@@ -642,11 +642,14 @@ test("scratch deletion failure remains unconfirmed after consumers stop", () =>
 
 test("public entries expose authoritative host domain types without widening driver access", async () => {
   const item: SuiteCase<null> = {
+    query: (run) => ({ test: "1", renderer: "canvas", workspace: `typed-${run}` }),
     id: "typed-host",
     label: "typed",
     request: () => null,
     drive: async (host: HostCase) => {
       host.signal.throwIfAborted();
+      const updated: void = host.setTimeout(60_000);
+      void updated;
       await host.script("return null");
       await host.task("await Promise.resolve()");
       const peer = await host.openPeer();
