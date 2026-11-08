@@ -545,8 +545,8 @@ Ports schedule requests; each request owns a block in its connection's stable sh
 32-byte completion header and a response room of at most 64 KiB. Inputs up to 64 KiB share that block.
 A larger input is copied once into a private ArrayBuffer and transferred before the guest parks, so a
 blocked guest keeps the same arena and the same `Atomics.wait` notification. An explicit `capacity`
-above 64 KiB bounds nothing larger: results beyond the room use the overflow path, and large
-results are read in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
+above 64 KiB is clamped to that room. Results that do not fit use the overflow path and are read
+in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
 its buffer until `release()`; buffers and revocation words are never recycled between guests.
 
 Every request debits the connection's logical limit of 2,147,479,552 bytes, inline or private, and
