@@ -733,6 +733,44 @@ test("runtime-owned source admission avoids a second byte snapshot", async () =>
   }
 });
 
+test("compiled program loaders release their owned source while registration stays live", async () => {
+  const source = bytes.slice();
+  const Bytes = globalThis.Uint8Array;
+  let owned: WeakRef<Uint8Array> | undefined;
+  globalThis.Uint8Array = new Proxy(Bytes, {
+    construct(target, args) {
+      const result = Reflect.construct(target, args, target);
+      if (args[0] === source) owned = new WeakRef(result);
+      return result;
+    },
+  });
+  let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+  const factory = processHost();
+  const runtime = create({
+    processHost: (options) => {
+      registry = options.registry;
+      return factory(options);
+    },
+  });
+  runtime.registerAdapter("test", () => ({ terminate() {} }));
+  try {
+    runtime.registerProgram("/snapshot", { adapter: "test", source });
+  } finally {
+    globalThis.Uint8Array = Bytes;
+  }
+  expect(owned).toBeDefined();
+  await runtime.processes();
+  const first = await registry!.resolve("/snapshot");
+  let released = false;
+  for (let round = 0; round < 20 && !released; round++) {
+    await Bun.sleep(5);
+    Bun.gc(true);
+    released = owned!.deref() === undefined;
+  }
+  expect(released).toBe(true);
+  expect((await registry!.resolve("/snapshot")).module).toBe(first.module);
+});
+
 test("disposal blocks previously borrowed capabilities and never activates unused processes", async () => {
   const runtime = create({
     processHost: () => {
