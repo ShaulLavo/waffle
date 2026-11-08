@@ -160,6 +160,20 @@ function terminal(control: Record<string, unknown>, reason: number) {
     "open waiter or rings not terminal",
   );
 }
+function retiredReplyDrain(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const old = record(before.replies),
+    next = record(after.replies),
+    head = number(old.head),
+    tail = number(old.tail),
+    consumed = number(next.tail);
+  requireProof(
+    [head, tail, consumed].every(
+      (value) => Number.isSafeInteger(value) && value <= 0xffffffff && value % 8 === 0,
+    ) && (consumed - tail) >>> 0 <= (head - tail) >>> 0,
+    "old reply consumer escaped committed bytes",
+  );
+  equal({ ...before, replies: { ...old, tail: consumed } }, after, "late old publication changed");
+}
 function liveRuntime(state: Record<string, unknown>, epoch: unknown) {
   requireProof(
     number(state.runtimeEpoch) > 0 && state.runtimeEpoch === epoch && state.disposed === false,
@@ -403,11 +417,9 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
     terminal(item, item.grant === original.control.grant ? 1 : 5);
   for (const state of [stopped, after]) {
     liveRuntime(state, before.runtimeEpoch);
-    equal(
-      terminalControls,
-      originalControls(state, original.grants),
-      "late old publication changed",
-    );
+    const controls = originalControls(state, original.grants);
+    for (const [index, control] of terminalControls.entries())
+      retiredReplyDrain(control, controls[index]!);
     const current = entries(state.workers);
     requireProof(
       current.find((item) => item.id === service.id)?.stopped === true &&
@@ -436,7 +448,7 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
     after,
     service,
     stopAt: number(stops[0]!.at),
-    controls: terminalControls,
+    controls: originalControls(after, original.grants),
   };
 }
 function failureExits(failure: Record<string, unknown>, original: ReturnType<typeof preFailure>) {

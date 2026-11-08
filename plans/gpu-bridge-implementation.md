@@ -845,3 +845,23 @@ An unrelated full-unit attempt on the corrected source reported terminal-deadhol
 as an early worker exit instead of its final held-section message. Two unchanged focused
 invocations of that exact test passed. Its cause remains unproved, the failed log stays in the
 coordinator report, and no terminal source, assertion or clock changed for this observation.
+
+
+### Service-failure reply consumption checkpoint
+
+PR 409 run 42443198652 at a47b0da7 passed payload and same-grant quota proofs, then the old
+service-failure oracle rejected late old publication. The complete protocol retains the actual
+result. Its sole control difference between service stop and the original guests' physical
+stops is the peer reply tail moving from 7,064 to the already-published head 7,088. No reply head,
+command counter, status, terminal reason, grant or arena changes. RecordRing.readInto deliberately
+consumes committed replies before reporting terminal status; the original C failure and all
+physical guest stops remain required. Calling that read a publication was an oracle error.
+
+The corrected check allows only aligned, forward consumer-tail movement inside the bytes that
+were already committed, including unsigned counter rollover. Every other old-control field
+stays exact. Once the original guests physically stop, their resulting full controls become the
+exact recovery baseline; no later read, write or revival is allowed. Permanent controls distinguish
+that admitted drain from tail regression, over-consumption, unaligned counters, head or command
+changes and post-stop movement. The unchanged captured result passes this correction, with its
+7.005 ms service slice and 126.105 ms peer gap preserved as not-met against 8 ms and 100 ms.
+Hardware qualification remains false. No production, workload, clock or local GPU capture changes.
