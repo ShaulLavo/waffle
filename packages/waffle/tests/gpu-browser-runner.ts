@@ -12,6 +12,7 @@ import {
   qualificationRoutes,
 } from "./gpu-browser-qualification.js";
 import { browserBundle } from "./browser-runner-lifecycle.js";
+import { serviceFailureCases } from "./gpu-service-failure-browser.js";
 import { disposalCases } from "./gpu-disposal-browser.js";
 import { regrantCases } from "./gpu-regrant-browser.js";
 import { admissionCases } from "./gpu-admission-browser.js";
@@ -417,11 +418,19 @@ async function main() {
       type: "application/wasm",
     });
     const url = runner.serve(routes);
+    const priorOnly = process.argv.includes("--prior-only");
+    const serviceFailureOnly = process.argv.includes("--service-failure-only");
     const disposalOnly = process.argv.includes("--disposal-only");
     const regrantOnly = process.argv.includes("--regrant-only");
     const requestedEngines = process.argv
       .slice(2)
-      .filter((arg) => arg !== "--regrant-only" && arg !== "--disposal-only");
+      .filter(
+        (arg) =>
+          arg !== "--regrant-only" &&
+          arg !== "--disposal-only" &&
+          arg !== "--service-failure-only" &&
+          arg !== "--prior-only",
+      );
     for (const requested of requestedEngines.length
       ? requestedEngines
       : ["chromium", "firefox", "webkit"]) {
@@ -436,6 +445,16 @@ async function main() {
       await navigateTestPage(page, url);
       const qualification = await qualifyGpuBrowser(page, engine);
       const available = requireIntegrationAdapter(engine, qualification.capabilities);
+      const serviceFailure =
+        priorOnly || disposalOnly || regrantOnly
+          ? undefined
+          : await serviceFailureCases(page, url, available);
+      console.log(JSON.stringify({ engine, stage: "service-failure", serviceFailure }));
+      if (serviceFailureOnly) {
+        await context.close();
+        await runner.closeBrowser(browser);
+        continue;
+      }
       const disposal = regrantOnly ? undefined : await disposalCases(page, url, available);
       console.log(JSON.stringify({ engine, stage: "disposal", disposal }));
       if (disposalOnly) {

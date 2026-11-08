@@ -65,6 +65,8 @@ interface OpenAttempt {
   retiredAck: boolean;
 }
 const attempts: OpenAttempt[] = [];
+let holdNextOpen = false;
+let pendingOpen: Open | undefined;
 const rings = new WeakMap<RecordRing, Owner>();
 const devices = new WeakMap<GPUDevice, Owner>();
 const presenters = new WeakMap<object, number>();
@@ -121,7 +123,13 @@ const gate = Promise.withResolvers<void>();
 let disposalAudit: SharedArrayBuffer | undefined;
 let heldCompletion: { owner: number; token: number } | undefined;
 let lateCallback:
-  | { owner: number; device: number; token: number; kind: "none" | "error"; at: number }
+  | {
+      owner: number;
+      device: number;
+      token: number;
+      kind: "none" | "error";
+      at: number;
+    }
   | undefined;
 const startCompletion = CompletionOwner.prototype.start;
 CompletionOwner.prototype.start = function (token, start, settle, reject, abandon) {
@@ -489,6 +497,13 @@ function snapshot(responseId: string) {
     scopeResult,
     lateCallback,
     heldCompletion,
+    pendingOpen: pendingOpen
+      ? {
+          grant: pendingOpen.grant,
+          surface: pendingOpen.surfaces[0]!.id,
+          connection: pendingOpen.open.id,
+        }
+      : null,
   };
 }
 function coverage() {
@@ -593,6 +608,18 @@ function command(data: Command) {
   }
 }
 host.onmessage = ({ data }) => {
+  if ("test" in data && data.test === "service-failure")
+    throw new Error(`GPU_SERVICE_FAILURE ${data.id}`);
+  if ("test" in data && data.test === "service-hold-open") {
+    holdNextOpen = true;
+    host.postMessage({ testId: data.id, gpuSnapshot: snapshot(data.id) });
+    return;
+  }
+  if (!("test" in data) && data.type === "open" && holdNextOpen) {
+    if (pendingOpen) throw new Error("Repeated held service open");
+    pendingOpen = data;
+    return;
+  }
   if ("test" in data) {
     command(data);
     return;
