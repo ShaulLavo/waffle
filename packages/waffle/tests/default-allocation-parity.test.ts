@@ -26,12 +26,28 @@ function capture(root: string, fallback: string, agent = "desktop") {
 function multiset(capture: { events: { rawURL?: string }[] }) {
   return capture.events.map(({ rawURL: _rawURL, ...event }) => JSON.stringify(event)).sort();
 }
+function demandOnlyReference(capture: { events: { rawURL?: string }[] }) {
+  const expected = multiset(capture);
+  for (const outcome of ["attempt", "success"]) {
+    const idle = JSON.stringify({
+      realm: "page-owned-javascript",
+      purpose: "guest",
+      constructor: "Worker",
+      descriptor: { url: "guest-worker", options: { type: "module" } },
+      outcome,
+    });
+    expect(expected.filter((event) => event === idle)).toHaveLength(3);
+    const first = expected.indexOf(idle);
+    expected.splice(first, 2);
+  }
+  return expected;
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
   ["normal", "ios"],
 ] as const)
-  test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match ledger-free main, ${mode}, ${agent} user agent`, async () => {
+  test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match the reference without idle workers, ${mode}, ${agent} user agent`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "waffle-parity-reference-"));
     try {
       const repository =
@@ -56,7 +72,7 @@ for (const [mode, agent] of [
         );
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
-      expect(multiset(current)).toEqual(multiset(baseline));
+      expect(multiset(current)).toEqual(demandOnlyReference(baseline));
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }

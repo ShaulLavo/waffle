@@ -283,10 +283,7 @@ export async function brokerNotificationCase(
       "guest termination began before relay disposal settled",
     );
     const unused = termination.workers.filter((worker) => !worker.helper && worker.requests === 0);
-    check(
-      unused.length === 2 && unused.every((worker) => worker.terminations === 1),
-      "unused idle workers were not disposed exactly once independently of the relay",
-    );
+    check(unused.length === 0, "broker constructed an unrequested idle worker");
     termination.release();
     const failure = await settled;
     check(
