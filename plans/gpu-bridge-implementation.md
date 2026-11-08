@@ -746,3 +746,12 @@ leaving the audit absent. The test observer now withholds that reply until the e
 callback and shared-audit publication finish. Production disposal and retirement are unchanged.
 The original failure remains in the coordinator report. The targeted compiled disposal case
 passes with both real audits and all seven physical Worker stops; no assertion or bound changed.
+
+Independent review corrections require native draw, submit, completed queue and presentation
+coverage for every admitted quota connection. A live render may still have pending queue work;
+its terminal observation must show completed work. The peer guest's surface must match its
+original native owner. Each native identity is fixed at its first ready observation. Retired
+submissions may settle once, but their first settled result cannot change or return to pending.
+The peer's own first terminal snapshot now starts its frozen history, before the final audit.
+Permanent negative controls cover all five gaps. Existing genuine captures supply these fields;
+no observation was added to an old record and no timing miss was discarded.

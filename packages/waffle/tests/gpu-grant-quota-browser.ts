@@ -320,7 +320,12 @@ function retiredProof(native: Record<string, unknown>, acknowledged: boolean) {
 }
 type RetiredHistory = Map<
   unknown,
-  { native: Record<string, unknown>; service: Record<string, unknown> }
+  {
+    native: Record<string, unknown>;
+    service: Record<string, unknown>;
+    queue: Record<string, unknown>[];
+    queueAt: number;
+  }
 >;
 function retiredHistory(
   service: Record<string, unknown>,
@@ -328,8 +333,11 @@ function retiredHistory(
   history: RetiredHistory,
 ) {
   const prior = history.get(native.id);
+  const queue = entries(record(service.fairness).queue).filter(
+    (work) => work.connection === native.id,
+  );
   if (!prior) {
-    history.set(native.id, { native, service });
+    history.set(native.id, { native, service, queue, queueAt: number(service.at) });
     return;
   }
   immutableRetired(prior.native, native);
@@ -348,7 +356,54 @@ function retiredHistory(
     JSON.stringify(nativeCalls(before)) === JSON.stringify(nativeCalls(after)),
     "late retired native calls",
   );
-  unchangedSubmissions(owned(before, "queue"), owned(after, "queue"), number(prior.service.at));
+  unchangedSubmissions(prior.queue, queue, prior.queueAt);
+  prior.queue = queue;
+  prior.queueAt = number(service.at);
+}
+function admittedIdentity(
+  native: Record<string, unknown>,
+  history: Map<unknown, Record<string, unknown>>,
+) {
+  const previous = history.get(native.id) ?? native;
+  for (const key of ["id", "grant", "surface", "device", "created"])
+    proof(
+      Number.isSafeInteger(native[key]) && number(native[key]) > 0 && native[key] === previous[key],
+      "admitted native identity changed",
+    );
+  history.set(native.id, previous);
+}
+function cycleRendering(service: Record<string, unknown>, owner: Record<string, unknown>) {
+  const id = owner.id;
+  const observed = record(service.fairness),
+    native = record(observed.native),
+    at = number(service.at);
+  for (const name of [
+    "draw",
+    "finish",
+    "submit",
+    "transferToImageBitmap",
+    "transferFromImageBitmap",
+  ])
+    proof(
+      native[`${id}:${name}`] !== undefined && number(record(native[`${id}:${name}`]).count) > 0,
+      "missing per-cycle native rendering",
+    );
+  proof(
+    entries(observed.presents).some((item) => item.connection === id && number(item.at) <= at) &&
+      entries(observed.slices).some(
+        (item) => item.connection === id && number(item.draws) > 0 && number(item.end) <= at,
+      ) &&
+      entries(observed.queue).some(
+        (item) =>
+          item.connection === id &&
+          number(item.start) <= at &&
+          ((owner.state === "ready" && record(item.settlement).kind === "pending") ||
+            (record(item.settlement).kind === "completed" &&
+              number(item.start) <= number(record(item.settlement).at) &&
+              number(record(item.settlement).at) <= at)),
+      ),
+    "missing per-cycle native rendering",
+  );
 }
 
 function phaseGuest(value: unknown, guest: Record<string, unknown>, kind: string, cycle: number) {
@@ -398,6 +453,7 @@ export function validateGrantQuotaResult(value: unknown) {
   const consumed = quotaImports(guest),
     expectedPeer = record(result.peer);
   importControls(peerGuest);
+  proof(peerGuest.surface === expectedPeer.surface, "original peer guest surface differs");
   proof(
     guest.pid !== peerGuest.pid &&
       guest.token !== peerGuest.token &&
@@ -409,6 +465,8 @@ export function validateGrantQuotaResult(value: unknown) {
   const realm = record(phases[0]!.before).realm;
   proof(typeof realm === "string" && realm.length > 0, "missing service realm");
   const retired: RetiredHistory = new Map();
+  const identities = new Map<unknown, Record<string, unknown>>();
+  admittedIdentity(expectedPeer, identities);
   const controlExit = record(result.controlExit),
     controlService = record(controlExit.service);
   proof(
@@ -421,6 +479,7 @@ export function validateGrantQuotaResult(value: unknown) {
   authority(controlExit);
   for (const native of entries(controlService.owners)) {
     retiredProof(native, true);
+    admittedIdentity(native, identities);
     retiredHistory(controlService, native, retired);
   }
   const responses = new Set<unknown>();
@@ -452,7 +511,14 @@ export function validateGrantQuotaResult(value: unknown) {
       serial = number(service.serial);
       at = number(service.at);
       responses.add(service.responseId);
-      validateService(service, { expectedPeer, guest, cycle: Math.min(cycle, 12), kind, retired });
+      validateService(service, {
+        expectedPeer,
+        guest,
+        cycle: Math.min(cycle, 12),
+        kind,
+        retired,
+        identities,
+      });
     }
     previous = bracketProof(phase, expectedPeer.id, previous);
   }
@@ -464,6 +530,7 @@ export function validateGrantQuotaResult(value: unknown) {
     consumed,
     realm,
     retired,
+    identities,
     serial,
     at,
     responses,
@@ -479,6 +546,7 @@ function retirementResult(
     consumed: number;
     realm: string;
     retired: RetiredHistory;
+    identities: Map<unknown, Record<string, unknown>>;
     serial: number;
     at: number;
     responses: Set<unknown>;
@@ -492,6 +560,7 @@ function retirementResult(
     consumed,
     realm,
     retired,
+    identities,
     serial,
     at,
     responses,
@@ -528,25 +597,36 @@ function retirementResult(
   );
   authority(peerExit);
   ledger(peerExit.snapshot, 1, consumed);
-  const final = record(result.final);
-  proof(
-    final.realm === realm &&
-      final.token === result.token &&
-      number(final.serial) > serial &&
-      number(final.at) > at &&
-      typeof final.responseId === "string" &&
-      !responses.has(final.responseId),
-    "terminal realm replaced or snapshot stale",
-  );
-  proof(
-    entries(final.owners).length === 14 && entries(final.attempts).length === 14,
-    "terminal owners or opens missing",
-  );
-  terminalCohort(final, record(phases.at(-1)!.service));
-  assertRetired(final);
-  for (const native of entries(final.owners).filter((native) => native.id !== expectedPeer.id)) {
-    retiredProof(native, true);
-    retiredHistory(final, native, retired);
+  let previous = record(phases.at(-1)!.service),
+    previousSerial = serial,
+    previousAt = at;
+  for (const terminal of [record(peerExit.service), record(result.final)]) {
+    proof(
+      terminal.realm === realm &&
+        terminal.token === result.token &&
+        terminal.mode === "admission" &&
+        terminal.armed === false &&
+        number(terminal.serial) > previousSerial &&
+        number(terminal.at) > previousAt &&
+        typeof terminal.responseId === "string" &&
+        !responses.has(terminal.responseId),
+      "terminal realm replaced or snapshot stale",
+    );
+    proof(
+      entries(terminal.owners).length === 14 && entries(terminal.attempts).length === 14,
+      "terminal owners or opens missing",
+    );
+    terminalCohort(terminal, previous);
+    assertRetired(terminal);
+    for (const native of entries(terminal.owners)) {
+      retiredProof(native, true);
+      admittedIdentity(native, identities);
+      retiredHistory(terminal, native, retired);
+    }
+    responses.add(terminal.responseId);
+    previousSerial = number(terminal.serial);
+    previousAt = number(terminal.at);
+    previous = terminal;
   }
   const runtime = record(result.runtimeStop);
   proof(
@@ -605,9 +685,10 @@ function validateService(
     cycle: number;
     kind: string;
     retired: RetiredHistory;
+    identities: Map<unknown, Record<string, unknown>>;
   },
 ) {
-  const { expectedPeer, guest, cycle, kind, retired } = expected;
+  const { expectedPeer, guest, cycle, kind, retired, identities } = expected;
   const peer = owner(service, expectedPeer.id, "original peer");
   peerProof(peer, expectedPeer);
   proof(
@@ -625,6 +706,7 @@ function validateService(
       service.nativeRequests === cycle + 2,
     "global service cap or unadmitted activation interfered",
   );
+  for (const native of all) admittedIdentity(native, identities);
   for (const native of all.filter(
     (entry) => entry.surface !== guest.surface && entry.id !== peer.id,
   )) {
@@ -645,6 +727,7 @@ function validateService(
   );
   for (let index = 0; index < victims.length; index++) {
     const native = victims[index]!;
+    cycleRendering(service, native);
     const attempt = attempts.find((entry) => entry.owner === native.id);
     proof(
       attempt !== undefined &&

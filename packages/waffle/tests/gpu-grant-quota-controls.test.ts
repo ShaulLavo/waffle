@@ -109,7 +109,13 @@ function snapshot(serial: number, cycle: number, kind: string, final = false) {
   );
   const fairness = {
     overflow: false,
-    native: Object.fromEntries(owners.map((item) => [`${item.id}:submit`, { count: 1 }])),
+    native: Object.fromEntries(
+      owners.flatMap((item) =>
+        ["draw", "finish", "submit", "transferToImageBitmap", "transferFromImageBitmap"].map(
+          (name) => [`${item.id}:${name}`, { count: 1 }],
+        ),
+      ),
+    ),
     presents: owners.flatMap((item) =>
       Array.from({ length: item.id === 2 ? serial : 1 }, (_, index) => ({
         connection: item.id,
@@ -117,13 +123,13 @@ function snapshot(serial: number, cycle: number, kind: string, final = false) {
       })),
     ),
     queue: owners.flatMap((item) =>
-      Array.from({ length: item.id === 2 ? serial : 1 }, (_, index) => ({
+      Array.from({ length: item.id === 2 ? serial : 2 }, (_, index) => ({
         connection: item.id,
         start: item.id === 2 ? (index + 1) * 20 - 3 : 0,
         settlement: { kind: "completed", at: item.id === 2 ? (index + 1) * 20 - 2 : 1 },
       })),
     ),
-    slices: owners.map((item) => ({ connection: item.id, start: 0, end: 1 })),
+    slices: owners.map((item) => ({ connection: item.id, start: 0, end: 1, draws: 1 })),
     blobs: new Array<{ connection: number; start: number; end: number | null }>(),
   };
   const connections = final ? 0 : active ? 2 : 1;
@@ -194,6 +200,12 @@ function result() {
   }));
   const controlExit = stop(2, "control", 1);
   controlExit.service.owners = [native(1, false, true)];
+  const peerExit = stop(3, "peer", 1, true, true);
+  peerExit.service = snapshot(15, 12, "stopped", true);
+  const final = structuredClone(peerExit.service);
+  final.serial = 16;
+  final.at = 320;
+  final.responseId = "sample-16";
   return {
     kind: "grant-quota",
     token: "quota",
@@ -218,8 +230,8 @@ function result() {
       },
     },
     stop: stop(4, victim.text, 2, true),
-    peerExit: stop(3, "peer", 1, true, true),
-    final: snapshot(15, 12, "stopped", true),
+    peerExit,
+    final,
     runtimeStop: {
       errors: new Array<string>(),
       workers: [{ url: "/gpu/service-worker.ts/ownership", stopped: true }],
@@ -299,7 +311,7 @@ test("global cap, replacement grants, late activation and wrong terminal reasons
   }, /failed open reached service/);
   rejects((value) => {
     value.phases[3]!.service.owners[3]!.grant++;
-  }, /guest grant replaced/);
+  }, /admitted native identity changed/);
   rejects((value) => {
     value.phases[1]!.service.owners[2]!.terminalReason = 3;
   }, /normal close terminal/);
@@ -343,19 +355,22 @@ test("earliest retired history and completed blobs reject late work", () => {
     value.phases[5]!.service.fairness.queue.find((work) => work.connection === 3)!.settlement.at++;
   }, /settlement changed/);
 });
+function pendingSettlement(value: Result) {
+  const first = value.phases[1]!.before;
+  const work = first.fairness.queue.find((work) => work.connection === 3)!;
+  work.settlement = { kind: "pending", at: 0 };
+  const services = value.phases
+    .slice(1)
+    .flatMap((phase) => [phase.before, phase.service])
+    .concat([value.peerExit.service, value.final]);
+  for (const service of services) {
+    const queue = service.fairness.queue.find((entry) => entry.connection === 3)!;
+    if (queue !== work) queue.settlement.at = first.at + 1;
+  }
+}
 test("legitimate pending settlement after the earliest retired snapshot stays valid", () => {
   const value = result();
-  const work = value.phases[1]!.before.fairness.queue.find((work) => work.connection === 3)!;
-  work.settlement = { kind: "pending", at: 0 };
-  for (const phase of value.phases.slice(1)) {
-    for (const service of [phase.before, phase.service]) {
-      const queue = service.fairness.queue.find((entry) => entry.connection === 3)!;
-      if (queue === work) continue;
-      queue.settlement.at = value.phases[1]!.before.at + 1;
-    }
-  }
-  value.final.fairness.queue.find((entry) => entry.connection === 3)!.settlement.at =
-    value.phases[1]!.before.at + 1;
+  pendingSettlement(value);
   expect(validateGrantQuotaResult(value).hardwareQualified).toBe(false);
 });
 test("default compiled runner discovers quota and retains every earlier case", () => {
@@ -402,4 +417,109 @@ test("control and terminal histories cannot join numeric identities from differe
   rejects((value) => {
     value.final.attempts[1]!.connection++;
   }, /terminal open history/);
+});
+
+function services(value: Result) {
+  return value.phases
+    .flatMap((phase) => [phase.before, phase.service])
+    .concat([value.peerExit.service, value.final]);
+}
+test("every admitted C cycle needs its own native rendering observations", () => {
+  rejects((value) => {
+    for (const service of services(value)) removeCycleRendering(service, 3);
+  }, /missing per-cycle native rendering/);
+});
+function removeCycleRendering(service: ReturnType<typeof snapshot>, id: number) {
+  const observed = service.fairness;
+  observed.presents = observed.presents.filter((item) => item.connection !== id);
+  observed.queue = observed.queue.filter((item) => item.connection !== id);
+  observed.slices = observed.slices.filter((item) => item.connection !== id);
+  observed.native = Object.fromEntries(
+    Object.entries(observed.native).filter(([key]) => !key.startsWith(`${id}:`)),
+  );
+}
+test("the original peer guest must own the observed native surface", () => {
+  rejects((value) => {
+    value.peerGuest.surface = 999;
+  }, /original peer guest surface/);
+});
+test("an owner's first ready grant and device cannot change before retirement", () => {
+  rejects((value) => {
+    for (const service of [value.phases[0]!.before, value.phases[0]!.service]) {
+      service.owners[2]!.grant = 999;
+      service.owners[2]!.device = 999;
+      service.attempts[2]!.grant = 999;
+    }
+  }, /admitted native identity changed/);
+});
+test("the first settled retired queue result cannot revert or change", () => {
+  const value = result();
+  pendingSettlement(value);
+  expect(validateGrantQuotaResult(value).hardwareQualified).toBe(false);
+  value.final.fairness.queue.find((item) => item.connection === 3)!.settlement.kind = "pending";
+  expect(() => validateGrantQuotaResult(value)).toThrow(/settlement changed after completion/);
+  rejects((changed) => {
+    pendingSettlement(changed);
+    changed.final.fairness.queue.find((item) => item.connection === 3)!.settlement.at++;
+  }, /settlement changed after completion/);
+});
+test("the original peer stays frozen from its first terminal service observation", () => {
+  rejects((value) => {
+    value.final.fairness.presents.push({ connection: 2, at: value.peerExit.service.at + 1 });
+  }, /late retired native or completed-blob work/);
+  rejects((value) => {
+    value.final.fairness.queue.push({
+      connection: 2,
+      start: value.peerExit.service.at + 1,
+      settlement: { kind: "completed", at: value.peerExit.service.at + 2 },
+    });
+  }, /late retired native work/);
+  rejects((value) => {
+    value.peerExit.service.realm = "different-service";
+  }, /terminal realm replaced/);
+});
+
+function removeRenderingKind(service: ReturnType<typeof snapshot>, id: number, kind: string) {
+  const observed = service.fairness;
+  if (kind === "queue") {
+    for (const work of observed.queue.filter((item) => item.connection === id))
+      work.settlement = { kind: "pending", at: 0 };
+    return;
+  }
+  if (kind === "present") {
+    observed.presents = observed.presents.filter((item) => item.connection !== id);
+    return;
+  }
+  if (kind === "slice") {
+    observed.slices = observed.slices.filter((item) => item.connection !== id);
+    return;
+  }
+  delete observed.native[`${id}:${kind}`];
+}
+for (const kind of [
+  "draw",
+  "finish",
+  "submit",
+  "transferToImageBitmap",
+  "transferFromImageBitmap",
+  "queue",
+  "present",
+  "slice",
+])
+  test(`quota connection requires its own ${kind} coverage`, () => {
+    rejects((value) => {
+      for (const service of services(value)) removeRenderingKind(service, 3, kind);
+    }, /missing per-cycle native rendering/);
+  });
+
+test("a live rendered connection may still await its genuine queue completion", () => {
+  const value = result();
+  const first = value.phases[0]!.before;
+  for (const work of first.fairness.queue.filter((item) => item.connection === 3))
+    work.settlement = { kind: "pending", at: 0 };
+  for (const service of services(value).slice(1)) {
+    for (const work of service.fairness.queue.filter((item) => item.connection === 3))
+      work.settlement.at = first.at + 1;
+  }
+  expect(validateGrantQuotaResult(value).hardwareQualified).toBe(false);
 });
