@@ -68,7 +68,7 @@ async function quotaCase(page: Page) {
       entries(observed.owners).find((entry) => entry.state === "ready")!.id,
       "original peer",
     );
-    await invoke(page, "ownershipPeer", [true]);
+    await invoke(page, "ownershipPeer", [true, 40]);
     const phases: Record<string, unknown>[] = [];
     const capture = async (kind: string, cycle: number) => {
       const previous = phases.at(-1);

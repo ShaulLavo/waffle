@@ -937,3 +937,22 @@ A real compiled CPU control covers reason 2 in the heavy scope wait alongside re
 The existing CI gate requires all 84 closed-reply tests and its historical and async suites.
 No C source, producer, production code, clock or workload changed in this follow-up. The
 historical pre-decoder malformed failures remain unresolved; this is not a claim to fix them.
+
+### Quota driver lifetime budget, PR 416 follow-up
+
+PR 416 run 42455542830 at b0c6249 includes the landed decoder and exact-cap fixes. Its
+new quota checkpoint failure is different from the old exceeded message. All twelve quota
+connections are normally retired, while the original peer's drained ring counters match the
+known 240-frame endpoint. A required fresh-peer bracket cannot complete after that endpoint.
+The original 20 ms feed cadence spends the finite peer workload in about 4.8 seconds, before
+the captured eight-second quota lifetime finishes. The fresh-progress assertion is correct.
+
+Only the quota driver now selects a 40 ms input cadence. That leaves roughly 9.6 seconds of
+continuous peer input under the same 240-frame cap, with margin over this captured lifetime.
+Every other ownership case retains its 20 ms cadence. C commands, rendering, queue checks,
+retirement assertions, all deadlines, the 8 ms slice target and the 100 ms peer-gap target
+remain unchanged. The input rate changes for this lifecycle proof, not for the fairness or
+hardware workloads. A longer future case can still fail the original fresh-progress check;
+no exhausted peer is reported as making new progress. A deterministic test executes the
+actual pump body and selected quota cadence on a virtual clock, fails before this correction
+and passes after it. The original captured failure is preserved, not normalized as passing.
