@@ -85,7 +85,7 @@ for (const [mode, agent] of [
         );
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
-      expect(withoutStorageRoot(current, 88_098_640)).toEqual(
+      expect(withoutStorageRoot(current, 33_289_256)).toEqual(
         withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
       );
     } finally {

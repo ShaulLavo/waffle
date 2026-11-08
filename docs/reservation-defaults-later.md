@@ -16,7 +16,7 @@ The source audit used commit `5ffb379b14e129e6505b499d91aa743cd80b3d38`, tree `c
 
 ## Accepted NOW changes
 
-Worker backend construction borrows the root already present in the first `connect` message. It no longer creates the 62,341,840-byte temporary root from `fs/shared.ts`, `BUFFER_SIZE`, before attaching the real root. Ordinary and standalone roots now use the same exact 88,098,640-byte layout with 16 KiB storage pages. Startup admission adds 512 control bytes. The former ordinary root allocated 67,108,864 bytes. The initial backing increase remains a native allocation risk even when restored file padding falls. Persistent recovery completes before publication attaches, as before.
+Worker backend construction borrows the root already present in the first `connect` message. It no longer creates the 62,341,840-byte temporary root from `fs/shared.ts`, `BUFFER_SIZE`, before attaching the real root. Ordinary and standalone roots now use the same exact 33,289,256-byte layout with 4 KiB storage pages. Startup admission adds 512 control bytes. The former ordinary root allocated 67,108,864 bytes. Persistent recovery completes before publication attaches, as before.
 
 The default pipe limit is now `1 << 20` permanent cursor cells, down from `1 << 24`. The default declaration falls from 268,443,664 to 16,785,424 bytes. Its 2,105,360-byte initial backing is unchanged. This is an accepted 16-fold reduction in default lifetime cell capacity on every platform, including desktop, not an unchanged-capacity optimization. Explicit `maxCells` options still support up to `1 << 24`, and exhaustion still returns `NFILE`. Cursor cells never recycle. Do not equate the cell count with a fixed number of pipes: endpoint rings and ownership determine cell use.
 

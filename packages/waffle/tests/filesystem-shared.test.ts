@@ -1,7 +1,7 @@
 import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, spyOn, test } from "bun:test";
 import { DEFAULT_SHARED_MAX_BYTES } from "../fs/protocol";
-import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
+import { DATA_PAGE_BYTES as PAGE, DATA_PAGES_PER_SEGMENT } from "../fs/storage-geometry";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
 
 test("revoking a killed shared-page writer releases its file lock", () => {
@@ -18,8 +18,8 @@ test("the service grows into another SAB segment and preserves page data", () =>
   const state = new SharedFilesystemState();
   state.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE * 1024, mtime: 1 },
-    new Uint8Array(PAGE * 1024).fill(65),
+    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, mtime: 1 },
+    new Uint8Array(PAGE * DATA_PAGES_PER_SEGMENT).fill(65),
   );
   state.register(
     1,
@@ -39,8 +39,8 @@ test("storage cap reports ENOSPC while the address-space limit reports EFBIG", (
   const cap = new SharedFilesystemState(undefined, 16 * 1024 * 1024);
   cap.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE * 1024, mtime: 1 },
-    new Uint8Array(PAGE * 1024),
+    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, mtime: 1 },
+    new Uint8Array(PAGE * DATA_PAGES_PER_SEGMENT),
   );
   try {
     cap.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 }, new Uint8Array(PAGE));
@@ -62,7 +62,13 @@ test("a cloned root attachment preserves service-owned extra segments", () => {
   const buffer = SharedFilesystemState.createBuffer();
   backend.attachShared(buffer);
   const state = backend.shared;
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 1024, mtime: 1 });
+  state.register(0, {
+    kind: "file",
+    ino: 1,
+    nlink: 1,
+    size: PAGE * DATA_PAGES_PER_SEGMENT,
+    mtime: 1,
+  });
   state.register(
     1,
     { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 },
@@ -99,13 +105,19 @@ test("revoking the global mutation owner repairs its epoch", () => {
 });
 
 test("failed growth returns partial page reservations to the allocator", () => {
-  const state = new SharedFilesystemState(undefined, PAGE * 1024);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 1023, mtime: 1 });
+  const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
+  state.register(0, {
+    kind: "file",
+    ino: 1,
+    nlink: 1,
+    size: PAGE * (DATA_PAGES_PER_SEGMENT - 1),
+    mtime: 1,
+  });
   expect(() =>
     state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, mtime: 1 }),
   ).toThrow();
   state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, mtime: 1 });
-  expect(state.resources().usedBytes).toBe(PAGE * 1024);
+  expect(state.resources().usedBytes).toBe(PAGE * DATA_PAGES_PER_SEGMENT);
 });
 
 test("namespace edits refresh shared parent directory timestamps", () => {
@@ -118,7 +130,7 @@ test("namespace edits refresh shared parent directory timestamps", () => {
 });
 
 test("unlink retains open pages then zeroes and reuses them on last close", () => {
-  const state = new SharedFilesystemState(undefined, PAGE * 1024);
+  const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
   state.register(
     0,
     { kind: "file", ino: 1, nlink: 1, size: PAGE, mtime: 1 },
@@ -140,10 +152,16 @@ test("unlink retains open pages then zeroes and reuses them on last close", () =
 
 test("resource snapshots include all allocated SAB bytes and the storage cap", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 1024, mtime: 1 });
+  state.register(0, {
+    kind: "file",
+    ino: 1,
+    nlink: 1,
+    size: PAGE * DATA_PAGES_PER_SEGMENT,
+    mtime: 1,
+  });
   state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 });
   const resources = state.resources();
-  expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * 1024);
+  expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * DATA_PAGES_PER_SEGMENT);
   expect(resources.metadataBytes! + resources.poolBytes!).toBe(resources.bytes);
   expect(resources.usedBytes! + resources.freeBytes!).toBe(resources.poolBytes);
   expect(resources.maxBytes).toBe(DEFAULT_SHARED_MAX_BYTES);

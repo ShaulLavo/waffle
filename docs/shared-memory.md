@@ -8,6 +8,10 @@ import { createRuntime } from "waffle";
 const runtime = createRuntime();
 ```
 
+## Size for Safari
+
+Safari allocates requested WebAssembly memory ahead of time; Chrome and Firefox commit lazily. Size memories, shared buffers and workers for Safari.
+
 ## Explicit bounded declarations
 
 An application that knows its capacity passes an issued declaration:
