@@ -20,11 +20,12 @@ const runners = [
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";
 const rootControls = "root-continuity-controls";
+const networkControls = "network-controls";
 const recovery = "recovery-r42";
 const nativeGpu = "gpu-native";
 const asyncGpu = "gpu-async";
 const memoryGroup = "memory-group";
-const chromiumOnly = [continuity, rootContinuity, rootControls, memoryGroup];
+const chromiumOnly = [continuity, rootContinuity, rootControls, networkControls, memoryGroup];
 const socket = "fs-socket";
 const reporterControls = "reporter-controls";
 const processControls = "process-recycling-controls";
@@ -33,14 +34,15 @@ function isolatedEngines(runner: string): string {
   if (runner === reporterControls) return "chromium,webkit";
   if (runner === gpuAsyncControls) return "--ci,chromium,webkit";
   if (runner === socket) return "firefox";
-  if (runner === rootControls || runner === processControls) return "--page-controls,chromium";
+  if (runner === rootControls || runner === processControls || runner === networkControls)
+    return "--page-controls,chromium";
   return "chromium";
 }
 const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
 const file = process.argv[1].endsWith("/gpu-async-controls-runner.ts") ? "gpu-async-controls" : process.argv[1].includes("/page-runner/") ? "reporter-controls" : process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
-const modes = ${JSON.stringify({ "root-continuity": "root-continuity-controls", "process-recycling": "process-recycling-controls" })};
+const modes = ${JSON.stringify({ "root-continuity": "root-continuity-controls", "process-recycling": "process-recycling-controls", network: networkControls })};
 const name = process.argv[2] === "--page-controls" ? modes[file] : file;
 const engines = process.argv.slice(2).join(",");
 if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls, processControls, gpuAsyncControls]))}.includes(name)) {
@@ -164,7 +166,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
     for (const runner of runners
       .concat(chromiumOnly, [socket])
-      .filter((name) => name !== rootControls))
+      .filter((name) => name !== rootControls && name !== networkControls))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
     await writeFile(join(root, "tests/gpu-native-browser-runner.ts"), nativeGpuFixture);
@@ -249,9 +251,11 @@ async function matrix(failing: readonly string[]): Promise<void> {
               ? "tests/page-runner/browser-controls-runner.ts failed"
               : entry.startsWith(`${processControls}:`)
                 ? "tests/process-recycling-browser-runner.ts failed"
-                : entry.startsWith(`${rootControls}:`)
-                  ? `tests/${rootContinuity}-browser-runner.ts failed`
-                  : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
+                : entry.startsWith(`${networkControls}:`)
+                  ? "tests/network-browser-runner.ts failed"
+                  : entry.startsWith(`${rootControls}:`)
+                    ? `tests/${rootContinuity}-browser-runner.ts failed`
+                    : `tests/${entry.split(":")[0]}-browser-runner.ts failed`,
         ),
     );
     expect(await readFile(join(root, "gpu-async.invocations"), "utf8")).toBe(
@@ -449,3 +453,7 @@ test("stock and page-owned GPU async failures remain independently blocking", as
 
 test("page-owned GPU async controls fail the serial CI group", () =>
   nativeDiscovery("serial", "gpu-async-controls"));
+
+test("network controls fail independently without repeating the complete positive matrix", async () => {
+  await matrix([`${networkControls}:--page-controls,chromium`]);
+}, 15_000);
