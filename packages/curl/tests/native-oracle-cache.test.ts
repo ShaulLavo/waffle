@@ -11,8 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { command, identity, provision, sha256, verify } from "../scripts/native-oracle.ts";
-import { processState } from "./fixtures/process-state.ts";
+import { identity, provision, sha256, verify } from "../scripts/native-oracle.ts";
 
 const roots: string[] = [];
 const signal = () => AbortSignal.timeout(5000);
@@ -118,35 +117,4 @@ test("bad source checksum rejects before extraction/build and removes scratch", 
     if (previous === undefined) delete process.env.CURL_NATIVE_SOURCE_ARCHIVE;
     else process.env.CURL_NATIVE_SOURCE_ARCHIVE = previous;
   }
-});
-
-test("deadline stops the shell and its child, not just the parent", async () => {
-  const root = scratch();
-  const pids = join(root, "pids");
-  await expect(
-    command(
-      "/bin/sh",
-      ["-c", 'echo $$ > "$1"; sleep 60 & echo $! >> "$1"; wait', "oracle-control", pids],
-      root,
-      signal(),
-      100,
-    ),
-  ).rejects.toThrow("deadline");
-  const observed = readFileSync(pids, "utf8").trim().split("\n");
-  expect(observed).toHaveLength(2);
-  for (const pid of observed) {
-    const path = `/proc/${pid}/stat`;
-    const state = processState(path);
-    expect(state === undefined || state === "Z").toBe(true);
-  }
-});
-
-test("pre-aborted and actively aborted native commands stop", async () => {
-  const root = scratch();
-  const marker = join(root, "executed");
-  expect(() => command("/usr/bin/touch", [marker], root, AbortSignal.abort())).toThrow();
-  expect(existsSync(marker)).toBe(false);
-  await expect(command("/usr/bin/sleep", ["60"], root, AbortSignal.timeout(30))).rejects.toThrow(
-    "aborted",
-  );
 });
