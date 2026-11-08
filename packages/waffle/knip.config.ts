@@ -15,6 +15,8 @@ export default {
   ignoreBinaries: ["cc"],
   ignoreIssues: {
     ...publicIssues,
+    // The routed service-worker entry invokes installation only in its own global scope.
+    "tests/network-browser-service-worker.ts": ["exports"],
     // Browser fixtures invoke this export through the routed module name.
     "tests/fixtures/gpu/async-native.ts": ["exports"],
     // The CLI runner also exports its entry for aggregate consumers.
@@ -39,6 +41,7 @@ export default {
         "tests/page-runner/asset-hold-controls.ts",
         "tests/page-runner/framework-bootstrap-main.ts",
         "tests/page-runner/framework-controls/installed.ts",
+        "tests/network-{page,relay-page,control-page,signal-control,browser-service-worker,relay-browser-runner}.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",
         "tests/gpu-async-browser-runner.ts",
