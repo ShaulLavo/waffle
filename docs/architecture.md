@@ -569,7 +569,7 @@ so the epoch stays odd until their bytes, size and timestamp are in place. Cache
 service alone owns backend pins. Preopens and open descriptions retain handles; transient path pins
 are bounded and evicting them invalidates cached paths.
 
-The service owns the page allocator and grows capacity geometrically in 16 KiB storage pages, across
+The service owns the page allocator and grows capacity geometrically in 4 KiB storage pages, across
 16 MiB growable SharedArrayBuffer segments. Connections carry the zero-byte segment references
 before execution; only the service grows their backing storage. A synchronous guest therefore
 sees completed growth without returning to its event loop or receiving another port message.
@@ -580,7 +580,7 @@ maximum reports WASI EFBIG.
 The 1.5 GiB ceiling leaves 512 MiB of headroom for sequential package installs beyond a
 retained 1 GiB tree. Smaller explicit caps still apply. It is a payload reservation limit,
 not an aggregate browser or process memory budget. The fixed allocator layout occupies
-88,098,640 bytes including its first 16 MiB data segment. Ordinary connections and
+33,289,256 bytes including its first 16 MiB data segment. Ordinary connections and
 startup-admitted standalone roots allocate that same exact layout. Startup admission
 adds 512 control bytes to the root backing charge. Additional payload backing grows
 lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the
@@ -590,19 +590,23 @@ capability tables), used/free bytes, the configured cap, and registered identiti
 segment references do not count as allocated backing storage. Grown segments are retained
 for page reuse until the filesystem is disposed.
 
-Storage geometry lives in the private `fs/storage-geometry.ts` module. A 256-entry leaf
-maps 4 MiB of logical file data. Each file has 256 logical roots, independently of the
-1,024 physical pages per 16 MiB segment. Transport chunks and WebAssembly memory
-pages remain 64 KiB. The fixed layout retains 32,768 slots, including reserved slot zero.
+Storage geometry lives in the private `fs/storage-geometry.ts` module. All mapping blocks
+hold 64 entries, so one pool serves every level. A leaf maps 256 KiB of logical file data.
+Each file has eight root words: seven direct leaves cover its first 1.75 MiB, and one tail
+pointer reaches a top block and branch blocks up to the 1 GiB file limit. Whether a page
+uses the tail depends only on its logical index, so growth never reinterprets an existing
+root. The 40,758-block pool covers every distribution of files and data within the fixed
+limits. This addressing is independent of the 4,096 physical pages per 16 MiB segment.
+Transport chunks and WebAssembly memory pages remain 64 KiB. The fixed layout retains
+32,768 slots, including reserved slot zero.
 
-An observed workspace allocates 98,304 physical reader counters, or 393,216 bytes.
-One aligned 256 MiB resident pin fits the unchanged 2 MiB reader metadata limit.
-Two independent selections of that same full range can return structured metadata
-pressure because each owns 16,384 page descriptors, even though physical pin bytes
-are shared. Closing the first selection releases its descriptors and admits the next
-pin. Reads borrowing one selection keep its existing shared lifetime.
+An observed workspace allocates 393,216 physical reader counters, or 1,572,864 bytes.
+A retained resident selection stores one 32-bit physical page ID per page. One aligned
+256 MiB pin charges 262,400 metadata bytes against the unchanged 2 MiB reader metadata
+limit. Seven overlapping selections of that full range fit before structured metadata
+pressure. Physical pin bytes are shared. Closing a selection releases its IDs and admits
+the next pin. Reads borrowing one selection keep its existing shared lifetime.
 
-The larger initial root can increase native allocation pressure before data restoration.
 Smaller storage pages reduce small-file padding, not the runtime's other buffers,
 request arenas, or guest memories. Grown segments remain a high-water allocation;
 current used bytes do not measure committed backing or native residency.

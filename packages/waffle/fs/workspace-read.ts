@@ -434,13 +434,12 @@ export class WorkspaceReadAuthority {
         ? { offset: 0, length: stat.size }
         : extent(stat.size, requested);
     this.admit(operation, range);
-    const pageBytes = this.backend.shared.isResident(this.backend.fs.handleForNode(node))
-      ? DATA_PAGE_BYTES
-      : PAGE;
+    const resident = this.backend.shared.isResident(this.backend.fs.handleForNode(node));
+    const pageBytes = resident ? DATA_PAGE_BYTES : PAGE;
     const descriptors = range.length
       ? Math.ceil((range.offset + range.length) / pageBytes) - Math.floor(range.offset / pageBytes)
       : 0;
-    const charge = 256 + descriptors * 64;
+    const charge = 256 + descriptors * (resident ? Uint32Array.BYTES_PER_ELEMENT : 64);
     this.takeMetadata(charge);
     let backing: ReadBacking;
     try {

@@ -29,12 +29,7 @@ const usedBlocks = (state: SharedFilesystemState) =>
 const connected = (maxBytes?: number) => {
   const identity = createFilesystemIdentity(undefined, maxBytes);
   const open = () =>
-    new SharedFilesystemState(
-      identity.shared,
-      identity.maxBytes,
-      undefined,
-      identity.segments,
-    );
+    new SharedFilesystemState(identity.shared, identity.maxBytes, undefined, identity.segments);
   return { identity, state: open(), peer: open() };
 };
 
@@ -231,7 +226,9 @@ for (const { free, failedAt } of [
     }
     expect(failure).toMatchObject({ errno: 51 });
     expect(state.pages[rootCellBase + slot * rootWords + 7]).toBe(0);
-    expect(Array.from(owners.subarray(blocks, blocks + free))).toEqual(new Array(free).fill(0));
+    expect(Array.from(owners.subarray(blocks, blocks + free))).toEqual(
+      Array.from({ length: free }, () => 0),
+    );
     expect(zeroCells()).toBe(true);
     expect(state.cells[physicalHint]).toBe(pages);
     expect(state.cells[tableHint]).toBe(blocks);
@@ -355,8 +352,7 @@ test("a bounded size histogram allocates each nonempty file by storage pages", (
 
 test("slot zero stays reserved and all 32,767 usable node slots remain available", () => {
   const state = new SharedFilesystemState();
-  for (let handle = 0; handle < 32767; handle++)
-    state.register(handle, stat(0, handle + 1));
+  for (let handle = 0; handle < 32767; handle++) state.register(handle, stat(0, handle + 1));
   expect(state.resources().files).toBe(32767);
   expect(state.slots[0]).toBe(0);
   expect(() => state.register(32767, stat(0))).toThrow("identity table exhausted");
