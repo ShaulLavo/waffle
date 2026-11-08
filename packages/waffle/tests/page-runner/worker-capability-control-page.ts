@@ -19,11 +19,13 @@ const nativeFetch = globalThis.fetch.bind(globalThis);
 const register = navigator.serviceWorker.register.bind(navigator.serviceWorker);
 navigator.serviceWorker.register = async (script, options) => {
   window.__workerControl.calls++;
+  const pending = register(script, options);
+  void pending.catch(() => {});
   if (mode === "in-flight-loss") {
     window.__workerControl.stage = "in-flight";
     await release.promise;
   }
-  return register(script, options);
+  return pending;
 };
 const intercepted: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = async (
   input,

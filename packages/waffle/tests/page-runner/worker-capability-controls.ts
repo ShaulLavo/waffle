@@ -18,7 +18,7 @@ export const workerControlModes = [
   "controller-mismatch",
   "absent-current",
 ];
-const installingWorker = `self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));`;
+const installingWorker = `const identity = crypto.randomUUID(); self.addEventListener('message', e => e.ports[0]?.postMessage(identity)); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));`;
 const foreignWorker = `const identity = crypto.randomUUID(); self.addEventListener('install', e => e.waitUntil(self.skipWaiting())); self.addEventListener('activate', e => e.waitUntil(self.clients.claim())); self.addEventListener('message', e => e.ports[0]?.postMessage(identity));`;
 function assert(value: unknown, detail: string): asserts value {
   if (!value) throw new Error(detail);
@@ -151,10 +151,14 @@ class ControlDriver extends PlaywrightDriver {
     const foreign = ["collision-before", "collision-after", "replacement", "in-place"].includes(
       this.mode,
     );
+    const unknownOperation = this.mode === "in-flight-loss";
     assert(
       foreign
         ? typeof value.current === "string" && value.current.endsWith("/foreign-sw.js")
-        : value.current === null,
+        : value.current === null ||
+            (unknownOperation &&
+              typeof value.current === "string" &&
+              value.current.includes("/owned-sw.js?waffle-run=")),
       `Wrong exact-scope cleanup: ${JSON.stringify(value)}`,
     );
     if (foreign)
