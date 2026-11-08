@@ -1910,7 +1910,7 @@ test("source registrations compile once across concurrent spawns and replace by 
   expect(modules[4]).toBe(modules[3]);
 });
 
-test("the borrowed process service queries exact idle ownership without exposing the pool", async () => {
+test("the borrowed process service creates demand-only workers without exposing the pool", async () => {
   const BaseWorker = globalThis.Worker;
   const observed: Worker[] = [];
   globalThis.Worker = class extends BaseWorker {
@@ -1926,14 +1926,19 @@ test("the borrowed process service queries exact idle ownership without exposing
   try {
     expect(service.isIdleWorker(first)).toBe(false);
     await Bun.sleep(10);
-    const idle = observed[2]!;
-    expect(service.isIdleWorker(idle)).toBe(true);
+    expect(observed).toHaveLength(2);
     expect(Reflect.get(service, "workers")).toBeUndefined();
     leased = service.takeWorker("https://example.test/process.js");
-    expect(leased).toBe(idle);
+    expect(leased).not.toBe(first);
+    expect(observed).toHaveLength(3);
     expect(service.isIdleWorker(leased)).toBe(false);
+    await Bun.sleep(10);
+    expect(observed).toHaveLength(3);
     await runtime.dispose();
-    expect(() => service.isIdleWorker(idle)).toThrow("disposed");
+    expect(() => service.isIdleWorker(first)).toThrow("disposed");
+    expect(() => service.takeWorker("https://example.test/process.js")).toThrow("disposed");
+    await Bun.sleep(10);
+    expect(observed).toHaveLength(3);
   } finally {
     first.terminate();
     leased?.terminate();
