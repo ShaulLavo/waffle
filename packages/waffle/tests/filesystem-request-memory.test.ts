@@ -11,7 +11,7 @@ import {
   requestMemoryResources,
   createRequestArenaData,
   FALLBACK_REQUEST_CONNECTION_BYTES,
-  FILESYSTEM_REQUEST_LIMITS,
+  REQUEST_ARENA_BYTES,
   closeRequestMemory,
   retireRequestMemory,
   requestTransportError,
@@ -37,14 +37,11 @@ test("retries an oversized arena reservation at the small-tab cap", () => {
   const attempts: number[] = [];
   const data = createRequestArenaData((_bytes, maximum) => {
     attempts.push(maximum);
-    if (maximum === FILESYSTEM_REQUEST_LIMITS.connectionBytes)
+    if (maximum === REQUEST_ARENA_BYTES)
       throw new RangeError("simulated small-tab reservation failure");
     return new SharedArrayBuffer(0, { maxByteLength: maximum });
   });
-  expect(attempts).toEqual([
-    FILESYSTEM_REQUEST_LIMITS.connectionBytes,
-    FALLBACK_REQUEST_CONNECTION_BYTES,
-  ]);
+  expect(attempts).toEqual([REQUEST_ARENA_BYTES, FALLBACK_REQUEST_CONNECTION_BYTES]);
   expect(sharedArrayBufferMaxByteLength(data)).toBe(FALLBACK_REQUEST_CONNECTION_BYTES);
 });
 

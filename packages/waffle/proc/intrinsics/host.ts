@@ -222,6 +222,17 @@ const wasmMemoryBufferGetter = descriptor(WebAssembly.Memory.prototype, "buffer"
 const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLength")!.get!;
 const arrayBufferByteLength = (buffer: ArrayBuffer): number =>
   apply(arrayBufferByteLengthGetter, buffer, []);
+export const ArrayBufferConstructor = ArrayBuffer;
+export const RangeErrorConstructor = RangeError;
+export const symbolIterator: typeof Symbol.iterator = Symbol.iterator;
+/** The native byte length of a genuine non-shared ArrayBuffer, or undefined for anything else. */
+export function arrayBufferLength(value: unknown): number | undefined {
+  try {
+    return apply(arrayBufferByteLengthGetter, value, []);
+  } catch {
+    return undefined;
+  }
+}
 type WasmBufferReader =
   | { kind: "array"; buffer: ArrayBuffer; read: (buffer: ArrayBuffer) => number }
   | { kind: "shared"; buffer: SharedArrayBuffer; read: (buffer: SharedArrayBuffer) => number };

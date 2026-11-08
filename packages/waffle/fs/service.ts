@@ -15,11 +15,12 @@ import {
   requestCancelled,
   receiveRequestBuffer,
   releaseRequestBuffer,
+  requestMemoryExhausted,
   REQUEST_SERVICE,
   type FilesystemRequestMemory,
   type FilesystemRequestBuffer,
 } from "./request-memory.js";
-import { atomicsWaitAsync } from "../proc/intrinsics.js";
+import { atomicsWaitAsync, typedArrayBuffer } from "../proc/intrinsics.js";
 import { WatchService } from "./watch-service.js";
 import { checkDirectoryPage } from "./directory-pages.js";
 import type { SocketBinding, ResolvedPath } from "../core/filesystem.js";
@@ -120,6 +121,8 @@ interface Session {
   responseMemory: Map<number, () => void>;
   retainedRequests: Map<number, FilesystemRequestBuffer>;
   pending: Map<number, FilesystemRequestBuffer>;
+  /** Transferred inputs by request id. Removed only when that request's work settles. */
+  privateInputs: Map<number, Uint8Array>;
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
@@ -133,6 +136,25 @@ interface Session {
 }
 function sessionRevoked(session: Session): boolean {
   return isRevoked(session.connection) || !!requestTransportError(session.requests);
+}
+function requestInput(session: Session, id: number, response: Uint8Array): Uint8Array {
+  return session.privateInputs.get(id) ?? response;
+}
+/** A retained reply must not keep a refunded private input reachable through a shared backing.
+ * An inline input cannot alias an overflowing result: it fits the response room by construction. */
+function independentResponse(
+  result: Uint8Array,
+  input: Uint8Array,
+  release: () => void,
+): Uint8Array {
+  if (typedArrayBuffer(result) !== typedArrayBuffer(input)) return result;
+  try {
+    return result.slice();
+  } catch (error) {
+    release();
+    if (error instanceof RangeError) throw requestMemoryExhausted();
+    throw error;
+  }
 }
 interface ShutdownOwner {
   readonly done: Promise<void>;
@@ -234,6 +256,7 @@ export class FilesystemService {
       responseMemory: new Map(),
       retainedRequests: new Map(),
       pending: new Map(),
+      privateInputs: new Map(),
       preparingHandles: new Map(),
       preparations: new Set(),
       ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
@@ -331,13 +354,16 @@ export class FilesystemService {
       data.generation,
       data.offset,
       data.length,
+      data.payload,
     );
     if (this.ownerStopping) {
       this.cancelRequest(session, data.id, buffer);
       return;
     }
-    if (session.pending.has(data.id)) throw new FilesystemError(28, "duplicate filesystem request");
+    if (session.pending.has(data.id) || session.retainedRequests.has(data.id))
+      throw new FilesystemError(28, "duplicate filesystem request");
     session.pending.set(data.id, buffer);
+    if (data.payload) session.privateInputs.set(data.id, new Uint8Array(data.payload));
     this.enqueue(session, data.id, buffer);
   }
   private retireTransport(session: Session): void {
@@ -416,7 +442,7 @@ export class FilesystemService {
     let barrier = false;
     try {
       const cells = requestCells(buffer);
-      const input = unpack(requestBytes(buffer).subarray(0, cells[1]!));
+      const input = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, cells[1]!));
       barrier = input.operation === "flush" || input.operation === "sync";
     } catch {
       /* request() reports malformed input through its completion */
@@ -1005,7 +1031,8 @@ export class FilesystemService {
     prepared?: PreparedRequest,
   ): Promise<void> {
     const cells = requestCells(buffer);
-    const bytes = requestBytes(buffer);
+    const response = requestBytes(buffer);
+    const bytes = requestInput(session, id, response);
     let state = State.Complete;
     let mutation = false;
     let preparing = false;
@@ -1015,7 +1042,7 @@ export class FilesystemService {
     try {
       if (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(buffer))
         throw new FilesystemError(11);
-      const { inputLength, dataLength } = requestLengths(buffer);
+      const { inputLength, dataLength } = requestLengths(buffer, bytes);
       const input = unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
       if (session.connection.publication && input.publication)
@@ -1055,7 +1082,7 @@ export class FilesystemService {
       for (const segment of segments)
         for (const peer of this.sessions)
           peer.connection.port.postMessage({ segment: segment.index });
-      state = this.writeResponse(session, id, cells, bytes, value);
+      state = this.writeResponse(session, id, cells, response, value, bytes);
     } catch (error) {
       this.discardResponse(session, id);
       if (
@@ -1097,6 +1124,7 @@ export class FilesystemService {
         Atomics.notify(cells, 0);
         wake(session.connection);
         session.pending.delete(id);
+        session.privateInputs.delete(id);
         this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
         this.sweep();
@@ -1148,6 +1176,7 @@ export class FilesystemService {
     cells: Int32Array,
     bytes: Uint8Array,
     value: unknown,
+    input: Uint8Array,
   ): State {
     const binary = value instanceof Uint8Array;
     const result = binary ? value : pack(value);
@@ -1155,9 +1184,11 @@ export class FilesystemService {
     cells[4] = binary ? 1 : 0;
     const response = session.responses.get(id);
     if (result.length > bytes.length) {
-      this.holdResponseMemory(session, id, retainResponseBytes(session.requests, result.length));
-      if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: result };
-      else session.responses.set(id, { kind: "bytes", bytes: result });
+      const release = retainResponseBytes(session.requests, result.length);
+      const stored = independentResponse(result, input, release);
+      this.holdResponseMemory(session, id, release);
+      if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: stored };
+      else session.responses.set(id, { kind: "bytes", bytes: stored });
       return State.Overflow;
     }
     if (response?.kind === "resolve") response.payload = { kind: "inline" };

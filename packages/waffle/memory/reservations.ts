@@ -25,7 +25,7 @@ export type {
   SharedMemoryDeclaration,
 } from "./platform.js";
 export const PAGE_BYTES = 65_536;
-export const UNBOUNDED_ARENA_BYTES = 2_147_479_552;
+export const UNBOUNDED_ARENA_BYTES = 134_316_032;
 export const BOUNDED_ARENA_BYTES = 67_108_864;
 export const UNBOUNDED_GROUP_MAXIMUM_PAGES = 65_536;
 export const BOUNDED_GROUP_MAXIMUM_PAGES = 16_384;
