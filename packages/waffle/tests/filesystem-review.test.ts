@@ -10,7 +10,7 @@ import {
   MemoryBackend,
   SharedFilesystemState,
 } from "../fs";
-import { PAGE } from "../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 
 const empty = new Uint8Array();
 
@@ -63,12 +63,12 @@ test("readFile honors a truncate between length sampling and read lock", () => {
 });
 
 test("geometric growth falls back to the final available page", () => {
-  const state = new SharedFilesystemState(undefined, PAGE * 256);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 128, mtime: 1 });
-  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 127, mtime: 1 });
-  state.grow(0, PAGE * 129);
-  expect(state.info(0)?.capacity).toBe(PAGE * 129);
-  expect(state.resources().usedBytes).toBe(PAGE * 256);
+  const state = new SharedFilesystemState(undefined, PAGE * 1024);
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 512, mtime: 1 });
+  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 511, mtime: 1 });
+  state.grow(0, PAGE * 513);
+  expect(state.info(0)?.capacity).toBe(PAGE * 513);
+  expect(state.resources().usedBytes).toBe(PAGE * 1024);
 });
 
 function directFixture() {
@@ -125,12 +125,12 @@ test("retained direct stat rejects a revoked connection", () => {
 test("cancelled allocation followed by connect installs each segment once", async () => {
   const backend = new MemoryBackend();
   const service = new FilesystemService(backend);
-  const root = connectFilesystemIdentity(createFilesystemIdentity(undefined, PAGE * 256 * 3));
+  const root = connectFilesystemIdentity(createFilesystemIdentity(undefined, PAGE * 1024 * 3));
   service.connect(root.server);
   const client = new FilesystemClient(root.client);
   let sibling: FilesystemClient | undefined;
   try {
-    await client.asyncCall("writeFile", ["/full"], new Uint8Array(PAGE * 256));
+    await client.asyncCall("writeFile", ["/full"], new Uint8Array(PAGE * 1024));
     const original = backend.execute.bind(backend);
     backend.execute = (operation, args, data) => {
       const result = original(operation, args, data);
@@ -209,8 +209,8 @@ test("zero-byte positioned writes do not grow or timestamp a file", () => {
 
 test("a successful truncate returns trailing capacity for another file", () => {
   const backend = new MemoryBackend();
-  backend.attachShared(SharedFilesystemState.createBuffer(), PAGE * 256);
-  backend.execute("writeFile", ["/full"], new Uint8Array(PAGE * 256));
+  backend.attachShared(SharedFilesystemState.createBuffer(), PAGE * 1024);
+  backend.execute("writeFile", ["/full"], new Uint8Array(PAGE * 1024));
   const root = backend.execute("preopen", ["/"], empty) as number;
   const path = backend.execute("resolve", [root, "full"], empty) as { node: number };
   backend.execute("resize", [path.node, 0, true], empty);
@@ -220,8 +220,8 @@ test("a successful truncate returns trailing capacity for another file", () => {
 });
 
 test("a failed SAB allocation rolls back all uncommitted page owners", () => {
-  const state = new SharedFilesystemState(undefined, PAGE * 512);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 255, mtime: 1 });
+  const state = new SharedFilesystemState(undefined, PAGE * 2048);
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 1023, mtime: 1 });
   const allocator = state as unknown as { ensureSegment(index: number): void };
   const original = allocator.ensureSegment.bind(state);
   allocator.ensureSegment = (index) => {
@@ -231,10 +231,10 @@ test("a failed SAB allocation rolls back all uncommitted page owners", () => {
   expect(() =>
     state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, mtime: 1 }),
   ).toThrow();
-  expect(Array.from(state.owners).filter((owner) => owner !== 0).length).toBe(255);
+  expect(Array.from(state.owners).filter((owner) => owner !== 0).length).toBe(1023);
   allocator.ensureSegment = original;
   state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, mtime: 1 });
-  expect(state.resources().usedBytes).toBe(PAGE * 256);
+  expect(state.resources().usedBytes).toBe(PAGE * 1024);
 });
 
 test("shared stat cannot observe a torn two-word timestamp", () => {

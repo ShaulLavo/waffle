@@ -10,7 +10,9 @@ import {
   type FilesystemIdentity,
 } from "../fs";
 import { SHARED_SEGMENT_BYTES } from "../fs/shared";
-import { CONNECTION_SHARED_BYTES, PAGE } from "../fs/protocol";
+import { CONNECTION_SHARED_BYTES } from "../fs/protocol";
+
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -41,7 +43,7 @@ test("the default pool admits an application budget beyond the exhausted GiB laz
     usedBytes: 0,
   });
   state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 6, mtime: 1 });
-  state.grow(0, 400384);
+  state.grow(0, PAGE * 6 + 1);
   expect(state.info(0)?.capacity).toBe(PAGE * 12);
   expect(state.resources().usedBytes).toBe(PAGE * 12);
   expect(identity.segments.every((buffer) => buffer.byteLength === 0)).toBe(true);
@@ -179,8 +181,8 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
     undefined,
     identity.segments,
   );
-  const page = SHARED_SEGMENT_BYTES / 256;
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: page * 255, mtime: 1 });
+  const page = PAGE;
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: page * 1023, mtime: 1 });
   const wrapper = identity.segments[0] as SharedArrayBuffer & { grow(size: number): void };
   const original = wrapper.grow;
   wrapper.grow = () => {
@@ -194,10 +196,10 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
       failure = error;
     }
     expect(failure).toMatchObject({ errno: 51 });
-    expect(Array.from(state.owners).filter((owner) => owner !== 0)).toHaveLength(255);
+    expect(Array.from(state.owners).filter((owner) => owner !== 0)).toHaveLength(1023);
     expect(state.resources()).toMatchObject({
       poolBytes: SHARED_SEGMENT_BYTES,
-      usedBytes: page * 255,
+      usedBytes: page * 1023,
     });
     expect(wrapper.byteLength).toBe(0);
   } finally {
@@ -206,7 +208,7 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
   state.register(2, { kind: "file", ino: 3, nlink: 1, size: page * 2, mtime: 1 });
   expect(state.resources()).toMatchObject({
     poolBytes: SHARED_SEGMENT_BYTES * 2,
-    usedBytes: page * 257,
+    usedBytes: page * 1025,
   });
   expect(state.takeNewSegments()).toEqual([]);
 });

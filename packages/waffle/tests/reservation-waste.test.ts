@@ -232,9 +232,9 @@ test("actual filesystem worker allocates no new MiB-sized backing before its fir
   }
 });
 
-test("standalone memory backends still own their original fixed root", () => {
+test("standalone memory backends own the exact fixed storage root", () => {
   const backend = new MemoryBackend();
-  expect(backend.shared.buffer.byteLength).toBe(62341840);
+  expect(backend.shared.buffer.byteLength).toBe(88098640);
   backend.execute("writeFile", ["/standalone"], new Uint8Array([65]));
   expect(backend.execute("readFile", ["/standalone"], new Uint8Array())).toEqual(
     new Uint8Array([65]),
