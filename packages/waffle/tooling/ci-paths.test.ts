@@ -1417,3 +1417,14 @@ test("G2 producer and native acceptance inputs select the blocking browser job",
   expect(source?.if).toBeUndefined();
   expect(source?.["continue-on-error"]).toBeUndefined();
 });
+
+test("normal network matrix uses one complete positive command plus bounded controls", async () => {
+  const matrix = await Bun.file(new URL("../scripts/test-browser.ts", import.meta.url)).text();
+  expect(matrix.match(/"tests\/network-browser-runner.ts"/g)).toHaveLength(2);
+  expect(matrix).toContain('engines: ["--page-controls", "chromium"]');
+  const entry = await Bun.file(
+    new URL("../tests/network-browser-runner.ts", import.meta.url),
+  ).text();
+  expect(entry).toContain("completeNetworkCommand");
+  expect(entry).not.toContain("runIsolatedPages");
+});

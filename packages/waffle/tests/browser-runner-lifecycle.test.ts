@@ -102,3 +102,58 @@ for (const engine of ["chromium", "firefox", "webkit"] as const) {
     });
   }
 }
+
+test("embedded ownership leaves signal listeners and both process fences to the caller", async () => {
+  const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+  const timer = spyOn(globalThis, "setTimeout");
+  const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
+  try {
+    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+    await lifecycle.close();
+    expect(timer.mock.calls.filter((call) => call[1] === 600_000 || call[1] === 60_000)).toEqual(
+      [],
+    );
+  } finally {
+    await lifecycle.close();
+    timer.mockRestore();
+  }
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+});
+
+test("standalone lifecycle retains its default execution and cleanup fences", async () => {
+  const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+  const timer = spyOn(globalThis, "setTimeout");
+  const lifecycle = new BrowserRunnerLifecycle();
+  try {
+    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(
+      before.map((count) => count + 1),
+    );
+    await lifecycle.close();
+    expect(timer.mock.calls.filter((call) => call[1] === 600_000)).toHaveLength(1);
+    expect(timer.mock.calls.filter((call) => call[1] === 60_000)).toHaveLength(1);
+  } finally {
+    await lifecycle.close();
+    timer.mockRestore();
+  }
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+});
+
+test("embedded browser launch disables Playwright's own process signal handlers", async () => {
+  const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
+  const launch = spyOn(engines.chromium, "launchPersistentContext").mockRejectedValue(
+    new Error("launch boundary"),
+  );
+  try {
+    await expect(lifecycle.persistent("chromium", "/unused/profile")).rejects.toThrow(
+      "launch boundary",
+    );
+    expect(launch.mock.calls[0]?.[1]).toMatchObject({
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+    });
+  } finally {
+    await lifecycle.close();
+    launch.mockRestore();
+  }
+});
