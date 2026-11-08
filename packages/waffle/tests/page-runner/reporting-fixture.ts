@@ -18,6 +18,8 @@ export async function reportingPage(
     };
     pagehide: () => void;
     cutoff: (watermark: number) => boolean;
+    heartbeat: () => void;
+    retire: () => void;
   }) => Promise<void>,
   release: () => void = () => {},
 ): Promise<void> {
@@ -29,14 +31,24 @@ export async function reportingPage(
   if (!build.success || !build.outputs[0]) throw new Error("CPU bootstrap build failed");
   const timers = new Set<ReturnType<typeof setInterval>>();
   const hide = new Set<() => void>();
+  let heartbeat = () => {};
   const retirement = Promise.withResolvers<Response>();
   const document = {};
-  const requests = new Set<Promise<Response>>();
-  const fetch = (url: string, init: RequestInit): Promise<Response> => {
-    const request = url.startsWith("/retire") ? retirement.promise : post(url, init);
+  const requests = new Set<Promise<unknown>>();
+  const track = <T>(request: Promise<T>): Promise<T> => {
     requests.add(request);
     void request.finally(() => requests.delete(request)).catch(() => {});
     return request;
+  };
+  const fetch = (url: string, init: RequestInit): Promise<Response> => {
+    const request = url.startsWith("/retire") ? retirement.promise : post(url, init);
+    return track(
+      request.then((response) => {
+        const parse = response.json.bind(response);
+        response.json = () => track(parse());
+        return response;
+      }),
+    );
   };
   const bridgeHolder: Pick<Window, "__waffleFramework"> = {};
   const page = Object.assign(bridgeHolder, {
@@ -52,6 +64,7 @@ export async function reportingPage(
     setTimeout,
     clearTimeout,
     setInterval(callback: () => void, ms: number) {
+      heartbeat = callback;
       const timer = setInterval(callback, ms);
       timers.add(timer);
       return timer;
@@ -88,6 +101,8 @@ export async function reportingPage(
       observation,
       snapshot: bridge.snapshot,
       cutoff: bridge.cutoff,
+      heartbeat: () => heartbeat(),
+      retire: () => retirement.resolve(Response.json({ kind: "live", retire: true })),
       pagehide: () => {
         for (const listener of hide) listener();
       },
@@ -97,7 +112,7 @@ export async function reportingPage(
     for (const listener of hide) listener();
     retirement.resolve(Response.json({ kind: "cancelled" }));
     for (const timer of timers) clearInterval(timer);
-    await Promise.allSettled(Array.from(requests));
+    while (requests.size) await Promise.allSettled(Array.from(requests));
     await waitUntil(() => (page.__waffleFramework?.snapshot().pending ?? 0) === 0);
   }
 }

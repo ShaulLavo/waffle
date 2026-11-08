@@ -181,7 +181,13 @@ export function installFrameworkBootstrap(config: Configuration): void {
       };
     },
     cutoff: (watermark: number) => {
-      if (!valid() || state.pending !== 0 || state.failure || state.ackedThrough !== watermark)
+      if (
+        !valid() ||
+        reporter.controlsPending !== 0 ||
+        state.pending !== 0 ||
+        state.failure ||
+        state.ackedThrough !== watermark
+      )
         throw new Error("Document not drained at cutoff");
       state.retired = true;
       releaseIdentity();
@@ -215,10 +221,11 @@ export function installFrameworkBootstrap(config: Configuration): void {
     const url = `/retire?run=${encodeURIComponent(config.run)}&doc=${encodeURIComponent(state.doc)}`;
     while (!state.retired) {
       reporter.signal.throwIfAborted();
-      const response = await reporter.post(url, { signal: reporter.clock.abortTimeout(2000) });
-      const command = await reporter.hostReply(response);
+      const command = await reporter.control(url, { signal: reporter.clock.abortTimeout(2000) });
       reporter.signal.throwIfAborted();
       if (command.kind === "live" && command.retire) {
+        await reporter.stop();
+        reporter.signal.throwIfAborted();
         await reporter.drain();
         await reporter.send({ token: config.token, kind: "retire-ready" });
         return;

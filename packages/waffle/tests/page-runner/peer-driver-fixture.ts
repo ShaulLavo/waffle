@@ -144,11 +144,9 @@ class PeerDocument {
   }
   async stop(): Promise<void> {
     clearInterval(this.retiring);
-    this.reporter.stop();
-    try {
-      await this.polling;
-    } catch (error) {
-      if (!this.reporter.signal.aborted) throw error;
+    const settled = await Promise.allSettled([this.polling, this.reporter.stop()]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
     }
   }
 }

@@ -89,7 +89,8 @@ test("report retry and retirement use pre-fixture dependencies while instrumenta
       clear = globalThis.clearTimeout;
     const interval = globalThis.setInterval,
       clearInterval = globalThis.clearInterval;
-    const timeout = AbortSignal.timeout;
+    const timeout = AbortSignal.timeout,
+      abortAny = AbortSignal.any;
     let attempts = 0,
       observedTimers = 0,
       retired = false;
@@ -125,6 +126,9 @@ test("report retry and retirement use pre-fixture dependencies while instrumenta
       AbortSignal.timeout = () => {
         throw new Error("Patched abort timeout");
       };
+      AbortSignal.any = () => {
+        throw new Error("Patched abort composition");
+      };
       reporter.startHeartbeat(1000);
       await reporter.send({ kind: "doc-complete" });
       await reporter.readyForRetirement();
@@ -139,6 +143,7 @@ test("report retry and retirement use pre-fixture dependencies while instrumenta
       globalThis.setInterval = interval;
       globalThis.clearInterval = clearInterval;
       AbortSignal.timeout = timeout;
+      AbortSignal.any = abortAny;
       reporter.stop();
     }
   }));
@@ -190,3 +195,43 @@ test("heartbeat holds one physical parse after abort and reports one sticky fail
       await Bun.sleep(0);
     }
   }));
+
+for (const phase of ["fetch", "parse"] as const) {
+  test(`reporter stop joins physical heartbeat ${phase} after cancellation`, () =>
+    withWindow(async () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const reporter = new Reporter("run", async () => {
+        if (phase === "fetch") {
+          entered.resolve();
+          await release.promise;
+        }
+        const response = Response.json({ kind: "live", retire: false });
+        if (phase === "fetch") return response;
+        const parse = response.json.bind(response);
+        response.json = async () => {
+          entered.resolve();
+          await release.promise;
+          return parse();
+        };
+        return response;
+      });
+      reporter.startHeartbeat(1);
+      let stopped = false;
+      try {
+        await entered.promise;
+        reporter.cancelDelivery("CPU cancellation");
+        const stopping = Promise.resolve(reporter.stop()).then(() => {
+          stopped = true;
+        });
+        await Bun.sleep(0);
+        expect(stopped).toBe(false);
+        release.resolve();
+        await stopping;
+        expect(stopped).toBe(true);
+      } finally {
+        release.resolve();
+        await reporter.stop();
+      }
+    }));
+}

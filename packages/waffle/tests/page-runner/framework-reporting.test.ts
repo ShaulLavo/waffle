@@ -25,6 +25,20 @@ const tasks = expected.map(
       retries: 0,
     }) as const,
 );
+async function reportOutcomes(observation: FrameworkObservation): Promise<void> {
+  for (let index = 0; index < 38; index++) {
+    if (index) await observation.taskStarted(() => String(index));
+    const update = {
+      id: String(index),
+      state: index % 2 ? "fail" : "pass",
+      errors: [],
+      hooks: {},
+      retryCount: 0,
+    } as const;
+    await observation.taskUpdate(() => [update]);
+    await observation.caseSettled(() => [update]);
+  }
+}
 test("actual bootstrap accessor paces 38 synthetic outcomes behind exact collector ACKs", async () => {
   const collector = new FrameworkCollector(expected);
   const document = collector.expect("tester", "http://fixture/tester");
@@ -63,18 +77,7 @@ test("actual bootstrap accessor paces 38 synthetic outcomes behind exact collect
         expect(started).toBe(false);
         gate.resolve();
         await first;
-        for (let index = 0; index < 38; index++) {
-          if (index) await observation.taskStarted(() => String(index));
-          const update = {
-            id: String(index),
-            state: index % 2 ? "fail" : "pass",
-            errors: [],
-            hooks: {},
-            retryCount: 0,
-          } as const;
-          await observation.taskUpdate(() => [update]);
-          await observation.caseSettled(() => [update]);
-        }
+        await reportOutcomes(observation);
         await observation.caseSettled(() => null);
         const closing = observation.executionFlushed();
         expect(snapshot().contentClosed).toBe(true);
@@ -179,7 +182,7 @@ test("local cutoff rejects held ACK, late tail append and wrong final watermark"
         if (hold) await gate.promise;
         return Response.json({ ackedThrough: reportBody(init).seq });
       },
-      async ({ observation, snapshot, cutoff }) => {
+      async ({ observation, snapshot, cutoff, retire }) => {
         await waitUntil(() => snapshot().pending === 0);
         const oldTail = snapshot().ackedThrough;
         hold = true;
@@ -190,6 +193,8 @@ test("local cutoff rejects held ACK, late tail append and wrong final watermark"
         await closing;
         expect(() => cutoff(oldTail)).toThrow("not drained");
         const retired = observation.waitForRetirement();
+        retire();
+        await waitUntil(() => snapshot().ackedThrough === oldTail + 2);
         expect(cutoff(snapshot().ackedThrough)).toBe(true);
         await retired;
       },
@@ -359,3 +364,88 @@ test("cancellation after actual collector acceptance preserves the missing page 
     () => gate.resolve(),
   );
 });
+
+function heldHeartbeat(phase: "fetch" | "parse") {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const messages: Record<string, unknown>[] = [];
+  const post = async (url: string, init: RequestInit) => {
+    if (url === "/report") {
+      const body = reportBody(init);
+      messages.push(body);
+      return Response.json({ ackedThrough: body.seq });
+    }
+    if (phase === "fetch") {
+      entered.resolve();
+      await release.promise;
+    }
+    const response = Response.json({ kind: "live", retire: false });
+    if (phase === "fetch") return response;
+    const parse = response.json.bind(response);
+    response.json = async () => {
+      entered.resolve();
+      await release.promise;
+      return parse();
+    };
+    return response;
+  };
+  return { entered, release, messages, post };
+}
+async function pendingHeartbeatRetirement(
+  page: Parameters<Parameters<typeof reportingPage>[3]>[0],
+  fixture: ReturnType<typeof heldHeartbeat>,
+): Promise<void> {
+  await page.observation.executionFlushed();
+  await page.observation.testerCleanupSettled();
+  page.heartbeat();
+  await fixture.entered.promise;
+  page.retire();
+  await Bun.sleep(0);
+  expect(fixture.messages.some((body) => body.kind === "retire-ready")).toBe(false);
+  expect(() => page.cutoff(page.snapshot().ackedThrough)).toThrow("not drained");
+}
+for (const phase of ["fetch", "parse"] as const) {
+  test(`bootstrap retirement and fixture cleanup join held heartbeat ${phase}`, async () => {
+    const fixture = heldHeartbeat(phase);
+    const { release, post } = fixture;
+    const callbackDone = Promise.withResolvers<void>();
+    let finished = false;
+    const use: Parameters<typeof reportingPage>[3] = async (page) => {
+      await pendingHeartbeatRetirement(page, fixture);
+    };
+    const observing: typeof use = (page) => use(page).finally(() => callbackDone.resolve());
+    const running = reportingPage("run", "token", post, observing).finally(() => {
+      finished = true;
+    });
+    void running.catch(() => {});
+    try {
+      await Promise.race([callbackDone.promise, running]);
+      await Bun.sleep(0);
+      expect(finished).toBe(false);
+    } finally {
+      release.resolve();
+      await running;
+    }
+    expect(finished).toBe(true);
+  });
+}
+
+for (const phase of ["fetch", "parse"] as const) {
+  test(`healthy retirement waits for heartbeat ${phase} before exact ready ACK and cutoff`, async () => {
+    const fixture = heldHeartbeat(phase);
+    const { release, messages, post } = fixture;
+    const use: Parameters<typeof reportingPage>[3] = async (page) => {
+      await pendingHeartbeatRetirement(page, fixture);
+      release.resolve();
+      await waitUntil(
+        () =>
+          messages.some((body) => body.kind === "retire-ready") && page.snapshot().pending === 0,
+      );
+      expect(page.snapshot().failure).toBeNull();
+      const retired = page.observation.waitForRetirement();
+      expect(page.cutoff(page.snapshot().ackedThrough)).toBe(true);
+      await retired;
+    };
+    await reportingPage("run", "token", post, use, () => release.resolve());
+  });
+}

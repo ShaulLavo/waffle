@@ -20,6 +20,7 @@ export class OrderedReporter<B extends object> {
     interval: globalThis.setInterval.bind(globalThis),
     clearInterval: globalThis.clearInterval.bind(globalThis),
     abortTimeout: AbortSignal.timeout.bind(AbortSignal),
+    abortAny: AbortSignal.any.bind(AbortSignal),
   };
   readonly observation: Observation = {
     doc: crypto.randomUUID(),
@@ -28,6 +29,8 @@ export class OrderedReporter<B extends object> {
     failure: null,
     retired: false,
   };
+  private readonly encoder = new TextEncoder();
+  private readonly encode = this.encoder.encode.bind(this.encoder);
   private readonly admission = new AbortController();
   private readonly delivery = new AbortController();
   private converting = false;
@@ -47,6 +50,14 @@ export class OrderedReporter<B extends object> {
   private sequence = 0;
   private tail = Promise.resolve();
   private heartbeatBusy = false;
+  private heartbeatEnabled = false;
+  private heartbeatTask: Promise<void> | undefined;
+  private controlCount = 0;
+  private controlDrain = Promise.resolve();
+  private controlSettled: (() => void) | undefined;
+  get controlsPending(): number {
+    return this.controlCount + Number(this.heartbeatBusy);
+  }
   private timer: ReturnType<typeof setInterval> | undefined;
   constructor(
     readonly run: string,
@@ -87,8 +98,9 @@ export class OrderedReporter<B extends object> {
         seq: this.sequence,
       });
       this.signal.throwIfAborted();
-      if (new TextEncoder().encode(encoded).byteLength > resultByteLimit)
+      if (this.encode(encoded).byteLength > resultByteLimit)
         throw new Error("Report envelope exceeds 48 KiB");
+      this.signal.throwIfAborted();
     } catch (error) {
       this.observation.pending--;
       this.closeAdmission("conversion", "Reporter snapshot conversion or encoding failed");
@@ -128,7 +140,7 @@ export class OrderedReporter<B extends object> {
     const response = await this.post("/report", {
       method: "POST",
       body: encoded,
-      signal: AbortSignal.any([
+      signal: this.clock.abortAny([
         this.delivery.signal,
         this.clock.abortTimeout(Math.min(1500, this.retryMs)),
       ]),
@@ -140,15 +152,16 @@ export class OrderedReporter<B extends object> {
     this.observation.ackedThrough = seq;
   }
   startHeartbeat(interval = 1000): void {
+    this.heartbeatEnabled = true;
     this.timer = this.clock.interval(() => {
-      void this.heartbeat();
+      if (!this.heartbeatEnabled || this.heartbeatBusy || this.observation.retired) return;
+      this.heartbeatBusy = true;
+      this.heartbeatTask = this.heartbeat();
     }, interval);
   }
   private async heartbeat(): Promise<void> {
-    if (this.heartbeatBusy || this.observation.retired) return;
-    this.heartbeatBusy = true;
     try {
-      const response = await this.post("/heartbeat", {
+      await this.control("/heartbeat", {
         method: "POST",
         body: JSON.stringify({
           kind: "heartbeat",
@@ -159,11 +172,22 @@ export class OrderedReporter<B extends object> {
         }),
         signal: this.clock.abortTimeout(1500),
       });
-      await this.hostReply(response);
     } catch {
       this.cancelDelivery("Collector heartbeat failed");
     } finally {
       this.heartbeatBusy = false;
+    }
+  }
+  async control(url: string, init: RequestInit): Promise<HostReply> {
+    if (this.controlCount++ === 0) {
+      const idle = Promise.withResolvers<void>();
+      this.controlDrain = idle.promise;
+      this.controlSettled = idle.resolve;
+    }
+    try {
+      return await this.hostReply(await this.post(url, init));
+    } finally {
+      if (--this.controlCount === 0) this.controlSettled?.();
     }
   }
   async hostReply(response: Response): Promise<HostReply> {
@@ -181,8 +205,10 @@ export class OrderedReporter<B extends object> {
     if (reply.kind === "cancelled") this.cancelDelivery("Collector cancelled reporting");
     return reply;
   }
-  stop(): void {
+  stop(): Promise<void> {
+    this.heartbeatEnabled = false;
     this.clock.clearInterval(this.timer);
+    return Promise.all([this.controlDrain, this.heartbeatTask]).then(() => {});
   }
   drain(): Promise<void> {
     return this.tail;

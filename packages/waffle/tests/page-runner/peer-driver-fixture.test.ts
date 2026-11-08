@@ -185,3 +185,35 @@ for (const reason of [undefined, null, false, 0, ""]) {
     }
   });
 }
+
+for (const reply of [
+  () => new Response("{not json"),
+  () => Response.json({ kind: "live", retire: "invalid" }),
+  () => Response.json({ kind: "live", retire: true }, { status: 503 }),
+]) {
+  test("peer stop preserves genuine invalid control reply after reporter abort", async () => {
+    const fixture = retirementFixture();
+    try {
+      await fixture.driver.navigate(fixture.server.url.href);
+      await bounded(fixture.entered.promise, 1000, "invalid control poll entry");
+      const stopping = fixture.driver.stop();
+      fixture.response.resolve(reply());
+      const settled = await bounded(
+        stopping.then(
+          () => ({ fulfilled: true }),
+          (error: unknown) => ({ rejected: error }),
+        ),
+        1000,
+        "invalid control joined",
+      );
+      expect(settled).toHaveProperty("rejected");
+      if (!("rejected" in settled)) throw new Error("Invalid control was accepted");
+      expect(settled.rejected).toBeInstanceOf(Error);
+      await expect(fixture.driver.stop()).rejects.toBe(settled.rejected);
+    } finally {
+      fixture.response.resolve(Response.json({ kind: "cancelled" }));
+      await fixture.driver.stop().catch(() => {});
+      await fixture.server.stop(true);
+    }
+  });
+}

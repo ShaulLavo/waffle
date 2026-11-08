@@ -211,3 +211,31 @@ test("malformed exact ACK failure is sticky and future snapshots never run", asy
   ).rejects.toThrow();
   expect(reads).toBe(0);
 });
+
+test("final encoding-stage reentry cannot commit the outer report", async () => {
+  const original = TextEncoder.prototype.encode;
+  let reporter: OrderedReporter<{ value: number }> | undefined;
+  let nested: Promise<void> | undefined;
+  let factoryReads = 0;
+  TextEncoder.prototype.encode = function (value) {
+    TextEncoder.prototype.encode = original;
+    if (!reporter) throw new Error("Encoder ran during reporter construction");
+    nested = reporter.sendSnapshot(() => {
+      factoryReads++;
+      return { value: 2 };
+    });
+    void nested.catch(() => {});
+    return original.call(this, value);
+  };
+  try {
+    reporter = new OrderedReporter("run", async (_url, init) => ack(init));
+    await expect(reporter.sendSnapshot(() => ({ value: 1 }))).rejects.toThrow("reentry");
+    await expect(nested).rejects.toThrow("reentry");
+    expect(factoryReads).toBe(0);
+    expect(reporter.observation.ackedThrough).toBe(-1);
+    expect(reporter.observation.pending).toBe(0);
+  } finally {
+    TextEncoder.prototype.encode = original;
+    await reporter?.stop();
+  }
+});
