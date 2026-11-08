@@ -4,7 +4,12 @@ import type { GraphicsOpen, GpuServiceReply } from "../browser/display/protocol.
 import { CompletionOwner } from "../browser/gpu/completions.js";
 import { RecordRing } from "../browser/gpu/ring.js";
 import { GpuService } from "../browser/gpu/service.js";
-import { payloadTerminalReady } from "./gpu-payload-pressure-browser.js";
+import {
+  payloadTerminalObservation,
+  payloadTerminalReady,
+} from "./gpu-payload-pressure-browser.js";
+import { until } from "./gpu-ownership-browser.js";
+import { qualificationRecord } from "./fixtures/gpu/qualification-contract.js";
 import { command, deferred, drain, handle, ROOT, settle } from "./fixtures/gpu/core-fixture.js";
 import { ringSnapshot } from "./fixtures/gpu/ring-snapshot.js";
 
@@ -210,4 +215,97 @@ test("payload terminal observation joins real native settlement with the service
       tasks.clear();
     }
   }
+});
+
+function payloadObservationSnapshot(status: number, reason: number): Record<string, unknown> {
+  return {
+    payloadPressure: {
+      allocations: [{ outcome: "refused", terminalReason: 3, owner: 1, grant: 1, connection: 1 }],
+    },
+    attempts: [
+      {
+        owner: 1,
+        grant: 1,
+        connection: 1,
+        status,
+        reason,
+        arenaTerminal: 3,
+        commands: { terminal: 3 },
+        replies: { terminal: 3 },
+      },
+    ],
+  };
+}
+
+type PayloadObservationPoll = Parameters<typeof payloadTerminalObservation>[0];
+async function withPayloadSnapshots(
+  samples: readonly { at: number; service: Record<string, unknown> }[],
+  run: (poll: PayloadObservationPoll, state: () => { now: number; polls: number }) => Promise<void>,
+) {
+  let now = 0,
+    next = 0,
+    polls = 0;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const page = {
+    async evaluate() {
+      const sample = samples[next++];
+      if (!sample) throw new Error("Unexpected extra payload polling");
+      now = sample.at;
+      return sample.service;
+    },
+  };
+  const poll: PayloadObservationPoll = async (ready) => {
+    polls++;
+    return qualificationRecord(await Reflect.apply(until, undefined, [page, ready]));
+  };
+  try {
+    await run(poll, () => ({ now, polls }));
+  } finally {
+    clock.mockRestore();
+  }
+}
+
+test("payload refusal and settlement keep one polling deadline", async () => {
+  const refusal = payloadObservationSnapshot(1, 0),
+    terminal = payloadObservationSnapshot(-48, 3);
+  await withPayloadSnapshots(
+    [
+      { at: 100, service: refusal },
+      { at: 200, service: payloadObservationSnapshot(1, 0) },
+      { at: 300, service: terminal },
+    ],
+    async (poll, state) => {
+      const observed = await payloadTerminalObservation(poll);
+      expect(observed.refusal).toBe(refusal);
+      expect(observed.terminal).toBe(terminal);
+      expect(state()).toEqual({ now: 300, polls: 1 });
+    },
+  );
+});
+
+test("late payload refusal cannot renew the original settlement budget", async () => {
+  const refusal = payloadObservationSnapshot(1, 0),
+    terminal = payloadObservationSnapshot(-48, 3);
+  await withPayloadSnapshots(
+    [
+      { at: 14900, service: refusal },
+      { at: 14901, service: refusal },
+      { at: 16000, service: refusal },
+      { at: 20000, service: terminal },
+    ],
+    async (poll, state) => {
+      await expect(payloadTerminalObservation(poll)).rejects.toThrow("checkpoint deadline");
+      expect(state()).toEqual({ now: 16000, polls: 1 });
+    },
+  );
+});
+
+test("already settled payload refusal retains the identical checkpoint", async () => {
+  const terminal = payloadObservationSnapshot(-48, 3);
+  await withPayloadSnapshots([{ at: 14900, service: terminal }], async (poll, state) => {
+    const observed = await payloadTerminalObservation(poll);
+    expect(observed.refusal).toBe(terminal);
+    expect(observed.terminal).toBe(terminal);
+    expect(state()).toEqual({ now: 14900, polls: 1 });
+  });
 });

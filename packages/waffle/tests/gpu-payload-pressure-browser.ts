@@ -54,6 +54,17 @@ export function payloadTerminalReady(service: Record<string, unknown>): boolean 
     record(attempt.replies).terminal === 3
   );
 }
+export async function payloadTerminalObservation(
+  poll: (ready: Parameters<typeof until>[1]) => ReturnType<typeof until>,
+) {
+  let refusal: Record<string, unknown> | undefined;
+  const terminal = await poll((service) => {
+    if (refusal === undefined && payloadRefusal(service) !== undefined) refusal = service;
+    return payloadTerminalReady(service);
+  });
+  proof(refusal !== undefined, "missing raw refusal checkpoint");
+  return { refusal, terminal };
+}
 async function payloadCase(page: Page) {
   await invoke(page, "openIntegration", [false, "ownership", true]);
   await invoke(page, "activateDisplay");
@@ -135,10 +146,7 @@ async function payloadCase(page: Page) {
     await capture("committed");
     await invoke(page, "feedTriangle", ["\n", 2]);
     await checkpoint(page, "GPU_WAIT_STDIN stage=payload-refusal-requested", 2);
-    const refusal = await until(page, (service) => payloadRefusal(service) !== undefined);
-    const terminal = payloadTerminalReady(refusal)
-      ? refusal
-      : await until(page, payloadTerminalReady);
+    const { refusal, terminal } = await payloadTerminalObservation((ready) => until(page, ready));
     await capture("terminal");
     await invoke(page, "feedTriangle", ["\n", 2]);
     await checkpoint(page, "GPU_WAIT_STDIN stage=payload-terminal", 2);
