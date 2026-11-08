@@ -734,13 +734,15 @@ test("runtime-owned source admission avoids a second byte snapshot", async () =>
 });
 
 test("compiled program loaders release their owned source while registration stays live", async () => {
-  const source = bytes.slice();
+  const source = new Uint8Array(1024 * 1024 + 13);
+  source.set(bytes);
+  source.set([0, 0x81, 0x80, 0x40, 0], bytes.length);
   const Bytes = globalThis.Uint8Array;
-  let owned: WeakRef<Uint8Array> | undefined;
+  let owned: WeakRef<ArrayBuffer> | undefined;
   globalThis.Uint8Array = new Proxy(Bytes, {
     construct(target, args) {
       const result = Reflect.construct(target, args, target);
-      if (args[0] === source) owned = new WeakRef(result);
+      if (args[0] === source) owned = new WeakRef(result.buffer);
       return result;
     },
   });
@@ -758,7 +760,7 @@ test("compiled program loaders release their owned source while registration sta
   } finally {
     globalThis.Uint8Array = Bytes;
   }
-  expect(owned).toBeDefined();
+  expect(owned!.deref()?.byteLength).toBe(source.byteLength);
   await runtime.processes();
   const first = await registry!.resolve("/snapshot");
   let released = false;
@@ -769,6 +771,11 @@ test("compiled program loaders release their owned source while registration sta
   }
   expect(released).toBe(true);
   expect((await registry!.resolve("/snapshot")).module).toBe(first.module);
+  const executable = await registry!.check("/snapshot");
+  if ("command" in executable) throw new Error("Expected a compiled program loader");
+  const reloaded =
+    typeof executable.module === "function" ? await executable.module() : executable.module;
+  expect(reloaded).toBe(first.module);
 });
 
 test("disposal blocks previously borrowed capabilities and never activates unused processes", async () => {

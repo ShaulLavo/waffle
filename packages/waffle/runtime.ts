@@ -473,9 +473,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   ) => {
     const shared = typeof source === "function" ? sourceModules.get(source) : undefined;
     if (shared) return shared;
-    const ownedSource = source instanceof Uint8Array ? new Uint8Array(source) : source;
+    let sourceOrModule:
+      | Uint8Array<ArrayBuffer>
+      | (() => Uint8Array | Promise<Uint8Array>)
+      | WebAssembly.Module = source instanceof Uint8Array ? new Uint8Array(source) : source;
     const module = async () => {
       assertLive();
+      const ownedSource = sourceOrModule;
+      if (ownedSource instanceof WebAssembly.Module) return ownedSource;
       onLoad?.({ kind: "preparing" });
       try {
         assertLive();
@@ -501,6 +506,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (threaded) declareThreadModule(compiled, threaded);
         assertLive();
         onLoad?.({ kind: "loaded" });
+        sourceOrModule = compiled;
         return compiled;
       } catch (error) {
         onLoad?.({ kind: "error", error });
