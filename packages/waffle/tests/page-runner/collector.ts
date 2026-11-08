@@ -1,6 +1,7 @@
 import { reportSequence } from "./report-stream.js";
 import {
   exactInventory,
+  sameStorageEntry,
   parseMessage,
   record,
   resultByteLimit,
@@ -10,7 +11,8 @@ import {
   type Message,
   type Outcome,
 } from "./protocol.js";
-import type { StorageEntry } from "../storage-allocation.js";
+import { sameWorkerEntry, type WorkerAttempt } from "./service-worker-page.js";
+import type { ServiceWorkerEntry, StorageEntry } from "../storage-allocation.js";
 export type CollectorPolicy = {
   listIds(value: unknown): string[];
   allocation?: (entry: StorageEntry, runningCaseIds: readonly string[], run: string) => void;
@@ -92,6 +94,26 @@ export class Collector {
   readonly ledger: StorageEntry[] = [];
   readonly documents: DocumentState[] = [];
   readonly transitions: PeerTransition[] = [];
+  private worker: { caseId: string; entry: ServiceWorkerEntry } | undefined;
+  private workerAttempt: { state: DocumentState; attempt: WorkerAttempt } | undefined;
+  declareWorker(caseId: string, entry: ServiceWorkerEntry): void {
+    if (this.worker) throw new Error("Duplicate service worker declaration");
+    this.worker = { caseId, entry };
+  }
+  get registrationAttempts(): WorkerAttempt[] {
+    const saved = this.workerAttempt;
+    if (!saved) return [];
+    const state = saved.attempt.state === "admitted" && saved.state.cutoff !== null ? "unconfirmed" : saved.attempt.state;
+    return [{ entry: saved.attempt.entry, state }];
+  }
+  admitFixture(token: string, doc: string, caseId: string): DocumentState {
+    const state = this.documents.find((item) => item.token === token);
+    if (!state || state !== this.active || state.doc !== doc || state.cutoff !== null ||
+        state.complete || state.group.role !== "case" || state.group.caseIds[0] !== caseId ||
+        state.owner.kind !== "coordinator" || this.outcomes[caseId]?.status !== "running")
+      throw new ObservationClosed("Fixture capability is not the live exact case document");
+    return state;
+  }
   active: DocumentState | undefined;
   runComplete = false;
   remaining: StorageEntry[] | null = null;
@@ -388,6 +410,13 @@ export class Collector {
       case "allocation":
         this.allocate(state, body.entry);
         return;
+      case "worker-settled":
+        if (!this.workerAttempt || this.workerAttempt.state !== state || state.complete ||
+            this.workerAttempt.attempt.state !== "admitted" ||
+            !sameWorkerEntry(this.workerAttempt.attempt.entry, body.entry))
+          this.violation("Unbound or duplicate worker settlement", state);
+        this.workerAttempt.attempt = { entry: body.entry, state: "settled" };
+        return;
       case "case-start":
         if (state.host) this.violation("Page start for host-driven case", state);
         this.startCase(state, body.caseId);
@@ -532,13 +561,26 @@ export class Collector {
   }
 
   private allocate(state: DocumentState, entry: StorageEntry): void {
-    if (!this.policy.allocation) this.violation("Suite declares no durable allocations", state);
     const running = state.group.caseIds.filter((id) => this.outcomes[id]?.status === "running");
     if (!["case", "peer"].includes(state.group.role) || !running.length)
       this.violation("Allocation outside running case", state);
+    if (entry.kind === "service-worker") {
+      this.allocateWorker(state, entry);
+      return;
+    }
+    if (!this.policy.allocation) this.violation("Suite declares no durable allocations", state);
     this.policy.allocation(entry, running, this.run);
     if (!this.ledger.some((saved) => saved.kind === entry.kind && saved.name === entry.name))
       this.ledger.push(entry);
+  }
+  private allocateWorker(state: DocumentState, entry: ServiceWorkerEntry): void {
+    if (!this.worker || state !== this.active || state.complete || state.owner.kind !== "coordinator" ||
+        state.group.role !== "case" || state.group.caseIds[0] !== this.worker.caseId ||
+        state.expectedURL !== entry.clientURL || !sameWorkerEntry(entry, this.worker.entry))
+      this.violation("Service worker allocation differs from host declaration", state);
+    if (this.workerAttempt) this.violation("Service worker attempt already admitted", state);
+    this.ledger.push(entry);
+    this.workerAttempt = { state, attempt: { entry, state: "admitted" } };
   }
   private finish(state: DocumentState, remaining: StorageEntry[]): void {
     const casesSettled = this.selected.every((id) =>
@@ -559,6 +601,11 @@ export class Collector {
       this.transitions.some((item) => item.progress.kind !== "completed")
     )
       this.violation("Premature run-complete", state);
+    if (remaining.some((entry) => !this.ledger.some((saved) => sameStorageEntry(saved, entry))))
+      this.violation("Unknown or changed remaining allocation", state);
+    const unresolved = this.registrationAttempts.filter((attempt) => attempt.state !== "settled");
+    if (unresolved.some((attempt) => !remaining.some((entry) => sameStorageEntry(entry, attempt.entry))))
+      this.violation("Finish omitted unjoined registration operation", state);
     if (remaining.length) this.fail("storage-cleanup", JSON.stringify(remaining), state);
     this.remaining = remaining;
     state.final = true;

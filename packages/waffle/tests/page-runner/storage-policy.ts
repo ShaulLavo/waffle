@@ -15,6 +15,7 @@ function validateStorageAllocation(
   runningCaseIds: readonly string[],
   run: string,
 ): void {
+  if (entry.kind === "service-worker") throw new Error("Storage policy does not own service workers");
   const backendPrefix = entry.kind === "indexeddb" ? "indexeddb:" : "opfs:";
   const id = runningCaseIds.find((caseId) => caseId.startsWith(backendPrefix));
   if (!id) throw new Error("Allocation outside running storage case");
@@ -29,6 +30,7 @@ function invalid(detail: string): never {
 }
 function logicalAllocation(entry: StorageEntry): string {
   if (entry.kind === "indexeddb") return entry.name;
+  if (entry.kind === "service-worker") throw new Error("Not an OPFS allocation");
   if (!entry.name.startsWith("bun-wasm-")) invalid("Invalid OPFS directory prefix");
   let logical: unknown;
   try {

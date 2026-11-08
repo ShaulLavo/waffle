@@ -1,3 +1,4 @@
+import { cleanupServiceWorker } from "./service-worker-page.js";
 import type { StorageEntry } from "../storage-allocation.js";
 async function deleteDatabase(name: string, timeout: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -54,10 +55,7 @@ export async function cleanupStorage(
 async function boundedDelete(entry: StorageEntry, timeout: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const operation =
-      entry.kind === "indexeddb"
-        ? deleteDatabase(entry.name, timeout)
-        : deleteDirectory(entry.name);
+    const operation = deleteEntry(entry, timeout);
     await Promise.race([
       operation,
       new Promise<never>((_, reject) => {
@@ -66,5 +64,14 @@ async function boundedDelete(entry: StorageEntry, timeout: number): Promise<void
     ]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function deleteEntry(entry: StorageEntry, timeout: number): Promise<void> {
+  switch (entry.kind) {
+    case "indexeddb": return deleteDatabase(entry.name, timeout);
+    case "opfs-directory": return deleteDirectory(entry.name);
+    case "service-worker": return cleanupServiceWorker(entry);
+    default: { const exhaustive: never = entry; return exhaustive; }
   }
 }
