@@ -388,3 +388,18 @@ test("a later same-guest import cannot backfill an earlier C checkpoint", () => 
     value.phases[4]!.service.serial = value.phases[4]!.before.serial;
   }, /stale or cross-realm/);
 });
+
+test("control and terminal histories cannot join numeric identities from different realms", () => {
+  rejects((value) => {
+    value.controlExit.service.realm = "other-service";
+  }, /another service realm/);
+  rejects((value) => {
+    value.final.owners[2] = value.final.owners[3]!;
+  }, /terminal native cohort duplicated/);
+  rejects((value) => {
+    value.final.owners[1]!.device++;
+  }, /terminal native identity/);
+  rejects((value) => {
+    value.final.attempts[1]!.connection++;
+  }, /terminal open history/);
+});

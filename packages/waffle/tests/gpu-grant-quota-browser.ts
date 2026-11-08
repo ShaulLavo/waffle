@@ -417,6 +417,7 @@ export function validateGrantQuotaResult(value: unknown) {
       controlExit.physicallyStopped === true,
     "positive control did not retire",
   );
+  proof(controlService.realm === realm, "positive control belongs to another service realm");
   authority(controlExit);
   for (const native of entries(controlService.owners)) {
     retiredProof(native, true);
@@ -541,6 +542,7 @@ function retirementResult(
     entries(final.owners).length === 14 && entries(final.attempts).length === 14,
     "terminal owners or opens missing",
   );
+  terminalCohort(final, record(phases.at(-1)!.service));
   assertRetired(final);
   for (const native of entries(final.owners).filter((native) => native.id !== expectedPeer.id)) {
     retiredProof(native, true);
@@ -563,6 +565,38 @@ function retirementResult(
   ledger(runtime.snapshot, 0, consumed);
   return timing(record(phases.at(-1)!.service), expectedPeer.id);
 }
+function terminalCohort(final: Record<string, unknown>, previous: Record<string, unknown>) {
+  const known = entries(previous.owners);
+  proof(
+    new Set(entries(final.owners).map((native) => native.id)).size === known.length,
+    "terminal native cohort duplicated",
+  );
+  proof(
+    final.nativeRequests === previous.nativeRequests &&
+      entries(final.owners).every((native) => known.some((prior) => prior.id === native.id)),
+    "terminal native cohort changed",
+  );
+  for (const native of entries(final.owners)) {
+    const prior = owner(previous, native.id, "terminal predecessor");
+    for (const key of ["grant", "surface", "device", "created"])
+      proof(native[key] === prior[key], "terminal native identity changed");
+    retiredProof(native, true);
+  }
+  const attempts = entries(previous.attempts);
+  for (const attempt of entries(final.attempts)) {
+    const prior = attempts.find((entry) => entry.owner === attempt.owner);
+    proof(
+      prior !== undefined &&
+        ["grant", "surface", "connection"].every((key) => attempt[key] === prior[key]) &&
+        attempt.status === -64 &&
+        attempt.reason === 1 &&
+        attempt.arenaTerminal === 1 &&
+        attempt.retiredAck === true,
+      "terminal open history changed",
+    );
+  }
+}
+
 function validateService(
   service: Record<string, unknown>,
   expected: {
