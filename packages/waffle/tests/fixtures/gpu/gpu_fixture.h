@@ -24,6 +24,7 @@ _Static_assert(WAFFLE_GPU_REPLY_ADAPTER_MESSAGE_OFFSET == WAFFLE_GPU_REPLY_DEVIC
 static uint32_t connection;
 static uint32_t token;
 static int frame_credit;
+static uint32_t closed_reason;
 static uint8_t bytes[8192];
 static WaffleGpuWriter writer = {bytes, sizeof(bytes), 0, 0};
 static uint32_t expected_texture = TEXTURE;
@@ -98,10 +99,23 @@ static void check_result(const uint8_t *p, uint32_t kind, uint32_t length) {
       gpu_read_u32(p + WAFFLE_GPU_REPLY_ERROR_SCOPE_TYPE_OFFSET) != expected_scope_type)
     fail("validation-scope", (int32_t)gpu_read_u32(p + WAFFLE_GPU_REPLY_ERROR_SCOPE_TYPE_OFFSET));
 }
+static void check_closed(const uint8_t *p, uint32_t length) {
+  if (length != 24) fail("closed-size", -28);
+  if (gpu_read_u32(p + 8)) fail("closed-token", -28);
+  uint32_t reason = gpu_read_u32(p + WAFFLE_GPU_REPLY_CLOSED_REASON_OFFSET);
+  if (reason < 1 || reason > 5) fail("closed-reason", -28);
+  if (gpu_read_u32(p + 20)) fail("closed-padding", -28);
+  closed_reason = reason;
+}
 static int completion(const uint8_t *p, uint32_t length, uint32_t expected, uint32_t expected_token) {
+  if (closed_reason) fail("reply-after-closed", -28);
   uint32_t kind = p[0] | (uint32_t)p[1] << 8;
   if (p[2] || p[3]) fail("reply-flags", -28);
   if (gpu_read_u32(p + 12) != 0) fail("reply-status", (int32_t)gpu_read_u32(p + 12));
+  if (kind == WAFFLE_GPU_REPLY_CLOSED) {
+    check_closed(p, length);
+    return 0;
+  }
   if (kind == WAFFLE_GPU_REPLY_FRAME_CREDIT) {
     expect_size(length, 24);
     if (gpu_read_u32(p + 8)) fail("credit-token", -28);
@@ -116,11 +130,8 @@ static int completion(const uint8_t *p, uint32_t length, uint32_t expected, uint
   check_result(p, kind, length);
   return 1;
 }
-static int drain(uint32_t expected, uint32_t expected_token, int64_t timeout) {
-  uint8_t replies[8192], written[4] = {0};
-  check("completions", runtime_gpu_completions(connection, replies, sizeof(replies), timeout, written));
-  uint32_t total = gpu_read_u32(written);
-  if (total > sizeof(replies)) fail("reply-span", -28);
+static int completion_batch(const uint8_t *replies, uint32_t total,
+                            uint32_t expected, uint32_t expected_token) {
   uint32_t offset = 0;
   int found = 0;
   while (offset < total) {
@@ -133,6 +144,17 @@ static int drain(uint32_t expected, uint32_t expected_token, int64_t timeout) {
   }
   if (found > 1) fail("duplicate-completion", -28);
   return found;
+}
+static int drain(uint32_t expected, uint32_t expected_token, int64_t timeout) {
+  uint8_t replies[8192], written[4] = {0};
+  for (;;) {
+    check("completions", runtime_gpu_completions(connection, replies, sizeof(replies), timeout, written));
+    uint32_t total = gpu_read_u32(written);
+    if (total > sizeof(replies)) fail("reply-span", -28);
+    int found = completion_batch(replies, total, expected, expected_token);
+    if (!closed_reason) return found;
+    /* Committed closed bytes precede the import's actual terminal errno. */
+  }
 }
 static void wait_for(uint32_t kind, uint32_t reply_token) {
   while (!drain(kind, reply_token, -1)) { }
