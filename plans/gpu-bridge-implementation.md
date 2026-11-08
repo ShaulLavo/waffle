@@ -755,3 +755,11 @@ submissions may settle once, but their first settled result cannot change or ret
 The peer's own first terminal snapshot now starts its frozen history, before the final audit.
 Permanent negative controls cover all five gaps. Existing genuine captures supply these fields;
 no observation was added to an old record and no timing miss was discarded.
+
+## G3 unread payload-storage checkpoint, November 8, 2026
+
+Status: Approved and in progress. This bounded test-only unit exercises actual compiled C
+payload-producing calls until unread fixed storage closes that connection with resource reason
+3. The original unrelated compiled green peer must keep presenting through closure and physical
+retirement. Pending-token and reply-ring saturation remain separate later work. Production,
+existing fixture modes, topology, targets and hardware qualification are unchanged.
