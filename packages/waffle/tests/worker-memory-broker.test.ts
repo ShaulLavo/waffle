@@ -188,6 +188,26 @@ async function fixture(
   }
 }
 
+test("broker launches create only requested workers and disposal stops every child", async () => {
+  const f = await fixture(false);
+  try {
+    await Bun.sleep(10);
+    expect(f.workers).toHaveLength(1);
+    await f.spawn();
+    await Bun.sleep(10);
+    expect(f.workers).toHaveLength(2);
+    expect(f.workers.every((worker) => worker.request !== undefined)).toBe(true);
+    expect(f.workers[0]).not.toBe(f.workers[1]);
+    await f.broker.dispose();
+    expect(f.workers.every((worker) => worker.stopped !== undefined)).toBe(true);
+    await Bun.sleep(10);
+    expect(f.workers).toHaveLength(2);
+    expect(f.errors).toEqual([]);
+  } finally {
+    await f.dispose();
+  }
+});
+
 test("child bootstrap receives its root's charged registry even without inherited metadata", async () => {
   const f = await fixture(false);
   try {

@@ -755,3 +755,185 @@ submissions may settle once, but their first settled result cannot change or ret
 The peer's own first terminal snapshot now starts its frozen history, before the final audit.
 Permanent negative controls cover all five gaps. Existing genuine captures supply these fields;
 no observation was added to an old record and no timing miss was discarded.
+
+## G3 unread payload-storage checkpoint, November 8, 2026
+
+Status: Approved. The normal compiled browser gate adds opt-in C payload-slot pressure.
+One original C incarnation obtains native shader compilation results serially and leaves their
+payload handles unread. It drains replies 1 through 63, retains committed success 64, then
+requests result 65. The original native allocation selects resource reason 3 with
+`Payload credit exhausted`. Only 512 payload bytes occupy the fixed 64 slots, far below the
+arena byte limit. Native operations stay bounded and the reply ring has room for the original
+success and the final closed record. Pending-token and reply-ring saturation remain separate work.
+
+The guest's first stdin checkpoint releases only after the original native publication of
+success 64. Its next release waits for actual resource closure. The C guest then drains that
+same success, closed reason 3, and errno `-48` in order. Its real payload import rejects the
+previously held handle with `-48`. Normal and repeated close both succeed. Transparent import
+observation retains original returns and thrown objects. Native compilation observation returns
+the original promise, without reading its result or changing its settlement.
+
+A compiled native positive control runs before measurement in the same runtime and service
+realm. The original unrelated green C peer keeps its PID, guest token, grant, owner, device and
+presenter through local resource closure and physical guest stop. Five actual screenshot brackets
+require new native presents and newly started and completed queue work within service times.
+First-ready identities, cumulative event prefixes, immutable completed blobs, earliest terminal
+cutoffs for every owner, genuine pending settlements and all physical Worker stops are checked.
+The one permitted final C drain advances only the original reply tail. It cannot publish or
+restart native work. Conservative consumed-backing debt remains separate from physical memory
+reclamation. Permanent positive and intended-reason negative controls run in default unit
+coverage, and the ordinary compiled runner discovers the case without a selector.
+
+The first actual compiled path confirmed the source prediction before the full validator was
+built. A fresh observation after the import and native scalar additions passed the strict
+validator at 1.82 ms maximum service slice and 65.485 ms peer gap. These are software-adapter
+observations against unchanged 8 ms and 100 ms targets, with `hardwareQualified: false`.
+All earlier misses remain evidence. Production, prior fixture modes, topology, protected async
+fixtures, workflow, ABI, schema, generator, workload defaults, deadlines, versions and budgets
+are unchanged. This bounded proof does not complete G3, G0.3, G4 or physical iPhone acceptance.
+
+### Retained bounded CI non-reproductions
+
+PR 407 source `38ea1010`, run `42431953158`, failed the existing malformed case's combined
+compiled-failure and physical-retirement assertion. The original packet identifies neither the
+mode nor the failed conjunct. Two exact-source all-mode targeted Chromium passes did not
+reproduce it, and the normal hosted rerun passed. Temporary diagnostics were removed without
+changing an assertion, workload or clock. The same combined assertion later recurred on earlier
+main `25fa61df`, run `42434304501`, job `128589892791`, artifact `13599530613`. This second
+packet likewise supplies no mode, result or new cause. Both occurrences remain under the same
+bounded non-reproduction, and the reporting parent owns its normal rerun. No new diagnostic or
+capture is part of payload work. The full disposition is
+`/work/reports/wave-20261106/waffle-features/gpu/g3-malformed-ci-42431953158/RESULT.md`.
+Recent hosted malformed peer gaps of 112.675 and 118.91 ms remain **not-met**.
+
+PR 406 source `60627243`, run `42432667106`, completed all GPU stages before a separate relay
+pending-write assertion failed. Two unchanged-source relay matrices passed, followed by the
+normal green hosted rerun. The cause remains unproved. No assertion or clock changed. The
+bounded report is `/work/reports/wave-20261108/ios-suites/waffle-relay-pending-write/REPORT.md`.
+PR 406 is merged at `2ca11deb`, and main run `42435162688` is fully green. It is not a dependency
+blocker. Neither historical failure is represented as a proven production fix.
+
+
+### Payload review and CI corrections
+
+The independent PR 409 review found four acceptance gaps. The corrected validator keeps every
+original owner and open attempt, correlates all native observations with that cohort, checks
+every queue settlement and its clock, and bounds new payload events to their first service
+observation interval. The first terminal snapshot fixes each owner's compilation-start,
+allocation and publication histories through the final audit. Existing pending promises may
+settle once. Repeated terminal notifications and the original C reply-tail drain remain valid.
+Permanent controls cover the review's mutations, and both unchanged complete captures still
+validate. Their 8 ms and 100 ms targets and software-only qualification labels are unchanged.
+
+The ready PR's parallel run `42439022309`, job `128604234997`, passed its payload case but later
+failed the quota teardown check. Its complete retained protocol shows the original peer reached
+exactly 240 frames, all seven quota phases completed, both guests exited successfully and every
+Worker stopped. The only runtime error called that exact cap an exceeded workload. The fixture
+now stops feeding quietly at 240 and still reports an error above 240. The cap, 20 ms input
+interval, C workload, fresh native screenshot brackets, deadlines and empty-error teardown check
+are unchanged. A deterministic helper test fails at the old exact-cap branch and passes after
+the correction. A case requiring progress after the cap still fails its original progress check.
+The failed packet is retained unchanged; this correction does not reclassify it as passing.
+
+
+The coordinator's review correction also has a permanent reply-tail regression control. The
+native retirement checks retain their step-by-step baseline, so the one permitted C drain
+cannot later roll back. Payload history freezes at every terminal transition and therefore
+stays fixed from the first one onward. No original ring or completed-history check is removed.
+
+An unrelated full-unit attempt on the corrected source reported terminal-deadholder.test.ts:609
+as an early worker exit instead of its final held-section message. Two unchanged focused
+invocations of that exact test passed. Its cause remains unproved, the failed log stays in the
+coordinator report, and no terminal source, assertion or clock changed for this observation.
+
+
+### Service-failure reply consumption checkpoint
+
+PR 409 run 42443198652 at a47b0da7 passed payload and same-grant quota proofs, then the old
+service-failure oracle rejected late old publication. The complete protocol retains the actual
+result. Its sole control difference between service stop and the original guests' physical
+stops is the peer reply tail moving from 7,064 to the already-published head 7,088. No reply head,
+command counter, status, terminal reason, grant or arena changes. RecordRing.readInto deliberately
+consumes committed replies before reporting terminal status; the original C failure and all
+physical guest stops remain required. Calling that read a publication was an oracle error.
+
+The corrected check allows only aligned, forward consumer-tail movement inside the bytes that
+were already committed, including unsigned counter rollover. Every other old-control field
+stays exact. Once the original guests physically stop, their resulting full controls become the
+exact recovery baseline; no later read, write or revival is allowed. Permanent controls distinguish
+that admitted drain from tail regression, over-consumption, unaligned counters, head or command
+changes and post-stop movement. The unchanged captured result passes this correction, with its
+7.005 ms service slice and 126.105 ms peer gap preserved as not-met against 8 ms and 100 ms.
+Hardware qualification remains false. No production, workload, clock or local GPU capture changes.
+
+
+The service-drain review found two additional boundaries. The allowance now joins each original
+grant to its original guest Worker and requires that consumer to still be physically running
+at the stopped checkpoint; already-stopped consumers keep exact controls. Reply tails use the
+collector's actual signed int32 representation, validated before u32 distance arithmetic, while
+heads remain u32. A permanent control uses the real RecordRing and exact collector expressions
+across rollover, including ring padding, rather than an unsigned synthetic tail. Additional
+controls reject consumption after physical stop and invalid signed counters. Both unchanged
+genuine service captures still validate, and both incomplete historical captures still reject.
+
+A native stop receipt at that first checkpoint also establishes the consumer cutoff. A
+contradictory still-running flag cannot permit later consumption once that receipt exists.
+Permanent controls cover both forms of recorded physical death.
+
+### Close-out diagnostics and compiled closed replies
+
+The November 8 owner goals make this lane optional. Finish existing PR 409 and return the
+reviewed diagnostic source to the PR 408 parent, then clean up and stop. No broader GPU,
+hardware or Vite work starts.
+
+PR 408 run 42441796889 retained a held-import throw without its original exception value.
+Exit 137 and empty cleanup errors do not identify that exception. The old record still fails
+its unchanged termination classifier. Failure-only test observation now retains bounded scalar
+metadata for future unclassified throws and separates original import errors from return
+observation failures. It preserves the original thrown value and recognized unwind shape.
+Own-descriptor checks and prototype-free output address the independent review findings.
+No production or acceptance correction is inferred from the historical packet.
+
+PR 409 run 42445933048 passed payload, quota, service-failure and disposal before regrant
+rejected the common C decoder's unexpected closed reply. The runtime correctly drains committed
+reply bytes before a later completions import returns its terminal error. The common fixture
+now validates that closed record and waits for the actual subsequent import result. It never
+synthesizes an errno from the close reason or accepts another record after closed. Compiled CPU
+regressions cover all terminal reasons, normal wait sites, invalid records and unchanged normal
+modes. The old failed regrant record remains rejected. A fresh normal fixture is required because
+this test-only C input changed. No browser assertion, production code, workload, clock, topology
+or 8 ms and 100 ms target changed.
+
+Independent review found that ordinary CI skipped the new closed-reply regressions. The
+existing compiled-fixture step now selects their file and suite using the same verified
+producer output. Its JUnit guard requires all 83 cases without skips or failures, separately
+from the unchanged historical and async requirements. Permanent guard controls reject missing,
+empty, short, skipped and failed suites. No additional producer or browser job is added.
+
+Run 42448959356 attempt 1 passed payload, then its final quota screenshot bracket lacked
+fresh peer progress. The retained 253 total presents are consistent with one control frame,
+twelve quota frames and the peer's unchanged 240-frame cap. The exhausted counter was not
+printed, so this is a source/count deduction, not a proven scheduling cause. The assertion
+remains blocking. No cap, deadline or workload changed.
+
+The one normal unchanged retry failed an earlier payload comparison. Its complete result
+shows two views of the same live command ring disagree only on the writer bit, zero in the
+owner view and one in the original-open view. The observer sampled that shared ring twice
+while its guest could acquire the writer. A checkpoint now reads each original backing once
+and reuses that exact sample across owner and attempt. Every later checkpoint samples afresh.
+The atomic reader is unchanged; no atomic multi-field or cross-ring snapshot is claimed.
+Deterministic shared-buffer controls reproduce the old two-read disagreement and require
+per-checkpoint reuse, fresh later reads and distinct original ring identities. The validator
+and failed historical record remain unchanged. No new local GPU capture is part of this fix.
+
+Run 42451410847 at 90f4474a passed payload, quota, service failure, disposal, regrant and
+admission, then failed malformed acceptance. The old nesting expectation still required
+`GPU_UNEXPECTED kind=12` and `unexpected-completion -28`, which described the common C
+decoder defect already corrected above. It now requires the published heavy command followed
+by exactly one actual `completions -64` failure, with no unexpected-completion output. The
+old broken-decoder output is rejected, not retained as a compatibility alternative. Original
+parser reason, same-peer progress, physical stop, authority and retirement checks remain.
+A real compiled CPU control covers reason 2 in the heavy scope wait alongside reason 4.
+The existing CI gate requires all 84 closed-reply tests and its historical and async suites.
+No C source, producer, production code, clock or workload changed in this follow-up. The
+historical pre-decoder malformed failures remain unresolved; this is not a claim to fix them.

@@ -192,7 +192,7 @@ function proof(kind = "header") {
       snapshot: ledger(2, 2),
       text:
         kind === "nesting"
-          ? "GPU_FAIRNESS_PUBLISHED\nGPU_UNEXPECTED kind=12 token=0\nGPU_FAIL stage=unexpected-completion status=-28\n"
+          ? "GPU_FAIRNESS_PUBLISHED\nGPU_FAIL stage=completions status=-64\n"
           : "GPU_FAIL stage=fairness-append status=-64\n",
     },
     peerExit: {
@@ -541,11 +541,26 @@ test("the compiled victim must report its exact parser-failure stage and errno",
   }
 });
 
-test("nested parser closure requires the exact compiled closed-completion observation", () => {
-  for (const old of ["GPU_FAIRNESS_PUBLISHED", "kind=12", "token=0", "status=-28"]) {
+test("nested parser closure requires the actual terminal import after the valid closed reply", () => {
+  for (const old of ["GPU_FAIRNESS_PUBLISHED", "stage=completions", "status=-64"]) {
     rejects(
       (value) => {
         value.stop.text = value.stop.text.replace(old, "unrelated");
+      },
+      /compiled victim failure/,
+      "nesting",
+    );
+  }
+  for (const text of [
+    "GPU_FAIRNESS_PUBLISHED\nGPU_UNEXPECTED kind=12 token=0\nGPU_FAIL stage=unexpected-completion status=-28\n",
+    "GPU_FAIRNESS_PUBLISHED\nGPU_UNEXPECTED kind=12 token=0\nGPU_FAIL stage=completions status=-64\n",
+    "GPU_FAIRNESS_PUBLISHED\nGPU_FAIL stage=completions status=-48\n",
+    "GPU_FAIRNESS_PUBLISHED\nGPU_FAIL stage=completions status=-64 trailing\n",
+    "GPU_FAIRNESS_PUBLISHED\nGPU_FAIL stage=completions status=-64\nGPU_FAIL stage=device status=-64\n",
+  ]) {
+    rejects(
+      (value) => {
+        value.stop.text = text;
       },
       /compiled victim failure/,
       "nesting",
