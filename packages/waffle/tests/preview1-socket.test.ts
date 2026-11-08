@@ -240,6 +240,40 @@ test("empty socket bindings never activate the network owner", async () => {
   expect(loads).toBe(0);
 });
 
+function socketReadable(socket: Socket) {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      socket.on("data", (chunk) =>
+        controller.enqueue(typeof chunk === "string" ? bytes(chunk) : new Uint8Array(chunk)),
+      );
+      socket.on("end", () => controller.close());
+      socket.on("error", (error) => controller.error(error));
+    },
+    cancel() {
+      socket.destroy();
+    },
+  });
+}
+
+test("direct connector detaches its readable callbacks on cancellation", async () => {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("missing test address");
+  const socket = createConnection({ host: "127.0.0.1", port: address.port });
+  try {
+    await new Promise<void>((resolve) => socket.once("connect", resolve));
+    const readable = socketReadable(socket);
+    await readable.cancel();
+    expect(socket.listenerCount("data")).toBe(0);
+    expect(socket.listenerCount("end")).toBe(0);
+    expect(socket.listenerCount("error")).toBe(0);
+  } finally {
+    socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 const directConnector: NetConnect = (target, signal) =>
   new Promise((resolve, reject) => {
     const socket = createConnection({ host: "127.0.0.1", port: target.port, allowHalfOpen: true });
@@ -249,18 +283,7 @@ const directConnector: NetConnect = (target, signal) =>
     socket.once("error", reject);
     socket.once("connect", () =>
       resolve({
-        readable: new ReadableStream<Uint8Array>({
-          start(controller) {
-            socket.on("data", (chunk) =>
-              controller.enqueue(typeof chunk === "string" ? bytes(chunk) : new Uint8Array(chunk)),
-            );
-            socket.on("end", () => controller.close());
-            socket.on("error", (error) => controller.error(error));
-          },
-          cancel() {
-            socket.destroy();
-          },
-        }),
+        readable: socketReadable(socket),
         writable: new WritableStream<Uint8Array>({
           write(chunk) {
             return new Promise<void>((resolve, reject) =>
