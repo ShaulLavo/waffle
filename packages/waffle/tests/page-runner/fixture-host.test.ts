@@ -274,7 +274,6 @@ test("noncooperative callback keeps immutable debt and scratch until test-owned 
     }
   }));
 
-
 test("saved fixture diagnostics preserve simultaneous startup and close aggregate causes", () =>
   withRoot(async (root) => {
     let closes = 0;
@@ -300,7 +299,9 @@ test("saved fixture diagnostics preserve simultaneous startup and close aggregat
     const path = join(root, "causes.json");
     const result = await runPageSuite(
       a,
-      () => { throw new Error("Unexpected driver"); },
+      () => {
+        throw new Error("Unexpected driver");
+      },
       { scratchRoot: root, resultPath: path, port: "ephemeral" },
     );
     expect(result.exit).toBe(2);
@@ -318,14 +319,18 @@ for (const stage of ["callback", "serialization"]) {
       };
       const route = {
         path: "/idle",
-        get: async () => stage === "callback" ? fail() : { toJSON: fail },
+        get: async () => (stage === "callback" ? fail() : { toJSON: fail }),
       };
       const d = new RouteDriver(async (driver) => {
-        expect((await fetch(driver.origin + "/idle", { headers: driver.headers() })).status).toBe(409);
+        expect((await fetch(driver.origin + "/idle", { headers: driver.headers() })).status).toBe(
+          409,
+        );
       });
       const path = join(root, "observation.json");
       const result = await runPageSuite(adapter([route]), () => d, {
-        scratchRoot: root, resultPath: path, port: "ephemeral",
+        scratchRoot: root,
+        resultPath: path,
+        port: "ephemeral",
       });
       expect(result.exit).toBe(2);
       const saved = await Bun.file(path).text();

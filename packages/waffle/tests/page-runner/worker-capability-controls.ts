@@ -211,9 +211,13 @@ export async function workerCapabilityControl(
     result.cleanup.storage.status !== "not-created",
     "Worker declaration bypassed durable cleanup",
   );
-  const passing = ["success", "nested-script", "delayed-ack", "controller-mismatch", "absent-current"].includes(
-    mode,
-  );
+  const passing = [
+    "success",
+    "nested-script",
+    "delayed-ack",
+    "controller-mismatch",
+    "absent-current",
+  ].includes(mode);
   assert(
     passing ? result.exit === 0 : result.exit !== 0,
     `Unexpected ${mode} result: ${JSON.stringify(result)}`,

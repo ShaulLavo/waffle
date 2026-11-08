@@ -129,7 +129,6 @@ test("aggregate page failures preserve primary and cleanup causes", async () => 
   expect(text.indexOf("PRIMARY")).toBeLessThan(text.indexOf("UNREGISTER"));
 });
 
-
 test("nested worker scope allowance belongs only to the exact declared script", async () => {
   const collector = new Collector("r", ["c"], ["c"], {
     listIds: () => ["c"],
