@@ -9,7 +9,10 @@ class FakeWorker {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   stopped = 0;
-  constructor(readonly url: string, readonly options?: WorkerOptions) {
+  constructor(
+    readonly url: string,
+    readonly options?: WorkerOptions,
+  ) {
     if (rejectConstruction) throw new Error("construction rejected");
     workers.push(this);
   }
