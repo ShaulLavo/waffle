@@ -140,7 +140,7 @@ try {
   const file = join(directory, "control.browser.test.ts");
   await writeFile(
     file,
-    'import { test } from "vitest"; test("not executed by the HTTP fake", () => { throw new Error("must not execute"); });',
+    'import { test } from "vitest"; test("not executed by the HTTP fake", () => { throw new Error("must not execute"); }, 20000);',
   );
   host = createFrameworkControl(
     {
@@ -151,7 +151,7 @@ try {
           file,
           fullName: "not executed by the HTTP fake",
           sourceKey: "control:1",
-          timeoutMs: 15000,
+          timeoutMs: 20000,
           retries: 0,
         },
       ],

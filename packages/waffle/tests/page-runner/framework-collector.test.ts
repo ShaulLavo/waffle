@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { FrameworkCollector } from "./framework-collector.js";
 import { dispatchReports } from "./collector-fetch.js";
-import type { ExpectedCase, FrameworkEvent, FrameworkTask, FrameworkUpdate } from "./framework-types.js";
+import type {
+  ExpectedCase,
+  FrameworkEvent,
+  FrameworkTask,
+  FrameworkUpdate,
+} from "./framework-types.js";
 
 function fixture(timeouts: readonly number[] = [15000]) {
   const expected: ExpectedCase[] = timeouts.map((timeoutMs, index) => ({
@@ -51,13 +56,15 @@ function fixture(timeouts: readonly number[] = [15000]) {
       retries: 0,
     },
   ];
-  const actual = suites.concat(expected.map((item, index): FrameworkTask => ({
-    ...item,
-    id: index === 0 ? "actual-case" : `actual-case-${index}`,
-    parentId: "actual-suite",
-    type: "test",
-    mode: "run",
-  })));
+  const actual = suites.concat(
+    expected.map((item, index): FrameworkTask => ({
+      ...item,
+      id: index === 0 ? "actual-case" : `actual-case-${index}`,
+      parentId: "actual-suite",
+      type: "test",
+      mode: "run",
+    })),
+  );
   collector.viewportConsumed = true;
   return { collector, actual, send, top, tester };
 }
@@ -211,7 +218,9 @@ test("collection retains mixed declared clocks by identity, not inventory order"
   expect(collector.collection).toEqual(actual);
   expect(collector.cases.map((item) => item.expected.timeoutMs)).toEqual([15000, 20000, 1000]);
   expect(collector.cases.map((item) => item.actualId)).toEqual([
-    "actual-case", "actual-case-1", "actual-case-2",
+    "actual-case",
+    "actual-case-1",
+    "actual-case-2",
   ]);
   expect(collector.cases.every((item) => !item.started)).toBe(true);
 });
@@ -223,7 +232,9 @@ for (const { expectedMs, actualMs } of [
 ]) {
   test(`collection rejects declared ${expectedMs} ms versus actual ${actualMs} ms`, () => {
     const { collector, actual, send } = fixture([expectedMs]);
-    const tasks = actual.map((item) => item.type === "test" ? { ...item, timeoutMs: actualMs } : item);
+    const tasks = actual.map((item) =>
+      item.type === "test" ? { ...item, timeoutMs: actualMs } : item,
+    );
     expect(() => send({ kind: "collected", tasks })).toThrow("Original case options changed");
     expect(collector.collection).toEqual([]);
     expect(collector.cases[0]?.actualId).toBeNull();
@@ -233,9 +244,34 @@ for (const { expectedMs, actualMs } of [
 
 test("collection rejects clocks swapped between independently named cases", () => {
   const { collector, actual, send } = fixture([20000, 15000]);
-  const tasks = actual.map((item) => item.type === "test"
-    ? { ...item, timeoutMs: item.timeoutMs === 20000 ? 15000 : 20000 } : item);
+  const tasks = actual.map((item) =>
+    item.type === "test" ? { ...item, timeoutMs: item.timeoutMs === 20000 ? 15000 : 20000 } : item,
+  );
   expect(() => send({ kind: "collected", tasks })).toThrow("Original case options changed");
   expect(collector.collection).toEqual([]);
   expect(collector.cases.every((item) => item.actualId === null && !item.started)).toBe(true);
+});
+
+for (const timeoutMs of [undefined, null, "20000", false, 0, -1, NaN, Infinity, -Infinity]) {
+  test(`collection rejects invalid actual clock ${String(timeoutMs)} without binding`, () => {
+    const { collector, actual, send } = fixture([20000]);
+    const item = actual.find((item) => item.type === "test");
+    if (!item) throw new Error("Missing fixture case");
+    Reflect.set(item, "timeoutMs", timeoutMs);
+    expect(() => send({ kind: "collected", tasks: actual })).toThrow();
+    expect(collector.collection).toEqual([]);
+    expect(collector.cases[0]?.actualId).toBeNull();
+    expect(collector.cases[0]?.started).toBe(false);
+    expect(collector.events).toEqual([]);
+  });
+}
+
+test("nondefault actual clocks still require run mode and zero retries", () => {
+  for (const changed of [{ mode: "skip" }, { retries: 1 }]) {
+    const { collector, actual, send } = fixture([20000]);
+    const tasks = actual.map((item) => (item.type === "test" ? { ...item, ...changed } : item));
+    expect(() => send({ kind: "collected", tasks })).toThrow("Original case options changed");
+    expect(collector.collection).toEqual([]);
+    expect(collector.cases[0]?.actualId).toBeNull();
+  }
 });

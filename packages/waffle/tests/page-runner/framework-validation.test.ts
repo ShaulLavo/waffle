@@ -6,13 +6,15 @@ function options(timeoutMs: number): FrameworkOptions {
   return {
     suite: "case-clock-control",
     native: { udid: "not-launched" },
-    expected: [{
-      file: "original.ts",
-      fullName: "required",
-      sourceKey: "original:1",
-      timeoutMs,
-      retries: 0,
-    }],
+    expected: [
+      {
+        file: "original.ts",
+        fullName: "required",
+        sourceKey: "original:1",
+        timeoutMs,
+        retries: 0,
+      },
+    ],
     scope: { kind: "root-selection", command: "test:browser", files: ["original.ts"] },
     resultPath: "/unused-case-clock-control.json",
   };
@@ -33,7 +35,9 @@ for (const timeoutMs of [undefined, null, "20000", false, 0, -1, NaN, Infinity, 
     const item = input.expected[0];
     if (!item) throw new Error("Missing fixture case");
     Reflect.set(item, "timeoutMs", timeoutMs);
-    expect(() => validateFrameworkOptions(input)).toThrow("Invalid expected case identity or original clock");
+    expect(() => validateFrameworkOptions(input)).toThrow(
+      "Invalid expected case identity or original clock",
+    );
   });
 }
 
@@ -42,5 +46,7 @@ test("nondefault clocks do not permit retries", () => {
   const item = input.expected[0];
   if (!item) throw new Error("Missing fixture case");
   Reflect.set(item, "retries", 1);
-  expect(() => validateFrameworkOptions(input)).toThrow("Invalid expected case identity or original clock");
+  expect(() => validateFrameworkOptions(input)).toThrow(
+    "Invalid expected case identity or original clock",
+  );
 });
