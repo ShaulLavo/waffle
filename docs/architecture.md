@@ -702,6 +702,14 @@ queues a separate acknowledgement. A reentrant native map fill may finish its ad
 that boundary. Neither reentry nor a microtask acknowledges retirement inline. Cleanup errors
 remain retained.
 
+Visible canvases belong to the service surface lifetime, not the carrying grant. The page sends
+an ordered private ID registration before the first canvas transfer, without activating a service
+when a surface is merely created. A retired grant may deliver that registered canvas under service
+admission, but cannot inspect or reopen its old command controls. Surface disposal invalidates the
+identity immediately and retains any in-flight attachment until its returned native context is
+cleaned up. Pending and visible entries share the existing bounded owner; no disposed-ID history
+or new shared allocation supplies authority. Cleanup failures retain their actual resources.
+
 Reader quiescence does not prove that aliases or native memory have been reclaimed. Before
 transferring a graphics-bearing launch, the broker binds its exact ticket to the original grant.
 The ticket retains all that launch's control allocation charges conservatively. The original

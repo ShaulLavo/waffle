@@ -217,6 +217,7 @@ test("reentrant open setup belongs to the original sealed grant before queued se
       return { transferFromImageBitmap() {} };
     },
   } as unknown as OffscreenCanvas;
+  rig.service.receive({ type: "surface-register", id: 1 });
   rig.service.receive({ type: "open", grant: 1, open: original, surfaces: [{ id: 1, canvas }] });
   expect(entered).toBe(true);
   expect(rig.replies).toEqual([]);
@@ -254,6 +255,7 @@ for (const mode of ["close", "revoke", "dispose"] as const) {
     const canvas = {
       getContext: () => ({ transferFromImageBitmap() {} }),
     } as unknown as OffscreenCanvas;
+    rig.service.receive({ type: "surface-register", id: 7 });
     rig.service.receive({ type: "open", grant: 1, open: original, surfaces: [{ id: 7, canvas }] });
     rig.service.receive({ type: "open", grant: 2, open: peer, surfaces: [] });
     write(original, "instance.create_surface", {
@@ -366,3 +368,32 @@ for (const mode of ["release", "retirement"] as const) {
     });
   }
 }
+
+
+test("late first surface transfer remains available to a fresh grant after original retirement", async () => {
+  const rig = taskService({});
+  const original = open(),
+    fresh = open(2);
+  let attached = 0;
+  const canvas = {
+    getContext() {
+      attached++;
+      return { transferFromImageBitmap() {} };
+    },
+  } as unknown as OffscreenCanvas;
+  rig.service.receive({ type: "surface-register", id: 1 });
+  rig.service.receive({ type: "revoke", grant: 1 });
+  await rig.turn();
+  await rig.turn();
+  expect(rig.replies).toEqual([{ type: "retired", grant: 1 }]);
+  const buffers = [original.control, original.commands, original.replies, original.arena];
+  const frozen = buffers.map((buffer) => Array.from(new Uint8Array(buffer)));
+  rig.service.receive({ type: "open", grant: 1, open: original, surfaces: [{ id: 1, canvas }] });
+  expect(rig.service.snapshot()).toMatchObject({ connections: 0, devicesLive: 0, heapBytes: 0 });
+  rig.service.receive({ type: "open", grant: 2, open: fresh, surfaces: [{ id: 1 }] });
+  expect(Atomics.load(new Int32Array(fresh.control), 0)).toBe(1);
+  expect(attached).toBe(1);
+  expect(rig.service.snapshot()).toMatchObject({ connections: 1, surfaces: 1 });
+  expect(buffers.map((buffer) => Array.from(new Uint8Array(buffer)))).toEqual(frozen);
+  expect(rig.replies.filter((reply) => reply.type === "retired" && reply.grant === 1)).toHaveLength(1);
+});

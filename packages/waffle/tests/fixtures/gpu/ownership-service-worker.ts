@@ -507,12 +507,12 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
   const owner = owners.find((entry) => entry.connection.completions === this.completions);
   if (!owner) throw new Error("Ownership surface observer missing");
   owner.surfaces = this;
-  life("configure", owner, presenterId(this.visible.get(owner.open.surfaces[0]!.id)?.presenter));
+  life("configure", owner, presenterId(this.surfaceOwner.resource(owner.open.surfaces[0]!.id)?.presenter));
   return result;
 };
 function releasedPresenter(connection: SurfaceConnection, release: () => void) {
   const owner = owners.find((entry) => entry.connection.completions === connection.completions);
-  const visible = owner ? connection.visible.get(owner.open.surfaces[0]!.id) : undefined;
+  const visible = owner ? connection.surfaceOwner.resource(owner.open.surfaces[0]!.id) : undefined;
   const presenter = visible?.presenter;
   const result = release();
   if (!owner || !presenter || presenter.owner !== connection) return result;
@@ -639,7 +639,7 @@ function createService(access: ServiceAccess) {
 
 function ownerSnapshot(owner: Owner, capture: typeof ringSnapshot) {
   const connection = owner.connection;
-  const visible = owner.surfaces?.visible.get(owner.open.surfaces[0]!.id);
+  const visible = owner.surfaces?.surfaceOwner.resource(owner.open.surfaces[0]!.id);
   const presenter = visible?.presenter?.owner === owner.surfaces ? visible?.presenter : undefined;
   return {
     id: owner.id,

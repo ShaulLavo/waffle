@@ -459,6 +459,7 @@ function acquiredTexture(connection: GpuConnection, surfaces: GpuSurfaces, frame
     create(connection, "texture", 5, textureDescriptor(22, 17));
     return connection.replay.handles.native(h(5), "texture");
   }
+  surfaces.register(1);
   surfaces.attach([{ id: 1, canvas: new OffscreenCanvas(4, 4) }]);
   const target = surfaces.connection([1], connection.completions);
   Object.assign(connection.replay.target, { surfaces: target });
