@@ -738,3 +738,11 @@ fields to it. Final canonical gate results are recorded in the coordinator repor
 Production code, existing fixture modes, workflows and budgets are unchanged. This is
 one single-worker functional proof, not complete G3 or hardware qualification;
 `hardwareQualified` remains false.
+
+The first ready-PR hosted run passed this quota proof, then exposed an older active-disposal
+observer race. Its service posted the selected grant's retirement reply before the genuine
+held native callback published its late audit. The page could terminate that Worker first,
+leaving the audit absent. The test observer now withholds that reply until the existing late
+callback and shared-audit publication finish. Production disposal and retirement are unchanged.
+The original failure remains in the coordinator report. The targeted compiled disposal case
+passes with both real audits and all seven physical Worker stops; no assertion or bound changed.
