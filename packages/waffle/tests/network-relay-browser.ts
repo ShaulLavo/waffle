@@ -209,8 +209,12 @@ async function preview1(
     filesystem.port.close();
   }
 }
-async function idle(): Promise<void> {
-  const response = await fetch("/relay-idle");
+export interface RelayBrowserEnvironment {
+  readonly fetchFixture: (path: "/relay-config" | "/relay-idle") => Promise<Response>;
+}
+const directEnvironment: RelayBrowserEnvironment = { fetchFixture: (path) => fetch(path) };
+async function idle(environment: RelayBrowserEnvironment): Promise<void> {
+  const response = await environment.fetchFixture("/relay-idle");
   check(response.ok, "Fixture cleanup acknowledgement failed");
   const report: unknown = await response.json();
   check(
@@ -223,7 +227,11 @@ async function idle(): Promise<void> {
     "Fixture retained target sockets or admissions",
   );
 }
-async function mode(config: RelayBrowserConfig, selected: RelayMode): Promise<RelayModeResult> {
+async function mode(
+  config: RelayBrowserConfig,
+  selected: RelayMode,
+  environment: RelayBrowserEnvironment,
+): Promise<RelayModeResult> {
   const probe: RelayProbe = {
     constructed: 0,
     ready: 0,
@@ -263,13 +271,13 @@ async function mode(config: RelayBrowserConfig, selected: RelayMode): Promise<Re
     if (selected === "bad-certificate" && typeof WebTransport === "function")
       requireCertificateRejection(probe);
     check(fallbackMs < 15000, "Carrier fallback exceeded its bounded deadline");
-    await idle();
+    await idle(environment);
     const denied = await preview1(runtime, relay.connect, config.targets.denied, false, 2);
     check(
       (await helperTraffic(runtime, relay.connect, config, "runtime")) === 0,
       "Runtime disposal fixture did not keep its live socket",
     );
-    await idle();
+    await idle(environment);
     result = {
       mode: selected,
       carrier,
@@ -291,7 +299,7 @@ async function mode(config: RelayBrowserConfig, selected: RelayMode): Promise<Re
     failures.push(
       ...receipts.flatMap((receipt) => (receipt.status === "rejected" ? [receipt.reason] : [])),
     );
-    await idle();
+    await idle(environment);
     if (probe.closed !== probe.constructed)
       failures.push(new Error("WebTransport session survived client disposal"));
     console.log(
@@ -347,12 +355,14 @@ function target(value: unknown): { host: string; port: number } {
   );
   return { host: value.host, port: value.port };
 }
-export async function networkRelayBrowserCases(): Promise<RelayModeResult[]> {
+export async function networkRelayBrowserCases(
+  environment: RelayBrowserEnvironment = directEnvironment,
+): Promise<RelayModeResult[]> {
   check(
     crossOriginIsolated && typeof SharedArrayBuffer === "function",
     "Relay worker fixtures require COOP/COEP",
   );
-  const response = await fetch("/relay-config");
+  const response = await environment.fetchFixture("/relay-config");
   check(response.ok, "Relay fixture config is missing");
   const config = configuration(await response.json());
   const modes: RelayMode[] = config.native
@@ -362,7 +372,7 @@ export async function networkRelayBrowserCases(): Promise<RelayModeResult[]> {
   const failures: unknown[] = [];
   for (const selected of modes) {
     try {
-      const result = await mode(config, selected);
+      const result = await mode(config, selected, environment);
       results.push(result);
       console.log(JSON.stringify({ relayMode: result }));
     } catch (error) {

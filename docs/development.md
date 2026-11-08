@@ -123,6 +123,8 @@ It checks a worker's Bun-shaped `NetHost` calls and the shipped Preview 1 worker
 NETWORK_SCRATCH_ROOT=/work/tmp bun packages/waffle/tests/network-browser-runner.ts chromium firefox webkit
 ```
 
+[Run the complete network command](network-browser-runner.md) describes owned phase evidence, interruption, the native entry, and its actual WebTransport qualification gate.
+
 For just the relay cases, run `packages/waffle/tests/network-relay-browser-runner.ts` with the same engines.
 Use a physically short scratch root, at most 36 bytes, so browser profile socket paths fit.
 The Chromium and Firefox cases require the relay package's declared optional native peers.

@@ -12,7 +12,7 @@ import {
 } from "./driver.js";
 /** Local runner regressions only. Not an iOS adapter or a replacement storage body. */
 export class PlaywrightDriver implements Driver {
-  private lifecycle = new BrowserRunnerLifecycle();
+  private lifecycle = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private readonly pages = new Map<string, Page>();
