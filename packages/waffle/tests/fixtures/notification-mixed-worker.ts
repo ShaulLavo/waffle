@@ -12,6 +12,7 @@ import { attachPipeEndpoint, type PipeEndpointHandle } from "../../proc/pipes.js
 import { WorkerProcessClient, type WorkerProcessTransport } from "../../proc/worker-client.js";
 
 export interface MixedRequest {
+  phase: "idle" | "sources";
   filesystem: FilesystemConnection;
   notifications: NotificationConnection;
   ring: SharedArrayBuffer;
@@ -65,7 +66,26 @@ function waitParked(
   return { stage: `${stage}-parked`, before, after: current, turns };
 }
 
-async function run(request: MixedRequest): Promise<void> {
+function checkIdleWaits(set: NotificationWaitSet, gate: Int32Array): void {
+  // No producer has run in this Worker, so no relay publication can still be in flight.
+  const quiet = set.sample();
+  globalThis.postMessage({ stage: "quiet" });
+  check(Atomics.wait(gate, 0, 0, 1500) !== "timed-out", "quiet barrier missing");
+  Atomics.store(gate, 0, 0);
+  const start = performance.now();
+  check(set.wait(quiet, start + 70) === "timed-out", "quiet wait did not expire");
+  check(performance.now() >= start + 60, "quiet wait returned early");
+  const beforeRevoke = set.sample();
+  globalThis.postMessage({ stage: "revoke" });
+  check(
+    set.wait(beforeRevoke, Infinity) === "closed",
+    "external revoke did not wake blocked guest",
+  );
+}
+
+async function run(
+  request: MixedRequest,
+): Promise<{ done: true; reports: unknown[]; turns: number }> {
   const fs = new FilesystemClient(request.filesystem);
   const descriptors = new DescriptorTable();
   const network = new NetHost(request.ring, () => {});
@@ -101,6 +121,10 @@ async function run(request: MixedRequest): Promise<void> {
     });
     const set = await scope.arm({ network, process, subscriptions: [{ kind: 0, id: fd }] });
     check(set.covered, "common pipe must be covered");
+    if (request.phase === "idle") {
+      checkIdleWaits(set, request.gate);
+      return { done: true, reports: [], turns: 0 };
+    }
     fs.call("watchRead", [watch]);
     const reports: unknown[] = [];
     reports.push(waitForSource(set, "filesystem", request.gate, "fs-service"));
@@ -149,17 +173,16 @@ async function run(request: MixedRequest): Promise<void> {
     }
     check(performance.now() - deadline < 60, "absolute deadline restarted after an early wake");
     check(turns < 8, "quiet wait repeatedly rescanned");
-    const quiet = set.sample();
-    const start = performance.now();
-    check(set.wait(quiet, start + 70) === "timed-out", "quiet wait did not expire");
-    check(performance.now() >= start + 60, "quiet wait returned early");
-    const beforeRevoke = set.sample();
-    globalThis.postMessage({ stage: "revoke", reports, turns });
+    globalThis.postMessage({ stage: "deadline-complete" });
+    check(Atomics.wait(request.gate, 0, 0, 1500) !== "timed-out", "deadline source missing");
+    Atomics.store(request.gate, 0, 0);
+    network.poll(0);
+    const deadlinePayload = network.read(handle, 8);
     check(
-      set.wait(beforeRevoke, Infinity) === "closed",
-      "external revoke did not wake blocked guest",
+      deadlinePayload instanceof Uint8Array && deadlinePayload[0] === 82,
+      "deadline source payload missing",
     );
-    globalThis.postMessage({ done: true, reports, turns });
+    return { done: true, reports, turns };
   } finally {
     scope.dispose();
     network.dispose();
@@ -170,7 +193,8 @@ async function run(request: MixedRequest): Promise<void> {
 }
 
 globalThis.onmessage = ({ data }: MessageEvent<MixedRequest>) => {
-  void run(data).catch((error) =>
-    globalThis.postMessage({ error: String(error), stack: error.stack }),
+  void run(data).then(
+    (result) => globalThis.postMessage(result),
+    (error) => globalThis.postMessage({ error: String(error), stack: error.stack }),
   );
 };
