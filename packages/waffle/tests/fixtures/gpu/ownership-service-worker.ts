@@ -12,8 +12,10 @@ import { FencedCommandReader } from "../../../browser/gpu/command-reader.js";
 import { SurfaceConnection } from "../../../browser/gpu/surfaces.js";
 import type {
   GpuServiceRequest,
+  GpuServiceReply,
   ServiceBootstrap,
 } from "../../../browser/display/service-protocol.js";
+import { disposalRetirementReady } from "./disposal-retirement.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 import { ringSnapshot, captureRingSnapshots } from "./ring-snapshot.js";
 
@@ -620,6 +622,7 @@ function createService(access: ServiceAccess) {
         for (const attempt of attempts)
           if (attempt.message.grant === message.grant) attempt.retiredAck = true;
       }
+      observeDisposalRetirement(message);
       if (
         message.type === "retired" &&
         selection?.mode === "disposal" &&
@@ -904,9 +907,9 @@ function writeDisposalAudit(slot: number, name: string) {
   Atomics.store(new Int32Array(disposalAudit, slot * 1048576, 1), 0, bytes.length);
 }
 
-function observeDisposalRetirement(message: GpuServiceRequest) {
-  if (message.type !== "revoke" || selection?.mode !== "disposal") return;
-  if (!owners.some((owner) => selected(owner) && owner.open.grant === message.grant)) return;
+function observeDisposalRetirement(message: GpuServiceRequest | GpuServiceReply) {
+  if (selection?.mode !== "disposal" || released) return;
+  if (!disposalRetirementReady(message, owners, owners.find(selected)?.open.grant)) return;
   writeDisposalAudit(0, "retired");
   released = true;
   gate.resolve();
