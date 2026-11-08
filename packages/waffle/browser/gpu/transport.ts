@@ -229,7 +229,8 @@ export class LogicalReader {
       return { kind: "terminal", reason: this.#terminalReason };
     }
   }
-  dispose(): void {
+  dispose(reason?: number): void {
+    this.#terminalReason ??= reason;
     this.#assembly?.release();
     this.#assembly = undefined;
     this.#scratch = undefined;

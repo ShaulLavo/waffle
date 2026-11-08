@@ -60,8 +60,8 @@ export class GpuConnection {
       this.completions.terminate(GPU_TERMINAL.service);
       throw error;
     }
-    this.completions.onRetire(() => {
-      this.#reader.dispose();
+    this.completions.onRetire((reason) => {
+      this.#reader.dispose(reason);
       this.replay.dispose();
     });
   }

@@ -42,7 +42,7 @@ interface Ready {
   readonly directory: PayloadDirectory | undefined;
   readonly payloads: (Payload | undefined)[];
   readonly generations: number[];
-  retire: (() => void) | undefined;
+  retire: ((reason: number) => void) | undefined;
 }
 
 /** Service realm owner. Retiring replaces the entire ring/arena-bearing state. */
@@ -108,13 +108,13 @@ export class CompletionOwner {
       ? this.#state.payloads.reduce((sum, slot) => sum + (slot?.length ?? 0), 0)
       : 0;
   }
-  onRetire(retire: () => void): void {
+  onRetire(retire: (reason: number) => void): void {
     return accessed<void>(this.#lifetime.access, undefined, () => this.#onRetire(retire));
   }
-  #onRetire(retire: () => void): void {
+  #onRetire(retire: (reason: number) => void): void {
     this.#synchronize();
     if (this.#state.kind === "terminal") {
-      retire();
+      retire(this.#state.reason);
       return;
     }
     if (this.#state.retire) throw new Error("Completion owner already has retirement cleanup");
@@ -297,17 +297,18 @@ export class CompletionOwner {
     state.generations.length = 0;
     const retire = state.retire;
     state.retire = undefined;
-    retire?.();
+    retire?.(selected);
   }
   abandon(): void {
     const state = this.#state;
     if (state.kind === "terminal") return;
-    this.#state = { kind: "terminal", reason: GPU_TERMINAL.service };
+    const reason = this.#closedReason ?? GPU_TERMINAL.service;
+    this.#state = { kind: "terminal", reason };
     for (const pending of state.pending.values()) pending.cancel();
     state.pending.clear();
     const retire = state.retire;
     state.retire = undefined;
-    retire?.();
+    retire?.(reason);
   }
   #synchronize(): void {
     if (this.#state.kind === "terminal") return;
