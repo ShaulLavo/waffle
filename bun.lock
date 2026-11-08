@@ -207,7 +207,7 @@
     },
     "packages/waffle": {
       "name": "waffle",
-      "version": "0.0.113",
+      "version": "0.0.114",
       "devDependencies": {
         "@astrojs/compiler-rs": "0.5.2",
         "@types/bun": "^1.4.3",
@@ -230,7 +230,7 @@
     },
     "packages/waffle-relay": {
       "name": "waffle-relay",
-      "version": "0.0.113",
+      "version": "0.0.114",
       "bin": {
         "waffle-relay": "./dist/cli.js",
       },
