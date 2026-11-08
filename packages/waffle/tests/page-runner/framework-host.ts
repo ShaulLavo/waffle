@@ -125,7 +125,7 @@ export class PageFrameworkHost implements FrameworkHost {
       (major === undefined || major < 22 || (major === 22 && (minor ?? 0) < 18))
     )
       throw new Error("Framework host requires Node 22.18 or later");
-    this.collector = new FrameworkCollector(options.expected);
+    this.collector = new FrameworkCollector(options.expected, (detail) => this.cancel(detail));
     this.queue = new FrameworkQueue(
       this.consumers,
       () => this.check(),
@@ -154,6 +154,10 @@ export class PageFrameworkHost implements FrameworkHost {
   private fault(category: string, detail: string): void {
     if (this.finalized) return;
     this.collector.fail(category, detail);
+    this.cancel(detail);
+  }
+  private cancel(detail: string): void {
+    this.collector.cancel();
     if (!this.controller.signal.aborted) this.controller.abort(new Error(detail));
   }
   private check(): void {
@@ -165,8 +169,7 @@ export class PageFrameworkHost implements FrameworkHost {
       performance.now() - this.fileStarted >= 600000
     )
       this.fault("file-timeout", "Absolute 600000 ms file deadline");
-    if (this.collector.failures.length)
-      this.controller.abort(new Error("Sticky framework host failure"));
+    if (this.collector.failures.length) this.cancel("Sticky framework host failure");
     this.controller.signal.throwIfAborted();
     if (!this.running || this.finalizing) throw new Error("Framework host is not executing");
   }

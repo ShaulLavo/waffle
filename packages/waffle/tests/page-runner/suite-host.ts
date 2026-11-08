@@ -137,7 +137,7 @@ async function fixtureResponse(
   collector.admitFixture(token, doc, application.declaration.caseId);
   return new Response(encoded, { headers: { ...headers, "Content-Type": "application/json" } });
 }
-function retirementCommand(collector: Collector, url: URL): boolean {
+function retirementCommand(collector: Collector, url: URL): ReturnType<Collector["reply"]> {
   const state = collector.documents.find(
     (item) => item.doc !== null && item.doc === url.searchParams.get("doc"),
   );
@@ -147,7 +147,7 @@ function retirementCommand(collector: Collector, url: URL): boolean {
     url.searchParams.get("doc") !== state.doc
   )
     throw new Error("Unbound retirement poll");
-  return state.retiring;
+  return collector.reply(state.retiring);
 }
 export type RunOptions = {
   resultPath: string;
@@ -349,6 +349,7 @@ export async function runPageSuite<R>(
   };
   const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
+    collector.cancel();
     application?.revoke("execution stopped");
     consumers.revoke();
     collector.abandon("execution stopped");

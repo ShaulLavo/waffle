@@ -1,3 +1,4 @@
+import { reportingFailure, type HostReply } from "./report-control.js";
 import { reportSequence } from "./report-stream.js";
 import {
   exactInventory,
@@ -131,6 +132,14 @@ export class Collector {
       throw new ObservationClosed("Fixture capability is not the live exact case document");
     return state;
   }
+  private cancelled = false;
+  private readonly reportingFailed = new Set<DocumentState>();
+  cancel(): void {
+    this.cancelled = true;
+  }
+  reply(retire = false): HostReply {
+    return this.cancelled ? { kind: "cancelled" } : { kind: "live", retire };
+  }
   active: DocumentState | undefined;
   runComplete = false;
   remaining: StorageEntry[] | null = null;
@@ -145,6 +154,7 @@ export class Collector {
     for (const id of required) this.outcomes[id] = { status: "pending" };
   }
   fail(category: string, detail: string, state = this.active): void {
+    this.cancel();
     const document =
       state?.owner.kind === "peer"
         ? {
@@ -335,15 +345,26 @@ export class Collector {
     this.fail("protocol", detail, state);
     throw new ReportRejected(detail);
   }
-  heartbeat(value: unknown): void {
+  heartbeat(value: unknown): HostReply {
     const state =
       record(value) && value.run === this.run
         ? this.documents.find((item) => item.doc !== null && item.doc === value.doc)
         : undefined;
-    if (state?.cutoff !== null && state?.cutoff !== undefined) return;
-    if (!record(value) || value.kind !== "heartbeat" || !state || !this.owns(state))
+    if (state?.cutoff !== null && state?.cutoff !== undefined) return { kind: "cancelled" };
+    if (
+      !record(value) ||
+      value.kind !== "heartbeat" ||
+      !reportingFailure(value.failure) ||
+      !state ||
+      !this.owns(state)
+    )
       this.violation("Unbound heartbeat", state);
     state.heartbeatAt = this.now();
+    if (value.failure !== null && !this.reportingFailed.has(state)) {
+      this.reportingFailed.add(state);
+      this.fail("page-reporting", value.failure, state);
+    }
+    return this.reply();
   }
   receive(value: unknown): { ackedThrough: number } {
     const known =

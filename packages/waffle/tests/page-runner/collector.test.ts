@@ -166,7 +166,7 @@ test("an old report cannot enter the next group and old heartbeats cannot extend
     "root",
   );
   f.clock(5000);
-  f.collector.heartbeat({ run: "run", doc: "document", kind: "heartbeat" });
+  f.collector.heartbeat({ run: "run", doc: "document", kind: "heartbeat", failure: null });
   expect(next.heartbeatAt).toBe(0);
   expect(() => f.send({ kind: "error", message: "after cutoff" })).toThrow("cutoff");
   expect(f.collector.failures).toHaveLength(0);
@@ -188,7 +188,7 @@ test("fake monotonic clock separates live-heartbeat case deadline and reporting 
     budgets = { ...storageBudgets, run: 300_000 };
   f.send({ kind: "case-start", caseId: first });
   f.clock(59_000);
-  f.collector.heartbeat({ run: "run", doc: "document", kind: "heartbeat" });
+  f.collector.heartbeat({ run: "run", doc: "document", kind: "heartbeat", failure: null });
   expect(f.collector.deadline(budgets, 0)).toBeNull();
   f.clock(60_000);
   expect(f.collector.deadline(budgets, 0)).toBe("case-hang");
@@ -196,7 +196,7 @@ test("fake monotonic clock separates live-heartbeat case deadline and reporting 
   terminal.clock(10_000);
   expect(terminal.collector.deadline(budgets, 0)).toBe("heartbeat-lost");
   terminal.clock(90_000);
-  terminal.collector.heartbeat({ run: "run", doc: "document", kind: "heartbeat" });
+  terminal.collector.heartbeat({ run: "run", doc: "document", kind: "heartbeat", failure: null });
   expect(terminal.collector.deadline(budgets, 0)).toBe("group-timeout");
   terminal.clock(300_000);
   expect(terminal.collector.deadline(budgets, 0)).toBe("run-timeout");

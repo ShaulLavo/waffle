@@ -131,7 +131,12 @@ class PeerDocument {
     const response = await fetch(
       `${url.origin}/retire?run=${String(this.config.run)}&doc=${this.reporter.observation.doc}`,
     );
-    if ((await response.json()) !== true) return;
+    const command = await this.reporter.hostReply(response);
+    if (command.kind === "cancelled") {
+      clearInterval(this.retiring);
+      return;
+    }
+    if (!command.retire) return;
     clearInterval(this.retiring);
     await this.reporter.send({ kind: "retire-ready" });
   }

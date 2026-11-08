@@ -10,7 +10,9 @@ const mode = FRAMEWORK_DOM_MODE;
 const clock = globalThis.setTimeout.bind(globalThis);
 const sleep = (ms: number) => new Promise((resolve) => clock(resolve, ms));
 function failed(error: unknown): void {
-  observer.error(String(error), "synthetic-fixture");
+  void observer
+    .error(() => ({ error: String(error), source: "synthetic-fixture" }))
+    .catch(() => {});
 }
 async function viewport(width: number, height: number, concurrent = false): Promise<void> {
   const iframeId = "synthetic-retained-iframe";
@@ -89,9 +91,9 @@ async function tester(): Promise<void> {
     timeoutMs: FRAMEWORK_DOM_TIMEOUT,
     retries: 0,
   } as const;
-  await observer.collected([task]);
+  await observer.collected(() => [task]);
   await operations();
-  observer.taskStarted(task.id);
+  await observer.taskStarted(() => task.id);
   const host = document.createElement("div");
   host.style.cssText = "width:480px;height:160px;box-sizing:border-box;padding:8px";
   document.body.append(host);
@@ -99,11 +101,11 @@ async function tester(): Promise<void> {
     throw new Error("Synthetic host was shrunk to the tester width");
   await sleep(100);
   const update = { id: task.id, state: "pass", errors: [], hooks: null, retryCount: 0 } as const;
-  observer.taskUpdate([update]);
-  observer.taskUpdate([update]);
-  observer.caseSettled([update]);
-  observer.executionFlushed();
-  observer.testerCleanupSettled();
+  await observer.taskUpdate(() => [update]);
+  await observer.taskUpdate(() => [update]);
+  await observer.caseSettled(() => [update]);
+  await observer.executionFlushed();
+  await observer.testerCleanupSettled();
   parent.postMessage("matched-cleanup-response", location.origin);
 }
 async function top(): Promise<void> {
@@ -123,9 +125,12 @@ addEventListener("message", (event) => {
   if (event.data === "execute-synthetic" && window !== parent) void tester().catch(failed);
   if (event.data !== "matched-cleanup-response" || window !== parent) return;
   if (mode === "missing-cleanup") return;
-  observer.cleanupResponseReceived();
-  void observer.waitForRetirement().then(() => {
-    Reflect.set(window, "__frameworkControlEnd", true);
-  });
+  void observer
+    .cleanupResponseReceived()
+    .then(() => observer.waitForRetirement())
+    .then(() => {
+      Reflect.set(window, "__frameworkControlEnd", true);
+    })
+    .catch(failed);
 });
 if (window === parent) void top().catch(failed);

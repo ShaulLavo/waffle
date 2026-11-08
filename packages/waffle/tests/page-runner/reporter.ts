@@ -13,9 +13,11 @@ export class Reporter extends OrderedReporter<Body> {
   async readyForRetirement(): Promise<void> {
     const url = `/retire?run=${encodeURIComponent(this.run)}&doc=${encodeURIComponent(this.observation.doc)}`;
     while (!this.observation.retired) {
+      this.signal.throwIfAborted();
       const response = await this.post(url, { signal: this.clock.abortTimeout(2000) });
-      const command: unknown = await response.json();
-      if (command === true) {
+      const command = await this.hostReply(response);
+      this.signal.throwIfAborted();
+      if (command.kind === "live" && command.retire) {
         await this.send({ kind: "retire-ready" });
         return;
       }
