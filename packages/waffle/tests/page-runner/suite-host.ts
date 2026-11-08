@@ -372,7 +372,6 @@ export async function runPageSuite<R>(
     const stopped =
       producerStopped &&
       hostStopped &&
-      !hostCases.some((host) => host.uncontainedPageWork()) &&
       applicationCleanup.fixture.status !== "unconfirmed" &&
       applicationCleanup.callbacks.status !== "unconfirmed" &&
       driverCleanup.session.status !== "unconfirmed" &&

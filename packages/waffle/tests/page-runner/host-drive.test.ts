@@ -1362,7 +1362,6 @@ test(
   }),
 );
 
-
 test("heartbeat liveness probe shares the teardown deadline and joins its command", async () => {
   const limits = {
     hello: 1000,
@@ -1388,16 +1387,18 @@ test("heartbeat liveness probe shares the teardown deadline and joins its comman
     return stopped.promise;
   };
   try {
-    await f.host.drive(async (host) => {
-      const revoked = Promise.withResolvers<void>();
-      const abort = () => {
-        revokedAt = performance.now();
-        revoked.resolve();
-      };
-      host.signal.addEventListener("abort", abort, { once: true });
-      await revoked.promise;
-      return null;
-    }).catch(() => {});
+    await f.host
+      .drive(async (host) => {
+        const revoked = Promise.withResolvers<void>();
+        const abort = () => {
+          revokedAt = performance.now();
+          revoked.resolve();
+        };
+        host.signal.addEventListener("abort", abort, { once: true });
+        await revoked.promise;
+        return null;
+      })
+      .catch(() => {});
     expect(revokedAt).toBeGreaterThan(0);
     expect(probeAbortedAt).toBeGreaterThanOrEqual(revokedAt);
     expect(probeAbortedAt - f.host.teardownDeadline()).toBeLessThan(150);
@@ -1410,3 +1411,45 @@ test("heartbeat liveness probe shares the teardown deadline and joins its comman
     expect(await f.consumers.join(100)).toBe(true);
   }
 }, 10_000);
+
+test(
+  "settled asset work permits final cleanup without erasing its teardown failure",
+  withHostFixture(async (root) => {
+    const driver = new HostDriver();
+    const entered = Promise.withResolvers<void>();
+    let request: Promise<Response> | undefined;
+    const a = adapter(async (host) => {
+      host.holdAsset("/programs/test-guest.wasm", async (held) => {
+        await held.continue();
+        entered.resolve();
+        await Bun.sleep(200);
+      });
+      request = fetch(`${driver.origin}/programs/test-guest.wasm`, {
+        headers: { Referer: driver.currentURL },
+      });
+      expect(await (await request).text()).toBe("guest");
+      await entered.promise;
+      return true;
+    });
+    a.assets = async () => ({
+      "/programs/test-guest.wasm": new Blob(["guest"], { type: "application/wasm" }),
+    });
+    a.budgets = () => ({ ...budgets, teardown: 40 });
+    try {
+      const result = await runPageSuite(a, () => driver, {
+        ...options(root),
+        cleanupTimeoutMs: 1000,
+      });
+      expect(result.exit).toBe(2);
+      expect(result.runComplete).toBe(false);
+      expect(result.failures.some((failure) => failure.category === "host-work-unconfirmed")).toBe(
+        true,
+      );
+      expect(driver.navigations).toBe(2);
+      expect(result.cleanup.server.status).toBe("confirmed");
+      expect(result.cleanup.scratch.status).toBe("confirmed");
+    } finally {
+      await request?.catch(() => {});
+    }
+  }),
+);
