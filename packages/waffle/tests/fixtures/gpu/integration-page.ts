@@ -11,6 +11,7 @@ import { createWorkerPipeCodec } from "../../../proc/worker-pipes.js";
 import type { RuntimeDisplay, DisplaySurface } from "../../../browser/display/owner.js";
 import type { GraphicsGrant, GraphicsOpen } from "../../../browser/display/protocol.js";
 import { pressureBurst } from "./qualification-contract.js";
+import { ownershipPeerInput } from "./peer-input.js";
 
 interface Run {
   pid: number;
@@ -436,10 +437,13 @@ export function ownershipPeer(pump: boolean) {
   peerPump = setInterval(() => {
     const text = drainTriangle(1, false).text;
     const count = text.split("GPU_WAIT_STDIN stage=fairness-peer frame=").length - 1;
-    if (count <= fed) return;
-    if (count >= 240) {
-      errors.push("Ownership peer exceeded its bounded continuous workload");
+    const action = ownershipPeerInput(count, fed);
+    if (action === "wait") return;
+    if (action !== "feed") {
+      if (action === "exceeded")
+        errors.push("Ownership peer exceeded its bounded continuous workload");
       clearInterval(peerPump);
+      peerPump = undefined;
       return;
     }
     fed = count;

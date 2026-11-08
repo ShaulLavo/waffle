@@ -80,16 +80,16 @@ function payloadEvents(serial: number) {
     at,
   });
   const compilations = Array.from({ length: count }, (_, index) => ({
-    ...subject(3 + index * 3, index === 64 ? 205 : 135 + index / 100),
+    ...subject(3 + index * 3, index === 64 ? 205 : 145 + index / 100),
     call: index + 1,
     settled: "fulfilled",
-    settledAt: index === 64 ? 205.001 : 135 + index / 100 + 0.001,
+    settledAt: index === 64 ? 205.001 : 145 + index / 100 + 0.001,
     pending: 1,
   }));
   const allocations = Array.from({ length: count }, (_, index) => ({
     ...subject(
       4 + index * 3 + Number(index === 64),
-      index === 64 ? 205.02 : 135 + index / 100 + 0.002,
+      index === 64 ? 205.02 : 145 + index / 100 + 0.002,
     ),
     length: 8,
     readyBefore: index,
@@ -103,7 +103,7 @@ function payloadEvents(serial: number) {
     failure: index === 64 ? "Payload credit exhausted" : null,
   }));
   const publications = Array.from({ length: Math.min(count, 64) }, (_, index) => ({
-    ...subject(5 + index * 3, 135 + index / 100 + 0.003),
+    ...subject(5 + index * 3, 145 + index / 100 + 0.003),
     token: 100 + index,
     status: 0,
     handle: index + 1,
@@ -611,3 +611,155 @@ for (const method of methods)
       for (const service of services(value)) delete service.fairness.native[`22:${method}`];
     }, /native rendering coverage missing/);
   });
+
+for (const key of ["peerExit", "final"] as const) {
+  const terminalService = (value: ReturnType<typeof fixture>) =>
+    key === "final" ? value.final : value.peerExit.service;
+  test(`terminal payload compilations cannot restart at ${key}`, () => {
+    rejects((value) => {
+      const service = terminalService(value);
+      service.payloadPressure.compilations.push({
+        ...service.payloadPressure.compilations.at(-1)!,
+        order: 10000,
+        call: 66,
+        at: service.at - 2,
+        settledAt: service.at - 1,
+      });
+    }, /late retired payload work/);
+  });
+  test(`terminal payload allocations cannot restart at ${key}`, () => {
+    rejects((value) => {
+      const service = terminalService(value);
+      service.payloadPressure.allocations.push({
+        ...service.payloadPressure.allocations.at(-1)!,
+        order: 10000,
+        at: service.at - 1,
+      });
+    }, /late retired payload work/);
+  });
+  test(`terminal payload publications cannot restart at ${key}`, () => {
+    rejects((value) => {
+      const service = terminalService(value);
+      service.payloadPressure.publications.push({
+        ...service.payloadPressure.publications.at(-1)!,
+        order: 10000,
+        token: 999,
+        at: service.at - 1,
+        published: false,
+      });
+    }, /late retired payload work/);
+  });
+}
+test("retired owners and original attempts cannot disappear", () => {
+  rejects((value) => {
+    value.final.owners = value.final.owners.filter((owner) => owner.id !== 11);
+    value.final.attempts = value.final.attempts.filter((attempt) => attempt.owner !== 11);
+    value.final.fairness.native["11:draw"]!.count++;
+  }, /owner cohort history changed/);
+});
+test("original open attempt identity cannot be rewritten", () => {
+  rejects((value) => {
+    value.final.attempts[0]!.connection++;
+  }, /open attempt identity changed/);
+});
+for (const key of ["native", "records"] as const)
+  test(`unowned ${key} aggregate is rejected`, () => {
+    rejects((value) => {
+      Reflect.set(value.final.fairness[key], "0:draw", { count: 1, totalMs: 1, maxMs: 1 });
+    }, /unowned native observation/);
+  });
+for (const key of ["queue", "slices", "presents", "blobs"] as const)
+  test(`unowned ${key} entry is rejected`, () => {
+    rejects((value) => {
+      value.final.fairness[key][0]!.connection = 0;
+    }, /unowned native observation/);
+  });
+test("every queue settlement must use a real discriminant", () => {
+  rejects((value) => {
+    for (const service of services(value)) {
+      const settlement = { kind: service.serial <= 3 ? "pending" : "invented", at: 61 };
+      service.fairness.queue.push({ connection: 11, start: 10, settlement });
+    }
+  }, /invalid native queue settlement/);
+});
+test("every queue settlement must follow its own native submission", () => {
+  rejects((value) => {
+    for (const service of services(value)) service.fairness.queue[0]!.settlement.at = 0;
+  }, /native queue settlement outside submission interval/);
+});
+test("new native submissions cannot lie beyond their observing snapshot", () => {
+  rejects((value) => {
+    value.uncovered.fairness.queue[0]!.start = 21;
+  }, /native submission after snapshot/);
+});
+test("settlements cannot lie beyond their observing snapshot", () => {
+  rejects((value) => {
+    value.uncovered.fairness.queue[0]!.settlement.at = 21;
+  }, /native queue settlement outside submission interval/);
+});
+test("new payload events cannot predate their first observation interval", () => {
+  rejects((value) => {
+    for (const service of services(value)) {
+      const payload = service.payloadPressure;
+      if (!payload.compilations.length) continue;
+      payload.compilations[0]!.at = 0;
+      payload.compilations[0]!.settledAt = 0;
+      payload.allocations[0]!.at = 0;
+      payload.publications[0]!.at = 0;
+    }
+  }, /payload event outside observation interval/);
+});
+test("new payload events cannot follow their observing snapshot", () => {
+  rejects((value) => {
+    value.committed.payloadPressure.compilations[0]!.at = 161;
+  }, /payload event outside observation interval/);
+});
+test("publication clocks must follow allocation clocks", () => {
+  rejects((value) => {
+    for (const service of services(value)) {
+      const event = service.payloadPressure.publications[0];
+      if (event) event.at = 145.001;
+    }
+  }, /payload event clock order changed/);
+});
+test("native settlement clocks must follow the original call", () => {
+  rejects((value) => {
+    for (const service of services(value)) {
+      const event = service.payloadPressure.compilations[0];
+      if (event) event.settledAt = event.at - 1;
+    }
+  }, /payload settlement outside call interval/);
+});
+
+test("an observed pending compilation may settle in its actual later interval", () => {
+  const value = fixture();
+  const pending = { ...value.committed.payloadPressure.compilations[0]!, at: 139 };
+  Reflect.set(pending, "settled", "pending");
+  Reflect.set(pending, "settledAt", null);
+  value.firstReady.payloadPressure.compilations.push(pending);
+  for (const service of services(value).filter((service) => service.serial > 7))
+    service.payloadPressure.compilations[0]!.at = 139;
+  expect(validatePayloadPressureResult(value).hardwareQualified).toBe(false);
+});
+test("a pending compilation cannot settle before the last pending observation", () => {
+  rejects((value) => {
+    const pending = { ...value.committed.payloadPressure.compilations[0]!, at: 139 };
+    Reflect.set(pending, "settled", "pending");
+    Reflect.set(pending, "settledAt", null);
+    value.firstReady.payloadPressure.compilations.push(pending);
+    for (const service of services(value).filter((service) => service.serial > 7)) {
+      service.payloadPressure.compilations[0]!.at = 139;
+      service.payloadPressure.compilations[0]!.settledAt = 139.5;
+    }
+  }, /settlement predates pending capture/);
+});
+test("repeated original terminal notifications remain allowed", () => {
+  const value = fixture();
+  value.final.payloadPressure.terminations.push({
+    ...value.final.payloadPressure.terminations[0]!,
+    order: 10000,
+    at: 419,
+    terminalBefore: 3,
+  });
+  expect(validatePayloadPressureResult(value).hardwareQualified).toBe(false);
+});

@@ -812,3 +812,25 @@ normal green hosted rerun. The cause remains unproved. No assertion or clock cha
 bounded report is `/work/reports/wave-20261108/ios-suites/waffle-relay-pending-write/REPORT.md`.
 PR 406 is merged at `2ca11deb`, and main run `42435162688` is fully green. It is not a dependency
 blocker. Neither historical failure is represented as a proven production fix.
+
+
+### Payload review and CI corrections
+
+The independent PR 409 review found four acceptance gaps. The corrected validator keeps every
+original owner and open attempt, correlates all native observations with that cohort, checks
+every queue settlement and its clock, and bounds new payload events to their first service
+observation interval. The first terminal snapshot fixes each owner's compilation-start,
+allocation and publication histories through the final audit. Existing pending promises may
+settle once. Repeated terminal notifications and the original C reply-tail drain remain valid.
+Permanent controls cover the review's mutations, and both unchanged complete captures still
+validate. Their 8 ms and 100 ms targets and software-only qualification labels are unchanged.
+
+The ready PR's parallel run `42439022309`, job `128604234997`, passed its payload case but later
+failed the quota teardown check. Its complete retained protocol shows the original peer reached
+exactly 240 frames, all seven quota phases completed, both guests exited successfully and every
+Worker stopped. The only runtime error called that exact cap an exceeded workload. The fixture
+now stops feeding quietly at 240 and still reports an error above 240. The cap, 20 ms input
+interval, C workload, fresh native screenshot brackets, deadlines and empty-error teardown check
+are unchanged. A deterministic helper test fails at the old exact-cap branch and passes after
+the correction. A case requiring progress after the cap still fails its original progress check.
+The failed packet is retained unchanged; this correction does not reclassify it as passing.

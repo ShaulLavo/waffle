@@ -508,6 +508,61 @@ function payloadHistory(before: Record<string, unknown>, after: Record<string, u
     );
   }
 }
+const payloadKinds = ["compilations", "allocations", "publications", "terminations"] as const;
+function payloadTimeline(service: Record<string, unknown>, previous?: Record<string, unknown>) {
+  const captured = pressure(service),
+    before = previous ? pressure(previous) : undefined,
+    at = number(service.at),
+    previousAt = previous ? number(previous.at) : 0;
+  const oldEvents = before ? payloadKinds.flatMap((key) => entries(before[key])) : [];
+  const lastOrder = oldEvents.reduce((last, event) => Math.max(last, integer(event.order)), 0);
+  for (const key of payloadKinds) {
+    const old = before ? entries(before[key]) : [];
+    for (const [index, event] of entries(captured[key]).entries())
+      payloadEvent(service, event, old[index], previousAt, at, lastOrder, key);
+  }
+  const events = payloadKinds.flatMap((key) => entries(captured[key]));
+  events.sort((a, b) => integer(a.order) - integer(b.order));
+  let order = 0,
+    clock = 0;
+  for (const event of events) {
+    proof(integer(event.order) > order, "payload event order duplicated");
+    proof(number(event.at) >= clock, "payload event clock order changed");
+    order = integer(event.order);
+    clock = number(event.at);
+  }
+}
+function payloadEvent(
+  service: Record<string, unknown>,
+  event: Record<string, unknown>,
+  prior: Record<string, unknown> | undefined,
+  previousAt: number,
+  at: number,
+  lastOrder: number,
+  kind: (typeof payloadKinds)[number],
+) {
+  const start = number(event.at);
+  proof(
+    start <= at && (prior !== undefined || start >= previousAt),
+    "payload event outside observation interval",
+  );
+  if (!prior)
+    proof(integer(event.order) > lastOrder, "new payload event order predates observation");
+  subject(event, owner(service, event.owner, "payload observer owner"), at);
+  if (kind !== "compilations") return;
+  proof(
+    event.settled === "pending" || event.settled === "fulfilled" || event.settled === "rejected",
+    "invalid native payload settlement",
+  );
+  if (event.settled === "pending") {
+    proof(event.settledAt === null, "pending payload settlement has a clock");
+    return;
+  }
+  const settledAt = number(event.settledAt);
+  proof(settledAt >= start && settledAt <= at, "payload settlement outside call interval");
+  if (prior?.settled === "pending")
+    proof(settledAt >= previousAt, "native compilation settlement predates pending capture");
+}
 function terminalOwner(native: Record<string, unknown>, reason: number, acknowledged: boolean) {
   proof(
     native.state === "terminal" &&
@@ -561,6 +616,15 @@ function frozen(
     equal(selected(old), selected(next), "late retired native calls");
   }
   unchangedSubmissions(owned(old, "queue"), owned(next, "queue"), number(before.at));
+  const payloadBefore = pressure(before),
+    payloadAfter = pressure(after);
+  const ownedPayload = (source: Record<string, unknown>, key: string) =>
+    entries(source[key]).filter((event) => event.owner === id);
+  for (const key of ["compilations", "allocations", "publications"])
+    proof(
+      ownedPayload(payloadBefore, key).length === ownedPayload(payloadAfter, key).length,
+      "late retired payload work",
+    );
 }
 function controls(
   service: Record<string, unknown>,
@@ -871,10 +935,6 @@ function validateSequence(
       "stale or cross-realm snapshot",
     );
     responses.add(service.responseId);
-    if (previous) {
-      cumulative(previous, service);
-      payloadHistory(previous, service);
-    }
     if (number(service.serial) >= number(record(result.observed).serial))
       proof(
         service.token === result.token && service.mode === "admission" && service.armed === false,
@@ -887,6 +947,13 @@ function validateSequence(
         new Set(natives.map((native) => native.id)).size === natives.length,
       "owner cohort replaced or duplicated",
     );
+    nativeCohort(service, previous);
+    nativeActivity(service);
+    if (previous) {
+      cumulative(previous, service);
+      payloadHistory(previous, service);
+    }
+    payloadTimeline(service, previous);
     for (const native of natives)
       validateNativeHistory(service, native, identities, retiredAt, victim, terminal, drained);
     if (number(service.serial) >= number(record(result.observed).serial))
@@ -928,5 +995,57 @@ function validateNativeHistory(
   if (native.state !== "terminal") return;
   const reason = native.id === victim.id ? 3 : 1;
   if (native.id !== victim.id) retired(native, reason);
-  retiredAt.set(native.id, service);
+  if (!before) retiredAt.set(native.id, service);
+}
+
+function nativeCohort(service: Record<string, unknown>, previous?: Record<string, unknown>) {
+  if (!previous) return;
+  prefix(
+    entries(previous.owners).map((native) => native.id),
+    entries(service.owners).map((native) => native.id),
+    "owner cohort history changed",
+  );
+  const attempts = entries(service.attempts);
+  for (const [index, attempt] of entries(previous.attempts).entries())
+    equal(openIdentity(attempt), openIdentity(attempts[index]!), "open attempt identity changed");
+}
+function openIdentity(attempt: Record<string, unknown>) {
+  const identity = { ...attempt };
+  for (const key of ["status", "reason", "arenaTerminal", "retiredAck", "commands", "replies"])
+    delete identity[key];
+  return identity;
+}
+function nativeActivity(service: Record<string, unknown>) {
+  const ids = new Set(entries(service.owners).map((native) => native.id)),
+    prefixes = new Set(Array.from(ids, String)),
+    fairness = record(service.fairness),
+    at = number(service.at);
+  for (const key of ["native", "records"])
+    proof(
+      Object.keys(record(fairness[key])).every(
+        (name) => name.includes(":") && prefixes.has(name.slice(0, name.indexOf(":"))),
+      ),
+      "unowned native observation",
+    );
+  for (const key of ["queue", "slices", "presents", "blobs"])
+    proof(
+      entries(fairness[key]).every((entry) => ids.has(entry.connection)),
+      "unowned native observation",
+    );
+  for (const work of entries(fairness.queue)) {
+    const settlement = record(work.settlement),
+      start = number(work.start);
+    proof(start <= at, "native submission after snapshot");
+    proof(
+      settlement.kind === "pending" ||
+        settlement.kind === "completed" ||
+        settlement.kind === "rejected",
+      "invalid native queue settlement",
+    );
+    if (settlement.kind !== "pending")
+      proof(
+        number(settlement.at) >= start && number(settlement.at) <= at,
+        "native queue settlement outside submission interval",
+      );
+  }
 }
