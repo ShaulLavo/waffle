@@ -327,16 +327,38 @@ function naturalRevocationExit(
     JSON.stringify(events.slice(0, original.length)) !== JSON.stringify(original)
   )
     return false;
-  const call = events.filter((event) => event.call === last.call),
-    phases = call.map((event) => event.phase).join(",");
+  return completeTerminalImports(events, compiled.token);
+}
+function sameImport(entered: Record<string, unknown>, event: Record<string, unknown>) {
   return (
-    ["enter,return", "enter,wait,return"].includes(phases) &&
-    call[0]!.connection === 1 &&
-    call.every((event) => event.name === last.name) &&
-    events.filter(
-      (event) => event.phase === "return" && typeof event.result === "number" && event.result < 0,
-    ).length === 1
+    event.token === entered.token && event.call === entered.call && event.name === entered.name
   );
+}
+function completeTerminalImports(events: readonly Record<string, unknown>[], token: unknown) {
+  let at = 0,
+    call = 0;
+  while (at < events.length) {
+    const entered = events[at++]!;
+    if (
+      entered.phase !== "enter" ||
+      entered.call !== ++call ||
+      entered.token !== token ||
+      (entered.name !== "open" && entered.name !== "append" && entered.name !== "completions") ||
+      (entered.name === "open" ? call !== 1 : entered.connection !== 1)
+    )
+      return false;
+    let returned = events[at++];
+    if (returned?.phase === "wait" && !sameImport(entered, returned)) return false;
+    if (returned?.phase === "wait") returned = events[at++];
+    if (
+      !returned ||
+      returned.phase !== "return" ||
+      !sameImport(entered, returned) ||
+      returned.result !== (at === events.length ? -64 : 0)
+    )
+      return false;
+  }
+  return true;
 }
 function exitProof(
   disposal: Record<string, unknown>,

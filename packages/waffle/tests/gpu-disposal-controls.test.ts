@@ -695,3 +695,44 @@ test("a natural exit still requires the complete matching import and original su
     naturalRevocationExit(value, 0);
   }, "wrong original guest exit or launch grant retirement");
 });
+
+function interveningSuccessfulImport(value: ReturnType<typeof fixture>) {
+  naturalRevocationExit(value, 1);
+  const observed = value.disposal.exits[1]!;
+  const terminal = observed.events.slice(-3);
+  const successful = terminal.map((event) => ({ ...event, result: 0 }));
+  observed.events = observed.events.slice(0, -3).concat(
+    successful,
+    terminal.map((event) => ({ ...event, call: 5 })),
+  );
+}
+test("natural exit accepts a saved checkpoint inside an intervening successful import", () => {
+  const value = fixture();
+  interveningSuccessfulImport(value);
+  value.peerGuest.events = value.disposal.exits[1]!.events.slice(0, -4);
+  expect(validateDisposalResult(value).hardwareQualified).toBe(false);
+});
+for (const mutation of ["throw", "missing-return", "skipped-call", "interleaved-call"])
+  test(`natural disposal exit rejects intervening ${mutation}`, () => {
+    rejects((value) => {
+      interveningSuccessfulImport(value);
+      corruptInterveningHistory(value, mutation);
+    }, "wrong original guest exit or launch grant retirement");
+  });
+function corruptInterveningHistory(value: ReturnType<typeof fixture>, mutation: string) {
+  const events = value.disposal.exits[1]!.events;
+  if (mutation === "throw") {
+    events[8] = { ...events[8]!, phase: "throw" };
+    return;
+  }
+  if (mutation === "missing-return") {
+    events.splice(8, 1);
+    return;
+  }
+  if (mutation === "skipped-call") {
+    for (const event of events.slice(-3)) event.call = 999999;
+    return;
+  }
+  const entered = { ...events.at(-1)!, name: "append", call: 6, phase: "enter", result: 0 };
+  events.splice(-1, 0, entered, { ...entered, phase: "return" });
+}
