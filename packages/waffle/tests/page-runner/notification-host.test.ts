@@ -10,8 +10,6 @@ import { runPageSuite } from "./suite-host.js";
 
 function originalResult() {
   const terminationOrder = [
-    { id: 2, worker: "unused", requests: 0, fenced: false },
-    { id: 3, worker: "unused", requests: 0, fenced: false },
     { id: 0, worker: "helper", requests: 1, fenced: true },
     { id: 1, worker: "guest", requests: 1, fenced: true },
   ];
@@ -212,4 +210,15 @@ test("host checks do not strengthen the original deadline and parked-source asse
     report.after.filesystem++;
   }
   expect(() => checkNotificationResult(actual)).not.toThrow();
+});
+
+test("notification broker results reject an unrequested idle Worker", () => {
+  const actual = originalResult();
+  actual.terminated.terminationOrder.push({
+    id: 2,
+    worker: "unused",
+    requests: 0,
+    fenced: false,
+  });
+  expect(() => checkNotificationResult(actual)).toThrow();
 });

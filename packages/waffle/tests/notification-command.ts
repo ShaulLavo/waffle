@@ -141,20 +141,15 @@ function checkBroker(value: unknown, revoke: boolean, relayFailure: boolean): vo
     throw new Error("Incomplete broker notification result");
   const order: unknown[] = value.terminationOrder;
   if (
-    order.length !== 4 ||
+    order.length !== 2 ||
     !order.every(termination) ||
-    new Set(order.map((event) => event.id)).size !== 4
+    new Set(order.map((event) => event.id)).size !== 2
   )
     throw new Error("Incomplete notification Worker termination order");
-  const processes = order.filter((event) => event.worker !== "unused");
-  const unused = order.filter((event) => event.worker === "unused");
   if (
-    unused.length !== 2 ||
-    unused.some((event) => event.requests !== 0) ||
-    processes.length !== 2 ||
-    processes[0]?.worker !== "helper" ||
-    processes[1]?.worker !== "guest" ||
-    processes.some((event) => event.requests !== 1 || !event.fenced)
+    order[0]?.worker !== "helper" ||
+    order[1]?.worker !== "guest" ||
+    order.some((event) => event.requests !== 1 || !event.fenced)
   )
     throw new Error("Wrong notification Worker termination order");
 }
@@ -166,7 +161,7 @@ function termination(
     counter(value.id) &&
     counter(value.requests) &&
     typeof value.worker === "string" &&
-    ["helper", "guest", "unused"].includes(value.worker) &&
+    ["helper", "guest"].includes(value.worker) &&
     typeof value.fenced === "boolean"
   );
 }
