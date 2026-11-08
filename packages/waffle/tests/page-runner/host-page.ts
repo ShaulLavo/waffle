@@ -16,7 +16,7 @@ type Receiver = {
   transition: { id: string; acknowledgedThrough: number | null } | null;
   prepareTransition(id: string): void;
   phase: "admitting" | "ready" | "driving" | "teardown" | "terminal";
-  verdict(value: unknown): void;
+  verdict(value: unknown, teardownDeadline: number): void;
   task(operation: string, source: string): void;
   allocateDatabase(operation: string, name: string): void;
 };
@@ -46,7 +46,7 @@ function dispatchTask(reporter: Reporter, source: string): Promise<unknown> {
 function receiver(
   reporter: Reporter,
   caseId: string,
-  resolve: (value: HostVerdict) => void,
+  resolve: (value: { body: HostVerdict; deadline: number }) => void,
 ): Receiver {
   const operations = new Set<string>();
   let running = false;
@@ -65,11 +65,12 @@ function receiver(
         })
         .catch(() => {});
     },
-    verdict(value) {
+    verdict(value, teardownDeadline) {
       if (state.phase !== "driving") throw new Error("Duplicate or out-of-phase verdict");
       const accepted = verdict(value);
+      if (!Number.isFinite(teardownDeadline)) throw new Error("Invalid teardown deadline");
       state.phase = "teardown";
-      resolve(accepted);
+      resolve({ body: accepted, deadline: teardownDeadline });
     },
     task(operation, source) {
       startTask(operation, () => dispatchTask(reporter, source));
@@ -104,10 +105,11 @@ async function hook<R>(
   request: R,
   body: HostVerdict,
   reporter: Reporter,
-  ms: number,
+  deadline: number,
 ): Promise<HookOutcome> {
   const clock = reporter.clock;
-  const until = clock.now() + ms;
+  const until = deadline - performance.timeOrigin;
+  const ms = Math.max(0, until - clock.now());
   const timed = Promise.withResolvers<HookOutcome>();
   const timer = clock.timeout(
     () => timed.resolve({ status: "timeout", error: "Page teardown timed out", settled: false }),
@@ -162,19 +164,19 @@ export async function runHostPage<R>(
   reporter: Reporter,
   snapshot: (value: unknown) => unknown,
 ): Promise<void> {
-  const body = Promise.withResolvers<HostVerdict>();
+  const body = Promise.withResolvers<{ body: HostVerdict; deadline: number }>();
   const state = receiver(reporter, config.caseId, body.resolve);
   window.__hostCase = state;
   await reporter.send({ kind: "case-ready", caseId: config.caseId });
   state.phase = "ready";
   const accepted = await body.promise;
   const entering = reporter.send({ kind: "case-teardown", caseId: config.caseId });
-  const teardown = await hook(run, config.request, accepted, reporter, config.teardownMs ?? 60_000);
+  const teardown = await hook(run, config.request, accepted.body, reporter, accepted.deadline);
   state.phase = "terminal";
   await entering;
-  const status = accepted.status === "pass" && teardown.status === "pass" ? "pass" : "fail";
+  const status = accepted.body.status === "pass" && teardown.status === "pass" ? "pass" : "fail";
   const error = [
-    accepted.status === "fail" ? accepted.error : "",
+    accepted.body.status === "fail" ? accepted.body.error : "",
     teardown.status !== "pass" ? teardown.error : "",
   ]
     .filter(Boolean)
@@ -184,7 +186,7 @@ export async function runHostPage<R>(
     caseId: config.caseId,
     status,
     error,
-    result: snapshot({ body: accepted, teardown }),
+    result: snapshot({ body: accepted.body, teardown }),
   });
 }
 

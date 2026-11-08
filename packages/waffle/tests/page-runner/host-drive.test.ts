@@ -217,7 +217,7 @@ for (const late of [false, true]) {
               host.signal.addEventListener(
                 "abort",
                 () => {
-                  timer = setTimeout(release.resolve, 300);
+                  timer = setTimeout(release.resolve, budgets.teardown + 300);
                 },
                 { once: true },
               );
