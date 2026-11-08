@@ -1,3 +1,5 @@
+import { fixtureCapabilityControl, fixtureControlModes } from "./fixture-capability-controls.js";
+import { workerCapabilityControl, workerControlModes } from "./worker-capability-controls.js";
 import { retainedWorkerControl, retainedWorkerControlModes } from "./retained-worker-controls.js";
 import { peerControl, peerControlModes } from "./peer-controls.js";
 import { buildFrameworkBootstrap } from "../../build.js";
@@ -285,6 +287,24 @@ async function engineControls(
   if (engine !== "chromium" && engine !== "webkit")
     throw new Error(`Unsupported control engine ${engine}`);
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  for (const mode of fixtureControlModes.filter(
+    (mode) => !selected || `fixture-capability-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `fixture-capability-${mode}`,
+      () => fixtureCapabilityControl(engine, mode, root),
+      results,
+    );
+  for (const mode of workerControlModes.filter(
+    (mode) => !selected || `worker-capability-${mode}`.includes(selected),
+  ))
+    await checkControl(
+      engine,
+      `worker-capability-${mode}`,
+      () => workerCapabilityControl(engine, mode, root),
+      results,
+    );
   for (const mode of frameworkControlModes.filter(
     (mode) => !selected || `framework-${mode}`.includes(selected),
   ))

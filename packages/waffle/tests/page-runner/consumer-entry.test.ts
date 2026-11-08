@@ -73,7 +73,7 @@ for (const [entry, target] of [
     const inputs = Object.keys(built.metafile.inputs);
     expect(
       inputs.filter((path) =>
-        /playwright|browser-runner-lifecycle|storage-browser|host-storage-control|(?:^|\/)(index|runtime)\.ts$|\/(core|fs|proc|browser|network)\//.test(
+        /playwright|network-relay|native-peer|browser-runner-lifecycle|storage-browser|host-storage-control|(?:^|\/)(index|runtime)\.ts$|\/(core|fs|proc|browser|network)\//.test(
           path,
         ),
       ),
@@ -683,4 +683,100 @@ test("public entries expose authoritative host domain types without widening dri
   };
   expect(await suite.list()).toEqual(["typed-host"]);
   expect(typeof item.drive).toBe("function");
+});
+
+test("public declarations and page context carry domain capabilities only", () => {
+  const a: SuiteAdapter<null> = {
+    ...adapter(),
+    inventory: () => [{ id, label: id, request: () => null }],
+    serviceWorker: { caseId: id, script: "/sw.js" },
+    fixture: {
+      caseId: id,
+      create: () => ({
+        start: async ({ origin, signal }) => [
+          {
+            path: "/config",
+            get: async ({ signal: requestSignal }) => {
+              signal.throwIfAborted();
+              requestSignal.throwIfAborted();
+              return { origin };
+            },
+          },
+        ],
+        close: async () => {},
+      }),
+    },
+  };
+  const page: PageSuite<null> = {
+    list: async () => [id],
+    finish: async (ledger) => ledger.slice(),
+    run: async (_request, allocate, context) => {
+      if (context.serviceWorker) {
+        const registration = await context.serviceWorker.register();
+        context.serviceWorker.controls(registration, navigator.serviceWorker.controller);
+        await context.serviceWorker.unregister(registration);
+      }
+      await context.fetchFixture("/config");
+      await allocate({
+        kind: "service-worker",
+        name: "http://localhost/scope/",
+        clientURL: "http://localhost/scope/client",
+        scriptURL: "http://localhost/sw.js",
+      });
+      return null;
+    },
+  };
+  expect(a.serviceWorker?.caseId).toBe(id);
+  expect(typeof page.run).toBe("function");
+});
+
+test("explicit ephemeral port does not inherit the storage environment port", () =>
+  fixture(async (root) => {
+    const previous = process.env.STORAGE_TEST_PORT;
+    const occupied = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("foreign"),
+    });
+    process.env.STORAGE_TEST_PORT = String(occupied.port);
+    const d = driver();
+    try {
+      const result = await runPageSuite(
+        adapter(),
+        () => d,
+        options(root, { port: "ephemeral", cleanupTimeoutMs: 1000 }),
+      );
+      expect(result.exit).toBe(0);
+      expect(new URL(d.origin).port).not.toBe(String(occupied.port));
+      expect(await (await fetch(`http://127.0.0.1:${occupied.port}`)).text()).toBe("foreign");
+    } finally {
+      await occupied.stop(true);
+      if (previous === undefined) delete process.env.STORAGE_TEST_PORT;
+      else process.env.STORAGE_TEST_PORT = previous;
+    }
+  }));
+test("document tokens and generated worker queries are bound to their exact host URL", async () => {
+  const c = new Collector("r", [id], [id], policy);
+  const f = serveCollector(c, { "/page.js": "", "/sw.js": "" }, undefined, 0);
+  const entry = {
+    kind: "service-worker",
+    name: `${f.origin}/_waffle_owned/r/`,
+    clientURL: `${f.origin}/_waffle_owned/r/client.html?token=t`,
+    scriptURL: `${f.origin}/sw.js?waffle-run=r`,
+  } as const;
+  c.declareWorker(id, entry);
+  c.expect({ id, role: "case", caseIds: [id] }, "t", entry.clientURL, "h");
+  f.configurations.set("t", {});
+  try {
+    expect((await fetch(entry.clientURL)).status).toBe(200);
+    expect((await fetch(`${f.origin}/?token=t`)).status).toBe(404);
+    expect((await fetch(entry.clientURL.replace("token=t", "token=wrong"))).status).toBe(404);
+    expect((await fetch(entry.scriptURL)).status).toBe(200);
+    expect(
+      (await fetch(entry.scriptURL.replace("waffle-run=r", "waffle-run=foreign"))).status,
+    ).toBe(404);
+    expect((await fetch(entry.scriptURL + "&extra=1")).status).toBe(404);
+  } finally {
+    await f.server.stop(true);
+  }
 });

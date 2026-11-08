@@ -15,6 +15,8 @@ function validateStorageAllocation(
   runningCaseIds: readonly string[],
   run: string,
 ): void {
+  if (entry.kind === "service-worker")
+    throw new Error("Storage policy does not own service workers");
   const backendPrefix = entry.kind === "indexeddb" ? "indexeddb:" : "opfs:";
   const id = runningCaseIds.find((caseId) => caseId.startsWith(backendPrefix));
   if (!id) throw new Error("Allocation outside running storage case");
@@ -28,11 +30,24 @@ function invalid(detail: string): never {
   throw new Error(detail);
 }
 function logicalAllocation(entry: StorageEntry): string {
-  if (entry.kind === "indexeddb") return entry.name;
-  if (!entry.name.startsWith("bun-wasm-")) invalid("Invalid OPFS directory prefix");
+  switch (entry.kind) {
+    case "indexeddb":
+      return entry.name;
+    case "service-worker":
+      throw new Error("Not an OPFS allocation");
+    case "opfs-directory":
+      return logicalDirectory(entry.name);
+    default: {
+      const exhaustive: never = entry;
+      return exhaustive;
+    }
+  }
+}
+function logicalDirectory(name: string): string {
+  if (!name.startsWith("bun-wasm-")) invalid("Invalid OPFS directory prefix");
   let logical: unknown;
   try {
-    logical = JSON.parse(atob(entry.name.slice(9).replaceAll("-", "+").replaceAll("_", "/")));
+    logical = JSON.parse(atob(name.slice(9).replaceAll("-", "+").replaceAll("_", "/")));
   } catch {
     invalid("Invalid encoded OPFS allocation");
   }
@@ -41,7 +56,7 @@ function logicalAllocation(entry: StorageEntry): string {
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
-  if (entry.name !== `bun-wasm-${encoded}`) invalid("Noncanonical OPFS directory name");
+  if (name !== `bun-wasm-${encoded}`) invalid("Noncanonical OPFS directory name");
   return logical;
 }
 export const storagePolicy: CollectorPolicy = {

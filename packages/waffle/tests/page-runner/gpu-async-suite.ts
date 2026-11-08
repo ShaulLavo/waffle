@@ -102,6 +102,7 @@ export function gpuAsyncAdapter(engine: GpuAsyncEngine): SuiteAdapter<GpuAsyncRe
       signal.throwIfAborted();
       const wasm = asyncFixture();
       const routes = await asyncRoutes(wasm, signal);
+      delete routes["/"];
       routes["/page.js"] = await browserBundle(resolve(import.meta.dir, "gpu-async-page.ts"));
       signal.throwIfAborted();
       return routes;

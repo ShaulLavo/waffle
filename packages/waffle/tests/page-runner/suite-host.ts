@@ -1,3 +1,12 @@
+import {
+  FixtureOwner,
+  localPath,
+  reservedPath,
+  type FixtureDeclaration,
+  type FixtureRoute,
+} from "./fixture-owner.js";
+import type { WorkerDeclaration } from "./service-worker-page.js";
+import type { ServiceWorkerEntry } from "../storage-allocation.js";
 import { writeResult } from "./result-file.js";
 export { writeResult } from "./result-file.js";
 import { dispatchReports } from "./collector-fetch.js";
@@ -30,23 +39,10 @@ const headers = {
 export type HostedPage = { path: string; script: string };
 export type PreparationContext = { scratch: string; signal: AbortSignal };
 const defaultPage: HostedPage = { path: "/", script: "/page.js" };
-function localPath(path: string): void {
-  const url = new URL(path, "http://localhost");
-  if (
-    !path.startsWith("/") ||
-    path.startsWith("//") ||
-    url.origin !== "http://localhost" ||
-    url.pathname !== path ||
-    url.search ||
-    url.hash ||
-    /[\\\s<>"']/u.test(path)
-  )
-    throw new Error("Expected a same-origin local page path");
-}
 function validatePage(page: HostedPage): HostedPage {
   localPath(page.path);
   localPath(page.script);
-  if (["/report", "/heartbeat", "/retire", "/favicon.ico"].includes(page.path))
+  if (reservedPath(page.path) || reservedPath(page.script) || page.path === page.script)
     throw new Error("Hosted page conflicts with a reserved endpoint");
   return page;
 }
@@ -64,6 +60,7 @@ export function serveCollector(
   assets: Record<string, Blob | string>,
   page: HostedPage = defaultPage,
   port = Number(process.env.STORAGE_TEST_PORT ?? 0),
+  application?: FixtureOwner,
 ) {
   validatePage(page);
   const configurations = new Map<string, unknown>();
@@ -81,17 +78,32 @@ export function serveCollector(
           fail: (category, detail) => collector.fail(category, detail),
         });
         if (report) return report;
-        if (request.method === "POST") throw new Error("Unknown collector endpoint");
+        if (application?.has(url.pathname))
+          return await fixtureResponse(request, collector, application);
+        if (request.method !== "GET" && request.method !== "HEAD")
+          return new Response("Method not allowed", { status: 405, headers });
         if (url.pathname === "/report" || url.pathname === "/heartbeat")
           return new Response("Method not allowed", { status: 405, headers });
         if (url.pathname === "/favicon.ico") return new Response(null, { status: 204, headers });
-        if (url.pathname === page.path)
-          return pageResponse(configurations.get(url.searchParams.get("token") ?? ""), page.script);
+        const token = url.searchParams.get("token") ?? "";
+        const expected = collector.documents.find((item) => item.token === token);
+        if (
+          expected &&
+          new URL(expected.expectedURL).pathname === url.pathname &&
+          expected.expectedURL === url.href
+        )
+          return pageResponse(configurations.get(token), page.script);
+        if (url.pathname === page.path || url.pathname.startsWith("/_waffle_owned/"))
+          return new Response("Unknown document binding", { status: 404, headers });
+        const workerScope = collector.workerScriptScope(url);
+        if (url.searchParams.has("waffle-run") && !workerScope)
+          return new Response("Unknown worker script binding", { status: 404, headers });
         const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
         return new Response(asset ?? "Not found", {
           status: asset === undefined ? 404 : 200,
           headers: {
             ...headers,
+            ...(workerScope ? { "Service-Worker-Allowed": workerScope } : {}),
             "Content-Type":
               typeof asset === "string"
                 ? "application/javascript"
@@ -107,6 +119,25 @@ export function serveCollector(
     },
   });
   return { server, configurations, origin: `http://127.0.0.1:${server.port}` };
+}
+async function fixtureResponse(
+  request: Request,
+  collector: Collector,
+  application: FixtureOwner,
+): Promise<Response> {
+  if (request.method !== "GET")
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: { ...headers, Allow: "GET" },
+    });
+  if (new URL(request.url).search) throw new Error("Fixture query is not declared");
+  const token = request.headers.get("X-Waffle-Fixture"),
+    doc = request.headers.get("X-Waffle-Document");
+  if (!token || !doc) throw new ObservationClosed("Missing fixture capability");
+  collector.admitFixture(token, doc, application.declaration.caseId);
+  const encoded = await application.get(new URL(request.url).pathname, request.signal);
+  collector.admitFixture(token, doc, application.declaration.caseId);
+  return new Response(encoded, { headers: { ...headers, "Content-Type": "application/json" } });
 }
 function retirementCommand(collector: Collector, url: URL): boolean {
   const state = collector.documents.find(
@@ -137,7 +168,7 @@ export type RunOptions = {
   assets?: Record<string, Blob | string>;
   cleanupTimeoutMs?: number;
   startedAt?: number;
-  port?: number;
+  port?: number | "ephemeral";
 };
 export type SuiteResult = {
   suite: string;
@@ -172,7 +203,14 @@ export type SuiteResult = {
   }[];
   ledger: Collector["ledger"];
   storageRemaining: Collector["remaining"];
-  cleanup: DriverCleanup & { server: CleanupStep; storage: CleanupStep; scratch: CleanupStep };
+  registrationAttempts: Collector["registrationAttempts"];
+  cleanup: DriverCleanup & {
+    server: CleanupStep;
+    storage: CleanupStep;
+    scratch: CleanupStep;
+    fixture: CleanupStep;
+    callbacks: CleanupStep;
+  };
   exit: number;
 };
 function absent(): CleanupStep {
@@ -233,6 +271,8 @@ export type SuiteAdapter<R> = {
   policy: CollectorPolicy;
   assets(context: PreparationContext): Promise<Record<string, Blob | string>>;
   page?: HostedPage;
+  serviceWorker?: WorkerDeclaration;
+  fixture?: FixtureDeclaration;
   resultWaitMs?: number;
   budgets(selected: number): Budgets;
 };
@@ -260,7 +300,12 @@ function runConfiguration<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
     throw new Error(
       "startedAt must be a finite same-process monotonic timestamp, not in the future",
     );
-  const port = options.port === undefined ? undefined : validatePort(options.port);
+  const port =
+    options.port === "ephemeral"
+      ? 0
+      : options.port === undefined
+        ? undefined
+        : validatePort(options.port);
   const page = validatePage(adapter.page ?? defaultPage);
   if (
     adapter.resultWaitMs !== undefined &&
@@ -299,18 +344,26 @@ export async function runPageSuite<R>(
   };
   const consumers = new HostConsumers();
   const hostCases: HostDrive[] = [];
+  let application: FixtureOwner | undefined;
+  let applicationCleanup = { fixture: absent(), callbacks: absent() };
+  let workerEntry: Omit<ServiceWorkerEntry, "clientURL"> | undefined;
+  let sealed = false;
   let preparation: Promise<void> | undefined;
   let cleaning: Promise<void> | undefined;
   const interrupted = () => {
     if (cleaning) return;
     collector.fail("interrupted", "Run interrupted");
+    application?.revoke("interrupted");
     controller.abort("interrupted");
   };
   const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
+    application?.revoke("execution stopped");
     consumers.revoke();
+    collector.abandon("execution stopped");
     controller.abort("execution stopped");
     const cleanupMs = options.cleanupTimeoutMs ?? 12_000;
+    const cleanupDeadline = performance.now() + cleanupMs;
     const [producerStopped, hostStopped] = await Promise.all([
       joinPreparation(preparation, cleanupMs),
       consumers.join(cleanupMs),
@@ -319,10 +372,17 @@ export async function runPageSuite<R>(
             driverCleanup = result;
           })
         : undefined,
+      application
+        ? application.finish(cleanupDeadline).then((result) => {
+            applicationCleanup = result;
+          })
+        : undefined,
     ]);
     const stopped =
       producerStopped &&
       hostStopped &&
+      applicationCleanup.fixture.status !== "unconfirmed" &&
+      applicationCleanup.callbacks.status !== "unconfirmed" &&
       driverCleanup.session.status !== "unconfirmed" &&
       driverCleanup.launcher.status !== "unconfirmed";
     if (!stopped)
@@ -382,9 +442,20 @@ export async function runPageSuite<R>(
       throw new Error("Driver unavailable or command completion uncertain");
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
-    const token = crypto.randomUUID(),
-      url = `${fixture.origin}${page.path}?token=${token}`,
-      handle = await driver.handle(operationSignal);
+    const token = crypto.randomUUID();
+    const capabilities = documentCapabilities({
+      adapter,
+      item,
+      worker: workerEntry,
+      application,
+      origin: fixture.origin,
+      page: page.path,
+      token,
+      run,
+      collector,
+    });
+    const { url } = capabilities;
+    const handle = await driver.handle(operationSignal);
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
     const state = collector.expect(group, token, url, handle);
@@ -396,6 +467,8 @@ export async function runPageSuite<R>(
       ...configuration,
       teardownMs: budgets.teardown ?? budgets.case,
       ledger: collector.ledger,
+      ...capabilities,
+      registrationAttempts: collector.registrationAttempts,
     });
     await bounded(
       driver.navigate(url, AbortSignal.any([operationSignal, AbortSignal.timeout(budgets.hello)])),
@@ -477,6 +550,7 @@ export async function runPageSuite<R>(
     if (!cleanupOnly) checkDeadline();
     operationSignal.throwIfAborted();
     fixture.configurations.delete(token);
+    if (item?.id === adapter.fixture?.caseId) application?.revoke("case document retired");
   }
   async function interruptedFinish(error: unknown): Promise<void> {
     if (
@@ -492,6 +566,7 @@ export async function runPageSuite<R>(
       )
     )
       return;
+    application?.revoke("interrupted finish");
     collector.abandon(String(error));
     try {
       await document({ id: "cleanup-finish", role: "finish", caseIds: [] }, null, true);
@@ -505,7 +580,15 @@ export async function runPageSuite<R>(
       options.scratchRoot ??
       process.env.STORAGE_SCRATCH_ROOT ??
       (process.platform === "darwin" ? join(homedir(), "tmp") : "/work/tmp");
-    if (port !== undefined) probePort(port);
+    validateDeclarations(adapter, required, page);
+    if (adapter.fixture && selected.includes(adapter.fixture.caseId))
+      application = new FixtureOwner(adapter.fixture, (detail) => {
+        if (!sealed) collector.fail("fixture", detail);
+      });
+    controller.signal.addEventListener("abort", () => application?.revoke("run cancelled"), {
+      once: true,
+    });
+    if (port !== undefined && port !== 0) probePort(port);
     checkExecution();
     await mkdir(root, { recursive: true });
     checkExecution();
@@ -521,7 +604,16 @@ export async function runPageSuite<R>(
     );
     const assets = await untilAborted(producing, signal);
     checkExecution();
-    fixture = serveCollector(collector, assets, page, port);
+    validateAssets(assets, page);
+    fixture = serveCollector(collector, assets, page, port, application);
+    workerEntry = workerLocation(adapter.serviceWorker, fixture.origin, run, assets);
+    if (application) {
+      const startup = application.start(
+        { origin: fixture.origin, run, scratch, signal },
+        (routes) => validateRoutes(routes, assets, page),
+      );
+      await untilAborted(startup, signal);
+    }
     checkExecution();
     driver = factory(scratch);
     checkExecution();
@@ -574,9 +666,16 @@ export async function runPageSuite<R>(
     process.removeListener("SIGTERM", interrupted);
     options.signal?.removeEventListener("abort", interrupted);
   }
-  if (!adapter.policy.allocation)
+  sealed = true;
+  if (!adapter.policy.allocation && !adapter.serviceWorker)
     storage = { status: "not-created", detail: "suite declares no durable allocations" };
-  const cleanup = { ...driverCleanup, server, storage, scratch: scratchCleanup };
+  const cleanup = {
+    ...driverCleanup,
+    server,
+    storage,
+    scratch: scratchCleanup,
+    ...applicationCleanup,
+  };
   const exit = resultExit(collector, cleanup, options.filter);
   const result: SuiteResult = {
     suite: adapter.suite,
@@ -620,12 +719,14 @@ export async function runPageSuite<R>(
         transition.progress.kind === "completed" ? transition.progress.remainingHandles : null,
     })),
     ledger: collector.ledger,
+    registrationAttempts: collector.registrationAttempts,
     storageRemaining: collector.remaining,
     cleanup,
     exit,
   };
-  await writeResult(options.resultPath, result);
-  return result;
+  const snapshot = structuredClone(result);
+  await writeResult(options.resultPath, snapshot);
+  return snapshot;
 }
 function pageConfiguration<R>(group: Group, item: SuiteCase<R> | null, run: string) {
   if (group.role !== "case") return { role: group.role };
@@ -644,9 +745,15 @@ function resultExit(
 ): number {
   const selected = collector.selected;
   const { server, storage, scratch: scratchCleanup } = cleanup;
-  const unconfirmed = [cleanup.session, cleanup.launcher, server, storage, scratchCleanup].some(
-    (step) => step.status === "unconfirmed",
-  );
+  const unconfirmed = [
+    cleanup.session,
+    cleanup.launcher,
+    server,
+    storage,
+    scratchCleanup,
+    cleanup.fixture,
+    cleanup.callbacks,
+  ].some((step) => step.status === "unconfirmed");
   const complete =
     collector.runComplete &&
     selected.every(
@@ -771,4 +878,95 @@ async function joinPreparation(
   } catch {
     return false;
   }
+}
+
+function validateDeclarations<R>(
+  adapter: SuiteAdapter<R>,
+  required: readonly string[],
+  page: HostedPage,
+): void {
+  for (const declaration of [adapter.serviceWorker, adapter.fixture]) {
+    if (declaration && !required.includes(declaration.caseId))
+      throw new Error("Declaration case is not in inventory");
+  }
+  if (!adapter.serviceWorker) return;
+  localPath(adapter.serviceWorker.script);
+  if (
+    reservedPath(adapter.serviceWorker.script) ||
+    [page.path, page.script].includes(adapter.serviceWorker.script)
+  )
+    throw new Error("Worker script conflicts with host routes");
+}
+function validateAssets(assets: Record<string, Blob | string>, page: HostedPage): void {
+  for (const path of Object.keys(assets)) {
+    localPath(path);
+    if (reservedPath(path) || path === page.path)
+      throw new Error(`Asset conflicts with host route: ${path}`);
+  }
+}
+function validateRoutes(
+  routes: readonly FixtureRoute[],
+  assets: Record<string, Blob | string>,
+  page: HostedPage,
+): void {
+  const paths = new Set<string>();
+  for (const route of routes) {
+    localPath(route.path);
+    if (
+      reservedPath(route.path) ||
+      [page.path, page.script].includes(route.path) ||
+      Object.hasOwn(assets, route.path) ||
+      paths.has(route.path) ||
+      typeof route.get !== "function"
+    )
+      throw new Error("Fixture route conflicts with host route or asset");
+    paths.add(route.path);
+  }
+}
+
+function workerLocation(
+  declaration: WorkerDeclaration | undefined,
+  origin: string,
+  run: string,
+  assets: Record<string, Blob | string>,
+): Omit<ServiceWorkerEntry, "clientURL"> | undefined {
+  if (!declaration) return;
+  if (!Object.hasOwn(assets, declaration.script)) throw new Error("Missing declared worker asset");
+  return {
+    kind: "service-worker",
+    name: `${origin}/_waffle_owned/${run}/`,
+    scriptURL: `${origin}${declaration.script}?waffle-run=${run}`,
+  };
+}
+function documentCapabilities<R>({
+  adapter,
+  item,
+  worker,
+  application,
+  origin,
+  page,
+  token,
+  run,
+  collector,
+}: {
+  adapter: SuiteAdapter<R>;
+  item: SuiteCase<R> | null;
+  worker: Omit<ServiceWorkerEntry, "clientURL"> | undefined;
+  application: FixtureOwner | undefined;
+  origin: string;
+  page: string;
+  token: string;
+  run: string;
+  collector: Collector;
+}) {
+  const owned = item && adapter.serviceWorker && item.id === adapter.serviceWorker.caseId && worker;
+  const path = owned ? `/_waffle_owned/${run}/client.html` : page;
+  const url = `${origin}${path}?token=${token}`;
+  const serviceWorker = owned ? { ...owned, clientURL: url } : undefined;
+  if (serviceWorker && item) collector.declareWorker(item.id, serviceWorker);
+  const fixturePaths =
+    item && application && item.id === application.declaration.caseId
+      ? application.paths()
+      : undefined;
+  return { url, serviceWorker, fixturePaths };
 }
