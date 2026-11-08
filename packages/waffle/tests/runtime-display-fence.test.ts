@@ -7,6 +7,7 @@ for (const mode of [
   "late-bounded",
   "pending",
   "failed-wait",
+  "failed-wait-after-suspend",
 ])
   test(`Runtime retains owned display retirement on ${mode}`, () => {
     const script = new URL("./fixtures/gpu/runtime-display-fence-launcher.ts", import.meta.url)

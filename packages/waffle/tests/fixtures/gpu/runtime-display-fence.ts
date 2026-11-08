@@ -23,7 +23,7 @@ const serviceWorker = {
   postMessage(message: { type: string; readers?: SharedArrayBuffer; open?: GraphicsOpen }) {
     if (message.type === "bootstrap") {
       gate = message.readers;
-      if (mode === "failed-wait")
+      if (mode.startsWith("failed-wait"))
         Reflect.set(globalThis, Symbol.for("waffle.test.displayGate"), gate);
     }
     if (message.type === "open") {
@@ -101,7 +101,7 @@ grant.connection.port.postMessage(valid);
 while (!gate || !opens) await new Promise<void>((resolve) => setImmediate(resolve));
 let reader: Worker | undefined;
 let rendezvousCells: Int32Array | undefined;
-if (mode === "abandoned" || mode === "failed-wait") {
+if (mode === "abandoned" || mode.startsWith("failed-wait")) {
   const rendezvous = new SharedArrayBuffer(8),
     cells = new Int32Array(rendezvous);
   rendezvousCells = cells;
@@ -120,9 +120,10 @@ let retired = false;
 void grant.retired().then(() => {
   retired = true;
 });
-failure!();
+if (mode !== "failed-wait-after-suspend") failure!();
 if (mode.startsWith("late-")) broker.rootStopped(root);
 const disposal = runtime.dispose();
+if (mode === "failed-wait-after-suspend") failure!();
 assert.equal(runtime.dispose(), disposal);
 assert.ok(Atomics.load(new Int32Array(gate), 0) < 0);
 let disposed = false,
@@ -135,7 +136,7 @@ void disposal.then(
     error = cause;
   },
 );
-if (mode === "failed-wait") {
+if (mode.startsWith("failed-wait")) {
   await disposal.catch(() => {});
   assert.match(String(error), /captured reader wait failed/);
   assert.equal(retired, false);

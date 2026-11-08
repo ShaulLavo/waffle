@@ -684,12 +684,17 @@ installs it before sending any open. A command reader admits the complete physic
 including padding, exceptions and tail stores. Scheduler visits and later native callbacks enter
 again. No admitted section spans a promise or task.
 
-Failure or Runtime suspension closes that exact service's admission synchronously. The page
-selects original transport terminals, joins all admitted sections, then settles those same
-controls again before requesting termination. `Worker.terminate()` is a separate cleanup request.
+Service failure closes that exact service's reader admission synchronously. The page selects
+original transport terminals, joins all admitted sections, then settles those same controls
+again before requesting termination. `Worker.terminate()` is a separate cleanup request.
 An abandoned admitted section leaves retirement pending. A failed join or stop keeps the Runtime,
 allocator and singleton guard owned. Replacement GPU activation waits for successful old-service
 bookkeeping and uses new grants and surfaces.
+
+Healthy Runtime suspension instead closes new display admission synchronously and revokes every
+grant through normal cooperative cleanup. It awaits their actual acknowledgements before closing
+and joining the service reader allocation and requesting termination. A missing acknowledgement
+leaves shutdown pending, without a timeout or termination shortcut.
 
 Normal grant revocation keeps peer admission open. Its irreversible local lease rejects new
 frames immediately. The service queues cleanup after all active callback frames return, then

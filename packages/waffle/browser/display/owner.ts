@@ -39,6 +39,11 @@ interface GrantOwner {
   readonly opens: Map<number, GraphicsOpen>;
   state: "live" | "revoking" | "retired";
   readonly retire: () => void;
+  readonly retired: Promise<void>;
+}
+interface ServiceRetirement {
+  readonly readers: Promise<JoinedServiceReaders>;
+  readonly settled: Promise<void>;
 }
 interface ServiceOwner {
   worker: Worker | undefined;
@@ -46,9 +51,9 @@ interface ServiceOwner {
   readonly incarnation: ServiceIncarnation;
   readonly readers: ServiceReaderFence;
   readonly exposed: Map<GrantOwner, Set<GraphicsOpen>>;
-  retirement:
-    | { readonly readers: Promise<JoinedServiceReaders>; readonly settled: Promise<void> }
-    | undefined;
+  retirement: ServiceRetirement | undefined;
+  readonly retirementStarted: Promise<ServiceRetirement>;
+  readonly beginRetirement: (retirement: ServiceRetirement) => void;
   phase: "starting" | "live" | "closing" | "joined" | "retained";
 }
 // Reader join is not alias-release evidence. Keep original wrappers through page destruction.
@@ -122,6 +127,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
         throw error;
       });
     owner.retirement = { readers, settled };
+    owner.beginRetirement(owner.retirement);
     void settled.catch(() => {});
     try {
       if (frame !== undefined) cancelAnimationFrame(frame);
@@ -154,6 +160,10 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     assertLive();
     const readers = createServiceReaders();
     let constructed!: (worker: Worker | undefined) => void;
+    let beginRetirement!: (retirement: ServiceRetirement) => void;
+    const retirementStarted = new Promise<ServiceRetirement>((resolve) => {
+      beginRetirement = resolve;
+    });
     const owner: ServiceOwner = {
       worker: undefined,
       constructed: new Promise<Worker | undefined>((resolve) => {
@@ -164,6 +174,8 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       exposed: new Map(),
       phase: "starting",
       retirement: undefined,
+      retirementStarted,
+      beginRetirement,
     };
     retainedServices.add(owner);
     service = owner;
@@ -356,6 +368,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
         state: "live",
         opens: new Map(),
         retire,
+        retired,
       };
       for (const surface of selected) surface.holder = id;
       grants.set(id, grant);
@@ -407,21 +420,27 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       return publicGrant;
     },
   });
+  const suspend = () => {
+    disposed = true;
+    if (frame !== undefined) cancelAnimationFrame(frame);
+    frame = undefined;
+    for (const grant of Array.from(grants.values())) revoke(grant);
+  };
   return {
     display,
     retained: () => retained || (service !== undefined && service.phase !== "joined"),
-    suspend() {
-      if (service) retireService(service);
-      for (const grant of Array.from(grants.values())) revoke(grant);
-    },
+    suspend,
     dispose(): Promise<void> {
       if (disposal) return disposal;
-      disposed = true;
-      const retirement = service ? retireService(service) : undefined;
-      for (const grant of Array.from(grants.values())) revoke(grant);
+      const retiring = Promise.all(Array.from(grants.values(), (grant) => grant.retired));
+      const owner = service;
       disposal = Promise.resolve()
         .then(async () => {
-          await retirement?.settled;
+          // Healthy grant cleanup needs the service reader gate until its actual acknowledgement.
+          await (owner
+            ? Promise.race([retiring, owner.retirementStarted.then((failure) => failure.settled)])
+            : retiring);
+          await (owner ? retireService(owner).settled : undefined);
           observer?.disconnect();
           globalThis.removeEventListener?.("resize", visibility);
           globalThis.removeEventListener?.("focus", visibility);
@@ -434,6 +453,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
           throw error;
         });
       void disposal.catch(() => {});
+      suspend();
       return disposal;
     },
   };

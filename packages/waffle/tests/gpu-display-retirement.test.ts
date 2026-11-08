@@ -23,11 +23,22 @@ function worker() {
     onerror: null as (() => void) | null,
     onmessage: null as ((event: MessageEvent) => void) | null,
     onmessageerror: null,
-    postMessage(message: { type: string; readers?: SharedArrayBuffer; open?: GraphicsOpen }) {
+    postMessage(message: {
+      type: string;
+      readers?: SharedArrayBuffer;
+      open?: GraphicsOpen;
+      grant?: number;
+    }) {
       if (message.type === "bootstrap") {
         expect(state.gate).toBeUndefined();
         state.gate = message.readers;
       }
+      if (message.type === "revoke")
+        setImmediate(() =>
+          value.onmessage?.(
+            new MessageEvent("message", { data: { type: "retired", grant: message.grant } }),
+          ),
+        );
       if (message.type === "open") {
         expect(state.gate).toBeDefined();
         state.opens++;

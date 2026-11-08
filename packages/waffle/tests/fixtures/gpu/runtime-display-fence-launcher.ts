@@ -1,5 +1,5 @@
 // Install the failing captured intrinsic before the production modules initialize.
-if (process.argv[2] === "failed-wait") {
+if (process.argv[2]?.startsWith("failed-wait")) {
   const wait = Atomics.waitAsync;
   Atomics.waitAsync = (cells, index, expected, timeout) => {
     if (cells.buffer === Reflect.get(globalThis, Symbol.for("waffle.test.displayGate")))
