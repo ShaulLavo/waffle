@@ -879,3 +879,27 @@ genuine service captures still validate, and both incomplete historical captures
 A native stop receipt at that first checkpoint also establishes the consumer cutoff. A
 contradictory still-running flag cannot permit later consumption once that receipt exists.
 Permanent controls cover both forms of recorded physical death.
+
+### Close-out diagnostics and compiled closed replies
+
+The November 8 owner goals make this lane optional. Finish existing PR 409 and return the
+reviewed diagnostic source to the PR 408 parent, then clean up and stop. No broader GPU,
+hardware or Vite work starts.
+
+PR 408 run 42441796889 retained a held-import throw without its original exception value.
+Exit 137 and empty cleanup errors do not identify that exception. The old record still fails
+its unchanged termination classifier. Failure-only test observation now retains bounded scalar
+metadata for future unclassified throws and separates original import errors from return
+observation failures. It preserves the original thrown value and recognized unwind shape.
+Own-descriptor checks and prototype-free output address the independent review findings.
+No production or acceptance correction is inferred from the historical packet.
+
+PR 409 run 42445933048 passed payload, quota, service-failure and disposal before regrant
+rejected the common C decoder's unexpected closed reply. The runtime correctly drains committed
+reply bytes before a later completions import returns its terminal error. The common fixture
+now validates that closed record and waits for the actual subsequent import result. It never
+synthesizes an errno from the close reason or accepts another record after closed. Compiled CPU
+regressions cover all terminal reasons, normal wait sites, invalid records and unchanged normal
+modes. The old failed regrant record remains rejected. A fresh normal fixture is required because
+this test-only C input changed. No browser assertion, production code, workload, clock, topology
+or 8 ms and 100 ms target changed.
