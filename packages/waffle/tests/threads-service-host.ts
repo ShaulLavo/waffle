@@ -1,3 +1,4 @@
+import { DATA_PAGE_BYTES } from "../fs/storage-geometry.ts";
 import { PersistentBackend } from "../fs/persistent.ts";
 import { FilesystemService } from "../fs/service.ts";
 import { PAGE, type FilesystemConnection } from "../fs/protocol.ts";
@@ -43,7 +44,7 @@ async function start({ connection, mode }: Extract<HostCommand, { kind: "start" 
   });
   backend = await PersistentBackend.open(store, {
     intervalMs: 0,
-    ...(mode === "dirty" ? { dirtyLimits: { maxBytes: PAGE + 40, maxWaiters: 8 } } : {}),
+    ...(mode === "dirty" ? { dirtyLimits: { maxBytes: DATA_PAGE_BYTES + 40, maxWaiters: 8 } } : {}),
   });
   if (mode === "cold") store.readBarrier = hold;
   if (mode === "growth") {

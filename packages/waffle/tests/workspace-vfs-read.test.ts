@@ -1,7 +1,8 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { expect, test } from "bun:test";
 import { FilesystemClient, MemoryBackend, PersistentBackend } from "../fs";
-import { PAGE, createFilesystemIdentity } from "../fs/protocol";
+import { createFilesystemIdentity } from "../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 import { workspacePublication } from "../fs/workspace-protocol";
 import { Wasi } from "../core/wasi";
 import { shareFileResource } from "../core/open-file";
@@ -543,7 +544,7 @@ test("aborted native public range keeps actual debt until the original I/O settl
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(closed).toBe(false);
     expect(storage.resources().opfsReaderWork).toBe(1);
-    expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
+    expect(storage.resources().readerStorageBytes).toBe(65536 * 3);
     gate.resolve();
     expect(await reading).toEqual({ kind: "stopped" });
     await closing;
@@ -710,6 +711,37 @@ test("reversed open arrival is not cancelled by unrelated newer closes", async (
         { offset: 0, length: 1 },
       ]),
     ).toEqual({ kind: "cancelled" });
+  } finally {
+    await value.close();
+  }
+});
+
+test("one 256 MiB resident pin fits metadata and independent overlap releases structured pressure", async () => {
+  const size = 256 * 1024 * 1024;
+  const value = await residentReadFixture(size);
+  try {
+    expect((await value.workspace.read("/file", { offset: 0, length: 0 })).kind).toBe("ok");
+    const base = value.service.resources().readerMetadataBytes!;
+    expect(base).toBe(65536 + 64 * 8 + 1280);
+    const first = await value.workspace.pin("/file");
+    if (first.kind !== "ok") throw new Error(JSON.stringify(first));
+    expect(value.service.resources().readerPinBytes).toBe(size);
+    expect(value.service.resources().readerMetadataBytes).toBe(
+      base + 256 + (size / PAGE) * 64 + 256,
+    );
+    const blocked = await value.workspace.pin("/file");
+    expect(blocked).toEqual({ kind: "pressure", resource: "metadata" });
+    expect(value.service.resources().readerLeases).toBe(1);
+    expect(value.service.resources().readerPinBytes).toBe(size);
+    expect((await first.value.read({ offset: size - 1, length: 1 })).kind).toBe("ok");
+    await first.value.close();
+    expect(value.service.resources().readerPinBytes).toBe(0);
+    expect(value.service.resources().readerMetadataBytes).toBe(base);
+    const next = await value.workspace.pin("/file");
+    if (next.kind !== "ok") throw new Error(JSON.stringify(next));
+    await next.value.close();
+    expect(value.service.resources().readerLeases).toBe(0);
+    expect(value.service.resources().readerMetadataBytes).toBe(base);
   } finally {
     await value.close();
   }

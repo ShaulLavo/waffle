@@ -16,7 +16,7 @@ The source audit used commit `5ffb379b14e129e6505b499d91aa743cd80b3d38`, tree `c
 
 ## Accepted NOW changes
 
-Worker backend construction borrows the root already present in the first `connect` message. It no longer creates the 62,341,840-byte temporary root from `fs/shared.ts`, `BUFFER_SIZE`, before attaching the real root. Standalone construction and startup-admitted roots keep their existing behavior. Persistent recovery completes before publication attaches, as before.
+Worker backend construction borrows the root already present in the first `connect` message. It no longer creates the 62,341,840-byte temporary root from `fs/shared.ts`, `BUFFER_SIZE`, before attaching the real root. Ordinary and standalone roots now use the same exact 88,098,640-byte layout with 16 KiB storage pages. Startup admission adds 512 control bytes. The former ordinary root allocated 67,108,864 bytes. The initial backing increase remains a native allocation risk even when restored file padding falls. Persistent recovery completes before publication attaches, as before.
 
 The default pipe limit is now `1 << 20` permanent cursor cells, down from `1 << 24`. The default declaration falls from 268,443,664 to 16,785,424 bytes. Its 2,105,360-byte initial backing is unchanged. This is an accepted 16-fold reduction in default lifetime cell capacity on every platform, including desktop, not an unchanged-capacity optimization. Explicit `maxCells` options still support up to `1 << 24`, and exhaustion still returns `NFILE`. Cursor cells never recycle. Do not equate the cell count with a fixed number of pipes: endpoint rings and ownership determine cell use.
 
@@ -45,7 +45,7 @@ Choose request-arena maxima from measured message sizes and concurrency, includi
 
 Choose data-segment count and maximum from peak file demand and growth traces. A buffer already sent to another worker cannot have its maximum raised later. Any lazy segment design must publish the same permanent backing to every consumer before use. Do not reduce the pool's existing maximum as a shortcut.
 
-Measure the fixed root's metadata and embedded data layout before changing its 64 MiB allocation. Preserve the node count, page-table capacity, watch offsets, identity words, and workspace-publication readers. Startup-admitted roots use the exact layout size, not the ordinary connection's rounded constant.
+The storage correction separates 256 logical roots per file from 1,024 physical pages per segment in `fs/storage-geometry.ts`. Both ordinary and startup-admitted roots use its exact layout. Further root reductions must preserve the node count, file capacity, watch offsets, identity words, and workspace-publication readers. Compare native startup and restored footprints before changing the representation again.
 
 Choose memory-group limits from group workloads and per-engine results. Test concurrent members while the owner grows shared memory. Preserve page-zero exclusion, physical-stop debt, member admission, pins, watches, and committed-backing accounting. Do not infer an iOS result from desktop Safari.
 

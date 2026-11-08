@@ -569,7 +569,7 @@ so the epoch stays odd until their bytes, size and timestamp are in place. Cache
 service alone owns backend pins. Preopens and open descriptions retain handles; transient path pins
 are bounded and evicting them invalidates cached paths.
 
-The service owns the page allocator and grows capacity geometrically in 64 KiB pages, across
+The service owns the page allocator and grows capacity geometrically in 16 KiB storage pages, across
 16 MiB growable SharedArrayBuffer segments. Connections carry the zero-byte segment references
 before execution; only the service grows their backing storage. A synchronous guest therefore
 sees completed growth without returning to its event loop or receiving another port message.
@@ -580,15 +580,32 @@ maximum reports WASI EFBIG.
 The 1.5 GiB ceiling leaves 512 MiB of headroom for sequential package installs beyond a
 retained 1 GiB tree. Smaller explicit caps still apply. It is a payload reservation limit,
 not an aggregate browser or process memory budget. The fixed allocator layout occupies
-59.45 MiB including its first 16 MiB data segment. Ordinary connections retain their
-64 MiB root allocation. Startup-admitted standalone roots charge the exact layout,
-65,664 bytes more than the former 1 GiB aggregate layout. Additional payload backing grows
+88,098,640 bytes including its first 16 MiB data segment. Ordinary connections and
+startup-admitted standalone roots allocate that same exact layout. Startup admission
+adds 512 control bytes to the root backing charge. Additional payload backing grows
 lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the
 configured cap, and grown backing remains allocated until disposal.
 `resources()` reports allocated backing bytes, data-pool and metadata bytes (including private
 capability tables), used/free bytes, the configured cap, and registered identities. Zero-byte
 segment references do not count as allocated backing storage. Grown segments are retained
 for page reuse until the filesystem is disposed.
+
+Storage geometry lives in the private `fs/storage-geometry.ts` module. A 256-entry leaf
+maps 4 MiB of logical file data. Each file has 256 logical roots, independently of the
+1,024 physical pages per 16 MiB segment. Transport chunks and WebAssembly memory
+pages remain 64 KiB. The fixed layout retains 32,768 slots, including reserved slot zero.
+
+An observed workspace allocates 98,304 physical reader counters, or 393,216 bytes.
+One aligned 256 MiB resident pin fits the unchanged 2 MiB reader metadata limit.
+Two independent selections of that same full range can return structured metadata
+pressure because each owns 16,384 page descriptors, even though physical pin bytes
+are shared. Closing the first selection releases its descriptors and admits the next
+pin. Reads borrowing one selection keep its existing shared lifetime.
+
+The larger initial root can increase native allocation pressure before data restoration.
+Smaller storage pages reduce small-file padding, not the runtime's other buffers,
+request arenas, or guest memories. Grown segments remain a high-water allocation;
+current used bytes do not measure committed backing or native residency.
 
 Connections carry their own revocation word and every ancestor's word, plus a shared ancestry
 wake signal. Blocking waits recheck revocation after a signal change; asynchronous values use
