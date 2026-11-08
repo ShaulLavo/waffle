@@ -35,6 +35,13 @@ function take(url: string): FakeWorker {
   return worker;
 }
 
+test("taking a worker never constructs unrequested workers while idle", async () => {
+  take("a");
+  expect(workers).toHaveLength(1);
+  await refill();
+  expect(workers).toHaveLength(1);
+});
+
 test("two unused workers are precreated off the demand stack and leased once", async () => {
   const first = take("a");
   expect(workers).toHaveLength(1);
