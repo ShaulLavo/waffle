@@ -50,13 +50,15 @@ for (const entry of ["browser/worker.ts", "browser/gpu/guest.ts", "browser/displ
     });
     if (!result.success || !result.metafile) throw new Error(result.logs.join("\n"));
     expect(
-      Object.keys(result.metafile.inputs).filter((path) =>
-        path.endsWith("browser/gpu/generated/tables.ts"),
+      Object.keys(result.metafile.inputs).filter(
+        (path) =>
+          path.endsWith("memory/graphics-retention.ts") ||
+          path.endsWith("browser/gpu/generated/tables.ts"),
       ),
     ).toEqual([]);
     expect(
       Object.keys(result.metafile.inputs).filter((path) =>
-        /browser\/(?:display\/owner|gpu\/(?:service|service-worker|surfaces|replay|scheduler|completions))\.ts$/.test(
+        /browser\/(?:display\/(?:owner|service-readers|launch-retention)|gpu\/(?:access|command-reader|service|service-worker|surfaces|replay|scheduler|completions))\.ts$/.test(
           path,
         ),
       ),

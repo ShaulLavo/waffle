@@ -14,7 +14,12 @@ for (const vector of expected.structs) {
     const commands = new RecordRing(new SharedArrayBuffer(4160), 8);
     const replies = new RecordRing(new SharedArrayBuffer(4160), 16);
     const arena = new SharedArrayBuffer(gpuPayloadLayout.byteLength);
-    const owner = new CompletionOwner({ access: serviceAccess(), commands, replies, arena: new Uint8Array(arena) });
+    const owner = new CompletionOwner({
+      access: serviceAccess(),
+      commands,
+      replies,
+      arena: new Uint8Array(arena),
+    });
     const directory = new PayloadDirectory(arena);
     const terminal = () => commands.terminal()?.reason;
     const terminate = (reason: number) => {

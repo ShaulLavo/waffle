@@ -399,7 +399,8 @@ function sourceTime(): number | undefined {
 
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
-  const token: { display?: Promise<RuntimeDisplayOwner | undefined>; disposal?: Promise<void> } = {};
+  const token: { display?: Promise<RuntimeDisplayOwner | undefined>; disposal?: Promise<void> } =
+    {};
   owners[ownerKey] = token;
   let hostIdentity: ReturnType<typeof snapshotHostIdentity>;
   let reservations: RuntimeReservations;
@@ -890,7 +891,9 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           const pendingDisplay = ownedDisplay;
           await attempt(async () => (await pendingDisplay)?.dispose());
         }
-        if (failures.length !== beforeDisplay || displayOwner?.retained()) throwFailures();
+        if (displayOwner?.retained() && failures.length === beforeDisplay)
+          failures.push(new Error("Display retirement is retained"));
+        if (failures.length !== beforeDisplay) throwFailures();
         let network: RuntimeNetworkOwner | undefined;
         if (ownedNetwork) await attempt(async () => (network = await ownedNetwork));
         if (network) await attempt(() => network?.dispose());

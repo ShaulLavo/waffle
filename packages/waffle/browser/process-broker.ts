@@ -1,4 +1,8 @@
-import { bindGraphicsLaunch, graphicsLaunchRetention, retainAllocationReceipts } from "./display/launch-retention.js";
+import {
+  bindGraphicsLaunch,
+  graphicsLaunchRetention,
+  retainAllocationReceipts,
+} from "./display/launch-retention.js";
 import type { GraphicsGrant } from "./display/protocol.js";
 import { allocateSharedControl, type SharedControlGrant } from "../memory/control.js";
 import {
@@ -1013,6 +1017,7 @@ export class BrowserProcessBroker {
       this.outputs.set(state.pid, output);
       this.registries.set(state.pid, registry);
       if (descendant) this.descendantHooks.set(state.pid, descendant);
+      this.rootAdmissions.set(state.pid, ticket);
       this.rootTickets.set(state.pid, ticket.launched());
       this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
@@ -1690,8 +1695,10 @@ export class BrowserProcessBroker {
         bindGraphicsLaunch(options.graphics, retention);
         const original = originalGraphicsGrants.get(options.graphics);
         if (original) bindGraphicsLaunch(original, retention);
+      } catch (error) {
+        ticket.abort();
+        throw error;
       }
-      catch (error) { ticket.abort(); throw error; }
     }
     let memory: BigInt64Array;
     try {
@@ -1759,7 +1766,13 @@ export class BrowserProcessBroker {
       connection = this.options.filesystem.connect(filesystem, ticket.arena);
       worker = child.worker = this.workers.take(options.workerUrl);
       child.launched = ticket.launched();
-      if (options.graphics) retainAllocationReceipts(worker, child.launched, graphicsLaunchRetention(options.graphics), (error) => this.report(error));
+      if (options.graphics)
+        retainAllocationReceipts(
+          worker,
+          child.launched,
+          graphicsLaunchRetention(options.graphics),
+          (error) => this.report(error),
+        );
     } catch (error) {
       // No Worker exists yet: the group reservation returns exactly once.
       child.group?.abort();

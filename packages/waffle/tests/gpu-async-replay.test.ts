@@ -121,7 +121,8 @@ function setup(mapped = false, heapLimit?: number) {
   const commands = ring(65536),
     replies = ring(65536, 16),
     credit = new ServiceCredit(heapLimit);
-  const connection = new GpuConnection(commands, replies, { root }, credit, { access: serviceAccess(),
+  const connection = new GpuConnection(commands, replies, { root }, credit, {
+    access: serviceAccess(),
     arena: new Uint8Array(backing),
   });
   const publish = (name: string, input: unknown) => send(connection, command(name, input));

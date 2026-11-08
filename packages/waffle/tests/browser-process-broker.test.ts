@@ -3775,3 +3775,129 @@ for (const threaded of [false, true]) {
     expect(releases).toBe(1);
   });
 }
+
+for (const bounded of [false, true])
+  for (const late of [false, true])
+    test(`graphics child receipt sink survives its actual handler teardown (${bounded}, ${late})`, async () => {
+      const { SharedMemoryLedger, declareSharedMemoryPlatform } =
+        await import("../memory/reservations.js");
+      const { defaultSharedMemoryPlatform } = await import("../memory/platform.js");
+      const { createSharedControlAllocator } = await import("../memory/control.js");
+      const platform = bounded
+        ? declareSharedMemoryPlatform({
+            kind: "bounded",
+            budgetBytes: bytes(512 * 1024 ** 2),
+            counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+          })
+        : defaultSharedMemoryPlatform;
+      let collect!: (id: number) => void;
+      const registrations: { target: object; id: number }[] = [];
+      const ledger = new SharedMemoryLedger(platform, undefined, (receive) => {
+        collect = receive;
+        return {
+          register(target, id) {
+            registrations.push({ target, id });
+          },
+        };
+      });
+      const reservations = ledger.openRuntime(platform);
+      const previousWorker = globalThis.Worker,
+        workers: ReceiptWorker[] = [],
+        ports: MessagePort[] = [];
+      class ReceiptWorker extends EventTarget {
+        request?: import("../browser/worker.js").RuntimeWorkerRequest;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: ErrorEvent) => void) | null = null;
+        constructor() {
+          super();
+          workers.push(this);
+        }
+        postMessage(request: import("../browser/worker.js").RuntimeWorkerRequest) {
+          this.request = request;
+        }
+        terminate() {}
+        emit(data: unknown) {
+          const event = new MessageEvent("message", { data });
+          this.dispatchEvent(event);
+          this.onmessage?.(event);
+        }
+      }
+      const identities = new ProcessIdentityAllocator(),
+        registry = new ExecutableRegistry();
+      const moduleBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+      const module = new WebAssembly.Module(moduleBytes);
+      const { declareModuleMemory } = await import("../memory/declarations.js");
+      declareModuleMemory(module, moduleBytes);
+      registry.register("fixture", { adapter: "fixture", module });
+      const channel = new MessageChannel();
+      ports.push(channel.port1, channel.port2);
+      const graphics = {
+        connection: {
+          port: channel.port1,
+          gpu: true,
+          revocation: new SharedArrayBuffer(64),
+          surfaces: [],
+          commandBytes: 64,
+          completionBytes: 64,
+        },
+        dispose() {},
+        async retired() {},
+      };
+      const broker = new BrowserProcessBroker({
+        reservations,
+        identities,
+        table: new ProcessTable(identities),
+        registry,
+        filesystem: {
+          connect(identity) {
+            const pair = connectFilesystemIdentity(identity);
+            ports.push(pair.client.port, pair.server.port);
+            return pair.client;
+          },
+          revoke() {},
+          reap() {},
+          async quiesce() {},
+        },
+        launch: (context) =>
+          broker.launchWorker(context, {
+            workerUrl: "http://localhost/receipt.js",
+            graphics,
+            request: { module: context.module, args: [], env: {} },
+          }),
+      });
+      const { root, messages, descriptors, client } = pipeClientFixture(identities);
+      try {
+        globalThis.Worker = ReceiptWorker as unknown as typeof Worker;
+        await broker.adoptRuntimeRoot(root, { memory: [] });
+        const { pid, supervisor } = await startFixtureChild({ broker, parent: client, messages });
+        const worker = workers[0]!,
+          request = worker.request!;
+        let receiptA!: SharedArrayBuffer;
+        const allocate = createSharedControlAllocator(request.controlGrant!, (backing) => {
+          receiptA = structuredClone(backing);
+        });
+        const openB = structuredClone(allocate(64));
+        if (!late) worker.emit({ type: "shared-control-allocation", buffer: receiptA });
+        markStarted(workerProcessState(request.runtimeProcess!).signals.outcome);
+        worker.emit({ type: "exit", code: 0 });
+        await supervisor.waitForExit(client.pid, pid);
+        broker.rootStopped(client.pid);
+        await broker.dispose();
+        expect(worker.onmessage).toBeNull();
+        expect(broker.workerMemory()).toEqual([]);
+        broker.rootStopped(client.pid);
+        reservations.dispose();
+        const successor = ledger.openRuntime(platform);
+        if (late) worker.emit({ type: "shared-control-allocation", buffer: receiptA });
+        const registration = registrations.find((entry) => entry.target === receiptA);
+        if (registration) collect(registration.id);
+        expect(successor.snapshot().debtBytes).toBe(64);
+        expect(openB.byteLength).toBe(64);
+        successor.dispose();
+      } finally {
+        globalThis.Worker = previousWorker;
+        descriptors.dispose();
+        await broker.dispose();
+        for (const port of ports) port.close();
+      }
+    });

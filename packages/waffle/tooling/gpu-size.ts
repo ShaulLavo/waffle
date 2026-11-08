@@ -2,8 +2,9 @@ import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
 // G2 on Bun 1.4.4: display 3,289 B, guest 5,592 B, service 36,141 B gzip.
-// New guest/service bounds allow 12% headroom. Display and core bounds are unchanged.
-export const GPU_BUDGETS = { display: 3437, guest: 6264, service: 40478 };
+// Reader ownership: display 4,319 B gzip on Bun 1.4.4. Display allows about 12% headroom.
+// Guest, service and core bounds are unchanged.
+export const GPU_BUDGETS = { display: 4816, guest: 6264, service: 40478 };
 const entries = {
   display: "browser/display/owner.ts",
   guest: "browser/gpu/guest.ts",

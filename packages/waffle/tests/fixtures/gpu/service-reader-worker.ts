@@ -2,7 +2,13 @@ import { attachServiceAccess } from "../../../browser/display/service-readers.js
 import { FencedCommandReader } from "../../../browser/gpu/command-reader.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
 const host = globalThis as unknown as {
-  onmessage: (event: MessageEvent<{ fence: SharedArrayBuffer; commands: SharedArrayBuffer; rendezvous: SharedArrayBuffer }>) => void;
+  onmessage: (
+    event: MessageEvent<{
+      fence: SharedArrayBuffer;
+      commands: SharedArrayBuffer;
+      rendezvous: SharedArrayBuffer;
+    }>,
+  ) => void;
   postMessage(message: unknown): void;
 };
 host.onmessage = ({ data }) => {

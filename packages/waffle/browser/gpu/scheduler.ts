@@ -33,10 +33,24 @@ export class GpuConnection {
     replies: RecordRing,
     target: ReplayTarget,
     credit: ServiceCredit,
-    options: { access: ServiceAccess; requestRetirement?: (reason: number) => void; maxLogical?: number; arena?: Uint8Array; handles?: number },
+    options: {
+      access: ServiceAccess;
+      settlementAccess?: ServiceAccess;
+      requestRetirement?: (reason: number) => void;
+      maxLogical?: number;
+      arena?: Uint8Array;
+      handles?: number;
+    },
   ) {
     this.commands = new FencedCommandReader(commands, options.access);
-    this.completions = new CompletionOwner({ commands, replies, arena: options.arena, access: options.access, requestRetirement: options.requestRetirement });
+    this.completions = new CompletionOwner({
+      commands,
+      replies,
+      arena: options.arena,
+      access: options.access,
+      settlementAccess: options.settlementAccess,
+      requestRetirement: options.requestRetirement,
+    });
     this.#reader = new LogicalReader(this.commands, credit, options.maxLogical);
     try {
       this.replay = new GpuReplay(target, this.completions, options.handles, credit);
@@ -58,9 +72,13 @@ export class GpuConnection {
     this.completions.terminate(reason);
   }
   slice(budget: SliceBudget = DEFAULT_BUDGET): SliceResult {
-    return accessed<SliceResult>(this.completionsAccess, { kind: "terminal", bytes: 0 }, () => this.#slice(budget));
+    return accessed<SliceResult>(this.completionsAccess, { kind: "terminal", bytes: 0 }, () =>
+      this.#slice(budget),
+    );
   }
-  get completionsAccess(): ServiceAccess { return { run: (work) => this.completions.run(work) }; }
+  get completionsAccess(): ServiceAccess {
+    return { run: (work) => this.completions.run(work) };
+  }
   #slice(budget: SliceBudget): SliceResult {
     if (
       !Number.isFinite(budget.bytes) ||

@@ -1,13 +1,19 @@
-import { serviceAccess } from "./service-access.js";
+import {
+  attachServiceAccess,
+  type ServiceAccess,
+} from "../../../browser/display/service-readers.js";
 import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
 import { CompletionOwner } from "../../../browser/gpu/completions.js";
 import { GpuService } from "../../../browser/gpu/service.js";
 import { GpuReplay } from "../../../browser/gpu/replay.js";
 import { GpuConnection, GpuScheduler } from "../../../browser/gpu/scheduler.js";
 import { LogicalReader } from "../../../browser/gpu/transport.js";
-import { RecordRing } from "../../../browser/gpu/ring.js";
+import { FencedCommandReader } from "../../../browser/gpu/command-reader.js";
 import { SurfaceConnection } from "../../../browser/gpu/surfaces.js";
-import type { GpuServiceRequest } from "../../../browser/display/service-protocol.js";
+import type {
+  GpuServiceRequest,
+  ServiceBootstrap,
+} from "../../../browser/display/service-protocol.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 import { ringSnapshot, captureRingSnapshots } from "./ring-snapshot.js";
 
@@ -51,7 +57,7 @@ interface Command {
 }
 const host = globalThis as unknown as {
   postMessage(message: unknown): void;
-  onmessage: (event: MessageEvent<GpuServiceRequest | Command>) => void;
+  onmessage: (event: MessageEvent<GpuServiceRequest | ServiceBootstrap | Command>) => void;
 };
 const fairness = installFairnessObserver();
 const realm = crypto.randomUUID();
@@ -453,8 +459,8 @@ LogicalReader.prototype.read = function () {
   if (result.kind === "terminal" && result.reason === 2) owner.protocolReads++;
   return result;
 };
-const readInto = RecordRing.prototype.readInto;
-RecordRing.prototype.readInto = function (destination) {
+const readInto = FencedCommandReader.prototype.readInto;
+FencedCommandReader.prototype.readInto = function (destination) {
   const result = readInto.call(this, destination);
   const owner = rings.get(this);
   if (owner && result.kind === "record") {
@@ -601,26 +607,33 @@ if (destroy) {
     return result;
   };
 }
-const service = new GpuService((message) => {
-  if (message.type === "retired") {
-    for (const owner of owners)
-      if (owner.open.grant === message.grant) {
-        owner.retiredAck = true;
-        life("retired", owner);
+let service: GpuService;
+function createService(access: ServiceAccess) {
+  return new GpuService(
+    (message) => {
+      if (message.type === "retired") {
+        for (const owner of owners)
+          if (owner.open.grant === message.grant) {
+            owner.retiredAck = true;
+            life("retired", owner);
+          }
+        for (const attempt of attempts)
+          if (attempt.message.grant === message.grant) attempt.retiredAck = true;
       }
-    for (const attempt of attempts)
-      if (attempt.message.grant === message.grant) attempt.retiredAck = true;
-  }
-  if (
-    message.type === "retired" &&
-    selection?.mode === "disposal" &&
-    owners.some((owner) => selected(owner) && owner.open.grant === message.grant)
-  ) {
-    void disposalSettled.promise.then(() => host.postMessage(message));
-    return;
-  }
-  host.postMessage(message);
-}, { access: serviceAccess() });
+      if (
+        message.type === "retired" &&
+        selection?.mode === "disposal" &&
+        owners.some((owner) => selected(owner) && owner.open.grant === message.grant)
+      ) {
+        void disposalSettled.promise.then(() => host.postMessage(message));
+        return;
+      }
+      host.postMessage(message);
+    },
+    { access: access },
+  );
+}
+
 function ownerSnapshot(owner: Owner, capture: typeof ringSnapshot) {
   const connection = owner.connection;
   const visible = owner.surfaces?.visible.get(owner.open.surfaces[0]!.id);
@@ -829,6 +842,12 @@ function command(data: Command) {
   }
 }
 host.onmessage = ({ data }) => {
+  if (!("test" in data) && data.type === "bootstrap") {
+    if (service) throw new Error("Duplicate fixture GPU bootstrap");
+    service = createService(attachServiceAccess(data.readers));
+    return;
+  }
+  if (!service) throw new Error("Fixture request before GPU bootstrap");
   if ("test" in data && data.test === "service-failure")
     throw new Error(`GPU_SERVICE_FAILURE ${data.id}`);
   if ("test" in data && data.test === "service-hold-open") {

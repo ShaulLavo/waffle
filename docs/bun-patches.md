@@ -43,8 +43,9 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/gpu/stream.json`, `tooling/gpu-stream*.ts`, `tests/gpu-stream.test.ts`, `tests/fixtures/gpu/{expected,enums,scene-expected}.json` | Original adapter      | Explicit triangle, scene, compute, bundle, query and copy/draw-state selection, C-to-browser policy, schema tooling and independent expected bytes. No browser implementation or WebGPU IDL enum list copied.                                                                                                                                                                                                                |
 | `browser/gpu/{codec,lowering,replay}.ts`, `tests/gpu-scene-*`, `tests/fixtures/gpu/scene-*.ts`                                             | Original adapter      | Creation, byte-span uploads, resource unions, explicit layouts, indexed bindings, copy/draw-state and depth/stencil controls against the pinned C schema and browser API. No upstream replay implementation copied.                                                                                                                                                                                                          |
 | `browser/gpu/{buffers,payload,metadata}.ts`, `browser/display/{open.ts,generated/graphics-layout.ts}`, `tests/gpu-async-*`                 | Original adapter      | Native mapping epochs, fixed payload ownership, checked C output projection, direct UTF-8 encoding and async controls. No upstream runtime implementation was copied. Geometry constants are generated from original Waffle selection metadata.                                                                                                                                                                              |
+| `browser/display/{service-readers,service-protocol,launch-retention}.ts`, `browser/gpu/{access,command-reader}.ts`                         | Original adapter      | Exact-service counted admission, queued grant retirement and original-ticket control charge retention. Original Waffle lifecycle code; no upstream implementation copied.                                                                                                                                                                                                                                                    |
 | `browser/gpu/method-coverage.json`                                                                                                         | Mechanical derivation | Individual object method and global function names from the pinned webgpu-headers YAML above, BSD-3-Clause. Coverage categories, pending slices, reasons and selected-call metadata are original Waffle policy; no method implementations copied.                                                                                                                                                                            |
-| `tests/page-runner/framework-dom-page.ts` | Adapted control | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit, not to replace the installed framework. See [Framework operation controls](#framework-operation-controls). |
+| `tests/page-runner/framework-dom-page.ts`                                                                                                  | Adapted control       | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit, not to replace the installed framework. See [Framework operation controls](#framework-operation-controls).                                                                                                                                       |
 
 ## GNU diffutils
 
@@ -565,3 +566,12 @@ closure fact, document invalidation and transport ownership checks are original
 Waffle adapters. They copy no SDK screenshot, image conversion or filesystem
 implementation. Consumer registration and mutable-context integration remain
 consumer-owned work.
+
+## GPU reader retirement
+
+The display service fence, grant frame lease and physical read adapter are original Waffle
+implementations. No upstream path or revision applies. They preserve the existing ring format
+and guest ABI while closing dedicated-service access before page retirement. The ticket receipt
+listener and retain-only accounting rules are also original adapters. They retain original charges
+across independent shared-buffer clones and late delivery, without identifying backing by wrapper
+equality or charging an open clone again.

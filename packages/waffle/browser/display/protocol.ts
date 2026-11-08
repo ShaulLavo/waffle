@@ -10,7 +10,7 @@ export interface GraphicsConnection {
 }
 export interface GraphicsGrant {
   readonly connection: GraphicsConnection;
-  /** Logical revocation is synchronous; retirement joins the ordered service acknowledgement. */
+  /** Logical revocation is synchronous; retirement joins readers and healthy service cleanup. */
   dispose(): void;
   retired(): Promise<void>;
 }

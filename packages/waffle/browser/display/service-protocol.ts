@@ -23,4 +23,5 @@ export type GpuServiceReply =
 export interface ServiceBootstrap {
   readonly type: "bootstrap";
   readonly readers: SharedArrayBuffer;
+  readonly incarnation: number;
 }

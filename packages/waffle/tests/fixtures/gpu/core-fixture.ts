@@ -64,7 +64,9 @@ export function rig(target: ReplayTarget, capacity = 256, replyCapacity = 4096) 
   const commands = ring(capacity);
   const replies = ring(replyCapacity, 16);
   const credit = new ServiceCredit();
-  const connection = new GpuConnection(commands, replies, target, credit, { access: serviceAccess() });
+  const connection = new GpuConnection(commands, replies, target, credit, {
+    access: serviceAccess(),
+  });
   return { commands, replies, credit, connection };
 }
 export function send(connection: GpuConnection, bytes: Uint8Array): void {

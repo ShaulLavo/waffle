@@ -67,7 +67,9 @@ export class GpuSurfaces {
       if (!presenter || presenter.credit) continue;
       presenter.owner.completions.run(() => {
         presenter.credit = true;
-        presenter.owner.completions.publish("frame-credit", 0, 0, { surface: { ...presenter.reference.handle } });
+        presenter.owner.completions.publish("frame-credit", 0, 0, {
+          surface: { ...presenter.reference.handle },
+        });
         return undefined;
       });
     }
@@ -230,8 +232,11 @@ export class SurfaceConnection implements SurfaceTarget {
     this.#live = false;
     const failures: unknown[] = [];
     for (const reference of this.#references) {
-      try { if (reference.visible.presenter?.owner === this) dropPresenter(reference.visible); }
-      catch (error) { failures.push(error); }
+      try {
+        if (reference.visible.presenter?.owner === this) dropPresenter(reference.visible);
+      } catch (error) {
+        failures.push(error);
+      }
     }
     this.#references.clear();
     if (failures.length) throw new AggregateError(failures, "GPU presenter cleanup failed");

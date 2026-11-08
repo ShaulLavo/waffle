@@ -27,6 +27,7 @@ interface Payload {
 }
 interface CompletionBuffers {
   readonly access: ServiceAccess;
+  readonly settlementAccess?: ServiceAccess;
   readonly requestRetirement?: (reason: number) => void;
   readonly commands: RecordRing;
   readonly replies: RecordRing;
@@ -48,11 +49,19 @@ interface Ready {
 export class CompletionOwner {
   #state: Ready | { readonly kind: "terminal"; readonly reason: number };
   #lastToken = 0;
+  #logicalTerminal = false;
+  #closedReason: number | undefined;
   #failure: string | undefined;
   get failure(): string | undefined {
     return this.#failure;
   }
-  constructor(private readonly buffers: CompletionBuffers) {
+  readonly #lifetime: Pick<CompletionBuffers, "access" | "settlementAccess" | "requestRetirement">;
+  constructor(buffers: CompletionBuffers) {
+    this.#lifetime = {
+      access: buffers.access,
+      settlementAccess: buffers.settlementAccess,
+      requestRetirement: buffers.requestRetirement,
+    };
     const { commands, replies, arena = new Uint8Array(0) } = buffers;
     if (commands.recordHeaderBytes !== 8 || replies.recordHeaderBytes !== 16)
       throw new RangeError("Expected command and completion rings");
@@ -73,21 +82,25 @@ export class CompletionOwner {
     };
   }
   get state(): ConnectionState {
-    return accessed<ConnectionState>(this.buffers.access, { kind: "terminal", reason: GPU_TERMINAL.service }, () => this.#readState());
+    return accessed<ConnectionState>(
+      this.#lifetime.access,
+      { kind: "terminal", reason: this.#closedReason ?? GPU_TERMINAL.service },
+      () => this.#readState(),
+    );
   }
   #readState(): ConnectionState {
     this.#synchronize();
     return this.#state.kind === "ready" ? { kind: "ready" } : this.#state;
   }
   get pendingCount(): number {
-    return accessed<number>(this.buffers.access, 0, () => this.#pendingCount());
+    return accessed<number>(this.#lifetime.access, 0, () => this.#pendingCount());
   }
   #pendingCount(): number {
     this.#synchronize();
     return this.#state.kind === "ready" ? this.#state.pending.size : 0;
   }
   get payloadBytes(): number {
-    return accessed<number>(this.buffers.access, 0, () => this.#payloadBytes());
+    return accessed<number>(this.#lifetime.access, 0, () => this.#payloadBytes());
   }
   #payloadBytes(): number {
     this.#synchronize();
@@ -96,7 +109,7 @@ export class CompletionOwner {
       : 0;
   }
   onRetire(retire: () => void): void {
-    return accessed<void>(this.buffers.access, undefined, () => this.#onRetire(retire));
+    return accessed<void>(this.#lifetime.access, undefined, () => this.#onRetire(retire));
   }
   #onRetire(retire: () => void): void {
     this.#synchronize();
@@ -108,7 +121,7 @@ export class CompletionOwner {
     this.#state.retire = retire;
   }
   admit(token: number): void {
-    return accessed<void>(this.buffers.access, undefined, () => this.#admit(token));
+    return accessed<void>(this.#lifetime.access, undefined, () => this.#admit(token));
   }
   #admit(token: number): void {
     this.#synchronize();
@@ -118,7 +131,9 @@ export class CompletionOwner {
     this.#lastToken = token;
   }
   publish(name: string, token: number, status: number, value: WireObject): boolean {
-    return accessed<boolean>(this.buffers.access, false, () => this.#publishValue(name, token, status, value));
+    return accessed<boolean>(this.#lifetime.access, false, () =>
+      this.#publishValue(name, token, status, value),
+    );
   }
   #publishValue(name: string, token: number, status: number, value: WireObject): boolean {
     this.#synchronize();
@@ -144,7 +159,10 @@ export class CompletionOwner {
     reject: (owner: CompletionOwner, error: unknown) => void,
     abandon: (value: T) => void,
   ): void {
-    this.run(() => { this.#start(token, start, settle, reject, abandon); return undefined; });
+    this.run(() => {
+      this.#start(token, start, settle, reject, abandon);
+      return undefined;
+    });
   }
   #start<T>(
     token: number,
@@ -171,9 +189,11 @@ export class CompletionOwner {
     }
     watchPromise(promise, pending, token);
   }
-  run(work: () => undefined): "ran" | "closed" { return this.buffers.access.run(work); }
+  run(work: () => undefined): "ran" | "closed" {
+    return this.#lifetime.access.run(work);
+  }
   settled(token: number): boolean {
-    return accessed<boolean>(this.buffers.access, false, () => this.#settled(token));
+    return accessed<boolean>(this.#lifetime.access, false, () => this.#settled(token));
   }
   #settled(token: number): boolean {
     this.#synchronize();
@@ -184,7 +204,9 @@ export class CompletionOwner {
     return this.fillPayload(bytes.byteLength, (destination) => destination.set(bytes));
   }
   fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
-    return accessed<Handle | undefined>(this.buffers.access, undefined, () => this.#fillPayload(length, fill));
+    return accessed<Handle | undefined>(this.#lifetime.access, undefined, () =>
+      this.#fillPayload(length, fill),
+    );
   }
   #fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
     this.#synchronize();
@@ -202,7 +224,7 @@ export class CompletionOwner {
     }
   }
   takePayload(handle: Handle, destination: Uint8Array): number {
-    return accessed<number>(this.buffers.access, 0, () => this.#takePayload(handle, destination));
+    return accessed<number>(this.#lifetime.access, 0, () => this.#takePayload(handle, destination));
   }
   #takePayload(handle: Handle, destination: Uint8Array): number {
     this.#synchronize();
@@ -232,18 +254,39 @@ export class CompletionOwner {
   }
   terminate(reason: number): void {
     this.run(() => {
-      if (this.buffers.requestRetirement) this.buffers.requestRetirement(reason);
-      else this.finishRetirement(reason);
+      this.#requestTermination(reason);
       return undefined;
     });
   }
+  #requestTermination(reason: number): void {
+    if (this.#lifetime.requestRetirement) {
+      const state = this.#state;
+      if (state.kind === "terminal") return;
+      const selected = state.commands.terminate(reason).reason;
+      this.#closedReason = selected;
+      state.directory?.mirror(selected);
+      if (!this.#logicalTerminal) {
+        this.#logicalTerminal = true;
+        publishClosed(state.replies, selected);
+        state.replies.terminate(selected);
+      }
+      this.#lifetime.requestRetirement(selected);
+    } else this.finishRetirement(reason);
+  }
   /** Called only by the queued connection owner under service-wide admission. */
   finishRetirement(reason: number): void {
+    (this.#lifetime.settlementAccess ?? this.#lifetime.access).run(() => {
+      this.#finishRetirement(reason);
+      return undefined;
+    });
+  }
+  #finishRetirement(reason: number): void {
     const state = this.#state;
     if (state.kind === "terminal") return;
     if (!Number.isInteger(reason) || reason <= 0 || reason > 0xffffffff)
       throw new RangeError("Invalid terminal reason");
     const selected = state.commands.terminate(reason).reason;
+    this.#closedReason = selected;
     this.#state = { kind: "terminal", reason: selected };
     state.directory?.mirror(selected);
     publishClosed(state.replies, selected);
@@ -329,25 +372,43 @@ function detach<T>(pending: Pending<T>): void {
   pending.reject = undefined;
 }
 function complete<T>(pending: Pending<T>, token: number, value: T): void {
-  const owner = pending.owner, settle = pending.settle;
+  const owner = pending.owner,
+    settle = pending.settle;
   detach(pending);
-  if (!owner || !settle) { pending.abandon(value); return; }
+  if (!owner || !settle) {
+    pending.abandon(value);
+    return;
+  }
   const ran = owner.run(() => {
-    if (!owner.settled(token)) { pending.abandon(value); return undefined; }
-    try { settle(owner, value); }
-    catch (error) { owner.terminate(error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol); }
+    if (!owner.settled(token)) {
+      pending.abandon(value);
+      return undefined;
+    }
+    try {
+      settle(owner, value);
+    } catch (error) {
+      owner.terminate(
+        error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+      );
+    }
     return undefined;
   });
   if (ran === "closed") pending.abandon(value);
 }
 function fail<T>(pending: Pending<T>, token: number, error: unknown): void {
-  const owner = pending.owner, reject = pending.reject;
+  const owner = pending.owner,
+    reject = pending.reject;
   detach(pending);
   if (!owner || !reject) return;
   owner.run(() => {
     if (!owner.settled(token)) return undefined;
-    try { reject(owner, error); }
-    catch (failure) { owner.terminate(failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol); }
+    try {
+      reject(owner, error);
+    } catch (failure) {
+      owner.terminate(
+        failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+      );
+    }
     return undefined;
   });
 }

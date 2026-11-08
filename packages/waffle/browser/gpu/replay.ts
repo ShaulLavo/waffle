@@ -124,7 +124,13 @@ export class GpuReplay {
     return this.#cursor !== undefined;
   }
   accept(record: LogicalRecord): void {
-    if (this.completions.run(() => { this.#accept(record); return undefined; }) === "closed") record.release();
+    if (
+      this.completions.run(() => {
+        this.#accept(record);
+        return undefined;
+      }) === "closed"
+    )
+      record.release();
   }
   #accept(record: LogicalRecord): void {
     if (!this.#live || this.#cursor) {
@@ -134,7 +140,11 @@ export class GpuReplay {
     this.#cursor = { record, offset: 0, blob: undefined };
   }
   step(): ReplayStep {
-    return accessed<ReplayStep>({ run: (work) => this.completions.run(work) }, { kind: "terminal" }, () => this.#admittedStep());
+    return accessed<ReplayStep>(
+      { run: (work) => this.completions.run(work) },
+      { kind: "terminal" },
+      () => this.#admittedStep(),
+    );
   }
   #admittedStep(): ReplayStep {
     if (!this.#live || this.completions.state.kind === "terminal") return { kind: "terminal" };
@@ -144,7 +154,6 @@ export class GpuReplay {
       this.completions.terminate(
         error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
       );
-      this.dispose();
       return { kind: "terminal" };
     }
   }
@@ -154,12 +163,23 @@ export class GpuReplay {
     this.#cursor?.record.release();
     this.#cursor = undefined;
     this.#waiting = undefined;
-    for (const device of this.#devices.values()) device.stop();
-    this.handles.retire();
+    const failures: unknown[] = [];
+    for (const device of this.#devices.values()) {
+      try {
+        device.stop();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      this.handles.retire();
+    } catch (error) {
+      failures.push(error);
+    }
     this.#buffers.dispose();
     this.#sources.dispose();
-    this.#devices.clear();
     this.#finished.clear();
+    if (failures.length) throw new AggregateError(failures, "GPU replay cleanup failed");
   }
   #step(): ReplayStep {
     const cursor = this.#cursor;
@@ -689,7 +709,10 @@ export class GpuReplay {
         nativeCall(receiver, "destroy", []);
         this.#buffers.deviceDestroyed(receiver);
         const observation = this.#devices.get(receiver);
-        if (observation) observation.sink.live = false;
+        if (observation) {
+          observation.sink.live = false;
+          observation.destroyed = true;
+        }
         return;
       case "query_set.destroy":
         nativeCall(receiver, "destroy", []);
@@ -941,10 +964,15 @@ export class GpuReplay {
     // command buffers retain ordinary resources. The owning device retires them.
     // Surface frames alone have the explicit discard-on-last-handle contract.
     if (kind !== "device" && !(kind === "texture" && this.#frameTextures.has(value))) return;
-    this.#devices.get(value)?.stop();
-    this.#devices.delete(value);
-    nativeCall(value, "destroy", []);
-    if (kind === "device") this.#buffers.deviceDestroyed(value);
+    const observed = this.#devices.get(value);
+    observed?.stop();
+    if (!observed?.destroyed) nativeCall(value, "destroy", []);
+    if (kind === "device") {
+      const observation = this.#devices.get(value);
+      if (observation) observation.sink.live = false;
+      this.#devices.delete(value);
+      this.#buffers.deviceDestroyed(value);
+    }
     if (kind === "texture") this.target.surfaces?.textureDestroyed?.(value);
   }
 }
@@ -965,6 +993,7 @@ function publishScope(owner: CompletionOwner, token: number, error: unknown): vo
   });
 }
 interface DeviceObservation {
+  destroyed: boolean;
   sink: { owner: CompletionOwner | undefined; live: boolean };
   stop(): void;
 }
@@ -975,16 +1004,15 @@ function observeDevice(owner: CompletionOwner, handle: Handle, device: object): 
   const listener = deviceListener(sink, handle);
   const listens = typeof Reflect.get(device, "addEventListener") === "function";
   if (listens) nativeCall(device, "addEventListener", ["uncapturederror", listener]);
+  let stopped = false;
   return {
     sink,
+    destroyed: false,
     stop: () => {
+      if (stopped) return;
+      stopped = true;
       sink.owner = undefined;
-      sink.live = false;
-      try {
-        if (listens) nativeCall(device, "removeEventListener", ["uncapturederror", listener]);
-      } catch {
-        /* A failing native detach cannot keep the owner live. */
-      }
+      if (listens) nativeCall(device, "removeEventListener", ["uncapturederror", listener]);
     },
   };
 }

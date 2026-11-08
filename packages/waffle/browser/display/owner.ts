@@ -1,12 +1,13 @@
-import { createServiceReaders, type ServiceReaderFence, type JoinedServiceReaders } from "./service-readers.js";
+import { graphicsLaunchRetention } from "./launch-retention.js";
+import {
+  createServiceReaders,
+  type ServiceReaderFence,
+  type JoinedServiceReaders,
+} from "./service-readers.js";
 import type { GpuServiceRequest, GpuServiceReply, ServiceSurface } from "./service-protocol.js";
 import { validGraphicsOpen } from "./open.js";
 import { allocateSharedControl } from "../../memory/control.js";
-import type {
-  GraphicsConnection,
-  GraphicsGrant,
-  GraphicsOpen,
-} from "./protocol.js";
+import type { GraphicsConnection, GraphicsGrant, GraphicsOpen } from "./protocol.js";
 
 export interface DisplaySurface {
   readonly id: number;
@@ -40,15 +41,19 @@ interface GrantOwner {
   readonly retire: () => void;
 }
 interface ServiceOwner {
-  readonly worker: Worker;
+  worker: Worker | undefined;
+  readonly constructed: Promise<Worker | undefined>;
   readonly incarnation: ServiceIncarnation;
   readonly readers: ServiceReaderFence;
   readonly exposed: Map<GrantOwner, Set<GraphicsOpen>>;
-  retirement: { readonly readers: Promise<JoinedServiceReaders>; readonly settled: Promise<void> } | undefined;
-  phase: "live" | "closing" | "joined" | "retained";
+  retirement:
+    | { readonly readers: Promise<JoinedServiceReaders>; readonly settled: Promise<void> }
+    | undefined;
+  phase: "starting" | "live" | "closing" | "joined" | "retained";
 }
 // Reader join is not alias-release evidence. Keep original wrappers through page destruction.
 const retainedServices = new Set<ServiceOwner>();
+const retainedGrants = new Set<GrantOwner>();
 const ownedWorkers = new WeakSet<Worker>();
 
 export interface DisplayOwnerOptions {
@@ -78,7 +83,8 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
   const post = (message: GpuServiceRequest, transfer: Transferable[] = []) =>
     liveService().worker.postMessage(message, transfer);
   const liveService = () => {
-    if (!service || service.phase !== "live") throw new Error("GPU service retirement pending");
+    if (!service || service.phase !== "live" || !boundService(service))
+      throw new Error("GPU service retirement pending");
     return service;
   };
   const finish = (grant: GrantOwner) => {
@@ -97,38 +103,41 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     if (owner.retirement) return owner.retirement;
     owner.phase = "closing";
     const closed = owner.readers.close();
-    if (frame !== undefined) cancelAnimationFrame(frame);
-    frame = undefined;
-    for (const surface of surfaces.values())
-      if (surface.state === "transferred") surface.state = "lost";
-    for (const [grant, opens] of owner.exposed) {
-      grant.state = "revoking";
-      Atomics.store(grant.revocation, 0, 1);
-      Atomics.notify(grant.revocation, 0);
-      for (const open of opens) settleOpen(open, -64, 5);
-    }
-    const readers = closed.join().then((proof) => {
-      if (!closed.accepts(proof)) throw new Error("Wrong GPU service reader proof");
-      for (const [grant, opens] of owner.exposed) {
-        for (const open of opens) settleOpen(open, -64, 5);
-        finish(grant);
-      }
-      owner.phase = "joined";
-      return proof;
+    let begin!: () => void, fail!: (error: unknown) => void;
+    const logical = new Promise<void>((resolve, reject) => {
+      begin = resolve;
+      fail = reject;
     });
-    const settled = readers.then(() => {
-      owner.worker.terminate();
-      if (service === owner) service = undefined;
-    }).catch((error: unknown) => {
-      owner.phase = "retained";
-      retained = true;
-      throw error;
-    });
+    const readers = logical.then(() => joinServiceReaders(owner, closed, finish));
+    const settled = readers
+      .then(async () => {
+        const worker = await owner.constructed;
+        await worker?.terminate();
+        if (!worker) retainedServices.delete(owner);
+        if (service === owner) service = undefined;
+      })
+      .catch((error: unknown) => {
+        owner.phase = "retained";
+        retained = true;
+        throw error;
+      });
     owner.retirement = { readers, settled };
     void settled.catch(() => {});
+    try {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      for (const surface of surfaces.values())
+        if (surface.state === "transferred") surface.state = "lost";
+      for (const [grant, opens] of owner.exposed) revokeExposed(grant, opens);
+      begin();
+    } catch (error) {
+      fail(error);
+    }
     return owner.retirement;
   };
-  const failService = (owner: ServiceOwner) => { retireService(owner); };
+  const failService = (owner: ServiceOwner) => {
+    retireService(owner);
+  };
   const tick = () => {
     frame = undefined;
     if (!service || disposed) return;
@@ -144,15 +153,35 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
     if (service) return liveService();
     assertLive();
     const readers = createServiceReaders();
+    let constructed!: (worker: Worker | undefined) => void;
+    const owner: ServiceOwner = {
+      worker: undefined,
+      constructed: new Promise<Worker | undefined>((resolve) => {
+        constructed = resolve;
+      }),
+      readers,
+      incarnation: serviceIncarnation(++incarnation),
+      exposed: new Map(),
+      phase: "starting",
+      retirement: undefined,
+    };
+    retainedServices.add(owner);
+    service = owner;
     let worker: Worker;
     try {
       worker = createGpuWorker(options);
       if (ownedWorkers.has(worker)) throw new Error("GPU Worker already owned");
       ownedWorkers.add(worker);
-    } catch (error) { readers.close(); throw error; }
-    const owner: ServiceOwner = { worker, readers, incarnation: serviceIncarnation(++incarnation), exposed: new Map(), phase: "live", retirement: undefined };
-    retainedServices.add(owner);
-    service = owner;
+      owner.worker = worker;
+      constructed(worker);
+      assertLive();
+      if (owner.retirement) throw new Error("GPU service retired during construction");
+      owner.phase = "live";
+    } catch (error) {
+      constructed(undefined);
+      failService(owner);
+      throw error;
+    }
     worker.onerror = () => failService(owner);
     worker.onmessageerror = () => failService(owner);
     worker.onmessage = ({ data }: MessageEvent<GpuServiceReply>) => {
@@ -163,8 +192,19 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       else if (data.type === "retired" && grant.state === "revoking") finish(grant);
       else if (data.type === "closed") grant.opens.delete(data.id);
     };
-    try { worker.postMessage({ type: "bootstrap", readers: readers.bootstrap }); }
-    catch (error) { failService(owner); throw error; }
+    try {
+      liveService();
+      worker.postMessage({
+        type: "bootstrap",
+        readers: readers.bootstrap,
+        incarnation: owner.incarnation,
+      });
+    } catch (error) {
+      failService(owner);
+      throw error;
+    }
+    assertLive();
+    liveService();
     frame = requestAnimationFrame(tick);
     return owner;
   };
@@ -175,7 +215,8 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       assertLive();
       if (grant.state !== "live") throw new Error("Revoked grant");
       const owner = activate();
-      if (grant.binding && grant.binding !== owner) throw new Error("GPU grant belongs to retired service");
+      if (grant.binding && grant.binding !== owner)
+        throw new Error("GPU grant belongs to retired service");
       grant.binding = owner;
       let exposure = owner.exposed.get(grant);
       if (!exposure) owner.exposed.set(grant, (exposure = new Set()));
@@ -210,7 +251,7 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       return;
     }
     try {
-      if (grant.binding.phase !== "live") return;
+      if (grant.binding.phase !== "live" || !boundService(grant.binding)) return;
       grant.binding.worker.postMessage({ type: "revoke", grant: grant.id });
     } catch {
       failService(grant.binding);
@@ -318,11 +359,19 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       };
       for (const surface of selected) surface.holder = id;
       grants.set(id, grant);
+      retainedGrants.add(grant);
       channel.port1.onmessage = ({ data }: MessageEvent<unknown>) => {
         if (grant.state !== "live") return;
         if (validGraphicsOpen(data, commandBytes, completionBytes)) {
           if (!gpu || grant.opens.has(data.id) || grant.opens.size >= 8) {
             settleOpen(data, -28, 2);
+            return;
+          }
+          try {
+            graphicsLaunchRetention(publicGrant);
+          } catch {
+            settleOpen(data, -64, 5);
+            revoke(grant);
             return;
           }
           attach(grant, data);
@@ -350,7 +399,12 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
         commandBytes,
         completionBytes,
       };
-      return Object.freeze({ connection, dispose: () => revoke(grant), retired: () => retired });
+      const publicGrant: GraphicsGrant = Object.freeze({
+        connection,
+        dispose: () => revoke(grant),
+        retired: () => retired,
+      });
+      return publicGrant;
     },
   });
   return {
@@ -365,26 +419,69 @@ export function createDisplayOwner(checkLive: () => void, options: DisplayOwnerO
       disposed = true;
       const retirement = service ? retireService(service) : undefined;
       for (const grant of Array.from(grants.values())) revoke(grant);
-      disposal = Promise.resolve().then(async () => {
-        await retirement?.settled;
-        observer?.disconnect();
-        globalThis.removeEventListener?.("resize", visibility);
-        globalThis.removeEventListener?.("focus", visibility);
-        globalThis.removeEventListener?.("blur", visibility);
-        globalThis.document?.removeEventListener("visibilitychange", visibility);
-        surfaces.clear();
-      }).catch((error: unknown) => { retained = true; throw error; });
+      disposal = Promise.resolve()
+        .then(async () => {
+          await retirement?.settled;
+          observer?.disconnect();
+          globalThis.removeEventListener?.("resize", visibility);
+          globalThis.removeEventListener?.("focus", visibility);
+          globalThis.removeEventListener?.("blur", visibility);
+          globalThis.document?.removeEventListener("visibilitychange", visibility);
+          surfaces.clear();
+        })
+        .catch((error: unknown) => {
+          retained = true;
+          throw error;
+        });
       void disposal.catch(() => {});
       return disposal;
     },
   };
+}
+function boundService(owner: ServiceOwner): owner is ServiceOwner & { worker: Worker } {
+  return owner.worker !== undefined;
+}
+function revokeExposed(grant: GrantOwner, opens: ReadonlySet<GraphicsOpen>): void {
+  if (grant.state === "retired") return;
+  grant.state = "revoking";
+  Atomics.store(grant.revocation, 0, 1);
+  Atomics.notify(grant.revocation, 0);
+  for (const open of opens) settleOpen(open, -64, 5);
+}
+async function joinServiceReaders(
+  owner: ServiceOwner,
+  closed: ReturnType<ServiceReaderFence["close"]>,
+  finish: (grant: GrantOwner) => void,
+): Promise<JoinedServiceReaders> {
+  const proof = await closed.join();
+  if (!closed.accepts(proof)) throw new Error("Wrong GPU service reader proof");
+  for (const [grant, opens] of owner.exposed) {
+    if (grant.state === "retired") continue;
+    for (const open of opens) settleOpen(open, -64, 5);
+    finish(grant);
+  }
+  owner.phase = "joined";
+  return proof;
 }
 function ringSize(bytes: number): number {
   if (!Number.isInteger(bytes) || bytes < 64 || bytes > 16 * 1024 * 1024 || bytes & (bytes - 1))
     throw new RangeError("Invalid graphics ring size");
   return bytes;
 }
+function settledOpen(open: GraphicsOpen): boolean {
+  const control = new Int32Array(open.control);
+  const reason = Atomics.load(control, 1);
+  if (reason <= 0 || Atomics.load(control, 0) >= 0) return false;
+  return (
+    Number((Atomics.load(new BigInt64Array(open.commands, 0, 1), 0) >> 32n) & 0xffffffffn) ===
+      reason &&
+    Number((Atomics.load(new BigInt64Array(open.replies, 0, 1), 0) >> 32n) & 0xffffffffn) ===
+      reason &&
+    Atomics.load(new Int32Array(open.arena), 0) === reason
+  );
+}
 function settleOpen(open: GraphicsOpen, errno: number, reason: number): void {
+  if (settledOpen(open)) return;
   const selected = terminateRing(open.commands, reason);
   terminateRing(open.replies, selected);
   Atomics.store(new Int32Array(open.arena), 0, selected);

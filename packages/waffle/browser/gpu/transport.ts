@@ -58,7 +58,10 @@ export class LogicalAppend {
   #chunkPayload = 0;
   readonly #chunkBytes: number;
   constructor(
-    readonly ring: Pick<RecordRing, "capacity" | "recordHeaderBytes" | "tryAcquireWriter" | "terminal" | "terminate">,
+    readonly ring: Pick<
+      RecordRing,
+      "capacity" | "recordHeaderBytes" | "tryAcquireWriter" | "terminal" | "terminate"
+    >,
     bytes: Uint8Array,
     readonly maxLogical: number = GPU_LIMITS.logicalBytes,
   ) {
@@ -163,13 +166,15 @@ export interface LogicalRecord {
   release(): void;
 }
 export type CommandReadResult = RingReadResult | { readonly kind: "reader-closed" };
-export interface CommandReadSource extends Pick<RecordRing, "capacity" | "recordHeaderBytes" | "terminal" | "terminate"> {
+export interface CommandReadSource extends Pick<
+  RecordRing,
+  "capacity" | "recordHeaderBytes" | "terminal" | "terminate"
+> {
   readInto(destination: Uint8Array): CommandReadResult;
 }
 
 export type LogicalRead =
   | { readonly kind: "reader-closed" }
-
   | { kind: "record"; record: LogicalRecord }
   | { kind: "progress" }
   | { kind: "empty" }

@@ -1,6 +1,9 @@
 import { allocateSharedControl } from "../../memory/control.js";
 import {
-  atomicsCompareExchange, atomicsLoad, atomicsNotify, Int32ArrayConstructor,
+  atomicsCompareExchange,
+  atomicsLoad,
+  atomicsNotify,
+  Int32ArrayConstructor,
   sharedArrayBufferByteLength,
 } from "../../proc/intrinsics.js";
 import { atomicsWaitAsync } from "../../proc/intrinsics/host.js";
@@ -11,7 +14,7 @@ export interface ServiceAccess {
 export interface JoinedServiceReaders {
   readonly kind: "joined-service-readers";
 }
-export interface ClosedServiceReaders {
+interface ClosedServiceReaders {
   join(): Promise<JoinedServiceReaders>;
   accepts(proof: unknown): proof is JoinedServiceReaders;
 }

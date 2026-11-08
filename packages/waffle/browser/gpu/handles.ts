@@ -101,10 +101,13 @@ export class HandleTable {
     this.#slots.length = 0;
     const failures: unknown[] = [];
     for (const [value, reference] of this.#references) {
-      try { this.dispose(reference.kind, value); }
-      catch (error) { failures.push(error); }
+      try {
+        this.dispose(reference.kind, value);
+        this.#references.delete(value);
+      } catch (error) {
+        failures.push(error);
+      }
     }
-    this.#references.clear();
     if (failures.length) throw new AggregateError(failures, "GPU native cleanup failed");
   }
   #slot(handle: Handle, kind: ObjectKind): Slot {

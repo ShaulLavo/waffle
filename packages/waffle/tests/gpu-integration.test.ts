@@ -1,4 +1,4 @@
-import { serviceAccess } from "./fixtures/gpu/service-access.js";
+import { serviceAccess, enrollGraphics } from "./fixtures/gpu/service-access.js";
 import { gpuPayloadLayout } from "../browser/display/generated/graphics-layout.js";
 import { validGraphicsOpen } from "../browser/display/open.js";
 import { afterEach, expect, test } from "bun:test";
@@ -151,6 +151,7 @@ test("display-only creates no worker; constructor failure settles pending open",
   });
   cleanups.push(() => owner.dispose());
   const grant = owner.display.grant({ surfaces: [], gpu: true });
+  enrollGraphics(grant);
   cleanups.push(() => grant.connection.port.close());
   expect(creates).toBe(0);
   const open = openRecord();
@@ -190,17 +191,20 @@ test("initial service post failure terminates the failed worker before replaceme
   for (let turn = 0; turn < 2; turn++) {
     const grant = owner.display.grant({ surfaces: [], gpu: true }),
       open = openRecord();
+    enrollGraphics(grant);
     grant.connection.port.postMessage(open);
     await grant.retired();
     grant.connection.port.close();
     expect(Atomics.load(new Int32Array(open.control), 0)).toBe(-64);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(stops).toBe(turn + 1);
   }
   expect(creates).toBe(2);
 });
 test("service revocation terminalizes held adapter work and cannot resurrect", async () => {
   let resolve!: (adapter: object) => void;
-  const service = new GpuService(() => {}, { access: serviceAccess(),
+  const service = new GpuService(() => {}, {
+    access: serviceAccess(),
     root: {
       requestAdapter: () =>
         new Promise<object>((yes) => {
@@ -230,7 +234,8 @@ test("service revocation terminalizes held adapter work and cannot resurrect", a
       throw new Error("late adapter used");
     },
   });
-  await settle();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
   expect(service.snapshot()).toMatchObject({ connections: 0, heapBytes: 0 });
   expect(new RecordRing(open.replies, 16).terminal()).toMatchObject({ reason: 4 });
 });
@@ -259,6 +264,7 @@ test("revoke settles an open before worker construction, and grant disposal is i
   });
   cleanups.push(() => owner.dispose());
   const grant = owner.display.grant({ surfaces: [], gpu: true });
+  enrollGraphics(grant);
   grant.dispose();
   grant.dispose();
   await grant.retired();
@@ -338,7 +344,7 @@ async function trackedNativeDevice(destroy: () => unknown = () => undefined) {
     else Reflect.deleteProperty(globalThis, "navigator");
   });
   const service = new GpuService(() => {}, { access: serviceAccess() });
-  cleanups.push(() => service.dispose());
+  cleanups.push(() => service.dispose().catch(() => {}));
   cleanups.push(() => lost.resolve({ reason: "destroyed" }));
   const open = openRecord();
   service.receive({ type: "open", grant: 1, open, surfaces: [] });
@@ -374,8 +380,10 @@ for (const mode of ["revoke", "guest-destroy"]) {
   test(`native device ownership retires on ${mode} before its loss promise settles`, async () => {
     const rig = await trackedNativeDevice();
     expect(rig.service.snapshot().devicesLive).toBe(1);
-    if (mode === "revoke") rig.service.receive({ type: "revoke", grant: 1 });
-    else {
+    if (mode === "revoke") {
+      rig.service.receive({ type: "revoke", grant: 1 });
+      await rig.destroyed.promise;
+    } else {
       const writer = rig.ring.tryAcquireWriter();
       if (writer.kind !== "acquired") throw new Error("Missing destroy writer");
       writer.writer.tryWrite(command("device.destroy", { receiver: handle(3) }));
@@ -387,6 +395,8 @@ for (const mode of ["revoke", "guest-destroy"]) {
     rig.lost.resolve({ reason: "destroyed" });
     await settle();
     expect(rig.service.snapshot().devicesLive).toBe(0);
+    await rig.service.dispose();
+    expect(rig.destroyCalls()).toBe(1);
   });
 }
 

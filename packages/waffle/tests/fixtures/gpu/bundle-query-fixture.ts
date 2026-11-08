@@ -112,7 +112,8 @@ export function nativeRig(gpu: object, device: object) {
     new RecordRing(new SharedArrayBuffer(64 + 4096), 8),
     replies,
     { root: gpu },
-    credit, { access: serviceAccess() },
+    credit,
+    { access: serviceAccess() },
   );
   connection.replay.handles.reserve(h(3), "device");
   connection.replay.handles.bind(h(3), "device", { kind: "native", value: device });

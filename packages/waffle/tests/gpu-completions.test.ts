@@ -107,7 +107,11 @@ describe("bounded completion and async ownership", () => {
     } finally {
       owner.terminate(GPU_TERMINAL.closed);
     }
-    const fresh = new CompletionOwner({ access: serviceAccess(), commands: ring(256), replies: ring(256, 16) });
+    const fresh = new CompletionOwner({
+      access: serviceAccess(),
+      commands: ring(256),
+      replies: ring(256, 16),
+    });
     try {
       fresh.admit(2);
       expect(() => fresh.admit(2)).toThrow("increase");
@@ -120,7 +124,8 @@ describe("bounded completion and async ownership", () => {
     }
   });
   test("fixed payload credit has generation-aware consuming reads and explicit local exhaustion", () => {
-    const owner = new CompletionOwner({ access: serviceAccess(),
+    const owner = new CompletionOwner({
+      access: serviceAccess(),
       commands: ring(256),
       replies: ring(256, 16),
       arena: new Uint8Array(16),
@@ -333,7 +338,8 @@ describe("bounded completion and async ownership", () => {
       const commands = ring(256);
       const replies = ring(256, 16);
       const credit = new ServiceCredit();
-      const connection = new GpuConnection(commands, replies, { root: {} }, credit, { access: serviceAccess(),
+      const connection = new GpuConnection(commands, replies, { root: {} }, credit, {
+        access: serviceAccess(),
         arena: new Uint8Array(16),
       });
       try {
@@ -377,7 +383,12 @@ describe("bounded completion and async ownership", () => {
   test("corrupt reply writer state still terminates locally and runs every retirement cleanup", () => {
     const backing = new SharedArrayBuffer(64 + 128);
     const replies = new RecordRing(backing, 16);
-    const owner = new CompletionOwner({ access: serviceAccess(), commands: ring(256), replies, arena: new Uint8Array(16) });
+    const owner = new CompletionOwner({
+      access: serviceAccess(),
+      commands: ring(256),
+      replies,
+      arena: new Uint8Array(16),
+    });
     let retired = false;
     owner.onRetire(() => {
       retired = true;

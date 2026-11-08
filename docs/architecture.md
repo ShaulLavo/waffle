@@ -676,3 +676,33 @@ installing playground dependencies.
 ## Lazy network implementation
 
 `runtime.network()` owns one separate Rust WASM instance through its namespace. Core and process loading do not load this module. Browser helpers retain virtual-only transport and unchanged rings. Native embedders wire the Waffle-owned OS adapter explicitly. See [ADR 005](adr/005-lazy-rust-wasm-network.md).
+
+## GPU service reader lifetime
+
+Each activated display service owns one fresh 64-byte counted admission allocation. The page
+installs it before sending any open. A command reader admits the complete physical ring read,
+including padding, exceptions and tail stores. Scheduler visits and later native callbacks enter
+again. No admitted section spans a promise or task.
+
+Failure or Runtime suspension closes that exact service's admission synchronously. The page
+selects original transport terminals, joins all admitted sections, then settles those same
+controls again before requesting termination. `Worker.terminate()` is a separate cleanup request.
+An abandoned admitted section leaves retirement pending. A failed join or stop keeps the Runtime,
+allocator and singleton guard owned. Replacement GPU activation waits for successful old-service
+bookkeeping and uses new grants and surfaces.
+
+Normal grant revocation keeps peer admission open. Its irreversible local lease rejects new
+frames immediately. The service queues cleanup after all active callback frames return, then
+queues a separate acknowledgement. A reentrant native map fill may finish its admitted copy before
+that boundary. Neither reentry nor a microtask acknowledges retirement inline. Cleanup errors
+remain retained.
+
+Reader quiescence does not prove that aliases or native memory have been reclaimed. Before
+transferring a graphics-bearing launch, the broker binds its exact ticket to the original grant.
+The ticket retains all that launch's control allocation charges conservatively. The original
+allocation receipt is the sole charging route; receiving a different clone in an open adds no
+charge. An allocation-only listener captures the old ticket independently of child/root maps and
+ordinary message handlers, and survives Runtime disposal. The default unbounded path keeps each
+original receipt holder as non-refundable debt. The bounded path retains its existing aggregate
+consumed debt. Page-created original controls and known service exposures stay rooted through page
+destruction. No guest connection contains the fence, ticket, retention token or join proof.
