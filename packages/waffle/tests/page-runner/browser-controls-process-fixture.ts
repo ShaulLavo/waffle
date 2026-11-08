@@ -16,6 +16,15 @@ if (mode === "supervise") {
 } else {
   const results = { path: resultPath, controls: [] };
   if (mode === "inherited") process.exitCode = 23;
+  if (mode === "orphan-stderr") {
+    const descendant = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    await Bun.write(`${resultPath}.orphan-pid`, String(descendant.pid));
+  }
   await checkControl(
     "synthetic",
     mode,
@@ -49,6 +58,10 @@ if (mode === "supervise") {
     });
     process.kill(process.ppid, "SIGTERM");
     await received;
+  }
+  if (mode === "orphan-stderr") {
+    console.error("CONTROL_ORPHAN_EXIT_23");
+    process.exit(23);
   }
   if (mode === "abrupt") process.exit(17);
   if (mode === "signal") process.kill(process.pid, "SIGTERM");

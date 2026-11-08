@@ -204,3 +204,64 @@ test("a process spawn exception retains its original identity and a final report
     }
   });
 });
+
+function expectStopped(pid: number): void {
+  expect(() => process.kill(pid, 0)).toThrow();
+}
+
+test.skipIf(process.platform !== "linux")(
+  "a descendant-held stderr pipe cannot block final results and outer cleanup",
+  async () => {
+    await temporary(async (root) => {
+      const resultPath = join(root, "result.json");
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          join(import.meta.dir, "../../scripts/browser-supervisor.ts"),
+          "500",
+          process.execPath,
+          fixture,
+          "supervise",
+          "orphan-stderr",
+          resultPath,
+        ],
+        {
+          env: {
+            ...process.env,
+            WAFFLE_BROWSER_TIMEOUT: "2000",
+            WAFFLE_BROWSER_PARENT: String(process.pid),
+            STORAGE_SCRATCH_ROOT: root,
+          },
+          timeout: 4000,
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      try {
+        const [code, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        expect(code).toBe(1);
+        const summary = await Bun.file(resultPath).json();
+        expect(summary.process).toEqual({ kind: "exited", exitCode: 23, signalCode: null });
+        expect(summary.exitCode).toBe(1);
+        expect(summary.controls).toEqual([
+          { engine: "synthetic", control: "orphan-stderr", status: "pass" },
+        ]);
+        expect(summary.supervisorError).toContain("stderr did not close");
+        expect(stdout).toContain('"browserControls":');
+        expect(stderr).toContain("CONTROL_ORPHAN_EXIT_23");
+        expect(await Bun.file(summary.stderrPath).text()).toBe("CONTROL_ORPHAN_EXIT_23\n");
+        const descendant = Number(await Bun.file(`${resultPath}.controls.json.orphan-pid`).text());
+        expect(Number.isSafeInteger(descendant) && descendant > 0).toBe(true);
+        expectStopped(descendant);
+        expect((await readdir(root)).some((name) => name.startsWith("wb-"))).toBe(false);
+      } finally {
+        if (child.exitCode === null) child.kill();
+        await child.exited;
+      }
+    });
+  },
+);

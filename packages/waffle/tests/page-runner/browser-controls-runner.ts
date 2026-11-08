@@ -14,11 +14,27 @@ function spawnControls(command: string[], controlsPath: string) {
 async function forwardErrors(
   stream: ReadableStream<Uint8Array>,
   file: Awaited<ReturnType<typeof open>>,
+  signal: AbortSignal,
 ): Promise<void> {
-  for await (const chunk of stream) {
-    process.stderr.write(chunk);
-    await file.writeFile(chunk);
-  }
+  await stream.pipeTo(
+    new WritableStream<Uint8Array>({
+      async write(chunk) {
+        process.stderr.write(chunk);
+        await file.writeFile(chunk);
+      },
+    }),
+    { signal },
+  );
+}
+
+function stderrDeadline(exited: Promise<number>, cancellation: AbortController) {
+  return exited.then(() =>
+    setTimeout(
+      () =>
+        cancellation.abort(new Error("stderr did not close within 1000 ms after the suite exited")),
+      1000,
+    ),
+  );
 }
 
 /** Observe the OS exit, not Bun's exit event, which can report 0 for an unhandled rejection. */
@@ -29,6 +45,8 @@ export async function runControlProcess(command: string[], resultPath: string): 
   const stderr = await open(stderrPath, "w");
   let child: ReturnType<typeof spawnControls> | undefined;
   let forwarding: Promise<void> | undefined;
+  let drainTimer: ReturnType<typeof stderrDeadline> | undefined;
+  const cancellation = new AbortController();
   let supervisorError: { error: unknown } | undefined;
   let exitCode = 1;
   const signals: NodeJS.Signals[] = [];
@@ -42,7 +60,8 @@ export async function runControlProcess(command: string[], resultPath: string): 
     async () => {
       try {
         child = spawnControls(command, controlsPath);
-        forwarding = forwardErrors(child.stderr, stderr);
+        forwarding = forwardErrors(child.stderr, stderr, cancellation.signal);
+        drainTimer = stderrDeadline(child.exited, cancellation);
         await Promise.all([child.exited, forwarding]);
       } catch (error) {
         supervisorError = { error };
@@ -72,6 +91,7 @@ export async function runControlProcess(command: string[], resultPath: string): 
         console.log(JSON.stringify({ browserControls: summary, resultPath }));
         await writeResult(resultPath, summary);
       } finally {
+        if (drainTimer) clearTimeout(await drainTimer);
         process.removeListener("SIGINT", interrupt);
         process.removeListener("SIGTERM", interrupt);
       }
