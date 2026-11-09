@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "../proc/observation.ts";
 import { expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
@@ -273,6 +274,7 @@ test("planned binding validates parent, canceled tickets and reused directory in
     expect(stream.tryRead!([new Uint8Array(1)])).toBe(-6);
     claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 0 });
     confirmDirectoryProcess(child);
+    captureNativeReturn(child)();
     collectDirectoryProcess(child);
     const replacement = f.spawn();
     expect(replacement.slot).toBe(child.slot);

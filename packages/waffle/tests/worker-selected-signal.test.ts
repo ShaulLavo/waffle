@@ -26,7 +26,7 @@ const module = new WebAssembly.Module(
 
 function childFixture() {
   const descriptors = new DescriptorTable();
-  const root = createWorkerProcessTransport({ capacity: 2 });
+  const root = createWorkerProcessTransport({ capacity: 3 });
   let child: WorkerProcessTransport | undefined;
   const parent = new WorkerProcessClient({
     transport: root,
@@ -109,7 +109,9 @@ async function observeDefaultSignal(
           postMessage(message);
         },
       },
-    );
+    ).catch((error: unknown) => {
+      if (error !== observed) throw error;
+    });
     return { observed, rechecked, messages, revoked: sharedRevoked(connection.client)() };
   } finally {
     connection.client.port.close();
@@ -145,7 +147,7 @@ for (const boundary of ["entry", "tagged-load"] as const)
         confirmDirectoryProcess(fixture.transport);
         expect(collectDirectoryProcess(fixture.transport)).toEqual(selected);
         successor = workerProcessState(fixture.spawn());
-        expect(successor.slot).toBe(state.slot);
+        expect(successor.slot).not.toBe(state.slot);
         expect(successor.pid).not.toBe(state.pid);
         const successorOutcome = successor.signals.outcome;
         if (!(successorOutcome instanceof OutcomeCell))
@@ -224,7 +226,7 @@ for (const boundary of ["entry", "tagged-load"] as const)
       }
     });
 
-test("checkActive rejects a collected shared winner it never authenticated locally", async () => {
+test("checkActive rejects unauthorized row reuse while its active observation is retained", async () => {
   const fixture = childFixture();
   const state = workerProcessState(fixture.transport);
   let successor: ReturnType<typeof workerProcessState> | undefined;
@@ -235,6 +237,13 @@ test("checkActive rejects a collected shared winner it never authenticated local
         claimOutcome(state.signals.outcome, { kind: "signaled", code: 9 });
         confirmDirectoryProcess(fixture.transport);
         collectDirectoryProcess(fixture.transport);
+        const outcome = state.signals.outcome;
+        if (!(outcome instanceof OutcomeCell)) throw new Error("expected captured outcome");
+        Atomics.store(
+          new BigInt64Array(outcome.validity.buffer, outcome.validity.byteOffset, 1),
+          0,
+          0n,
+        );
         successor = workerProcessState(fixture.spawn());
       },
       () => {},

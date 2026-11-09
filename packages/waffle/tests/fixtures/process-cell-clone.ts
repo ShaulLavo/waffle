@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "waffle/proc/observation";
 import assert from "node:assert/strict";
 import { MessageChannel, MessagePort, Worker, isMainThread, workerData } from "node:worker_threads";
 import { DescriptorTable } from "waffle/core/descriptors";
@@ -215,6 +216,7 @@ async function noReply(): Promise<void> {
 }
 async function stale(mode: "process" | "job"): Promise<void> {
   const { root, child, state } = fixture();
+  const returned = captureNativeReturn({ ...child, kind: "directory" });
   const cells: Cells =
     mode === "process"
       ? {
@@ -252,6 +254,7 @@ async function stale(mode: "process" | "job"): Promise<void> {
     assert.deepEqual(directoryJobs(root.directory), [workerProcessState(root).jobSlot]);
     for (const phase of ["collected", "reused"] as const) {
       if (phase === "reused") {
+        returned();
         const replacement = reserveDirectoryProcess(root, 72, root.pid, 902, root.pid);
         const replacementState = workerProcessState(replacement);
         assert.equal(replacement.slot, child.slot, "exercise the very same process row");
@@ -344,7 +347,12 @@ async function broker(): Promise<void> {
   let stopQuiescent: (() => void) | undefined;
   let quiescentTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+    supervisor.createRoot({
+      pid: state.pid,
+      job: state.job,
+      observation: transport,
+      ...state.signals,
+    });
     processes = new WorkerProcessBroker({ supervisor: async () => supervisor, codec });
     processes.adoptRoot(transport);
     const pid = client.spawn(state.pid, {

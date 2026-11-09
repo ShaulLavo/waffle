@@ -688,3 +688,20 @@ process resources, fail predictably under limits, and terminate without strandin
 or process resources throughout the supported browser matrix. Record the exact remaining guest,
 adapter, process-spawning, and device limitations instead of equating thread support with universal
 native application portability.
+
+## Native-return observation integration
+
+Status: Approved implementation. The process-observation contract now carries one stable
+16-byte token through generic and threaded entry. Its canonical source is either the original
+process row or the original standalone outcome word. No selector is mirrored or moved.
+
+Thread guests receive the process's admitted observer before bootstrap. The aggregate retains
+initial, late, rollback, and service consumers through native return. Logical collection forwards
+ancestry immediately; phase 4 waits only for row-reuse eligibility. Metadata-only roots do not
+invent a native-return event. Rejected or uncertain native ownership cannot complete strong cleanup.
+
+The normal CPU controls are `process-observation*.test.ts`, the existing directory helper and
+thread lifecycle tests, and the private-authority gate. Browser and native qualification remain
+separate. Matching Bun root/worker entries, the subprocess owner and child launcher, and Bash's
+external-root stop owner and worker entry must carry the admitted observation before their first
+await. Consumer archives and pins belong to the integration owner, not this source change.

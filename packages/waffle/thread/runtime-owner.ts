@@ -1,3 +1,4 @@
+import { captureProcessObserver, type ProcessObserver } from "../proc/observation.js";
 import { createSharedControlAllocator } from "../memory/control.js";
 import {
   type RuntimeReservations,
@@ -9,7 +10,7 @@ import {
 } from "../memory/reservations.js";
 import type { ThreadModuleDeclaration } from "../memory/declarations.js";
 import { WAIT_REGISTRATION_WORDS } from "../interrupt/wait.js";
-import { readOutcome, serializeOutcome } from "../proc/outcome.js";
+import { serializeOutcome } from "../proc/outcome.js";
 import { workerProcessDirectoryId, type WorkerProcessTransport } from "../proc/worker-client.js";
 import { ProcessError, ProcessErrno, type ProcessContext } from "../proc/types.js";
 import type { FilesystemConnection } from "../fs/protocol.js";
@@ -60,6 +61,7 @@ class NoThreadOwner {
 const capacities = new WeakMap<RuntimeReservations, { processes: number; guests: number }>();
 /** Page-only owner. The sole ledger owns bytes; this counter bounds admitted actors. */
 export class RuntimeThreadOwner {
+  private readonly observer: ProcessObserver;
   private readonly backing: SharedGuestBacking;
   private readonly serviceAlias: SharedGuestAlias;
   private readonly service: Worker;
@@ -95,6 +97,7 @@ export class RuntimeThreadOwner {
 
   private constructor(private readonly options: OwnerOptions) {
     const { reservations, context, transport } = options;
+    this.observer = captureProcessObserver(context.observation);
     this.directory = workerProcessDirectoryId(transport);
     this.capacity = capacities.get(reservations) ?? { processes: 0, guests: 0 };
     capacities.set(reservations, this.capacity);
@@ -150,7 +153,11 @@ export class RuntimeThreadOwner {
     }
     void this.startInitial().catch((error) => this.fail(error));
     context.registerRevocation(() => this.terminal());
-    if (readOutcome(context.outcome)) this.terminal();
+    if (this.winner()) this.terminal();
+  }
+  private winner() {
+    const observed = this.observer.read();
+    return observed.kind === "selected" ? observed.result : null;
   }
   private createBacking(): SharedGuestBacking {
     try {
@@ -178,7 +185,7 @@ export class RuntimeThreadOwner {
   private async rollbackBacking(abort?: () => void): Promise<void> {
     try {
       abort?.();
-      const winner = readOutcome(this.options.context.outcome);
+      const winner = this.winner();
       if (!winner) throw new Error("unstarted thread has no terminal outcome");
       this.backing.seal(winner);
       await this.backing.fence({ kind: "no-agent" });
@@ -193,7 +200,7 @@ export class RuntimeThreadOwner {
   }
   private async startInitial(): Promise<void> {
     await deadline(this.serviceReady.promise, "thread service ready");
-    if (this.phase !== "open" || readOutcome(this.options.context.outcome)) return;
+    if (this.phase !== "open" || this.winner()) return;
     const guest = this.launch({ kind: "initial" });
     if (!guest) {
       this.options.context.startFailed(
@@ -260,8 +267,7 @@ export class RuntimeThreadOwner {
         if (!guest) return { kind: "error", errno: 6 };
         const ready = await deadline(guest.ready.promise, "thread ready");
         if (ready !== "ready") return { kind: "error", errno: 11 };
-        if (this.phase !== "open" || readOutcome(this.options.context.outcome))
-          return { kind: "error", errno: 11 };
+        if (this.phase !== "open" || this.winner()) return { kind: "error", errno: 11 };
         this.enter(guest);
         return { kind: "ok", value: tid };
       }
@@ -275,7 +281,7 @@ export class RuntimeThreadOwner {
     }
   }
   private launch(entry: GuestEntry): Guest | undefined {
-    if (this.phase !== "open" || readOutcome(this.options.context.outcome)) return;
+    if (this.phase !== "open" || this.winner()) return;
     if (
       this.guests.size + this.starting.size >= 4 ||
       this.capacity.guests >= 8 ||
@@ -301,7 +307,7 @@ export class RuntimeThreadOwner {
       channel = new MessageChannel();
       worker = new Worker(this.options.urls.guestWorkerUrl, { type: "module" });
       const launched = ticket.launched();
-      if (this.phase !== "open" || readOutcome(this.options.context.outcome))
+      if (this.phase !== "open" || this.winner())
         throw new Error("thread admission sealed during construction");
       const allocate = createSharedControlAllocator(ticket.control, (buffer) =>
         launched.controlAllocated(buffer),
@@ -323,7 +329,7 @@ export class RuntimeThreadOwner {
         thread,
         memory,
         waits,
-        terminal: () => !!readOutcome(this.options.context.outcome),
+        terminal: () => !!this.winner(),
         retain: (registration) => route.retain(registration.buffer),
         failed: (error) => {
           route.failed(error);
@@ -361,6 +367,7 @@ export class RuntimeThreadOwner {
           thread,
           entry,
           outcome: serializeOutcome(this.options.context.outcome),
+          observation: this.options.transport,
           signal,
           waits: waits.buffer,
           lane: { port: channel.port2, reply },
@@ -403,7 +410,7 @@ export class RuntimeThreadOwner {
   }
 
   private enter(guest: Guest): void {
-    if (this.phase !== "open" || readOutcome(this.options.context.outcome)) return;
+    if (this.phase !== "open" || this.winner()) return;
     guest.phase = "running";
     guest.worker.postMessage({ kind: "enter" });
   }
@@ -417,7 +424,7 @@ export class RuntimeThreadOwner {
     }
     if (event.kind === "process-terminal") {
       this.terminal();
-      const winner = readOutcome(this.options.context.outcome);
+      const winner = this.winner();
       if (winner?.kind === "signaled") this.options.context.defaultSignal(winner.code);
       else if (winner?.kind === "start-failed")
         this.options.context.startFailed(new Error("thread guest startup failed"));
@@ -441,7 +448,7 @@ export class RuntimeThreadOwner {
       );
   }
   terminal(): void {
-    const winner = readOutcome(this.options.context.outcome);
+    const winner = this.winner();
     if (!winner) return;
     this.backing.seal(winner);
     if (this.phase === "open") this.phase = "draining";

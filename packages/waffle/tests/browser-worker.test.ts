@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "../proc/observation.js";
 import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
 import { controlLoad, controlStore } from "../proc/control.js";
 import { compileInterruptible } from "../interrupt/loader.js";
@@ -432,7 +433,7 @@ for (const isolated of [true, false])
     expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
   });
 
-test("a delayed stale Worker releases its filesystem and reports startup failure without touching its replacement", async () => {
+test("a delayed terminated Worker releases its filesystem without completing its replacement", async () => {
   const root = createWorkerProcessTransport({ capacity: 2 });
   const descriptors = new DescriptorTable(),
     notices: WorkerProcessMessage[] = [];
@@ -458,9 +459,11 @@ test("a delayed stale Worker releases its filesystem and reports startup failure
   if (old.operation !== "spawn") throw new Error("missing spawn fixture");
   const state = workerProcessState(old.transport);
   standaloneRuntimeProcess(old.transport);
+  const returned = captureNativeReturn(old.transport);
   claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
   confirmDirectoryProcess(old.transport);
   collectDirectoryJob(root.directory, state.jobSlot, state.job);
+  returned();
   const replacement = owner.spawn(owner.pid, request);
   const latest = notices.at(-1)!;
   if (latest.operation !== "spawn") throw new Error("missing replacement fixture");
@@ -509,14 +512,10 @@ test("a delayed stale Worker releases its filesystem and reports startup failure
     ).resolves.toBeUndefined();
     expect(entered).toBe(false);
     expect(dispose).toHaveBeenCalledTimes(1);
-    expect(order).toEqual(["executor cleanup", "acknowledgement"]);
-    expect(messages.filter((message) => message.type === "error")).toMatchObject([
-      {
-        type: "error",
-        code: 126,
-        message: expect.stringContaining("process incarnation was collected"),
-      },
-    ]);
+    expect(order).toEqual(["executor cleanup"]);
+    expect(
+      messages.filter((message) => message.type === "error" || message.type === "exit"),
+    ).toEqual([]);
     expect(messages.some((message) => message.type === "runtime-proc")).toBe(false);
     expect(readOutcome(current.signals.outcome)).toBeNull();
     expect(controlLoad(current.confirmed)).toBe(0);
@@ -529,7 +528,7 @@ test("a delayed stale Worker releases its filesystem and reports startup failure
   }
 });
 
-test("collection during Worker setup cannot bypass filesystem cleanup through a stale outcome", async () => {
+test("termination during Worker bindings releases owned descriptors without completing a successor", async () => {
   const root = createWorkerProcessTransport({ capacity: 2 }),
     descriptors = new DescriptorTable();
   const notices: WorkerProcessMessage[] = [];
@@ -554,15 +553,17 @@ test("collection during Worker setup cannot bypass filesystem cleanup through a 
   const notice = notices[0]!;
   if (notice.operation !== "spawn") throw new Error("missing spawn fixture");
   const state = workerProcessState(notice.transport);
+  const returned = captureNativeReturn(notice.transport);
   let replacement: ReturnType<typeof workerProcessState> | undefined,
     ran = false;
   try {
     const result = await fixture(
       {
-        setup() {
+        beforeBindings() {
           claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
           confirmDirectoryProcess(notice.transport);
           collectDirectoryJob(root.directory, state.jobSlot, state.job);
+          returned();
           client.spawn(client.pid, request);
           replacement = workerProcessState(notices.at(-1)!.transport);
         },
@@ -574,14 +575,10 @@ test("collection during Worker setup cannot bypass filesystem cleanup through a 
       { runtimeProcess: notice.transport },
     );
     expect(ran).toBe(false);
-    expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
-    expect(result.messages.filter((message) => message.type === "error")).toMatchObject([
-      {
-        type: "error",
-        code: 126,
-        message: expect.stringContaining("process incarnation was collected"),
-      },
-    ]);
+    expect(result.order).toEqual(["descriptor release", "filesystem release"]);
+    expect(
+      result.messages.filter((message) => message.type === "error" || message.type === "exit"),
+    ).toEqual([]);
     expect(replacement?.slot).toBe(state.slot);
     expect(readOutcome(replacement!.signals.outcome)).toBeNull();
     expect(controlLoad(replacement!.confirmed)).toBe(0);

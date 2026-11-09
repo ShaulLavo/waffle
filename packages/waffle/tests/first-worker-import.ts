@@ -1,3 +1,4 @@
+import * as observations from "../proc/observation.js";
 import * as memoryControls from "../memory/control.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "../browser/worker-memory.js";
 import { ExecutionUnwind } from "../core/unwind.js";
@@ -47,6 +48,7 @@ export async function failFirstWorkerImport(
   let restoreControls: (() => void) | undefined;
   const context = {
     ...memoryControls,
+    ...observations,
     installSharedControlAllocator(allocate: (length: number) => SharedArrayBuffer) {
       restoreControls = memoryControls.installSharedControlAllocator(allocate);
       return restoreControls;

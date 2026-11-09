@@ -120,7 +120,13 @@ test("shared worker root and spawned child retain their own cwd through broker a
   const f = fixture();
   const transport = createWorkerProcessTransport({ pid: 100, job: 100, cwd: "/root/🧇" });
   const state = workerProcessState(transport);
-  f.supervisor.createRoot({ pid: state.pid, job: state.job, cwd: transport.cwd, ...state.signals });
+  f.supervisor.createRoot({
+    pid: state.pid,
+    job: state.job,
+    cwd: transport.cwd,
+    observation: transport,
+    ...state.signals,
+  });
   const descriptors = new DescriptorTable();
   cleanups.push(() => descriptors.dispose());
   const messages: WorkerProcessMessage[] = [];

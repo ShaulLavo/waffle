@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "./observation.js";
 import type { PipePublicationRegistryHandle } from "./pipes.js";
 import { allocateSharedControl } from "../memory/control.ts";
 import {
@@ -82,7 +83,9 @@ export interface WorkerDescriptorCodec {
   discard(token: unknown): void;
 }
 export interface WorkerProcessTransport {
+  readonly kind: "directory";
   directory: SharedArrayBuffer;
+  readonly lifetime: SharedArrayBuffer;
   identity: SharedArrayBuffer;
   slot: number;
   pid: number;
@@ -155,7 +158,7 @@ export type WorkerProcessMessage =
 
 export const workerProcessState = directoryState;
 function reserveRecord(
-  transport: WorkerProcessTransport,
+  transport: Pick<WorkerProcessTransport, "directory" | "slot" | "pid" | "identity">,
   pid: number,
   parentPid: number,
   job: number,
@@ -206,7 +209,7 @@ export function createWorkerProcessTransport(
   const identities = new ProcessIdentityAllocator(options.identity);
   identities.observePid(pid);
   identities.observeJob(job);
-  const transport: WorkerProcessTransport = {
+  const transport = {
     directory: createDirectory(capacity),
     identity: identities.buffer,
     slot: 0,
@@ -432,6 +435,7 @@ export class WorkerProcessClient {
     let child: WorkerProcessTransport | undefined;
     let transfer: WorkerSpawnTransfer | undefined;
     let codec = this.options.codec;
+    let publishing = false;
     try {
       // Acquire the host admission fence before touching shared membership. Fatal
       // teardown must not stop this worker with an anonymous outstanding reservation.
@@ -469,6 +473,7 @@ export class WorkerProcessClient {
       this.admit();
       const group = directoryJob(child.directory, workerProcessState(child).jobSlot);
       checkDirectoryJobAdmission(child.directory, group);
+      publishing = true;
       this.options.postMessage({
         type: "runtime-proc",
         operation: "spawn",
@@ -476,52 +481,8 @@ export class WorkerProcessClient {
         request: snapshot,
       });
     } catch (error) {
-      let cleaned = true;
-      let state: ReturnType<typeof workerProcessState> | undefined;
-      try {
-        if (child) {
-          state = workerProcessState(child);
-          claimOutcome(state.signals.outcome, startFailure(error));
-        }
-        const resources = child?.resources ?? [];
-        for (let index = 0; index < resources.length; index++) {
-          try {
-            codec.discard(resources[index]);
-          } catch (cleanupError) {
-            cleaned = false;
-            this.report(cleanupError);
-          }
-        }
-        try {
-          transfer?.cancel?.();
-        } catch (cleanupError) {
-          cleaned = false;
-          this.report(cleanupError);
-        }
-        if (child && state && cleaned) {
-          controlStore(state.confirmed, 0, 1);
-          confirmWorkerProcessJob(child);
-        }
-      } finally {
-        transfer?.release?.();
-      }
-      if (child && state && cleaned) {
-        // Confirmation may orphan-collect this child when its parent died during export.
-        // Keep its independently captured job authority, not a fresh process-row lookup.
-        try {
-          collectDirectoryProcess(child);
-        } catch (cleanupError) {
-          if (!isCollectedProcess(cleanupError)) throw cleanupError;
-        }
-        // A reentrant exporter may have admitted another member; a release callback may
-        // instead have collected/reused the job. Never adopt that replacement's identity.
-        try {
-          if (controlLoad(state.jobPending) === 0)
-            collectDirectoryJob(child.directory, state.jobSlot, state.job);
-        } catch (cleanupError) {
-          if (!isCollectedProcess(cleanupError)) throw cleanupError;
-        }
-      }
+      if (publishing) this.releaseUncertainSpawn(transfer);
+      else this.rollbackSpawn(child, transfer, codec, error);
       throw error;
     }
     // Publication transferred ownership. Never discard published resources if a host
@@ -538,6 +499,67 @@ export class WorkerProcessClient {
       }
     }
     return pid;
+  }
+  private releaseUncertainSpawn(transfer: WorkerSpawnTransfer | undefined): void {
+    try {
+      transfer?.release?.();
+    } catch (error) {
+      this.report(error);
+    }
+  }
+  private rollbackSpawn(
+    child: WorkerProcessTransport | undefined,
+    transfer: WorkerSpawnTransfer | undefined,
+    codec: WorkerDescriptorCodec,
+    error: unknown,
+  ): void {
+    let cleaned = true;
+    let state: ReturnType<typeof workerProcessState> | undefined;
+    try {
+      if (child) {
+        state = workerProcessState(child);
+        claimOutcome(state.signals.outcome, startFailure(error));
+      }
+      const resources = child?.resources ?? [];
+      for (let index = 0; index < resources.length; index++) {
+        try {
+          codec.discard(resources[index]);
+        } catch (cleanupError) {
+          cleaned = false;
+          this.report(cleanupError);
+        }
+      }
+      try {
+        transfer?.cancel?.();
+      } catch (cleanupError) {
+        cleaned = false;
+        this.report(cleanupError);
+      }
+      if (child && state && cleaned) {
+        captureNativeReturn(child)();
+        controlStore(state.confirmed, 0, 1);
+        confirmWorkerProcessJob(child);
+      }
+    } finally {
+      transfer?.release?.();
+    }
+    if (child && state && cleaned) {
+      // Confirmation may orphan-collect this child when its parent died during export.
+      // Keep its independently captured job authority, not a fresh process-row lookup.
+      try {
+        collectDirectoryProcess(child);
+      } catch (cleanupError) {
+        if (!isCollectedProcess(cleanupError)) throw cleanupError;
+      }
+      // A reentrant exporter may have admitted another member; a release callback may
+      // instead have collected/reused the job. Never adopt that replacement's identity.
+      try {
+        if (controlLoad(state.jobPending) === 0)
+          collectDirectoryJob(child.directory, state.jobSlot, state.job);
+      } catch (cleanupError) {
+        if (!isCollectedProcess(cleanupError)) throw cleanupError;
+      }
+    }
   }
   private find(pid: number, retained = false) {
     const directory = this.options.transport.directory;

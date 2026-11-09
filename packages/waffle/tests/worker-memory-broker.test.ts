@@ -279,6 +279,8 @@ test("a collected directory slot cannot attribute a late old sample to its repla
     await f.supervisor.waitForExit(f.root.pid, f.pid);
     const job = f.parent.jobOf(f.pid);
     expect(f.parent.waitJob(f.root.pid, job)?.status).toBe(0);
+    stop.resolve();
+    await until(() => !f.broker.workerMemory().some((sample) => sample.pid === f.pid));
     const nextPid = await f.spawn();
     const next = f.workers.find(
       (worker) => worker.request?.runtimeProcess?.pid === nextPid,
@@ -286,7 +288,7 @@ test("a collected directory slot cannot attribute a late old sample to its repla
     expect(next.runtimeProcess!.slot).toBe(request.runtimeProcess!.slot);
     expect(next.memoryObservation).not.toBe(request.memoryObservation);
     Atomics.store(new BigInt64Array(request.memoryObservation!), 0, 262144n);
-    expect(f.broker.workerMemory().find((sample) => sample.pid === f.pid)?.bytes).toBe(262144);
+    expect(f.broker.workerMemory().find((sample) => sample.pid === f.pid)).toBeUndefined();
     expect(f.broker.workerMemory().find((sample) => sample.pid === nextPid)?.bytes).toBeNull();
   } finally {
     stop.resolve();

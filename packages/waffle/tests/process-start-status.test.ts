@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "../proc/observation.ts";
 import { expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { Wasi } from "../core/wasi.js";
@@ -272,6 +273,7 @@ test("a reused process slot rejects stale startup read, mark and claim without a
     expect(parent.startStatus(parent.pid, pid)).toBe(0);
     expect(readOutcome(state.signals.outcome)).toBeNull();
     child.exit(127);
+    captureNativeReturn(oldTransport)();
     controlStore(state.confirmed, 0, 1);
     confirmWorkerProcessJob(oldTransport);
     expect(parent.wait(parent.pid, pid)).toEqual({ kind: "exited", code: 127, status: 127 });
@@ -454,7 +456,11 @@ for (const adapter of ["worker", "supervisor"] as const)
           },
         });
       supervisor.createRoot({ pid: parent.pid });
-      supervisor.reserveAdmittedSpawn(parent.pid, request, { pid, outcome: state.signals.outcome });
+      supervisor.reserveAdmittedSpawn(parent.pid, request, {
+        pid,
+        outcome: state.signals.outcome,
+        observation: childTransport,
+      });
       claimOutcome(state.signals.outcome, { kind: "exited", code: 0 });
       controlStore(state.confirmed, 0, 1);
       confirmWorkerProcessJob(childTransport);

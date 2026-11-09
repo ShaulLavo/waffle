@@ -697,9 +697,6 @@ for (const kind of ["direct", "runtime"] as const)
     try {
       for (let run = 0; run < 100; run++) {
         const controller = {
-          stop() {
-            stops++;
-          },
           retired() {
             retired++;
           },
@@ -723,7 +720,11 @@ for (const kind of ["direct", "runtime"] as const)
           pid = workerProcessState(root).pid;
           await broker.adoptRuntimeRoot(root, { memory: [], ...controller });
         }
+        const stop = broker.captureRootStop(pid, () => {
+          stops++;
+        });
         await broker.rootExit(pid, 0);
+        await stop();
         expect(broker.transportFor(pid)).toBeUndefined();
       }
       expect(activations).toBe(0);
@@ -739,7 +740,7 @@ for (const kind of ["direct", "runtime"] as const)
         expect((Reflect.get(broker, name) as Map<unknown, unknown>).size).toBe(0);
       expect(Array.from(table.values())).toHaveLength(0);
       await broker.dispose();
-      expect(stops).toBe(0);
+      expect(stops).toBe(100);
       expect(retired).toBe(100);
     } finally {
       await broker.dispose();
@@ -2394,7 +2395,7 @@ test("lazy external roots revoke before fencing without activating a supervisor"
   }
 });
 
-test("a pending external launcher retains authority until its late rejection then releases the failed controller", async () => {
+test("a pending external launcher retains authority until its late rejection without certifying an unknown native consumer", async () => {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
@@ -2453,7 +2454,7 @@ test("a pending external launcher retains authority until its late rejection the
   } finally {
     rejectLaunch(new Error("test cleanup"));
     await starting;
-    await broker.dispose();
+    await expect(broker.dispose()).rejects.toBeInstanceOf(AggregateError);
   }
 });
 
@@ -2595,6 +2596,7 @@ for (const settlement of ["resolve", "reject"] as const)
       disposal = broker.dispose().then(() => {
         disposed = true;
       });
+      void disposal.catch(() => {});
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       // No controller stop or retirement may consume authority a late launcher still needs.
       expect(events).not.toContain("retired");
@@ -2612,19 +2614,24 @@ for (const settlement of ["resolve", "reject"] as const)
         expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
       }
       releaseStop();
-      await disposal;
+      if (settlement === "reject") await expect(disposal).rejects.toBeInstanceOf(AggregateError);
+      else await disposal;
       expect(events.at(-1)).toBe("retired");
       expect(events.filter((event) => event === "stop")).toHaveLength(1);
       expect(events.filter((event) => event === "retired")).toHaveLength(1);
       expect(events.filter((event) => event === "terminate")).toHaveLength(
         settlement === "resolve" ? 1 : 0,
       );
-      expect((Reflect.get(broker, "controllers") as Map<number, unknown>).size).toBe(0);
+      if (settlement === "resolve")
+        expect((Reflect.get(broker, "controllers") as Map<number, unknown>).size).toBe(0);
+      else expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
     } finally {
       resolveLaunch(handle);
       releaseStop();
       await starting;
-      await (disposal ?? broker.dispose());
+      await (disposal ?? broker.dispose()).catch((error) => {
+        if (settlement !== "reject") throw error;
+      });
     }
   });
 
@@ -2692,16 +2699,23 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
       expect(errors).toEqual([]);
       release();
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      expect(events).toEqual([
+      const expected = [
         "exited",
         exitAt === "launch throws" ? "stop" : "terminate",
         "retired",
         "error",
-      ]);
-      expect(errors).toEqual([failure]);
+      ];
+      if (exitAt === "launch throws") expected.push("error");
+      expect(events).toEqual(expected);
+      expect(errors[0]).toBe(failure);
+      if (exitAt === "launch throws")
+        expect(errors[1]).toMatchObject({ message: "launcher threw after selecting failure" });
+      else expect(errors).toEqual([failure]);
     } finally {
       release();
-      await broker.dispose();
+      if (exitAt === "launch throws")
+        await expect(broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+      else await broker.dispose();
     }
   });
 

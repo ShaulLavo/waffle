@@ -703,7 +703,12 @@ class ProcessFixture {
       module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
     });
     const state = workerProcessState(this.root);
-    this.supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+    this.supervisor.createRoot({
+      pid: state.pid,
+      job: state.job,
+      observation: this.root,
+      ...state.signals,
+    });
     this.broker.adoptRoot(this.root);
     await this.worker(this.root);
   }

@@ -56,7 +56,12 @@ function fixture() {
   });
   const transport = createWorkerProcessTransport(),
     state = workerProcessState(transport);
-  supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+  supervisor.createRoot({
+    pid: state.pid,
+    job: state.job,
+    observation: transport,
+    ...state.signals,
+  });
   const descriptors = new DescriptorTable(),
     messages: WorkerProcessMessage[] = [];
   const codec = {

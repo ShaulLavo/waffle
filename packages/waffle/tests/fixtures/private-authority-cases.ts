@@ -245,3 +245,16 @@ export function ordinaryArrayBinding(entries: readonly string[]): void {
   const [entry] = entries;
   void entry;
 }
+
+/** @compileFixture Parsed by the authority guard, never called. */
+export function liveObservationToken(
+  transfer: import("../../proc/observation.js").ProcessObservationTransfer,
+): bigint {
+  return Atomics.load(new BigInt64Array(transfer.lifetime), 1);
+}
+/** @compileFixture Parsed by the authority guard, never called. */
+export function liveObservationIteration(
+  observers: readonly import("../../proc/observation.js").ProcessObserver[],
+): void {
+  observers.forEach((observer) => observer.read());
+}

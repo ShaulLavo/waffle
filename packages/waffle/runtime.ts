@@ -246,6 +246,8 @@ const processCapabilities = {
   rootControlGrant: "method",
   rootControlAllocated: "method",
   rootStopped: "method",
+  rootObservation: "method",
+  captureRootStop: "method",
   isIdleWorker: "method",
   kill: "async",
   killJob: "async",

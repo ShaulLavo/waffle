@@ -1,3 +1,4 @@
+import { admitProcessObservation } from "../proc/observation.ts";
 import { expect, test } from "bun:test";
 import { compileThreadGuest } from "../thread/guest-module.ts";
 import { createThreadLaneOwner, THREAD_LANE_BYTES } from "../thread/lane.ts";
@@ -54,6 +55,7 @@ test("actual guest fdstat has live native canaries and zero mutable-native obser
       module,
       memory: fixture.memory,
       entry: { kind: "initial" },
+      observation: admitProcessObservation(1, outcome),
       outcome: serializeOutcome(outcome),
       signal: new SharedArrayBuffer(4),
       waits: new SharedArrayBuffer(12),

@@ -1,3 +1,4 @@
+import { admitProcessObservation } from "../proc/observation.ts";
 import {
   claimOutcome,
   outcomeWord,
@@ -50,6 +51,7 @@ export async function guestFixture(
 ) {
   const fixture = await serviceFixture("cold", memory);
   const outcome = outcomeWord();
+  const observation = admitProcessObservation(1, outcome);
   const guests: Guest[] = [];
   const requests: { call: CallKey; request: ThreadRequest }[] = [];
   const failures: unknown[] = [];
@@ -135,6 +137,7 @@ export async function guestFixture(
       args,
       env,
       lane: { port: channel.port2, reply },
+      observation,
       outcome: serializeOutcome(outcome),
       signal: new SharedArrayBuffer(4),
       waits: waitBuffer,
