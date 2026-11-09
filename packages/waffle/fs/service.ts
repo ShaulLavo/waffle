@@ -63,6 +63,7 @@ import {
   type FilesystemIdentity,
   type FilesystemConnection,
   type RequestMessage,
+  type SegmentAnnouncement,
 } from "./protocol.js";
 
 const mutations = new Set([
@@ -325,10 +326,13 @@ export class FilesystemService {
     sessions: Iterable<Session>,
   ): void {
     if (!segments.length) return;
+    const announcements = segments.map(({ index, buffer }): SegmentAnnouncement => ({
+      segment: index,
+      buffer,
+    }));
     for (const peer of sessions) {
       if (peer.closed || sessionRevoked(peer)) continue;
-      for (const segment of segments)
-        peer.connection.port.postMessage({ segment: segment.index, buffer: segment.buffer });
+      for (const announcement of announcements) peer.connection.port.postMessage(announcement);
     }
   }
   private signalTransportFailure(

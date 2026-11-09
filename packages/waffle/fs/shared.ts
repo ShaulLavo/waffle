@@ -217,7 +217,7 @@ export class SharedFilesystemState {
     this.globalLock();
     try {
       const slot = this.slot(handle);
-      this.settleStaged(slot);
+      this.settleUnderLock(slot);
       this.checkFile(slot, handle);
       this.checkAccess(slot, 4);
       if (!this.pageReaders) throw new FilesystemError(58, "page retention is not enabled");
@@ -1865,6 +1865,13 @@ export class SharedFilesystemState {
     stages!.splice(index, 1);
     if (!stages!.length) this.staged.delete(stage.slot);
   }
+  /** For owner paths that read or reshape a file's pages without taking its file lock. Taking
+   * the lock is what applies the file's committed stages. */
+  private settleUnderLock(slot: number): void {
+    if (!this.staged.size) return;
+    this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, "release");
+    this.unlock(this.at(slot, FILE_LOCK));
+  }
   /** Owner only, with this slot's file lock held. Commit needs that lock too, so each stage
    * here is either wholly committed or not committed at all. */
   private settleStaged(slot: number): void {
@@ -2010,12 +2017,9 @@ export class SharedFilesystemState {
   }
   growLocked(handle: FileHandle, size: number): void {
     const slot = this.slot(handle);
-    // Growth takes no file lock of its own. A client waiting on a file whose staged write is
-    // committed asks for growth to become ready, so that write is applied here.
-    if (this.staged.size) {
-      this.lock(this.at(slot, FILE_LOCK));
-      this.unlock(this.at(slot, FILE_LOCK));
-    }
+    // A client waiting on a file whose staged write is committed asks for growth to become
+    // ready, so that write is applied here.
+    this.settleUnderLock(slot);
     const needed = Math.ceil(size / DATA_PAGE_BYTES);
     const capacity = this.slots[this.at(slot, CAPACITY)]!;
     this.checkDirty(

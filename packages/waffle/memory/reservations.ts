@@ -45,7 +45,7 @@ type SharedGuestMemoryShape = SharedGuestMemoryPlan & { readonly kind: "shared-g
 type AllocationShape = BufferShape | GroupMemoryShape | SharedGuestMemoryShape;
 /** Admission for backing that does not exist yet. It is not a native reservation: nothing is
  * constructed for it, and it reports no grown bytes. */
-export type CapacityPromiseShape = {
+type CapacityPromiseShape = {
   readonly kind: "capacity-promise";
   readonly bytes: ReservedBytes;
 };
