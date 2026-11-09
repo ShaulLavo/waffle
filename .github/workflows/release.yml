@@ -14,6 +14,9 @@ on:
 permissions:
   contents: write
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -27,7 +30,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref_name }}
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - uses: dtolnay/rust-toolchain@stable
@@ -62,7 +66,10 @@ jobs:
         run: |
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun packages/waffle-relay/scripts/prepare-native.ts
+      - run: bun run prepare:package
+      - run: bun run --cwd packages/git/node_modules/bun-wasm prepare
       - name: Pack the prepared runtime package
         run: bun run --cwd packages/waffle pack
       - name: Pack the prepared relay package
@@ -86,3 +93,5 @@ jobs:
           gh release create "$RELEASE_TAG" "${{ steps.archives.outputs.runtime }}" "${{ steps.archives.outputs.runtime }}.sha256" \
             "${{ steps.archives.outputs.relay }}" "${{ steps.archives.outputs.relay }}.sha256" \
             --draft --verify-tag --title "$RELEASE_TAG" --generate-notes
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

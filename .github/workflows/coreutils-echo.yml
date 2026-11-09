@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   echo-process:
     runs-on: ubuntu-latest
@@ -19,7 +22,8 @@ jobs:
       ECHO_XARGS_ARTIFACT: ${{ github.workspace }}/.build/xargs-process-input
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - uses: ./.github/actions/program-optimizer
@@ -56,9 +60,8 @@ jobs:
           set -euo pipefail
           archive=$(mktemp "$RUNNER_TEMP/xargs-wasi-sdk-XXXXXX.tar.gz")
           trap 'rm -f -- "$archive"' EXIT
-          curl --fail --location --retry 3 --silent --show-error \
-            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
-            -o "$archive"
+          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz "$archive"
           printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 "$archive" | sha256sum --check --status
           mkdir -p "$WASI_SDK_PATH"
           tar -xzf "$archive" --strip-components=1 -C "$WASI_SDK_PATH"
@@ -113,3 +116,5 @@ jobs:
           echo "SDK=${{ steps.sdk.outputs.cache-hit }}"
           echo "Cargo/sysroot=${{ steps.cargo.outputs.cache-hit }}"
           echo "shared libc=${{ steps.libc.outputs.cache-hit }}"
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

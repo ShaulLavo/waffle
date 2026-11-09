@@ -1,0 +1,13 @@
+name: Save new release assets
+description: Save only when completed URL-addressed assets grew since restore
+runs:
+  using: composite
+  steps:
+    - id: inventory
+      shell: bash
+      run: node "$GITHUB_WORKSPACE/tools/ci-release-cache.ts" save
+    - uses: actions/cache/save@v4
+      if: steps.inventory.outputs.changed == 'true'
+      with:
+        path: ${{ runner.temp }}/github-release-assets
+        key: release-assets-v2-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ steps.inventory.outputs.inventory }}

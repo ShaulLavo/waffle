@@ -1,0 +1,17 @@
+name: Pinned Wasmtime
+description: Install Wasmtime 49.0.3 through the authenticated release API
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        test "$RUNNER_OS/$RUNNER_ARCH" = Linux/X64
+        stage=$(mktemp -d "$RUNNER_TEMP/wasmtime-download.XXXXXXXX")
+        trap 'rm -rf -- "$stage"' EXIT
+        archive=wasmtime-v49.0.3-x86_64-linux.tar.xz
+        node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" "https://github.com/bytecodealliance/wasmtime/releases/download/v49.0.3/$archive" "$stage/$archive"
+        mkdir -p "$HOME/downloader/bin"
+        tar -xJf "$stage/$archive" --strip-components=1 -C "$stage" "wasmtime-v49.0.3-x86_64-linux/wasmtime"
+        install "$stage/wasmtime" "$HOME/downloader/bin/wasmtime"
+        "$HOME/downloader/bin/wasmtime" --version | grep -E '^wasmtime 49\.0\.3( |$)'
