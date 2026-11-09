@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { Collector } from "./collector.js";
 import { WebDriverError } from "./driver.js";
 import { SafariDriver, type NativeCommandFailure } from "./safari-driver.js";
@@ -168,7 +169,8 @@ for (const cleanupFails of [false, true]) {
       budgets: () => ({ hello: 1000, heartbeat: 15, case: 2000, group: 2000, run: 4000 }),
     };
     try {
-      root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "native-facts-"));
+      root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "native-facts-"));
+      expect(dirname(root)).toBe(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir());
       const reads = { value: 0 };
       const result = await runPageSuite(
         adapter,
