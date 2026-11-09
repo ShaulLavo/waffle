@@ -216,3 +216,20 @@ test("host diagnostics copy only bounded scalars without calling metadata getter
   expect(formatHostError(error)).toContain("original failure");
   expect(formatHostError(error)).not.toContain("Filesystem allocation:");
 });
+
+test("revoked allocation metadata leaves the original failure report intact", () => {
+  const metadata = Proxy.revocable({}, {});
+  const original = new RangeError("original native failure", { cause: "native cause" });
+  const stack = original.stack;
+  Object.defineProperty(original, "filesystemAllocation", { value: metadata.proxy });
+  metadata.revoke();
+  expect(segmentFailure(5, original)).toBe(original);
+  const detail = formatHostError(
+    new Error("Notification scenario sendFailure failed", { cause: original }),
+  );
+  expect(detail).toContain("Notification scenario sendFailure failed");
+  expect(detail).toContain("original native failure");
+  expect(detail).toContain("native cause");
+  expect(detail).not.toContain("Filesystem allocation:");
+  expect(original.stack).toBe(stack);
+});

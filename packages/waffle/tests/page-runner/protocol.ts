@@ -251,7 +251,7 @@ function errorArray(value: unknown): value is unknown[] {
 }
 
 function filesystemAllocationDetail(value: unknown): string {
-  if (!record(value)) return "";
+  if (value === null || typeof value !== "object" || errorArray(value)) return "";
   const fields = [
     "identityOrdinal",
     "rootOrdinal",
