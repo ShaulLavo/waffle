@@ -105,7 +105,7 @@ Rebind output uses `program-release.json` schema `waffle-program-release/2`, wit
 `operation: "peer-rebind"`. It reads the immutable schema-1 source manifest explicitly, including
 family packages that lack `waffleHostInterface`, and never treats missing metadata as compatible for
 new releases. Migration requires an explicit `--host-interface` and a matching-runtime `--acceptance`
-script from the tool checkout selected by `--root`, which defaults to the current directory. The target runtime archive must carry that same valid integer. A schema-2 source also
+script from the acceptance source checkout selected by `--root`, which defaults to the checkout containing the executing script. The target runtime archive must carry that same valid integer. A schema-2 source also
 requires equality with its existing runtime and family metadata. Each rebound
 package receives that exact integer, a wildcard Waffle peer, and no Waffle runtime dependency.
 The `rebind` block records the original manifest, historical checker, tool commit, and acceptance
@@ -114,6 +114,9 @@ sorted `sources` list of every bundled source path and SHA-256. Each source must
 regular file identical to that commit and inside `--root`, including imported helpers and JSON
 fixtures. The bundler consumes those checked bytes. Only installed closure packages and runtime
 built-ins remain external. Modified, untracked, or out-of-root imports refuse acceptance.
+Direct `import()` and `require()` calls must use literal module paths, so unresolved module loads
+are refused before execution. Source binding identifies module inputs, not arbitrary application I/O.
+The executing tool checkout supplies `toolCommit` and `toolDirty` independently of `--root`.
 This source list extends the existing acceptance receipt because the entry hash alone does not
 identify the imported assertions. The historical checker and package source identities stay bound
 to the original release commit. Each package records its metadata changes. Normal releases use `operation: "release"` in the

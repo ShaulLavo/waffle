@@ -708,7 +708,8 @@ function manifestRuntime(value: unknown, label: string): HistoricalRuntimeManife
   return { ...metadata, waffleHostInterface: readHostInterface(runtime, label) };
 }
 
-function toolState(root: string) {
+function toolState() {
+  const root = resolve(import.meta.dirname, "..");
   return { commit: git(root, ["rev-parse", "HEAD"]), dirty: gitStatus(root) !== "" };
 }
 
@@ -974,6 +975,7 @@ async function verifyReboundClosure(
 
 async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
   const control = { signal: options.signal, timeoutMs: options.commandTimeoutMs };
+  const tool = toolState();
   assertOutputDirectory(options.out);
   const work = mkdtempSync(resolve(options.out, ".work-"));
   let retained = false;
@@ -1035,7 +1037,6 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
     };
     for (const item of source.packages) rebound.push(await stageReboundPackage(context, item));
     const installCheck = await verifyReboundClosure(context, rebound, runtime);
-    const tool = toolState(resolve(options.root));
     const historicalToolsTree = git(options.historicalRoot, ["rev-parse", `HEAD:tools`]);
     const manifest = outputManifest(
       source,

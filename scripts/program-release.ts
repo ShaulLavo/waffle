@@ -910,6 +910,43 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
   return { ...receipt, acceptance };
 }
 
+function assertLiteralModuleLoad(
+  compiler: typeof import("typescript-api"),
+  node: import("typescript-api").Node,
+  path: string,
+) {
+  if (!compiler.isCallExpression(node)) return;
+  const expression = node.expression;
+  const moduleLoad =
+    expression.kind === compiler.SyntaxKind.ImportKeyword ||
+    (compiler.isIdentifier(expression) && expression.text === "require");
+  if (!moduleLoad) return;
+  const argument = node.arguments[0];
+  assert.ok(
+    argument && compiler.isStringLiteralLike(argument),
+    `Acceptance module path must be a string literal: ${path}`,
+  );
+}
+
+async function assertLiteralModuleLoads(contents: Buffer, path: string, loader: Bun.Loader) {
+  if (loader === "json") return;
+  const compiler = (await import("typescript-api")).default;
+  const kind =
+    loader === "tsx" || loader === "jsx" ? compiler.ScriptKind.TSX : compiler.ScriptKind.TS;
+  const source = compiler.createSourceFile(
+    path,
+    contents.toString("utf8"),
+    compiler.ScriptTarget.Latest,
+    false,
+    kind,
+  );
+  function visit(node: import("typescript-api").Node) {
+    assertLiteralModuleLoad(compiler, node, path);
+    compiler.forEachChild(node, visit);
+  }
+  visit(source);
+}
+
 function boundAcceptance(root: string, script: string) {
   const sourceRoot = realpathSync(root);
   const commit = git(sourceRoot, ["rev-parse", "HEAD"]);
@@ -948,10 +985,11 @@ function boundAcceptance(root: string, script: string) {
   const plugin: Bun.BunPlugin = {
     name: "source-bound-acceptance",
     setup(build) {
-      build.onLoad({ filter: /.*/, namespace: "file" }, ({ path }) => {
+      build.onLoad({ filter: /.*/, namespace: "file" }, async ({ path }) => {
         const contents = readSource(path);
         const loader = loaders.get(extname(path));
         assert.ok(loader, `Unsupported acceptance source: ${path}`);
+        await assertLiteralModuleLoads(contents, path, loader);
         return { contents, loader };
       });
     },

@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -393,6 +394,11 @@ describe("program peer rebind", () => {
     expect(manifest.runtime.version).toBe("0.0.106");
     expect(manifest.sourceCommit).toBe(git(fixture.root, ["rev-parse", "HEAD"]));
     expect(manifest.rebind?.from.manifestSha256).toBe(fixture.options.fromManifestSha256);
+    expect(manifest.rebind?.toolCommit).toBe(git(repository, ["rev-parse", "HEAD"]));
+    expect(manifest.rebind?.toolDirty).toBe(git(repository, ["status", "--porcelain"]) !== "");
+    expect(manifest.rebind?.toolCommit).not.toBe(
+      git(fixture.acceptanceRoot, ["rev-parse", "HEAD"]),
+    );
     expect(manifest.installCheck.runtimeRoots).toBe(1);
     expect(manifest.packages.map((item) => item.version)).toEqual(["0.0.14", "0.0.14"]);
     expect(manifest.packages[0]?.changedFiles).toEqual(["package.json"]);
@@ -489,6 +495,46 @@ describe("program peer rebind", () => {
     },
     60_000,
   );
+
+  test.each(["import", "require"] as const)(
+    "rejects runtime-computed %s before unchecked module executes",
+    async (kind) => {
+      scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+      const fixture = createFixture();
+      const marker = resolve(scratch, "unchecked-executed");
+      const outside = resolve(scratch, "unchecked.ts");
+      writeFileSync(
+        outside,
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "ran"); export const value = 1;\n`,
+      );
+      const entry = resolve(fixture.acceptanceRoot, "tools/acceptance.ts");
+      const load = kind === "import" ? "await import(path)" : "require(path)";
+      writeFileSync(entry, `const path = ${JSON.stringify(outside)}; ${load};\n`);
+      commit(fixture.acceptanceRoot, "computed module load");
+      await expect(buildRebind(fixture.options)).rejects.toThrow(
+        /Acceptance module path must be a string literal/,
+      );
+      expect(existsSync(marker)).toBe(false);
+    },
+    60_000,
+  );
+
+  test("literal dynamic imports remain source-bound without matching comment or string text", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture();
+    const entry = resolve(fixture.acceptanceRoot, "tools/acceptance.ts");
+    writeFileSync(
+      entry,
+      'const text = "import(unchecked) require(unchecked)"; /* import(unchecked) */\nconst helper = await import("./acceptance-helper.ts"); helper.accept();\n',
+    );
+    commit(fixture.acceptanceRoot, "literal module load");
+    const manifest = await buildRebind(fixture.options);
+    expect(manifest.installCheck.acceptance?.output).toBe("accepted local runtime bytes");
+    expect(manifest.rebind?.acceptance?.sources.map((source) => source.path)).toEqual([
+      "tools/acceptance-helper.ts",
+      "tools/acceptance.ts",
+    ]);
+  }, 60_000);
 
   test.each([1, 2] as const)(
     "schema-%i rebind authenticates interface 1 before rewriting to 2",
