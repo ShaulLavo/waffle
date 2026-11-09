@@ -159,6 +159,9 @@ export class SharedFilesystemState {
   readonly pendingSegments: SharedSegment[] = [];
   private readonly firstBytes: Uint8Array;
   private readonly pageViews: (Uint8Array | undefined)[] = [];
+  /** Scratch for one direct read's resolved source pages; see sourcePages. */
+  private readonly readViews: Uint8Array[] = [];
+  private readViewsBusy = false;
   /** Owner only: unsettled staged writes by file slot. Empty on every client state. */
   private readonly staged = new Map<number, StagedWrite[]>();
   private serviceMutation = false;
@@ -447,6 +450,16 @@ export class SharedFilesystemState {
   private requireBacking(slot: number, first: number, end: number): void {
     for (let logical = first; logical < end; logical++)
       this.segmentBuffer(this.pages[this.pageAt(slot, logical)]! - 1);
+  }
+  /** The page views of logical pages [first, end), resolved once and then used for the copy, so
+   * resolving them before the first byte moves costs a read almost nothing. Throws
+   * MissingSegmentError, with nothing copied, for a page this agent cannot reach. `views` is the
+   * state's scratch array unless a read is already using it: a guest iovec getter can reenter
+   * another read during the copy. */
+  private sourcePages(slot: number, first: number, end: number, views: Uint8Array[]): void {
+    const pages = this.pages;
+    for (let index = 0; index < end - first; index++)
+      views[index] = this.segmentFor(pages[this.pageAt(slot, first + index)]! - 1);
   }
   /** A write over reader-pinned pages copies each one to the lowest free page. Only the owner
    * can build the segment such a page may need, so any other agent checks here, before it
@@ -1374,45 +1387,56 @@ export class SharedFilesystemState {
       this.checkAccess(slot, 4);
       if (!(slots[base + REVISION_STATE]! & RESIDENT))
         throw new MissingDataError("shared filesystem file has not been loaded");
-      const pages = this.pages;
       let requested = 0;
       for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
       // Resolve every source page before the first destination byte changes: a range can start
       // in a segment this agent holds and end in one it lacks. Bytes at or past the end of the
       // file need no backing, so an empty read and a read at EOF never ask for a segment.
       const size = Math.min(slots[base + FILE_SIZE]!, offset + requested);
-      if (size > offset)
-        this.requireBacking(
-          slot,
-          Math.floor(offset / DATA_PAGE_BYTES),
-          Math.ceil(size / DATA_PAGE_BYTES),
-        );
-      let position = offset;
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i]!,
-          length = chunk.length;
-        let at = 0;
-        while (at < length && position < size) {
-          const inPage = position % DATA_PAGE_BYTES;
-          const count = Math.min(length - at, size - position, DATA_PAGE_BYTES - inPage);
-          const page = this.segmentFor(
-            pages[this.pageAt(slot, (position - inPage) / DATA_PAGE_BYTES)]! - 1,
-          );
-          copyBytes.call(
-            chunk,
-            count === DATA_PAGE_BYTES ? page : page.subarray(inPage, inPage + count),
-            at,
-          );
-          at += count;
-          position += count;
-        }
-        if (at < length) break;
+      if (size <= offset) return 0;
+      const first = Math.floor(offset / DATA_PAGE_BYTES);
+      const scratch = !this.readViewsBusy;
+      const views = scratch ? this.readViews : [];
+      this.sourcePages(slot, first, Math.ceil(size / DATA_PAGE_BYTES), views);
+      if (scratch) this.readViewsBusy = true;
+      try {
+        return this.copyPages(views, first, chunks, offset, size);
+      } finally {
+        if (scratch) this.readViewsBusy = false;
       }
-      return position - offset;
     } finally {
       Atomics.compareExchange(slots, lock, owner, 0);
       this.section?.exit();
     }
+  }
+  /** Copies file bytes [offset, size) from resolved page views into the iovecs. */
+  private copyPages(
+    views: readonly Uint8Array[],
+    first: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    size: number,
+  ): number {
+    let position = offset;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!,
+        length = chunk.length;
+      let at = 0;
+      while (at < length && position < size) {
+        const inPage = position % DATA_PAGE_BYTES;
+        const count = Math.min(length - at, size - position, DATA_PAGE_BYTES - inPage);
+        const page = views[(position - inPage) / DATA_PAGE_BYTES - first]!;
+        copyBytes.call(
+          chunk,
+          count === DATA_PAGE_BYTES ? page : page.subarray(inPage, inPage + count),
+          at,
+        );
+        at += count;
+        position += count;
+      }
+      if (at < length) break;
+    }
+    return position - offset;
   }
   private readyGlobal(revoked: () => boolean, owner: number): boolean {
     try {
