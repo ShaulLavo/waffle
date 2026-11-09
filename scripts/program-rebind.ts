@@ -541,14 +541,17 @@ function rewritePublishedManifest(
   assert.equal(source.version, item.version, "Original package version differs");
   if (bundle.schema === "waffle-program-release/2") {
     const required = assertWaffleFamilyManifest(source, item.name);
-    assertExactHostInterface(required, targetHostInterface, item.name);
     assert.equal(required, item.waffleHostInterface, `${item.name} source metadata differs`);
   }
   if (
     bundle.schema === "waffle-program-release/1" &&
     Object.hasOwn(source, "waffleHostInterface")
   ) {
-    assertExactHostInterface(readHostInterface(source, item.name), targetHostInterface, item.name);
+    const provided = readHostInterface(
+      record(bundle.manifest.runtime, "source runtime"),
+      "source runtime",
+    );
+    assertExactHostInterface(readHostInterface(source, item.name), provided, item.name);
   }
   const originalRuntime = manifestRuntime(bundle.manifest.runtime, "source runtime").url;
   const originalUrls = new Map(bundle.packages.map((entry) => [entry.name, entry.url]));
