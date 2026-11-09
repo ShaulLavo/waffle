@@ -98,11 +98,13 @@ async function mixedNotificationCase(
   }
 }
 
-type MixedReply = { error: string; stack: string } | { done: true } | { stage: string };
+type MixedStage = string | { deadline: number };
+
+type MixedReply = { error: string; stack: string } | { done: true } | { stage: MixedStage };
 
 function receive(
   data: MixedReply,
-  publish: (stage: string) => Promise<void>,
+  publish: (stage: MixedStage) => Promise<void>,
   resolve: (value: unknown) => void,
   reject: (error: unknown) => void,
 ): void {
@@ -118,11 +120,15 @@ function receive(
 }
 
 async function publishStage(
-  stage: string,
-  publish: (stage: string) => Promise<void>,
+  stage: MixedStage,
+  publish: (stage: MixedStage) => Promise<void>,
   gate: Int32Array,
   timers: ReturnType<typeof setTimeout>[],
 ): Promise<void> {
+  if (typeof stage !== "string") {
+    await publish(stage);
+    return;
+  }
   if (stage.endsWith("-parked")) {
     await new Promise<void>((resolve) => {
       timers.push(setTimeout(resolve, 35));
@@ -131,7 +137,7 @@ async function publishStage(
     return;
   }
   await publish(stage);
-  if (stage === "deadline" || stage === "revoke") return;
+  if (stage === "revoke") return;
   Atomics.store(gate, 0, 1);
   Atomics.notify(gate, 0);
 }
@@ -145,11 +151,13 @@ function sourcePublisher(
   timers: ReturnType<typeof setTimeout>[],
   deadlineNews: "timer" | "held",
   networkNews: "together" | "head-first",
-): (stage: string) => Promise<void> {
-  // The held control publishes at the next phase barrier, not after another timer delay.
-  let deadlinePending = false;
-  let deadlineWrite: Promise<void> | undefined;
+): (stage: MixedStage) => Promise<void> {
+  let completeDeadline: (() => Promise<void>) | undefined;
   return async (stage) => {
+    if (typeof stage !== "string") {
+      completeDeadline = deadlinePublisher(network, timers, deadlineNews, stage.deadline);
+      return;
+    }
     const source = stage.replace("-parked", "");
     if (source === "fs-service")
       await fs.asyncCall("writeFile", ["/control", false], new Uint8Array([1]));
@@ -157,45 +165,40 @@ function sourcePublisher(
     if (source === "network") {
       if (stage === "network-parked" && networkNews === "head-first")
         await network.write(1, Kind.Head, new Uint8Array([123, 125]));
-      else await publishNetwork(network);
+      else await publishNetwork(network, 1, 81);
     }
+    // The process stage follows the guest's first network read.
     if (stage === "process" && networkNews === "head-first")
       await network.write(1, Kind.Data, new Uint8Array([81]));
     if (source === "process") writer.tryWrite([new Uint8Array([3])]);
-    if (stage === "deadline" && deadlineNews === "timer")
-      deadlineWrite = scheduleDeadlineNews(network, timers);
-    if (stage === "deadline" && deadlineNews === "held") deadlinePending = true;
-    if ((stage === "quiet" || stage === "deadline-complete") && deadlinePending) {
-      deadlinePending = false;
-      await network.write(1, Kind.Data, new Uint8Array([82]));
-    }
-    if (stage === "deadline-complete") await deadlineWrite;
+    if (stage === "deadline-complete") await completeDeadline?.();
     if (stage === "revoke") await bridge.dispose();
   };
 }
 
-function scheduleDeadlineNews(
+function deadlinePublisher(
   network: RingWriter,
   timers: ReturnType<typeof setTimeout>[],
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    timers.push(
-      setTimeout(() => {
-        void network.write(1, Kind.Data, new Uint8Array([82])).then(resolve, reject);
-      }, 90),
-    );
+  mode: "timer" | "held",
+  handle: number,
+): () => Promise<void> {
+  const publish = () => publishNetwork(network, handle, 82);
+  if (mode === "held") return publish;
+  const pending = new Promise<void>((resolve, reject) => {
+    timers.push(setTimeout(() => void publish().then(resolve, reject), 90));
   });
+  return () => pending;
 }
 
-async function publishNetwork(network: RingWriter): Promise<void> {
-  await network.write(1, Kind.Head, new Uint8Array([123, 125]));
-  await network.write(1, Kind.Data, new Uint8Array([81]));
+async function publishNetwork(network: RingWriter, handle: number, byte: number): Promise<void> {
+  await network.write(handle, Kind.Head, new Uint8Array([123, 125]));
+  await network.write(handle, Kind.Data, new Uint8Array([byte]));
 }
 
 function runGuest(
   guest: Worker,
   request: import("./fixtures/notification-mixed-worker.js").MixedRequest,
-  publishSource: (stage: string) => Promise<void>,
+  publishSource: (stage: MixedStage) => Promise<void>,
   timers: ReturnType<typeof setTimeout>[],
   setDeadline: (timer: ReturnType<typeof setTimeout>) => void,
 ): Promise<unknown> {
@@ -206,7 +209,7 @@ function runGuest(
     guest.onmessage = ({ data }: MessageEvent<MixedReply>) =>
       receive(data, publish, resolve, reject);
 
-    const publish = (stage: string) => publishStage(stage, publishSource, gate, timers);
+    const publish = (stage: MixedStage) => publishStage(stage, publishSource, gate, timers);
     guest.postMessage(request, [request.filesystem.port, request.notifications.port]);
   });
 }
