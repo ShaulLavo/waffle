@@ -70,6 +70,14 @@ The native command uses the existing page-owned host and the same scenario funct
 It retains the complete result before page retirement. Normal reporter controls check
 original assertion failures and copied results. Desktop controls do not establish native
 Safari acceptance.
+
+Identity-construction failures include a copied scalar `filesystemAllocation` snapshot in the
+existing host error text when the thrown object can be annotated. It records independent,
+inherited or supplied storage, root completion, the one-based extra-segment slot and completed
+segment count. Identity and root ordinals count attempts in that bundled module instance;
+root ordinals exclude backend roots and supplied or inherited roots. They are not live-object
+counts or native-memory measurements. The original exception, cause and stack remain unchanged.
+
 [Host case queries and timeouts](host-case-query-timeouts.md) describes initial query binding and live body-relative deadlines for page-owned consumers.
 
 ### Run the complete compiled GPU async command
