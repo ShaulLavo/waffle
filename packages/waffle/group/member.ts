@@ -124,11 +124,11 @@ export function createGroupMember(
   const buffer = (): SharedArrayBuffer => reflectApply(memoryBuffer, memory, []);
   const bytes = () => sharedArrayBufferByteLength(buffer());
   const words = () => new Int32ArrayConstructor(buffer());
-  const call = (op: number, a = 0, b = 0, c = 0): number[] => {
+  const call = (op: number, a = 0, b = 0, c = 0, d = 0): number[] => {
     hooks.checkActive();
     if (disposed) return [-GroupErrno.BADF];
     const sent = (seq = (seq % 0x7fffffff) + 1);
-    reflectApply(postPort, port, [{ seq: sent, op, args: [a >>> 0, b >>> 0, c >>> 0] }]);
+    reflectApply(postPort, port, [{ seq: sent, op, args: [a >>> 0, b >>> 0, c >>> 0, d >>> 0] }]);
     for (;;) {
       const current = atomicsLoad(reply, 0);
       if (current === sent) break;
@@ -140,6 +140,10 @@ export function createGroupMember(
       atomicsLoad(reply, 2),
       atomicsLoad(reply, 3),
       atomicsLoad(reply, 4),
+      atomicsLoad(reply, 5),
+      atomicsLoad(reply, 6),
+      atomicsLoad(reply, 7),
+      atomicsLoad(reply, 8),
     ];
   };
   const inBounds = (addr: number, size: number) => addr % size === 0 && addr + size <= bytes();
@@ -153,9 +157,17 @@ export function createGroupMember(
       dataViewSetUint32(data, (out >>> 0) + index * 4, values[from + index]! >>> 0, true);
   };
   /** Validates the output span first, so a bad pointer leaves owner state untouched. */
-  const answer = (out: number, count: number, op: number, a: number, b = 0): number => {
+  const answer = (
+    out: number,
+    count: number,
+    op: number,
+    a: number,
+    b = 0,
+    c = 0,
+    d = 0,
+  ): number => {
     if (!span(out, count)) return -GroupErrno.INVAL;
-    const values = call(op, a, b);
+    const values = call(op, a, b, c, d);
     if (values[0]! < 0) return values[0]!;
     write(out, values, 1, count);
     return 0;
@@ -232,6 +244,21 @@ export function createGroupMember(
     },
     shm_unpin(pin: number): number {
       return call(GroupOp.UNPIN, pin)[0]!;
+    },
+    shm_publish(
+      kind: number,
+      primary: number,
+      companion: number,
+      meta: number,
+      out: number,
+    ): number {
+      return answer(out, 1, GroupOp.PUBLISH, kind, primary, companion, meta);
+    },
+    shm_publication_open(token: number, kind: number, out: number): number {
+      return answer(out, 7, GroupOp.OPEN, token, kind);
+    },
+    shm_withdraw(token: number): number {
+      return call(GroupOp.WITHDRAW, token)[0]!;
     },
     futex_wait32(addr: number, expected: number, ns: bigint): number {
       hooks.checkActive();

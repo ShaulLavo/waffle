@@ -33,6 +33,8 @@ export interface MemoryGroupPolicy {
   /** Bounded metadata per group. */
   readonly regions: number;
   readonly pins: number;
+  /** Publications per group, not the references they hold. */
+  readonly publications: number;
   readonly watches: number;
   /** Bounded number of live groups per page. */
   readonly groups: number;
@@ -48,6 +50,7 @@ const defaultMemoryGroupPolicy: MemoryGroupPolicy = Object.freeze({
   maximumPages: MAX_GROUP_PAGES,
   regions: 4096,
   pins: 4096,
+  publications: 4096,
   watches: 1024,
   groups: 64,
   stackBytes: 1024 * 1024,
@@ -112,6 +115,7 @@ export interface MemoryGroupSnapshot {
   readonly pids: readonly number[];
   readonly regions: number;
   readonly pins: number;
+  readonly published: number;
   readonly holds: number;
   readonly watches: number;
   /** Owner-granted logical backing, the W3 charge. Fixed reservation bytes are reported by the page ledger. */
@@ -152,12 +156,34 @@ interface Region {
   readonly chunk?: Chunk;
   readonly holders: Map<Member, number>;
   pins: number;
+  /** Publications that reference this region. */
+  published: number;
 }
 /** A transit pin. Its owner is the member that must accept or discard the delivery. */
 interface Pin {
   readonly id: number;
   readonly region: Region;
   owner: Member;
+}
+/** A group-owned reference set. It outlives its publisher and only that incarnation withdraws it. */
+interface Publication {
+  readonly kind: number;
+  readonly primary: Region;
+  readonly companion?: Region;
+  readonly meta: number;
+  readonly publisher: Member;
+}
+
+/** Issues u32 identities that never wrap or repeat. Callers refuse on `exhausted` before charging. */
+class IdentityCounter {
+  private next = 1;
+  get exhausted(): boolean {
+    return this.next > 0xffffffff;
+  }
+  take(): number {
+    if (this.exhausted) throw new Error("memory group identity exhausted");
+    return this.next++;
+  }
 }
 
 /** Owner-side lifecycle of one admitted member incarnation. Each transition happens once. */
@@ -188,8 +214,9 @@ export class MemoryGroupOwner {
   private readonly regions = new Map<number, Region>();
   private readonly pins = new Map<number, Pin>();
   private readonly arenas: Arena[] = [];
-  private nextHandle = 1;
-  private nextPin = 1;
+  private readonly published = new Map<number, Publication>();
+  private readonly handles = new IdentityCounter();
+  private readonly pinIds = new IdentityCounter();
   private ended = false;
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
@@ -202,6 +229,8 @@ export class MemoryGroupOwner {
     readonly directory: string,
     private readonly policy: MemoryGroupPolicy,
     private readonly budget: GroupBackingBudget,
+    /** Page-wide, so a token from another group is absent from this group's directory. */
+    private readonly tokens: IdentityCounter,
     private readonly onEnd: (group: MemoryGroupOwner) => void,
     private readonly source?: GroupMemorySource,
     private readonly backing?: GroupBacking,
@@ -286,6 +315,7 @@ export class MemoryGroupOwner {
       pids: Object.freeze(live.map((member) => member.pid)),
       regions: this.regions.size,
       pins: this.pins.size,
+      published: this.published.size,
       holds,
       watches,
       committedBytes: this.charged,
@@ -357,19 +387,19 @@ export class MemoryGroupOwner {
       !Number.isSafeInteger(data.seq) ||
       !Number.isSafeInteger(data.op) ||
       !Array.isArray(data.args) ||
-      data.args.length !== 3 ||
+      data.args.length !== 4 ||
       !data.args.every((value) => Number.isInteger(value) && value >= 0 && value <= 0xffffffff)
     )
       return;
     const result = this.dispatch(member, data.op, data.args);
     const reply = member.reply;
-    for (let index = 0; index < 4; index++) reply[1 + index] = result[index] ?? 0;
+    for (let index = 1; index < REPLY_WORDS; index++) reply[index] = result[index - 1] ?? 0;
     Atomics.store(reply, 0, data.seq | 0);
     Atomics.notify(reply, 0);
   }
 
-  /** Returns [status, r0, r1, r2]. Exposed for owner-side tests through `request`. */
-  private dispatch(member: Member, op: number, [a, b]: readonly number[]): number[] {
+  /** Returns [status, r0..r6]. Exposed for owner-side tests through `request`. */
+  private dispatch(member: Member, op: number, [a, b, c, d]: readonly number[]): number[] {
     switch (op) {
       case GroupOp.GROW:
         return [this.grow(member, a!)];
@@ -387,16 +417,22 @@ export class MemoryGroupOwner {
         return this.accept(member, a!);
       case GroupOp.UNPIN:
         return [this.unpin(member, a!)];
+      case GroupOp.PUBLISH:
+        return this.publish(member, a!, b!, c!, d!);
+      case GroupOp.OPEN:
+        return this.open(member, a!, b!);
+      case GroupOp.WITHDRAW:
+        return [this.withdraw(member, a!)];
       default:
         return [-GroupErrno.INVAL];
     }
   }
 
   /** In-process entry for the owner's own tests and for page-side shims; same rules as RPC. */
-  request(lease: MemberLease, op: number, a = 0, b = 0, c = 0): number[] {
+  request(lease: MemberLease, op: number, a = 0, b = 0, c = 0, d = 0): number[] {
     const member = this.members[lease.index];
     if (!member || member.pid !== lease.pid || !this.receives(member)) return [-GroupErrno.SRCH];
-    return this.dispatch(member, op, [a, b, c]);
+    return this.dispatch(member, op, [a, b, c, d]);
   }
 
   private takePages(pages: number): number | undefined {
@@ -441,15 +477,22 @@ export class MemoryGroupOwner {
   private create(member: Member, len: number, align: number): number[] {
     if (len < 1 || len > 0x7fffffff || align < 1 || align > PAGE_BYTES || align & (align - 1))
       return [-GroupErrno.INVAL];
-    if (this.regions.size >= this.policy.regions) return [-GroupErrno.AGAIN];
+    if (this.regions.size >= this.policy.regions || this.handles.exhausted)
+      return [-GroupErrno.AGAIN];
     const placed =
       len <= SMALL_REGION && align <= SMALL_REGION
         ? this.placeSmall(len, align)
         : this.placeLarge(len);
     if (!placed) return [-GroupErrno.NOMEM];
-    const handle = this.nextHandle++;
-    if (this.nextHandle > 0xffffffff) this.nextHandle = 1;
-    const region: Region = { ...placed, handle, len, holders: new Map([[member, 1]]), pins: 0 };
+    const handle = this.handles.take();
+    const region: Region = {
+      ...placed,
+      handle,
+      len,
+      holders: new Map([[member, 1]]),
+      pins: 0,
+      published: 0,
+    };
     new Uint8Array(this.memory.buffer, region.addr, len).fill(0);
     this.regions.set(handle, region);
     member.holds.set(handle, 1);
@@ -484,9 +527,17 @@ export class MemoryGroupOwner {
   private attach(member: Member, handle: number): number[] {
     const region = this.regions.get(handle);
     if (!region) return [-GroupErrno.BADF];
-    region.holders.set(member, (region.holders.get(member) ?? 0) + 1);
-    member.holds.set(handle, (member.holds.get(handle) ?? 0) + 1);
+    this.addHold(member, region);
     return [0, region.addr, region.len];
+  }
+
+  private addHold(member: Member, region: Region): void {
+    region.holders.set(member, (region.holders.get(member) ?? 0) + 1);
+    member.holds.set(region.handle, (member.holds.get(region.handle) ?? 0) + 1);
+  }
+
+  private held(member: Member, handle: number): Region | undefined {
+    return member.holds.get(handle) ? this.regions.get(handle) : undefined;
   }
 
   private detach(member: Member, handle: number): number {
@@ -507,9 +558,8 @@ export class MemoryGroupOwner {
   private pin(member: Member, handle: number): number[] {
     const region = this.regions.get(handle);
     if (!region || !member.holds.get(handle)) return [-GroupErrno.BADF];
-    if (this.pins.size >= this.policy.pins) return [-GroupErrno.AGAIN];
-    const id = this.nextPin++;
-    if (this.nextPin > 0xffffffff) this.nextPin = 1;
+    if (this.pins.size >= this.policy.pins || this.pinIds.exhausted) return [-GroupErrno.AGAIN];
+    const id = this.pinIds.take();
     this.pins.set(id, { id, region, owner: member });
     region.pins++;
     return [0, id];
@@ -535,8 +585,7 @@ export class MemoryGroupOwner {
     const region = pin.region;
     this.pins.delete(id);
     region.pins--;
-    region.holders.set(member, (region.holders.get(member) ?? 0) + 1);
-    member.holds.set(region.handle, (member.holds.get(region.handle) ?? 0) + 1);
+    this.addHold(member, region);
     return [0, region.handle, region.addr, region.len];
   }
 
@@ -553,8 +602,62 @@ export class MemoryGroupOwner {
     this.maybeFree(pin.region);
   }
 
+  /** One owner step: a complete publication, or no change. */
+  private publish(
+    member: Member,
+    kind: number,
+    primaryHandle: number,
+    companionHandle: number,
+    meta: number,
+  ): number[] {
+    if (kind === 0 || companionHandle === primaryHandle) return [-GroupErrno.INVAL];
+    const primary = this.held(member, primaryHandle);
+    const companion = companionHandle === 0 ? undefined : this.held(member, companionHandle);
+    if (!primary || (companionHandle !== 0 && !companion)) return [-GroupErrno.BADF];
+    if (this.published.size >= this.policy.publications || this.tokens.exhausted)
+      return [-GroupErrno.AGAIN];
+    const token = this.tokens.take();
+    primary.published++;
+    if (companion) companion.published++;
+    this.published.set(token, { kind, primary, companion, meta, publisher: member });
+    return [0, token];
+  }
+
+  /** One owner step: a hold on every region and the owner's own extents, or nothing. */
+  private open(member: Member, token: number, kind: number): number[] {
+    const entry = this.published.get(token);
+    if (!entry || entry.kind !== kind) return [-GroupErrno.BADF];
+    const { primary, companion, meta } = entry;
+    this.addHold(member, primary);
+    if (companion) this.addHold(member, companion);
+    return [
+      0,
+      primary.handle,
+      primary.addr,
+      primary.len,
+      companion?.handle ?? 0,
+      companion?.addr ?? 0,
+      companion?.len ?? 0,
+      meta,
+    ];
+  }
+
+  private withdraw(member: Member, token: number): number {
+    const entry = this.published.get(token);
+    if (!entry || entry.publisher !== member) return -GroupErrno.BADF;
+    this.published.delete(token);
+    this.unpublish(entry.primary);
+    if (entry.companion) this.unpublish(entry.companion);
+    return 0;
+  }
+
+  private unpublish(region: Region): void {
+    region.published--;
+    this.maybeFree(region);
+  }
+
   private maybeFree(region: Region): void {
-    if (region.holders.size || region.pins) return;
+    if (region.holders.size || region.pins || region.published) return;
     this.regions.delete(region.handle);
     if (region.chunk) {
       this.free.give(region.chunk.page, region.chunk.pages);
@@ -602,6 +705,10 @@ export class MemoryGroupOwner {
     if (this.ended) return;
     this.ended = true;
     this.reconcile();
+    this.published.clear();
+    this.regions.clear();
+    this.pins.clear();
+    this.arenas.length = 0;
     this.budget.release(this.charged);
     if (this.backing) this.source?.retire(this.backing);
     this.onEnd(this);
@@ -612,6 +719,7 @@ export class MemoryGroupOwner {
 export class MemoryGroups {
   readonly policy: MemoryGroupPolicy;
   readonly budget: GroupBackingBudget;
+  private readonly tokens = new IdentityCounter();
   private readonly groups = new Map<string, MemoryGroupOwner>();
   private readonly owners = new WeakMap<MemoryGroupHandle, MemoryGroupOwner>();
   private nextId = 1;
@@ -645,6 +753,7 @@ export class MemoryGroups {
         directory,
         this.policy,
         this.budget,
+        this.tokens,
         (ended) => {
           this.groups.delete(ended.id);
         },

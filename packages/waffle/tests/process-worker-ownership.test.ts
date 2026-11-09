@@ -261,6 +261,23 @@ test("worker spawn synchronously retains arbitrary bindings across lazy activati
   expect(counts[1]).toBe(2);
 });
 
+test("the typed Worker field reaches the adapter as an owned copy, and only an object counts", async () => {
+  const f = fixture();
+  const worker: Record<string, unknown> = { resourceLimits: {} };
+  const thread = f.root.spawn(1, request({ worker }));
+  worker.resourceLimits = "changed after the synchronous spawn";
+  const ordinary = f.root.spawn(1, request());
+  const malformed = [null, 1, "x", true].map((value) =>
+    f.root.spawn(1, request({ worker: value as never })),
+  );
+  await f.flush();
+  const started = malformed.concat([thread, ordinary]);
+  for (const pid of started) await f.supervisor.start(pid);
+  expect(f.contexts.get(thread)!.request.worker).toEqual({ resourceLimits: {} });
+  for (const pid of malformed.concat([ordinary]))
+    expect(f.contexts.get(pid)!.request).not.toHaveProperty("worker");
+});
+
 test("spawned pipe writers survive parent exit before the child worker starts", () => {
   const transport = createWorkerProcessTransport({ capacity: 16 });
   const spawnMessages: WorkerProcessMessage[] = [];

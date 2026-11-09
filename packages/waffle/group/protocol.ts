@@ -13,7 +13,7 @@ export const GroupErrno = Object.freeze({
   SRCH: 71,
 });
 
-/** Member-to-owner requests. Each carries a sequence number and up to three u32 arguments. */
+/** Member-to-owner requests. Each carries a sequence number and four u32 arguments. */
 export const GroupOp = Object.freeze({
   GROW: 1,
   CREATE: 2,
@@ -23,16 +23,19 @@ export const GroupOp = Object.freeze({
   ROUTE: 6,
   ACCEPT: 7,
   UNPIN: 8,
+  PUBLISH: 9,
+  OPEN: 10,
+  WITHDRAW: 11,
 });
 
 export interface GroupRequestMessage {
   readonly seq: number;
   readonly op: number;
-  readonly args: readonly [number, number, number];
+  readonly args: readonly [number, number, number, number];
 }
 
-/** Reply cells: [seq, status, r0, r1, r2]. The owner stores results before publishing seq. */
-export const REPLY_WORDS = 5;
+/** Reply cells: [seq, status, r0..r6]. The owner stores results before publishing seq. */
+export const REPLY_WORDS = 9;
 
 /**
  * Watch table in the control buffer. Owned by the group owner, never guest memory.

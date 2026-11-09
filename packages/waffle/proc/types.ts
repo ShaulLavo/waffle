@@ -82,6 +82,12 @@ export interface SpawnRequest {
   /** New jobs only; omission preserves independent foreground/background jobs. */
   jobLifetime?: JobLifetime;
   fds: DescriptorBinding[];
+  /** A guest thread started as a process. Waffle gives its contents no meaning. */
+  worker?: Readonly<Record<string, unknown>>;
+}
+/** Owned copy of the guest-supplied Worker field. A non-object value is not a Worker. */
+export function snapshotSpawnWorker(worker: unknown): Pick<SpawnRequest, "worker"> {
+  return worker !== null && typeof worker === "object" ? { worker: { ...worker } } : {};
 }
 /** Immutable shared-directory job identity, independent of controller message order. */
 export interface SharedJobIdentity {

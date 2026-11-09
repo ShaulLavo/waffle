@@ -88,6 +88,14 @@ function withExecutionObservation(expected: string[]) {
   }
   return events.sort();
 }
+/** Publication descriptors widened the memory group reply cell from five words to nine. */
+function withPublicationReply(expected: string[]) {
+  const oldReply = '"initial":20,"maximum":20,"growable":false';
+  expect(expected.filter((event) => event.includes(oldReply))).toHaveLength(2);
+  return expected
+    .map((event) => event.replace(oldReply, '"initial":36,"maximum":36,"growable":false'))
+    .sort();
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
@@ -119,8 +127,12 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 33_289_256)).toEqual(
-        withExecutionObservation(
-          withPrivateInputArena(withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024))),
+        withPublicationReply(
+          withExecutionObservation(
+            withPrivateInputArena(
+              withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+            ),
+          ),
         ),
       );
     } finally {

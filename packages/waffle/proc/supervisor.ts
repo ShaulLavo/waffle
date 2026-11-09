@@ -43,6 +43,7 @@ import {
   checkedSignal,
   checkedJobLifetime,
   checkedProcessCwd,
+  snapshotSpawnWorker,
   type ChildExitEvent,
   type ProcessContext,
   type ProcessLifecycle,
@@ -137,6 +138,7 @@ function snapshot(
     job: selection.job,
     ...(selection.jobLifetime === undefined ? {} : { jobLifetime: selection.jobLifetime }),
     fds: spec.fds.map((binding) => ({ ...binding })),
+    ...snapshotSpawnWorker(spec.worker),
   };
 }
 
