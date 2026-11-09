@@ -747,13 +747,7 @@ function outputManifest(
       toolsTree: historicalToolsTree,
       command: "bun tools/program-package.ts check",
     },
-    acceptance: options.acceptance
-      ? {
-          script: relative(options.historicalRoot, options.acceptance),
-          commit: sourceCommit,
-          sha256: sha256(readFileSync(options.acceptance)),
-        }
-      : undefined,
+    acceptance: installCheck.acceptance?.source,
     runtimeInput: {
       kind: options.runtime.tarball ? "local-artifact" : "published-download",
       provisional: Boolean(options.runtime.tarball) && !options.runtimePublished,
@@ -963,6 +957,7 @@ async function verifyReboundClosure(
       work,
       requests,
       acceptance: options.acceptance,
+      acceptanceRoot: options.root,
       runtimeVersion: runtime.version,
       runtimeHostInterface: runtime.hostInterface,
       control,
@@ -986,7 +981,7 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
     const requiredHostInterface = parseHostInterface(options.hostInterface, "rebind requirement");
     const source = await loadSourceBundle(options, control, work);
     if (source.schema === "waffle-program-release/1") {
-      assert.ok(options.acceptance, "Schema-1 migration requires historical --acceptance");
+      assert.ok(options.acceptance, "Schema-1 migration requires source-bound --acceptance");
     }
     const sourceCommit = stringValue(source.manifest.sourceCommit, "Source manifest sourceCommit");
     const programVersion = versionFromTag(options.tag);
@@ -996,7 +991,6 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
       options.historicalRoot,
       resolve(options.historicalRoot, "tools/program-package.ts"),
     );
-    if (options.acceptance) assertHistoricalScript(options.historicalRoot, options.acceptance);
     const tagState = targetTagState(
       options.historicalRoot,
       options.tag,
@@ -1151,7 +1145,7 @@ const usage = `Usage: bun scripts/program-rebind.ts --from-tag programs-vX.Y.Z \
   --from-manifest-sha256 HEX --tag programs-vX.Y.Z --out DIR \\
   --runtime-url URL --runtime-sha256 HEX --runtime-tarball FILE \\
   --historical-root DIR [--from-assets DIR] [--registry URL] \\
-  [--acceptance FILE] [--require-tag] [--timeout-ms MS]`;
+  [--acceptance FILE_FROM_ROOT] [--require-tag] [--timeout-ms MS]`;
 
 async function main(argv: string[]) {
   const controller = new AbortController();

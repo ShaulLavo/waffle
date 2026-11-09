@@ -93,7 +93,7 @@ bun scripts/program-rebind.ts \
   --runtime-tarball "$RUNTIME_ARCHIVE" --host-interface "$HOST_INTERFACE" \
   --runtime-source-commit "$RUNTIME_SOURCE_COMMIT" \
   --historical-root /work/worktrees/waffle/checker-3050f69 \
-  --acceptance /work/worktrees/waffle/checker-3050f69/tools/family-packed-app.ts
+  --acceptance "$PWD/tools/family-packed-app.ts"
 ```
 
 The tool admits the original tarballs with the checker from their source commit, proves identity
@@ -104,12 +104,19 @@ when supplied, so a private draft asset can be qualified without an unauthentica
 Rebind output uses `program-release.json` schema `waffle-program-release/2`, with
 `operation: "peer-rebind"`. It reads the immutable schema-1 source manifest explicitly, including
 family packages that lack `waffleHostInterface`, and never treats missing metadata as compatible for
-new releases. Migration requires an explicit `--host-interface` and the unchanged historical `--acceptance`
-script. The target runtime archive must carry that same valid integer. A schema-2 source also
+new releases. Migration requires an explicit `--host-interface` and a matching-runtime `--acceptance`
+script from the tool checkout selected by `--root`, which defaults to the current directory. The target runtime archive must carry that same valid integer. A schema-2 source also
 requires equality with its existing runtime and family metadata. Each rebound
 package receives that exact integer, a wildcard Waffle peer, and no Waffle runtime dependency.
 The `rebind` block records the original manifest, historical checker, tool commit, and acceptance
-harness. Each package records its metadata changes. Normal releases use `operation: "release"` in the
+program. Acceptance records its own source commit, root-relative script path, SHA-256, and a
+sorted `sources` list of every bundled source path and SHA-256. Each source must be a tracked
+regular file identical to that commit and inside `--root`, including imported helpers and JSON
+fixtures. The bundler consumes those checked bytes. Only installed closure packages and runtime
+built-ins remain external. Modified, untracked, or out-of-root imports refuse acceptance.
+This source list extends the existing acceptance receipt because the entry hash alone does not
+identify the imported assertions. The historical checker and package source identities stay bound
+to the original release commit. Each package records its metadata changes. Normal releases use `operation: "release"` in the
 same schema. Current-main admission is not used for historical receipts that the current checker
 correctly refuses.
 
