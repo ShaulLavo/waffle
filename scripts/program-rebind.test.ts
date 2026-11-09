@@ -439,7 +439,15 @@ describe("program peer rebind", () => {
     });
   }, 60_000);
 
-  test.each(["entry", "import", "untracked", "outside", "symlink", "false-root"] as const)(
+  test.each([
+    "entry",
+    "import",
+    "untracked",
+    "outside",
+    "symlink",
+    "false-root",
+    "empty-root",
+  ] as const)(
     "rejects acceptance source with %s identity violation",
     async (violation) => {
       scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
@@ -471,8 +479,9 @@ describe("program peer rebind", () => {
         symlinkSync(outside, helper);
         commit(fixture.acceptanceRoot, "outside symlink");
       }
-      const options =
-        violation === "false-root" ? { ...fixture.options, root: fixture.root } : fixture.options;
+      let options = fixture.options;
+      if (violation === "false-root") options = { ...options, root: fixture.root };
+      if (violation === "empty-root") options = { ...options, root: "" };
       await expect(buildRebind(options)).rejects.toThrow(
         /Acceptance source (identity differs|is not a tracked regular file|escapes its source root)/,
       );

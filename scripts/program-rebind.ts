@@ -957,7 +957,7 @@ async function verifyReboundClosure(
       work,
       requests,
       acceptance: options.acceptance,
-      acceptanceRoot: options.root,
+      acceptanceRoot: resolve(options.root),
       runtimeVersion: runtime.version,
       runtimeHostInterface: runtime.hostInterface,
       control,
