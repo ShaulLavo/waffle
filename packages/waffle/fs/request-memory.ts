@@ -414,6 +414,11 @@ export class FilesystemRequestPool {
       const candidate = this.arenas[i]!;
       if (atomicsLoad(new Int32ArrayConstructor(candidate.revocation), 0) !== 2) continue;
       if (!get(arenaMemory(candidate, this.budget), C.retired)) continue;
+      // The old client counts itself in while it publishes a request into this arena. A reaped
+      // agent can still be inside that section, mid-copy. Only an observed zero frees the arena:
+      // the count is never reset, and neither a timeout nor a terminate return stands in for
+      // it. Until then the arena stays here, charged, and a later take looks again.
+      if (get(arenaMemory(candidate, this.budget), C.sections)) continue;
       if (get(arenaMemory(candidate, this.budget), C.retirementError)) {
         this.strand(candidate);
         continue;

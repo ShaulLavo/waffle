@@ -1,22 +1,19 @@
 import { objectDefineProperty } from "../proc/intrinsics.js";
 
-/** Ordinals count attempts in this module instance, not live roots or native memory. */
+/** Ordinals count attempts in this module instance, not live roots or native memory. An identity
+ * constructs no data segment, so construction has only a root stage and an identity stage. */
 export interface FilesystemIdentityAllocation {
   identityOrdinal: number;
   rootOrdinal: number | null;
   kind: "independent" | "inherited" | "provided";
-  stage: "root" | "segments" | "identity";
+  stage: "root" | "identity";
   rootComplete: boolean;
-  segmentSlot: number | null;
-  segmentsCompleted: number;
-  segmentsPlanned: number;
 }
 let identities = 0;
 let roots = 0;
 export function beginIdentityAllocation(
   inherited: boolean,
   provided: boolean,
-  segmentsPlanned: number,
 ): FilesystemIdentityAllocation {
   return {
     identityOrdinal: ++identities,
@@ -24,9 +21,6 @@ export function beginIdentityAllocation(
     kind: inherited ? "inherited" : provided ? "provided" : "independent",
     stage: "root",
     rootComplete: false,
-    segmentSlot: null,
-    segmentsCompleted: 0,
-    segmentsPlanned: inherited ? 0 : segmentsPlanned,
   };
 }
 export function recordIdentityAllocationFailure(

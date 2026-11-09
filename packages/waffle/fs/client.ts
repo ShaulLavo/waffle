@@ -55,6 +55,7 @@ import {
   mapSize,
   mapForEach,
   setAdd,
+  setHas,
   setDelete,
   setForEach,
   arrayAppend,
@@ -224,6 +225,12 @@ export class FilesystemCompletion {
       this.release();
     }
   }
+  /** Release a staged write after this client committed it. Committing is the only use of that
+   * completion, and the discard posted here asks the owner to apply the write. */
+  releaseCommitted(): void {
+    this.consumed = true;
+    this.release();
+  }
   private check(): void {
     const failure = this.client.transportError();
     if (failure) throw failure;
@@ -301,6 +308,50 @@ export class FilesystemCompletion {
     return this.decoded;
   }
 }
+/** A write the owner is holding for this client. `bytes` is the client's own copy: a retry
+ * commits the stage only when it still carries exactly these bytes for the same place. */
+interface StagedPreparation {
+  kind: "write";
+  completion: FilesystemCompletion;
+  offset: number;
+  append: boolean;
+  bytes: Uint8Array;
+}
+/** A private copy of the first bytes of a write, at most one transport page. */
+function stagedBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  let length = 0;
+  for (let i = 0; i < chunks.length; i++) length = Math.min(PAGE, length + chunks[i]!.length);
+  const bytes = new Uint8ArrayConstructor(length);
+  let at = 0;
+  for (let i = 0; i < chunks.length && at < length; i++) {
+    const chunk = chunks[i]!;
+    const count = Math.min(chunk.length, length - at);
+    typedArraySet(bytes, new Uint8ArrayConstructor(chunk.buffer, chunk.byteOffset, count), at);
+    at += count;
+  }
+  return bytes;
+}
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
+}
+/** Copies `bytes` into the iovecs, starting `skip` bytes into their combined range. */
+function copyReadAt(chunks: readonly Uint8Array[], bytes: Uint8Array, skip: number): void {
+  let source = 0;
+  for (let i = 0; i < chunks.length && source < bytes.length; i++) {
+    const chunk = chunks[i]!;
+    const start = Math.min(skip, chunk.length);
+    skip -= start;
+    const count = Math.min(chunk.length - start, bytes.length - source);
+    if (count > 0) typedArraySet(chunk, bytes.subarray(source, source + count), start);
+    source += Math.max(0, count);
+  }
+}
+function preparationFailed(completion: FilesystemCompletion | undefined): boolean {
+  const state = completion?.cells[0];
+  return state === State.Failed || state === State.Cancelled;
+}
 /** Blocking watch calls for a synchronous guest; each one is a service round trip. */
 function clientWatches(
   cells: () => Int32Array,
@@ -354,6 +405,14 @@ export class FilesystemClient implements FileSystem {
         revision: number | undefined;
       }
   >();
+  // One staged write per handle, apart from ioPreparations: a read or a readiness probe on the
+  // same handle consumes or replaces those, and must never withdraw a write waiting to commit.
+  private stagedWrites = new MapConstructor<number, StagedPreparation>();
+  // Handles whose last immediate write had to be staged. Right after such a write commits, the
+  // file waits one owner turn for its apply. The next write then stages at once, instead of
+  // first asking for growth and staging on the retry after that. Only a hint: a wrong one costs
+  // a stage the direct path then makes unnecessary.
+  private stagedHandles = new SetConstructor<number>();
   private capabilityEntries = new MapConstructor<number, number>();
   private capabilities: Int32Array;
   private epoch: Int32Array;
@@ -390,8 +449,7 @@ export class FilesystemClient implements FileSystem {
       (operation, args) => this.call(operation, args),
     );
     connection.port.onmessage = ({ data }) => {
-      if (data.segment)
-        this.shared.addSegment(connection.segments[data.segment - 1]!, data.segment);
+      if (data.segment) this.attachSegment(data.segment, data.buffer);
       else mapGet(this.completions, data.completed)?.notify();
     };
     connection.port.onmessageerror = () => {
@@ -405,6 +463,13 @@ export class FilesystemClient implements FileSystem {
   }
   transportError() {
     return requestTransportError(this.requests.memory);
+  }
+  /** An announced segment only makes later access direct. Nothing waits for it: until it
+   * arrives, and for an agent that never returns to its event loop, the owner serves those
+   * pages. The connection's directory is filled too, so later forks start with the segment. */
+  private attachSegment(index: number, buffer: SharedArrayBuffer): void {
+    this.shared.addSegment(buffer, index);
+    this.connection.segments[index - 1] ??= this.shared.segments[index]!;
   }
   async attachResidentPublication(): Promise<void> {
     await this.resident?.attach();
@@ -536,7 +601,7 @@ export class FilesystemClient implements FileSystem {
       else {
         mapDelete(this.openHandles, reservation.handle);
         mapDelete(this.fileSlots, reservation.handle);
-        this.cancelIO(reservation.handle);
+        this.closeIO(reservation.handle);
       }
     }
     this.connection.port.postMessage({ trim: true });
@@ -715,6 +780,8 @@ export class FilesystemClient implements FileSystem {
     mapForEach(this.completions, (completion) => completion.release());
     mapClear(this.completions);
     mapClear(this.ioPreparations);
+    mapClear(this.stagedWrites);
+    this.stagedHandles = new SetConstructor();
     this.reads.clear();
     this.stats.clear();
     this.paths.clear();
@@ -816,7 +883,7 @@ export class FilesystemClient implements FileSystem {
       if (!(error instanceof FilesystemError) || error.errno !== 11) throw error;
       mapDelete(this.openHandles, handle);
       mapDelete(this.fileSlots, handle);
-      this.cancelIO(handle);
+      this.closeIO(handle);
       return;
     }
     try {
@@ -827,7 +894,7 @@ export class FilesystemClient implements FileSystem {
       else {
         mapDelete(this.openHandles, handle);
         mapDelete(this.fileSlots, handle);
-        this.cancelIO(handle);
+        this.closeIO(handle);
       }
       // Keep linked zero-reference capabilities as a bounded cache. dropReference queues any
       // needed detached-file/budget trim without waiting for a worker acknowledgment.
@@ -855,6 +922,19 @@ export class FilesystemClient implements FileSystem {
     mapDelete(this.ioPreparations, handle);
     pending.completion.release();
   }
+  /** The last local reference to a handle is gone: nothing prepared for it may outlive it. */
+  private closeIO(handle: FileHandle): void {
+    this.cancelIO(handle);
+    this.cancelStage(handle);
+    setDelete(this.stagedHandles, handle);
+  }
+  /** Withdraws an uncommitted staged write. The owner drops its copy and nothing changed. */
+  private cancelStage(handle: FileHandle): void {
+    const stage = mapGet(this.stagedWrites, handle);
+    if (!stage) return;
+    mapDelete(this.stagedWrites, handle);
+    stage.completion.release();
+  }
   private preparedIO(handle: FileHandle): boolean {
     const pending = mapGet(this.ioPreparations, handle);
     if (!pending) return true;
@@ -869,6 +949,92 @@ export class FilesystemClient implements FileSystem {
     // can run. No wait(), async continuation or overflow transfer is needed for preparation.
     completion.releaseReady();
     return true;
+  }
+  /** The writer's view of both preparations. False means one is still running: EAGAIN, and
+   * nothing new is submitted. A staged write that finished stays for the retry to commit; one
+   * that failed or was cancelled is cleared here and throws its errno once. */
+  private preparedWrite(handle: FileHandle): boolean {
+    if (!this.preparedIO(handle)) return false;
+    const stage = mapGet(this.stagedWrites, handle);
+    if (!stage) return true;
+    if (!stage.completion.ready) return false;
+    if (atomicsLoad(stage.completion.cells, 0) === State.Complete) return true;
+    mapDelete(this.stagedWrites, handle);
+    stage.completion.releaseReady();
+    return true;
+  }
+  private submitStage(handle: FileHandle, offset: number, append: boolean, bytes: Uint8Array) {
+    this.cancelStage(handle);
+    const completion = this.submit("stageWrite", [handle, offset, append], bytes);
+    mapSet(this.stagedWrites, handle, { kind: "write", completion, offset, append, bytes });
+  }
+  /** An immediate write whose target pages are in a segment this agent lacks. The first call
+   * hands a private copy to the owner and returns EAGAIN with nothing changed and no iovec kept.
+   * A retry that still carries the same bytes for the same place commits that stage itself, in
+   * attached metadata, and returns its count. Anything else prepares again: other bytes, or a
+   * commit that found the file waiting for the owner, not loaded, too small or reader-pinned. */
+  private stagedIO(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: boolean,
+    admission?: PublicationAdmission,
+  ): { written: number; offset: number } | number {
+    const bytes = stagedBytes(chunks);
+    const stage = mapGet(this.stagedWrites, handle);
+    const matches =
+      stage !== undefined &&
+      stage.append === append &&
+      (append || stage.offset === offset) &&
+      sameBytes(stage.bytes, bytes);
+    const end = matches
+      ? this.shared.commitStagedWrite(
+          slot,
+          handle,
+          stage.completion.cells,
+          stage.bytes,
+          append,
+          offset,
+          this.epoch,
+          this.revoked,
+          this.connection.owner,
+          admission,
+        )
+      : undefined;
+    if (stage && end !== undefined) {
+      mapDelete(this.stagedWrites, handle);
+      stage.completion.releaseCommitted();
+      return append ? { written: bytes.length, offset: end } : bytes.length;
+    }
+    setAdd(this.stagedHandles, handle);
+    this.submitStage(handle, offset, append, bytes);
+    return -6;
+  }
+  /** A direct immediate write found the file not resident or too small. With a staged write
+   * outstanding the owner does both jobs in one preparation; otherwise capacity is reserved. */
+  private prepareWriteIO(
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: boolean,
+    size: number,
+  ): number {
+    if (mapHas(this.stagedWrites, handle) || setHas(this.stagedHandles, handle))
+      this.submitStage(handle, offset, append, stagedBytes(chunks));
+    else this.prepareIO(handle, { kind: "grow", size });
+    return -6;
+  }
+  /** A direct immediate write was accepted, so a stage for this handle is no longer needed. */
+  private wroteDirectly(handle: FileHandle): void {
+    this.cancelStage(handle);
+    setDelete(this.stagedHandles, handle);
+  }
+  /** EAGAIN keeps a staged write for the next retry. Any other failure withdraws it. */
+  private immediateFailure(handle: FileHandle, error: unknown): number {
+    const code = this.directFailure(handle, error);
+    if (code !== 6) this.cancelStage(handle);
+    return code;
   }
   private prepareIO(handle: FileHandle, intent: { kind: "grow"; size: number }): void {
     if (mapHas(this.ioPreparations, handle)) return;
@@ -926,6 +1092,54 @@ export class FilesystemClient implements FileSystem {
     }
     return at;
   }
+  /** Blocking read of bytes this agent cannot reach, in owner requests of one transport page.
+   * The file's revision only moves forward, so a reply taken between two equal samples is that
+   * revision's content. Only such a reply is copied out, which makes the returned prefix one
+   * revision's bytes:
+   * - a change before any progress asks again, so a race is never reported as end of file;
+   * - a change or an error after progress returns the bytes already delivered;
+   * - an error before progress returns that errno with every destination unchanged;
+   * - a reply shorter than its request is the end of the file. */
+  private readThroughOwner(
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+  ): number {
+    let wanted = 0;
+    for (let i = 0; i < chunks.length; i++) wanted += chunks[i]!.length;
+    let delivered = 0;
+    try {
+      let revision = this.shared.revision(handle, false, this.revoked, this.connection.owner);
+      while (delivered < wanted) {
+        const requested = Math.min(PAGE, wanted - delivered);
+        const bytes: Uint8Array = this.call("read", [handle, requested, offset + delivered]);
+        const current = this.shared.revision(handle, false, this.revoked, this.connection.owner);
+        if (current !== revision && delivered) return delivered;
+        if (current !== revision) {
+          revision = current;
+          continue;
+        }
+        copyReadAt(chunks, bytes, delivered);
+        delivered += bytes.length;
+        if (bytes.length < requested) return delivered;
+      }
+      return delivered;
+    } catch (error) {
+      return delivered || -errno(error);
+    }
+  }
+  /** A file whose bytes are not resident: one bounded owner read, under one file lock at the
+   * owner. A cold file is read as a range and is not loaded whole, so this stays a short read. */
+  private readUnloaded(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    try {
+      let requested = 0;
+      for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
+      const bytes: Uint8Array = this.call("read", [handle, Math.min(PAGE, requested), offset]);
+      return this.copyReadResult(chunks, bytes);
+    } catch (failure) {
+      return -errno(failure);
+    }
+  }
   private residentIO<T>(action: () => T): T | number {
     try {
       this.section.enter();
@@ -982,12 +1196,34 @@ export class FilesystemClient implements FileSystem {
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
     if (!(offset >= 0)) return -28;
     try {
-      if (!this.preparedIO(handle)) return -6;
+      if (!this.preparedWrite(handle)) return -6;
       const slot = this.directSlot(handle);
       if (!slot) return -8;
       chunks = fixedWriteSources(chunks);
       const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
-      const written = this.shared.directWrite(
+      const written = this.immediateWrite(slot, handle, chunks, offset, total);
+      if (written === "missing")
+        return this.stagedIO(slot, handle, chunks, offset, false) as number;
+      if (written === undefined)
+        return this.prepareWriteIO(handle, chunks, offset, false, offset + total);
+      // The segment arrived in the meantime, so a stage for this write is no longer needed.
+      this.wroteDirectly(handle);
+      return written;
+    } catch (error) {
+      return -this.immediateFailure(handle, error);
+    }
+  }
+  /** The direct attempt of an immediate write. "missing" means a target page is in a segment
+   * this agent lacks and nothing changed; undefined asks for the owner, as directWrite does. */
+  private immediateWrite(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    total: number,
+  ): number | undefined | "missing" {
+    try {
+      return this.shared.directWrite(
         slot,
         handle,
         chunks,
@@ -998,11 +1234,9 @@ export class FilesystemClient implements FileSystem {
         this.connection.owner,
         true,
       );
-      if (written !== undefined) return written;
-      this.prepareIO(handle, { kind: "grow", size: offset + total });
-      return -6;
     } catch (error) {
-      return -this.directFailure(handle, error);
+      if (error instanceof MissingSegmentError) return "missing";
+      throw error;
     }
   }
   tryAppend(
@@ -1013,12 +1247,28 @@ export class FilesystemClient implements FileSystem {
       return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
     try {
-      if (!this.preparedIO(handle)) return -6;
+      if (!this.preparedWrite(handle)) return -6;
       const slot = this.directSlot(handle);
       if (!slot) return -8;
       chunks = fixedWriteSources(chunks);
       const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
-      const result = this.shared.directAppend(
+      const result = this.immediateAppend(slot, handle, chunks, total);
+      if (result === "missing") return this.stagedIO(slot, handle, chunks, 0, true);
+      if (typeof result === "number") return this.prepareWriteIO(handle, chunks, 0, true, result);
+      this.wroteDirectly(handle);
+      return result;
+    } catch (error) {
+      return -this.immediateFailure(handle, error);
+    }
+  }
+  private immediateAppend(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    total: number,
+  ): { written: number; offset: number } | number | "missing" {
+    try {
+      return this.shared.directAppend(
         slot,
         handle,
         chunks,
@@ -1028,15 +1278,12 @@ export class FilesystemClient implements FileSystem {
         this.connection.owner,
         true,
       );
-      if (typeof result !== "number") return result;
-      this.prepareIO(handle, { kind: "grow", size: result });
-      return -6;
     } catch (error) {
-      return -this.directFailure(handle, error);
+      if (error instanceof MissingSegmentError) return "missing";
+      throw error;
     }
   }
-  private publicationInput(chunks: readonly Uint8Array[]): Uint8Array {
-    const bound = this.shared.publication!.limits.inputBytes;
+  private publicationInput(chunks: readonly Uint8Array[], bound: number): Uint8Array {
     chunks = fixedWriteSources(chunks);
     let length = 0;
     for (const chunk of chunks) length = Math.min(bound, length + chunk.length);
@@ -1079,10 +1326,16 @@ export class FilesystemClient implements FileSystem {
     let admission: PublicationAdmission | undefined;
     try {
       if (!Number.isSafeInteger(offset) || offset < 0) throw new FilesystemError(28);
-      if (nonblocking && !this.preparedIO(handle)) return -6;
+      if (nonblocking && !this.preparedWrite(handle)) return -6;
       const slot = this.directSlot(handle);
       if (!slot && nonblocking) return -8;
-      const bytes = this.publicationInput(chunks);
+      // The admission covers exactly the bytes that commit. A retry of a staged write commits
+      // the staged prefix, so it admits no more than that.
+      const staged = nonblocking && mapHas(this.stagedWrites, handle);
+      const bytes = this.publicationInput(
+        chunks,
+        staged ? Math.min(PAGE, domain.limits.inputBytes) : domain.limits.inputBytes,
+      );
       const intent = append
         ? ({ kind: "append", handle } as const)
         : ({ kind: "write", handle, offset } as const);
@@ -1104,7 +1357,9 @@ export class FilesystemClient implements FileSystem {
         admission,
       );
     } catch (error) {
-      return -this.directFailure(handle, error);
+      return -(nonblocking
+        ? this.immediateFailure(handle, error)
+        : this.directFailure(handle, error));
     } finally {
       if (admission) domain.cancel(connection.session, admission);
     }
@@ -1129,12 +1384,14 @@ export class FilesystemClient implements FileSystem {
         nonblocking,
         admission,
       );
-      if (typeof result !== "number" || result >= 0) return result;
-      const size = -result;
-      if (nonblocking) {
-        this.prepareIO(handle, { kind: "grow", size });
-        return -6;
+      if (result === "missing")
+        return this.stagedIO(slot, handle, [input], offset, append, admission);
+      if (typeof result !== "number" || result >= 0) {
+        if (nonblocking) this.wroteDirectly(handle);
+        return result;
       }
+      const size = -result;
+      if (nonblocking) return this.prepareWriteIO(handle, [input], offset, append, size);
       this.call("grow", [handle, size]);
     }
   }
@@ -1146,10 +1403,12 @@ export class FilesystemClient implements FileSystem {
     append: boolean,
     nonblocking: boolean,
     admission: PublicationAdmission,
-  ): { written: number; offset: number } | number {
+  ): { written: number; offset: number } | number | "missing" {
     try {
       return this.attemptPublicationIO(slot, handle, input, offset, append, nonblocking, admission);
     } catch (error) {
+      // An immediate caller never waits for the owner here: it stages the write instead.
+      if (nonblocking && error instanceof MissingSegmentError) return "missing";
       if (!(error instanceof DirtyCapacityError) || error.permanent || nonblocking) throw error;
       return this.publicationFallback(handle, input, offset, append, admission);
     }
@@ -1192,8 +1451,7 @@ export class FilesystemClient implements FileSystem {
       );
       return result === undefined ? -Math.max(1, offset + input.length) : result;
     } catch (error) {
-      if (!(error instanceof MissingSegmentError)) throw error;
-      if (nonblocking) throw new FilesystemError(6);
+      if (!(error instanceof MissingSegmentError) || nonblocking) throw error;
       return this.publicationFallback(handle, input, offset, append, admission);
     }
   }
@@ -1222,18 +1480,16 @@ export class FilesystemClient implements FileSystem {
     writing: boolean,
   ): { readable: boolean; writable: boolean; hangup: boolean } {
     const pending = mapGet(this.ioPreparations, handle);
+    // Only a writer waits for a staged write. A reader of the same handle never sees it.
+    const stage = writing ? mapGet(this.stagedWrites, handle) : undefined;
     // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
     // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
     if (this.revoked()) return { readable: true, writable: true, hangup: true };
     if (pending?.kind === "read")
       return { readable: pending.completion.ready, writable: false, hangup: false };
-    if (pending && !pending.completion.ready)
+    if ((pending && !pending.completion.ready) || (stage && !stage.completion.ready))
       return { readable: false, writable: false, hangup: false };
-    if (
-      pending &&
-      (pending.completion.cells[0] === State.Failed ||
-        pending.completion.cells[0] === State.Cancelled)
-    )
+    if (preparationFailed(pending?.completion) || preparationFailed(stage?.completion))
       return { readable: true, writable: true, hangup: false };
     try {
       if (!this.preparedIO(handle)) return { readable: false, writable: false, hangup: false };
@@ -1246,6 +1502,9 @@ export class FilesystemClient implements FileSystem {
         this.revoked,
         this.connection.owner,
       );
+      // A finished staged write is consumed by its retry, which also prepares again when the
+      // file is not resident. Report it writable unless a lock is busy right now.
+      if (stage) return { readable: false, writable: ready !== false, hangup: false };
       // Cold polling selects a bounded range. Only the next syscall consumes its bytes.
       if (ready === undefined && writing) this.prepareIO(handle, { kind: "grow", size: 0 });
       if (ready === undefined && !writing) this.prepareReadIO(handle, 0, PAGE);
@@ -1431,21 +1690,11 @@ export class FilesystemClient implements FileSystem {
           this.connection.owner,
         );
       } catch (error) {
-        if (!(error instanceof MissingSegmentError) && !(error instanceof MissingDataError))
-          return -this.directFailure(handle, error);
-        // Only a standalone state can lack a segment; the service reply replaces every copied byte.
-        try {
-          let requested = 0;
-          for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
-          const bytes = this.call("read", [
-            handle,
-            Math.min(PAGE, requested),
-            offset,
-          ]) as Uint8Array;
-          return this.copyReadResult(chunks, bytes);
-        } catch (failure) {
-          return -errno(failure);
-        }
+        // Either way the direct read refused before it changed any destination byte.
+        if (error instanceof MissingSegmentError)
+          return this.readThroughOwner(handle, chunks, offset);
+        if (!(error instanceof MissingDataError)) return -this.directFailure(handle, error);
+        return this.readUnloaded(handle, chunks, offset);
       }
     }
     let total = 0;

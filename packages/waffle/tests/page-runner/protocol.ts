@@ -252,16 +252,7 @@ function errorArray(value: unknown): value is unknown[] {
 
 function filesystemAllocationDetail(value: unknown): string {
   if (value === null || typeof value !== "object" || errorArray(value)) return "";
-  const fields = [
-    "identityOrdinal",
-    "rootOrdinal",
-    "kind",
-    "stage",
-    "rootComplete",
-    "segmentSlot",
-    "segmentsCompleted",
-    "segmentsPlanned",
-  ];
+  const fields = ["identityOrdinal", "rootOrdinal", "kind", "stage", "rootComplete"];
   const snapshot: Record<string, string | number | boolean | null> = {};
   for (const key of fields) {
     const field = errorField(value, key);

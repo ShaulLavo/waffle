@@ -33,6 +33,8 @@ import { ProcessError } from "../proc/errors.js";
 import { MemoryGroups } from "../group/state.js";
 import { GroupOp } from "../group/protocol.js";
 const counts = { fixedBuffer: true, sharedMemory: true, privateMemory: true };
+/** The advertised filesystem cap beyond the root's own first segment: 95 segments of 16 MiB. */
+const SEGMENT_CAPACITY = 95 * 16 * 1024 ** 2;
 const bounded = (n = 6 * 1024 ** 3) =>
   declareSharedMemoryPlatform({ kind: "bounded", budgetBytes: bytes(n), counts });
 const unlimited = declareSharedMemoryPlatform({ kind: "unbounded" });
@@ -281,13 +283,10 @@ test("a simulated 6 GiB pool admits concurrent guests, requests, and active fixe
     kind: "fixed-buffer",
     length: bytes(64 * 1024 ** 2),
   });
-  const segments = Array.from({ length: 95 }, () =>
-    runtime.buffer("filesystem-segment", {
-      kind: "growable-buffer",
-      initial: 0,
-      maximum: bytes(16 * 1024 ** 2),
-    }),
-  );
+  // The data segments are admitted as one promise. Nothing is constructed for them here.
+  const declaredBeforePromise = declared;
+  runtime.dataCapacity(root, bytes(SEGMENT_CAPACITY));
+  expect(declared).toBe(declaredBeforePromise);
   const pool = new FilesystemRequestPool(createRequestBudget(), undefined, runtime.arenas);
   const tickets = Array.from({ length: 4 }, (_, pid) =>
     runtime.admit({ ...plan(8192), pid, controls: true, connection: true }),
@@ -310,11 +309,124 @@ test("a simulated 6 GiB pool admits concurrent guests, requests, and active fixe
     runtime.snapshot().holders.filter((holder) => holder.label === "guest-memory"),
   ).toHaveLength(4);
   expect(requests).toHaveLength(4);
-  expect(segments).toHaveLength(95);
+  expect(
+    runtime.snapshot().holders.filter((holder) => holder.label === "filesystem-segment"),
+  ).toEqual([
+    {
+      label: "filesystem-segment",
+      shape: { kind: "capacity-promise", bytes: bytes(SEGMENT_CAPACITY) },
+      scope: "runtime",
+      state: "live",
+      declaredBytes: SEGMENT_CAPACITY,
+      grownBytes: null,
+    },
+  ]);
   expect(root.byteLength).toBe(64 * 1024 ** 2);
   first.stopped();
   second.stopped();
   running.forEach((ticket) => ticket.stopped());
+});
+
+test("the filesystem's extra capacity is one promise with the charge the segment maxima had", () => {
+  // No fixed buffer counts on this platform. The promise is charged in full regardless, as the
+  // 95 growable segment maxima it replaces were.
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(2 * 1024 ** 3),
+    counts: { fixedBuffer: false, sharedMemory: true, privateMemory: false },
+  });
+  const constructed: unknown[] = [];
+  const observed: ReservationAllocator = {
+    buffer(shape) {
+      constructed.push(shape);
+      return allocations.buffer(shape);
+    },
+    memory: allocations.memory,
+  };
+  const collectors: { receive: (id: number) => void; ids: Map<object, number[]> }[] = [];
+  const ledger = new SharedMemoryLedger(platform, observed, (receive) => {
+    const ids = new Map<object, number[]>();
+    collectors.push({ receive, ids });
+    return { register: (target, id) => void ids.set(target, (ids.get(target) ?? []).concat(id)) };
+  });
+  const runtime = ledger.openRuntime(platform);
+  const root = runtime.buffer("filesystem-root", {
+    kind: "fixed-buffer",
+    length: bytes(PAGE_BYTES),
+  });
+  expect(runtime.snapshot().reservedBytes).toBe(0);
+  constructed.length = 0;
+  const withdraw = runtime.dataCapacity(root, bytes(SEGMENT_CAPACITY));
+  expect(constructed).toEqual([]);
+  expect(SEGMENT_CAPACITY).toBe(1_593_835_520);
+  expect(runtime.snapshot().reservedBytes).toBe(SEGMENT_CAPACITY);
+  const promise = () =>
+    runtime.snapshot().holders.filter((holder) => holder.label === "filesystem-segment");
+  expect(promise()).toEqual([
+    {
+      label: "filesystem-segment",
+      shape: { kind: "capacity-promise", bytes: bytes(SEGMENT_CAPACITY) },
+      scope: "runtime",
+      state: "live",
+      declaredBytes: SEGMENT_CAPACITY,
+      grownBytes: null,
+    },
+  ]);
+  // It is its own holder: the root's record and ownership are untouched, nothing is a growable
+  // buffer, and admission sees the whole amount before any consumer starts.
+  expect(runtime.ownsBuffer("filesystem-root", root)).toBe(true);
+  expect(runtime.snapshot().holders.some((holder) => holder.shape.kind === "growable-buffer")).toBe(
+    false,
+  );
+  expect(runtime.snapshot().availableBytes).toBe(2 * 1024 ** 3 - SEGMENT_CAPACITY);
+  // A second promise that does not fit is refused whole and records nothing.
+  expect(() => runtime.dataCapacity(root, bytes(SEGMENT_CAPACITY))).toThrow(
+    SharedMemoryAdmissionError,
+  );
+  expect(promise()).toHaveLength(1);
+  expect(runtime.snapshot().reservedBytes).toBe(SEGMENT_CAPACITY);
+  // Only this runtime's live root can carry one.
+  expect(() => runtime.dataCapacity(new SharedArrayBuffer(8), bytes(1))).toThrow(TypeError);
+  const control = runtime.buffer("control", { kind: "fixed-buffer", length: bytes(8) });
+  expect(() => runtime.dataCapacity(control, bytes(1))).toThrow(TypeError);
+  // Construction that fails afterwards withdraws it in the same unwind, exactly once.
+  withdraw();
+  withdraw();
+  expect(promise()).toEqual([]);
+  expect(runtime.snapshot().reservedBytes).toBe(0);
+  // A kept promise follows the runtime to awaiting-collection, and ends with the page's last
+  // reference to the root. That receipt is local reachability, nothing more.
+  runtime.dataCapacity(root, bytes(SEGMENT_CAPACITY));
+  runtime.dispose();
+  expect(promise().map((holder) => holder.state)).toEqual(["awaiting-collection"]);
+  expect(ledger.snapshot().awaitingReleaseBytes).toBe(SEGMENT_CAPACITY);
+  for (const id of collectors[0]!.ids.get(root) ?? []) collectors[0]!.receive(id);
+  expect(promise()).toEqual([]);
+  expect(ledger.snapshot().reservedBytes).toBe(0);
+});
+
+test("a growable buffer or shared memory is charged at its declared maximum, not what it holds", () => {
+  // Safari reserves a growable SharedArrayBuffer's maxByteLength and a shared memory's maximum
+  // up front. The ledger counts the same way: a zero initial length is not zero cost.
+  const platform = declareSharedMemoryPlatform({
+    kind: "bounded",
+    budgetBytes: bytes(6 * 1024 ** 3),
+    counts: { fixedBuffer: false, sharedMemory: true, privateMemory: false },
+  });
+  const runtime = new SharedMemoryLedger(platform).openRuntime(platform);
+  const arena = runtime.arenas.create(null);
+  expect(arena.byteLength).toBe(0);
+  expect(runtime.snapshot().reservedBytes).toBe(BOUNDED_ARENA_BYTES);
+  const group = runtime.groups.create({ kind: "growable", maximumPages: pages(4096) }, null);
+  expect(group.memory.buffer.byteLength).toBe(PAGE_BYTES);
+  expect(runtime.snapshot().reservedBytes).toBe(BOUNDED_ARENA_BYTES + 4096 * PAGE_BYTES);
+  const charged = runtime
+    .snapshot()
+    .holders.map(({ label, declaredBytes, grownBytes }) => ({ label, declaredBytes, grownBytes }));
+  expect(charged).toEqual([
+    { label: "request-arena", declaredBytes: BOUNDED_ARENA_BYTES, grownBytes: 0 },
+    { label: "memory-group", declaredBytes: 4096 * PAGE_BYTES, grownBytes: PAGE_BYTES },
+  ]);
 });
 
 test("shared imports and absent maxima are parsed, and memory64 fails closed", () => {

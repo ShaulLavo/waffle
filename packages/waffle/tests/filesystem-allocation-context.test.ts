@@ -1,26 +1,21 @@
 import { expect, test } from "bun:test";
-import {
-  createFilesystemIdentity,
-  createFilesystemConnection,
-  SHARED_SEGMENT_BYTES,
-} from "../fs/protocol.js";
+import { createFilesystemIdentity, createFilesystemConnection } from "../fs/protocol.js";
 import { SHARED_ROOT_BYTES } from "../fs/storage-geometry.js";
 import { installSharedControlAllocator } from "../memory/allocator.js";
 import { formatHostError } from "./page-runner/protocol.js";
 
 const NativeSharedArrayBuffer = globalThis.SharedArrayBuffer;
-function segmentFailure(slot: number, original: unknown) {
-  let attempts = 0;
-  globalThis.SharedArrayBuffer = new Proxy(NativeSharedArrayBuffer, {
-    construct(target, args) {
-      if (args[0] === 0 && ++attempts === slot) throw original;
-      return Reflect.construct(target, args);
-    },
+/** Fails the given control allocation of one independent identity, counting after its root. */
+function controlFailure(boundary: number, original: unknown) {
+  let controls = 0;
+  const restore = installSharedControlAllocator((length) => {
+    if (length !== SHARED_ROOT_BYTES && ++controls === boundary) throw original;
+    return new NativeSharedArrayBuffer(length);
   });
   try {
     return capture(() => createFilesystemIdentity());
   } finally {
-    globalThis.SharedArrayBuffer = NativeSharedArrayBuffer;
+    restore();
   }
 }
 function capture(run: () => unknown): unknown {
@@ -35,31 +30,7 @@ function snapshot(error: unknown) {
   return Object.getOwnPropertyDescriptor(error, "filesystemAllocation")?.value;
 }
 
-for (const slot of [1, 5, 95]) {
-  test(`filesystem allocation failure identifies original segment ${slot}`, () => {
-    const original = new RangeError("original segment failure", { cause: "native cause" });
-    const stack = original.stack;
-    expect(segmentFailure(slot, original)).toBe(original);
-    expect(original.cause).toBe("native cause");
-    expect(original.stack).toBe(stack);
-    expect(snapshot(original)).toMatchObject({
-      kind: "independent",
-      stage: "segments",
-      rootComplete: true,
-      segmentSlot: slot,
-      segmentsCompleted: slot - 1,
-      segmentsPlanned: 95,
-    });
-    const detail = formatHostError(
-      new Error("Notification scenario sendFailure failed", { cause: original }),
-    );
-    expect(detail).toContain(`"segmentSlot":${slot}`);
-    expect(detail).toContain("original segment failure");
-    expect(detail).toContain("native cause");
-  });
-}
-
-test("root failure precedes every extra segment and connection allocation", () => {
+test("root failure precedes every identity and connection allocation", () => {
   const original = new RangeError("original root failure");
   const lengths: number[] = [];
   const restore = installSharedControlAllocator((length) => {
@@ -69,20 +40,19 @@ test("root failure precedes every extra segment and connection allocation", () =
   try {
     expect(capture(() => createFilesystemConnection())).toBe(original);
     expect(lengths).toEqual([SHARED_ROOT_BYTES]);
-    expect(snapshot(original)).toMatchObject({
+    expect(snapshot(original)).toEqual({
+      identityOrdinal: expect.any(Number),
+      rootOrdinal: expect.any(Number),
       kind: "independent",
       stage: "root",
       rootComplete: false,
-      segmentSlot: null,
-      segmentsCompleted: 0,
-      segmentsPlanned: 95,
     });
   } finally {
     restore();
   }
 });
 
-test("inherited control failure does not claim a new root or segments", () => {
+test("inherited control failure does not claim a new root", () => {
   const parent = createFilesystemIdentity();
   const original = new RangeError("inherited capabilities failure");
   const restore = installSharedControlAllocator(() => {
@@ -95,24 +65,17 @@ test("inherited control failure does not claim a new root or segments", () => {
       stage: "identity",
       rootOrdinal: null,
       rootComplete: true,
-      segmentSlot: null,
-      segmentsCompleted: 0,
-      segmentsPlanned: 0,
     });
   } finally {
     restore();
   }
 });
 
-test("normal identities preserve independent allocation geometry and inherited storage", () => {
+test("normal identities allocate one root, no data segment, and inherit storage", () => {
   const parent = createFilesystemIdentity();
   const child = createFilesystemIdentity(parent);
   expect(parent.shared.byteLength).toBe(SHARED_ROOT_BYTES);
-  expect(parent.segments).toHaveLength(95);
-  for (const segment of parent.segments) {
-    expect(segment.byteLength).toBe(0);
-    expect(Reflect.get(segment, "maxByteLength")).toBe(SHARED_SEGMENT_BYTES);
-  }
+  expect(parent.segments).toEqual([]);
   expect(child.shared).toBe(parent.shared);
   expect(child.segments).toBe(parent.segments);
   expect(child.ownerStates).toBe(parent.ownerStates);
@@ -122,53 +85,47 @@ test("normal identities preserve independent allocation geometry and inherited s
 });
 
 for (const boundary of [1, 2, 3, 4, 5, 6]) {
-  test(`independent identity control allocation ${boundary} retains completed storage progress`, () => {
-    const original = new RangeError("original control failure");
-    let controls = 0;
-    const restore = installSharedControlAllocator((length) => {
-      if (length !== SHARED_ROOT_BYTES && ++controls === boundary) throw original;
-      return new NativeSharedArrayBuffer(length);
+  test(`independent identity control allocation ${boundary} follows a complete root`, () => {
+    const original = new RangeError("original control failure", { cause: "native cause" });
+    const stack = original.stack;
+    expect(controlFailure(boundary, original)).toBe(original);
+    expect(original.cause).toBe("native cause");
+    expect(original.stack).toBe(stack);
+    expect(snapshot(original)).toMatchObject({
+      kind: "independent",
+      stage: "identity",
+      rootComplete: true,
     });
-    try {
-      expect(capture(() => createFilesystemIdentity())).toBe(original);
-      expect(snapshot(original)).toMatchObject({
-        kind: "independent",
-        stage: "identity",
-        rootComplete: true,
-        segmentSlot: null,
-        segmentsCompleted: 95,
-        segmentsPlanned: 95,
-      });
-    } finally {
-      restore();
-    }
+    const detail = formatHostError(
+      new Error("Notification scenario sendFailure failed", { cause: original }),
+    );
+    expect(detail).toContain('"stage":"identity"');
+    expect(detail).toContain("original control failure");
+    expect(detail).toContain("native cause");
   });
 }
 
-test("provided storage reports only its own segment constructors", () => {
-  const original = new RangeError("provided segment failure");
+test("provided storage asks its construction for control buffers only, never a data segment", () => {
+  const original = new RangeError("provided control failure");
   const shared = new NativeSharedArrayBuffer(SHARED_ROOT_BYTES);
-  let segments = 0;
+  const requests: { length: number; maximum: number | undefined }[] = [];
   const construction = {
     shared,
     allocateShared(length: number, maximum?: number) {
-      if (maximum !== undefined && ++segments === 5) throw original;
-      return maximum === undefined
-        ? new NativeSharedArrayBuffer(length)
-        : Reflect.construct(NativeSharedArrayBuffer, [length, { maxByteLength: maximum }]);
+      requests.push({ length, maximum });
+      if (requests.length === 5) throw original;
+      return new NativeSharedArrayBuffer(length);
     },
   };
   expect(capture(() => createFilesystemConnection(undefined, undefined, construction))).toBe(
     original,
   );
+  expect(requests.every(({ maximum }) => maximum === undefined)).toBe(true);
   expect(snapshot(original)).toMatchObject({
     kind: "provided",
-    stage: "segments",
+    stage: "identity",
     rootOrdinal: null,
     rootComplete: true,
-    segmentSlot: 5,
-    segmentsCompleted: 4,
-    segmentsPlanned: 95,
   });
 });
 
@@ -178,16 +135,16 @@ for (const original of [
   null,
 ]) {
   test(`unannotatable ${String(original)} escapes unchanged`, () => {
-    expect(segmentFailure(1, original)).toBe(original);
+    expect(controlFailure(1, original)).toBe(original);
   });
 }
 
 test("copied failure metadata is scalar-only and does not change after later identities", () => {
   const first = new RangeError("first");
-  segmentFailure(5, first);
+  controlFailure(5, first);
   const before = structuredClone(snapshot(first));
   const second = new RangeError("second");
-  segmentFailure(1, second);
+  controlFailure(1, second);
   createFilesystemIdentity();
   expect(snapshot(first)).toEqual(before);
   expect(snapshot(second).identityOrdinal).toBe(before.identityOrdinal + 1);
@@ -195,20 +152,26 @@ test("copied failure metadata is scalar-only and does not change after later ide
   for (const value of Object.values(before)) {
     expect(value === null || ["string", "boolean", "number"].includes(typeof value)).toBe(true);
   }
-  expect(Object.keys(before)).toHaveLength(8);
+  expect(Object.keys(before)).toEqual([
+    "identityOrdinal",
+    "rootOrdinal",
+    "kind",
+    "stage",
+    "rootComplete",
+  ]);
   expect(Object.keys(first)).toEqual([]);
 });
 
 test("host diagnostics copy only bounded scalars without calling metadata getters", () => {
   const error = new RangeError("original failure");
-  segmentFailure(1, error);
+  controlFailure(1, error);
   Object.defineProperty(snapshot(error), "unrelated", {
     get() {
       throw new Error("must not read");
     },
   });
-  expect(formatHostError(error)).toContain('"segmentSlot":1');
-  Object.defineProperty(snapshot(error), "segmentSlot", {
+  expect(formatHostError(error)).toContain('"stage":"identity"');
+  Object.defineProperty(snapshot(error), "stage", {
     get() {
       throw new Error("must not read");
     },
@@ -223,7 +186,7 @@ test("revoked allocation metadata leaves the original failure report intact", ()
   const stack = original.stack;
   Object.defineProperty(original, "filesystemAllocation", { value: metadata.proxy });
   metadata.revoke();
-  expect(segmentFailure(5, original)).toBe(original);
+  expect(controlFailure(5, original)).toBe(original);
   const detail = formatHostError(
     new Error("Notification scenario sendFailure failed", { cause: original }),
   );
