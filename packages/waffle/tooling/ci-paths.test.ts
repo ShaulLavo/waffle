@@ -305,6 +305,23 @@ test("browser failure retains structured recovery evidence before full protocol"
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
 });
 
+test("serial browser controls retain durable process evidence even when the command fails", () => {
+  const steps = stepsFor("browser");
+  const browserTest = steps.find(
+    (step) =>
+      step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
+  );
+  const result = "${{ runner.temp }}/browser-controls-results.json";
+  expect(record(browserTest?.env).BROWSER_CONTROLS_RESULT).toBe(result);
+  const upload = artifactStep(steps, `${result}*`);
+  expect(upload.if).toBe("always() && matrix.group == 'serial'");
+  expect(record(upload.with).name).toBe(
+    "browser-controls-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  expect(record(upload.with)["retention-days"]).toBe(7);
+  expect(record(upload.with)["if-no-files-found"]).toBe("warn");
+});
+
 test("the browser suite runs its two ordered groups on separate runners", () => {
   const browserTest = stepsFor("browser").find(
     (step) =>

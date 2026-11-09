@@ -1,0 +1,88 @@
+import { ControlRun } from "./control-run.js";
+import { join } from "node:path";
+import { withStorageCleanup } from "../storage-allocation.js";
+import { runControlProcess } from "./browser-controls-runner.js";
+import { checkControl } from "./browser-controls-suite.js";
+
+async function interruptControl(signal: "SIGINT" | "SIGTERM"): Promise<void> {
+  const received = Promise.withResolvers<void>();
+  process.once(signal, () => received.resolve());
+  process.kill(process.ppid, signal);
+  await received.promise;
+}
+
+async function forwardedSignal(): Promise<void> {
+  const received = new Promise<void>((resolve) => {
+    process.once("SIGTERM", () => {
+      console.error("CONTROL_SIGNAL_FORWARDED");
+      resolve();
+    });
+  });
+  process.kill(process.ppid, "SIGTERM");
+  await received;
+}
+
+const [mode, argument, resultPath] = process.argv.slice(2);
+if (!mode || !resultPath) throw new Error("Expected mode and result path");
+
+if (mode === "supervise") {
+  if (!argument) throw new Error("Expected child mode");
+  const command =
+    argument === "spawn-failure"
+      ? ["/nonexistent-waffle-browser-controls-command"]
+      : [process.execPath, join(import.meta.dir, "browser-controls-process-fixture.ts"), argument];
+  process.exitCode = await runControlProcess(command, resultPath);
+} else {
+  const controls = new ControlRun();
+  const results = { path: resultPath, run: controls };
+  if (mode === "inherited") process.exitCode = 23;
+  if (mode === "orphan-stderr") {
+    const descendant = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+      detached: true,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    await Bun.write(`${resultPath}.orphan-pid`, String(descendant.pid));
+  }
+  try {
+    await checkControl(
+      "synthetic",
+      mode,
+      async () => {
+        if (mode === "verdict-failure") throw new TypeError("CONTROL_ASSERTION");
+        if (mode === "interrupted-SIGINT") await interruptControl("SIGINT");
+        if (mode === "interrupted-SIGTERM") await interruptControl("SIGTERM");
+      },
+      results,
+    );
+    if (mode === "interrupted-SIGINT" || mode === "interrupted-SIGTERM")
+      await checkControl("synthetic", "later", async () => {}, results);
+    controls.throwIfInterrupted();
+  } finally {
+    controls.close();
+  }
+  if (mode === "verdict-failure") process.exitCode = 1;
+  if (mode === "top-level") throw new Error("CONTROL_TOP_LEVEL", { cause: "ORIGINAL_CAUSE" });
+  if (mode === "cleanup")
+    await withStorageCleanup(
+      async () => {
+        throw new TypeError("CONTROL_PRIMARY");
+      },
+      async () => {
+        throw new RangeError("CONTROL_CLEANUP");
+      },
+    );
+  if (mode === "unhandled") {
+    process.on("exit", (code) => console.log(`CONTROL_EXIT_EVENT_${code}`));
+    void Promise.reject(new Error("CONTROL_UNHANDLED", { cause: "UNHANDLED_CAUSE" }));
+    await Bun.sleep(20);
+  }
+  if (mode === "forwarded-signal") await forwardedSignal();
+  if (mode === "orphan-stderr") {
+    console.error("CONTROL_ORPHAN_EXIT_23");
+    process.exit(23);
+  }
+  if (mode === "abrupt") process.exit(17);
+  if (mode === "signal") process.kill(process.pid, "SIGTERM");
+}
