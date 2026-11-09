@@ -5,6 +5,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/relay-image.yml"
+      - ".github/actions/release-downloads/**"
+      - ".github/actions/save-release-downloads/**"
+      - ".github/actions/setup-tools/**"
+      - "tools/ci-*.ts"
       - "packages/waffle-relay/container/**"
       - "packages/waffle-relay/scripts/*relay-image*.ts"
       - "packages/waffle-relay/scripts/prepare-native-container.ts"
@@ -30,6 +34,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  GITHUB_TOKEN: ${{ github.token }}
   IMAGE: ghcr.io/shaullavo/waffle-relay
 
 jobs:
@@ -51,9 +56,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
         with:
-          node-version: 26.12.1
+          bun-version: "1.4.4"
+          node-version: "26.12.1"
       - name: Qualify and save the actual selected image, then prove same-run reload
         id: qualify
         shell: bash
@@ -124,6 +131,8 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/image"
 
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
   publish:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'ShaulLavo/waffle'
     needs: qualify
@@ -139,9 +148,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
         with:
-          node-version: 26.12.1
+          bun-version: "1.4.4"
+          node-version: "26.12.1"
       - name: Require the same-run producer's exact artifact and receipt
         env:
           ARTIFACT_ID: ${{ needs.qualify.outputs.artifact-id }}
@@ -155,7 +166,8 @@ jobs:
           path: image
       - name: Verify source, variant, archive and actual saved config before login
         run: node packages/waffle-relay/scripts/relay-image-custody.ts load image
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Require the hosted runner Buildx without downloading another release
+        run: docker buildx version
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
@@ -199,3 +211,5 @@ jobs:
           if docker image inspect "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA" >/dev/null 2>&1; then docker image rm "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA"; fi
           if docker image inspect waffle-relay:validated >/dev/null 2>&1; then docker image rm waffle-relay:validated; fi
           rm -rf image "$RUNNER_TEMP/anonymous"
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

@@ -669,7 +669,9 @@ test("jq pins and verifies its native oracle without a host-jq fallback", () => 
   expect(record(download?.env).JQ_NATIVE_URL).toBe(
     "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
   );
-  expect(String(download?.run)).toContain('curl -fL --retry 3 "$JQ_NATIVE_URL"');
+  expect(String(download?.run)).toContain(
+    'node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" "$JQ_NATIVE_URL"',
+  );
   expect(String(download?.run)).toContain('"$JQ_NATIVE_DIR/jq"');
   expect(record(verify?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
   expect(record(verify?.env).JQ_NATIVE_SHA256).toBe(
@@ -988,7 +990,12 @@ test("gh restores the exact network asset and does not set up native compilers",
     ),
   ).toBe(false);
   expect(
-    record(steps.find((step) => step.uses === "actions/setup-node@v4")?.with)["node-version"],
+    record(
+      steps.find(
+        (step) =>
+          step.uses === "./.github/actions/setup-tools" && record(step.with)["node-version"],
+      )?.with,
+    )["node-version"],
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });
@@ -1085,6 +1092,10 @@ test("procps selects its exact inputs without selecting native work for package-
   );
   expect(filters.procps).toEqual([
     ".github/workflows/ci.yml",
+    ".github/actions/release-downloads/**",
+    ".github/actions/save-release-downloads/**",
+    ".github/actions/setup-tools/**",
+    "tools/ci-*.ts",
     "package.json",
     "bun.lock",
     "packages/waffle/**",
@@ -1482,3 +1493,4 @@ test("package setup explicitly prepares Waffle after the script-free install", (
 });
 
 import "../../../tools/ci-release-coverage.test.ts";
+import "../../../tools/ci-release-download.test.ts";

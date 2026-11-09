@@ -1,3 +1,5 @@
+import { releaseDownload } from "../../../tools/ci-release-download.ts";
+import { seedNativePrebuild } from "../../../tools/ci-native-prebuild.ts";
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
@@ -125,6 +127,7 @@ async function install(manager: "npm" | "bun", nativeArchive: Uint8Array): Promi
       trustedDependencies: manager === "bun" ? [nativePeer] : [],
     }),
   );
+  await seedNativePrebuild(env.npm_config_cache);
   await execute(manager, ["install"], { cwd: directory, env, timeout: 90000, maxBuffer: 1048576 });
   const installed = await readFile(
     join(directory, `node_modules/${nativePeer}/build/Release/webtransport.node`),
@@ -185,7 +188,7 @@ try {
     ["pm", "pack", "--ignore-scripts", "--filename", join(scratch, "relay.tgz")],
     { cwd: root },
   );
-  const response = await fetch(
+  const response = await releaseDownload(
     `https://github.com/fails-components/webtransport/releases/download/v1.6.11/${asset}`,
   );
   assert.equal(response.status, 200);

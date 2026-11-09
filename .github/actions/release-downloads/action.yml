@@ -1,0 +1,15 @@
+name: Release download cache
+description: Restore completed release assets and record the starting inventory
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "CI_RELEASE_CACHE=$RUNNER_TEMP/github-release-assets" >> "$GITHUB_ENV"
+    - uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/github-release-assets
+        key: release-assets-v2-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-restore
+        restore-keys: |
+          release-assets-v2-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
+    - shell: bash
+      run: node "$GITHUB_WORKSPACE/tools/ci-release-cache.ts" restore

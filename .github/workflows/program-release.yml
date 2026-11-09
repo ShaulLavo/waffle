@@ -33,6 +33,9 @@ on:
 permissions:
   contents: write
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -54,7 +57,8 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           # Python stages a qualified interpreter artifact; release it with the local CLI.
           [[ ",$FAMILIES," != *",python,"* ]]
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - uses: ./.github/actions/program-optimizer
@@ -67,13 +71,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.WASI_SDK_PATH }}
-          key: wasi-sdk-34.0-x86_64-linux
+          key: wasi-sdk-34.0-x86_64-linux-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
       - name: Download wasi-sdk
         if: steps.wasi-sdk.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
+          archive=$(mktemp "$RUNNER_TEMP/release-wasi-sdk-XXXXXX.tar.gz")
+          trap 'rm -f -- "$archive"' EXIT
+          node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz "$archive"
+          printf '%s  %s\n' b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4 "$archive" | sha256sum --check --status
           mkdir -p "$(dirname "$WASI_SDK_PATH")"
-          curl -fsSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
-            | tar -xz -C "$(dirname "$WASI_SDK_PATH")"
+          tar -xzf "$archive" -C "$(dirname "$WASI_SDK_PATH")"
       - name: Cache program builds
         uses: actions/cache@v4
         with:
@@ -119,3 +128,5 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" .build/program-release/assets/* \
             --verify-tag --title "$RELEASE_TAG" --generate-notes
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
