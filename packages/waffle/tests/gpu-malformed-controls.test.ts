@@ -541,7 +541,89 @@ test("the compiled victim must report its exact parser-failure stage and errno",
   }
 });
 
-test("nested parser closure requires the actual terminal import after the valid closed reply", () => {
+test("nesting accepts the original scope-barrier append terminal after oversized publication", () => {
+  const value = proof("nesting");
+  for (const index of retirement) {
+    const guest = value.phases[index]!.guest!;
+    guest.events.at(-1)!.result = 0;
+    guest.events = guest.events.concat([
+      {
+        token: "victim",
+        name: "append",
+        call: 4,
+        phase: "enter",
+        connection: 1,
+        length: 48,
+        authority: cleanAuthority(),
+      },
+      { token: "victim", name: "append", call: 4, phase: "return", result: -64 },
+    ]);
+  }
+  value.stop.text =
+    "GPU_STAGE surface id=2 width=64 height=64 scale=1000 flags=3\n" +
+    "GPU_STAGE open\nGPU_STAGE adapter\nGPU_STAGE device\nGPU_STAGE acquired colour=red\n" +
+    "GPU_WAIT_STDIN stage=fairness-heavy-ready\nGPU_STDIN stage=fairness-heavy-ready count=1\n" +
+    "GPU_FAIRNESS_BLOB draws=200000 bytes=4800184 appends=1\n" +
+    "GPU_FAIRNESS_PUBLISHED\nGPU_FAIL stage=append status=-64\n";
+  expect(validateMalformedResult(value).hardwareQualified).toBe(false);
+});
+
+test("the original C scope barrier appends before waiting after oversized publication", () => {
+  const triangle = readFileSync(new URL("./fixtures/gpu/triangle.c", import.meta.url), "utf8");
+  const helpers = readFileSync(new URL("./fixtures/gpu/gpu_fixture.h", import.meta.url), "utf8");
+  expect(triangle).toContain(
+    '  check("fairness-append", runtime_gpu_append(connection, blob, (uint32_t)large.offset));\n' +
+      '  free(blob);\n  puts("GPU_FAIRNESS_PUBLISHED");\n}',
+  );
+  expect(triangle).toContain(
+    "  fairness_large_blob(&frame);\n  scope_barrier();\n" +
+      '  printf("GPU_FAIRNESS_REPLAYED draws=%u\\n", fairness_draws);',
+  );
+  expect(helpers).toContain(
+    "static void scope_barrier(void) {\n" +
+      "  gpu_push_scope(&writer);\n  uint32_t reply_token = next_token();\n" +
+      "  gpu_pop_scope(&writer, reply_token);\n  append();\n" +
+      "  wait_for(WAFFLE_GPU_REPLY_ERROR_SCOPE, reply_token);\n}",
+  );
+  expect(helpers).toContain(
+    '  check("append", runtime_gpu_append(connection, bytes, (uint32_t)writer.offset));',
+  );
+  expect(helpers).toContain(
+    "static void wait_for(uint32_t kind, uint32_t reply_token) {\n" +
+      "  while (!drain(kind, reply_token, -1)) { }\n}",
+  );
+  expect(helpers).toContain(
+    '    check("completions", runtime_gpu_completions(connection, replies, sizeof(replies), timeout, written));',
+  );
+  expect(helpers).toContain("    if (!closed_reason) return found;");
+});
+
+test("original GPU imports expose protocol closure to append or to the draining completion poll", () => {
+  const source = readFileSync(new URL("../browser/gpu/guest.ts", import.meta.url), "utf8");
+  const append = source.slice(
+    source.indexOf("  const append ="),
+    source.indexOf("  const completions ="),
+  );
+  const completions = source.slice(
+    source.indexOf("  const completions ="),
+    source.indexOf("  const invoke ="),
+  );
+  expect(source).toContain(
+    "  const errno = (reason: number | undefined) => (reason === GPU_TERMINAL.resource ? -48 : -64);",
+  );
+  expect(append).toContain(
+    "    if (entry.closed || terminal(entry)) return errno(terminal(entry));",
+  );
+  expect(append).toContain('      if (result === "done") return 0;');
+  expect(append).toContain('      if (result === "terminal") return errno(terminal(entry));');
+  expect(completions).toContain("      const result = drainReplies(entry, destination);");
+  expect(completions).toContain("        return result > 0 ? 0 : result;");
+  expect(completions.indexOf("const result = drainReplies")).toBeLessThan(
+    completions.indexOf("if (entry.closed || terminal(entry)) return errno(terminal(entry))"),
+  );
+});
+
+test("nested parser closure requires the actual terminal import after publication", () => {
   for (const old of ["GPU_FAIRNESS_PUBLISHED", "stage=completions", "status=-64"]) {
     rejects(
       (value) => {
@@ -567,6 +649,35 @@ test("nested parser closure requires the actual terminal import after the valid 
     );
   }
 });
+
+test.each(["append", "completions"])(
+  "nesting keeps exact failure and publication evidence for %s",
+  (stage) => {
+    const failure = `GPU_FAIL stage=${stage} status=-64\n`;
+    const published = "GPU_FAIRNESS_PUBLISHED\n";
+    const invalid = [
+      failure,
+      failure + published,
+      published + published + failure,
+      published + failure + failure,
+      published + failure.replace("-64", "-48"),
+      published + failure.replace("-64", "-58"),
+      published + failure.replace("-64", "-64 trailing"),
+      published + "GPU_UNEXPECTED kind=12 token=0\n" + failure,
+      published + "GPU_FAIL stage=fairness-append status=-64\n",
+      published + "GPU_FAIL stage=device status=-64\n",
+    ];
+    for (const text of invalid) {
+      rejects(
+        (value) => {
+          value.stop.text = text;
+        },
+        /compiled victim failure/,
+        "nesting",
+      );
+    }
+  },
+);
 
 test("each screenshot bracket requires new presents and completed queue work", () => {
   for (const index of all) {
