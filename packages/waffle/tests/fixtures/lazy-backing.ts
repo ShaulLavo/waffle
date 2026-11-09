@@ -19,7 +19,7 @@ export type Cleanup = () => void | Promise<void>;
 /** Keeps segment announcements away from a client that has an event loop, so it stays in the
  * state of a guest that has not returned to its loop: the pages exist, and it lacks the segment.
  * `deliver` sees each announcement instead and may attach it. */
-export function withoutAnnouncements<T extends { port: MessagePort }>(
+function withoutAnnouncements<T extends { port: MessagePort }>(
   connection: T,
   deliver?: (index: number, buffer: SharedArrayBuffer) => void,
 ): T {
