@@ -38,6 +38,7 @@ export default {
         "tests/page-runner/guest-watch-{command,control-phases,stalled-helper}.ts",
         "tests/page-runner/storage-page-control-worker.ts",
         "tests/page-runner/browser-controls-runner.ts",
+        "tests/page-runner/asset-hold-controls.ts",
         "tests/page-runner/framework-bootstrap-main.ts",
         "tests/page-runner/framework-controls/installed.ts",
         "tests/network-{page,relay-page,control-page,signal-control,browser-service-worker,relay-browser-runner}.ts",

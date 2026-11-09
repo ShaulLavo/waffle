@@ -55,7 +55,9 @@ test("attached failure facts are bounded, payload-free and do not read error acc
   };
   try {
     for (let index = 0; index < 140; index++) {
-      await emitFailedRequest(queue, client, secret);
+      await expect(emitFailedRequest(queue, client, secret)).rejects.toThrow(
+        "WebDriver transport failed before an observed parsed response",
+      );
     }
     expect(queue.commandFailures).toHaveLength(128);
     expect(queue.commandFailures[0]).toMatchObject({
@@ -269,24 +271,28 @@ test("the unchanged direct deadline records a header-stage timeout", async () =>
 test("malformed attached envelopes retain known status without consulting accessors", async () => {
   const { queue } = queueFixture();
   let reads = 0;
+  const response = {
+    body: null,
+    get statusCode(): number {
+      reads++;
+      throw new Error("private");
+    },
+  };
   try {
-    await queue.run(async () => {
-      const request = queue.guard({ method: "GET" });
-      const response = {
-        body: null,
-        get statusCode(): number {
-          reads++;
-          throw new Error("private");
-        },
-      };
-      expect(queue.response(response, request)).toBe(response);
-    });
+    await expect(
+      queue.run(async () => {
+        const request = queue.guard({ method: "GET" });
+        expect(queue.response(response, request)).toBe(response);
+      }),
+    ).rejects.toThrow("Malformed WebDriver envelope");
     expect(reads).toBe(0);
     expect(queue.commandFailures[0]).toMatchObject({ stage: "envelope", status: null });
-    await queue.run(async () => {
-      const request = queue.guard({ method: "GET" });
-      queue.response({ statusCode: 503, body: {} }, request);
-    });
+    await expect(
+      queue.run(async () => {
+        const request = queue.guard({ method: "GET" });
+        queue.response({ statusCode: 503, body: {} }, request);
+      }),
+    ).rejects.toThrow("Malformed WebDriver envelope");
     expect(queue.commandFailures[1]).toMatchObject({ stage: "envelope", status: 503 });
   } finally {
     queue.releaseObservers();

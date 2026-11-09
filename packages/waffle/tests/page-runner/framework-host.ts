@@ -21,6 +21,8 @@ import type {
   FrameworkMiddlewareStack,
   FrameworkResult,
   ProviderOperation,
+  ViewportOperation,
+  ScreenshotOperation,
   VitestEnd,
 } from "./framework-types.js";
 
@@ -43,6 +45,7 @@ function snapshot(value: unknown) {
     value.valid !== true ||
     typeof value.ackedThrough !== "number" ||
     typeof value.pending !== "number" ||
+    typeof value.contentClosed !== "boolean" ||
     (value.failure !== null && typeof value.failure !== "string")
   )
     throw new Error("Invalid actual document observation");
@@ -53,6 +56,7 @@ function snapshot(value: unknown) {
     ackedThrough: value.ackedThrough,
     pending: value.pending,
     paired: value.paired === true,
+    contentClosed: value.contentClosed,
   };
 }
 function geometry(value: unknown): FrameworkGeometry {
@@ -75,11 +79,9 @@ function geometry(value: unknown): FrameworkGeometry {
     dimensions.some(
       (value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0,
     ) ||
-    ![iframe.x, iframe.y].every((value) => typeof value === "number" && Number.isFinite(value)) ||
-    tester.width !== 414 ||
-    tester.height !== 896
+    ![iframe.x, iframe.y].every((value) => typeof value === "number" && Number.isFinite(value))
   )
-    throw new Error("Actual logical tester is not 414 by 896 with finite positive DPR");
+    throw new Error("Actual geometry is not finite and positive");
   return value as FrameworkGeometry;
 }
 export class PageFrameworkHost implements FrameworkHost {
@@ -123,12 +125,13 @@ export class PageFrameworkHost implements FrameworkHost {
       (major === undefined || major < 22 || (major === 22 && (minor ?? 0) < 18))
     )
       throw new Error("Framework host requires Node 22.18 or later");
-    this.collector = new FrameworkCollector(options.expected);
+    this.collector = new FrameworkCollector(options.expected, (detail) => this.cancel(detail));
     this.queue = new FrameworkQueue(
       this.consumers,
       () => this.check(),
       (detail) => this.fault("transport", detail),
     );
+    this.controller.signal.addEventListener("abort", () => this.queue.revoke(), { once: true });
     this.middleware = frameworkMiddleware(this.collector);
   }
   mount(server: FrameworkMiddlewareStack): void {
@@ -151,6 +154,10 @@ export class PageFrameworkHost implements FrameworkHost {
   private fault(category: string, detail: string): void {
     if (this.finalized) return;
     this.collector.fail(category, detail);
+    this.cancel(detail);
+  }
+  private cancel(detail: string): void {
+    this.collector.cancel();
     if (!this.controller.signal.aborted) this.controller.abort(new Error(detail));
   }
   private check(): void {
@@ -162,8 +169,7 @@ export class PageFrameworkHost implements FrameworkHost {
       performance.now() - this.fileStarted >= 600000
     )
       this.fault("file-timeout", "Absolute 600000 ms file deadline");
-    if (this.collector.failures.length)
-      this.controller.abort(new Error("Sticky framework host failure"));
+    if (this.collector.failures.length) this.cancel("Sticky framework host failure");
     this.controller.signal.throwIfAborted();
     if (!this.running || this.finalizing) throw new Error("Framework host is not executing");
   }
@@ -216,7 +222,9 @@ export class PageFrameworkHost implements FrameworkHost {
       this.check();
       this.handle = await driver.handle(this.controller.signal);
       this.check();
-      const browser = await this.consumers.invoke(() => input.connect(driver.connection()));
+      const connection = driver.connection();
+      this.queue.bindSession(connection.sessionId);
+      const browser = await this.consumers.invoke(() => input.connect(connection));
       this.check();
       return browser;
     }, "attach");
@@ -234,9 +242,174 @@ export class PageFrameworkHost implements FrameworkHost {
     }, "open");
     // No admission wait inside navigation. The monitor owns the next queue entry.
   }
-  provider<T>(_kind: ProviderOperation, operation: () => Promise<T>): Promise<T> {
+  provider(operation: ViewportOperation): Promise<void>;
+  provider<T>(
+    operation: ProviderOperation | ScreenshotOperation,
+    callback: () => Promise<T>,
+  ): Promise<T>;
+  provider<T>(
+    operation: ProviderOperation | ViewportOperation | ScreenshotOperation,
+    callback?: () => Promise<T>,
+  ): Promise<T | void> {
     this.check();
-    return this.queue.run(operation, _kind);
+    if (typeof operation === "string") {
+      if (
+        !["open", "test-frame", "main-frame", "framework-cleanup"].includes(operation) ||
+        typeof callback !== "function"
+      )
+        return Promise.reject(new Error("Invalid lifecycle operation"));
+      return this.queue.run(callback, operation);
+    }
+    try {
+      return this.domain(this.validateDomain(operation, callback), callback);
+    } catch (reason) {
+      this.fault("operation", "Framework domain admission failed");
+      return Promise.reject(reason);
+    }
+  }
+  private validateDomain(
+    operation: ViewportOperation | ScreenshotOperation,
+    callback: unknown,
+  ): ViewportOperation | ScreenshotOperation {
+    if (!record(operation)) throw new Error("Invalid framework domain operation");
+    if (operation.kind === "viewport") {
+      if (
+        callback !== undefined ||
+        ![operation.width, operation.height].every(
+          (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
+        )
+      )
+        throw new Error("Viewport requires finite positive dimensions and no callback");
+      return { kind: "viewport", width: operation.width, height: operation.height };
+    }
+    if (
+      operation.kind !== "screenshot" ||
+      typeof operation.file !== "string" ||
+      typeof callback !== "function"
+    )
+      throw new Error("Screenshot requires an actual file and callback");
+    return { kind: "screenshot", file: operation.file };
+  }
+  private content(file: string, binding: FrameworkResult["binding"]): void {
+    this.check();
+    if (
+      !binding ||
+      this.binding !== binding ||
+      !this.bound ||
+      !this.collector.viewportConsumed ||
+      this.collector.executionFlushed ||
+      this.collector.cleanupSettled ||
+      this.collector.cleanupResponse ||
+      this.retired ||
+      file !== this.options.scope.files[0] ||
+      !this.collector.collection.some((task) => task.file === file)
+    )
+      throw new Error("Framework file content is not live and admitted");
+  }
+  private async selectedDocument(): Promise<void> {
+    const driver = this.driver,
+      frames = this.frames;
+    if (!driver || !frames || this.handle === null)
+      throw new Error("Missing bound driver or frame");
+    if (
+      (await driver.handle(this.controller.signal)) !== this.handle ||
+      !(await driver.handles(this.controller.signal)).includes(this.handle)
+    )
+      throw new Error("Owned framework window changed");
+    const expected = this.collector.document(frames.isTestFrame() ? "tester" : "orchestrator");
+    const value = await driver.script(
+      "const b=window.__waffleFramework; return b ? b.snapshot() : null;",
+      this.controller.signal,
+    );
+    const actual = snapshot(value);
+    if (
+      !record(value) ||
+      !expected ||
+      value.kind !== expected.kind ||
+      actual.doc !== expected.doc ||
+      actual.token !== expected.token ||
+      actual.contentClosed ||
+      !actual.paired
+    )
+      throw new Error("Selected framework document changed or closed");
+    const challenge = `const b=window.__waffleFramework; return !!b && b.challenge(${JSON.stringify(expected.token)},${JSON.stringify(expected.doc)});`;
+    if ((await driver.script(challenge, this.controller.signal)) !== true)
+      throw new Error("Selected framework document challenge failed");
+  }
+  private async observeContent(operation: ViewportOperation | ScreenshotOperation): Promise<void> {
+    await this.selectedDocument();
+    await this.main(() => this.observeBoundContent(operation));
+    await this.selectedDocument();
+  }
+  private async observeBoundContent(
+    operation: ViewportOperation | ScreenshotOperation,
+  ): Promise<void> {
+    try {
+      const top = snapshot(await this.script("return bridge.snapshot();"));
+      const tester = snapshot(await this.script("return bridge.testerSnapshot();"));
+      const topState = this.collector.document("orchestrator"),
+        testerState = this.collector.document("tester");
+      if (
+        top.doc !== topState?.doc ||
+        top.token !== topState.token ||
+        tester.doc !== testerState?.doc ||
+        tester.token !== testerState.token ||
+        !top.paired ||
+        !tester.paired ||
+        top.contentClosed ||
+        tester.contentClosed
+      )
+        throw new Error("Bound framework documents changed or closed");
+      const actual = geometry(await this.script("return bridge.geometry();"));
+      if (
+        operation.kind === "viewport" &&
+        (actual.tester.width !== operation.width || actual.tester.height !== operation.height)
+      )
+        throw new Error(
+          `Viewport target unrealized: tester ${actual.tester.width} by ${actual.tester.height}; iframe ${actual.iframe.width} by ${actual.iframe.height}`,
+        );
+    } catch (reason) {
+      this.fault("operation", "Actual framework document or viewport verification failed");
+      throw reason;
+    }
+  }
+  private domain<T>(
+    operation: ViewportOperation | ScreenshotOperation,
+    callback: (() => Promise<T>) | undefined,
+  ): Promise<T | void> {
+    const binding = this.binding;
+    const file = operation.kind === "screenshot" ? operation.file : this.options.scope.files[0];
+    this.content(file, binding);
+    let entryTester = false;
+    const before = async () => {
+      this.content(file, binding);
+      entryTester = this.frames?.isTestFrame() === true;
+      await this.observeContent(operation);
+      this.content(file, binding);
+      if (callback) return this.queue.run(callback);
+    };
+    const finalize = async () => {
+      await this.observeContent(operation);
+      this.content(file, binding);
+      const frames = this.frames;
+      if (!frames) throw new Error("Missing frame callbacks at restoration");
+      if (frames.isTestFrame() === entryTester) return;
+      await this.queue.run(
+        entryTester ? frames.tester : frames.main,
+        entryTester ? "test-frame" : "main-frame",
+      );
+      await this.selectedDocument();
+    };
+    return this.queue
+      .run(before, operation.kind, {
+        rootOnly: true,
+        finalize,
+        complete: () => this.content(file, binding),
+      })
+      .catch((reason: unknown) => {
+        this.fault("operation", "Bound framework operation failed");
+        throw reason;
+      });
   }
   guardRequest<T extends RequestInit>(request: T): T {
     return this.queue.guard(request);
@@ -267,12 +440,12 @@ export class PageFrameworkHost implements FrameworkHost {
     const frames = this.frames;
     if (!frames) throw new Error("Frame callbacks not registered");
     const wasTester = frames.isTestFrame();
-    if (wasTester) await this.consumers.invoke(frames.main);
+    if (wasTester) await this.queue.run(frames.main, "main-frame");
     try {
       return await operation();
     } finally {
       if (wasTester && !this.driver?.uncertain && !this.controller.signal.aborted)
-        await this.consumers.invoke(frames.tester);
+        await this.queue.run(frames.tester, "test-frame");
     }
   }
   private async script(source: string): Promise<unknown> {
@@ -315,7 +488,7 @@ export class PageFrameworkHost implements FrameworkHost {
       !capture.frame["element-6066-11e4-a52e-4f735466cecf"]
     )
       throw new Error("Actual iframe document capture mismatch");
-    await this.consumers.invoke(this.frames.tester);
+    await this.queue.run(this.frames.tester, "test-frame");
     try {
       const source = `const b=window.__waffleFramework; return !!b && b.challenge(${JSON.stringify(tester.token)},${JSON.stringify(tester.doc)});`;
       if ((await this.driver?.script(source, this.controller.signal)) !== true)
@@ -325,7 +498,7 @@ export class PageFrameworkHost implements FrameworkHost {
         this.controller.signal,
       );
     } finally {
-      await this.consumers.invoke(this.frames.main);
+      await this.queue.run(this.frames.main, "main-frame");
     }
     if (!this.handle) throw new Error("Missing owned window at admission");
     this.binding = {
@@ -416,7 +589,10 @@ export class PageFrameworkHost implements FrameworkHost {
         throw new Error("Initial viewport command from the wrong frame");
       if (this.collector.viewportConsumed || this.collector.collection.length)
         throw new Error("Initial viewport permit expired");
-      this.geometryValue = geometry(await this.script("return bridge.geometry();"));
+      const actual = geometry(await this.script("return bridge.geometry();"));
+      if (actual.tester.width !== 414 || actual.tester.height !== 896)
+        throw new Error("Actual logical tester is not 414 by 896");
+      this.geometryValue = actual;
       this.collector.viewportConsumed = true;
       this.viewportPermit = null;
     } catch (error) {

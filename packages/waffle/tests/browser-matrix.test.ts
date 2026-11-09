@@ -15,6 +15,7 @@ const runners = [
   "publication-cross-tab",
   "search-executor",
   "guest-watch",
+  "filesystem-transport",
   "gpu",
 ];
 const continuity = "workspace-continuity";

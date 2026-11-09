@@ -33,13 +33,15 @@ class PeerDocument {
       const task: Promise<unknown> = new Function("window", `return (async () => {${source}\n})()`)(
         this.window,
       );
-      void task.then(() =>
-        this.reporter.send({ kind: "task-end", caseId: "peer", operation, status: "pass" }),
-      );
+      void task
+        .then(() =>
+          this.reporter.send({ kind: "task-end", caseId: "peer", operation, status: "pass" }),
+        )
+        .catch(() => {});
     },
     verdict: (body: { status: "pass" | "fail"; result?: unknown; error?: string }) => {
       this.host.phase = "teardown";
-      void this.terminal(body);
+      void this.terminal(body).catch(() => {});
     },
   };
   constructor(
@@ -131,14 +133,21 @@ class PeerDocument {
     const response = await fetch(
       `${url.origin}/retire?run=${String(this.config.run)}&doc=${this.reporter.observation.doc}`,
     );
-    if ((await response.json()) !== true) return;
+    const command = await this.reporter.hostReply(response);
+    if (command.kind === "cancelled") {
+      clearInterval(this.retiring);
+      return;
+    }
+    if (!command.retire) return;
     clearInterval(this.retiring);
     await this.reporter.send({ kind: "retire-ready" });
   }
   async stop(): Promise<void> {
     clearInterval(this.retiring);
-    this.reporter.stop();
-    await this.polling;
+    const settled = await Promise.allSettled([this.polling, this.reporter.stop()]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
   }
 }
 export class PeerDriverFixture extends FakeDriver {
@@ -200,7 +209,11 @@ export class PeerDriverFixture extends FakeDriver {
     this.windows.set(this.selected, page);
     const started = page.start();
     if (value.role === "peer" && this.holdPeerReadyAcknowledgement) {
-      this.peerStarts.push(started);
+      this.peerStarts.push(
+        started.catch((error: unknown) => {
+          if (!page.reporter.signal.aborted) throw error;
+        }),
+      );
       void started.catch(() => {});
       await this.peerReadyReceived.promise;
       return;

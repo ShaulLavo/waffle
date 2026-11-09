@@ -9,7 +9,7 @@ export class WebDriverError extends Error {
     readonly code: string,
     message: string,
   ) {
-    super(message);
+    super(message ? `${code}: ${message}` : code);
     this.name = "WebDriverError";
   }
 }

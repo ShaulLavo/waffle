@@ -1,3 +1,4 @@
+import { hostReply } from "./report-control.js";
 import type { StorageEntry } from "../storage-allocation.js";
 import type { Driver, DriverCleanup } from "./driver.js";
 import { record, type Body } from "./protocol.js";
@@ -38,7 +39,7 @@ export class FakeDriver implements Driver {
   };
   private retirement: ReturnType<typeof setInterval> | undefined;
   private retirementBusy = false;
-  private configuration: Record<string, unknown> = {};
+  protected configuration: Record<string, unknown> = {};
   constructor(
     readonly mode: FakeMode,
     readonly command?: FakeCommand,
@@ -109,7 +110,13 @@ export class FakeDriver implements Driver {
     try {
       const url = `${this.origin}/retire?run=${String(this.configuration.run)}&doc=${this.observation.doc}`;
       const response = await fetch(url);
-      if ((await response.json()) !== true) return;
+      const command: unknown = await response.json();
+      if (!response.ok || !hostReply(command)) throw new Error("Invalid retirement reply");
+      if (command.kind === "cancelled") {
+        clearInterval(this.retirement);
+        return;
+      }
+      if (!command.retire) return;
       clearInterval(this.retirement);
       await this.send({ kind: "retire-ready" });
     } catch {

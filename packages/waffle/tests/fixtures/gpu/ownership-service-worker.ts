@@ -1,12 +1,21 @@
+import {
+  attachServiceAccess,
+  type ServiceAccess,
+} from "../../../browser/display/service-readers.js";
 import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
 import { CompletionOwner } from "../../../browser/gpu/completions.js";
 import { GpuService } from "../../../browser/gpu/service.js";
 import { GpuReplay } from "../../../browser/gpu/replay.js";
 import { GpuConnection, GpuScheduler } from "../../../browser/gpu/scheduler.js";
 import { LogicalReader } from "../../../browser/gpu/transport.js";
-import { RecordRing } from "../../../browser/gpu/ring.js";
+import { FencedCommandReader } from "../../../browser/gpu/command-reader.js";
 import { SurfaceConnection } from "../../../browser/gpu/surfaces.js";
-import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
+import type {
+  GpuServiceRequest,
+  GpuServiceReply,
+  ServiceBootstrap,
+} from "../../../browser/display/service-protocol.js";
+import { disposalRetirementReady } from "./disposal-retirement.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 import { ringSnapshot, captureRingSnapshots } from "./ring-snapshot.js";
 
@@ -50,7 +59,7 @@ interface Command {
 }
 const host = globalThis as unknown as {
   postMessage(message: unknown): void;
-  onmessage: (event: MessageEvent<GpuServiceRequest | Command>) => void;
+  onmessage: (event: MessageEvent<GpuServiceRequest | ServiceBootstrap | Command>) => void;
 };
 const fairness = installFairnessObserver();
 const realm = crypto.randomUUID();
@@ -68,7 +77,7 @@ interface OpenAttempt {
 const attempts: OpenAttempt[] = [];
 let holdNextOpen = false;
 let pendingOpen: Open | undefined;
-const rings = new WeakMap<RecordRing, Owner>();
+const rings = new WeakMap<object, Owner>();
 const devices = new WeakMap<GPUDevice, Owner>();
 const presenters = new WeakMap<object, number>();
 let nextPresenter = 0;
@@ -452,8 +461,8 @@ LogicalReader.prototype.read = function () {
   if (result.kind === "terminal" && result.reason === 2) owner.protocolReads++;
   return result;
 };
-const readInto = RecordRing.prototype.readInto;
-RecordRing.prototype.readInto = function (destination) {
+const readInto = FencedCommandReader.prototype.readInto;
+FencedCommandReader.prototype.readInto = function (destination) {
   const result = readInto.call(this, destination);
   const owner = rings.get(this);
   if (owner && result.kind === "record") {
@@ -486,8 +495,8 @@ function corrupt(owner: Owner, view: DataView) {
   };
 }
 const disposeReader = LogicalReader.prototype.dispose;
-LogicalReader.prototype.dispose = function () {
-  const result = disposeReader.call(this);
+LogicalReader.prototype.dispose = function (reason) {
+  const result = disposeReader.call(this, reason);
   const owner = rings.get(this.ring);
   if (owner) owner.readerDisposed = true;
   return result;
@@ -498,12 +507,16 @@ SurfaceConnection.prototype.configure = function (surface, descriptor) {
   const owner = owners.find((entry) => entry.connection.completions === this.completions);
   if (!owner) throw new Error("Ownership surface observer missing");
   owner.surfaces = this;
-  life("configure", owner, presenterId(this.visible.get(owner.open.surfaces[0]!.id)?.presenter));
+  life(
+    "configure",
+    owner,
+    presenterId(this.surfaceOwner.resource(owner.open.surfaces[0]!.id)?.presenter),
+  );
   return result;
 };
 function releasedPresenter(connection: SurfaceConnection, release: () => void) {
   const owner = owners.find((entry) => entry.connection.completions === connection.completions);
-  const visible = owner ? connection.visible.get(owner.open.surfaces[0]!.id) : undefined;
+  const visible = owner ? connection.surfaceOwner.resource(owner.open.surfaces[0]!.id) : undefined;
   const presenter = visible?.presenter;
   const result = release();
   if (!owner || !presenter || presenter.owner !== connection) return result;
@@ -600,29 +613,37 @@ if (destroy) {
     return result;
   };
 }
-const service = new GpuService((message) => {
-  if (message.type === "retired") {
-    for (const owner of owners)
-      if (owner.open.grant === message.grant) {
-        owner.retiredAck = true;
-        life("retired", owner);
+let service: GpuService;
+function createService(access: ServiceAccess) {
+  return new GpuService(
+    (message) => {
+      if (message.type === "retired") {
+        for (const owner of owners)
+          if (owner.open.grant === message.grant) {
+            owner.retiredAck = true;
+            life("retired", owner);
+          }
+        for (const attempt of attempts)
+          if (attempt.message.grant === message.grant) attempt.retiredAck = true;
       }
-    for (const attempt of attempts)
-      if (attempt.message.grant === message.grant) attempt.retiredAck = true;
-  }
-  if (
-    message.type === "retired" &&
-    selection?.mode === "disposal" &&
-    owners.some((owner) => selected(owner) && owner.open.grant === message.grant)
-  ) {
-    void disposalSettled.promise.then(() => host.postMessage(message));
-    return;
-  }
-  host.postMessage(message);
-});
+      observeDisposalRetirement(message);
+      if (
+        message.type === "retired" &&
+        selection?.mode === "disposal" &&
+        owners.some((owner) => selected(owner) && owner.open.grant === message.grant)
+      ) {
+        void disposalSettled.promise.then(() => host.postMessage(message));
+        return;
+      }
+      host.postMessage(message);
+    },
+    { access: access },
+  );
+}
+
 function ownerSnapshot(owner: Owner, capture: typeof ringSnapshot) {
   const connection = owner.connection;
-  const visible = owner.surfaces?.visible.get(owner.open.surfaces[0]!.id);
+  const visible = owner.surfaces?.surfaceOwner.resource(owner.open.surfaces[0]!.id);
   const presenter = visible?.presenter?.owner === owner.surfaces ? visible?.presenter : undefined;
   return {
     id: owner.id,
@@ -828,6 +849,12 @@ function command(data: Command) {
   }
 }
 host.onmessage = ({ data }) => {
+  if (!("test" in data) && data.type === "bootstrap") {
+    if (service) throw new Error("Duplicate fixture GPU bootstrap");
+    service = createService(attachServiceAccess(data.readers));
+    return;
+  }
+  if (!service) throw new Error("Fixture request before GPU bootstrap");
   if ("test" in data && data.test === "service-failure")
     throw new Error(`GPU_SERVICE_FAILURE ${data.id}`);
   if ("test" in data && data.test === "service-hold-open") {
@@ -884,9 +911,9 @@ function writeDisposalAudit(slot: number, name: string) {
   Atomics.store(new Int32Array(disposalAudit, slot * 1048576, 1), 0, bytes.length);
 }
 
-function observeDisposalRetirement(message: GpuServiceRequest) {
-  if (message.type !== "revoke" || selection?.mode !== "disposal") return;
-  if (!owners.some((owner) => selected(owner) && owner.open.grant === message.grant)) return;
+function observeDisposalRetirement(message: GpuServiceRequest | GpuServiceReply) {
+  if (selection?.mode !== "disposal" || released) return;
+  if (!disposalRetirementReady(message, owners, owners.find(selected)?.open.grant)) return;
   writeDisposalAudit(0, "retired");
   released = true;
   gate.resolve();

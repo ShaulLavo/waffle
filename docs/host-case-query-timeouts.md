@@ -64,3 +64,23 @@ The setter does not change shared budgets, hello, heartbeat, run, document, repo
 or teardown clocks. Consumers retain their own timeout policy and current effective
 timeout. A pending page task retains its actual promise and collector registration;
 changing a timeout never reports a fabricated task completion or detaches cleanup debt.
+
+## Hold an ordinary asset
+
+Call `host.holdAsset(path, callback)` synchronously before a guarded task starts the
+producer. The path must name an existing canonical ordinary asset. Each real GET
+invokes its callback with only `request.continue(): Promise<void>`. Continue selects
+that request's original response once, without replacing its bytes, status or headers.
+It completes at server handoff, independently of callback completion.
+
+Hold documents require exactly one executable HTML delivery and an exact full
+same-origin referrer from the acknowledged case document. Missing or stale context
+never selects the current case. A repeated protected document delivery is rejected.
+Unheld cases and ordinary asset HEAD requests retain normal behavior. This is a
+controlled top-level document contract, not arbitrary worker or referrer-free support.
+
+The body owns its release promise and finally block. Revocation closes new admissions
+but permits already admitted continuation. Body, callback and response work remain
+owned until actual settlement. Verdict delivery, diagnostics, disposal and joins share
+one teardown deadline from body revocation. Unsettled work forbids the next document
+and leaves containment unconfirmed. Holds do not change any original case clock.

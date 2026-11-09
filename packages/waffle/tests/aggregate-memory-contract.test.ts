@@ -223,8 +223,8 @@ test("aggregate contract admits startup backing before the real allocator runs",
   const backend = await open(storage, memoryBudget);
   try {
     expect(allocator.calls).toBe(1);
-    expect(backend.shared.buffer.byteLength).toBe(88_098_640);
-    expect(memoryBudget.snapshot().allocated - before.allocated).toBe(88_099_152);
+    expect(backend.shared.buffer.byteLength).toBe(33_289_256);
+    expect(memoryBudget.snapshot().allocated - before.allocated).toBe(33_289_768);
     expect(allocator.admittedBackingBytes).toBe(
       before.backingBytes + backend.shared.buffer.byteLength,
     );
@@ -235,6 +235,24 @@ test("aggregate contract admits startup backing before the real allocator runs",
     await close(backend, storage);
     memoryBudget.close();
   }
+});
+
+test("the exact startup root lease is admitted and one byte less is refused", () => {
+  const empty = budget(128 * MiB).snapshot();
+  const overhead = empty.allocated + empty.reserve;
+  const lease = 33_289_768;
+  const allocate = (bytes: number) =>
+    new SharedFilesystemState(
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      budget(overhead + bytes),
+    );
+  expect(() => allocate(lease - 1)).toThrow(MemoryBudgetError);
+  expect(allocate(lease).buffer.byteLength).toBe(33_289_256);
 });
 
 test("aggregate contract returns startup reservations after controlled allocation failure", async () => {
@@ -452,7 +470,7 @@ test("aggregate contract denies impossible startup before any shared allocator r
 
 test("aggregate contract startup pressure has no new allocation or reservation effect", async () => {
   const allocator = new StartupAllocator();
-  const memoryBudget = budget(128 * MiB, allocator);
+  const memoryBudget = budget(48 * MiB, allocator);
   const storage = new HeldStorage();
   const backend = await open(storage, memoryBudget);
   try {
@@ -515,7 +533,7 @@ test("aggregate contract never retroactively admits an imported shared backing",
 
 test("aggregate contract a published root survives later factory failure and remains charged", async () => {
   const allocator = new StartupAllocator();
-  const memoryBudget = budget(128 * MiB, allocator);
+  const memoryBudget = budget(48 * MiB, allocator);
   const storage = new HeldStorage();
   const before = memoryBudget.snapshot();
   let failure: unknown;
@@ -584,7 +602,7 @@ test("aggregate contract startup root keeps attached publication reader backing"
       throw new Error("reader fixture file is missing");
     retained = backend.shared.retainVersionPages(resolved.node, 0, 2);
     expect(new Int32Array(publication.pageReaders!).some((count) => count > 0)).toBe(true);
-    expect(backend.shared.readerPinBytes()).toBe(16384);
+    expect(backend.shared.readerPinBytes()).toBe(4096);
     backend.execute("write", [resolved.node, 0], new Uint8Array([90]));
     expect(retained.read(0, 2)).toEqual(new Uint8Array([65, 66]));
     expect(backend.shared.snapshot(resolved.node)?.data).toEqual(new Uint8Array([90, 66]));

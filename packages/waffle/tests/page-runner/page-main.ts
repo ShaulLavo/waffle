@@ -127,6 +127,7 @@ export function startPage<R>(suite: PageSuite<R>): void {
     void reporter.send({ kind: "error", message }).catch(() => {});
   }
   window.addEventListener("pagehide", () => {
+    reporter.cancelDelivery("Document hidden");
     reporter.observation.retired = true;
     reporter.stop();
   });

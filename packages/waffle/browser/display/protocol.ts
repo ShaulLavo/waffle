@@ -10,7 +10,7 @@ export interface GraphicsConnection {
 }
 export interface GraphicsGrant {
   readonly connection: GraphicsConnection;
-  /** Logical revocation is synchronous; retirement joins the ordered service acknowledgement. */
+  /** Logical revocation is synchronous; retirement joins readers and healthy service cleanup. */
   dispose(): void;
   retired(): Promise<void>;
 }
@@ -22,21 +22,3 @@ export interface GraphicsOpen {
   readonly replies: SharedArrayBuffer;
   readonly arena: SharedArrayBuffer;
 }
-export interface ServiceSurface {
-  readonly id: number;
-  readonly canvas?: OffscreenCanvas;
-}
-export type GpuServiceRequest =
-  | {
-      readonly type: "open";
-      readonly grant: number;
-      readonly open: GraphicsOpen;
-      readonly surfaces: readonly ServiceSurface[];
-    }
-  | { readonly type: "close"; readonly grant: number; readonly id: number }
-  | { readonly type: "revoke"; readonly grant: number }
-  | { readonly type: "tick" }
-  | { readonly type: "surface-dispose"; readonly id: number };
-export type GpuServiceReply =
-  | { readonly type: "retired"; readonly grant: number }
-  | { readonly type: "closed"; readonly grant: number; readonly id: number };

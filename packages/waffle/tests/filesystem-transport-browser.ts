@@ -15,6 +15,25 @@ interface Result {
   crossOriginIsolated: boolean;
   retainedBytes: number;
   namespaceRequests: number;
+  large: LargeResult | undefined;
+}
+interface LargeResult {
+  matches: boolean;
+  payloads: number;
+  payloadBytes: number | undefined;
+  arenaBytes: number;
+  writeMs: number;
+}
+const LARGE_INPUT_BYTES = 8 * 1024 * 1024;
+/** A round trip alone passes on the old inline path; this checks the transfer itself. */
+function assertLargeResult(large: LargeResult | undefined): void {
+  if (
+    !large?.matches ||
+    large.payloads !== 5 ||
+    large.payloadBytes !== 0 ||
+    large.arenaBytes > 1024 * 1024
+  )
+    throw Error(`large private transfer regression: ${JSON.stringify(large)}`);
 }
 declare global {
   interface Window {
@@ -37,6 +56,8 @@ interface State {
   lost: number;
   next: number;
   growth: number;
+  largeBytes?: number;
+  largeResult?: LargeResult;
 }
 function prestartedWorker(workers: Set<Worker>): Promise<Worker> {
   const worker = new Worker("/child.js", { type: "module" });
@@ -84,6 +105,10 @@ window.run = async (rounds, concurrency, prestart) => {
       await client.asyncCall("writeFile", ["/growth.bin"], new Uint8Array(state.growth).fill(90));
       const worker = await bounded(prestartedWorker(workers), 10000);
       await runChild(state, worker);
+      const blocking = await bounded(prestartedWorker(workers), 10000);
+      state.largeBytes = LARGE_INPUT_BYTES;
+      await runChild(state, blocking);
+      assertLargeResult(state.largeResult);
     }
     client.dispose();
     fs.postMessage({ dispose: true });
@@ -102,6 +127,7 @@ window.run = async (rounds, concurrency, prestart) => {
       crossOriginIsolated,
       retainedBytes,
       namespaceRequests,
+      large: state.largeResult,
     };
     if (LEGACY_SOURCE && !state.lost)
       throw Error(`negative control did not reproduce: ${JSON.stringify(result)}`);
@@ -121,7 +147,7 @@ function runChild(state: State, worker: Worker): Promise<void> {
   const id = ++state.next;
   const done = Promise.withResolvers<void>();
   let finished = false;
-  const timer = setTimeout(() => finish(false), 3000);
+  const timer = setTimeout(() => finish(false), state.largeBytes ? 60000 : 3000);
   const finish = (success: boolean) => {
     if (finished) return;
     finished = true;
@@ -137,12 +163,17 @@ function runChild(state: State, worker: Worker): Promise<void> {
   };
   state.inflight.set(identity.owner, finish);
   worker.onmessage = ({ data }) => {
-    if (data.type === "done") finish(data.ok === true);
+    if (data.type !== "done") return;
+    if (data.large) state.largeResult = data.large;
+    finish(data.ok === true);
   };
   worker.onerror = () => finish(false);
   if (LEGACY_SOURCE)
     state.root.client.port.postMessage({ connect: pair.server }, [pair.server.port]);
   else state.fs.postMessage({ connect: pair.server }, [pair.server.port]);
-  worker.postMessage({ connection: pair.client, id, growth: state.growth }, [pair.client.port]);
+  worker.postMessage(
+    { connection: pair.client, id, growth: state.growth, largeBytes: state.largeBytes },
+    [pair.client.port],
+  );
   return done.promise;
 }

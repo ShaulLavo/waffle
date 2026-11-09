@@ -8,7 +8,7 @@ import {
   typedArraySet,
   Uint8ArrayConstructor,
 } from "../../proc/intrinsics.js";
-import type { RecordRing, RingWriter } from "./ring.js";
+import type { RecordRing, RingWriter, RingReadResult } from "./ring.js";
 import {
   GPU_LIMITS,
   GPU_TERMINAL,
@@ -58,7 +58,10 @@ export class LogicalAppend {
   #chunkPayload = 0;
   readonly #chunkBytes: number;
   constructor(
-    readonly ring: RecordRing,
+    readonly ring: Pick<
+      RecordRing,
+      "capacity" | "recordHeaderBytes" | "tryAcquireWriter" | "terminal" | "terminate"
+    >,
     bytes: Uint8Array,
     readonly maxLogical: number = GPU_LIMITS.logicalBytes,
   ) {
@@ -162,7 +165,16 @@ export interface LogicalRecord {
   readonly bytes: Uint8Array;
   release(): void;
 }
+export type CommandReadResult = RingReadResult | { readonly kind: "reader-closed" };
+export interface CommandReadSource extends Pick<
+  RecordRing,
+  "capacity" | "recordHeaderBytes" | "terminal" | "terminate"
+> {
+  readInto(destination: Uint8Array): CommandReadResult;
+}
+
 export type LogicalRead =
+  | { readonly kind: "reader-closed" }
   | { kind: "record"; record: LogicalRecord }
   | { kind: "progress" }
   | { kind: "empty" }
@@ -173,9 +185,10 @@ export class LogicalReader {
   #assembly: Assembly | undefined;
   lastReadBytes = 0;
   #scratch: Uint8Array | undefined;
+  #terminalReason: number | undefined;
   readonly #releaseScratch: () => void;
   constructor(
-    readonly ring: RecordRing,
+    readonly ring: CommandReadSource,
     readonly credit: ServiceCredit,
     readonly maxLogical: number = GPU_LIMITS.logicalBytes,
   ) {
@@ -201,18 +214,23 @@ export class LogicalReader {
   read(): LogicalRead {
     this.lastReadBytes = 0;
     if (!this.#scratch)
-      return { kind: "terminal", reason: this.ring.terminal()?.reason ?? GPU_TERMINAL.closed };
+      return {
+        kind: "terminal",
+        reason: this.#terminalReason ?? this.ring.terminal()?.reason ?? GPU_TERMINAL.closed,
+      };
     try {
       return this.#read();
     } catch (error) {
       const reason =
         error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol;
       this.ring.terminate(reason);
+      this.#terminalReason = this.ring.terminal()?.reason ?? reason;
       this.dispose();
-      return { kind: "terminal", reason: this.ring.terminal()?.reason ?? reason };
+      return { kind: "terminal", reason: this.#terminalReason };
     }
   }
-  dispose(): void {
+  dispose(reason?: number): void {
+    this.#terminalReason ??= reason;
     this.#assembly?.release();
     this.#assembly = undefined;
     this.#scratch = undefined;
@@ -223,8 +241,9 @@ export class LogicalReader {
     if (!scratch) throw new GpuProtocolError("Reader retired");
     const result = this.ring.readInto(scratch);
     if (result.kind === "short") throw new GpuResourceError("Physical record exceeds copy budget");
-    if (result.kind === "empty") return result;
+    if (result.kind === "empty" || result.kind === "reader-closed") return result;
     if (result.kind === "terminal") {
+      this.#terminalReason = result.reason;
       this.dispose();
       return result;
     }

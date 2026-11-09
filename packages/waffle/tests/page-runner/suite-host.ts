@@ -31,11 +31,7 @@ import {
   type DriverCleanup,
 } from "./driver.js";
 import { record, type Budgets, type HostCase } from "./protocol.js";
-const headers = {
-  "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "require-corp",
-  "Cache-Control": "no-store",
-};
+import { AssetOwner, assetHeaders as headers } from "./asset-owner.js";
 export type HostedPage = { path: string; script: string };
 export type PreparationContext = { scratch: string; signal: AbortSignal };
 const defaultPage: HostedPage = { path: "/", script: "/page.js" };
@@ -61,14 +57,16 @@ export function serveCollector(
   page: HostedPage = defaultPage,
   port = Number(process.env.STORAGE_TEST_PORT ?? 0),
   application?: FixtureOwner,
+  consumers = new HostConsumers(),
 ) {
   validatePage(page);
   const configurations = new Map<string, unknown>();
+  const assetOwner = new AssetOwner(collector, assets, page, consumers);
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port,
     maxRequestBodySize: 65536,
-    async fetch(request) {
+    async fetch(request, server) {
       const url = new URL(request.url);
       try {
         const report = await dispatchReports(request, {
@@ -92,24 +90,10 @@ export function serveCollector(
           new URL(expected.expectedURL).pathname === url.pathname &&
           expected.expectedURL === url.href
         )
-          return pageResponse(configurations.get(token), page.script);
+          return assetOwner.pageResponse(expected, configurations.get(token), request.method);
         if (url.pathname === page.path || url.pathname.startsWith("/_waffle_owned/"))
           return new Response("Unknown document binding", { status: 404, headers });
-        const workerScope = collector.workerScriptScope(url);
-        if (url.searchParams.has("waffle-run") && !workerScope)
-          return new Response("Unknown worker script binding", { status: 404, headers });
-        const asset = Object.hasOwn(assets, url.pathname) ? assets[url.pathname] : undefined;
-        return new Response(asset ?? "Not found", {
-          status: asset === undefined ? 404 : 200,
-          headers: {
-            ...headers,
-            ...(workerScope ? { "Service-Worker-Allowed": workerScope } : {}),
-            "Content-Type":
-              typeof asset === "string"
-                ? "application/javascript"
-                : asset?.type || "application/octet-stream",
-          },
-        });
+        return await assetOwner.response(request, server);
       } catch (error) {
         if (error instanceof ObservationClosed)
           return Response.json({ error: error.message }, { status: 410, headers });
@@ -118,7 +102,21 @@ export function serveCollector(
       }
     },
   });
-  return { server, configurations, origin: `http://127.0.0.1:${server.port}` };
+  return { server, configurations, assetOwner, origin: `http://127.0.0.1:${server.port}` };
+}
+function sealAssets(fixture: ReturnType<typeof serveCollector> | undefined): void {
+  fixture?.assetOwner.seal();
+}
+function documentTeardown(
+  host: HostDrive | undefined,
+  deadline: number | undefined,
+  signal: AbortSignal,
+) {
+  if (!host) return { deadline, signal };
+  return {
+    deadline: Math.min(deadline ?? Infinity, host.teardownDeadline()),
+    signal: AbortSignal.any([signal, host.teardownSignal()]),
+  };
 }
 async function fixtureResponse(
   request: Request,
@@ -139,7 +137,7 @@ async function fixtureResponse(
   collector.admitFixture(token, doc, application.declaration.caseId);
   return new Response(encoded, { headers: { ...headers, "Content-Type": "application/json" } });
 }
-function retirementCommand(collector: Collector, url: URL): boolean {
+function retirementCommand(collector: Collector, url: URL): ReturnType<Collector["reply"]> {
   const state = collector.documents.find(
     (item) => item.doc !== null && item.doc === url.searchParams.get("doc"),
   );
@@ -149,15 +147,7 @@ function retirementCommand(collector: Collector, url: URL): boolean {
     url.searchParams.get("doc") !== state.doc
   )
     throw new Error("Unbound retirement poll");
-  return state.retiring;
-}
-function pageResponse(configuration: unknown, script: string): Response {
-  if (!configuration) return new Response("Unknown document token", { status: 404, headers });
-  const encoded = JSON.stringify(configuration).replaceAll("<", "\\u003c");
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Page suite</title><script>window.__suiteConfiguration=${encoded}</script><script type="module" src="${script.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"></script>`,
-    { headers: { ...headers, "Content-Type": "text/html" } },
-  );
+  return collector.reply(state.retiring, state);
 }
 export type RunOptions = {
   resultPath: string;
@@ -359,6 +349,7 @@ export async function runPageSuite<R>(
   };
   const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
+    collector.cancel();
     application?.revoke("execution stopped");
     consumers.revoke();
     collector.abandon("execution stopped");
@@ -459,7 +450,7 @@ export async function runPageSuite<R>(
     const handle = await driver.handle(operationSignal);
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
-    const state = collector.expect(group, token, url, handle);
+    const state = collector.expect(group, token, url, handle, cleanupOnly);
     const configuration = pageConfiguration(group, item, run);
     fixture.configurations.set(token, {
       run,
@@ -505,6 +496,7 @@ export async function runPageSuite<R>(
               ledger: collector.ledger,
             });
           },
+          fixture.assetOwner,
         )
       : undefined;
     if (host) hostCases.push(host);
@@ -523,6 +515,7 @@ export async function runPageSuite<R>(
       await host.drive(item.drive);
       priorFailures = collector.failures.length;
     }
+    const teardown = documentTeardown(host, resultDeadline, operationSignal);
     await awaitState(
       state,
       () => state.complete,
@@ -530,11 +523,13 @@ export async function runPageSuite<R>(
       documentDriver,
       budgets,
       cleanupOnly ? performance.now() : started,
-      operationSignal,
+      teardown.signal,
       priorFailures,
-      resultDeadline,
+      teardown.deadline,
     );
     if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
+    if (collector.reply(false, state).kind === "cancelled")
+      throw new Error("Reporting cancelled before retirement");
     state.retiring = true;
     await awaitState(
       state,
@@ -543,10 +538,11 @@ export async function runPageSuite<R>(
       documentDriver,
       budgets,
       cleanupOnly ? performance.now() : started,
-      operationSignal,
+      teardown.signal,
       priorFailures,
+      teardown.deadline,
     );
-    await retireDocument(state, collector, documentDriver, operationSignal, priorFailures);
+    await retireDocument(state, collector, documentDriver, teardown.signal, priorFailures);
     operationSignal.throwIfAborted();
     if (!cleanupOnly) checkDeadline();
     operationSignal.throwIfAborted();
@@ -606,7 +602,7 @@ export async function runPageSuite<R>(
     const assets = await untilAborted(producing, signal);
     checkExecution();
     validateAssets(assets, page);
-    fixture = serveCollector(collector, assets, page, port, application);
+    fixture = serveCollector(collector, assets, page, port, application, consumers);
     workerEntry = workerLocation(adapter.serviceWorker, fixture.origin, run, assets);
     if (application) {
       const startup = application.start(
@@ -668,6 +664,7 @@ export async function runPageSuite<R>(
     options.signal?.removeEventListener("abort", interrupted);
   }
   sealed = true;
+  sealAssets(fixture);
   if (!adapter.policy.allocation && !adapter.serviceWorker)
     storage = { status: "not-created", detail: "suite declares no durable allocations" };
   const cleanup = {
