@@ -11,6 +11,17 @@ async function interruptControl(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   await received.promise;
 }
 
+async function forwardedSignal(): Promise<void> {
+  const received = new Promise<void>((resolve) => {
+    process.once("SIGTERM", () => {
+      console.error("CONTROL_SIGNAL_FORWARDED");
+      resolve();
+    });
+  });
+  process.kill(process.ppid, "SIGTERM");
+  await received;
+}
+
 const [mode, argument, resultPath] = process.argv.slice(2);
 if (!mode || !resultPath) throw new Error("Expected mode and result path");
 
@@ -67,16 +78,7 @@ if (mode === "supervise") {
     void Promise.reject(new Error("CONTROL_UNHANDLED", { cause: "UNHANDLED_CAUSE" }));
     await Bun.sleep(20);
   }
-  if (mode === "forwarded-signal") {
-    const received = new Promise<void>((resolve) => {
-      process.once("SIGTERM", () => {
-        console.error("CONTROL_SIGNAL_FORWARDED");
-        resolve();
-      });
-    });
-    process.kill(process.ppid, "SIGTERM");
-    await received;
-  }
+  if (mode === "forwarded-signal") await forwardedSignal();
   if (mode === "orphan-stderr") {
     console.error("CONTROL_ORPHAN_EXIT_23");
     process.exit(23);

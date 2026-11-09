@@ -37,6 +37,8 @@ function stderrDeadline(exited: Promise<number>, cancellation: AbortController) 
   );
 }
 
+function ignoreForwardingFailure(): void {}
+
 /** Observe the OS exit, not Bun's exit event, which can report 0 for an unhandled rejection. */
 export async function runControlProcess(command: string[], resultPath: string): Promise<number> {
   const controlsPath = `${resultPath}.controls.json`;
@@ -72,7 +74,7 @@ export async function runControlProcess(command: string[], resultPath: string): 
       try {
         if (child?.exitCode === null && child.signalCode === null) child.kill();
         if (child) exitCode = await child.exited;
-        await forwarding?.catch(() => {});
+        await forwarding?.catch(ignoreForwardingFailure);
         await stderr.close();
         const controls: unknown = await Bun.file(controlsPath).json();
         const outcome = child
@@ -110,7 +112,7 @@ if (import.meta.main) {
   const phase = engines.includes("--prepare")
     ? "prepare"
     : engines.includes("--prepared")
-      ? engines[0]
+      ? engines.filter((argument) => argument !== "--prepared").join("-")
       : undefined;
   const resultPath =
     resultIndex < 0

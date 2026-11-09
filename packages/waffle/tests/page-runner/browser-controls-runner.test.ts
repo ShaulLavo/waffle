@@ -128,6 +128,29 @@ async function synthetic(root: string, mode: string) {
   }
 }
 
+async function assertProcessOutcome(mode: string, expected: number): Promise<void> {
+  await temporary(async (root) => {
+    const { code, stdout, stderr, summary } = await synthetic(root, mode);
+    expect(code).toBe(expected);
+    expect(summary.controls).toEqual([{ engine: "synthetic", control: mode, status: "pass" }]);
+    if (mode === "top-level") {
+      expect(stderr).toContain("CONTROL_TOP_LEVEL");
+      expect(stderr).toContain("ORIGINAL_CAUSE");
+    }
+    if (mode === "cleanup") {
+      expect(stderr).toContain("TypeError: CONTROL_PRIMARY");
+      expect(stderr).toContain("RangeError: CONTROL_CLEANUP");
+    }
+    if (mode === "unhandled") {
+      expect(stderr).toContain("CONTROL_UNHANDLED");
+      expect(stderr).toContain("UNHANDLED_CAUSE");
+      expect(stdout).toContain("CONTROL_EXIT_EVENT_");
+    }
+    if (mode === "signal") expect(summary.process.signalCode).toBe("SIGTERM");
+    if (mode === "forwarded-signal") expect(stderr).toContain("CONTROL_SIGNAL_FORWARDED");
+  });
+}
+
 for (const [mode, expected] of [
   ["pass", 0],
   ["inherited", 23],
@@ -138,28 +161,8 @@ for (const [mode, expected] of [
   ["signal", 143],
   ["forwarded-signal", 1],
 ] as const) {
-  test(`passing control verdicts do not hide ${mode} process outcome`, async () => {
-    await temporary(async (root) => {
-      const { code, stdout, stderr, summary } = await synthetic(root, mode);
-      expect(code).toBe(expected);
-      expect(summary.controls).toEqual([{ engine: "synthetic", control: mode, status: "pass" }]);
-      if (mode === "top-level") {
-        expect(stderr).toContain("CONTROL_TOP_LEVEL");
-        expect(stderr).toContain("ORIGINAL_CAUSE");
-      }
-      if (mode === "cleanup") {
-        expect(stderr).toContain("TypeError: CONTROL_PRIMARY");
-        expect(stderr).toContain("RangeError: CONTROL_CLEANUP");
-      }
-      if (mode === "unhandled") {
-        expect(stderr).toContain("CONTROL_UNHANDLED");
-        expect(stderr).toContain("UNHANDLED_CAUSE");
-        expect(stdout).toContain("CONTROL_EXIT_EVENT_");
-      }
-      if (mode === "signal") expect(summary.process.signalCode).toBe("SIGTERM");
-      if (mode === "forwarded-signal") expect(stderr).toContain("CONTROL_SIGNAL_FORWARDED");
-    });
-  });
+  test(`passing control verdicts do not hide ${mode} process outcome`, () =>
+    assertProcessOutcome(mode, expected));
 }
 
 test("failed control verdict and its original error remain blocking", async () => {
@@ -290,25 +293,31 @@ test("prepared control engines do not admit the dispatcher flag as an engine", a
   });
 });
 
-test("split control phases retain separate preparation and engine evidence", async () => {
-  await temporary(async (root) => {
-    const base = join(root, "ci-results.json");
-    const retained = new Map<string, string>();
-    for (const phase of ["prepare", "chromium", "webkit"]) {
-      const args = phase === "prepare" ? ["--prepare"] : [phase, "--prepared"];
-      const { code, stderr } = await invoke(root, args, false, base);
-      expect(code, stderr).toBe(phase === "prepare" ? 0 : 1);
-      const path = `${base}.${phase}.json`;
-      const summary = await Bun.file(path).json();
-      expect(summary.process.exitCode).toBe(code);
-      expect(await Bun.file(`${path}.controls.json`).json()).toEqual(summary.controls);
-      expect(await Bun.file(summary.stderrPath).text()).toBe(stderr);
-      retained.set(path, await Bun.file(path).text());
-    }
-    expect(await Bun.file(base).exists()).toBe(false);
-    for (const [path, original] of retained) expect(await Bun.file(path).text()).toBe(original);
-  });
-});
+async function phaseEvidence(root: string, flagFirst: boolean): Promise<void> {
+  const base = join(root, "ci-results.json");
+  const retained = new Map<string, string>();
+  for (const phase of ["prepare", "chromium", "webkit"]) {
+    const engineArgs = flagFirst ? ["--prepared", phase] : [phase, "--prepared"];
+    const args = phase === "prepare" ? ["--prepare"] : engineArgs;
+    const { code, stderr } = await invoke(root, args, false, base);
+    expect(code, stderr).toBe(phase === "prepare" ? 0 : 1);
+    const path = `${base}.${phase}.json`;
+    const summary = await Bun.file(path).json();
+    expect(summary.process.exitCode).toBe(code);
+    expect(await Bun.file(`${path}.controls.json`).json()).toEqual(summary.controls);
+    expect(await Bun.file(summary.stderrPath).text()).toBe(stderr);
+    for (const file of [path, `${path}.controls.json`, summary.stderrPath])
+      retained.set(file, await Bun.file(file).text());
+  }
+  expect(await Bun.file(base).exists()).toBe(false);
+  for (const [path, original] of retained) expect(await Bun.file(path).text()).toBe(original);
+}
+
+test("split control phases retain separate preparation and engine evidence", () =>
+  temporary((root) => phaseEvidence(root, false)));
+
+test("leading prepared flags keep each engine report and sidecars separate", () =>
+  temporary((root) => phaseEvidence(root, true)));
 
 for (const signal of ["SIGINT", "SIGTERM"])
   test(`retained control results cannot turn forwarded ${signal} into a negative pass`, async () => {
