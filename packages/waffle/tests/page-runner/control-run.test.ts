@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,5 +70,43 @@ test("ordinary negative verdicts remain independent without changing the process
     expect(process.exitCode).toBe(exitCode);
   } finally {
     controls.close();
+  }
+});
+
+test("the control CLI retires its root when result persistence fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "control-persist-"));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  try {
+    const blocked = join(root, "blocked");
+    await writeFile(blocked, "owned dispatcher file");
+    const launched = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "browser-controls-runner.ts"),
+        "unsupported",
+        "--prepared",
+        "--result",
+        join(blocked, "results.json"),
+      ],
+      {
+        env: { ...process.env, STORAGE_SCRATCH_ROOT: root },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    child = launched;
+    const [code, stdout, stderr] = await Promise.all([
+      launched.exited,
+      new Response(launched.stdout).text(),
+      new Response(launched.stderr).text(),
+    ]);
+    expect(code, stdout + stderr).not.toBe(0);
+    expect(stderr).toContain(blocked);
+    expect(await readdir(root)).toEqual(["blocked"]);
+    expect(await readFile(blocked, "utf8")).toBe("owned dispatcher file");
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill();
+    await child?.exited;
+    await rm(root, { recursive: true, force: true });
   }
 });

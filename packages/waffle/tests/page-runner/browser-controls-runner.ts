@@ -352,8 +352,11 @@ async function main(controls: ControlRun): Promise<void> {
     for (const engine of resultIndex < 0 ? args : args.slice(0, resultIndex))
       await engineControls(engine, root, controls);
   } finally {
-    await writeResult(resultPath ?? join(root, "results.json"), results);
-    await rm(root, { recursive: true, force: true });
+    try {
+      await writeResult(resultPath ?? join(root, "results.json"), results);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
   if (!results.length || results.some((result) => result.status === "fail")) process.exitCode = 1;
 }
