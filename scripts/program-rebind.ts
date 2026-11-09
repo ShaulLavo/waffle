@@ -708,7 +708,8 @@ function manifestRuntime(value: unknown, label: string): HistoricalRuntimeManife
   return { ...metadata, waffleHostInterface: readHostInterface(runtime, label) };
 }
 
-function toolState(root: string) {
+function toolState() {
+  const root = resolve(import.meta.dirname, "..");
   return { commit: git(root, ["rev-parse", "HEAD"]), dirty: gitStatus(root) !== "" };
 }
 
@@ -747,13 +748,7 @@ function outputManifest(
       toolsTree: historicalToolsTree,
       command: "bun tools/program-package.ts check",
     },
-    acceptance: options.acceptance
-      ? {
-          script: relative(options.historicalRoot, options.acceptance),
-          commit: sourceCommit,
-          sha256: sha256(readFileSync(options.acceptance)),
-        }
-      : undefined,
+    acceptance: installCheck.acceptance?.source,
     runtimeInput: {
       kind: options.runtime.tarball ? "local-artifact" : "published-download",
       provisional: Boolean(options.runtime.tarball) && !options.runtimePublished,
@@ -963,6 +958,7 @@ async function verifyReboundClosure(
       work,
       requests,
       acceptance: options.acceptance,
+      acceptanceRoot: resolve(options.root),
       runtimeVersion: runtime.version,
       runtimeHostInterface: runtime.hostInterface,
       control,
@@ -979,6 +975,7 @@ async function verifyReboundClosure(
 
 async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
   const control = { signal: options.signal, timeoutMs: options.commandTimeoutMs };
+  const tool = toolState();
   assertOutputDirectory(options.out);
   const work = mkdtempSync(resolve(options.out, ".work-"));
   let retained = false;
@@ -986,7 +983,7 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
     const requiredHostInterface = parseHostInterface(options.hostInterface, "rebind requirement");
     const source = await loadSourceBundle(options, control, work);
     if (source.schema === "waffle-program-release/1") {
-      assert.ok(options.acceptance, "Schema-1 migration requires historical --acceptance");
+      assert.ok(options.acceptance, "Schema-1 migration requires source-bound --acceptance");
     }
     const sourceCommit = stringValue(source.manifest.sourceCommit, "Source manifest sourceCommit");
     const programVersion = versionFromTag(options.tag);
@@ -996,7 +993,6 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
       options.historicalRoot,
       resolve(options.historicalRoot, "tools/program-package.ts"),
     );
-    if (options.acceptance) assertHistoricalScript(options.historicalRoot, options.acceptance);
     const tagState = targetTagState(
       options.historicalRoot,
       options.tag,
@@ -1041,7 +1037,6 @@ async function buildRebind(options: RebindOptions): Promise<ReleaseManifest> {
     };
     for (const item of source.packages) rebound.push(await stageReboundPackage(context, item));
     const installCheck = await verifyReboundClosure(context, rebound, runtime);
-    const tool = toolState(resolve(options.root));
     const historicalToolsTree = git(options.historicalRoot, ["rev-parse", `HEAD:tools`]);
     const manifest = outputManifest(
       source,
@@ -1151,7 +1146,7 @@ const usage = `Usage: bun scripts/program-rebind.ts --from-tag programs-vX.Y.Z \
   --from-manifest-sha256 HEX --tag programs-vX.Y.Z --out DIR \\
   --runtime-url URL --runtime-sha256 HEX --runtime-tarball FILE \\
   --historical-root DIR [--from-assets DIR] [--registry URL] \\
-  [--acceptance FILE] [--require-tag] [--timeout-ms MS]`;
+  [--acceptance FILE_FROM_ROOT] [--require-tag] [--timeout-ms MS]`;
 
 async function main(argv: string[]) {
   const controller = new AbortController();
