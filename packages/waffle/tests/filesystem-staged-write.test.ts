@@ -658,6 +658,9 @@ test("the page's command stdio completes an unattached write and read while its 
   await write;
   expect(owner.revision(node)).toBe(before + 1);
   expect(fs.shared.segments).toHaveLength(1);
+  // The write resolved in the call that committed it. No owner turn has run since, so the file
+  // is still gated for an agent that holds the segment: it cannot read the older bytes.
+  expect(awaitsOwner({ fs: rig.client, node })).toBe(true);
   // Reading back through stdin goes through the owner too, after the write was applied.
   const read = await stdio.stdin.read();
   expect(read).toHaveLength(PAGE * 2);
