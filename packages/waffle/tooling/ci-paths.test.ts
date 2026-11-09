@@ -1480,3 +1480,5 @@ test("package setup explicitly prepares Waffle after the script-free install", (
   expect(String(tooling?.run)).toContain("oxfmt --check");
   expect(String(tooling?.run)).toContain("packages/waffle-relay/tests/prepare-native.test.ts");
 });
+
+import "../../../tools/ci-release-coverage.test.ts";
