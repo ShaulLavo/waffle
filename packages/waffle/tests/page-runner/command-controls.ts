@@ -1,3 +1,4 @@
+import type { BunPlugin } from "bun";
 import { join } from "node:path";
 import { browserBundle, type engines } from "../browser-runner-lifecycle.js";
 import { commandAdapter, commandPageBundle, type CommandRequest } from "./command-suites.js";
@@ -5,6 +6,22 @@ import { PlaywrightDriver } from "./playwright-driver.js";
 import { runPageSuite, type SuiteAdapter, type SuiteResult } from "./suite-host.js";
 import { record } from "./protocol.js";
 import { runStorage } from "./storage-host.js";
+
+const notificationControlModes = [
+  "complete",
+  "snapshot",
+  "invalid-result",
+  "mixed",
+  "terminated",
+  "revoked",
+  "startupCancel",
+  "releaseFailure",
+  "sendFailure",
+  "relayStopFailure",
+  "relayArmFailure",
+  "startupReject",
+] as const;
+type NotificationControl = (typeof notificationControlModes)[number];
 
 export const commandControlModes = [
   "objectResult",
@@ -19,7 +36,7 @@ export const commandControlModes = [
   "wrongResult",
   "missing-export",
   "import-failure",
-];
+].concat(notificationControlModes.map((mode) => `notification-${mode}`));
 const fixtureArgs = ["/guest.js?mode=sample", "/helper.js", "/writer.js"];
 function fixtureAdapter(mode: string): SuiteAdapter<CommandRequest> {
   const adapter = commandAdapter(mode === "arrayResult" ? "fs-socket-attachment" : "guest-watch");
@@ -81,6 +98,10 @@ export async function commandControl(
   mode: string,
   root: string,
 ): Promise<void> {
+  const notificationMode = notificationControlModes.find(
+    (entry) => mode === `notification-${entry}`,
+  );
+  if (notificationMode) return notificationControl(engine, notificationMode, root);
   const adapter = fixtureAdapter(mode);
   const result = await runPageSuite(adapter, (scratch) => new PlaywrightDriver(engine, scratch), {
     resultPath: join(root, `command-${mode}.json`),
@@ -144,4 +165,170 @@ export async function storagePageLabelControl(
     Object.values(result.cleanup).some((step) => record(step) && step.status === "unconfirmed")
   )
     throw new Error(`Production storage page lost ${label} label check: ${JSON.stringify(result)}`);
+}
+
+function notificationFailure(mode: NotificationControl) {
+  if (mode === "mixed")
+    return {
+      path: "fixtures/notification-mixed-worker.ts",
+      old: 'check(set.covered, "common pipe must be covered");',
+      replacement: 'check(false, "common pipe must be covered");',
+      message: "common pipe must be covered",
+    };
+  if (["terminated", "revoked", "relayStopFailure"].includes(mode))
+    return {
+      path: "notification-lifetime-cases.ts",
+      old: 'check(hostCleanups === 1, "host cleanup did not run exactly once after physical stop");',
+      replacement: `check(hostCleanups === (${mode === "revoked" ? "revoke" : mode === "relayStopFailure" ? "relayFailure" : "!revoke && !relayFailure"} ? 2 : 1), "host cleanup did not run exactly once after physical stop");`,
+      message: "host cleanup did not run exactly once after physical stop",
+    };
+  if (["startupCancel", "relayArmFailure", "startupReject"].includes(mode))
+    return {
+      path: "notification-lifetime-cases.ts",
+      old: 'check(Atomics.load(marker, 0) === 0, "cancelled/rejected startup entered guest");',
+      replacement: `check(Atomics.load(marker, 0) === (mode === "${mode === "startupCancel" ? "arm" : mode === "relayArmFailure" ? "relay" : "reject"}" ? 1 : 0), "cancelled/rejected startup entered guest");`,
+      message: "cancelled/rejected startup entered guest",
+    };
+  if (mode === "releaseFailure" || mode === "sendFailure")
+    return {
+      path: "notification-lifetime-cases.ts",
+      old: 'check(network.releases === 1, "scope release was repeated");',
+      replacement: `check(network.releases === (${mode === "sendFailure" ? "detachPort" : "!detachPort"} ? 2 : 1), "scope release was repeated");`,
+      message: "scope release was repeated",
+    };
+  return null;
+}
+function notificationAssertionPlugin(
+  source: string,
+  content: string,
+  failure: { old: string; replacement: string },
+): BunPlugin {
+  return {
+    name: "notification-original-assertion",
+    setup(build) {
+      build.onLoad({ filter: /notification-(?:mixed-worker|lifetime-cases)\.ts$/ }, (args) =>
+        args.path === source
+          ? { contents: content.replace(failure.old, failure.replacement), loader: "ts" }
+          : undefined,
+      );
+    },
+  };
+}
+async function notificationAssets(mode: NotificationControl, scratch: string) {
+  const assets = await commandAdapter("notification").assets({
+    scratch,
+    signal: AbortSignal.timeout(60_000),
+  });
+  const failure = notificationFailure(mode);
+  if (failure) {
+    const source = join(import.meta.dir, "..", failure.path);
+    const content = await Bun.file(source).text();
+    if (content.split(failure.old).length !== 2)
+      throw new Error(`Notification assertion moved: ${mode}`);
+    const built = await Bun.build({
+      entrypoints: [source],
+      target: "browser",
+      plugins: [notificationAssertionPlugin(source, content, failure)],
+    });
+    if (!built.success || !built.outputs[0])
+      throw new AggregateError(built.logs, `Notification control ${mode}`);
+    assets[mode === "mixed" ? "/guest.js" : "/lifetime.js"] = built.outputs[0];
+  }
+  if (mode !== "snapshot" && mode !== "invalid-result") return assets;
+  const original = assets["/notification.js"];
+  if (!original) throw new Error("Missing original notification command asset");
+  assets["/original-notification.js"] = original;
+  assets["/notification.js"] =
+    `import { notificationCommand as original } from "/original-notification.js";
+export async function notificationCommand() {
+  const actual = await original();
+  ${
+    mode === "invalid-result"
+      ? "actual.startupReject.entries = 1;"
+      : `let calls = 0;
+  Object.defineProperty(actual, "toJSON", { value() {
+    if (++calls !== 1) throw new Error("Notification result serialized twice");
+    const copy = Object.fromEntries(Object.entries(actual));
+    queueMicrotask(() => {
+      for (const key of Object.keys(actual)) actual[key] = null;
+      window.__notificationSnapshot = { calls, cleared: Object.values(actual).every(value => value === null) };
+    });
+    return copy;
+  } });`
+  }
+  return actual;
+}`;
+  return assets;
+}
+async function notificationControl(
+  engine: keyof typeof engines,
+  mode: NotificationControl,
+  root: string,
+): Promise<void> {
+  const adapter = commandAdapter("notification");
+  let copiedBeforeRetirement = false;
+  const resultPath = join(root, `notification-${engine}-${mode}.json`);
+  const result = await runPageSuite(
+    adapter,
+    (scratch) => {
+      const driver = new PlaywrightDriver(engine, scratch);
+      if (mode === "snapshot")
+        observeNotificationSnapshot(driver, () => {
+          copiedBeforeRetirement = true;
+        });
+      return driver;
+    },
+    {
+      resultPath,
+      scratchRoot: process.env.STORAGE_SCRATCH_ROOT,
+      assets: await notificationAssets(mode, root),
+    },
+  );
+  const passed = mode === "complete" || mode === "snapshot";
+  checkedResult(result, passed ? 0 : 1);
+  checkedSuccess(result, mode);
+  if (JSON.stringify(await Bun.file(resultPath).json()) !== JSON.stringify(result))
+    throw new Error("Actual notification result was not retained in the result file");
+  const id = "notification: notificationCommand";
+  const actual = result.results[id];
+  const outcome = result.outcomes[id];
+  if (
+    result.suite !== "notification" ||
+    JSON.stringify(result.required) !== JSON.stringify([id]) ||
+    JSON.stringify(result.selected) !== JSON.stringify([id])
+  )
+    throw new Error("Notification control did not select the whole original command");
+  if (result.failures.length || outcome?.status !== (passed ? "pass" : "fail"))
+    throw new Error(`Notification ${mode} did not reach its original command outcome`);
+  if (passed) adapter.policy.check?.(id, actual);
+  if (mode === "snapshot" && !copiedBeforeRetirement)
+    throw new Error("Notification result was not copied before document teardown");
+  const failure = notificationFailure(mode);
+  if (failure && (outcome?.status !== "fail" || !outcome.detail.includes(failure.message)))
+    throw new Error(`Original notification assertion was lost for ${mode}`);
+  if (
+    mode === "invalid-result" &&
+    (!record(actual) || !record(actual.startupReject) || actual.startupReject.entries !== 1)
+  )
+    throw new Error("The failed actual notification result was discarded");
+  console.log(
+    JSON.stringify({
+      engine,
+      control: `notification-${mode}`,
+      exit: result.exit,
+      copiedBeforeRetirement: mode === "snapshot" ? copiedBeforeRetirement : null,
+      retainedScenarios: record(actual) ? Object.keys(actual) : [],
+      cleanup: result.cleanup,
+    }),
+  );
+}
+
+function observeNotificationSnapshot(driver: PlaywrightDriver, copied: () => void): void {
+  const script = driver.script.bind(driver);
+  driver.script = async (source, signal) => {
+    if (!source.includes("r.retired = true")) return script(source, signal);
+    const observed = await script("return window.__notificationSnapshot || null", signal);
+    if (record(observed) && observed.calls === 1 && observed.cleared === true) copied();
+    return script(source, signal);
+  };
 }

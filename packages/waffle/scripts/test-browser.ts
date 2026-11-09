@@ -67,6 +67,7 @@ const serial = runners
         },
       ],
     ],
+    [[{ runner: "tests/notification-browser-runner.ts", engines: [] }]],
   );
 // CI runs the two groups on separate runners; each keeps its own order.
 const group = process.env.WAFFLE_BROWSER_GROUP;

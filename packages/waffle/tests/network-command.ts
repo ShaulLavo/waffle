@@ -115,7 +115,14 @@ export async function completeNetworkCommand(
       failure: String(error),
     });
     console.log(
-      JSON.stringify({ command: "network-browser", complete: false, exit: 2, resultPath }),
+      JSON.stringify({
+        command: "network-browser",
+        complete: false,
+        exit: 2,
+        resultPath,
+        phases: failedPhases(phases),
+        failure: String(error),
+      }),
     );
     return 2;
   } finally {
@@ -134,9 +141,56 @@ export async function completeNetworkCommand(
       phases.every((phase) => phase.confirmed);
     if (whole && !complete && exit === 0) exit = 2;
     await writeResult(resultPath!, { suite: "network-command", complete, exit, phases });
-    console.log(JSON.stringify({ command: "network-browser", complete, exit, resultPath }));
+    console.log(
+      JSON.stringify({
+        command: "network-browser",
+        complete,
+        exit,
+        resultPath,
+        ...(!complete && { phases: failedPhases(phases) }),
+      }),
+    );
     return exit;
   }
+}
+function failedPhases(phases: readonly Phase[]) {
+  return phases
+    .filter((phase) => phase.exit !== 0 || !phase.confirmed)
+    .map((phase) => {
+      const { target, exit, confirmed, result } = phase;
+      if (!result || typeof result !== "object")
+        return { target, phase: phase.phase, exit, confirmed, result };
+      const value = Object.fromEntries(Object.entries(result));
+      const entries = (field: unknown, include: (item: unknown) => boolean) =>
+        field && typeof field === "object"
+          ? Object.fromEntries(Object.entries(field).filter(([, item]) => include(item)))
+          : undefined;
+      const status = (item: unknown) =>
+        item && typeof item === "object" && "status" in item ? item.status : undefined;
+      return {
+        target,
+        phase: phase.phase,
+        exit,
+        confirmed,
+        result: {
+          runComplete: value.runComplete,
+          omitted: value.omitted,
+          failures: value.failures,
+          failure: value.failure,
+          precondition: value.precondition,
+          outcomes: entries(
+            value.outcomes,
+            (item) =>
+              status(item) !== "pass" ||
+              (typeof item === "object" &&
+                item !== null &&
+                "provisional" in item &&
+                item.provisional === true),
+          ),
+          cleanup: entries(value.cleanup, (item) => status(item) === "unconfirmed"),
+        },
+      };
+    });
 }
 async function runPhase(
   adapter: SuiteAdapter<null>,
