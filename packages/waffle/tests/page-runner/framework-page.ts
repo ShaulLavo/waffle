@@ -20,3 +20,18 @@ export function getFrameworkObservation(): FrameworkObservation | undefined {
   const accessor: unknown = Reflect.get(globalThis, Symbol.for("waffle.framework.observation"));
   return typeof accessor === "function" ? accessor() : undefined;
 }
+
+export type FrameworkTraceDocument =
+  | {
+      readonly kind: "tester";
+      bind(input: {
+        readonly snapshot: () => string;
+        readonly releaseOriginalRpc: () => void;
+      }): void;
+    }
+  | { readonly kind: "orchestrator"; waitForTesterTrace(): Promise<void> };
+export function getFrameworkTraceDocument(): FrameworkTraceDocument | undefined {
+  if (typeof document === "undefined") return;
+  const accessor: unknown = Reflect.get(globalThis, Symbol.for("waffle.framework.trace"));
+  return typeof accessor === "function" ? accessor() : undefined;
+}

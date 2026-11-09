@@ -1,8 +1,15 @@
+import { installFrameworkTracePage } from "./framework-trace-page.js";
 import { OrderedReporter } from "./ordered-reporter.js";
 import type { FrameworkObservation } from "./framework-page.js";
 import type { FrameworkEvent } from "./framework-types.js";
 
-type Configuration = { run: string; token: string; kind: "orchestrator" | "tester"; url: string };
+type Configuration = {
+  run: string;
+  token: string;
+  kind: "orchestrator" | "tester";
+  url: string;
+  trace?: boolean;
+};
 type Body = { token: string } & (
   | { kind: "hello"; role: string; url: string }
   | { kind: "event"; event: FrameworkEvent }
@@ -92,6 +99,7 @@ export function installFrameworkBootstrap(config: Configuration): void {
   };
   const pagehide = (): void => {
     invalidated = true;
+    trace?.lost();
     reporter.cancelDelivery("Document hidden");
     releaseIdentity();
   };
@@ -113,7 +121,31 @@ export function installFrameworkBootstrap(config: Configuration): void {
       invalidated = true;
     return !invalidated;
   };
+  const trace = config.trace
+    ? installFrameworkTracePage(
+        config,
+        state.doc,
+        () =>
+          valid() &&
+          (!admitted ||
+            (config.kind === "tester"
+              ? parent.__waffleFramework?.matchesTester(capturedDocument, frameElement) === true
+              : paired())),
+      )
+    : undefined;
   const bridge = {
+    traceChannel: () => trace?.session() ?? null,
+    traceIframe: () => new URL(config.url).searchParams.get("iframeId"),
+    traceReady: () => {
+      if (!trace) return true;
+      if (!trace.ready()) return false;
+      if (config.kind === "tester") return true;
+      const candidate = document.querySelector("iframe[data-vitest]");
+      return (
+        candidate instanceof HTMLIFrameElement &&
+        candidate.contentWindow?.__waffleFramework?.traceChannel() === trace.session()
+      );
+    },
     snapshot: () => ({
       ...state,
       kind: config.kind,
@@ -153,9 +185,23 @@ export function installFrameworkBootstrap(config: Configuration): void {
       state.doc === doc &&
       (config.kind === "orchestrator" ||
         parent.__waffleFramework?.matchesTester(document, frameElement) === true),
-    admit: (token: string, doc: string, viewportPermit: string | null) => {
+    admit: (
+      token: string,
+      doc: string,
+      viewportPermit: string | null,
+      traceGeneration?: string,
+    ) => {
       if (!valid() || token !== config.token || doc !== state.doc || admitted)
         throw new Error("Invalid or reused document admission");
+      if (trace) {
+        if (!traceGeneration) throw new Error("Missing trace generation");
+        const iframeId =
+          config.kind === "tester"
+            ? bridge.traceIframe()
+            : tester?.defaultView?.__waffleFramework?.traceIframe();
+        if (!iframeId) throw new Error("Missing paired actual tester iframe identity");
+        trace.admit(traceGeneration, iframeId);
+      }
       admitted = true;
       permit = viewportPermit;
       if (permit) admission.resolve({ permit, width: 414, height: 896 });
@@ -242,6 +288,9 @@ export function installFrameworkBootstrap(config: Configuration): void {
 declare global {
   interface Window {
     __waffleFramework?: {
+      traceReady(): boolean;
+      traceChannel(): string | null;
+      traceIframe(): string | null;
       snapshot(): {
         doc: string;
         kind: string;

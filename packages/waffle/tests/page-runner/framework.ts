@@ -1,6 +1,13 @@
 import { PageFrameworkHost } from "./framework-host.js";
 import type { FrameworkHost, FrameworkOptions } from "./framework-types.js";
 export type {
+  CollectorObservation,
+  CollectorDelivery,
+  TesterTraceOptions,
+  TesterTraceCapture,
+  TraceCheckpoint,
+  TraceFailure,
+  TraceSettlement,
   Json,
   ExpectedCase,
   SafariRequested,
@@ -16,6 +23,7 @@ export type {
   VitestEnd,
   FrameAdapter,
   TransportEvents,
+  FrameworkEvent,
   FrameworkTask,
   FrameworkUpdate,
   FrameworkGeometry,
