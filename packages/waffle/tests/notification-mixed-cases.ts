@@ -16,9 +16,16 @@ export async function mixedNotificationCases(
   guestUrl: string,
   helperUrl: string,
   deadlineNews: "timer" | "held" = "timer",
+  networkNews: "together" | "head-first" = "together",
 ): Promise<unknown> {
-  const idle = await mixedNotificationCase(guestUrl, helperUrl, "idle", deadlineNews);
-  const sources = await mixedNotificationCase(guestUrl, helperUrl, "sources", deadlineNews);
+  const idle = await mixedNotificationCase(guestUrl, helperUrl, "idle", deadlineNews, networkNews);
+  const sources = await mixedNotificationCase(
+    guestUrl,
+    helperUrl,
+    "sources",
+    deadlineNews,
+    networkNews,
+  );
   return { done: true, idle, sources };
 }
 
@@ -27,6 +34,7 @@ async function mixedNotificationCase(
   helperUrl: string,
   phase: "idle" | "sources",
   deadlineNews: "timer" | "held",
+  networkNews: "together" | "head-first",
 ): Promise<unknown> {
   const service = new FilesystemService(new MemoryBackend());
   const pair = createFilesystemConnection();
@@ -49,7 +57,16 @@ async function mixedNotificationCase(
     const path = await fs.asyncCall("resolve", [root, "control"]);
     fs.retain(path.node);
     const connection = fs.fork();
-    const publish = sourcePublisher(fs, path.node, network, writer, bridge, timers, deadlineNews);
+    const publish = sourcePublisher(
+      fs,
+      path.node,
+      network,
+      writer,
+      bridge,
+      timers,
+      deadlineNews,
+      networkNews,
+    );
     return await runGuest(
       guest,
       {
@@ -110,7 +127,7 @@ async function publishStage(
     await new Promise<void>((resolve) => {
       timers.push(setTimeout(resolve, 35));
     });
-    await publish(stage.replace("-parked", ""));
+    await publish(stage);
     return;
   }
   await publish(stage);
@@ -127,16 +144,24 @@ function sourcePublisher(
   bridge: NotificationBridge,
   timers: ReturnType<typeof setTimeout>[],
   deadlineNews: "timer" | "held",
+  networkNews: "together" | "head-first",
 ): (stage: string) => Promise<void> {
   // The held control publishes at the next phase barrier, not after another timer delay.
   let deadlinePending = false;
   let deadlineWrite: Promise<void> | undefined;
   return async (stage) => {
-    if (stage === "fs-service")
+    const source = stage.replace("-parked", "");
+    if (source === "fs-service")
       await fs.asyncCall("writeFile", ["/control", false], new Uint8Array([1]));
-    if (stage === "fs-direct") fs.write(node, [new Uint8Array([2])], 0);
-    if (stage === "network") await publishNetwork(network);
-    if (stage === "process") writer.tryWrite([new Uint8Array([3])]);
+    if (source === "fs-direct") fs.write(node, [new Uint8Array([2])], 0);
+    if (source === "network") {
+      if (stage === "network-parked" && networkNews === "head-first")
+        await network.write(1, Kind.Head, new Uint8Array([123, 125]));
+      else await publishNetwork(network);
+    }
+    if (stage === "process" && networkNews === "head-first")
+      await network.write(1, Kind.Data, new Uint8Array([81]));
+    if (source === "process") writer.tryWrite([new Uint8Array([3])]);
     if (stage === "deadline" && deadlineNews === "timer")
       deadlineWrite = scheduleDeadlineNews(network, timers);
     if (stage === "deadline" && deadlineNews === "held") deadlinePending = true;
