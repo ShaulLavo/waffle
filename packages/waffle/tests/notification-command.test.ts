@@ -77,7 +77,10 @@ test("the complete notification command preserves nine original calls, arguments
 for (let index = 0; index < calls.length; index++) {
   test(`original notification failure ${labels[index]} rejects the command`, async () => {
     const observed: unknown[][] = [];
-    await expect(execute(index, observed)).rejects.toThrow(`original failure ${index}`);
+    const error: unknown = await execute(index, observed).catch((cause: unknown) => cause);
+    expect(Object.getOwnPropertyDescriptor(error, "cause")?.value).toMatchObject({
+      message: `original failure ${index}`,
+    });
     expect(observed).toEqual(expectedCalls.slice(0, index + 1));
   });
 }

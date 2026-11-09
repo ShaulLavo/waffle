@@ -17,34 +17,64 @@ export async function notificationCommand() {
   const mixed: typeof import("./notification-mixed-cases.js") = await import(mixedPath);
   const lifetime: typeof import("./notification-lifetime-cases.js") = await import(lifetimePath);
   const url = (path: string) => new URL(path, location.href).href;
-  return {
-    mixed: await mixed.mixedNotificationCases(url("/guest.js"), url("/helper.js")),
-    terminated: await lifetime.brokerNotificationCase(url("/runtime.js"), url("/helper.js"), false),
-    revoked: await lifetime.brokerNotificationCase(url("/runtime.js"), url("/helper.js"), true),
-    startupCancel: await lifetime.bootstrapNotificationCase(
+  let scenario = "mixed";
+  try {
+    const mixedResult = await mixed.mixedNotificationCases(url("/guest.js"), url("/helper.js"));
+    scenario = "terminated";
+    const terminated = await lifetime.brokerNotificationCase(
+      url("/runtime.js"),
+      url("/helper.js"),
+      false,
+    );
+    scenario = "revoked";
+    const revoked = await lifetime.brokerNotificationCase(
+      url("/runtime.js"),
+      url("/helper.js"),
+      true,
+    );
+    scenario = "startupCancel";
+    const startupCancel = await lifetime.bootstrapNotificationCase(
       url("/runtime.js"),
       url("/stalled.js"),
       "arm",
-    ),
-    releaseFailure: await lifetime.scopeDisposalFailureCase(url("/stalled.js"), false),
-    sendFailure: await lifetime.scopeDisposalFailureCase(url("/stalled.js"), true),
-    relayStopFailure: await lifetime.brokerNotificationCase(
+    );
+    scenario = "releaseFailure";
+    const releaseFailure = await lifetime.scopeDisposalFailureCase(url("/stalled.js"), false);
+    scenario = "sendFailure";
+    const sendFailure = await lifetime.scopeDisposalFailureCase(url("/stalled.js"), true);
+    scenario = "relayStopFailure";
+    const relayStopFailure = await lifetime.brokerNotificationCase(
       url("/runtime.js"),
       url("/helper.js"),
       false,
       true,
-    ),
-    relayArmFailure: await lifetime.bootstrapNotificationCase(
+    );
+    scenario = "relayArmFailure";
+    const relayArmFailure = await lifetime.bootstrapNotificationCase(
       url("/runtime.js"),
       url("/reject.js"),
       "relay",
-    ),
-    startupReject: await lifetime.bootstrapNotificationCase(
+    );
+    scenario = "startupReject";
+    const startupReject = await lifetime.bootstrapNotificationCase(
       url("/runtime.js"),
       url("/helper.js"),
       "reject",
-    ),
-  };
+    );
+    return {
+      mixed: mixedResult,
+      terminated,
+      revoked,
+      startupCancel,
+      releaseFailure,
+      sendFailure,
+      relayStopFailure,
+      relayArmFailure,
+      startupReject,
+    };
+  } catch (cause) {
+    throw new Error(`Notification scenario ${scenario} failed`, { cause });
+  }
 }
 
 const scenarioNames = [

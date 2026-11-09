@@ -21,6 +21,8 @@ test("nested causes stop at a bounded depth and cyclic causes terminate", () => 
   const nested = formatHostError(error);
   expect(nested).toContain("wrapper 99");
   expect(nested).toContain("wrapper 98");
+  expect(nested).toContain("wrapper 96");
+  expect(nested).not.toContain("wrapper 95");
   expect(nested).not.toContain("unreachable tail");
   const cyclic = new Error("cycle");
   Object.defineProperty(cyclic, "cause", { value: cyclic });
@@ -55,17 +57,39 @@ test("only safe scalar error descriptors are read, never accessors or object con
   const proxy = Proxy.revocable({}, {});
   proxy.revoke();
   expect(() => formatHostError(proxy.proxy)).not.toThrow();
+  expect(() => formatHostError({ errors: proxy.proxy })).not.toThrow();
+  const fields = { name: payload, message: payload, stack: payload, errno: payload };
+  expect(formatHostError(fields)).not.toContain("secret");
+  expect(reads).toBe(0);
 });
 
 test("aggregate cause accessors and indexed getters are not invoked", () => {
   let reads = 0;
   const values: Error[] = [];
-  Object.defineProperty(values, "0", { get: () => { reads++; throw new Error("private"); } });
+  Object.defineProperty(values, "0", {
+    get: () => {
+      reads++;
+      throw new Error("private");
+    },
+  });
   values.length = 100_000;
   const error = new AggregateError([], "safe aggregate");
   Object.defineProperty(error, "errors", { value: values });
   expect(() => formatHostError(error)).not.toThrow();
-  Object.defineProperty(error, "errors", { get: () => { reads++; throw new Error("private"); } });
+  Object.defineProperty(error, "errors", {
+    get: () => {
+      reads++;
+      throw new Error("private");
+    },
+  });
   expect(() => formatHostError(error)).not.toThrow();
   expect(reads).toBe(0);
+});
+
+test("aggregate traversal visits only the first eight causes in primary order", () => {
+  const errors = Array.from({ length: 100 }, (_, index) => new Error(`entry-${index}`));
+  const text = formatHostError(new AggregateError(errors, "wide"));
+  expect(text).toContain("entry-7");
+  expect(text).not.toContain("entry-8");
+  expect(text.indexOf("entry-0")).toBeLessThan(text.indexOf("entry-7"));
 });

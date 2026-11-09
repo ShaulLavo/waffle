@@ -38,5 +38,7 @@ export function spawnError(error: unknown): ProcessError {
           ? 6
           : error.errno
         : 29;
-  return new ProcessError(errno, error instanceof Error ? error.message : String(error));
+  return new ProcessError(errno, error instanceof Error ? error.message : String(error), {
+    cause: error,
+  });
 }
