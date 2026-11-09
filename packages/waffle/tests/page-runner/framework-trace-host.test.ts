@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -11,9 +11,8 @@ import {
 } from "./framework.js";
 
 test("an armed but unadmitted public host never waits for a hypothetical producer or restarts cleanup accounting", async () => {
-  const root = await mkdtemp(
-    join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-trace-host-"),
-  );
+  const priorRoot = process.env.STORAGE_SCRATCH_ROOT;
+  const root = await mkdtemp(join(priorRoot ?? tmpdir(), "waffle-trace-host-"));
   let calls = 0;
   const options: FrameworkOptions = {
     suite: "trace-unadmitted-cpu",
@@ -31,7 +30,8 @@ test("an armed but unadmitted public host never waits for a hypothetical produce
     resultPath: join(root, "result.json"),
   };
   try {
-    expect(dirname(root)).toBe(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir());
+    expect(dirname(root)).toBe(priorRoot ?? tmpdir());
+    process.env.STORAGE_SCRATCH_ROOT = root;
     const host = createFrameworkHost(options);
     const capture = host.captureTesterTrace({
       collectorResponse: async () => {
@@ -54,12 +54,21 @@ test("an armed but unadmitted public host never waits for a hypothetical produce
       });
       return { status: "interrupted", errors: ["CPU only"] };
     });
-    await entered.promise;
+    await Promise.race([
+      entered.promise,
+      running.then(() => {
+        throw new Error("Framework ended before entering the CPU fixture");
+      }),
+    ]);
+    const ownedScratch = (await readdir(root)).filter((name) =>
+      name.startsWith("waffle-framework-"),
+    );
     const before = performance.now();
     const aborted = host.abort("no admitted source");
     release.resolve();
     const result = await aborted;
     expect(await running).toBe(result);
+    expect(ownedScratch).toHaveLength(1);
     expect(result.trace).toEqual({ status: "incomplete", reason: "not-admitted", retained: null });
     expect(result.cleanupDeadlineAt).toBeGreaterThanOrEqual(before + 60000);
     expect(result.cleanupDeadlineAt).toBeLessThan(before + 60100);
@@ -75,6 +84,8 @@ test("an armed but unadmitted public host never waits for a hypothetical produce
       result.cleanupDeadlineAt,
     );
   } finally {
+    if (priorRoot === undefined) delete process.env.STORAGE_SCRATCH_ROOT;
+    else process.env.STORAGE_SCRATCH_ROOT = priorRoot;
     await rm(root, { recursive: true, force: true });
   }
 });
