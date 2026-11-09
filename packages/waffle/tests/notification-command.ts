@@ -83,6 +83,19 @@ function sample(
   );
 }
 function checkMixed(value: unknown): void {
+  if (!record(value) || value.done !== true)
+    throw new Error("Incomplete mixed notification result");
+  if (
+    !record(value.idle) ||
+    value.idle.done !== true ||
+    !Array.isArray(value.idle.reports) ||
+    value.idle.reports.length !== 0 ||
+    value.idle.turns !== 0
+  )
+    throw new Error("Incomplete isolated idle notification result");
+  checkSources(value.sources);
+}
+function checkSources(value: unknown): void {
   if (
     !record(value) ||
     value.done !== true ||

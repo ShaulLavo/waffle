@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkNotificationResult, notificationSources } from "../notification-command.js";
+import { mixedNotificationCases } from "../notification-mixed-cases.js";
 import { commandControlModes } from "./command-controls.js";
 import { commandAdapter } from "./command-suites.js";
 import { FakeDriver } from "./fake-driver.js";
@@ -39,16 +40,26 @@ function originalResult() {
     "process",
     "process-parked",
   ];
+  const idleReports: unknown[] = [];
   return {
     mixed: {
       done: true,
-      turns: 2,
-      reports: stages.map((stage) => ({
-        stage,
+      idle: { done: true, reports: idleReports, turns: 0 },
+      sources: {
+        done: true,
         turns: 2,
-        before: { sequence: 0, filesystem: 0, network: 0, process: 0 },
-        after: { sequence: 1, filesystem: stage.startsWith("fs-") ? 1 : 0, network: 1, process: 1 },
-      })),
+        reports: stages.map((stage) => ({
+          stage,
+          turns: 2,
+          before: { sequence: 0, filesystem: 0, network: 0, process: 0 },
+          after: {
+            sequence: 1,
+            filesystem: stage.startsWith("fs-") ? 1 : 0,
+            network: 1,
+            process: 1,
+          },
+        })),
+      },
     },
     terminated: broker(false),
     revoked: broker(true),
@@ -60,6 +71,14 @@ function originalResult() {
     startupReject: { mode: "reject", entries: 0, cleanups: 1, relayReply: 0 },
   };
 }
+test("host accepts the actual isolated idle and source notification Worker result", async () => {
+  const mixed = await mixedNotificationCases(
+    new URL("../fixtures/notification-mixed-worker.ts", import.meta.url).href,
+    new URL("../../browser/notification-worker.ts", import.meta.url).href,
+  );
+  expect(() => checkNotificationResult({ ...originalResult(), mixed })).not.toThrow();
+}, 15000);
+
 const adapter = commandAdapter("notification");
 const id = "notification: notificationCommand";
 async function control(actual: unknown) {
@@ -123,18 +142,38 @@ test("reordered notification results fail and are not normalized before retentio
   expect(result.exit).toBe(1);
   expect(Object.keys(Object(result.results[id]))).toEqual(Object.keys(actual));
 });
+test("the host does not accept the retired flat notification result shape", () => {
+  const actual = originalResult();
+  expect(() => checkNotificationResult({ ...actual, mixed: actual.mixed.sources })).toThrow();
+});
+
 for (const mutate of [
   (value: ReturnType<typeof originalResult>) => {
-    value.mixed.reports.pop();
+    value.mixed.done = false;
   },
   (value: ReturnType<typeof originalResult>) => {
-    value.mixed.reports.reverse();
+    value.mixed.idle.done = false;
   },
   (value: ReturnType<typeof originalResult>) => {
-    for (const report of value.mixed.reports) report.after.filesystem = 0;
+    value.mixed.idle.reports.push({ stage: "late-source" });
   },
   (value: ReturnType<typeof originalResult>) => {
-    value.mixed.turns = 8;
+    value.mixed.idle.turns = 1;
+  },
+  (value: ReturnType<typeof originalResult>) => {
+    value.mixed.sources.done = false;
+  },
+  (value: ReturnType<typeof originalResult>) => {
+    value.mixed.sources.reports.pop();
+  },
+  (value: ReturnType<typeof originalResult>) => {
+    value.mixed.sources.reports.reverse();
+  },
+  (value: ReturnType<typeof originalResult>) => {
+    for (const report of value.mixed.sources.reports) report.after.filesystem = 0;
+  },
+  (value: ReturnType<typeof originalResult>) => {
+    value.mixed.sources.turns = 8;
   },
   (value: ReturnType<typeof originalResult>) => {
     value.terminated.terminationOrder.reverse();
@@ -205,8 +244,8 @@ test("ordinary command asset preparation includes all seven original sources", a
 
 test("host checks do not strengthen the original deadline and parked-source assertions", () => {
   const actual = originalResult();
-  actual.mixed.turns = 0;
-  for (const report of actual.mixed.reports) {
+  actual.mixed.sources.turns = 0;
+  for (const report of actual.mixed.sources.reports) {
     if (!report.stage.endsWith("-parked")) continue;
     report.after.filesystem++;
   }
