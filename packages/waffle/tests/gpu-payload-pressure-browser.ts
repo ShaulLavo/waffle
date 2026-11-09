@@ -595,14 +595,19 @@ function payloadEvent(
   if (prior?.settled === "pending")
     proof(settledAt >= previousAt, "native compilation settlement predates pending capture");
 }
-function terminalOwner(native: Record<string, unknown>, reason: number, acknowledged: boolean) {
+function terminalOwner(
+  native: Record<string, unknown>,
+  reason: number,
+  acknowledged: boolean,
+  resources: "pending" | "retired" = "retired",
+) {
   proof(
     native.state === "terminal" &&
       native.terminalReason === reason &&
-      native.readerDisposed === true &&
-      native.devices === 0 &&
+      native.readerDisposed === (resources === "retired") &&
+      native.devices === (resources === "retired" ? 0 : 1) &&
       native.created === 1 &&
-      native.destroyed === 1 &&
+      native.destroyed === (resources === "retired" ? 1 : 0) &&
       native.pending === 0 &&
       native.payloadBytes === 0 &&
       native.replayBusy === false &&
@@ -621,8 +626,15 @@ function frozen(
   id: unknown,
   draining: boolean,
 ) {
-  const a = owner(before, id, "earliest terminal"),
+  const selected = owner(before, id, "earliest terminal"),
     b = owner(after, id, "retired");
+  const retiring = selected.readerDisposed === false;
+  if (retiring) {
+    terminalOwner(selected, 3, false, "pending");
+    terminalOwner(b, 3, false);
+  }
+  // Selection fences work immediately. Only queued cleanup may destroy the original device.
+  const a = retiring ? { ...selected, destroyed: b.destroyed } : selected;
   const oldReply = record(a.replies),
     newReply = record(b.replies);
   if (draining) {
@@ -857,7 +869,12 @@ export function validatePayloadPressureResult(value: unknown) {
   const refusedNative = owner(refusal, victim.id, "original refused payload owner");
   refusalControls(refusal, refusedNative);
   payloadNative(refusal, refusedNative, results, requested, true);
-  terminalOwner(refusedNative, 3, false);
+  terminalOwner(
+    refusedNative,
+    3,
+    false,
+    refusedNative.readerDisposed === false ? "pending" : "retired",
+  );
   proof(record(refusedNative.replies).used === 64, "refusal lost unread committed replies");
   payloadState(terminal, victim, results, requested, true, false, false);
   payloadState(drained, victim, results, requested, true, true, false);
@@ -983,7 +1000,7 @@ function validateSequence(
   proof(typeof realm === "string" && realm.length > 0, "missing original service realm");
   const responses = new Set<unknown>(),
     identities = new Map<unknown, Record<string, unknown>>(),
-    retiredAt = new Map<unknown, Record<string, unknown>>();
+    terminalAt = new Map<unknown, Record<string, unknown>>();
   let previous: Record<string, unknown> | undefined;
   for (const service of sequence) {
     proof(
@@ -1019,7 +1036,7 @@ function validateSequence(
         service,
         native,
         identities,
-        retiredAt,
+        terminalAt,
         victim,
         refusal,
         terminal,
@@ -1032,13 +1049,16 @@ function validateSequence(
       );
     previous = service;
   }
-  proof(identities.size === 3 && retiredAt.size === 3, "missing original owner retirement history");
+  proof(
+    identities.size === 3 && terminalAt.size === 3,
+    "missing original owner retirement history",
+  );
 }
 function validateNativeHistory(
   service: Record<string, unknown>,
   native: Record<string, unknown>,
   identities: Map<unknown, Record<string, unknown>>,
-  retiredAt: Map<unknown, Record<string, unknown>>,
+  terminalAt: Map<unknown, Record<string, unknown>>,
   victim: Record<string, unknown>,
   refusal: Record<string, unknown>,
   terminal: Record<string, unknown>,
@@ -1053,7 +1073,7 @@ function validateNativeHistory(
   identities.set(native.id, prior);
   if (service === refusal && native.id === victim.id) refusalControls(service, native);
   else controls(service, native, native.state === "ready" ? 0 : native.id === victim.id ? 3 : 1);
-  const before = retiredAt.get(native.id);
+  const before = terminalAt.get(native.id);
   if (before)
     frozen(
       before,
@@ -1066,7 +1086,7 @@ function validateNativeHistory(
   if (native.state !== "terminal") return;
   const reason = native.id === victim.id ? 3 : 1;
   if (native.id !== victim.id) retired(native, reason);
-  retiredAt.set(native.id, service);
+  terminalAt.set(native.id, service);
 }
 
 function nativeCohort(service: Record<string, unknown>, previous?: Record<string, unknown>) {

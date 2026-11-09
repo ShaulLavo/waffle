@@ -912,6 +912,43 @@ for (const [name, capture] of [
     value.terminal.fairness.native["33:getCompilationInfo"]!.count++;
     expect(() => validatePayloadPressureResult(value)).toThrow(/late retired native calls/);
   });
+  test(`refusal ${name} cannot permit a new native submission during cleanup`, () => {
+    const value = capture();
+    value.terminal.fairness.queue.push({
+      connection: 33,
+      start: value.refusal.at + 0.1,
+      settlement: { kind: "completed", at: value.terminal.at - 0.1 },
+    });
+    expect(() => validatePayloadPressureResult(value)).toThrow(/late retired native work/);
+  });
+  for (const key of ["presents", "slices", "blobs"] as const)
+    test(`refusal ${name} cannot permit late ${key} during cleanup`, () => {
+      const value = capture();
+      const entry = { ...value.terminal.fairness[key][0]!, connection: 33 };
+      Reflect.apply(value.terminal.fairness[key].push, value.terminal.fairness[key], [entry]);
+      expect(() => validatePayloadPressureResult(value)).toThrow(
+        /late retired native or completed-blob work/,
+      );
+    });
+  for (const key of ["compilations", "allocations", "publications"] as const)
+    test(`refusal ${name} cannot permit late payload ${key} during cleanup`, () => {
+      const value = capture();
+      const entry = {
+        ...value.terminal.payloadPressure[key].at(-1)!,
+        order: 10000,
+        at: value.terminal.at - 0.5,
+      };
+      if (key === "compilations") Reflect.set(entry, "settledAt", value.terminal.at - 0.1);
+      Reflect.apply(value.terminal.payloadPressure[key].push, value.terminal.payloadPressure[key], [
+        entry,
+      ]);
+      expect(() => validatePayloadPressureResult(value)).toThrow(/late retired payload work/);
+    });
+  test(`refusal ${name} cannot destroy the device again after cleanup`, () => {
+    const value = capture();
+    value.final.owners[2]!.destroyed++;
+    expect(() => validatePayloadPressureResult(value)).toThrow(/late retired owner work/);
+  });
   test(`refusal ${name} cannot permit reply publication during cleanup`, () => {
     const value = capture();
     value.terminal.owners[2]!.replies.head += 8;
@@ -932,6 +969,6 @@ for (const [key, replacement] of [
     Reflect.set(value.refusal.owners[2]!, key, replacement);
     value.refusal.attempts[2]!.retiredAck = value.refusal.owners[2]!.retiredAck;
     expect(() => validatePayloadPressureResult(value)).toThrow(
-      /connection resources did not retire locally/,
+      /late retired owner work|connection resources did not retire locally/,
     );
   });
