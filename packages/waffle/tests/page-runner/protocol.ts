@@ -261,7 +261,7 @@ function filesystemAllocationDetail(value: unknown): string {
     "segmentSlot",
     "segmentsCompleted",
     "segmentsPlanned",
-  ] satisfies (keyof import("../../fs/identity-allocation.js").FilesystemIdentityAllocation)[];
+  ];
   const snapshot: Record<string, string | number | boolean | null> = {};
   for (const key of fields) {
     const field = errorField(value, key);

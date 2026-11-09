@@ -35,11 +35,12 @@ export function recordIdentityAllocationFailure(
 ): void {
   if (error === null || (typeof error !== "object" && typeof error !== "function")) return;
   try {
-    objectDefineProperty(error, "filesystemAllocation", {
+    const descriptor = {
       __proto__: null,
       value: { ...allocation },
       configurable: true,
-    });
+    };
+    objectDefineProperty(error, "filesystemAllocation", descriptor);
   } catch {
     // A frozen or otherwise unannotatable thrown value must still escape unchanged.
   }
