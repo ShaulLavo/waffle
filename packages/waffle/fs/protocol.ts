@@ -1,3 +1,8 @@
+import {
+  beginIdentityAllocation,
+  recordIdentityAllocationFailure,
+  type FilesystemIdentityAllocation,
+} from "./identity-allocation.js";
 import { allocateSharedControl } from "../memory/control.js";
 import { wakeFilesystemWatch } from "./watch-ring.js";
 import { FilesystemSection } from "./section.js";
@@ -147,13 +152,18 @@ function identitySegments(
   parent: FilesystemIdentity | undefined,
   maxBytes: number,
   construction: FilesystemOwnerConstruction | undefined,
+  allocation: FilesystemIdentityAllocation,
 ): SharedArrayBuffer[] {
-  return (
-    parent?.segments ??
-    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
-      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
-    )
-  );
+  if (parent) return parent.segments;
+  allocation.stage = "segments";
+  return Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, (_, index) => {
+    allocation.segmentSlot = index + 1;
+    const segment = construction
+      ? construction.allocateShared(0, SHARED_SEGMENT_BYTES)
+      : createSharedSegment();
+    allocation.segmentsCompleted++;
+    return segment;
+  });
 }
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
  * Firefox does not activate guest-created channels until that guest returns to its event loop.
@@ -165,11 +175,33 @@ export function createFilesystemIdentity(
   construction?: FilesystemOwnerConstruction,
 ): FilesystemIdentity {
   if (construction && parent) throw new TypeError("owner construction cannot fork an identity");
+  maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
+  const allocation = beginIdentityAllocation(
+    parent !== undefined,
+    construction !== undefined,
+    maxBytes / SHARED_SEGMENT_BYTES - 1,
+  );
+  try {
+    return constructFilesystemIdentity(parent, maxBytes, publication, construction, allocation);
+  } catch (error) {
+    recordIdentityAllocationFailure(error, allocation);
+    throw error;
+  }
+}
+function constructFilesystemIdentity(
+  parent: FilesystemIdentity | undefined,
+  maxBytes: number,
+  publication: PublicationConfiguration | WorkspaceConfiguration | undefined,
+  construction: FilesystemOwnerConstruction | undefined,
+  allocation: FilesystemIdentityAllocation,
+): FilesystemIdentity {
   const allocate = (bytes: number) =>
     construction ? construction.allocateShared(bytes) : allocateSharedControl(bytes);
-  maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared = parent?.shared ?? construction?.shared ?? allocateSharedControl(SHARED_ROOT_BYTES);
-  const segments = identitySegments(parent, maxBytes, construction);
+  allocation.rootComplete = true;
+  const segments = identitySegments(parent, maxBytes, construction, allocation);
+  allocation.stage = "identity";
+  allocation.segmentSlot = null;
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)
     throw new FilesystemError(33, "filesystem identity table exhausted");

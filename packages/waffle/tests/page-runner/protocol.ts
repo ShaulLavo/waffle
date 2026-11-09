@@ -222,6 +222,7 @@ function errorDetail(error: unknown, traversal: ErrorTraversal, depth: number): 
   const errno = errorField(error, "errno");
   let text = `${name}${message ? `: ${message}` : ""}`;
   if (typeof errno === "number" && Number.isFinite(errno)) text += ` (errno=${errno})`;
+  text += filesystemAllocationDetail(errorField(error, "filesystemAllocation"));
   if (depth < 3) text += errorCauses(error, traversal, depth);
   const stack = errorText(errorField(error, "stack"), 1024);
   return stack ? `${text}\nStack:\n${stack}` : text;
@@ -247,4 +248,33 @@ function errorArray(value: unknown): value is unknown[] {
   } catch {
     return false;
   }
+}
+
+function filesystemAllocationDetail(value: unknown): string {
+  if (!record(value)) return "";
+  const fields = [
+    "identityOrdinal",
+    "rootOrdinal",
+    "kind",
+    "stage",
+    "rootComplete",
+    "segmentSlot",
+    "segmentsCompleted",
+    "segmentsPlanned",
+  ] satisfies (keyof import("../../fs/identity-allocation.js").FilesystemIdentityAllocation)[];
+  const snapshot: Record<string, string | number | boolean | null> = {};
+  for (const key of fields) {
+    const field = errorField(value, key);
+    if (!allocationScalar(field)) return "";
+    snapshot[key] = field;
+  }
+  return `\nFilesystem allocation: ${JSON.stringify(snapshot)}`;
+}
+function allocationScalar(value: unknown): value is string | number | boolean | null {
+  return (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) ||
+    (typeof value === "string" && value.length <= 32)
+  );
 }
