@@ -847,3 +847,91 @@ test("a copied checkpoint cannot change its raw refusal under the same serial", 
     /same refusal\/settlement checkpoint changed/,
   );
 });
+
+function beforeResourceRetirement() {
+  const value = beforeConnectionSettlement();
+  Object.assign(value.refusal.owners[2]!, {
+    devices: 1,
+    destroyed: 0,
+    readerDisposed: false,
+  });
+  return value;
+}
+test("raw refusal may precede queued device and reader cleanup", () => {
+  const value = beforeResourceRetirement();
+  expect(value.refusal.owners[2]).toMatchObject({
+    state: "terminal",
+    terminalReason: 3,
+    devices: 1,
+    destroyed: 0,
+    readerDisposed: false,
+    retiredAck: false,
+  });
+  expect(value.terminal.owners[2]).toMatchObject({
+    devices: 0,
+    destroyed: 1,
+    readerDisposed: true,
+    retiredAck: false,
+  });
+  expect(validatePayloadPressureResult(value).hardwareQualified).toBe(false);
+});
+for (const [name, capture] of [
+  ["before cleanup", beforeResourceRetirement],
+  ["after cleanup", beforeConnectionSettlement],
+] as const) {
+  for (const key of [
+    "readerReads",
+    "ringReads",
+    "logicalBytes",
+    "protocolReads",
+    "protocolReplays",
+    "peakHeap",
+    "destroyed",
+  ] as const)
+    test(`refusal ${name} still cuts off late ${key}`, () => {
+      const value = capture();
+      value.terminal.owners[2]![key]++;
+      expect(() => validatePayloadPressureResult(value)).toThrow(
+        /late retired owner work|connection resources did not retire locally/,
+      );
+    });
+  for (const [key, replacement] of [
+    ["devices", 1],
+    ["destroyed", 0],
+    ["readerDisposed", false],
+  ] as const)
+    test(`refusal ${name} cannot leave ${key} unretired at settlement`, () => {
+      const value = capture();
+      Reflect.set(value.terminal.owners[2]!, key, replacement);
+      expect(() => validatePayloadPressureResult(value)).toThrow(
+        /late retired owner work|connection resources did not retire locally/,
+      );
+    });
+  test(`refusal ${name} cannot permit native work during cleanup`, () => {
+    const value = capture();
+    value.terminal.fairness.native["33:getCompilationInfo"]!.count++;
+    expect(() => validatePayloadPressureResult(value)).toThrow(/late retired native calls/);
+  });
+  test(`refusal ${name} cannot permit reply publication during cleanup`, () => {
+    const value = capture();
+    value.terminal.owners[2]!.replies.head += 8;
+    value.terminal.owners[2]!.replies.used += 8;
+    expect(() => validatePayloadPressureResult(value)).toThrow(
+      /Late work published to retired victim rings|late retired reply publication/,
+    );
+  });
+}
+for (const [key, replacement] of [
+  ["devices", 0],
+  ["destroyed", 1],
+  ["readerDisposed", true],
+  ["retiredAck", true],
+] as const)
+  test(`selected refusal cannot claim inconsistent cleanup ${key}`, () => {
+    const value = beforeResourceRetirement();
+    Reflect.set(value.refusal.owners[2]!, key, replacement);
+    value.refusal.attempts[2]!.retiredAck = value.refusal.owners[2]!.retiredAck;
+    expect(() => validatePayloadPressureResult(value)).toThrow(
+      /connection resources did not retire locally/,
+    );
+  });
