@@ -20,6 +20,16 @@ test("mixed quiet wait excludes a deadline source held past its absolute deadlin
   expect(result).toMatchObject({ done: true, idle: { done: true }, sources: { done: true } });
 }, 15000);
 
+test("deadline payload is independent of earlier network data published after its read", async () => {
+  const result = await mixedNotificationCases(
+    new URL("./fixtures/notification-mixed-worker.ts", import.meta.url).href,
+    new URL("../browser/notification-worker.ts", import.meta.url).href,
+    "held",
+    "head-first",
+  );
+  expect(result).toMatchObject({ done: true, idle: { done: true }, sources: { done: true } });
+}, 15000);
+
 import {
   bootstrapNotificationCase,
   brokerNotificationCase,
