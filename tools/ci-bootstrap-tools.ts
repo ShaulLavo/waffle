@@ -69,7 +69,7 @@ async function installArchive(
   }
 }
 
-export async function setupTools(
+async function setupTools(
   root: string,
   bunVersion: string,
   nodeVersion?: string,

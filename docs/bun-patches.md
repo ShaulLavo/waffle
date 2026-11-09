@@ -613,8 +613,9 @@ and Rust cache actions start from bun-wasm `.github/actions/release-downloads/ac
 and `.github/actions/rust-build-cache/action.yml` at
 `b753bcd1fa4aff3089c304286c248a3da8a6e1e6`.
 
-Waffle changes script paths to `tools/`, requires a token for uncached CI release
-requests, and saves cache snapshots only after the completed asset inventory grows.
+Waffle changes script paths to `tools/`, keeps the bootstrap installer private,
+requires a token for uncached CI release requests, and saves cache snapshots only
+after the completed asset inventory grows.
 The inventory hashes original-URL keys, not temporary signed URLs or credentials.
 Warm jobs restore the same snapshot without saving a duplicate. Local non-CI use
 retains unauthenticated fetching. Binaryen 133, sccache 0.19.0, wasi-sdk 34,
