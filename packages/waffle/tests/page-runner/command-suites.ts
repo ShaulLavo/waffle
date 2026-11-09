@@ -1,3 +1,4 @@
+import { checkNotificationResult, notificationSources } from "../notification-command.js";
 import { resolve } from "node:path";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { record, strings } from "./protocol.js";
@@ -7,7 +8,7 @@ import type { SuiteAdapter } from "./suite-host.js";
 export type CommandRequest = { entry: string; exportName: string; args: readonly string[] };
 export type CommandDescriptor = CommandRequest & { id: string };
 type Command = CommandRequest & {
-  suite: "search-executor" | "fs-socket-attachment" | "guest-watch";
+  suite: "search-executor" | "fs-socket-attachment" | "guest-watch" | "notification";
   sources: Readonly<Record<string, string>>;
   caseMs: number;
   check(result: unknown): void;
@@ -18,6 +19,15 @@ const socketLabels = [
   "late forwarded reply cannot revive scope or page guard",
 ];
 export const commands = [
+  {
+    suite: "notification",
+    entry: "/notification.js",
+    exportName: "notificationCommand",
+    args: [],
+    sources: notificationSources,
+    caseMs: 60_000,
+    check: checkNotificationResult,
+  },
   {
     suite: "search-executor",
     entry: "/tests.js",

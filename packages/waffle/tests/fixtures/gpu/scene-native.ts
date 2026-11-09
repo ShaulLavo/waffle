@@ -1,3 +1,4 @@
+import { serviceAccess } from "./service-access.js";
 import { gpuStream } from "../../../browser/gpu/generated/tables.js";
 import { nativeCall, nativeObject, destroyNative } from "../../../browser/gpu/lowering.js";
 import { GpuConnection } from "../../../browser/gpu/scheduler.js";
@@ -438,6 +439,7 @@ export async function sceneNativeControl(control = "normal") {
     replies,
     { root: gpu },
     credit,
+    { access: serviceAccess() },
   );
   try {
     connection.replay.handles.reserve(h(3), "device");

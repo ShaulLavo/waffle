@@ -11,7 +11,7 @@ replacement happens to return the right answer:
 > Never pass an authority-bearing runtime value through a guest-mutable builtin.
 
 Private authority includes process directory and identity buffers, incarnation
-cells, signal/outcome controls, pipe buffers and lifetimes, descriptor tables,
+cells, execution observation tokens and canonical-source transfers, signal/outcome controls, pipe buffers and lifetimes, descriptor tables,
 open descriptions, endpoint callbacks, and collections containing these values.
 A `Map<number, Stream>` is private even though its keys are ordinary numbers.
 A callback that closes over a private endpoint is authority too.
@@ -81,6 +81,10 @@ closures and buffers carry process authority:
 | `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                                                              |
 | `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.                                           |
 | `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal.                                     |
+
+`proc/observation.ts` is checked alongside `proc/outcome.ts` and `proc/directory.ts`.
+Its source variants, tokens, views, branded unwinds, and acquisition callbacks use captured
+constructors, atomics, and WeakMap operations. Token expiry grants no producer authority.
 
 Terminal identity/context, policy/turn, attachment/authority, input and process-lifetime
 handles are named private types in the checker. None of these modules is classified as a
@@ -202,3 +206,10 @@ The fixed GPU payload directory is guest-reachable checked code. Its full-width 
 DataView reads and payload copies use captured intrinsics. The command publication remains
 the terminal selector; the payload header only mirrors its winner. Payload handles name slots
 within the supplied connection, not a global provenance domain. No payload exception is added.
+
+The display service-reader fence, grant frame lease, physical command adapter and launch receipt
+retention modules are trusted page/service implementations. Guest bundle checks reject every
+path to them. Bootstrap carries the private exact-service fence only to the dedicated GPU Worker.
+The join proof is an allocation-local object identity, with no exported constructor. The signed
+admission word uses captured atomics and constructors. [GPU service reader lifetime](architecture.md#gpu-service-reader-lifetime)
+describes the separate reader, normal grant acknowledgement and retained allocation obligations.

@@ -1,3 +1,4 @@
+import { serviceAccess } from "./service-access.js";
 import { gpuObjectKinds, gpuStream } from "../../../browser/gpu/generated/tables.js";
 import { GpuConnection } from "../../../browser/gpu/scheduler.js";
 import { RecordRing } from "../../../browser/gpu/ring.js";
@@ -112,6 +113,7 @@ export function nativeRig(gpu: object, device: object) {
     replies,
     { root: gpu },
     credit,
+    { access: serviceAccess() },
   );
   connection.replay.handles.reserve(h(3), "device");
   connection.replay.handles.bind(h(3), "device", { kind: "native", value: device });

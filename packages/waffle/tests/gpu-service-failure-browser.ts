@@ -374,6 +374,55 @@ function preFailure(result: Record<string, unknown>) {
     grants: [control.grant, peer.grant, victim.grant, opening.grant],
   };
 }
+function logicalFailureControls(
+  failure: Record<string, unknown>,
+  before: Record<string, unknown>,
+  stopped: Record<string, unknown>,
+  service: Record<string, unknown>,
+  original: ReturnType<typeof preFailure>,
+) {
+  const selected = record(failure.selected);
+  liveRuntime(selected, before.runtimeEpoch);
+  requireProof(
+    number(selected.at) >= number(failure.startedAt) &&
+      number(selected.at) <=
+        number(entries(stopped.readerJoins).find((join) => join.worker === service.id)?.at),
+    "missing logical failure selection",
+  );
+  const selectedControls = originalControls(selected, original.grants);
+  for (const control of selectedControls)
+    terminal(control, control.grant === original.control.grant ? 1 : 5);
+  return selectedControls;
+}
+function joinedBaseline(
+  stopped: Record<string, unknown>,
+  after: Record<string, unknown>,
+  service: Record<string, unknown>,
+  original: ReturnType<typeof preFailure>,
+  startedAt: number,
+  stopAt: number,
+) {
+  const joins = entries(stopped.readerJoins).filter((join) => join.worker === service.id);
+  requireProof(joins.length === 1, "missing exact service reader join");
+  const joined = joins[0]!;
+  requireProof(
+    joined.admission === -1 &&
+      number(joined.incarnation) > 0 &&
+      joined.incarnation === service.incarnation &&
+      number(joined.at) >= startedAt &&
+      number(joined.at) <= stopAt,
+    "wrong exact service reader join",
+  );
+  const baseline = originalControls(joined, original.grants);
+  requireProof(
+    entries(joined.controls).length === original.grants.length,
+    "reader join inventory differs",
+  );
+  for (const control of baseline)
+    terminal(control, control.grant === original.control.grant ? 1 : 5);
+  equal(stopped.readerJoins, after.readerJoins, "service reader join history rewritten");
+  return baseline;
+}
 function failedService(result: Record<string, unknown>, original: ReturnType<typeof preFailure>) {
   const failure = record(result.failure),
     before = record(failure.before),
@@ -414,10 +463,18 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
   requireProof(
     stops.length === 1 &&
       stops[0]!.url === service.url &&
-      number(stops[0]!.at) >= number(failure.startedAt) &&
-      number(stops[0]!.at) <= number(fault.at),
+      number(stops[0]!.at) >= number(failure.startedAt),
     "normal owner did not stop the failed worker",
   );
+  const baseline = joinedBaseline(
+    stopped,
+    after,
+    service,
+    original,
+    number(failure.startedAt),
+    number(stops[0]!.at),
+  );
+  const selectedControls = logicalFailureControls(failure, before, stopped, service, original);
   const controls = originalControls(before, original.grants);
   requireProof(
     entries(before.controls).length === 4 && controls[0]!.grant === original.control.grant,
@@ -434,6 +491,18 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
         record(item.replies).terminal === 0,
       "connection or opening waiter already terminal",
     );
+  for (const [index, prior] of selectedControls.entries()) {
+    equal(
+      record(prior.commands).head,
+      record(baseline[index]!.commands).head,
+      "logical failure command head changed",
+    );
+    equal(
+      record(prior.replies).head,
+      record(baseline[index]!.replies).head,
+      "logical failure reply head changed",
+    );
+  }
   workerHistory(before, stopped);
   workerHistory(stopped, after);
   const terminalControls = originalControls(stopped, original.grants),
@@ -444,7 +513,7 @@ function failedService(result: Record<string, unknown>, original: ReturnType<typ
   for (const state of [stopped, after]) {
     liveRuntime(state, before.runtimeEpoch);
     const controls = originalControls(state, original.grants);
-    for (const [index, control] of terminalControls.entries()) {
+    for (const [index, control] of baseline.entries()) {
       const originalWorker = consumers.get(control.grant)!,
         worker = stoppedWorkers.find((worker) => worker.id === originalWorker.id)!;
       retiredReplyDrain(

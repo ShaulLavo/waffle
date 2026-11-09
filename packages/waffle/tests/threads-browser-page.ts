@@ -1,3 +1,4 @@
+import { admitProcessObservation } from "../proc/observation.ts";
 import { SharedFilesystem } from "../browser/shared-fs.ts";
 import { PipeController } from "../proc/pipes.ts";
 import {
@@ -53,6 +54,7 @@ class BrowserEmbedding {
   readonly memory = new WebAssembly.Memory({ initial: 17, maximum: 512, shared: true });
   readonly initialBuffer = this.memory.buffer;
   readonly outcome = outcomeWord();
+  readonly observation = admitProcessObservation(1, this.outcome);
   readonly guests: Guest[] = [];
   readonly serviceEvents: ServiceEvent[] = [];
   readonly failures: string[] = [];
@@ -219,6 +221,7 @@ class BrowserEmbedding {
       memory: this.memory,
       thread,
       entry,
+      observation: this.observation,
       outcome: serializeOutcome(this.outcome),
       signal: new SharedArrayBuffer(4),
       waits: waits.buffer,

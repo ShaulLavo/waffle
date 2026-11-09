@@ -30,6 +30,14 @@ const intrinsicModules: Readonly<Record<string, string>> = {
 };
 const trustedModules: Readonly<Record<string, string>> = {
   ...intrinsicModules,
+  "memory/graphics-retention.ts": "Private page ticket issuance, never a guest implementation.",
+  "browser/display/service-readers.ts":
+    "Page/service-only counted incarnation ownership, never guest authority.",
+  "browser/display/launch-retention.ts":
+    "Page-only ticket provenance and allocation receipt lifetime.",
+  "browser/gpu/access.ts": "Service-only irreversible grant lease and synchronous frames.",
+  "browser/gpu/command-reader.ts":
+    "Service-only physical reader admission, never imported by guests.",
   "browser/display/owner.ts": "Page-only display, grant and service lifecycle owner.",
   "browser/gpu/service.ts": "Dedicated GPU service, never a guest implementation.",
   "browser/gpu/service-worker.ts": "Dedicated GPU service entry, never a guest implementation.",
@@ -182,6 +190,7 @@ export const enforcedModules = [
   "proc/filesystem-codec.ts",
   "proc/identity.ts",
   "proc/outcome.ts",
+  "proc/observation.ts",
   "proc/pipes.ts",
   "proc/signals.ts",
   "proc/terminal-lifetime.ts",
@@ -245,6 +254,8 @@ const authority = new Set([
   "SharedArrayBuffer",
   "TaggedCells",
   "OutcomeCell",
+  "ProcessObserver",
+  "ProcessObservationTransfer",
   "ControlCells",
   "OutcomeWord",
   "Descriptor",

@@ -716,25 +716,28 @@ test("reversed open arrival is not cancelled by unrelated newer closes", async (
   }
 });
 
-test("one 256 MiB resident pin fits metadata and independent overlap releases structured pressure", async () => {
+test("full 256 MiB resident pins charge compact descriptors until structured metadata pressure", async () => {
   const size = 256 * 1024 * 1024;
   const value = await residentReadFixture(size);
   try {
     expect((await value.workspace.read("/file", { offset: 0, length: 0 })).kind).toBe("ok");
     const base = value.service.resources().readerMetadataBytes!;
     expect(base).toBe(65536 + 64 * 8 + 1280);
-    const first = await value.workspace.pin("/file");
-    if (first.kind !== "ok") throw new Error(JSON.stringify(first));
+    const fullPinCharge = 262_656;
+    const pins = [];
+    for (let count = 1; count <= 7; count++) {
+      const pin = await value.workspace.pin("/file");
+      if (pin.kind !== "ok") throw new Error(JSON.stringify(pin));
+      pins.push(pin.value);
+      expect(value.service.resources().readerMetadataBytes).toBe(base + count * fullPinCharge);
+    }
     expect(value.service.resources().readerPinBytes).toBe(size);
-    expect(value.service.resources().readerMetadataBytes).toBe(
-      base + 256 + (size / PAGE) * 64 + 256,
-    );
     const blocked = await value.workspace.pin("/file");
     expect(blocked).toEqual({ kind: "pressure", resource: "metadata" });
-    expect(value.service.resources().readerLeases).toBe(1);
+    expect(value.service.resources().readerLeases).toBe(7);
     expect(value.service.resources().readerPinBytes).toBe(size);
-    expect((await first.value.read({ offset: size - 1, length: 1 })).kind).toBe("ok");
-    await first.value.close();
+    expect((await pins[0]!.read({ offset: size - 1, length: 1 })).kind).toBe("ok");
+    for (const pin of pins) await pin.close();
     expect(value.service.resources().readerPinBytes).toBe(0);
     expect(value.service.resources().readerMetadataBytes).toBe(base);
     const next = await value.workspace.pin("/file");

@@ -1,3 +1,4 @@
+import type { ProcessObservationTransfer } from "./observation.js";
 import { ProcessError, ProcessErrno } from "./errors.ts";
 export { ProcessError, ProcessErrno } from "./errors.ts";
 import { objectFreeze } from "./intrinsics.ts";
@@ -92,6 +93,9 @@ export interface SharedJobIdentity {
   readonly jobLifetime?: JobLifetime;
 }
 export interface SpawnReservation {
+  readonly observation?: ProcessObservationTransfer;
+  /** Captured owner callback, invoked only at successful native return or proved no-agent rollback. */
+  nativeReturn?(): void;
   controlParent?: number;
   rootPid?: number;
   pid?: number;
@@ -106,6 +110,7 @@ export interface ProcessHandle {
   terminate(): void | Promise<void>;
 }
 export interface ProcessLifecycle {
+  readonly observation: ProcessObservationTransfer;
   readonly pid: number;
   readonly parentPid: number;
   readonly job: number;

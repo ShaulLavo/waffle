@@ -1,3 +1,6 @@
+import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
+import type { GraphicsOpen } from "../../../browser/display/protocol.js";
+import { serviceAccess } from "./service-access.js";
 import { expect } from "bun:test";
 import { gpuStream } from "../../../browser/gpu/generated/tables.ts";
 import { encodeGpuCommand } from "../../../tooling/gpu-stream-layout.ts";
@@ -7,6 +10,16 @@ import { ServiceCredit } from "../../../browser/gpu/protocol.ts";
 import { LogicalAppend } from "../../../browser/gpu/transport.ts";
 import type { ReplayTarget } from "../../../browser/gpu/replay.ts";
 
+export function graphicsOpen(id = 1): GraphicsOpen {
+  return {
+    type: "open",
+    id,
+    control: new SharedArrayBuffer(64),
+    commands: new SharedArrayBuffer(4160),
+    replies: new SharedArrayBuffer(4160),
+    arena: new SharedArrayBuffer(gpuPayloadLayout.byteLength),
+  };
+}
 export function handle(id: number, generation = 1) {
   return { id, generation };
 }
@@ -63,7 +76,9 @@ export function rig(target: ReplayTarget, capacity = 256, replyCapacity = 4096) 
   const commands = ring(capacity);
   const replies = ring(replyCapacity, 16);
   const credit = new ServiceCredit();
-  const connection = new GpuConnection(commands, replies, target, credit);
+  const connection = new GpuConnection(commands, replies, target, credit, {
+    access: serviceAccess(),
+  });
   return { commands, replies, credit, connection };
 }
 export function send(connection: GpuConnection, bytes: Uint8Array): void {

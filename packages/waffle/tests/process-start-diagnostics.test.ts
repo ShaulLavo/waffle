@@ -108,7 +108,7 @@ test("a throwing startup diagnostic reports its error without replacing typed EI
   try {
     await supervisor.start(child);
     expect(reports).toBe(1);
-    expect(errors).toEqual([diagnosticError]);
+    expect(errors).toEqual([diagnosticError, startupError]);
     expect(supervisor.wait(root, child)).toEqual({
       kind: "start-failed",
       code: 5,

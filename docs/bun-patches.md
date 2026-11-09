@@ -43,8 +43,13 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/gpu/stream.json`, `tooling/gpu-stream*.ts`, `tests/gpu-stream.test.ts`, `tests/fixtures/gpu/{expected,enums,scene-expected}.json` | Original adapter      | Explicit triangle, scene, compute, bundle, query and copy/draw-state selection, C-to-browser policy, schema tooling and independent expected bytes. No browser implementation or WebGPU IDL enum list copied.                                                                                                                                                                                                                |
 | `browser/gpu/{codec,lowering,replay}.ts`, `tests/gpu-scene-*`, `tests/fixtures/gpu/scene-*.ts`                                             | Original adapter      | Creation, byte-span uploads, resource unions, explicit layouts, indexed bindings, copy/draw-state and depth/stencil controls against the pinned C schema and browser API. No upstream replay implementation copied.                                                                                                                                                                                                          |
 | `browser/gpu/{buffers,payload,metadata}.ts`, `browser/display/{open.ts,generated/graphics-layout.ts}`, `tests/gpu-async-*`                 | Original adapter      | Native mapping epochs, fixed payload ownership, checked C output projection, direct UTF-8 encoding and async controls. No upstream runtime implementation was copied. Geometry constants are generated from original Waffle selection metadata.                                                                                                                                                                              |
+| `browser/display/{service-readers,service-protocol,launch-retention}.ts`, `browser/gpu/{access,command-reader}.ts`                         | Original adapter      | Exact-service counted admission, queued grant retirement and original-ticket control charge retention. Original Waffle lifecycle code; no upstream implementation copied.                                                                                                                                                                                                                                                    |
 | `browser/gpu/method-coverage.json`                                                                                                         | Mechanical derivation | Individual object method and global function names from the pinned webgpu-headers YAML above, BSD-3-Clause. Coverage categories, pending slices, reasons and selected-call metadata are original Waffle policy; no method implementations copied.                                                                                                                                                                            |
-| `tests/page-runner/framework-dom-page.ts` | Adapted control | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit, not to replace the installed framework. See [Framework operation controls](#framework-operation-controls). |
+| `tests/page-runner/framework-dom-page.ts`                                                                                                  | Adapted control       | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit and uses the synchronous snapshot reporting contract, not an installed framework replacement. See [Framework operation controls](#framework-operation-controls).                                                                                  |
+| `tests/page-runner/framework-trace-page.ts`                                                                                                | Original adapter      | Captured native Vitest cleanup-channel observation and finite evidence ownership. No upstream message handler, cleanup implementation, or RPC expression copied. See [Framework tester trace observer](#framework-tester-trace-observer).                                                                                                                                                                                    |
+| `tools/ci-release-download.ts`, `tools/ci-bootstrap-tools.ts`, CI download actions                                                         | Adapted code          | bun-wasm at `1bf9291451587b9b36786513dba817e855d470cb` and `b753bcd1fa4aff3089c304286c248a3da8a6e1e6`. Node-compatible API downloads and tool bootstrap, adapted to Waffle paths and inventory-based cache saving. See [CI release downloads](#ci-release-downloads).                                                                                                                                                        |
+| `tools/ci-native-prebuild.ts`                                                                                                              | Adapted code          | Cache filename calculation from `prebuild-install` 7.1.3 `util.js`, with Waffle-owned archive checksum validation. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                        |
+| `tools/ci-release-cache.ts`, Wasmtime action, CI coverage tests                                                                            | Original adapter      | Waffle-owned complete-asset inventory, pinned Wasmtime setup, and CI download guards. No external implementation copied. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                  |
 
 ## GNU diffutils
 
@@ -557,7 +562,9 @@ renamed window-message events instead of the framework's BroadcastChannel and
 RPC. It retains iframe-only completion matching, CSS resizing and done/fail
 ordering. These adaptations isolate sequential sizing, same-size completion,
 restoration and the concurrent-call correlation limit without importing original
-tests. They do not qualify the installed ordinary page method or an official
+tests. Its reporting calls now use snapshot factories and await real synthetic lifecycle
+boundaries. This changes only the local observation adapter, not the upstream viewport
+algorithm or clocks. They do not qualify the installed ordinary page method or an official
 screenshot callback. Fixture callback bytes are explicitly not a DOM image.
 
 The shared host operation boundary, callback scopes, recursive joins, local
@@ -565,3 +572,72 @@ closure fact, document invalidation and transport ownership checks are original
 Waffle adapters. They copy no SDK screenshot, image conversion or filesystem
 implementation. Consumer registration and mutable-context integration remain
 consumer-owned work.
+
+The reporting reservation, scalar heartbeat failure/cancellation protocol and CPU realm controls
+are original Waffle adapters. They copy no Vitest hooks or RPC implementation. The CPU controls
+promote the retained reporter-fault reproducer's use of actual reporter, collector and owned host
+paths. The later paired consumer owns the exact installed Vitest patch and its provenance.
+
+## GPU reader retirement
+
+The display service fence, grant frame lease and physical read adapter are original Waffle
+implementations. No upstream path or revision applies. They preserve the existing ring format
+and guest ABI while closing dedicated-service access before page retirement. The ticket receipt
+listener and retain-only accounting rules are also original adapters. They retain original charges
+across independent shared-buffer clones and late delivery, without identifying backing by wrapper
+equality or charging an open clone again.
+
+## Framework tester trace observer
+
+`tests/page-runner/framework-trace-page.ts` is original Waffle code against
+`@vitest/browser` 5.0.2. The inspected distribution paths are `dist/client.js`,
+`dist/client/__vitest_browser__/orchestrator-M9828UZ-.js`, and
+`dist/client/__vitest_browser__/tester-COH68OX9.js`. The client's SHA-256 is
+`e5a46a0da670e50e7cce2f3eb367c1403911a8c7459f368c058b177a37604270`.
+
+The adapter uses the actual native channel constructed from the own-data session
+identity and matches own-data `event`, `iframeId`, and `messageId` fields. It observes
+the successful terminal post after the original cleanup catch and trace finishing.
+It copies none of Vitest's handler, cleanup, RPC, or error serialization code.
+Waffle owns admission, bounded snapshots, physical receipts, and the distinct final
+disposal authorization. [Framework tester trace ownership](framework-tester-trace.md)
+describes the contract and its CPU-only verification limits.
+
+## CI release downloads
+
+`tools/ci-release-download.ts` and `tools/ci-bootstrap-tools.ts` adapt bun-wasm
+`scripts/ci-release-download.ts` and `scripts/ci-bootstrap-tools.ts` at
+`1bf9291451587b9b36786513dba817e855d470cb`. The setup action comes from
+`.github/actions/setup-tools/action.yml` at the same revision. The release cache
+and Rust cache actions start from bun-wasm `.github/actions/release-downloads/action.yml`
+and `.github/actions/rust-build-cache/action.yml` at
+`b753bcd1fa4aff3089c304286c248a3da8a6e1e6`.
+
+Waffle changes script paths to `tools/`, keeps the bootstrap installer private,
+requires a token for uncached CI release requests, and saves cache snapshots only
+after the completed asset inventory grows. The bootstrap restores setup-bun's
+`bunx` symlink and safely recreates it when a job provisions Bun again.
+The inventory hashes original-URL keys, not temporary signed URLs or credentials.
+Warm jobs restore the same snapshot without saving a duplicate. Local non-CI use
+retains unauthenticated fetching. Binaryen 133, sccache 0.19.0, wasi-sdk 34,
+jq 1.8.2, Wasmtime 49.0.3, Bun 1.4.4, the original Node selectors, relay prebuilds,
+relay image archives, and program publication inputs use this transport.
+Existing checksums and executable checks remain in their callers.
+
+`tools/ci-native-prebuild.ts` is Waffle's adapter for the pinned WebTransport
+1.6.11 Linux x64 archive. Its six-character SHA-512 URL prefix and sanitized cache
+filename adapt `prebuild-install` 7.1.3 `util.js` functions `cachedPrebuild` and
+`prebuildCache`. It verifies the existing archive SHA-256 before supplying the
+standard installer's cache. The installer, native artifact existence check,
+loader-shadow rejection, package pins, and addon checksum checks remain active.
+No upstream download or extraction implementation is copied.
+
+`tools/ci-release-cache.ts`, the Wasmtime action, and the coverage tests are
+original Waffle adapters. `test:ci` loads the transport and coverage tests through
+`packages/waffle/tooling/ci-paths.test.ts`. New remote setup actions require an
+explicit download audit. Workflow setup restores the release cache before Bun
+or Node installation and saves only a changed complete-asset inventory at the end.
+The relay image publish job requires the hosted Ubuntu runner's existing Buildx
+instead of installing another moving release. GNU FTP, curl.se, codeload, npm
+registry traffic, and GitHub artifact transfers are outside the release endpoint
+change.

@@ -1,3 +1,4 @@
+import { reportingFailure, type HostReply } from "./report-control.js";
 import { randomUUID } from "node:crypto";
 import { ObservationClosed } from "./collector.js";
 import { record, resultByteLimit } from "./protocol.js";
@@ -56,7 +57,7 @@ function update(value: unknown): value is FrameworkUpdate {
     Number.isSafeInteger(value.retryCount)
   );
 }
-function frameworkEvent(value: unknown): value is FrameworkEvent {
+export function frameworkEvent(value: unknown): value is FrameworkEvent {
   if (!record(value) || typeof value.kind !== "string") return false;
   if (value.kind === "collected") return Array.isArray(value.tasks) && value.tasks.every(task);
   if (value.kind === "task-started") return typeof value.id === "string";
@@ -79,7 +80,18 @@ export class FrameworkCollector {
   cleanupSettled = false;
   cleanupResponse = false;
   viewportConsumed = false;
-  constructor(readonly expected: readonly ExpectedCase[]) {
+  private cancelled = false;
+  private readonly reportingFailed = new Set<FrameworkDocument>();
+  cancel(): void {
+    this.cancelled = true;
+  }
+  private reply(retire = false): HostReply {
+    return this.cancelled ? { kind: "cancelled" } : { kind: "live", retire };
+  }
+  constructor(
+    readonly expected: readonly ExpectedCase[],
+    private readonly onFailure: (detail: string) => void = () => {},
+  ) {
     this.cases = expected.map((item) => ({
       expected: item,
       actualId: null,
@@ -88,7 +100,9 @@ export class FrameworkCollector {
     }));
   }
   fail(category: string, detail: string): void {
+    this.cancel();
     this.failures.push({ category, detail });
+    this.onFailure(detail);
   }
   expect(kind: DocumentKind, url: string): FrameworkDocument {
     if (this.documents.some((document) => document.kind === kind))
@@ -235,17 +249,27 @@ export class FrameworkCollector {
       item.outcome = value;
     }
   }
-  heartbeat(value: unknown): void {
-    if (!record(value) || value.run !== this.run || value.kind !== "heartbeat")
-      throw new Error("Unbound heartbeat");
-    const document = this.documents.find((item) => item.doc !== null && item.doc === value.doc);
-    if (!document) throw new Error("Unknown heartbeat document");
-    if (document.cutoff === null) document.heartbeatAt = performance.now();
+  heartbeat(value: unknown): HostReply {
+    const { document, body } = this.bound(value);
+    if (
+      document.doc === null ||
+      body.doc !== document.doc ||
+      body.kind !== "heartbeat" ||
+      body.role !== document.kind ||
+      !reportingFailure(body.failure)
+    )
+      throw new Error("Malformed framework heartbeat");
+    document.heartbeatAt = performance.now();
+    if (body.failure !== null && !this.reportingFailed.has(document)) {
+      this.reportingFailed.add(document);
+      this.fail("page-reporting", body.failure);
+    }
+    return this.reply();
   }
-  retirement(url: URL): boolean {
+  retirement(url: URL): HostReply {
     const document = this.documents.find((item) => item.doc === url.searchParams.get("doc"));
     if (url.searchParams.get("run") !== this.run || !document || document.cutoff !== null)
       throw new Error("Unbound retirement poll");
-    return document.retiring;
+    return this.reply(document.retiring);
   }
 }

@@ -1,10 +1,19 @@
+import {
+  attachServiceAccess,
+  type ServiceAccess,
+} from "../../../browser/display/service-readers.js";
 import { installFairnessObserver } from "./fairness-observer.js";
 import { GpuService } from "../../../browser/gpu/service.js";
-import type { GpuServiceRequest } from "../../../browser/display/protocol.js";
+import type {
+  GpuServiceRequest,
+  ServiceBootstrap,
+} from "../../../browser/display/service-protocol.js";
 import { pressureBurst } from "./qualification-contract.js";
 const host = globalThis as unknown as {
   postMessage(message: unknown): void;
-  onmessage: (event: MessageEvent<GpuServiceRequest | { test: string; id: string }>) => void;
+  onmessage: (
+    event: MessageEvent<GpuServiceRequest | ServiceBootstrap | { test: string; id: string }>,
+  ) => void;
 };
 const params = new URL(location.href).searchParams;
 const hold = params.get("hold");
@@ -47,10 +56,15 @@ const root =
         },
       }
     : undefined;
-const service = new GpuService((message) => host.postMessage(message), {
-  root,
-  suppressTransfer: params.get("suppress") === "1",
-});
+let service: GpuService;
+function createService(access: ServiceAccess) {
+  return new GpuService((message) => host.postMessage(message), {
+    access: access,
+    root,
+    suppressTransfer: params.get("suppress") === "1",
+  });
+}
+
 const snapshot = () => ({
   ...service.snapshot(),
   held,
@@ -81,6 +95,12 @@ async function testCommand(data: { test: string; id: string }): Promise<void> {
   host.postMessage({ testId: data.id, gpuSnapshot: snapshot() });
 }
 host.onmessage = ({ data }) => {
+  if (!("test" in data) && data.type === "bootstrap") {
+    if (service) throw new Error("Duplicate fixture GPU bootstrap");
+    service = createService(attachServiceAccess(data.readers));
+    return;
+  }
+  if (!service) throw new Error("Fixture request before GPU bootstrap");
   if ("test" in data) {
     void testCommand(data);
     return;

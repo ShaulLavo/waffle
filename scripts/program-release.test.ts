@@ -1,3 +1,4 @@
+import runtimeManifest from "../packages/waffle/package.json" with { type: "json" };
 import {
   preparedFixture as makePreparedFixture,
   prepareRuntimeFixture,
@@ -33,9 +34,11 @@ import { parseHostInterface } from "../packages/waffle/tooling/host-interface.ts
 
 const hostInterface = parseHostInterface(1, "fixture");
 const repository = resolve(import.meta.dirname, "..");
-const runtimeVersion: unknown = JSON.parse(
-  readFileSync(resolve(repository, "packages/waffle/package.json"), "utf8"),
-).version;
+const runtimeHostInterface = parseHostInterface(
+  runtimeManifest.waffleHostInterface,
+  "runtime fixture",
+);
+const runtimeVersion: unknown = runtimeManifest.version;
 if (typeof runtimeVersion !== "string") throw new Error("Runtime fixture needs a package version");
 const runtimeUrl = runtimeReleaseUrl("ShaulLavo/waffle", runtimeVersion);
 let runtimeSha256 = "";
@@ -143,7 +146,7 @@ describe("base closure", () => {
     expect(manifest.schema).toBe("waffle-program-release/2");
     expect(manifest.runtime).toMatchObject({
       version: runtimeVersion,
-      waffleHostInterface: 1,
+      waffleHostInterface: runtimeHostInterface,
       url: runtimeUrl,
       sha256: runtimeSha256,
     });
@@ -198,7 +201,7 @@ describe("base closure", () => {
       }
     }
     const base = packedManifest(resolve(out, "assets", "waffle-base-0.0.92.tgz"));
-    expect(base.waffleHostInterface).toBe(1);
+    expect(base.waffleHostInterface).toBe(runtimeHostInterface);
     expect(base.peerDependencies).toEqual({ waffle: "*" });
     expect(Object.keys(base.dependencies).toSorted()).toEqual([
       "waffle-coreutils",

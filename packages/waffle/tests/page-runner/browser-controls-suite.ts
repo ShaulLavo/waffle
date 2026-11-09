@@ -1,3 +1,4 @@
+import { ControlRun } from "./control-run.js";
 import { fixtureCapabilityControl, fixtureControlModes } from "./fixture-capability-controls.js";
 import { workerCapabilityControl, workerControlModes } from "./worker-capability-controls.js";
 import { retainedWorkerControl, retainedWorkerControlModes } from "./retained-worker-controls.js";
@@ -264,24 +265,15 @@ async function waitFor(done: () => boolean, collector: Collector): Promise<void>
     await Bun.sleep(25);
   }
 }
-type ControlResult =
-  | { engine: string; control: string; status: "pass" }
-  | { engine: string; control: string; status: "fail"; error: string };
-type ControlResults = { path: string; controls: ControlResult[] };
+type ControlResults = { path: string; run: ControlRun };
 export async function checkControl(
   engine: string,
   control: string,
   run: () => Promise<void>,
   results: ControlResults,
 ): Promise<void> {
-  try {
-    await run();
-    results.controls.push({ engine, control, status: "pass" });
-  } catch (error) {
-    results.controls.push({ engine, control, status: "fail", error: String(error) });
-  }
-  await writeResult(results.path, results.controls);
-  console.log(JSON.stringify(results.controls[results.controls.length - 1]));
+  await results.run.check(engine, control, run);
+  await writeResult(results.path, results.run.results);
 }
 async function engineControls(
   engine: string,
@@ -378,29 +370,48 @@ async function engineControls(
       results,
     );
 }
-async function main(): Promise<void> {
+async function main(controls: ControlRun): Promise<void> {
+  controls.throwIfInterrupted();
   const args = process.argv.slice(2),
     resultIndex = args.indexOf("--result"),
     resultPath = resultIndex < 0 ? undefined : args[resultIndex + 1];
   if (resultIndex >= 0 && (!resultPath || !isAbsolute(resultPath)))
     throw new Error("Use chromium webkit --result /absolute/control-results.json");
   if (!resultPath) throw new Error("The controls supervisor must supply --result");
+  const requested = args.slice(0, resultIndex);
+  if (requested.length === 1 && requested[0] === "--prepare") {
+    await buildFrameworkBootstrap();
+    return;
+  }
+  const preparedIndex = requested.indexOf("--prepared");
+  if (preparedIndex >= 0) requested.splice(preparedIndex, 1);
   const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
-  const results: ControlResults = { path: resultPath, controls: [] };
+  const results: ControlResults = { path: resultPath, run: controls };
   let root: string | undefined;
   await withStorageCleanup(
     async () => {
-      if (!selected || frameworkControlModes.some((mode) => `framework-${mode}`.includes(selected)))
+      if (
+        preparedIndex < 0 &&
+        (!selected || frameworkControlModes.some((mode) => `framework-${mode}`.includes(selected)))
+      )
         await buildFrameworkBootstrap();
       root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "pr-results-"));
       await mkdir(root, { recursive: true });
-      for (const engine of args.slice(0, resultIndex)) await engineControls(engine, root, results);
+      for (const engine of requested) await engineControls(engine, root, results);
     },
     async () => {
       if (root) await rm(root, { recursive: true, force: true });
     },
   );
-  if (!results.controls.length || results.controls.some((result) => result.status === "fail"))
+  if (!controls.results.length || controls.results.some((result) => result.status === "fail"))
     process.exitCode = 1;
 }
-if (import.meta.main) await main();
+if (import.meta.main) {
+  const controls = new ControlRun();
+  try {
+    await main(controls);
+    controls.throwIfInterrupted();
+  } finally {
+    controls.close();
+  }
+}

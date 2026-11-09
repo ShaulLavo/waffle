@@ -17,6 +17,12 @@ type Slot = { readonly generation: number; readonly objectKind: ObjectKind } & (
   | ObjectValue
 );
 
+type NativeReference = {
+  readonly kind: ObjectKind;
+  count: number;
+  disposal: { kind: "live" } | { kind: "active" } | { kind: "failed"; reason: unknown };
+};
+
 export function objectKind(name: string): ObjectKind {
   if (!Object.hasOwn(gpuObjectKinds, name)) throw new GpuProtocolError("Unknown object kind");
   return name as ObjectKind;
@@ -31,7 +37,8 @@ export function numericObjectKind(value: number): ObjectKind {
 export class HandleTable {
   readonly #slots: (Slot | undefined)[];
   #live = true;
-  readonly #references = new Map<object, { kind: ObjectKind; count: number }>();
+  readonly #references = new Map<object, NativeReference>();
+  #retirementError: AggregateError | undefined;
   constructor(
     root: object,
     readonly dispose: (kind: ObjectKind, value: object) => void,
@@ -64,12 +71,15 @@ export class HandleTable {
     if (!slot || slot.generation !== handle.generation || slot.kind === "released") return false;
     if (slot.objectKind !== kind || slot.kind !== "reserved")
       throw new GpuProtocolError("Invalid result binding");
-    this.#slots[handle.id] = { ...value, generation: handle.generation, objectKind: kind };
     if (value.kind === "native") {
       const reference = this.#references.get(value.value);
+      if (reference?.disposal.kind === "failed") throw reference.disposal.reason;
+      if (reference?.disposal.kind === "active")
+        throw new GpuProtocolError("Native disposal is in progress");
       if (reference) reference.count++;
-      else this.#references.set(value.value, { kind, count: 1 });
+      else this.#references.set(value.value, { kind, count: 1, disposal: { kind: "live" } });
     }
+    this.#slots[handle.id] = { ...value, generation: handle.generation, objectKind: kind };
     return true;
   }
   get(handle: Handle, kind: ObjectKind): ObjectValue {
@@ -92,15 +102,37 @@ export class HandleTable {
     if (slot.kind !== "native") return;
     const reference = this.#references.get(slot.value);
     if (!reference || --reference.count > 0) return;
-    this.#references.delete(slot.value);
-    this.dispose(kind, slot.value);
+    this.#disposeReference(slot.value, reference);
   }
   retire(): void {
+    if (this.#retirementError) throw this.#retirementError;
     if (!this.#live) return;
     this.#live = false;
     this.#slots.length = 0;
-    for (const [value, reference] of this.#references) this.dispose(reference.kind, value);
-    this.#references.clear();
+    const failures: unknown[] = [];
+    for (const [value, reference] of this.#references) {
+      try {
+        this.#disposeReference(value, reference);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (!failures.length) return;
+    this.#retirementError = new AggregateError(failures, "GPU native cleanup failed");
+    throw this.#retirementError;
+  }
+  #disposeReference(value: object, reference: NativeReference): void {
+    if (reference.disposal.kind === "failed") throw reference.disposal.reason;
+    if (reference.disposal.kind === "active")
+      throw new GpuProtocolError("Native disposal is in progress");
+    reference.disposal = { kind: "active" };
+    try {
+      this.dispose(reference.kind, value);
+      this.#references.delete(value);
+    } catch (error) {
+      reference.disposal = { kind: "failed", reason: error };
+      throw error;
+    }
   }
   #slot(handle: Handle, kind: ObjectKind): Slot {
     const slot = this.#slots[handle.id];

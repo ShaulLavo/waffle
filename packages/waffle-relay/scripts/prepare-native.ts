@@ -1,3 +1,4 @@
+import { seedNativePrebuild } from "../../../tools/ci-native-prebuild.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -11,7 +12,7 @@ const mainName = "@fails-components/webtransport";
 
 type Preparation = {
   resolve: (specifier: string) => string;
-  install: (entry: string, root: string) => void;
+  install: (entry: string, root: string) => void | Promise<void>;
   verify: () => Promise<void>;
 };
 
@@ -31,7 +32,8 @@ function requirePackage(entry: string, expectedName: typeof nativeName | typeof 
   return root;
 }
 
-function install(entry: string, root: string): void {
+async function install(entry: string, root: string): Promise<void> {
+  if (process.env.GITHUB_ACTIONS === "true") await seedNativePrebuild();
   const installer = createRequire(entry).resolve("prebuild-install/bin.js");
   execFileSync(
     "node",
@@ -63,7 +65,7 @@ export async function prepareNativeRelay(options: Preparation): Promise<string> 
   requirePackage(options.resolve(mainName), mainName);
   const artifact = join(root, "build/Release/webtransport.node");
   requireUnshadowedPrebuild(root);
-  options.install(entry, root);
+  await options.install(entry, root);
   requireUnshadowedPrebuild(root);
   const bytes = statSync(artifact);
   if (!bytes.isFile() || bytes.size === 0)

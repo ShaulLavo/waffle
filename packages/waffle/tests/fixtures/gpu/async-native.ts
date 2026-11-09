@@ -1,3 +1,4 @@
+import { serviceAccess } from "./service-access.js";
 import { gpuStream } from "../../../browser/gpu/generated/tables.js";
 import { gpuPayloadLayout } from "../../../browser/display/generated/graphics-layout.js";
 import { GpuConnection } from "../../../browser/gpu/scheduler.js";
@@ -37,7 +38,7 @@ class AsyncNativeRig {
       this.replies,
       { root: gpu },
       this.credit,
-      { arena: new Uint8Array(this.backing) },
+      { access: serviceAccess(), arena: new Uint8Array(this.backing) },
     );
   }
   async open(): Promise<void> {

@@ -1,3 +1,4 @@
+import { admitProcessObservation } from "../proc/observation.ts";
 import { expect, test } from "bun:test";
 import { pages } from "../memory/reservations.js";
 import { inspectThreadSource } from "../memory/declarations.js";
@@ -100,6 +101,7 @@ test("actual guest realm replacements cannot observe immutable argument bytes or
         memory,
         thread: { directory: "authority", pid: 1, tid: 1 },
         entry: { kind: "initial" },
+        observation: admitProcessObservation(1, outcome),
         outcome: serializeOutcome(outcome),
         signal: new SharedArrayBuffer(4),
         waits: new SharedArrayBuffer(12),

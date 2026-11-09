@@ -1,7 +1,7 @@
 import type { Dictionary } from "./lowering.js";
 import type { SurfaceTarget } from "./replay.js";
 import type { CompletionOwner } from "./completions.js";
-import type { ServiceSurface } from "../display/protocol.js";
+import type { ServiceSurface } from "../display/service-protocol.js";
 import { GpuCallError, GpuResourceError, type Handle } from "./protocol.js";
 
 interface Frame {
@@ -17,6 +17,7 @@ interface Presenter {
   frame: Frame | undefined;
   credit: boolean;
   readonly loss: { lost: boolean };
+  cleanup: { readonly kind: "live" } | { readonly kind: "failed"; readonly error: unknown };
 }
 interface VisibleSurface {
   readonly canvas: OffscreenCanvas;
@@ -29,59 +30,178 @@ interface SurfaceReference {
   readonly handle: Handle;
   readonly visible: VisibleSurface;
 }
-/** Strong references keep bitmaprenderer placeholders alive after guest devices retire. */
+type Attachment =
+  | { readonly kind: "pending" }
+  | { readonly kind: "attaching"; readonly canvas: OffscreenCanvas }
+  | { readonly kind: "unavailable"; readonly canvas: OffscreenCanvas }
+  | { readonly kind: "attached"; readonly visible: VisibleSurface }
+  | { readonly kind: "cleaning"; readonly visible: VisibleSurface }
+  | { readonly kind: "retained"; readonly visible: VisibleSurface; readonly error: unknown };
+interface SurfaceEntry {
+  phase: "live" | "disposing";
+  attachment: Attachment;
+}
+/** Current page identities own native assets independently of their carrying grant. */
 export class GpuSurfaces {
-  readonly #visible = new Map<number, VisibleSurface>();
+  readonly #entries = new Map<number, SurfaceEntry>();
   readonly #counts = { frameTexturesCreated: 0, presents: 0 };
-  constructor(readonly suppressTransfer = false) {}
+  constructor(
+    readonly suppressTransfer = false,
+    private readonly accepting: () => boolean = () => true,
+    private readonly wake: () => void = () => {},
+  ) {}
+  register(id: number): void {
+    if (!Number.isInteger(id) || id < 1 || id > 0xffffffff)
+      throw new GpuCallError("Invalid surface identity");
+    if (!this.accepting() || this.#entries.has(id) || this.#entries.size >= 16)
+      throw new GpuCallError("Duplicate or excessive surface");
+    this.#entries.set(id, { phase: "live", attachment: { kind: "pending" } });
+  }
+  get(id: number): VisibleSurface | undefined {
+    const entry = this.#entries.get(id);
+    if (entry?.phase !== "live" || entry.attachment.kind !== "attached") return undefined;
+    return entry.attachment.visible;
+  }
+  /** Native-resource inspection remains available during invalidation and failed cleanup. */
+  resource(id: number): VisibleSurface | undefined {
+    const attachment = this.#entries.get(id)?.attachment;
+    if (!attachment || !("visible" in attachment)) return undefined;
+    return attachment.visible;
+  }
   attach(surfaces: readonly ServiceSurface[]): void {
+    const failures: unknown[] = [];
     for (const surface of surfaces) {
-      if (!surface.canvas) {
-        if (!this.#visible.has(surface.id)) throw new GpuCallError("Unknown transferred surface");
-        continue;
+      try {
+        this.#attach(surface);
+      } catch (error) {
+        failures.push(error);
       }
-      if (this.#visible.has(surface.id) || this.#visible.size >= 16)
-        throw new GpuCallError("Duplicate surface");
-      const context = surface.canvas.getContext("bitmaprenderer");
-      if (!context) throw new GpuCallError("Bitmap renderer unavailable");
-      this.#visible.set(surface.id, {
-        canvas: surface.canvas,
-        context,
-        presenter: undefined,
-        retained: false,
-      });
     }
+    if (failures.length) throw new AggregateError(failures, "Surface attachment failed");
+  }
+  #attach(surface: ServiceSurface): void {
+    if (surface.canvas === undefined) {
+      if (!this.get(surface.id)) throw new GpuCallError("Unknown transferred surface");
+      return;
+    }
+    const entry = this.#entries.get(surface.id);
+    if (!entry || entry.phase !== "live" || !this.accepting())
+      throw new GpuCallError("Unknown transferred surface");
+    if (entry.attachment.kind !== "pending") throw new GpuCallError("Duplicate surface");
+    const canvas = surface.canvas;
+    entry.attachment = { kind: "attaching", canvas };
+    try {
+      this.#attachContext(entry, canvas);
+    } finally {
+      this.#finishAttachment(surface.id, entry);
+    }
+    if (!this.get(surface.id)) throw new GpuCallError("Surface unavailable");
+  }
+  #finishAttachment(id: number, entry: SurfaceEntry): void {
+    if (entry.phase === "disposing" && this.#entries.get(id) === entry) this.invalidate(id);
+    this.wake();
+  }
+  #attachContext(entry: SurfaceEntry, canvas: OffscreenCanvas): void {
+    let context: ImageBitmapRenderingContext | null;
+    try {
+      context = canvas.getContext("bitmaprenderer");
+      if (!context) throw new GpuCallError("Bitmap renderer unavailable");
+    } catch (error) {
+      entry.attachment = { kind: "unavailable", canvas };
+      throw error;
+    }
+    entry.attachment = {
+      kind: "attached",
+      visible: { canvas, context, presenter: undefined, retained: false },
+    };
+    if (entry.phase === "live" && this.accepting()) return;
+    entry.phase = "disposing";
+    this.#cleanup(entry);
   }
   connection(ids: readonly number[], completions: CompletionOwner): SurfaceConnection {
-    return new SurfaceConnection(
-      this.#visible,
-      ids,
-      completions,
-      this.suppressTransfer,
-      this.#counts,
-    );
+    return new SurfaceConnection(this, ids, completions, this.suppressTransfer, this.#counts);
   }
   tick(): void {
-    for (const visible of this.#visible.values()) {
-      const presenter = visible.presenter;
+    for (const id of this.#entries.keys()) {
+      const presenter = this.get(id)?.presenter;
       if (!presenter || presenter.credit) continue;
-      presenter.credit = true;
-      presenter.owner.completions.publish("frame-credit", 0, 0, {
-        surface: { ...presenter.reference.handle },
+      presenter.owner.completions.run(() => {
+        presenter.credit = true;
+        presenter.owner.completions.publish("frame-credit", 0, 0, {
+          surface: { ...presenter.reference.handle },
+        });
+        return undefined;
       });
     }
   }
-  dispose(id: number): void {
-    const visible = this.#visible.get(id);
-    if (!visible) return;
-    dropPresenter(visible);
-    visible.context.transferFromImageBitmap(null);
-    this.#visible.delete(id);
+  invalidate(id: number): boolean {
+    const entry = this.#entries.get(id);
+    if (!entry) return false;
+    entry.phase = "disposing";
+    if (entry.attachment.kind === "pending" || entry.attachment.kind === "unavailable") {
+      this.#entries.delete(id);
+      return false;
+    }
+    return true;
+  }
+  invalidateAll(): void {
+    for (const id of this.#entries.keys()) this.invalidate(id);
+  }
+  dispose(id: number): boolean {
+    const entry = this.#entries.get(id);
+    if (!entry) return true;
+    entry.phase = "disposing";
+    if (!this.#cleanup(entry)) return false;
+    this.#entries.delete(id);
+    return true;
+  }
+  #cleanup(entry: SurfaceEntry): boolean {
+    const attachment = entry.attachment;
+    if (attachment.kind === "attaching" || attachment.kind === "cleaning") return false;
+    if (attachment.kind === "retained") throw attachment.error;
+    if (attachment.kind !== "attached") return true;
+    const visible = attachment.visible;
+    entry.attachment = { kind: "cleaning", visible };
+    try {
+      dropPresenter(visible);
+      visible.context.transferFromImageBitmap(null);
+      visible.retained = false;
+      entry.attachment = { kind: "pending" };
+      return true;
+    } catch (error) {
+      entry.attachment = { kind: "retained", visible, error };
+      throw error;
+    }
+  }
+  disposeAll(): void {
+    this.invalidateAll();
+    for (const id of this.#entries.keys()) {
+      try {
+        this.dispose(id);
+      } catch {
+        // The entry retains the actual native resources and original cleanup error.
+      }
+    }
+  }
+  get active(): boolean {
+    for (const entry of this.#entries.values())
+      if (entry.attachment.kind === "attaching" || entry.attachment.kind === "cleaning")
+        return true;
+    return false;
+  }
+  get failures(): unknown[] {
+    const failures: unknown[] = [];
+    for (const entry of this.#entries.values())
+      if (entry.attachment.kind === "retained") failures.push(entry.attachment.error);
+    return failures;
   }
   snapshot() {
-    const values = Array.from(this.#visible.values());
+    const values = Array.from(this.#entries.keys(), (id) => this.resource(id)).filter(
+      (visible) => visible !== undefined,
+    );
     return {
       ...this.#counts,
+      registeredSurfaces: this.#entries.size,
       surfaces: values.length,
       retainedBitmaps: values.filter((surface) => surface.retained).length,
       presentCanvasesLive: values.filter((surface) => surface.presenter).length,
@@ -95,7 +215,7 @@ export class SurfaceConnection implements SurfaceTarget {
   #live = true;
   readonly #sink: { owner: CompletionOwner | undefined };
   constructor(
-    readonly visible: Map<number, VisibleSurface>,
+    readonly surfaceOwner: GpuSurfaces,
     ids: readonly number[],
     readonly completions: CompletionOwner,
     readonly suppressTransfer: boolean,
@@ -105,7 +225,7 @@ export class SurfaceConnection implements SurfaceTarget {
     this.#sink = { owner: completions };
   }
   create(id: number, _label: string, result: Handle): object {
-    const visible = this.visible.get(id);
+    const visible = this.surfaceOwner.get(id);
     if (!this.#live || !this.#allowed.has(id) || !visible)
       throw new GpuCallError("Surface outside grant");
     const reference = { id, visible, handle: result };
@@ -153,6 +273,7 @@ export class SurfaceConnection implements SurfaceTarget {
       frame: undefined,
       credit: true,
       loss,
+      cleanup: { kind: "live" },
     };
     visible.presenter = presenter;
     void config.device.lost.then(() => {
@@ -223,13 +344,23 @@ export class SurfaceConnection implements SurfaceTarget {
     this.unconfigure(surface);
     this.#references.delete(this.#reference(surface));
   }
+  stopPublishing(): void {
+    this.#sink.owner = undefined;
+  }
   dispose(): void {
     if (!this.#live) return;
-    for (const reference of this.#references)
-      if (reference.visible.presenter?.owner === this) dropPresenter(reference.visible);
-    this.#references.clear();
-    this.#sink.owner = undefined;
+    this.stopPublishing();
     this.#live = false;
+    const failures: unknown[] = [];
+    for (const reference of this.#references) {
+      try {
+        if (reference.visible.presenter?.owner === this) dropPresenter(reference.visible);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    this.#references.clear();
+    if (failures.length) throw new AggregateError(failures, "GPU presenter cleanup failed");
   }
   #reference(surface: object): SurfaceReference {
     for (const reference of this.#references)
@@ -245,10 +376,17 @@ export class SurfaceConnection implements SurfaceTarget {
 }
 function dropPresenter(visible: VisibleSurface): void {
   const presenter = visible.presenter;
-  visible.presenter = undefined;
-  presenter?.frame?.texture.destroy();
-  presenter?.context.unconfigure();
-  if (presenter) presenter.frame = undefined;
+  if (!presenter) return;
+  if (presenter.cleanup.kind === "failed") throw presenter.cleanup.error;
+  try {
+    presenter.frame?.texture.destroy();
+    presenter.frame = undefined;
+    presenter.context.unconfigure();
+    visible.presenter = undefined;
+  } catch (error) {
+    presenter.cleanup = { kind: "failed", error };
+    throw error;
+  }
 }
 function configuration(descriptor: Dictionary) {
   const { device, width, height, format, usage, alphaMode, viewFormats } = descriptor;

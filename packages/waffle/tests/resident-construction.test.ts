@@ -199,8 +199,8 @@ test("resident retains all 118 allocation/reference records and two holding leas
   try {
     await owner.ready;
     expect(allocator.specs).toHaveLength(117);
-    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(88_899_884);
-    expect(budget.snapshot().allocated - before.allocated).toBe(88_900_396);
+    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(35_270_156);
+    expect(budget.snapshot().allocated - before.allocated).toBe(35_270_668);
     expect(budget.snapshot().producerFree).toEqual({ allocations: 0, references: 0, leases: 0 });
     expect(budget.snapshot().obligations).toBe(0);
     const published = budget.snapshot();
@@ -237,7 +237,7 @@ const fixedBytes =
   49156 +
   12 +
   FILESYSTEM_SECTION_BYTES +
-  393216 +
+  1572864 +
   limits.sessions * 8 +
   44 +
   limits.sessions * 16 +
@@ -249,7 +249,7 @@ const fixedBytes =
   limits.pins * 12 +
   limits.pinBytes +
   32 +
-  64 +
+  72 +
   4096 * 12;
 const startupCharge = rootCharge();
 function exactCapacity() {
@@ -327,9 +327,9 @@ test("resident real open borrows one physical backend root and charges the whole
     );
     expect(new Set(backing).size).toBe(117);
     expect(allocator.specs).toHaveLength(117);
-    expect(allocator.specs.filter((spec) => spec.bytes > MiB)).toHaveLength(1);
+    expect(allocator.specs.filter((spec) => spec.bytes > 2 * MiB)).toHaveLength(1);
     expect(allocator.specs.filter((spec) => spec.bytes === 0)).toHaveLength(96);
-    expect(arena.pageReaders?.byteLength).toBe(393216);
+    expect(arena.pageReaders?.byteLength).toBe(1572864);
     expect(arena.readerLifetimes?.byteLength).toBe(limits.sessions * 8);
     expect(arena.versions.byteLength).toBe(49152);
     expect(budget.snapshot().backingBytes - before.backingBytes).toBe(

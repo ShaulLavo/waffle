@@ -351,7 +351,10 @@ function lifecycleLaunch(
     assert.ok(resource instanceof PipeEndpoint);
     capture(resource);
     launched(context.pid);
-    if (outcome === "start-failure") throw new Error("controlled launcher failure");
+    if (outcome === "start-failure") {
+      context.startFailed(new Error("controlled launcher failure"));
+      return { terminate() {} };
+    }
     assert.equal(context.started(), true);
     if (outcome === "EOF") {
       assert.equal(await readLifecycleInput(resource), pipeRequest.input);

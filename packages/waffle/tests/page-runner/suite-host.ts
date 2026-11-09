@@ -5,6 +5,7 @@ import {
   type FixtureDeclaration,
   type FixtureRoute,
 } from "./fixture-owner.js";
+import type { NativeCommandFailure } from "./safari-driver.js";
 import type { WorkerDeclaration } from "./service-worker-page.js";
 import type { ServiceWorkerEntry } from "../storage-allocation.js";
 import { writeResult } from "./result-file.js";
@@ -137,7 +138,7 @@ async function fixtureResponse(
   collector.admitFixture(token, doc, application.declaration.caseId);
   return new Response(encoded, { headers: { ...headers, "Content-Type": "application/json" } });
 }
-function retirementCommand(collector: Collector, url: URL): boolean {
+function retirementCommand(collector: Collector, url: URL): ReturnType<Collector["reply"]> {
   const state = collector.documents.find(
     (item) => item.doc !== null && item.doc === url.searchParams.get("doc"),
   );
@@ -147,7 +148,7 @@ function retirementCommand(collector: Collector, url: URL): boolean {
     url.searchParams.get("doc") !== state.doc
   )
     throw new Error("Unbound retirement poll");
-  return state.retiring;
+  return collector.reply(state.retiring, state);
 }
 export type RunOptions = {
   resultPath: string;
@@ -160,7 +161,12 @@ export type RunOptions = {
   startedAt?: number;
   port?: number | "ephemeral";
 };
+type FirstCommandFailure = NativeCommandFailure & {
+  readonly hostNow: number;
+  readonly lastHeartbeatAgeMs: number | null;
+};
 export type SuiteResult = {
+  firstCommandFailure: FirstCommandFailure | null;
   suite: string;
   run: string;
   required: string[];
@@ -307,7 +313,7 @@ function runConfiguration<R>(adapter: SuiteAdapter<R>, options: RunOptions) {
 }
 export async function runPageSuite<R>(
   adapter: SuiteAdapter<R>,
-  factory: (scratch: string) => Driver,
+  factory: (scratch: string, observeFailure: (facts: NativeCommandFailure) => void) => Driver,
   options: RunOptions,
 ): Promise<SuiteResult> {
   const { started, port, page } = runConfiguration(adapter, options);
@@ -322,6 +328,31 @@ export async function runPageSuite<R>(
     throw error;
   }
   const { required, selectedCases, selected, run, collector, budgets } = selection;
+  let firstCommandFailure: FirstCommandFailure | null = null;
+  let failureObserved = false;
+  const observeFailure = (facts: NativeCommandFailure): void => {
+    if (failureObserved) return;
+    failureObserved = true;
+    const hostNow = performance.now();
+    const state = collector.active;
+    const lastHeartbeatAgeMs = state?.doc ? hostNow - state.heartbeatAt : null;
+    firstCommandFailure = Object.freeze({
+      client: facts.client,
+      operation: null,
+      phase: null,
+      method: facts.method,
+      path: facts.path,
+      dispatchedAt: facts.dispatchedAt,
+      settledAt: facts.settledAt,
+      stage: facts.stage,
+      status: facts.status,
+      abort: facts.abort,
+      errorName: facts.errorName,
+      errorCode: facts.errorCode,
+      hostNow,
+      lastHeartbeatAgeMs,
+    });
+  };
   let scratch = "",
     driver: Driver | undefined,
     fixture: ReturnType<typeof serveCollector> | undefined;
@@ -349,6 +380,7 @@ export async function runPageSuite<R>(
   };
   const stop = (): Promise<void> => (cleaning ??= Promise.resolve().then(teardown));
   const teardown = async (): Promise<void> => {
+    collector.cancel();
     application?.revoke("execution stopped");
     consumers.revoke();
     collector.abandon("execution stopped");
@@ -449,7 +481,7 @@ export async function runPageSuite<R>(
     const handle = await driver.handle(operationSignal);
     if (!cleanupOnly) checkExecution();
     operationSignal.throwIfAborted();
-    const state = collector.expect(group, token, url, handle);
+    const state = collector.expect(group, token, url, handle, cleanupOnly);
     const configuration = pageConfiguration(group, item, run);
     fixture.configurations.set(token, {
       run,
@@ -527,6 +559,8 @@ export async function runPageSuite<R>(
       teardown.deadline,
     );
     if (host?.uncontainedPageWork()) throw new Error("Uncontained page task or teardown");
+    if (collector.reply(false, state).kind === "cancelled")
+      throw new Error("Reporting cancelled before retirement");
     state.retiring = true;
     await awaitState(
       state,
@@ -609,7 +643,7 @@ export async function runPageSuite<R>(
       await untilAborted(startup, signal);
     }
     checkExecution();
-    driver = factory(scratch);
+    driver = factory(scratch, observeFailure);
     checkExecution();
     await bounded(
       driver.start(AbortSignal.any([signal, AbortSignal.timeout(20_000)])),
@@ -673,6 +707,7 @@ export async function runPageSuite<R>(
   };
   const exit = resultExit(collector, cleanup, options.filter);
   const result: SuiteResult = {
+    firstCommandFailure,
     suite: adapter.suite,
     run,
     required,
@@ -720,6 +755,7 @@ export async function runPageSuite<R>(
     exit,
   };
   const snapshot = structuredClone(result);
+  Object.freeze(snapshot.firstCommandFailure);
   await writeResult(options.resultPath, snapshot);
   return snapshot;
 }

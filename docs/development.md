@@ -55,6 +55,21 @@ Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 
+### Run the complete notification command
+
+The notification runner keeps all nine original lifecycle scenarios in one page. Its stock
+command uses Chromium and runs once in the serial CI group, without engine arguments.
+
+```sh
+bun packages/waffle/tests/notification-browser-runner.ts
+STORAGE_SCRATCH_ROOT=/absolute/scratch/root IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/notification-browser-runner.ts ios-safari --result /absolute/result.json
+```
+
+The native command uses the existing page-owned host and the same scenario functions.
+It retains the complete result before page retirement. Normal reporter controls check
+original assertion failures and copied results. Desktop controls do not establish native
+Safari acceptance.
 [Host case queries and timeouts](host-case-query-timeouts.md) describes initial query binding and live body-relative deadlines for page-owned consumers.
 
 ### Run the complete compiled GPU async command
@@ -153,6 +168,8 @@ The portable directory includes the browser bundles and WASM fixtures. It needs 
 Safari WebDriver, not a repository install or native WebTransport peers. The driver owns its Safari
 session, local relay and target listeners. Remove the prepared directory after retaining the small report.
 Actual Safari, iPhone and deployed remote UDP acceptance remain separate checks.
+
+Reporter controls prepare their shared framework bootstrap once, then run Chromium and WebKit in separate serial commands. Each command keeps the existing ten-minute supervisor limit. An outer interruption fails the control even when an expected negative failure was already present.
 
 The libc suite builds guest binaries with a pinned wasi-sdk and runs them under Wasmtime. See [Guest libc](wasi-libc.md) for its requirements. `bun run test:libc` runs it.
 

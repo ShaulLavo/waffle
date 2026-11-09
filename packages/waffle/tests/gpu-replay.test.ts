@@ -455,3 +455,57 @@ describe("generated-layout GPU replay", () => {
     }
   });
 });
+
+for (const reason of [undefined, null, false, 0, "", new Error("failed native cleanup")]) {
+  test(`last native handle release retains cleanup failure without retry: ${String(reason)}`, () => {
+    const failed = {},
+      healthy = {};
+    const destroyed: object[] = [];
+    const table = new HandleTable({}, (_kind, value) => {
+      destroyed.push(value);
+      if (value === failed) throw reason;
+    });
+    table.reserve(handle(2), "device");
+    table.bind(handle(2), "device", { kind: "native", value: failed });
+    table.reserve(handle(3), "device");
+    table.bind(handle(3), "device", { kind: "native", value: failed });
+    table.reserve(handle(4), "device");
+    table.bind(handle(4), "device", { kind: "native", value: healthy });
+    table.release(handle(2), "device");
+    expect(destroyed).toEqual([]);
+    let original: unknown = Symbol("not thrown");
+    try {
+      table.release(handle(3), "device");
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBe(reason);
+    table.reserve(handle(5), "device");
+    let rebound: unknown = Symbol("not thrown");
+    try {
+      table.bind(handle(5), "device", { kind: "native", value: failed });
+    } catch (error) {
+      rebound = error;
+    }
+    expect(rebound).toBe(reason);
+    expect(() => table.native(handle(5), "device")).toThrow("pending");
+    let retirement: unknown;
+    try {
+      table.retire();
+    } catch (error) {
+      retirement = error;
+    }
+    expect(retirement).toBeInstanceOf(AggregateError);
+    if (!(retirement instanceof AggregateError)) throw new Error("Lost failed native ownership");
+    expect(retirement.errors).toEqual([reason]);
+    expect(destroyed).toEqual([failed, healthy]);
+    let repeated: unknown;
+    try {
+      table.retire();
+    } catch (error) {
+      repeated = error;
+    }
+    expect(repeated).toBe(retirement);
+    expect(destroyed).toEqual([failed, healthy]);
+  });
+}

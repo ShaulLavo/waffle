@@ -697,9 +697,6 @@ for (const kind of ["direct", "runtime"] as const)
     try {
       for (let run = 0; run < 100; run++) {
         const controller = {
-          stop() {
-            stops++;
-          },
           retired() {
             retired++;
           },
@@ -723,7 +720,11 @@ for (const kind of ["direct", "runtime"] as const)
           pid = workerProcessState(root).pid;
           await broker.adoptRuntimeRoot(root, { memory: [], ...controller });
         }
+        const stop = broker.captureRootStop(pid, () => {
+          stops++;
+        });
         await broker.rootExit(pid, 0);
+        await stop();
         expect(broker.transportFor(pid)).toBeUndefined();
       }
       expect(activations).toBe(0);
@@ -739,7 +740,7 @@ for (const kind of ["direct", "runtime"] as const)
         expect((Reflect.get(broker, name) as Map<unknown, unknown>).size).toBe(0);
       expect(Array.from(table.values())).toHaveLength(0);
       await broker.dispose();
-      expect(stops).toBe(0);
+      expect(stops).toBe(100);
       expect(retired).toBe(100);
     } finally {
       await broker.dispose();
@@ -2394,7 +2395,7 @@ test("lazy external roots revoke before fencing without activating a supervisor"
   }
 });
 
-test("a pending external launcher retains authority until its late rejection then releases the failed controller", async () => {
+test("a pending external launcher retains authority until its late rejection without certifying an unknown native consumer", async () => {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
@@ -2453,7 +2454,7 @@ test("a pending external launcher retains authority until its late rejection the
   } finally {
     rejectLaunch(new Error("test cleanup"));
     await starting;
-    await broker.dispose();
+    await expect(broker.dispose()).rejects.toBeInstanceOf(AggregateError);
   }
 });
 
@@ -2595,6 +2596,7 @@ for (const settlement of ["resolve", "reject"] as const)
       disposal = broker.dispose().then(() => {
         disposed = true;
       });
+      void disposal.catch(() => {});
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       // No controller stop or retirement may consume authority a late launcher still needs.
       expect(events).not.toContain("retired");
@@ -2612,19 +2614,24 @@ for (const settlement of ["resolve", "reject"] as const)
         expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
       }
       releaseStop();
-      await disposal;
+      if (settlement === "reject") await expect(disposal).rejects.toBeInstanceOf(AggregateError);
+      else await disposal;
       expect(events.at(-1)).toBe("retired");
       expect(events.filter((event) => event === "stop")).toHaveLength(1);
       expect(events.filter((event) => event === "retired")).toHaveLength(1);
       expect(events.filter((event) => event === "terminate")).toHaveLength(
         settlement === "resolve" ? 1 : 0,
       );
-      expect((Reflect.get(broker, "controllers") as Map<number, unknown>).size).toBe(0);
+      if (settlement === "resolve")
+        expect((Reflect.get(broker, "controllers") as Map<number, unknown>).size).toBe(0);
+      else expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
     } finally {
       resolveLaunch(handle);
       releaseStop();
       await starting;
-      await (disposal ?? broker.dispose());
+      await (disposal ?? broker.dispose()).catch((error) => {
+        if (settlement !== "reject") throw error;
+      });
     }
   });
 
@@ -2692,16 +2699,23 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
       expect(errors).toEqual([]);
       release();
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      expect(events).toEqual([
+      const expected = [
         "exited",
         exitAt === "launch throws" ? "stop" : "terminate",
         "retired",
         "error",
-      ]);
-      expect(errors).toEqual([failure]);
+      ];
+      if (exitAt === "launch throws") expected.push("error");
+      expect(events).toEqual(expected);
+      expect(errors[0]).toBe(failure);
+      if (exitAt === "launch throws")
+        expect(errors[1]).toMatchObject({ message: "launcher threw after selecting failure" });
+      else expect(errors).toEqual([failure]);
     } finally {
       release();
-      await broker.dispose();
+      if (exitAt === "launch throws")
+        await expect(broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+      else await broker.dispose();
     }
   });
 
@@ -3775,3 +3789,129 @@ for (const threaded of [false, true]) {
     expect(releases).toBe(1);
   });
 }
+
+for (const bounded of [false, true])
+  for (const late of [false, true])
+    test(`graphics child receipt sink survives its actual handler teardown (${bounded}, ${late})`, async () => {
+      const { SharedMemoryLedger, declareSharedMemoryPlatform } =
+        await import("../memory/reservations.js");
+      const { defaultSharedMemoryPlatform } = await import("../memory/platform.js");
+      const { createSharedControlAllocator } = await import("../memory/control.js");
+      const platform = bounded
+        ? declareSharedMemoryPlatform({
+            kind: "bounded",
+            budgetBytes: bytes(512 * 1024 ** 2),
+            counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+          })
+        : defaultSharedMemoryPlatform;
+      let collect!: (id: number) => void;
+      const registrations: { target: object; id: number }[] = [];
+      const ledger = new SharedMemoryLedger(platform, undefined, (receive) => {
+        collect = receive;
+        return {
+          register(target, id) {
+            registrations.push({ target, id });
+          },
+        };
+      });
+      const reservations = ledger.openRuntime(platform);
+      const previousWorker = globalThis.Worker,
+        workers: ReceiptWorker[] = [],
+        ports: MessagePort[] = [];
+      class ReceiptWorker extends EventTarget {
+        request?: import("../browser/worker.js").RuntimeWorkerRequest;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: ErrorEvent) => void) | null = null;
+        constructor() {
+          super();
+          workers.push(this);
+        }
+        postMessage(request: import("../browser/worker.js").RuntimeWorkerRequest) {
+          this.request = request;
+        }
+        terminate() {}
+        emit(data: unknown) {
+          const event = new MessageEvent("message", { data });
+          this.dispatchEvent(event);
+          this.onmessage?.(event);
+        }
+      }
+      const identities = new ProcessIdentityAllocator(),
+        registry = new ExecutableRegistry();
+      const moduleBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+      const module = new WebAssembly.Module(moduleBytes);
+      const { declareModuleMemory } = await import("../memory/declarations.js");
+      declareModuleMemory(module, moduleBytes);
+      registry.register("fixture", { adapter: "fixture", module });
+      const channel = new MessageChannel();
+      ports.push(channel.port1, channel.port2);
+      const graphics = {
+        connection: {
+          port: channel.port1,
+          gpu: true,
+          revocation: new SharedArrayBuffer(64),
+          surfaces: [],
+          commandBytes: 64,
+          completionBytes: 64,
+        },
+        dispose() {},
+        async retired() {},
+      };
+      const broker = new BrowserProcessBroker({
+        reservations,
+        identities,
+        table: new ProcessTable(identities),
+        registry,
+        filesystem: {
+          connect(identity) {
+            const pair = connectFilesystemIdentity(identity);
+            ports.push(pair.client.port, pair.server.port);
+            return pair.client;
+          },
+          revoke() {},
+          reap() {},
+          async quiesce() {},
+        },
+        launch: (context) =>
+          broker.launchWorker(context, {
+            workerUrl: "http://localhost/receipt.js",
+            graphics,
+            request: { module: context.module, args: [], env: {} },
+          }),
+      });
+      const { root, messages, descriptors, client } = pipeClientFixture(identities);
+      try {
+        globalThis.Worker = ReceiptWorker as unknown as typeof Worker;
+        await broker.adoptRuntimeRoot(root, { memory: [] });
+        const { pid, supervisor } = await startFixtureChild({ broker, parent: client, messages });
+        const worker = workers[0]!,
+          request = worker.request!;
+        let receiptA!: SharedArrayBuffer;
+        const allocate = createSharedControlAllocator(request.controlGrant!, (backing) => {
+          receiptA = structuredClone(backing);
+        });
+        const openB = structuredClone(allocate(64));
+        if (!late) worker.emit({ type: "shared-control-allocation", buffer: receiptA });
+        markStarted(workerProcessState(request.runtimeProcess!).signals.outcome);
+        worker.emit({ type: "exit", code: 0 });
+        await supervisor.waitForExit(client.pid, pid);
+        broker.rootStopped(client.pid);
+        await broker.dispose();
+        expect(worker.onmessage).toBeNull();
+        expect(broker.workerMemory()).toEqual([]);
+        broker.rootStopped(client.pid);
+        reservations.dispose();
+        const successor = ledger.openRuntime(platform);
+        if (late) worker.emit({ type: "shared-control-allocation", buffer: receiptA });
+        const registration = registrations.find((entry) => entry.target === receiptA);
+        if (registration) collect(registration.id);
+        expect(successor.snapshot().debtBytes).toBe(64);
+        expect(openB.byteLength).toBe(64);
+        successor.dispose();
+      } finally {
+        globalThis.Worker = previousWorker;
+        descriptors.dispose();
+        await broker.dispose();
+        for (const port of ports) port.close();
+      }
+    });

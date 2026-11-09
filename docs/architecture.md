@@ -541,10 +541,20 @@ but unrecoverable storage raises an error rather than silently creating an empty
 `name` selects an isolated database for tests/workspaces. Closing a page without a completed
 flush may lose its uncommitted edits; browser persistence is not a power-loss-safe host filesystem.
 
-Ports schedule requests; each request owns a SharedArrayBuffer with a 32-byte completion header,
-JSON operation/arguments and optional binary input. Results overwrite the data region. Large
-results are read in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
+Ports schedule requests; each request owns a block in its connection's stable shared arena with a
+32-byte completion header and a response room of at most 64 KiB. Inputs up to 64 KiB share that block.
+A larger input is copied once into a private ArrayBuffer and transferred before the guest parks, so a
+blocked guest keeps the same arena and the same `Atomics.wait` notification. An explicit `capacity`
+above 64 KiB is clamped to that room. Results that do not fit use the overflow path and are read
+in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
 its buffer until `release()`; buffers and revocation words are never recycled between guests.
+
+Every request debits the connection's logical limit of 2,147,479,552 bytes, inline or private, and
+is refused synchronously with errno 48 when it cannot fit. A private input also reserves its full
+byte length from the namespace before the buffer exists; that charge ends when the service gives
+up the request, or at successful connection retirement if the message never arrived. The arena
+itself reserves 134,316,032 bytes, enough for 1,024 live blocks under first-fit placement. Those
+figures are logical accounting and declared address space, not measured physical memory.
 
 ```ts
 const request = client.submit("read", [handle, 4096, 0]); // does not block
@@ -569,7 +579,7 @@ so the epoch stays odd until their bytes, size and timestamp are in place. Cache
 service alone owns backend pins. Preopens and open descriptions retain handles; transient path pins
 are bounded and evicting them invalidates cached paths.
 
-The service owns the page allocator and grows capacity geometrically in 16 KiB storage pages, across
+The service owns the page allocator and grows capacity geometrically in 4 KiB storage pages, across
 16 MiB growable SharedArrayBuffer segments. Connections carry the zero-byte segment references
 before execution; only the service grows their backing storage. A synchronous guest therefore
 sees completed growth without returning to its event loop or receiving another port message.
@@ -580,7 +590,7 @@ maximum reports WASI EFBIG.
 The 1.5 GiB ceiling leaves 512 MiB of headroom for sequential package installs beyond a
 retained 1 GiB tree. Smaller explicit caps still apply. It is a payload reservation limit,
 not an aggregate browser or process memory budget. The fixed allocator layout occupies
-88,098,640 bytes including its first 16 MiB data segment. Ordinary connections and
+33,289,256 bytes including its first 16 MiB data segment. Ordinary connections and
 startup-admitted standalone roots allocate that same exact layout. Startup admission
 adds 512 control bytes to the root backing charge. Additional payload backing grows
 lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the
@@ -590,19 +600,23 @@ capability tables), used/free bytes, the configured cap, and registered identiti
 segment references do not count as allocated backing storage. Grown segments are retained
 for page reuse until the filesystem is disposed.
 
-Storage geometry lives in the private `fs/storage-geometry.ts` module. A 256-entry leaf
-maps 4 MiB of logical file data. Each file has 256 logical roots, independently of the
-1,024 physical pages per 16 MiB segment. Transport chunks and WebAssembly memory
-pages remain 64 KiB. The fixed layout retains 32,768 slots, including reserved slot zero.
+Storage geometry lives in the private `fs/storage-geometry.ts` module. All mapping blocks
+hold 64 entries, so one pool serves every level. A leaf maps 256 KiB of logical file data.
+Each file has eight root words: seven direct leaves cover its first 1.75 MiB, and one tail
+pointer reaches a top block and branch blocks up to the 1 GiB file limit. Whether a page
+uses the tail depends only on its logical index, so growth never reinterprets an existing
+root. The 40,758-block pool covers every distribution of files and data within the fixed
+limits. This addressing is independent of the 4,096 physical pages per 16 MiB segment.
+Transport chunks and WebAssembly memory pages remain 64 KiB. The fixed layout retains
+32,768 slots, including reserved slot zero.
 
-An observed workspace allocates 98,304 physical reader counters, or 393,216 bytes.
-One aligned 256 MiB resident pin fits the unchanged 2 MiB reader metadata limit.
-Two independent selections of that same full range can return structured metadata
-pressure because each owns 16,384 page descriptors, even though physical pin bytes
-are shared. Closing the first selection releases its descriptors and admits the next
-pin. Reads borrowing one selection keep its existing shared lifetime.
+An observed workspace allocates 393,216 physical reader counters, or 1,572,864 bytes.
+A retained resident selection stores one 32-bit physical page ID per page. One aligned
+256 MiB pin charges 262,400 metadata bytes against the unchanged 2 MiB reader metadata
+limit. Seven overlapping selections of that full range fit before structured metadata
+pressure. Physical pin bytes are shared. Closing a selection releases its IDs and admits
+the next pin. Reads borrowing one selection keep its existing shared lifetime.
 
-The larger initial root can increase native allocation pressure before data restoration.
 Smaller storage pages reduce small-file padding, not the runtime's other buffers,
 request arenas, or guest memories. Grown segments remain a high-water allocation;
 current used bytes do not measure committed backing or native residency.
@@ -672,3 +686,46 @@ installing playground dependencies.
 ## Lazy network implementation
 
 `runtime.network()` owns one separate Rust WASM instance through its namespace. Core and process loading do not load this module. Browser helpers retain virtual-only transport and unchanged rings. Native embedders wire the Waffle-owned OS adapter explicitly. See [ADR 005](adr/005-lazy-rust-wasm-network.md).
+
+## GPU service reader lifetime
+
+Each activated display service owns one fresh 64-byte counted admission allocation. The page
+installs it before sending any open. A command reader admits the complete physical ring read,
+including padding, exceptions and tail stores. Scheduler visits and later native callbacks enter
+again. No admitted section spans a promise or task.
+
+Service failure closes that exact service's reader admission synchronously. The page selects
+original transport terminals, joins all admitted sections, then settles those same controls
+again before requesting termination. `Worker.terminate()` is a separate cleanup request.
+An abandoned admitted section leaves retirement pending. A failed join or stop keeps the Runtime,
+allocator and singleton guard owned. Replacement GPU activation waits for successful old-service
+bookkeeping and uses new grants and surfaces.
+
+Healthy Runtime suspension instead closes new display admission synchronously and revokes every
+grant through normal cooperative cleanup. It awaits their actual acknowledgements before closing
+and joining the service reader allocation and requesting termination. A missing acknowledgement
+leaves shutdown pending, without a timeout or termination shortcut.
+
+Normal grant revocation keeps peer admission open. Its irreversible local lease rejects new
+frames immediately. The service queues cleanup after all active callback frames return, then
+queues a separate acknowledgement. A reentrant native map fill may finish its admitted copy before
+that boundary. Neither reentry nor a microtask acknowledges retirement inline. Cleanup errors
+remain retained.
+
+Visible canvases belong to the service surface lifetime, not the carrying grant. The page sends
+an ordered private ID registration before the first canvas transfer, without activating a service
+when a surface is merely created. A retired grant may deliver that registered canvas under service
+admission, but cannot inspect or reopen its old command controls. Surface disposal invalidates the
+identity immediately and retains any in-flight attachment until its returned native context is
+cleaned up. Pending and visible entries share the existing bounded owner; no disposed-ID history
+or new shared allocation supplies authority. Cleanup failures retain their actual resources.
+
+Reader quiescence does not prove that aliases or native memory have been reclaimed. Before
+transferring a graphics-bearing launch, the broker binds its exact ticket to the original grant.
+The ticket retains all that launch's control allocation charges conservatively. The original
+allocation receipt is the sole charging route; receiving a different clone in an open adds no
+charge. An allocation-only listener captures the old ticket independently of child/root maps and
+ordinary message handlers, and survives Runtime disposal. The default unbounded path keeps each
+original receipt holder as non-refundable debt. The bounded path retains its existing aggregate
+consumed debt. Page-created original controls and known service exposures stay rooted through page
+destruction. No guest connection contains the fence, ticket, retention token or join proof.

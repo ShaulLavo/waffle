@@ -61,13 +61,18 @@ function mutate(connection: Connection, name: string, labels: readonly string[])
   send(connection, joinRecords(...records));
 }
 
+function labelObject(kind: string, label: string) {
+  if (kind === "device") return { label, destroy() {} };
+  return { label };
+}
+
 for (const vector of expected.vectors) {
   test(`ordered label assignment preserves identity: ${vector.command}`, () => {
     const target = new RecordingTarget();
     const { connection, replies, credit } = rig(target, 4096);
     const kind = vector.command.split(".")[0]!;
     const seen: { receiver: object; value: unknown }[] = [];
-    const native = kind === "render_pass_encoder" ? target.pass : {};
+    const native = kind === "render_pass_encoder" ? target.pass : labelObject(kind, "");
     Object.defineProperty(native, "label", {
       configurable: true,
       set(this: object, value: unknown) {
@@ -101,8 +106,8 @@ for (const vector of expected.vectors.filter((vector) => vector.context === "top
       const first = rig({ root: {} });
       const second = rig({ root: {} });
       const kind = objectKind(vector.command.split(".")[0]!);
-      const native = { label: "unchanged" };
-      const other = { label: "other" };
+      const native = labelObject(kind, "unchanged");
+      const other = labelObject(kind, "other");
       try {
         bind(first.connection, fault === "wrong-kind" ? "adapter" : kind, native);
         bind(second.connection, kind, other);

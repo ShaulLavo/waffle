@@ -177,6 +177,7 @@ for (const command of commands) {
     const adapter = commandAdapter(command.suite),
       budgets = adapter.budgets(1);
     const expected = {
+      notification: { case: 60_000, run: 450_000 },
       "search-executor": { case: 600_000, run: 990_000 },
       "fs-socket-attachment": { case: 60_000, run: 450_000 },
       "guest-watch": { case: 120_000, run: 510_000 },
@@ -188,7 +189,7 @@ for (const command of commands) {
     f.send({ kind: "case-start", caseId: f.id });
     for (const now of [budgets.case - 1, budgets.case]) {
       f.clock(now);
-      f.collector.heartbeat({ run: "run", doc: "doc", kind: "heartbeat" });
+      f.collector.heartbeat({ run: "run", doc: "doc", kind: "heartbeat", failure: null });
       expect(f.collector.deadline(budgets, 0)).toBe(now === budgets.case ? "case-hang" : null);
     }
   });

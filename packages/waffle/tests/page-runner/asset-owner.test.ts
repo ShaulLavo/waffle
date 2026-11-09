@@ -27,6 +27,14 @@ function setup() {
     undefined,
     consumers,
   );
+  const date = { value: "Sat, 01 Jan 2000 00:00:00 GMT" };
+  const respond = hosted.assetOwner.response.bind(hosted.assetOwner);
+  hosted.assetOwner.response = async (...args) => {
+    const requestedDate = date.value;
+    const response = await respond(...args);
+    response.headers.set("Date", requestedDate);
+    return response;
+  };
   const requests: Promise<Response>[] = [];
   const releases: (() => void)[] = [];
   async function document(id = "A", guard: () => void = () => {}) {
@@ -69,6 +77,7 @@ function setup() {
     ...hosted,
     collector,
     consumers,
+    date,
     document,
     get,
     gate,
@@ -129,6 +138,22 @@ function oneGet(f: Fixture, state: DocumentState) {
 function hold(f: Fixture, state: DocumentState, callback: AssetHoldCallback) {
   f.assetOwner.hold(state, path, callback);
 }
+
+test(
+  "fixture supplies the Date header independently for distinct unheld and held requests",
+  withAssets(async (f) => {
+    const original = await f.get();
+    expect(original.headers.get("Date")).toBe(f.date.value);
+    expect(new Uint8Array(await original.arrayBuffer())).toEqual(bytes);
+    const state = await f.document();
+    hold(f, state, continueAsset);
+    f.date.value = "Mon, 01 Jan 2001 00:00:00 GMT";
+    const held = await f.get(state);
+    expect(held.headers.get("Date")).toBe(f.date.value);
+    expect(held.headers.get("Date")).not.toBe(original.headers.get("Date"));
+    expect(new Uint8Array(await held.arrayBuffer())).toEqual(bytes);
+  }),
+);
 
 test(
   "held ordinary bytes, MIME, status and all headers match the unheld response",
@@ -303,13 +328,19 @@ for (const failure of [undefined, null, false, 0, "", new Error("exact callback 
 }
 
 test(
-  "callback return without continue rejects handoff, after-continue failure cannot retract bytes",
+  "callback return without continue rejects handoff",
   withAssets(async (f) => {
     const a = await f.document();
     hold(f, a, async () => {});
     expect((await f.get(a)).status).toBe(409);
     expect(String(f.assetOwner.errors(a)[0])).toContain("without continue");
     f.assetOwner.revoke(a);
+  }),
+);
+
+test(
+  "after-continue failure cannot retract handed-off bytes",
+  withAssets(async (f) => {
     const b = await f.document("B");
     const failure = new Error("after handoff");
     hold(f, b, async (request) => {

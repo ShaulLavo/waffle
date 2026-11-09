@@ -51,6 +51,8 @@ const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry.js"
 const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor.js")>("supervisor");
 const { SignalDisposition, setSignalDisposition } =
   isolated.load<typeof import("../proc/signals.js")>("signals");
+const { captureNativeReturn } =
+  isolated.load<typeof import("../proc/observation.js")>("observation");
 const { claimOutcome, readOutcome } = isolated.load<typeof import("../proc/outcome.js")>("outcome");
 const { WorkerProcessBroker } =
   isolated.load<typeof import("../proc/worker-broker.js")>("worker-broker");
@@ -177,7 +179,12 @@ function fixture(
       );
     },
   });
-  supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+  supervisor.createRoot({
+    pid: state.pid,
+    job: state.job,
+    observation: transport,
+    ...state.signals,
+  });
   options.beforeActivation?.(supervisor);
   const { codec, source } = fakeCodec();
   const messages: WorkerProcessMessage[] = [];
@@ -627,7 +634,12 @@ test("broker import and staged release failures finish admission with typed outc
       fences++;
     },
   });
-  supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+  supervisor.createRoot({
+    pid: state.pid,
+    job: state.job,
+    observation: transport,
+    ...state.signals,
+  });
   const messages: WorkerProcessMessage[] = [];
   const client = new WorkerProcessClient({
     transport,
@@ -1351,16 +1363,16 @@ test("worker transfer release follows published commit or failed cancellation co
         },
         release() {
           const state = workerProcessState({ ...f.transport, slot: 2, pid: 3 });
-          expect(controlLoad(state.confirmed, 0)).toBe(1);
-          expect(controlLoad(state.jobConfirmed, 0)).toBe(1);
-          expect(controlLoad(state.jobPending, 0)).toBe(0);
+          expect(controlLoad(state.confirmed, 0)).toBe(0);
+          expect(controlLoad(state.jobConfirmed, 0)).toBe(0);
+          expect(controlLoad(state.jobPending, 0)).toBe(1);
           order.push("failed-release");
         },
       };
     },
   });
   expect(() => failed.spawn(1, request())).toThrow("publication failed");
-  expect(order).toEqual(["commit", "release", "cancel", "failed-release"]);
+  expect(order).toEqual(["commit", "release", "failed-release"]);
 });
 
 test("broker disposal preserves safe confirmation after listener cleanup without awaiting physical termination", async () => {
@@ -1483,6 +1495,7 @@ for (const hostOperation of ["wait", "reap", "childExited", "waitForExit"] as co
     expect(f.supervisor.get(pid)?.result?.code).toBe(7); // Receipt deliberately withheld.
     expectErrno(() => f.supervisor[hostOperation](1, pid), 12);
     expect(f.supervisor.get(pid)).toBeUndefined();
+    await f.flush();
     const replacement = f.root.spawn(1, request({ job: f.root.job }));
     await f.flush();
     expect(replacement).toBeGreaterThan(pid);
@@ -1551,6 +1564,7 @@ test("captured signals, outcomes and confirmation cells cannot write a reused pr
   const old = workerProcessState(oldTransport);
   f.supervisor.exit(oldPid, Number.MAX_SAFE_INTEGER);
   const returned = f.supervisor.reap(1, oldPid);
+  await f.flush();
   const pid = f.root.spawn(1, request({ job: f.root.job }));
   await f.flush();
   const next = workerProcessState(f.broker.get(pid)!);
@@ -1573,6 +1587,7 @@ test("captured signals, outcomes and confirmation cells cannot write a reused pr
 
 function readyForCollection(transport: WorkerProcessTransport): void {
   const state = workerProcessState(transport);
+  captureNativeReturn(transport)();
   claimOutcome(state.signals.outcome, { kind: "exited", code: 0 });
   controlStore(state.confirmed, 0, 1);
   controlStore(state.jobConfirmed, 0, 1);
@@ -1662,6 +1677,7 @@ test("a pending wait resolves its captured immutable result after another collec
   const waiting = f.supervisor.waitForExit(1, pid);
   f.supervisor.exit(pid, 47);
   const selected = f.supervisor.reap(1, pid);
+  await f.flush();
   const replacement = f.root.spawn(1, request({ job: f.root.job }));
   await f.flush();
   const state = workerProcessState(f.broker.get(replacement)!);
@@ -1674,7 +1690,7 @@ test("a pending wait resolves its captured immutable result after another collec
   expect(controlLoad(state.confirmed)).toBe(0);
 });
 
-test("a pending launch stops only its captured old handle after collection and row reuse", async () => {
+test("a pending launch stops only its captured old handle while another slot is used", async () => {
   let finishLaunch!: (handle: ProcessHandle) => void;
   let first = true,
     oldStops = 0,
@@ -1687,7 +1703,7 @@ test("a pending launch stops only its captured old handle after collection and r
     finishLaunch = resolve;
   });
   const f = fixture({
-    capacity: 2,
+    capacity: 3,
     launch() {
       if (first) {
         first = false;
@@ -1732,7 +1748,7 @@ test("a pending launch stops only its captured old handle after collection and r
   expect(f.supervisor.get(replacement)?.result).toBeNull();
 });
 
-test("host waits in an early exit observer release shared capacity before returning", async () => {
+test("host waits in an early exit observer return before native capacity is reusable", async () => {
   let pid = 0,
     replacement = 0;
   const f = fixture({
@@ -1741,7 +1757,7 @@ test("host waits in an early exit observer release shared capacity before return
       supervisor.onChildExit((event) => {
         if (event.pid !== pid) return;
         expect(supervisor.wait(1, pid)?.code).toBe(21);
-        replacement = f.root.spawn(1, request({ job: f.root.job }));
+        expectErrno(() => f.root.spawn(1, request({ job: f.root.job })), ProcessErrno.AGAIN);
       });
     },
   });
@@ -1751,6 +1767,8 @@ test("host waits in an early exit observer release shared capacity before return
   f.supervisor.exit(pid, 21);
   expect(await waiting).toEqual({ kind: "exited", code: 21, status: 21 });
   expect(f.broker.get(pid)).toBeUndefined();
+  await f.flush();
+  replacement = f.root.spawn(1, request({ job: f.root.job }));
   expect(replacement).toBeGreaterThan(pid);
   await f.flush();
   expect(directorySlots(f.transport.directory)).toHaveLength(2);
@@ -1808,7 +1826,7 @@ for (const stopAt of ["seal", "job-retiring", "member-retiring", "member-freed"]
     const original = Atomics.compareExchange;
     const stopped = new Error("collector terminated");
     let interrupted = false;
-    const identityOffset = leaderTransport.slot * 78 * 8 + 32;
+    const identityOffset = leaderTransport.slot * 79 * 8 + 32;
     const groupOffset = group.outcome.byteOffset - 3 * 8;
     Atomics.compareExchange = ((
       array: BigInt64Array,
@@ -1833,7 +1851,7 @@ for (const stopAt of ["seal", "job-retiring", "member-retiring", "member-freed"]
             replacement === packedControl(leader, 3)) ||
           (stopAt === "member-freed" &&
             array.byteOffset === identityOffset &&
-            expected === packedControl(leader, 3) &&
+            expected === packedControl(leader, 4) &&
             replacement === 0n))
       ) {
         interrupted = true;
@@ -2080,7 +2098,7 @@ test("job recovery after partial freeing preserves internal-chain forwarding des
       array instanceof BigInt64Array &&
       array.buffer === root.directory &&
       array.byteOffset === identity &&
-      expected === packedControl(2, 3) &&
+      expected === packedControl(2, 4) &&
       replacement === 0n
     ) {
       stopped = true;
@@ -2451,7 +2469,7 @@ for (const joining of [false, true]) {
         !interrupted &&
         array instanceof BigInt64Array &&
         array.buffer === root.directory &&
-        array.byteOffset === 32 + 78 * 8 &&
+        array.byteOffset === 32 + 79 * 8 &&
         index === 1 &&
         value === packedControl(2, 1)
       ) {
@@ -2927,7 +2945,7 @@ for (const boundary of ["load", "compareExchange"] as const) {
     const launch = Promise.withResolvers<ProcessHandle>();
     const errors: unknown[] = [];
     const f = fixture({
-      capacity: 2,
+      capacity: 3,
       launch: () => launch.promise,
       onError: (error) => errors.push(error),
     });
@@ -2961,11 +2979,12 @@ for (const boundary of ["load", "compareExchange"] as const) {
     try {
       if (boundary === "load") Atomics.load = racingLoad as typeof Atomics.load;
       else Atomics.compareExchange = racingCas as typeof Atomics.compareExchange;
-      launch.reject(new Error("intentional adapter startup rejection"));
+      const rejection = new Error("intentional adapter startup rejection");
+      launch.reject(rejection);
       await f.supervisor.start(pid);
       for (let turn = 0; turn < 12; turn++) await Promise.resolve();
       expect(raced).toBe(true);
-      expect(errors).toEqual([]);
+      expect(errors).toEqual([rejection]);
       const replacement = workerProcessState(
         f.messages.find((message) => message.operation === "spawn")!.transport,
       );
@@ -3067,12 +3086,13 @@ test("retirement publication reports SRCH while its captured job remains live", 
   };
   try {
     Atomics.load = failingLoad as typeof Atomics.load;
-    launch.reject(new Error("intentional adapter startup rejection"));
+    const rejection = new Error("intentional adapter startup rejection");
+    launch.reject(rejection);
     await f.supervisor.start(pid);
     for (let turn = 0; turn < 12; turn++) await Promise.resolve();
     expect(injected).toBe(true);
     expect(group.retirement.valid()).toBe(true);
-    expect(errors).toEqual([error]);
+    expect(errors).toEqual([rejection, error]);
   } finally {
     Atomics.load = load;
     launch.reject(new Error("cleanup"));

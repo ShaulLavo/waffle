@@ -15,6 +15,7 @@ const runners = [
   "publication-cross-tab",
   "search-executor",
   "guest-watch",
+  "filesystem-transport",
   "gpu",
 ];
 const continuity = "workspace-continuity";
@@ -27,11 +28,18 @@ const asyncGpu = "gpu-async";
 const memoryGroup = "memory-group";
 const chromiumOnly = [continuity, rootContinuity, rootControls, networkControls, memoryGroup];
 const socket = "fs-socket";
-const reporterControls = "reporter-controls";
+const notification = "notification";
+const reporterPrepare = "reporter-controls-prepare";
+const reporterChromium = "reporter-controls-chromium";
+const reporterWebkit = "reporter-controls-webkit";
+const reporterControls = [reporterPrepare, reporterChromium, reporterWebkit];
 const processControls = "process-recycling-controls";
 const gpuAsyncControls = "gpu-async-controls";
 function isolatedEngines(runner: string): string {
-  if (runner === reporterControls) return "chromium,webkit";
+  if (runner === notification) return "";
+  if (runner === reporterPrepare) return "--prepare";
+  if (runner === reporterChromium) return "chromium,--prepared";
+  if (runner === reporterWebkit) return "webkit,--prepared";
   if (runner === gpuAsyncControls) return "--ci,chromium,webkit";
   if (runner === socket) return "firefox";
   if (runner === rootControls || runner === processControls || runner === networkControls)
@@ -43,11 +51,12 @@ import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, write
 const names = ${JSON.stringify(runners)};
 const file = process.argv[1].endsWith("/gpu-async-controls-runner.ts") ? "gpu-async-controls" : process.argv[1].includes("/page-runner/") ? "reporter-controls" : process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
 const modes = ${JSON.stringify({ "root-continuity": "root-continuity-controls", "process-recycling": "process-recycling-controls", network: networkControls })};
-const name = process.argv[2] === "--page-controls" ? modes[file] : file;
+const reporter = process.argv[2] === "--prepare" ? "reporter-controls-prepare" : "reporter-controls-" + process.argv[2];
+const name = file === "reporter-controls" ? reporter : process.argv[2] === "--page-controls" ? modes[file] : file;
 const engines = process.argv.slice(2).join(",");
-if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls, processControls, gpuAsyncControls]))}.includes(name)) {
+if (${JSON.stringify(chromiumOnly.concat([socket], reporterControls, [processControls, gpuAsyncControls, notification]))}.includes(name)) {
   appendFileSync(name + ".invocations", engines + "\\n");
-  const expected = ${JSON.stringify(Object.fromEntries(chromiumOnly.concat([socket, reporterControls, processControls, gpuAsyncControls]).map((name) => [name, isolatedEngines(name)])))};
+  const expected = ${JSON.stringify(Object.fromEntries(chromiumOnly.concat([socket], reporterControls, [processControls, gpuAsyncControls, notification]).map((name) => [name, isolatedEngines(name)])))};
   if (engines !== expected[name]) throw Error("isolated engine repeated or changed");
   if (existsSync(name + ".finished")) throw Error("continuity repeated");
   const scratch = process.env.STORAGE_SCRATCH_ROOT;
@@ -60,7 +69,7 @@ if (${JSON.stringify(chromiumOnly.concat([socket, reporterControls, processContr
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
   if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
-  const predecessors = ${JSON.stringify(Object.fromEntries(chromiumOnly.concat([socket, reporterControls, processControls, gpuAsyncControls]).map((name, index, all) => [name, all[index - 1] ?? asyncGpu])))};
+  const predecessors = ${JSON.stringify(Object.fromEntries(chromiumOnly.concat([socket], reporterControls, [processControls, gpuAsyncControls, notification]).map((name, index, all) => [name, all[index - 1] ?? asyncGpu])))};
   const predecessor = predecessors[name];
   if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
   appendFileSync("isolated.order", name + "\\n");
@@ -165,7 +174,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
       await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
     await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
     for (const runner of runners
-      .concat(chromiumOnly, [socket])
+      .concat(chromiumOnly, [socket, notification])
       .filter((name) => name !== rootControls && name !== networkControls))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
@@ -207,14 +216,17 @@ async function matrix(failing: readonly string[]): Promise<void> {
     }
     expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
       [recovery, nativeGpu, "gpu-async:parallel", "gpu-async:webkit"]
-        .concat(chromiumOnly, [socket, reporterControls, processControls, gpuAsyncControls])
+        .concat(chromiumOnly, [socket], reporterControls, [
+          processControls,
+          gpuAsyncControls,
+          notification,
+        ])
         .join("\n") + "\n",
     );
-    for (const runner of chromiumOnly.concat([
-      socket,
-      reporterControls,
+    for (const runner of chromiumOnly.concat([socket], reporterControls, [
       processControls,
       gpuAsyncControls,
+      notification,
     ])) {
       const engine = isolatedEngines(runner);
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe(engine);
@@ -234,11 +246,12 @@ async function matrix(failing: readonly string[]): Promise<void> {
         runners.map((runner) => `${runner}:webkit`),
         [`${asyncGpu}:webkit`],
         chromiumOnly.map((runner) => `${runner}:${isolatedEngines(runner)}`),
+        [`${socket}:firefox`],
+        reporterControls.map((runner) => `${runner}:${isolatedEngines(runner)}`),
         [
-          `${socket}:firefox`,
-          `${reporterControls}:chromium,webkit`,
           `${processControls}:--page-controls,chromium`,
           `${gpuAsyncControls}:--ci,chromium,webkit`,
+          `${notification}:`,
         ],
       );
     expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
@@ -247,7 +260,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
         .map((entry) =>
           entry.startsWith(`${gpuAsyncControls}:`)
             ? "tests/page-runner/gpu-async-controls-runner.ts failed"
-            : entry.startsWith(`${reporterControls}:`)
+            : entry.startsWith("reporter-controls-")
               ? "tests/page-runner/browser-controls-runner.ts failed"
               : entry.startsWith(`${processControls}:`)
                 ? "tests/process-recycling-browser-runner.ts failed"
@@ -333,9 +346,10 @@ test("socket Firefox attachment failure remains blocking in its single invocatio
   await matrix([`${socket}:firefox`]);
 }, 15_000);
 
-test("page-owned reporter controls fail the matrix without changing existing engine groups", async () => {
-  await matrix([`${reporterControls}:chromium,webkit`]);
-}, 15_000);
+for (const runner of reporterControls)
+  test(`page-owned reporter ${runner} failure remains independently blocking`, async () => {
+    await matrix([`${runner}:${isolatedEngines(runner)}`]);
+  }, 15_000);
 
 test("native GPU failure remains blocking in its single supervised Chromium invocation", async () => {
   await matrix([`${nativeGpu}:chromium`]);
@@ -343,7 +357,7 @@ test("native GPU failure remains blocking in its single supervised Chromium invo
 
 async function nativeDiscovery(
   group: "parallel" | "serial",
-  failingRunner: "gpu-native" | "gpu-async" | "gpu-async-controls" | undefined,
+  failingRunner: "gpu-native" | "gpu-async" | "gpu-async-controls" | "notification" | undefined,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "waffle-native-discovery-"));
   let cleanupError: CommandCleanupError | undefined;
@@ -398,6 +412,9 @@ export async function runBrowserSuite(command) {
         ? [["tests/page-runner/gpu-async-controls-runner.ts", "--ci", "chromium", "webkit"]]
         : [],
     );
+    expect(
+      commands.filter((command) => command[0] === "tests/notification-browser-runner.ts"),
+    ).toEqual(group === "serial" ? [["tests/notification-browser-runner.ts"]] : []);
     const failed =
       failingRunner === "gpu-async-controls"
         ? "tests/page-runner/gpu-async-controls-runner.ts"
@@ -454,6 +471,16 @@ test("stock and page-owned GPU async failures remain independently blocking", as
 test("page-owned GPU async controls fail the serial CI group", () =>
   nativeDiscovery("serial", "gpu-async-controls"));
 
+test("notification stock command runs once with its original empty engine arguments", async () => {
+  await matrix([]);
+}, 15_000);
+
+test("notification stock command failure remains blocking after the other commands", async () => {
+  await matrix([`${notification}:`]);
+}, 15_000);
+
+test("notification failure exits only its designated serial CI group nonzero", () =>
+  nativeDiscovery("serial", "notification"));
 test("network controls fail independently without repeating the complete positive matrix", async () => {
   await matrix([`${networkControls}:--page-controls,chromium`]);
 }, 15_000);

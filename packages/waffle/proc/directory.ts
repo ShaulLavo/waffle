@@ -38,7 +38,7 @@ import {
 } from "./intrinsics.ts";
 
 const HEADER_BYTES = 32;
-const PROCESS_WORDS = 78;
+const PROCESS_WORDS = 79;
 const JOB_WORDS = 10;
 export interface DirectoryHandle {
   readonly directory: SharedArrayBuffer;
@@ -314,7 +314,15 @@ export function reserveDirectoryProcess(
   jobSlot?: number,
   foreground = true,
   jobLifetime: JobLifetime = "independent",
-): DirectoryHandle {
+): DirectoryHandle & { readonly kind: "directory"; readonly lifetime: SharedArrayBuffer } {
+  const lifetime = allocateSharedControl(16);
+  const observation = new BigInt64ArrayConstructor(lifetime);
+  atomicsStore(
+    observation,
+    0,
+    atomicsLoad(new BigInt64ArrayConstructor(handle.directory, 8, 1), 0),
+  );
+  atomicsStore(observation, 1, packedControl(pid, 1));
   let created: ReturnType<typeof allocate> | undefined;
   let reserved: ReturnType<typeof allocate> | undefined;
   let joined: TaggedCells | undefined;
@@ -359,7 +367,7 @@ export function reserveDirectoryProcess(
     // No fallible allocation remains once other workers can join the published job.
     if (created) atomicsStore(created.raw, 0, packedControl(job, 1));
     atomicsStore(raw, 0, packedControl(pid, 1));
-    return { directory: handle.directory, slot: reserved.slot, pid };
+    return { kind: "directory", directory: handle.directory, slot: reserved.slot, pid, lifetime };
   } catch (error) {
     if (reserved) atomicsCompareExchange(reserved.raw, 0, packedControl(pid, 2), 0n);
     if (created) atomicsCompareExchange(created.raw, 0, packedControl(job, 2), 0n);
@@ -516,7 +524,8 @@ function finishCollectionStep(
     }
     if (changed) continue;
     // No positive link or frozen forwarding dependency can now introduce a new link to pid.
-    atomicsCompareExchange(raw, 0, retiring, 0n);
+    atomicsCompareExchange(raw, 0, retiring, packedControl(pid, 4));
+    freeReturnedProcess(raw, pid);
     wakeDirectory(directory);
     return;
   }
@@ -672,7 +681,9 @@ function finishDirectoryJob(directory: SharedArrayBuffer, slot: number, job: num
     }
   });
   mapForEach(members, (member, pid) => {
-    atomicsCompareExchange(row(directory, member.slot), 0, packedControl(pid, 3), 0n);
+    const raw = row(directory, member.slot);
+    atomicsCompareExchange(raw, 0, packedControl(pid, 3), packedControl(pid, 4));
+    freeReturnedProcess(raw, pid);
   });
   atomicsCompareExchange(group, 0, retiring, 0n);
   wakeDirectory(directory);
@@ -733,4 +744,32 @@ function retireOrphans(handle: DirectoryHandle): void {
       if (!isCollectedProcess(error)) throw error;
     }
   }
+}
+
+/** Exact captured storage, not ordinary live process authority. */
+export function directoryObservationLocation(handle: DirectoryHandle): {
+  readonly identity: BigInt64Array;
+  readonly outcome: BigInt64Array;
+  readonly nativeReturn: BigInt64Array;
+  readonly domain: bigint;
+} {
+  const raw = row(handle.directory, handle.slot);
+  return {
+    identity: typedArraySubarray(raw, 0, 1),
+    outcome: typedArraySubarray(raw, 5, 6),
+    nativeReturn: typedArraySubarray(raw, 78, 79),
+    domain: atomicsLoad(new BigInt64ArrayConstructor(handle.directory, 8, 1), 0),
+  };
+}
+function freeReturnedProcess(raw: BigInt64Array, pid: number): void {
+  if (atomicsLoad(raw, 78) !== packedControl(pid, 1)) return;
+  atomicsCompareExchange(raw, 0, packedControl(pid, 4), 0n);
+}
+/** Called only after the stable observation token has expired. */
+export function returnDirectoryProcess(handle: DirectoryHandle): void {
+  const raw = row(handle.directory, handle.slot);
+  if (Number(atomicsLoad(raw, 0) >> 32n) !== handle.pid) return;
+  atomicsCompareExchange(raw, 78, packedControl(handle.pid, 0), packedControl(handle.pid, 1));
+  freeReturnedProcess(raw, handle.pid);
+  wakeDirectory(handle.directory);
 }

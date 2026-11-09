@@ -299,6 +299,7 @@ function fixture() {
   const names = ["live", "committed", "terminal", "drained", "stopped"];
   const serials = [5, 9, 12, 15, 18];
   const captures = [undefined, guest.committed, guest.terminal, guest.drained, guest.full];
+  const terminal = snapshot(11);
   return {
     kind: "payload-pressure",
     token: "payload",
@@ -319,7 +320,8 @@ function fixture() {
     controlExit: stop(10, controlGuest.text, 2, 1, 1),
     committedGuest: guest.committed,
     committed: snapshot(8),
-    terminal: snapshot(11),
+    refusal: terminal,
+    terminal,
     drained: snapshot(14),
     stop: stop(30, guest.full.text, 17, 2, 2),
     phases: names.map((kind, index) => ({
@@ -348,19 +350,24 @@ function fixture() {
   };
 }
 function services(value: ReturnType<typeof fixture>) {
-  return [
-    value.uncovered,
-    value.controlExit.service,
-    value.controlCoverage,
-    value.observed,
-    value.firstReady,
-    value.committed,
-    value.terminal,
-    value.drained,
-    value.stop.service,
-    value.peerExit.service,
-    value.final,
-  ].concat(value.phases.flatMap((phase) => [phase.before, phase.service]));
+  return Array.from(
+    new Set(
+      [
+        value.uncovered,
+        value.controlExit.service,
+        value.controlCoverage,
+        value.observed,
+        value.firstReady,
+        value.committed,
+        value.refusal,
+        value.terminal,
+        value.drained,
+        value.stop.service,
+        value.peerExit.service,
+        value.final,
+      ].concat(value.phases.flatMap((phase) => [phase.before, phase.service])),
+    ),
+  );
 }
 function rejects(change: (value: ReturnType<typeof fixture>) => void, reason: RegExp) {
   const value = fixture();
@@ -770,4 +777,73 @@ test("the original reply tail cannot regress after its admitted C drain", () => 
     reply.tail = value.terminal.owners[2]!.replies.tail;
     reply.used = reply.head - reply.tail;
   }, /Late work published to retired victim rings/);
+});
+
+function beforeConnectionSettlement() {
+  const value = fixture();
+  for (const service of services(value)) service.serial *= 2;
+  value.refusal = structuredClone(value.terminal);
+  value.refusal.serial--;
+  value.refusal.at--;
+  value.refusal.responseId = "original-refusal-before-service-turn";
+  value.refusal.attempts[2]!.status = 1;
+  value.refusal.attempts[2]!.reason = 0;
+  return value;
+}
+test("raw native refusal precedes connection settlement without erasing either record", () => {
+  const value = beforeConnectionSettlement();
+  expect(value.refusal.attempts[2]).toMatchObject({ status: 1, reason: 0, arenaTerminal: 3 });
+  expect(value.terminal.attempts[2]).toMatchObject({ status: -48, reason: 3, arenaTerminal: 3 });
+  expect(validatePayloadPressureResult(value).hardwareQualified).toBe(false);
+  expect(value.refusal.attempts[2]!.reason).toBe(0);
+});
+test("a refusal already settled on arrival needs no second invented checkpoint", () => {
+  const value = fixture();
+  expect(value.refusal).toBe(value.terminal);
+  expect(validatePayloadPressureResult(value).hardwareQualified).toBe(false);
+});
+test("historical results cannot acquire a missing raw refusal by fallback", () => {
+  const value = fixture();
+  Reflect.deleteProperty(value, "refusal");
+  expect(() => validatePayloadPressureResult(value)).toThrow(/Expected qualification record/);
+});
+for (const [status, reason] of [
+  [1, 3],
+  [-64, 3],
+  [-48, 0],
+])
+  test(`raw refusal rejects an unproved publication pair ${status}/${reason}`, () => {
+    const value = beforeConnectionSettlement();
+    Object.assign(value.refusal.attempts[2]!, { status, reason });
+    expect(() => validatePayloadPressureResult(value)).toThrow(
+      /original refusal control publication differs/,
+    );
+  });
+test("the settled terminal checkpoint still requires exact original mirrors", () => {
+  const value = beforeConnectionSettlement();
+  Object.assign(value.terminal.attempts[2]!, { status: 1, reason: 0 });
+  expect(() => validatePayloadPressureResult(value)).toThrow(
+    /original control\/ring\/arena reason differs/,
+  );
+});
+test("an intermediate native refusal cannot permit later command publication", () => {
+  const value = beforeConnectionSettlement();
+  for (const service of services(value).filter(
+    (service) => service.serial >= value.terminal.serial,
+  )) {
+    service.owners[2]!.commands.head += 8;
+    service.owners[2]!.commands.tail += 8;
+  }
+  expect(() => validatePayloadPressureResult(value)).toThrow(
+    /Late work published to retired victim rings/,
+  );
+});
+test("a copied checkpoint cannot change its raw refusal under the same serial", () => {
+  const value = fixture();
+  value.refusal = structuredClone(value.terminal);
+  value.refusal.attempts[2]!.status = 1;
+  value.refusal.attempts[2]!.reason = 0;
+  expect(() => validatePayloadPressureResult(value)).toThrow(
+    /same refusal\/settlement checkpoint changed/,
+  );
 });

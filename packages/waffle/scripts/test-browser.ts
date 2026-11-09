@@ -6,6 +6,7 @@ process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 const gpuRunner = "tests/gpu-browser-runner.ts";
 const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
+const reporterControls = "tests/page-runner/browser-controls-runner.ts";
 const runners = [
   "tests/browser-navigation-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
@@ -17,6 +18,7 @@ const runners = [
   "tests/publication-cross-tab-browser-runner.ts",
   "tests/search-executor-browser-runner.ts",
   "tests/guest-watch-browser-runner.ts",
+  "tests/filesystem-transport-browser-runner.ts",
   gpuRunner,
 ];
 const parallel = [
@@ -46,7 +48,9 @@ const serial = runners
     [[{ runner: "tests/network-browser-runner.ts", engines: ["--page-controls", "chromium"] }]],
     [[{ runner: "tests/memory-group-browser-runner.ts", engines: ["chromium"] }]],
     [[{ runner: "tests/fs-socket-browser-runner.ts", engines: ["firefox"] }]],
-    [[{ runner: "tests/page-runner/browser-controls-runner.ts", engines: ["chromium", "webkit"] }]],
+    [[{ runner: reporterControls, engines: ["--prepare"] }]],
+    [[{ runner: reporterControls, engines: ["chromium", "--prepared"] }]],
+    [[{ runner: reporterControls, engines: ["webkit", "--prepared"] }]],
     [
       [
         {
@@ -63,6 +67,7 @@ const serial = runners
         },
       ],
     ],
+    [[{ runner: "tests/notification-browser-runner.ts", engines: [] }]],
   );
 // CI runs the two groups on separate runners; each keeps its own order.
 const group = process.env.WAFFLE_BROWSER_GROUP;

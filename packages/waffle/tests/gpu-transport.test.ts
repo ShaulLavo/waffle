@@ -1,3 +1,4 @@
+import { serviceAccess } from "./fixtures/gpu/service-access.js";
 import { describe, expect, test } from "bun:test";
 import { GPU_LIMITS, GPU_TERMINAL, ServiceCredit } from "../browser/gpu/protocol.ts";
 import { GpuConnection } from "../browser/gpu/scheduler.ts";
@@ -300,7 +301,10 @@ describe("logical GPU transport over the real RecordRing", () => {
     const credit = new ServiceCredit();
     expect(
       () =>
-        new GpuConnection(ring(128), ring(256, 16), new RecordingTarget(), credit, { handles: 1 }),
+        new GpuConnection(ring(128), ring(256, 16), new RecordingTarget(), credit, {
+          access: serviceAccess(),
+          handles: 1,
+        }),
     ).toThrow("handle limit");
     expect(credit.used).toBe(0);
   });

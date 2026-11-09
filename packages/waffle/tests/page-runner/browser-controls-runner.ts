@@ -103,14 +103,23 @@ export async function runControlProcess(command: string[], resultPath: string): 
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const resultIndex = args.indexOf("--result");
+  const engines = resultIndex < 0 ? args : args.slice(0, resultIndex);
+  const configuredPath =
+    process.env.BROWSER_CONTROLS_RESULT ??
+    resolve(".browser-controls", `results-${crypto.randomUUID()}.json`);
+  const phase = engines.includes("--prepare")
+    ? "prepare"
+    : engines.includes("--prepared")
+      ? engines[0]
+      : undefined;
   const resultPath =
     resultIndex < 0
-      ? (process.env.BROWSER_CONTROLS_RESULT ??
-        resolve(".browser-controls", `results-${crypto.randomUUID()}.json`))
+      ? phase
+        ? `${configuredPath}.${phase}.json`
+        : configuredPath
       : args[resultIndex + 1];
   if (!resultPath || !isAbsolute(resultPath))
     throw new Error("Use chromium webkit --result /absolute/control-results.json");
-  const engines = resultIndex < 0 ? args : args.slice(0, resultIndex);
   process.exitCode = await runControlProcess(
     [process.execPath, join(import.meta.dir, "browser-controls-suite.ts")].concat(engines),
     resultPath,

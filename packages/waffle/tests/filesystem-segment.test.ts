@@ -12,7 +12,7 @@ import {
 import { SHARED_SEGMENT_BYTES } from "../fs/shared";
 import { CONNECTION_SHARED_BYTES } from "../fs/protocol";
 
-import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
+import { DATA_PAGE_BYTES as PAGE, DATA_PAGES_PER_SEGMENT } from "../fs/storage-geometry";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -182,7 +182,8 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
     identity.segments,
   );
   const page = PAGE;
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: page * 1023, mtime: 1 });
+  const held = DATA_PAGES_PER_SEGMENT - 1;
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: page * held, mtime: 1 });
   const wrapper = identity.segments[0] as SharedArrayBuffer & { grow(size: number): void };
   const original = wrapper.grow;
   wrapper.grow = () => {
@@ -196,10 +197,10 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
       failure = error;
     }
     expect(failure).toMatchObject({ errno: 51 });
-    expect(Array.from(state.owners).filter((owner) => owner !== 0)).toHaveLength(1023);
+    expect(Array.from(state.owners).filter((owner) => owner !== 0)).toHaveLength(held);
     expect(state.resources()).toMatchObject({
       poolBytes: SHARED_SEGMENT_BYTES,
-      usedBytes: page * 1023,
+      usedBytes: page * held,
     });
     expect(wrapper.byteLength).toBe(0);
   } finally {
@@ -208,7 +209,7 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
   state.register(2, { kind: "file", ino: 3, nlink: 1, size: page * 2, mtime: 1 });
   expect(state.resources()).toMatchObject({
     poolBytes: SHARED_SEGMENT_BYTES * 2,
-    usedBytes: page * 1025,
+    usedBytes: page * (held + 2),
   });
   expect(state.takeNewSegments()).toEqual([]);
 });

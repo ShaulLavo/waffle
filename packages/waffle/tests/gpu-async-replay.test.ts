@@ -1,3 +1,4 @@
+import { serviceAccess } from "./fixtures/gpu/service-access.js";
 import { expect, test } from "bun:test";
 import { GpuConnection } from "../browser/gpu/scheduler.ts";
 import { gpuObjectKinds, gpuStream } from "../browser/gpu/generated/tables.ts";
@@ -121,6 +122,7 @@ function setup(mapped = false, heapLimit?: number) {
     replies = ring(65536, 16),
     credit = new ServiceCredit(heapLimit);
   const connection = new GpuConnection(commands, replies, { root }, credit, {
+    access: serviceAccess(),
     arena: new Uint8Array(backing),
   });
   const publish = (name: string, input: unknown) => send(connection, command(name, input));

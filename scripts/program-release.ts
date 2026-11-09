@@ -1,3 +1,4 @@
+import { releaseDownload } from "../tools/ci-release-download.ts";
 // Stages, packs and verifies the GitHub release-tarball closure of the program families.
 // Workspace edges become immutable release-asset URLs inside disposable staging copies only;
 // the source checkout is never modified. See docs/program-release.md.
@@ -675,7 +676,7 @@ export async function readRuntime(
 async function fetchOk(url: string, control: Control) {
   const deadline = AbortSignal.timeout(control.timeoutMs);
   const signal = control.signal ? AbortSignal.any([control.signal, deadline]) : deadline;
-  const response = await fetch(url, { signal });
+  const response = await releaseDownload(url, { signal });
   assert.ok(response.ok, `GET ${url}: ${response.status}`);
   return response;
 }

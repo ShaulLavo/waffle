@@ -1,3 +1,4 @@
+import { releaseDownload } from "../tools/ci-release-download.ts";
 // Rebinds published program-family tarballs to a new runtime without rebuilding guests.
 // The source release is admitted by its historical checker; only package.json is rewritten.
 import assert from "node:assert/strict";
@@ -176,7 +177,7 @@ function archivePath(base: string, filename: string): string {
 async function fetchBytes(url: string, signal: AbortSignal | undefined, timeoutMs: number) {
   const deadline = AbortSignal.timeout(timeoutMs);
   const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
-  const response = await fetch(url, { signal: combined });
+  const response = await releaseDownload(url, { signal: combined });
   assert.ok(response.ok, `GET ${url}: ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }

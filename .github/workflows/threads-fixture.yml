@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/threads-fixture.yml"
+      - ".github/actions/release-downloads/**"
+      - ".github/actions/save-release-downloads/**"
+      - ".github/actions/setup-tools/**"
+      - "tools/ci-*.ts"
       - "rust-toolchain.toml"
       - "packages/waffle/rust-toolchain.toml"
       - "packages/waffle/scripts/build-thread-fixture.ts"
@@ -15,6 +19,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/threads-fixture.yml"
+      - ".github/actions/release-downloads/**"
+      - ".github/actions/save-release-downloads/**"
+      - ".github/actions/setup-tools/**"
+      - "tools/ci-*.ts"
       - "rust-toolchain.toml"
       - "packages/waffle/rust-toolchain.toml"
       - "packages/waffle/scripts/build-thread-fixture.ts"
@@ -30,6 +38,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   producer:
     if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
@@ -37,7 +48,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
         with:
           bun-version: "1.4.4"
       - uses: actions/cache@v4
@@ -66,3 +78,5 @@ jobs:
       - name: Report the compiler cache result
         if: always()
         run: echo "threads toolchain cache-hit=${{ steps.toolchain.outputs.cache-hit }}"
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

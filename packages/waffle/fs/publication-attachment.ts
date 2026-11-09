@@ -20,7 +20,9 @@ import { parseFileIdentity } from "./file-identity.js";
 import {
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
+  Uint8ArrayConstructor,
   typedArraySet,
+  typedArraySubarray,
   atomicsLoad,
   atomicsStore,
   sharedArrayBufferByteLength,
@@ -1033,11 +1035,21 @@ class WorkspaceBridge {
       integer(data.generation),
       integer(data.offset),
       integer(data.length),
+      data.payload,
     );
+    if (this.pending.has(id)) throw new FilesystemError(28, "duplicate filesystem request");
     if (this.stopping || this.endpoint.kind === "cleanup-only") return this.refuse(id, buffer, 11);
-    if (buffer.length > requestBound || this.pending.size >= 16) return this.refuse(id, buffer, 6);
+    if (
+      buffer.length > requestBound ||
+      HEADER + buffer.privateBytes > requestBound ||
+      this.pending.size >= 16
+    )
+      return this.refuse(id, buffer, 6);
     const abort = new AbortController();
-    const joined = this.execute(id, buffer, abort.signal)
+    const input = buffer.privateBytes
+      ? new Uint8ArrayConstructor(data.payload as ArrayBuffer)
+      : requestBytes(buffer);
+    const joined = this.execute(id, buffer, input, abort.signal)
       .catch((error: unknown) =>
         this.fail(id, buffer, error instanceof FilesystemError ? error.errno : 29),
       )
@@ -1181,13 +1193,13 @@ class WorkspaceBridge {
   private async execute(
     id: number,
     buffer: FilesystemRequestBuffer,
+    requestInput: Uint8Array,
     signal: AbortSignal,
   ): Promise<void> {
-    const lengths = requestLengths(buffer);
+    const lengths = requestLengths(buffer, requestInput);
     const inputLength = integer(lengths.inputLength, 8192),
       dataLength = integer(lengths.dataLength, PAGE);
-    if (inputLength + dataLength > buffer.length - HEADER) throw new FilesystemError(28);
-    const input: unknown = unpack(requestBytes(buffer).subarray(0, inputLength));
+    const input: unknown = unpack(typedArraySubarray(requestInput, 0, inputLength));
     const call = record(input),
       operation = text(call.operation);
     if (!Array.isArray(call.args)) throw new FilesystemError(28);
@@ -1232,8 +1244,8 @@ class WorkspaceBridge {
         request: {
           operation: actualOperation,
           args: actualArgs,
-          input: new Uint8Array(
-            requestBytes(buffer).subarray(inputLength, inputLength + dataLength),
+          input: new Uint8ArrayConstructor(
+            typedArraySubarray(requestInput, inputLength, inputLength + dataLength),
           ),
           id: mutationId,
         },

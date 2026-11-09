@@ -1,3 +1,4 @@
+import { releaseDownload, saveReleaseResponse } from "../../../tools/ci-release-download.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
@@ -16,17 +17,9 @@ const spec = context.specification;
 const qualification = join(directory, "qualification");
 await mkdir(join(qualification, "tests"), { recursive: true });
 async function download(url: string, path: string): Promise<void> {
-  execFileSync("curl", [
-    "--fail",
-    "--silent",
-    "--show-error",
-    "--location",
-    "--max-time",
-    "120",
-    url,
-    "--output",
-    path,
-  ]);
+  const response = await releaseDownload(url, { timeoutMs: 120_000 });
+  assert.ok(response.ok, `Release download failed: HTTP ${response.status}`);
+  await saveReleaseResponse(path, response);
 }
 if (spec.variant === "native") {
   const runtime = join(directory, "waffle.tgz");
