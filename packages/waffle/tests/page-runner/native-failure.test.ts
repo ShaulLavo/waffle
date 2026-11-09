@@ -169,20 +169,10 @@ for (const cleanupFails of [false, true]) {
     };
     try {
       root = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "native-facts-"));
-      let reads = 0;
+      const reads = { value: 0 };
       const result = await runPageSuite(
         adapter,
-        (scratch, observeFailure) => {
-          const driver = new SafariDriver(udid, scratch, (facts) => {
-            observeFailure(
-              reentrantFacts(facts, observeFailure, () => {
-                reads++;
-              }),
-            );
-          });
-          driver.start = (signal) => driver.startControl(fixture.server.url.origin, signal);
-          return driver;
-        },
+        (scratch, observeFailure) => reentrantDriver(fixture, scratch, observeFailure, reads),
         { resultPath: join(root, "result.json"), scratchRoot: root, port: "ephemeral" },
       );
       expect(result.exit).toBe(2);
@@ -192,7 +182,7 @@ for (const cleanupFails of [false, true]) {
         { group: "list", category: "driver-lost", detail: "heartbeat-lost" },
         { group: "list", category: "driver-lost", detail: "Error: heartbeat-lost" },
       ]);
-      expect(reads).toBe(1);
+      expect(reads.value).toBe(1);
       const facts = result.firstCommandFailure;
       expect(facts).toMatchObject({
         client: "direct",
@@ -228,6 +218,23 @@ for (const cleanupFails of [false, true]) {
     expect(fixture.server.pendingRequests).toBe(0);
     await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
   });
+}
+
+function reentrantDriver(
+  fixture: ReturnType<typeof controlServer>,
+  scratch: string,
+  observeFailure: (facts: NativeCommandFailure) => void,
+  reads: { value: number },
+): SafariDriver {
+  const driver = new SafariDriver(udid, scratch, (facts) => {
+    observeFailure(
+      reentrantFacts(facts, observeFailure, () => {
+        reads.value++;
+      }),
+    );
+  });
+  driver.start = (signal) => driver.startControl(fixture.server.url.origin, signal);
+  return driver;
 }
 
 function reentrantFacts(
