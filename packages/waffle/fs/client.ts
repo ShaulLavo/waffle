@@ -1061,16 +1061,21 @@ export class FilesystemClient implements FileSystem {
     const pending = mapGet(this.ioPreparations, handle);
     if (pending?.kind !== "read") return;
     const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    if (pending.offset !== offset || pending.length < Math.min(PAGE, length)) {
+      this.cancelIO(handle);
+      return;
+    }
+    const completion = pending.completion;
+    // While the reply is outstanding this touches no shared state. Sampling the revision enters
+    // a counted section, and leaving one bumps the very signal an event-loop caller awaits: it
+    // would wake at once, retry, and never let the reply be delivered.
+    if (!completion.ready) return -6;
     if (
-      pending.offset !== offset ||
-      pending.length < Math.min(PAGE, length) ||
       pending.revision !== this.shared.revision(handle, true, this.revoked, this.connection.owner)
     ) {
       this.cancelIO(handle);
       return;
     }
-    const completion = pending.completion;
-    if (!completion.ready) return -6;
     mapDelete(this.ioPreparations, handle);
     try {
       const count = completion.cells[2]!;

@@ -1,16 +1,23 @@
 import { afterEach, expect, test } from "bun:test";
+import { DescriptorTable } from "../core/descriptors";
 import {
   MissingDataError,
+  PersistentBackend,
   SharedFilesystemState,
   createFilesystemIdentity,
   reapFilesystem,
   revokeFilesystem,
   type FilesystemClient,
 } from "../fs";
+import { DirtyCapacityError } from "../fs/dirty-admission";
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { State } from "../fs/protocol";
+import type { PersistenceBatch, PersistedIndex, StorageBackend } from "../fs/storage";
+import { CommandStdio } from "../proc/command-stdio";
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { requestBudgetBytes, requestMemorySections } from "../fs/request-memory";
 import { SLOT_WORDS } from "../fs/shared";
-import { MAX_FILES } from "../fs/storage-geometry";
+import { DATA_PAGES_PER_SEGMENT, MAX_FILES } from "../fs/storage-geometry";
 import {
   DATA_PAGE_BYTES as PAGE,
   SHARED_SEGMENT_BYTES,
@@ -22,6 +29,7 @@ import {
   resolveNode,
   settle,
   unattachedClient,
+  unattachedConnection,
   untilReady,
   withoutWaiting,
   type Cleanup,
@@ -44,7 +52,10 @@ const file = (ino: number, size: number) => ({
 /** `/target` lives wholly in segment 1, which only the owner and yielding clients hold. Its
  * capacity is `capacity` pages, so a write inside that needs no growth first. */
 async function target(rig: Rig, pages = 2, capacity = pages): Promise<number> {
-  await fillFirstSegment(rig);
+  // A publication bounds each input, so there the first segment is marked taken instead of
+  // filled by one 16 MiB write. Either way the allocator's next page is the first of segment 1.
+  if (rig.backend.shared.publication) rig.backend.shared.owners.fill(1, 0, DATA_PAGES_PER_SEGMENT);
+  else await fillFirstSegment(rig);
   await rig.client.asyncCall("writeFile", ["/target"], new Uint8Array(PAGE * pages).fill(0x11));
   const node = await resolveNode(rig.client, "target");
   rig.client.retain(node);
@@ -599,4 +610,296 @@ test("a late or repeated settle of an old stage cannot touch a newer stage, newe
   expect(owner.snapshot(reused)!.data.every((byte) => byte === 0x66)).toBe(true);
   expect(owner.revision(reused)).toBe(reusedRevision);
   expect(owner.isResident(reused)).toBe(true);
+});
+
+/** The page's command stdio over one file, on a connection that lacks the file's segment. */
+async function commandStdio(rig: Rig, node: number) {
+  const descriptors = new DescriptorTable();
+  cleanups.push(() => descriptors.dispose());
+  const rights = (1n << 29n) - 1n;
+  const input = descriptors.open(
+    { kind: "file", handle: node, offset: 0, append: false },
+    rights,
+    0n,
+  );
+  const output = descriptors.open(
+    { kind: "file", handle: node, offset: 0, append: false },
+    rights,
+    0n,
+  );
+  descriptors.inherit(0, descriptors.get(input)!);
+  descriptors.inherit(1, descriptors.get(output)!);
+  const abort = new AbortController();
+  const stdio = new CommandStdio(descriptors, abort.signal, unattachedConnection(rig));
+  const fs = (stdio as unknown as { filesystem: FilesystemClient }).filesystem;
+  fs.retain(await resolveNode(fs, "target"));
+  return { stdio, abort, fs };
+}
+
+test("the page's command stdio completes an unattached write and read while its event loop stays live", async () => {
+  const rig = createRig(3, cleanups);
+  const node = await target(rig);
+  const owner = rig.backend.shared;
+  const before = owner.revision(node)!;
+  const { stdio, fs } = await commandStdio(rig, node);
+  const hold = holdOwner(rig.service, ["stageWrite"]);
+  let finished = false;
+  // The page cannot block. Its write awaits readiness on the shared signal instead.
+  const write = withoutWaiting(() => stdio.stdout.write(new Uint8Array(PAGE).fill(0x72))).then(
+    () => {
+      finished = true;
+    },
+  );
+  await hold.entered;
+  await settle();
+  expect(finished).toBe(false);
+  expect(owner.revision(node)).toBe(before);
+  hold.release();
+  await write;
+  expect(owner.revision(node)).toBe(before + 1);
+  expect(fs.shared.segments).toHaveLength(1);
+  // Reading back through stdin goes through the owner too, after the write was applied.
+  const read = await stdio.stdin.read();
+  expect(read).toHaveLength(PAGE * 2);
+  expect(read!.subarray(0, PAGE).every((byte) => byte === 0x72)).toBe(true);
+  expect(read!.subarray(PAGE).every((byte) => byte === 0x11)).toBe(true);
+  await stdio.settle();
+  expect((await readFile(rig, "/target"))[0]).toBe(0x72);
+});
+
+test("aborting the page's command stdio rejects a staged write and leaves no effect", async () => {
+  const rig = createRig(3, cleanups);
+  const node = await target(rig);
+  const owner = rig.backend.shared;
+  const before = owner.revision(node)!;
+  // Abort while the owner still holds the preparation.
+  const early = await commandStdio(rig, node);
+  const hold = holdOwner(rig.service, ["stageWrite"]);
+  const cancelled = early.stdio.stdout
+    .write(new Uint8Array(PAGE).fill(0x73))
+    .catch((error: { code?: string }) => error.code);
+  await hold.entered;
+  early.abort.abort();
+  expect(await cancelled).toBe("CANCELED");
+  hold.release();
+  await early.stdio.settle();
+  await settle();
+  expect(owner.revision(node)).toBe(before);
+  // Abort after the preparation finished, before any retry could commit it.
+  const late = await commandStdio(rig, node);
+  expect(late.fs.tryWrite(node, [new Uint8Array(PAGE).fill(0x74)], 0)).toBe(-6);
+  await untilReady(late.fs, node, true);
+  late.abort.abort();
+  expect(
+    await late.stdio.stdout.write(new Uint8Array(PAGE).fill(0x74)).catch((error) => error.code),
+  ).toBe("CANCELED");
+  await late.stdio.settle();
+  await settle();
+  expect(owner.revision(node)).toBe(before);
+  expect((await readFile(rig, "/target")).every((byte) => byte === 0x11)).toBe(true);
+  expect(owner.isResident(node)).toBe(true);
+});
+
+test("a staged write publishes exactly once, and reader-pinned pages are relocated by the owner", async () => {
+  const rig = createRig(3, cleanups, { publication: { workspace: true } });
+  const node = await target(rig, 4);
+  const owner = rig.backend.shared;
+  const domain = owner.publication!;
+  const { fs } = await unattachedClient(rig, "target", cleanups);
+  const published = () => {
+    const page = domain.changes(cut, domain.limits.logBytes);
+    if (page.kind !== "changes") throw new Error(page.kind);
+    return page.publications.flatMap((entry) => entry.changes);
+  };
+  let cut = domain.cut();
+  const first = new Uint8Array(PAGE).fill(0x81);
+  expect(withoutWaiting(() => fs.tryWrite(node, [first], 0))).toBe(-6);
+  await untilReady(fs, node, true);
+  // Preparation published nothing and left the admission open for no one.
+  expect(domain.cut().generation).toBe(cut.generation);
+  expect(withoutWaiting(() => fs.tryWrite(node, [first], 0))).toBe(PAGE);
+  expect(domain.cut().generation).toBe(cut.generation + 1);
+  const effects = published();
+  expect(effects.map((effect) => effect.kind)).toEqual(["bytes", "metadata"]);
+  expect(effects[0]).toMatchObject({ kind: "bytes", offset: 0, size: PAGE * 4, bytes: first });
+  await settle();
+  expect(domain.cut().generation).toBe(cut.generation + 1);
+  expect((await readFile(rig, "/target"))[0]).toBe(0x81);
+  // A reader holds the second page. The owner copies it aside while it prepares the stage, so
+  // the commit never writes under the reader, and the pinned version stays readable.
+  const pinned = owner.retainVersionPages(node, PAGE, PAGE);
+  cut = domain.cut();
+  const second = new Uint8Array(PAGE).fill(0x82);
+  expect(fs.tryWrite(node, [second], PAGE)).toBe(-6);
+  await untilReady(fs, node, true);
+  expect(fs.tryWrite(node, [second], PAGE)).toBe(PAGE);
+  expect(pinned.read(PAGE, 4)).toEqual(new Uint8Array(4).fill(0x11));
+  // A pin that arrives between the preparation and the retry sends the write back once.
+  const third = new Uint8Array(PAGE).fill(0x83);
+  expect(fs.tryWrite(node, [third], PAGE * 2)).toBe(-6);
+  await untilReady(fs, node, true);
+  const late = owner.retainVersionPages(node, PAGE * 2, PAGE);
+  const generation = domain.cut().generation;
+  expect(withoutWaiting(() => fs.tryWrite(node, [third], PAGE * 2))).toBe(-6);
+  expect(domain.cut().generation).toBe(generation);
+  await untilReady(fs, node, true);
+  expect(fs.tryWrite(node, [third], PAGE * 2)).toBe(PAGE);
+  expect(late.read(PAGE * 2, 4)).toEqual(new Uint8Array(4).fill(0x11));
+  expect(published().filter((effect) => effect.kind === "bytes")).toHaveLength(2);
+  const stored = await readFile(rig, "/target");
+  expect([stored[0], stored[PAGE], stored[PAGE * 2], stored[PAGE * 3]]).toEqual([
+    0x81, 0x82, 0x83, 0x11,
+  ]);
+  const used = owner.resources().usedBytes;
+  pinned.release();
+  late.release();
+  expect(owner.resources().usedBytes).toBe(used - PAGE * 2);
+});
+
+test("dirty admission refuses a commit with EAGAIN and keeps the stage for the retry", async () => {
+  const rig = createRig(3, cleanups);
+  const node = await target(rig);
+  const { fs } = await unattachedClient(rig, "target", cleanups);
+  const owner = rig.backend.shared;
+  const before = owner.revision(node)!;
+  const bytes = new Uint8Array(PAGE).fill(0x91);
+  await stage(fs, node, bytes, 0);
+  const admission = fs.shared.dirtyAdmission;
+  const checkFile = admission.checkFile;
+  let refusals = 0;
+  admission.checkFile = () => {
+    refusals++;
+    throw new DirtyCapacityError();
+  };
+  const outstanding = fs.completions.size;
+  try {
+    expect(withoutWaiting(() => fs.tryWrite(node, [bytes], 0))).toBe(-6);
+  } finally {
+    admission.checkFile = checkFile;
+  }
+  // Refused before the commit point: nothing changed and nothing new was submitted.
+  expect(refusals).toBe(1);
+  expect(fs.completions.size).toBe(outstanding);
+  expect(owner.revision(node)).toBe(before);
+  expect(awaitsOwner({ fs: rig.client, node })).toBe(false);
+  expect(withoutWaiting(() => fs.tryWrite(node, [bytes], 0))).toBe(PAGE);
+  expect(owner.revision(node)).toBe(before + 1);
+  expect((await readFile(rig, "/target"))[0]).toBe(0x91);
+});
+
+test("a stage the owner cannot prepare fails once with its errno and changes nothing", async () => {
+  const rig = createRig(3, cleanups);
+  const node = await target(rig);
+  const { fs } = await unattachedClient(rig, "target", cleanups);
+  const owner = rig.backend.shared;
+  const before = owner.revision(node)!;
+  // The write needs growth into segment 2, and the platform refuses that construction.
+  const internals = owner as unknown as { ensureSegment(segment: number): void };
+  const ensure = internals.ensureSegment;
+  internals.ensureSegment = function (this: typeof owner, segment: number) {
+    if (segment === 2) throw new RangeError("injected segment refusal");
+    return Reflect.apply(ensure, this, [segment]);
+  };
+  const used = owner.resources().usedBytes;
+  const bytes = new Uint8Array(PAGE).fill(0x95);
+  const at = SHARED_SEGMENT_BYTES;
+  let result = -6;
+  for (let attempt = 0; attempt < 6 && result === -6; attempt++) {
+    result = fs.tryWrite(node, [bytes], at);
+    if (result === -6) await untilReady(fs, node, true);
+  }
+  internals.ensureSegment = ensure;
+  expect(result).toBe(-51);
+  expect(owner.revision(node)).toBe(before);
+  expect(owner.resources().usedBytes).toBe(used);
+  expect(2 in owner.segments).toBe(false);
+  expect(fs.completions.size).toBe(0);
+  expect(await readFile(rig, "/target")).toHaveLength(PAGE * 2);
+});
+
+class Store implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  index?: PersistedIndex;
+  payloads = new Map<string, Uint8Array>();
+  readRange = fixturePayloadHooks(this.payloads).readRange;
+  retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
+  async load() {
+    return this.index;
+  }
+  async read(key: string) {
+    return this.payloads.get(key)!.slice();
+  }
+  async persist(batch: PersistenceBatch) {
+    const nodes = new Map(this.index?.nodes.map((entry) => [entry.ino, entry]));
+    for (const entry of batch.upserts) nodes.set(entry.ino, entry);
+    for (const ino of batch.removes) nodes.delete(ino);
+    for (const [key, data] of batch.data) this.payloads.set(key, data.slice());
+    this.index = {
+      version: 1,
+      generation: batch.generation,
+      root: batch.root,
+      nodes: Array.from(nodes.values()),
+    };
+  }
+  async flush() {}
+  async close() {}
+}
+/** Polls and retries an immediate write the way a guest does, and counts its EAGAIN returns. */
+async function immediateWrite(fs: FilesystemClient, node: number, bytes: Uint8Array, at: number) {
+  for (let again = 0; again < 8; again++) {
+    const result = withoutWaiting(() => fs.tryWrite(node, [bytes], at));
+    if (result !== -6) return { result, again };
+    await untilReady(fs, node, true);
+  }
+  throw new Error("immediate write never completed");
+}
+
+test("a persistent tree persists a committed staged write and stages onto a cold file", async () => {
+  const store = new Store();
+  const backend = await PersistentBackend.open(store, { intervalMs: 0, dirtyLimits: false });
+  cleanups.push(async () => {
+    await backend.close();
+    backend.dispose();
+  });
+  const rig = createRig(3, cleanups, { backend });
+  const node = await target(rig);
+  const { fs } = await unattachedClient(rig, "target", cleanups);
+  const first = new Uint8Array(PAGE).fill(0x61);
+  await stage(fs, node, first, 0);
+  // The discard never arrives. Only an owner operation can apply the committed write now, and
+  // the checkpoint's snapshot is one: it must persist the new bytes, not the gated old ones.
+  fs.connection.port.postMessage = () => {};
+  expect(fs.tryWrite(node, [first], 0)).toBe(PAGE);
+  await rig.client.asyncCall("flush");
+  const persisted = Array.from(store.payloads.values()).filter(
+    (payload) => payload.length === PAGE * 2,
+  );
+  expect(persisted.map((payload) => [payload[0], payload[PAGE]])).toContainEqual([0x61, 0x11]);
+  expect(backend.shared.isResident(node)).toBe(true);
+  // Reopen the tree: every file is cold. Loading the full file takes segment 0, so the target
+  // is hydrated into a segment the next client lacks.
+  const reopened = await PersistentBackend.open(store, { intervalMs: 0, dirtyLimits: false });
+  cleanups.push(async () => {
+    await reopened.close();
+    reopened.dispose();
+  });
+  const cold = createRig(3, cleanups, { backend: reopened });
+  expect((await readFile(cold, "/full")).length).toBe(SHARED_SEGMENT_BYTES);
+  const guest = await unattachedClient(cold, "target", cleanups);
+  expect(reopened.shared.isResident(guest.node)).toBe(false);
+  // Hydration first, then the stage, then the commit. No call waits, and nothing is written
+  // behind an EAGAIN.
+  const second = new Uint8Array(PAGE).fill(0x62);
+  const outcome = await immediateWrite(guest.fs, guest.node, second, PAGE);
+  expect(outcome).toEqual({ result: PAGE, again: 2 });
+  expect(guest.fs.shared.segments).toHaveLength(1);
+  const stored = await readFile(cold, "/target");
+  expect(stored).toHaveLength(PAGE * 2);
+  expect(stored.subarray(0, PAGE).every((byte) => byte === 0x61)).toBe(true);
+  expect(stored.subarray(PAGE).every((byte) => byte === 0x62)).toBe(true);
 });

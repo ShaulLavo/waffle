@@ -580,9 +580,22 @@ service alone owns backend pins. Preopens and open descriptions retain handles; 
 are bounded and evicting them invalidates cached paths.
 
 The service owns the page allocator and grows capacity geometrically in 4 KiB storage pages, across
-16 MiB growable SharedArrayBuffer segments. Connections carry the zero-byte segment references
-before execution; only the service grows their backing storage. A synchronous guest therefore
-sees completed growth without returning to its event loop or receiving another port message.
+fixed 16 MiB SharedArrayBuffer segments. Only the service builds a segment, when a page in it is
+first needed, so a new tree holds no backing beyond its root. A connection starts with the
+segments its launcher already held, and the service offers every later one by index on the
+connection's port. That delivery only makes access direct. A page table entry may name a page in
+a segment an agent lacks: every direct path resolves its backing before it changes anything, and
+on a miss the service performs the operation through the request arena that was attached before
+the guest ran. A synchronous guest therefore sees completed growth without returning to its event
+loop or receiving another port message.
+
+An immediate (`try`) write to such a page never waits for the service. The first call hands the
+service a private copy of at most 64 KiB and returns EAGAIN with nothing changed. The retry
+commits in attached metadata, under the same nonblocking locks as a direct write, and marks the
+file not resident. That state already sends every direct read, write and readiness probe to the
+service, which copies the staged bytes into the file's existing pages before it serves, persists
+or reclaims anything. The commit needs no free page and does not depend on what the file held when
+it was staged. The service applies or withdraws each staged write exactly once.
 `createFilesystemIdentity(undefined, maxBytes)` configures
 the pool cap (1.5 GiB by default, rounded to whole segments); files can span segments up to the
 independent 1 GiB per-file ceiling. A full pool reports WASI ENOSPC, while a request beyond the addressable
@@ -596,9 +609,9 @@ adds 512 control bytes to the root backing charge. Additional payload backing gr
 lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the
 configured cap, and grown backing remains allocated until disposal.
 `resources()` reports allocated backing bytes, data-pool and metadata bytes (including private
-capability tables), used/free bytes, the configured cap, and registered identities. Zero-byte
-segment references do not count as allocated backing storage. Grown segments are retained
-for page reuse until the filesystem is disposed.
+capability tables), used/free bytes, the configured cap, and registered identities. Only
+segments that were built count as backing storage. Built segments are retained for page
+reuse until the filesystem is disposed, and are never handed to another tree.
 
 Storage geometry lives in the private `fs/storage-geometry.ts` module. All mapping blocks
 hold 64 entries, so one pool serves every level. A leaf maps 256 KiB of logical file data.
@@ -618,7 +631,7 @@ pressure. Physical pin bytes are shared. Closing a selection releases its IDs an
 the next pin. Reads borrowing one selection keep its existing shared lifetime.
 
 Smaller storage pages reduce small-file padding, not the runtime's other buffers,
-request arenas, or guest memories. Grown segments remain a high-water allocation;
+request arenas, or guest memories. Built segments remain a high-water allocation;
 current used bytes do not measure committed backing or native residency.
 
 Connections carry their own revocation word and every ancestor's word, plus a shared ancestry

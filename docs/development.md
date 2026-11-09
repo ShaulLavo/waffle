@@ -73,8 +73,8 @@ Safari acceptance.
 
 Identity-construction failures include a copied scalar `filesystemAllocation` snapshot in the
 existing host error text when the thrown object can be annotated. It records independent,
-inherited or supplied storage, root completion, the one-based extra-segment slot and completed
-segment count. Identity and root ordinals count attempts in that bundled module instance;
+inherited or supplied storage, the stage and root completion. An identity constructs no data
+segment. Identity and root ordinals count attempts in that bundled module instance;
 root ordinals exclude backend roots and supplied or inherited roots. They are not live-object
 counts or native-memory measurements. The original exception, cause and stack remain unchanged.
 
