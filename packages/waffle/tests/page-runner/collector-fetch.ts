@@ -1,3 +1,5 @@
+import { frameworkEvent } from "./framework-collector.js";
+import type { CollectorObservation } from "./framework-types.js";
 import { bounded } from "./driver.js";
 import { ObservationClosed, ReportRejected } from "./collector.js";
 import type { HostReply } from "./report-control.js";
@@ -15,7 +17,7 @@ export type ReportSink = {
 export function reservedReportPath(path: string): boolean {
   return ["/report", "/heartbeat", "/retire"].includes(path);
 }
-async function readReportBody(request: Request): Promise<unknown> {
+export async function readReportBody(request: Request): Promise<unknown> {
   if (!request.body) throw new Error("Missing collector body");
   const reader = request.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -35,12 +37,13 @@ async function readReportBody(request: Request): Promise<unknown> {
       text += decoder.decode(item.value, { stream: true });
     }
   } finally {
-    void reader.cancel().catch(() => {});
+    await reader.cancel().catch(() => {});
   }
 }
 export async function dispatchReports(
   request: Request,
   sink: ReportSink,
+  observe?: (observation: CollectorObservation) => void,
 ): Promise<Response | undefined> {
   const url = new URL(request.url);
   if (!reservedReportPath(url.pathname)) return;
@@ -50,13 +53,32 @@ export async function dispatchReports(
     if (request.method !== "POST" || url.pathname === "/retire")
       return new Response("Method not allowed", { status: 405, headers: collectorHeaders });
     const body = await bounded(readReportBody(request), 2000, "collector request body");
-    if (url.pathname === "/report")
-      return Response.json(sink.receive(body), { headers: collectorHeaders });
+    if (url.pathname === "/report") return receiveReport(body, sink, observe);
     return Response.json(sink.heartbeat(body), { headers: collectorHeaders });
   } catch (error) {
     if (error instanceof ObservationClosed)
       return Response.json({ error: error.message }, { status: 410, headers: collectorHeaders });
     if (!(error instanceof ReportRejected)) sink.fail("collector", String(error));
     return Response.json({ error: String(error) }, { status: 409, headers: collectorHeaders });
+  }
+}
+
+function receiveReport(
+  body: unknown,
+  sink: ReportSink,
+  observe: ((observation: CollectorObservation) => void) | undefined,
+): Response {
+  const event =
+    typeof body === "object" && body !== null && "event" in body && frameworkEvent(body.event)
+      ? body.event
+      : undefined;
+  try {
+    const answer = sink.receive(body);
+    if (event) observe?.({ event, status: 200, accepted: true });
+    return Response.json(answer, { headers: collectorHeaders });
+  } catch (error) {
+    if (event)
+      observe?.({ event, status: error instanceof ObservationClosed ? 410 : 409, accepted: false });
+    throw error;
   }
 }
