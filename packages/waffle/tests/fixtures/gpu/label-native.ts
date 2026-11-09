@@ -198,6 +198,7 @@ async function invalidIdentities(
 function virtualSurface(connection: GpuConnection, device: object) {
   const surfaces = new GpuSurfaces();
   const canvas = new OffscreenCanvas(4, 4);
+  surfaces.register(7);
   surfaces.attach([{ id: 7, canvas }]);
   const owner = surfaces.connection([7], connection.completions);
   const reference = owner.create(7, "initial", h(50));

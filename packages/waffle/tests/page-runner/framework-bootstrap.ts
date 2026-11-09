@@ -1,4 +1,3 @@
-import { resultByteLimit } from "./protocol.js";
 import { OrderedReporter } from "./ordered-reporter.js";
 import type { FrameworkObservation } from "./framework-page.js";
 import type { FrameworkEvent } from "./framework-types.js";
@@ -11,43 +10,62 @@ type Body = { token: string } & (
 );
 export function installFrameworkBootstrap(config: Configuration): void {
   const capturedDocument = document;
-  const reporter = new OrderedReporter<Body>(config.run);
+  const reporter = new OrderedReporter<Body>(config.run, undefined, undefined, {
+    token: config.token,
+    role: config.kind,
+  });
   const state = reporter.observation;
   let admitted = false,
-    permit: string | null = null;
+    permit: string | null = null,
+    contentClosed = false,
+    invalidated = false;
   let iframe: HTMLIFrameElement | null = null,
     tester: Document | null = null;
   const admission = Promise.withResolvers<{ permit: string; width: 414; height: 896 }>();
   const retired = Promise.withResolvers<void>();
-  const send = (event: FrameworkEvent): Promise<void> => {
-    try {
-      if (new TextEncoder().encode(JSON.stringify(event)).byteLength > resultByteLimit)
-        throw new Error("Framework observation exceeds 48 KiB");
-      return reporter.send({ token: config.token, kind: "event", event });
-    } catch (error) {
-      state.failure ??= String(error);
-      return Promise.reject(error);
-    }
-  };
-  const enqueue = (event: FrameworkEvent): void => {
-    void send(event).catch(() => {});
+  void admission.promise.catch(() => {});
+  void retired.promise.catch(() => {});
+  reporter.signal.addEventListener(
+    "abort",
+    () => {
+      admission.reject(reporter.signal.reason);
+      retired.reject(reporter.signal.reason);
+    },
+    { once: true },
+  );
+  const send = (snapshot: () => FrameworkEvent | null): Promise<void> =>
+    reporter.sendSnapshot(() => {
+      const event = snapshot();
+      return event === null ? null : { token: config.token, kind: "event", event };
+    });
+  const enqueue = (snapshot: () => FrameworkEvent): void => {
+    void send(snapshot).catch(() => {});
   };
   const removeEarlyListener = window.removeEventListener.bind(window);
   const error = (event: ErrorEvent) =>
-    enqueue({ kind: "error", source: "early-error", error: event.message });
+    enqueue(() => ({ kind: "error", source: "early-error", error: event.message }));
   const rejection = (event: PromiseRejectionEvent) =>
-    enqueue({ kind: "error", source: "early-rejection", error: String(event.reason) });
+    enqueue(() => ({ kind: "error", source: "early-rejection", error: String(event.reason) }));
   addEventListener("error", error);
   addEventListener("unhandledrejection", rejection);
+  const closeContent = (event: FrameworkEvent): Promise<void> => {
+    contentClosed = true;
+    return send(() => event);
+  };
   const observation: FrameworkObservation = {
-    collected: (tasks) => send({ kind: "collected", tasks }),
-    taskStarted: (id) => enqueue({ kind: "task-started", id }),
-    taskUpdate: (updates) => enqueue({ kind: "task-update", updates }),
-    caseSettled: (updates) => enqueue({ kind: "case-settled", updates }),
-    error: (error, source) => enqueue({ kind: "error", error, source }),
-    executionFlushed: () => enqueue({ kind: "execution-flushed" }),
-    testerCleanupSettled: () => enqueue({ kind: "tester-cleanup-settled" }),
-    cleanupResponseReceived: () => enqueue({ kind: "cleanup-response-received" }),
+    signal: reporter.signal,
+    collected: (snapshot) => send(() => ({ kind: "collected", tasks: snapshot() })),
+    taskStarted: (snapshot) => send(() => ({ kind: "task-started", id: snapshot() })),
+    taskUpdate: (snapshot) => send(() => ({ kind: "task-update", updates: snapshot() })),
+    caseSettled: (snapshot) =>
+      send(() => {
+        const updates = snapshot();
+        return updates === null ? null : { kind: "case-settled", updates };
+      }),
+    error: (snapshot) => send(() => ({ kind: "error", ...snapshot() })),
+    executionFlushed: () => closeContent({ kind: "execution-flushed" }),
+    testerCleanupSettled: () => closeContent({ kind: "tester-cleanup-settled" }),
+    cleanupResponseReceived: () => closeContent({ kind: "cleanup-response-received" }),
     catcherInstalled: () => {
       removeEarlyListener("error", error);
       removeEarlyListener("unhandledrejection", rejection);
@@ -55,19 +73,53 @@ export function installFrameworkBootstrap(config: Configuration): void {
     waitForInitialViewport: () => admission.promise,
     waitForRetirement: () => retired.promise,
   };
-  const valid = () =>
-    document === capturedDocument && location.href === config.url && !state.retired;
-  const paired = () =>
-    valid() &&
-    iframe?.isConnected === true &&
-    iframe.contentDocument === tester &&
-    document.querySelectorAll("iframe[data-vitest]").length === 1;
+  const ancestors = new Set<Node>();
+  const inspectMutations = (records: MutationRecord[]): void => {
+    if (!iframe) return;
+    for (const record of records) inspectRemoved(record.removedNodes);
+  };
+  const inspectRemoved = (nodes: NodeList): void => {
+    for (const node of nodes) {
+      if (ancestors.has(node) || node === iframe || (iframe && node.contains(iframe)))
+        invalidated = true;
+    }
+  };
+  const mutations = new MutationObserver(inspectMutations);
+  mutations.observe(capturedDocument, { childList: true, subtree: true });
+  const releaseIdentity = (): void => {
+    mutations.disconnect();
+    removeEarlyListener("pagehide", pagehide);
+  };
+  const pagehide = (): void => {
+    invalidated = true;
+    reporter.cancelDelivery("Document hidden");
+    releaseIdentity();
+  };
+  addEventListener("pagehide", pagehide);
+  const valid = () => {
+    inspectMutations(mutations.takeRecords());
+    if (document !== capturedDocument || location.href !== config.url) invalidated = true;
+    if (invalidated) reporter.cancelDelivery("Document identity invalidated");
+    return !invalidated && !state.retired;
+  };
+  const paired = () => {
+    if (!valid()) return false;
+    if (!iframe) return false;
+    if (
+      !iframe.isConnected ||
+      iframe.contentDocument !== tester ||
+      document.querySelectorAll("iframe[data-vitest]").length !== 1
+    )
+      invalidated = true;
+    return !invalidated;
+  };
   const bridge = {
     snapshot: () => ({
       ...state,
       kind: config.kind,
       token: config.token,
       admitted,
+      contentClosed,
       valid: valid(),
       paired: config.kind === "tester" || paired(),
     }),
@@ -86,6 +138,7 @@ export function installFrameworkBootstrap(config: Configuration): void {
       if (!candidate.contentWindow?.__waffleFramework?.snapshot().doc) return null;
       iframe = candidate;
       tester = candidate.contentDocument;
+      for (let node = candidate.parentNode; node; node = node.parentNode) ancestors.add(node);
       return {
         doc: state.doc,
         frame: candidate,
@@ -128,9 +181,16 @@ export function installFrameworkBootstrap(config: Configuration): void {
       };
     },
     cutoff: (watermark: number) => {
-      if (!valid() || state.pending !== 0 || state.failure || state.ackedThrough !== watermark)
+      if (
+        !valid() ||
+        reporter.controlsPending !== 0 ||
+        state.pending !== 0 ||
+        state.failure ||
+        state.ackedThrough !== watermark
+      )
         throw new Error("Document not drained at cutoff");
       state.retired = true;
+      releaseIdentity();
       reporter.stop();
       retired.resolve();
       return true;
@@ -160,8 +220,12 @@ export function installFrameworkBootstrap(config: Configuration): void {
     await hello;
     const url = `/retire?run=${encodeURIComponent(config.run)}&doc=${encodeURIComponent(state.doc)}`;
     while (!state.retired) {
-      const response = await reporter.post(url, { signal: reporter.clock.abortTimeout(2000) });
-      if ((await response.json()) === true) {
+      reporter.signal.throwIfAborted();
+      const command = await reporter.control(url, { signal: reporter.clock.abortTimeout(2000) });
+      reporter.signal.throwIfAborted();
+      if (command.kind === "live" && command.retire) {
+        await reporter.stop();
+        reporter.signal.throwIfAborted();
         await reporter.drain();
         await reporter.send({ token: config.token, kind: "retire-ready" });
         return;
@@ -170,7 +234,9 @@ export function installFrameworkBootstrap(config: Configuration): void {
     }
   };
   void retirement().catch((error) => {
-    state.failure ??= String(error);
+    if (!reporter.signal.aborted) reporter.cancelDelivery(String(error));
+    admission.reject(error);
+    retired.reject(error);
   });
 }
 declare global {
@@ -181,6 +247,7 @@ declare global {
         kind: string;
         token: string;
         admitted: boolean;
+        contentClosed: boolean;
         valid: boolean;
         paired: boolean;
         ackedThrough: number;

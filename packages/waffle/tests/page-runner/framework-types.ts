@@ -12,7 +12,7 @@ export type ExpectedCase = {
   readonly file: string;
   readonly fullName: string;
   readonly sourceKey: string;
-  readonly timeoutMs: 15000;
+  readonly timeoutMs: number;
   readonly retries: 0;
 };
 /** @public */
@@ -51,6 +51,12 @@ export type FrameworkOptions = {
   readonly resultPath: string;
 };
 export type ProviderOperation = "open" | "test-frame" | "main-frame" | "framework-cleanup";
+export type ViewportOperation = {
+  readonly kind: "viewport";
+  readonly width: number;
+  readonly height: number;
+};
+export type ScreenshotOperation = { readonly kind: "screenshot"; readonly file: string };
 export type VitestEnd =
   | { readonly status: "passed" }
   | {
@@ -179,7 +185,11 @@ export interface FrameworkHost {
     frames: FrameAdapter;
   }): Promise<T>;
   openPage(actualUrl: string, open: () => Promise<void>): Promise<void>;
-  provider<T>(kind: ProviderOperation, operation: () => Promise<T>): Promise<T>;
+  provider(operation: ViewportOperation): Promise<void>;
+  provider<T>(
+    kind: ProviderOperation | ScreenshotOperation,
+    operation: () => Promise<T>,
+  ): Promise<T>;
   guardRequest<T extends RequestInit>(request: T): T;
   observeResponse<T extends { statusCode: number; body?: unknown }>(
     response: T,

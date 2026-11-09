@@ -1,9 +1,11 @@
 import { navigateTestPage } from "./browser-navigation.js";
-import { firefox, chromium } from "playwright";
+import { firefox, chromium, webkit } from "playwright";
 
 const [engine = "firefox", port = "4301", rounds = "60", concurrency = "2"] = process.argv.slice(2);
-if (engine !== "firefox" && engine !== "chromium") throw Error(`unsupported engine ${engine}`);
-const browser = await (engine === "firefox" ? firefox : chromium).launch();
+const engines = { firefox, chromium, webkit };
+if (engine !== "firefox" && engine !== "chromium" && engine !== "webkit")
+  throw Error(`unsupported engine ${engine}`);
+const browser = await engines[engine].launch();
 try {
   const context = await browser.newContext();
   const page = await context.newPage();

@@ -547,17 +547,17 @@ test("directory metadata reserves the complete dirty child list before mutation"
   }
 });
 
-test("a one-byte write fits a 20,000-byte dirty budget", async () => {
+test("a one-byte write fits a 6,000-byte dirty budget", async () => {
   const storage = new ControlledStorage();
   const backend = await PersistentBackend.open(storage, {
     intervalMs: 0,
-    dirtyLimits: { maxBytes: 20000, maxMetadataBytes: 1024 * 1024 },
+    dirtyLimits: { maxBytes: 6000, maxMetadataBytes: 1024 * 1024 },
     checkpointLimits: { maxBytes: 1024, maxMetadataBytes: 128 * 1024 },
   });
   try {
     backend.execute("writeFile", ["/tiny"], new Uint8Array([91]));
-    expect(backend.shared.resources().usedBytes).toBe(16384);
-    expect(backend.dirtyPressure().accountedBytes).toBeLessThanOrEqual(20000);
+    expect(backend.shared.resources().usedBytes).toBe(4096);
+    expect(backend.dirtyPressure().accountedBytes).toBeLessThanOrEqual(6000);
     await backend.checkpoint(true);
     expect(backend.execute("readFile", ["/tiny"], new Uint8Array())).toEqual(new Uint8Array([91]));
   } finally {

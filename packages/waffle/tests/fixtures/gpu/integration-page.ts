@@ -52,9 +52,44 @@ const disposalOpens: { grant: number; open: GraphicsOpen }[] = [];
 let disposalAudit: SharedArrayBuffer | undefined;
 const workerStops: { id: number; url: string; at: number }[] = [];
 let disposalArmed = false;
+const serviceSelections = new Map<
+  Worker,
+  ReturnType<typeof serviceFailureState> & { at: number }
+>();
+const serviceStopWaiters = new Map<Worker, () => void>();
+const serviceReaders = new Map<Worker, { backing: SharedArrayBuffer; incarnation: number }>();
+const serviceJoins: {
+  worker: number;
+  incarnation: number;
+  at: number;
+  admission: number;
+  controls: ReturnType<typeof disposalControls>;
+}[] = [];
 let runtimeEpoch = 0;
 let peerPump: ReturnType<typeof setInterval> | undefined;
 
+function observeFailureSelection(worker: Worker): void {
+  const property = Object.getOwnPropertyDescriptor(nativeWorker.prototype, "onerror");
+  if (!property?.get || !property.set)
+    throw new Error("Native Worker error-handler property missing");
+  const get = property.get,
+    set = property.set;
+  Object.defineProperty(worker, "onerror", {
+    configurable: true,
+    get: () => Reflect.apply(get, worker, []),
+    set(handler: Worker["onerror"]) {
+      const wrapped =
+        handler &&
+        function (this: Worker, event: ErrorEvent) {
+          const result = handler.call(this, event);
+          if (disposalArmed && event.message.includes("GPU_SERVICE_FAILURE"))
+            serviceSelections.set(worker, { ...serviceFailureState(), at: performance.now() });
+          return result;
+        };
+      Reflect.apply(set, worker, [wrapped]);
+    },
+  });
+}
 /** @browserEntry */
 export async function openIntegration(
   suppressTransfer = false,
@@ -74,12 +109,17 @@ export async function openIntegration(
   disposalAudit = undefined;
   disposalArmed = false;
   disposalGuests.clear();
+  serviceReaders.clear();
+  serviceStopWaiters.clear();
+  serviceSelections.clear();
+  serviceJoins.length = 0;
   globalThis.Worker = class extends nativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       const path = String(url).includes("/gpu/service-worker.ts")
         ? `${holdMode === "ownership" ? "/gpu/service-worker.ts/ownership" : url}?suppress=${suppress ? "1" : "0"}&hold=${holdMode}`
         : url;
       super(path, options);
+      if (String(path).includes("/gpu/service-worker.ts")) observeFailureSelection(this);
       workers.push({
         url: String(path),
         worker: this,
@@ -98,12 +138,33 @@ export async function openIntegration(
       });
     }
     override postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        message.type === "bootstrap" &&
+        "readers" in message &&
+        message.readers instanceof SharedArrayBuffer &&
+        "incarnation" in message &&
+        typeof message.incarnation === "number"
+      ) {
+        serviceReaders.set(this, { backing: message.readers, incarnation: message.incarnation });
+      }
       captureDisposalOpen(message);
       captureDisposalGuest(this, message);
       if (Array.isArray(options)) return super.postMessage(message, options);
       return super.postMessage(message, options);
     }
     override terminate() {
+      const readers = serviceReaders.get(this);
+      if (readers)
+        serviceJoins.push({
+          worker: workers.findIndex((item) => item.worker === this) + 1,
+          incarnation: readers.incarnation,
+          at: performance.now(),
+          admission: Atomics.load(new Int32Array(readers.backing), 0),
+          controls: disposalControls(),
+        });
       const found = workers.find((item) => item.worker === this);
       if (found) {
         found.stopped = true;
@@ -113,7 +174,10 @@ export async function openIntegration(
           at: performance.now(),
         });
       }
-      return super.terminate();
+      const result = super.terminate();
+      serviceStopWaiters.get(this)?.();
+      serviceStopWaiters.delete(this);
+      return result;
     }
   };
   runtimeEpoch++;
@@ -315,6 +379,9 @@ export async function closeIntegration(captureRetirement = false) {
     for (const canvas of canvases.values()) canvas.remove();
     canvases.clear();
     disposalGuests.clear();
+    serviceReaders.clear();
+    serviceStopWaiters.clear();
+    serviceJoins.length = 0;
     disposalOpens.length = 0;
     disposalAudit = undefined;
     globalThis.Worker = nativeWorker;
@@ -626,6 +693,7 @@ function disposalWorkers() {
     stopped,
     createdAt,
     ...disposalGuests.get(worker),
+    ...(serviceReaders.has(worker) ? { incarnation: serviceReaders.get(worker)!.incarnation } : {}),
   }));
 }
 function captureDisposalGuest(worker: Worker, message: unknown) {
@@ -662,6 +730,7 @@ export function serviceFailureState() {
     workers: disposalWorkers(),
     controls: disposalControls(),
     workerStops: workerStops.slice(),
+    readerJoins: structuredClone(serviceJoins),
     revocations: Array.from(runs.values(), (run) => ({
       pid: run.pid,
       value: run.grant ? Atomics.load(new Int32Array(run.grant.connection.revocation), 0) : -1,
@@ -699,10 +768,14 @@ export async function failGpuService() {
     }, 10000);
     entry.worker.addEventListener("error", observed, { once: true });
   });
+  const serviceStopped = new Promise<void>((resolve) =>
+    serviceStopWaiters.set(entry.worker, resolve),
+  );
   const startedAt = performance.now();
   entry.worker.postMessage({ test: "service-failure", id });
   const fault = await error;
   await Promise.all(Array.from(runs.values(), (run) => run.grant!.retired()));
+  await serviceStopped;
   clearInterval(peerPump);
   peerPump = undefined;
   const stopped = serviceFailureState();
@@ -723,6 +796,7 @@ export async function failGpuService() {
     startedAt,
     before,
     fault,
+    selected: serviceSelections.get(entry.worker),
     stopped,
     exits,
     after: serviceFailureState(),

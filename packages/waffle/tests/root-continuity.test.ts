@@ -80,7 +80,7 @@ test("late selected checkpoint uses the real restored root and one canonical led
     expect(pair.root.connection.shared).toBe(rootBacking);
     expect(first.backend.shared.buffer).toBe(rootBacking);
     expect(first.specs).toHaveLength(117);
-    expect(first.specs.filter((spec) => spec.bytes > 1024 * 1024)).toHaveLength(1);
+    expect(first.specs.filter((spec) => spec.bytes > 2 * 1024 * 1024)).toHaveLength(1);
     expect(first.memory.snapshot().obligations).toBe(0);
     expect(first.memory.snapshot().producerFree.allocations).toBe(before.producerFree.allocations);
     const domain = first.backend.shared.publication;

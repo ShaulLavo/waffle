@@ -170,7 +170,13 @@ function fixture() {
   }));
   const oldWorkers = [
     { id: 1, url: "/fs-worker.js", stopped: false, createdAt: 1 },
-    { id: 2, url: "/gpu/service-worker.ts/ownership", stopped: false, createdAt: 2 },
+    {
+      id: 2,
+      url: "/gpu/service-worker.ts/ownership",
+      stopped: false,
+      createdAt: 2,
+      incarnation: 1,
+    },
   ];
   const originalWorkers = oldWorkers.concat(
     [controlGuest, peerGuest, victimGuest, openingGuest].map((item, index) => ({
@@ -207,6 +213,9 @@ function fixture() {
     workerStops,
     revocations,
     snapshot: ledger(1, 4),
+    readerJoins: [
+      { worker: 2, incarnation: 1, admission: -1, at: 200.5, controls: structuredClone(controls) },
+    ],
   };
   const armed = { name: "armed", service: service(60) };
   const recoveryGuest = compiled(5);
@@ -313,6 +322,7 @@ function fixture() {
       },
       before: {
         ...state,
+        readerJoins: [],
         workers: originalWorkers,
         workerStops: initialStops,
         controls: controls.map((item) =>
@@ -327,6 +337,13 @@ function fixture() {
                 replies: ring(),
               },
         ),
+      },
+      selected: {
+        ...structuredClone(state),
+        at: 200.25,
+        readerJoins: [],
+        workers: originalWorkers,
+        workerStops: initialStops,
       },
       stopped: state,
       after: { ...structuredClone(state), workers: retiredWorkers, workerStops: retiredStops },
@@ -854,6 +871,7 @@ function committedReplyDrain() {
   const value = fixture();
   for (const state of [
     value.failure.before,
+    value.failure.selected,
     value.failure.stopped,
     value.failure.after,
     value.recovery.state,
@@ -867,11 +885,18 @@ function committedReplyDrain() {
             replies: {
               ...control.replies,
               head: 48,
-              tail: state === value.failure.before || state === value.failure.stopped ? 24 : 48,
+              tail:
+                state === value.failure.before ||
+                state === value.failure.selected ||
+                state === value.failure.stopped
+                  ? 24
+                  : 48,
             },
           },
     );
   }
+  Object.assign(value.failure.stopped.readerJoins[0]!.controls[1]!.replies, { head: 48, tail: 24 });
+  value.failure.after.readerJoins = structuredClone(value.failure.stopped.readerJoins);
   return value;
 }
 
@@ -945,6 +970,7 @@ test("committed reply consumption accepts the real observer's signed rollover ta
   const value = committedReplyDrain();
   for (const state of [
     value.failure.before,
+    value.failure.selected,
     value.failure.stopped,
     value.failure.after,
     value.recovery.state,
@@ -952,10 +978,17 @@ test("committed reply consumption accepts the real observer's signed rollover ta
   ])
     Object.assign(
       state.controls[1]!.replies,
-      state === value.failure.before || state === value.failure.stopped
+      state === value.failure.before ||
+        state === value.failure.selected ||
+        state === value.failure.stopped
         ? { head: before.head, tail: before.tail }
         : { head: after.head, tail: after.tail },
     );
+  Object.assign(value.failure.stopped.readerJoins[0]!.controls[1]!.replies, {
+    head: before.head,
+    tail: before.tail,
+  });
+  value.failure.after.readerJoins = structuredClone(value.failure.stopped.readerJoins);
   expect(validateServiceFailureResult(value).hardwareQualified).toBe(false);
 });
 
@@ -987,4 +1020,16 @@ for (const tail of [-0x80000001, 0x80000000, -15, -16.5])
     expect(() => validateServiceFailureResult(value)).toThrow(
       "old reply consumer escaped committed bytes",
     );
+  });
+
+for (const kind of ["missing", "incarnation", "active", "history", "inventory"])
+  test(`reader join rejects ${kind} evidence`, () => {
+    const value = fixture();
+    const joins = value.failure.stopped.readerJoins;
+    if (kind === "missing") value.failure.stopped.readerJoins = [];
+    if (kind === "incarnation") joins[0]!.incarnation++;
+    if (kind === "active") joins[0]!.admission = -2;
+    if (kind === "history") value.failure.after.readerJoins = [];
+    if (kind === "inventory") joins[0]!.controls.pop();
+    expect(() => validateServiceFailureResult(value)).toThrow();
   });

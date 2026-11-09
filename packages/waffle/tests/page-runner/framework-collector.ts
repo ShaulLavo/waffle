@@ -1,3 +1,4 @@
+import { reportingFailure, type HostReply } from "./report-control.js";
 import { randomUUID } from "node:crypto";
 import { ObservationClosed } from "./collector.js";
 import { record, resultByteLimit } from "./protocol.js";
@@ -79,7 +80,18 @@ export class FrameworkCollector {
   cleanupSettled = false;
   cleanupResponse = false;
   viewportConsumed = false;
-  constructor(readonly expected: readonly ExpectedCase[]) {
+  private cancelled = false;
+  private readonly reportingFailed = new Set<FrameworkDocument>();
+  cancel(): void {
+    this.cancelled = true;
+  }
+  private reply(retire = false): HostReply {
+    return this.cancelled ? { kind: "cancelled" } : { kind: "live", retire };
+  }
+  constructor(
+    readonly expected: readonly ExpectedCase[],
+    private readonly onFailure: (detail: string) => void = () => {},
+  ) {
     this.cases = expected.map((item) => ({
       expected: item,
       actualId: null,
@@ -88,7 +100,9 @@ export class FrameworkCollector {
     }));
   }
   fail(category: string, detail: string): void {
+    this.cancel();
     this.failures.push({ category, detail });
+    this.onFailure(detail);
   }
   expect(kind: DocumentKind, url: string): FrameworkDocument {
     if (this.documents.some((document) => document.kind === kind))
@@ -201,24 +215,28 @@ export class FrameworkCollector {
     const tests = tasks.filter((item) => item.type === "test");
     if (tests.length !== this.expected.length)
       throw new Error("Independent inventory count mismatch");
-    const matches = this.expected.map((expected) =>
-      tests.filter(
-        (actual) => actual.file === expected.file && actual.fullName === expected.fullName,
+    const matches = this.cases.map((item) => ({
+      item,
+      actual: tests.filter(
+        (actual) =>
+          actual.file === item.expected.file && actual.fullName === item.expected.fullName,
       ),
-    );
-    if (matches.some((items) => items.length !== 1))
+    }));
+    if (matches.some(({ actual }) => actual.length !== 1))
       throw new Error("Independent inventory identity mismatch");
-    if (tests.some((item) => item.mode !== "run" || item.timeoutMs !== 15000 || item.retries !== 0))
+    if (
+      matches.some(
+        ({ item, actual }) =>
+          actual[0]?.mode !== "run" ||
+          actual[0]?.timeoutMs !== item.expected.timeoutMs ||
+          actual[0]?.retries !== item.expected.retries,
+      )
+    )
       throw new Error("Original case options changed");
     if (tasks.some((item) => item.parentId !== null && !ids.has(item.parentId)))
       throw new Error("Unknown actual task parent");
     this.collection = tasks;
-    for (const item of this.cases)
-      item.actualId =
-        tests.find(
-          (actual) =>
-            actual.file === item.expected.file && actual.fullName === item.expected.fullName,
-        )?.id ?? null;
+    for (const { item, actual } of matches) item.actualId = actual[0]?.id ?? null;
   }
   private updates(event: Extract<FrameworkEvent, { kind: "task-update" | "case-settled" }>): void {
     for (const value of event.updates) {
@@ -231,17 +249,27 @@ export class FrameworkCollector {
       item.outcome = value;
     }
   }
-  heartbeat(value: unknown): void {
-    if (!record(value) || value.run !== this.run || value.kind !== "heartbeat")
-      throw new Error("Unbound heartbeat");
-    const document = this.documents.find((item) => item.doc !== null && item.doc === value.doc);
-    if (!document) throw new Error("Unknown heartbeat document");
-    if (document.cutoff === null) document.heartbeatAt = performance.now();
+  heartbeat(value: unknown): HostReply {
+    const { document, body } = this.bound(value);
+    if (
+      document.doc === null ||
+      body.doc !== document.doc ||
+      body.kind !== "heartbeat" ||
+      body.role !== document.kind ||
+      !reportingFailure(body.failure)
+    )
+      throw new Error("Malformed framework heartbeat");
+    document.heartbeatAt = performance.now();
+    if (body.failure !== null && !this.reportingFailed.has(document)) {
+      this.reportingFailed.add(document);
+      this.fail("page-reporting", body.failure);
+    }
+    return this.reply();
   }
-  retirement(url: URL): boolean {
+  retirement(url: URL): HostReply {
     const document = this.documents.find((item) => item.doc === url.searchParams.get("doc"));
     if (url.searchParams.get("run") !== this.run || !document || document.cutoff !== null)
       throw new Error("Unbound retirement poll");
-    return document.retiring;
+    return this.reply(document.retiring);
   }
 }

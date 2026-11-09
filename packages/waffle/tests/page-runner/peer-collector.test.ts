@@ -210,8 +210,8 @@ test("per-generation liveness is not renewed by root or another peer", () => {
   const silent = f.add("silent");
   f.add("alive");
   f.clock(10000);
-  f.collector.heartbeat({ run: "run", doc: "root-doc", kind: "heartbeat" });
-  f.collector.heartbeat({ run: "run", doc: "alive", kind: "heartbeat" });
+  f.collector.heartbeat({ run: "run", doc: "root-doc", kind: "heartbeat", failure: null });
+  f.collector.heartbeat({ run: "run", doc: "alive", kind: "heartbeat", failure: null });
   const budgets = { hello: 20000, heartbeat: 10000, case: 600000, group: 600000, run: 600000 };
   expect(f.collector.deadline(budgets, 0)).toBe("heartbeat-lost");
   expect(f.collector.overdueDocument(budgets)).toBe(silent);
@@ -236,7 +236,7 @@ test("reload keeps generations separate and the predecessor cannot authorize a s
   f.send("next", { kind: "peer-ready" });
   f.collector.completeTransition(transition, old.handle, next, null);
   f.clock(9000);
-  f.collector.heartbeat({ run: "run", doc: "owner", kind: "heartbeat" });
+  f.collector.heartbeat({ run: "run", doc: "owner", kind: "heartbeat", failure: null });
   expect(next.heartbeatAt).toBe(0);
   expect(old.physical).toBe("superseded");
   expect(() => f.collector.prepareTransition(old, "reload", 15000)).toThrow();

@@ -522,7 +522,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   };
   const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => {
     try {
-      if (outcome) return claimOutcome(outcome, result);
+      if (outcome) return (localOutcome = claimOutcome(outcome, result));
     } catch (error) {
       detachCollectedProcess(error);
     }
@@ -530,16 +530,17 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   };
   const defaultSignal = (signal: number): void => {
     checkedSignal(signal);
-    const killed = requestedSignal && controlLoad(requestedSignal, 0) === 9;
-    if (
-      !(outcome ? readOutcome(outcome) : localOutcome) &&
-      !killed &&
-      !defaultSignalTerminates(signal)
-    )
-      return;
-    const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
+    const settled = localOutcome ?? (outcome ? readOutcome(outcome) : null);
+    const killed = !settled && requestedSignal && controlLoad(requestedSignal, 0) === 9;
+    if (!settled && !killed && !defaultSignalTerminates(signal)) return;
+    const winner = settled ?? claim({ kind: "signaled", code: killed ? 9 : signal });
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
-    runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
+    localOutcome = winner;
+    if (runtimeProcess && !runtimeProcess.completeSelectedDefaultSignal(winner)) {
+      outcome = null;
+      runtimeProcess = null;
+      requestedSignal = undefined;
+    }
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.
     if (!outcome && winner.kind === "signaled")
@@ -555,7 +556,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     }
   };
   const checkActive = () => {
-    const winner = outcome ? readOutcome(outcome) : localOutcome;
+    const winner = localOutcome ?? (outcome ? readOutcome(outcome) : null);
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked() || cancellation.signal.aborted) throw new WasiExit(1);

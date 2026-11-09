@@ -15,6 +15,18 @@ import { PipeController, type PipeEndpoint } from "../proc/pipes.js";
 export async function mixedNotificationCases(
   guestUrl: string,
   helperUrl: string,
+  deadlineNews: "timer" | "held" = "timer",
+): Promise<unknown> {
+  const idle = await mixedNotificationCase(guestUrl, helperUrl, "idle", deadlineNews);
+  const sources = await mixedNotificationCase(guestUrl, helperUrl, "sources", deadlineNews);
+  return { done: true, idle, sources };
+}
+
+async function mixedNotificationCase(
+  guestUrl: string,
+  helperUrl: string,
+  phase: "idle" | "sources",
+  deadlineNews: "timer" | "held",
 ): Promise<unknown> {
   const service = new FilesystemService(new MemoryBackend());
   const pair = createFilesystemConnection();
@@ -37,10 +49,11 @@ export async function mixedNotificationCases(
     const path = await fs.asyncCall("resolve", [root, "control"]);
     fs.retain(path.node);
     const connection = fs.fork();
-    const publish = sourcePublisher(fs, path.node, network, writer, bridge, timers);
+    const publish = sourcePublisher(fs, path.node, network, writer, bridge, timers, deadlineNews);
     return await runGuest(
       guest,
       {
+        phase,
         filesystem: connection,
         notifications: bridge.connection,
         ring,
@@ -113,24 +126,40 @@ function sourcePublisher(
   writer: PipeEndpoint,
   bridge: NotificationBridge,
   timers: ReturnType<typeof setTimeout>[],
+  deadlineNews: "timer" | "held",
 ): (stage: string) => Promise<void> {
+  // The held control publishes at the next phase barrier, not after another timer delay.
+  let deadlinePending = false;
+  let deadlineWrite: Promise<void> | undefined;
   return async (stage) => {
     if (stage === "fs-service")
       await fs.asyncCall("writeFile", ["/control", false], new Uint8Array([1]));
     if (stage === "fs-direct") fs.write(node, [new Uint8Array([2])], 0);
     if (stage === "network") await publishNetwork(network);
     if (stage === "process") writer.tryWrite([new Uint8Array([3])]);
-    if (stage === "deadline") scheduleDeadlineNews(network, timers);
+    if (stage === "deadline" && deadlineNews === "timer")
+      deadlineWrite = scheduleDeadlineNews(network, timers);
+    if (stage === "deadline" && deadlineNews === "held") deadlinePending = true;
+    if ((stage === "quiet" || stage === "deadline-complete") && deadlinePending) {
+      deadlinePending = false;
+      await network.write(1, Kind.Data, new Uint8Array([82]));
+    }
+    if (stage === "deadline-complete") await deadlineWrite;
     if (stage === "revoke") await bridge.dispose();
   };
 }
 
-function scheduleDeadlineNews(network: RingWriter, timers: ReturnType<typeof setTimeout>[]): void {
-  timers.push(
-    setTimeout(() => {
-      void network.write(1, Kind.Data, new Uint8Array([82]));
-    }, 90),
-  );
+function scheduleDeadlineNews(
+  network: RingWriter,
+  timers: ReturnType<typeof setTimeout>[],
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    timers.push(
+      setTimeout(() => {
+        void network.write(1, Kind.Data, new Uint8Array([82])).then(resolve, reject);
+      }, 90),
+    );
+  });
 }
 
 async function publishNetwork(network: RingWriter): Promise<void> {

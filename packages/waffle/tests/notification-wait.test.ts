@@ -11,6 +11,15 @@ test("real blocked Worker composes filesystem, network and process notifications
   expect(result).toMatchObject({ done: true });
 }, 15000);
 
+test("mixed quiet wait excludes a deadline source held past its absolute deadline", async () => {
+  const result = await mixedNotificationCases(
+    new URL("./fixtures/notification-mixed-worker.ts", import.meta.url).href,
+    new URL("../browser/notification-worker.ts", import.meta.url).href,
+    "held",
+  );
+  expect(result).toMatchObject({ done: true, idle: { done: true }, sources: { done: true } });
+}, 15000);
+
 import {
   bootstrapNotificationCase,
   brokerNotificationCase,

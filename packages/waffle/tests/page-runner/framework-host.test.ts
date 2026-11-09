@@ -361,3 +361,83 @@ async function commandFailureResult(root: string): Promise<void> {
   }
 }
 test("public framework results persist command failure facts", () => fixture(commandFailureResult));
+
+async function requestBoundary(
+  root: string,
+  width: number,
+  height: number,
+  valid: boolean,
+): Promise<void> {
+  const host = createFrameworkHost(options(join(root, "result.json")));
+  let reason: unknown;
+  await host.run(async (registerClose) => {
+    registerClose(closeNothing);
+    reason = await host
+      .provider({ kind: "viewport", width, height })
+      .catch((error: unknown) => error);
+    return { status: "interrupted", errors: ["request boundary only"] };
+  });
+  expect(reason).toBeInstanceOf(Error);
+  expect(String(reason)).toContain(valid ? "not live and admitted" : "finite positive");
+}
+for (const [width, height, valid] of [
+  [800.5, 600.5, true],
+  [800, 600, true],
+  [0, 600, false],
+  [-1, 600, false],
+  [NaN, 600, false],
+  [Infinity, 600, false],
+  [800, -Infinity, false],
+] as const) {
+  test(`viewport boundary preserves ${width} by ${height} without integer narrowing`, () =>
+    fixture((root) => requestBoundary(root, width, height, valid)));
+}
+
+async function immediateFaultCancellation(root: string): Promise<void> {
+  const host = createFrameworkHost(options(join(root, "result.json")));
+  const release = Promise.withResolvers<void>();
+  let canceled = false,
+    callbackSettled = false;
+  const result = await host.run(async (registerClose) => {
+    registerClose(async () => {
+      release.resolve();
+    });
+    await host
+      .provider("framework-cleanup", async () => {
+        const request = host.guardRequest<RequestInit>({});
+        host.requestSettled({ kind: "transport-fault", detail: "Control host fault" });
+        canceled = request.signal?.aborted === true;
+        expect(callbackSettled).toBe(false);
+        await release.promise;
+        host.observeResponse({ statusCode: 200, body: { value: null } }, request);
+        callbackSettled = true;
+      })
+      .catch(() => {});
+    return { status: "interrupted", errors: ["control host fault"] };
+  });
+  expect(canceled).toBe(true);
+  expect(callbackSettled).toBe(true);
+  expect(result.cleanup.callbacks.status).toBe("confirmed");
+  expect(result.cleanup.scratch.status).toBe("confirmed");
+}
+test("a host fault immediately cancels an owned request before its callback returns", () =>
+  fixture(immediateFaultCancellation));
+
+// check:tooling checks these overloads; the invalid calls never execute.
+function providerSignatures(host: import("./framework-types.js").FrameworkHost): void {
+  const viewport: Promise<void> = host.provider({ kind: "viewport", width: 800.5, height: 600 });
+  const value = Object.freeze({ path: "fixture.png", buffer: new Uint8Array(0) });
+  const screenshot: Promise<typeof value> = host.provider(
+    { kind: "screenshot", file: "original.ts" },
+    async () => value,
+  );
+  void viewport;
+  void screenshot;
+  // @ts-expect-error viewport is callback-free
+  host.provider({ kind: "viewport", width: 800, height: 600 }, async () => {});
+  // @ts-expect-error screenshot requires the original callback
+  host.provider({ kind: "screenshot", file: "original.ts" });
+  // @ts-expect-error lifecycle strings still require their callbacks
+  host.provider("test-frame");
+}
+void providerSignatures;

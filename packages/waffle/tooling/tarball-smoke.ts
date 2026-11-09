@@ -184,7 +184,7 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
 import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
@@ -202,6 +202,16 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
   drive: async (host: HostCase) => {
     host.signal.throwIfAborted();
     const remaining = host.remainingMs();
+    const callback: AssetHoldCallback = async (request: HeldAssetRequest) => {
+      await request.continue();
+      // @ts-expect-error continuation cannot change original response
+      request.continue({ body: "replacement" });
+      // @ts-expect-error callback has no HTTP authority
+      void request.headers;
+    };
+    host.holdAsset("/programs/shell-engine.wasm", callback);
+    // @ts-expect-error response replacement is not supported
+    host.holdAsset("/programs/test-guest.wasm", async () => new Response("replacement"));
     await host.script("window.fixture = 1;");
     await host.task("await Promise.resolve();");
     const peer = await host.openPeer();

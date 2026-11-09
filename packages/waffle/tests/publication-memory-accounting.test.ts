@@ -34,7 +34,7 @@ type Fault =
 
 function sizes(observe: boolean): number[] {
   const fixed = [44, 32, 72, 640, 256, 24, 2048, 24, 128, 49_152];
-  return observe ? [393_216, 16].concat(fixed) : fixed;
+  return observe ? [1_572_864, 16].concat(fixed) : fixed;
 }
 function demand(observe: boolean) {
   const fields = sizes(observe);
@@ -106,11 +106,11 @@ function rig(options: { room?: number; records?: MemoryRecords; serialLimit?: nu
   const overhead = probe.snapshot().allocated;
   probe.close();
   const budget = new MemoryBudget(
-    { ...configuration, bytes: overhead + (options.room ?? 1024 * 1024) },
+    { ...configuration, bytes: overhead + (options.room ?? 2 * 1024 * 1024) },
     allocator,
   );
   allocator.budget = budget;
-  expect(budget.snapshot().limit).toBeLessThan(2 * 1024 * 1024);
+  expect(budget.snapshot().limit).toBeLessThan(5 * 1024 * 1024);
   return { budget, allocator };
 }
 function construct(budget: MemoryBudget, observe: boolean): PublicationBuffers {
@@ -197,7 +197,7 @@ test.each([false, true])("publication fixed backing plan and precharge, observe=
     const before = budget.snapshot();
     const buffers = construct(budget, observe);
     const plan = demand(observe);
-    expect(plan.bytes).toBeLessThan(512 * 1024);
+    expect(plan.bytes).toBeLessThan(2 * 1024 * 1024);
     expect(admit.mock.calls).toEqual([[plan]]);
     expect(allocator.specs).toEqual(
       sizes(observe).map((bytes) => ({ kind: "shared", bytes, maximum: bytes })),
@@ -363,7 +363,7 @@ function exerciseAliases(buffers: PublicationBuffers): void {
 test.each([false, true])(
   "publication aliases and stopped budgets retain backing, observe=%p",
   (observe) => {
-    const { budget, allocator } = rig();
+    const { budget, allocator } = rig({ room: 4 * 1024 * 1024 });
     try {
       const before = budget.snapshot();
       const buffers = construct(budget, observe);
@@ -430,7 +430,7 @@ test.each([false, true])(
     const { budget } = rig();
     const unbudgeted = createPublicationBuffers(limits, observe);
     const native = new MemoryBudget({
-      bytes: 512 * 1024,
+      bytes: 2 * 1024 * 1024,
       producers: records,
       progress: { bytes: 0, allocations: 0, references: 0, leases: 0 },
       waiters: 0,

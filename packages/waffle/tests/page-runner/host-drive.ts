@@ -1,5 +1,6 @@
+import type { AssetOwner } from "./asset-owner.js";
+import { bounded, type Driver } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
-import { type Driver } from "./driver.js";
 import {
   record,
   formatHostError,
@@ -36,6 +37,11 @@ export class HostDrive {
   private pending = 0;
   private readonly body = new AbortController();
   private deadline = Infinity;
+  private teardownUntil: number | undefined;
+  private bodyWork: { kind: "pending"; promise: Promise<unknown> } | { kind: "settled" } = {
+    kind: "settled",
+  };
+  private containmentFailed = false;
   private bodyStartedAt = 0;
   private active = false;
   private uncertain = false;
@@ -55,7 +61,9 @@ export class HostDrive {
     private readonly started: number,
     private readonly signal: AbortSignal,
     private readonly configurePeer?: (state: DocumentState, lookupToken: string) => void,
+    private readonly assets?: AssetOwner,
   ) {
+    this.body.signal.addEventListener("abort", () => this.beginTeardown(), { once: true });
     consumers.register(() => {
       this.closed = true;
       this.revoke();
@@ -318,13 +326,61 @@ try {
     } while (performance.now() < wakeAt);
   }
 
+  private beginTeardown(): void {
+    this.teardownUntil ??= Math.min(
+      performance.now() + (this.budgets.teardown ?? this.budgets.case),
+      this.started + this.budgets.run,
+    );
+    this.assets?.revoke(this.state);
+  }
+  teardownDeadline(): number {
+    if (this.teardownUntil === undefined) throw new Error("Host teardown has not started");
+    return this.teardownUntil;
+  }
+  teardownSignal(): AbortSignal {
+    return AbortSignal.timeout(Math.max(1, Math.ceil(this.teardownDeadline() - performance.now())));
+  }
+  private async joinBodyAndAssets(): Promise<void> {
+    const until = this.teardownDeadline();
+    const body =
+      this.bodyWork.kind === "pending"
+        ? this.bodyWork.promise.then(
+            () => {},
+            () => {},
+          )
+        : Promise.resolve();
+    const joined = await Promise.all([
+      bounded(body, Math.max(0, until - performance.now()), "host body join").then(
+        () => true,
+        () => false,
+      ),
+      this.assets?.join(this.state, until) ?? true,
+    ]);
+    if (joined.every(Boolean) && performance.now() <= until) return;
+    this.containmentFailed = true;
+    this.collector.fail(
+      "host-work-unconfirmed",
+      "Actual host body or asset work outlived teardown",
+      this.state,
+    );
+  }
   revoke(): void {
+    this.beginTeardown();
     this.active = false;
     for (const controller of this.peerSignals.values())
       controller.abort(new Error("Host case capability revoked"));
     if (!this.body.signal.aborted) this.body.abort(new Error("Host case capability revoked"));
   }
   uncontainedPageWork(): boolean {
+    if (
+      this.containmentFailed ||
+      this.bodyWork.kind === "pending" ||
+      this.assets?.pending(this.state)
+    )
+      return true;
+    return this.uncontainedPageTasks();
+  }
+  private uncontainedPageTasks(): boolean {
     if (
       this.collector.transitions.some(
         (transition) =>
@@ -360,7 +416,14 @@ try {
     );
   }
   failureEvidence(): unknown {
-    return { caseId: this.state.group.caseIds[0], body: this.bodyFailure };
+    return {
+      caseId: this.state.group.caseIds[0],
+      body: this.bodyFailure,
+      assets: this.assets?.errors(this.state),
+      pendingBody: this.bodyWork.kind === "pending",
+      pendingAssets: this.assets?.pending(this.state) ?? false,
+      containmentFailed: this.containmentFailed,
+    };
   }
   async drive(callback: (host: HostCase) => Promise<unknown>): Promise<void> {
     const caseId = this.state.group.caseIds[0];
@@ -373,6 +436,7 @@ try {
       if (overdue && !this.livenessProbe) {
         const state = this.collector.overdueDocument(this.budgets) ?? this.state;
         this.collector.fail(overdue, "Host case infrastructure deadline", state);
+        this.body.abort(new Error(overdue));
         this.livenessProbe = this.probe(state).then((category) => {
           if (category !== "responsive") this.collector.fail(category, overdue, state);
         });
@@ -387,9 +451,15 @@ try {
       this.infrastructure();
       this.active = true;
       this.collector.beginHost(this.state, caseId);
+      this.assets?.bind(this.state, () => this.checkBody());
       this.bodyStartedAt = performance.now();
       this.deadline = Math.min(this.bodyStartedAt + this.budgets.case, this.bodyLimit());
       const host: HostCase = {
+        holdAsset: (path, callback) => {
+          this.checkBody();
+          if (!this.assets) throw new Error("Asset response owner unavailable");
+          this.assets.hold(this.state, path, callback);
+        },
         openPeer: () => this.openPeer(),
         signal: this.body.signal,
         remainingMs: () => Math.max(0, this.deadline - performance.now()),
@@ -407,6 +477,11 @@ try {
       };
       this.checkBody();
       const returned = this.consumers.invoke(() => callback(host));
+      this.bodyWork = { kind: "pending", promise: returned };
+      const settled = () => {
+        this.bodyWork = { kind: "settled" };
+      };
+      void returned.then(settled, settled);
       this.checkBody();
       const result = await abortable(returned, this.body.signal);
       this.checkBody();
@@ -427,18 +502,32 @@ try {
       this.signal.removeEventListener("abort", stop);
       this.revoke();
     }
-    await this.livenessProbe;
-    await this.closeRemainingPeers();
     this.collector.results[caseId] = { body: verdict, teardown: { status: "not-entered" } };
+    const delivery = this.closeRemainingPeers().then(async () => {
+      if (this.uncontainedPageTasks())
+        this.collector.fail(
+          "page-task-unconfirmed",
+          "Page task outlived its host waiter",
+          this.state,
+        );
+      await this.deliver(verdict);
+      if (this.signal.aborted || this.collector.failures.length) await this.recoverTeardown();
+    });
+    const completed = await Promise.allSettled([
+      delivery,
+      this.livenessProbe,
+      this.joinBodyAndAssets(),
+    ]);
+    const failure = completed.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
     if (this.uncontainedPageWork())
       this.collector.fail(
         "page-task-unconfirmed",
-        "Page task outlived its host waiter",
+        "Page task or host work outlived its host waiter",
         this.state,
       );
-    await this.deliver(verdict);
-    if (this.signal.aborted || this.collector.failures.length) await this.recoverTeardown();
   }
+
   private peerCapability(state: DocumentState): HostPeer {
     const controller = new AbortController();
     this.peerSignals.set(state, controller);
@@ -488,6 +577,7 @@ try {
     const until = Math.min(
       performance.now() + 4000,
       this.deadline,
+      this.teardownUntil ?? Infinity,
       this.started + this.budgets.run,
     );
     const signal = AbortSignal.any([
@@ -725,7 +815,10 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     const prior = this.closes.get(state);
     if (prior) return prior;
     const until = cleanup
-      ? performance.now() + Math.min(this.budgets.operation ?? 15_000, 15_000)
+      ? Math.min(
+          performance.now() + Math.min(this.budgets.operation ?? 15_000, 15_000),
+          this.teardownDeadline(),
+        )
       : this.operationDeadline();
     const transition = this.collector.prepareTransition(state, "close", until);
     this.peerSignals.get(state)?.abort(new Error("Peer closed"));
@@ -762,7 +855,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     }
   }
   private async recoverTeardown(): Promise<void> {
-    const signal = AbortSignal.timeout((this.budgets.teardown ?? this.budgets.case) + 10_000);
+    const signal = this.teardownSignal();
     while (this.state.host?.kind !== "terminal") {
       const observed = await this.execute(
         "return {phase:h.phase, failure:window.__pageRunner.failure};",
@@ -770,6 +863,8 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
         signal,
         undefined,
         true,
+        this.state,
+        this.teardownDeadline(),
       );
       if (record(observed) && observed.phase === "terminal" && observed.failure)
         throw new ObservationFailure(`Teardown reporting failed: ${String(observed.failure)}`);
@@ -779,17 +874,19 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
   private async deliver(verdict: HostVerdict): Promise<void> {
     if (this.delivered) throw new Error("Host verdict already delivered");
     if (this.pending) {
-      this.infrastructure();
-      await abortable(this.tail, this.signal);
+      this.infrastructure(true);
+      await abortable(this.tail, this.teardownSignal());
     }
     await this.execute(
-      `h.verdict(${JSON.stringify(verdict)});`,
+      `h.verdict(${JSON.stringify(verdict)}, ${performance.timeOrigin + this.teardownDeadline()});`,
       "host",
-      AbortSignal.timeout(5000),
+      this.teardownSignal(),
       () => {
         this.delivered = true;
       },
       true,
+      this.state,
+      this.teardownDeadline(),
     );
   }
 }
