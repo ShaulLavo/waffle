@@ -200,7 +200,12 @@ function sharedFixture(
   const registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "fixture" });
   const s = new ProcessSupervisor({ registry, launch: () => ({ terminate() {} }), ...options });
-  s.createRoot({ pid: rootState.pid, job: rootState.job, ...rootState.signals });
+  s.createRoot({
+    pid: rootState.pid,
+    job: rootState.job,
+    observation: transport,
+    ...rootState.signals,
+  });
   const messages: WorkerProcessMessage[] = [];
   const codec = suppliedCodec ?? {
     export(): never {

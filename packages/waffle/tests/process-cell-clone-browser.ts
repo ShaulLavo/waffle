@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "../proc/observation.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { SharedFilesystem } from "../browser/shared-fs.js";
@@ -151,6 +152,7 @@ export async function browserStaleCellClone(job: boolean): Promise<void> {
   const root = createWorkerProcessTransport({ pid: 11, job: 31, capacity: 2 });
   const child = reserveDirectoryProcess(root, 71, root.pid, 901, root.pid),
     state = workerProcessState(child);
+  const returned = captureNativeReturn({ ...child, kind: "directory" });
   const outcome = job ? state.jobOutcome : state.signals.outcome;
   const controls = (
     job
@@ -205,6 +207,7 @@ export async function browserStaleCellClone(job: boolean): Promise<void> {
     collectDirectoryJob(root.directory, state.jobSlot, state.job);
     for (const phase of ["collected", "recycled"]) {
       if (phase === "recycled") {
+        returned();
         const replacement = reserveDirectoryProcess(root, 72, root.pid, 902, root.pid);
         equal(replacement.slot, child.slot, "same process slot");
         equal(workerProcessState(replacement).jobSlot, state.jobSlot, "same job slot");

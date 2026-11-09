@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "../proc/observation.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
@@ -43,6 +44,7 @@ async function mixedNotificationCase(
   const bridge = createNotificationBridge(helperUrl);
   const guest = new Worker(guestUrl, { type: "module" });
   const transport = createWorkerProcessTransport({ capacity: 4 });
+  const returned = captureNativeReturn(transport);
   const pipe = new PipeController({ capacity: 8, wake: workerProcessState(transport).wake });
   const reader = pipe.retain(1, "read");
   const writer = pipe.retain(2, "write");
@@ -88,7 +90,10 @@ async function mixedNotificationCase(
     clearTimeout(deadline);
     for (const timer of timers) clearTimeout(timer);
     await bridge.dispose();
-    await guest.terminate();
+    const native: { terminate(): void | Promise<void> } = guest;
+    const pending = native.terminate();
+    if (pending) await pending;
+    returned();
     network.dispose();
     reader.close();
     writer.close();

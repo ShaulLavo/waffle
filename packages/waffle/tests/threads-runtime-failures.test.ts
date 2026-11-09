@@ -21,6 +21,9 @@ test("thread adapter cleanup failure keeps the same fenced backing as debt and r
   expect(report.serviceConstructors).toBe(1);
   expect(report.guestConstructors).toBe(1);
   expect(report.cleanupCalls).toBe(1);
+  expect(report.nativeThreadStops).toBe(2);
+  expect(report.nativeThreadReturns).toBe(2);
+  expect(report.observation).toEqual({ kind: "terminated" });
   expect(report.disposal.kind).toBe("error");
   expect(report.repeatedDisposal.kind).toBe("error");
   expect(report.sharedGuests).toHaveLength(1);

@@ -94,7 +94,7 @@ test("source families keep a workspace development edge and exact runtime metada
 });
 
 test("the repository source metadata gate covers every Waffle family", () => {
-  assert.equal(assertSourceWaffleMetadata(repository), 1);
+  assert.equal(assertSourceWaffleMetadata(repository), 2);
 });
 
 test("source discovery includes missing peers and dev-only runtime references", () => {

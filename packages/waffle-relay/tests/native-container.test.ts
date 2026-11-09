@@ -75,7 +75,7 @@ describe("native container preparation", () => {
   });
 });
 
-async function fixture(directory: string) {
+async function fixture(directory: string, interfaces?: { runtime: number; relay: number }) {
   const source = (await execute("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
   const runtime = join(directory, "runtime");
   const relay = join(directory, "relay");
@@ -86,9 +86,14 @@ async function fixture(directory: string) {
     ["waffle-relay", relay],
   ];
   for (const [name, path] of packages) {
-    const text = (
+    let text = (
       await execute("git", ["show", `${source}:packages/${name}/package.json`], { cwd: root })
     ).stdout;
+    if (interfaces)
+      text = JSON.stringify({
+        ...JSON.parse(text),
+        waffleHostInterface: name === "waffle" ? interfaces.runtime : interfaces.relay,
+      });
     await writeFile(join(path, "package/package.json"), text);
   }
   const sourceArchive = join(directory, "source.tar");
@@ -128,7 +133,7 @@ test("archive tuple checks real source and rejects mismatched bytes, versions an
     const input = await fixture(directory);
     expect(await verifyPairedReleaseArchives(input)).toMatchObject({
       source: input.source,
-      hostInterface: 1,
+      hostInterface: 2,
     });
     await expect(
       verifyPairedReleaseArchives({
@@ -206,4 +211,25 @@ test("native pins admit only the final public pair and freeze the install graph"
     expect(lock.packages[`node_modules/${name}`].version).toBe("1.6.11");
   expect(lock.packages["node_modules/waffle"].version).toBe(nativeRelease.version);
   expect(lock.packages["node_modules/waffle-relay"].version).toBe(nativeRelease.version);
+});
+
+test("archive host interfaces must match each other and the selected source", async () => {
+  const directory = await mkdtemp(
+    join(
+      process.env.WAFFLE_RELAY_TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()),
+      "waffle-native-interface-",
+    ),
+  );
+  try {
+    const peerMismatch = await fixture(join(directory, "peer"), { runtime: 2, relay: 3 });
+    await expect(verifyPairedReleaseArchives(peerMismatch)).rejects.toThrow(
+      "Runtime and relay host interfaces differ",
+    );
+    const sourceMismatch = await fixture(join(directory, "source"), { runtime: 3, relay: 3 });
+    await expect(verifyPairedReleaseArchives(sourceMismatch)).rejects.toThrow(
+      "Archive host interface differs from source",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

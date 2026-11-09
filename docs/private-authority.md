@@ -11,7 +11,7 @@ replacement happens to return the right answer:
 > Never pass an authority-bearing runtime value through a guest-mutable builtin.
 
 Private authority includes process directory and identity buffers, incarnation
-cells, signal/outcome controls, pipe buffers and lifetimes, descriptor tables,
+cells, execution observation tokens and canonical-source transfers, signal/outcome controls, pipe buffers and lifetimes, descriptor tables,
 open descriptions, endpoint callbacks, and collections containing these values.
 A `Map<number, Stream>` is private even though its keys are ordinary numbers.
 A callback that closes over a private endpoint is authority too.
@@ -81,6 +81,10 @@ closures and buffers carry process authority:
 | `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                                                              |
 | `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.                                           |
 | `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal.                                     |
+
+`proc/observation.ts` is checked alongside `proc/outcome.ts` and `proc/directory.ts`.
+Its source variants, tokens, views, branded unwinds, and acquisition callbacks use captured
+constructors, atomics, and WeakMap operations. Token expiry grants no producer authority.
 
 Terminal identity/context, policy/turn, attachment/authority, input and process-lifetime
 handles are named private types in the checker. None of these modules is classified as a

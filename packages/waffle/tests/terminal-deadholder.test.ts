@@ -1,3 +1,4 @@
+import { captureNativeReturn } from "../proc/observation.ts";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
@@ -426,6 +427,7 @@ test("a stale physical-stop capture cannot change a replacement directory incarn
     await f.lifetime.quiesce();
     claimOutcome(f.state.signals.outcome, { kind: "exited", code: 0 });
     confirmWorkerProcessJob(f.process);
+    captureNativeReturn(f.process)();
     collectDirectoryProcess(f.process);
     const replacement = f.spawn();
     expect(replacement.slot).toBe(f.process.slot);

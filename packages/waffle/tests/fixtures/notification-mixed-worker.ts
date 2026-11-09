@@ -1,4 +1,9 @@
 import {
+  captureProcessObserver,
+  acquireObservedProcess,
+  checkProcessObservation,
+} from "../../proc/observation.js";
+import {
   NotificationWaitScope,
   type NotificationWaitSet,
 } from "../../browser/notification-wait.js";
@@ -86,28 +91,35 @@ function checkIdleWaits(set: NotificationWaitSet, gate: Int32Array): void {
 async function run(
   request: MixedRequest,
 ): Promise<{ done: true; reports: unknown[]; turns: number }> {
+  const observer = captureProcessObserver(request.process);
   const fs = new FilesystemClient(request.filesystem);
   const descriptors = new DescriptorTable();
   const network = new NetHost(request.ring, () => {});
   const scope = new NotificationWaitScope(request.notifications, fs);
   let watch: number | undefined;
   try {
+    checkProcessObservation(observer);
     const root = await fs.asyncCall("preopen", ["/"]);
+    checkProcessObservation(observer);
     watch = await fs.asyncCall("watchOpen", [root, true]);
-    const service = new WorkerProcessClient({
-      transport: request.process,
-      descriptors,
-      codec: {
-        export() {
-          throw Error("unused");
-        },
-        import() {
-          throw Error("unused");
-        },
-        discard() {},
-      },
-      postMessage() {},
-    });
+    const service = acquireObservedProcess(
+      observer,
+      () =>
+        new WorkerProcessClient({
+          transport: request.process,
+          descriptors,
+          codec: {
+            export() {
+              throw Error("unused");
+            },
+            import() {
+              throw Error("unused");
+            },
+            discard() {},
+          },
+          postMessage() {},
+        }),
+    );
     const reader = attachPipeEndpoint(request.pipe);
     const fd = descriptors.open(reader, (1n << 29n) - 1n, (1n << 29n) - 1n);
     const process = new ProcessABI({

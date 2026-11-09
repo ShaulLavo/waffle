@@ -97,7 +97,12 @@ function processFixture(cellsPerProcess = 32, processCapacity = 16) {
     },
   });
   const rootState = workerProcessState(pair.transport);
-  supervisor.createRoot({ pid: rootState.pid, job: rootState.job, ...rootState.signals });
+  supervisor.createRoot({
+    pid: rootState.pid,
+    job: rootState.job,
+    observation: pair.transport,
+    ...rootState.signals,
+  });
   const processes = new WorkerProcessBroker({
     supervisor: async () => supervisor,
     codec: () => pair.broker.codec(),
@@ -538,7 +543,12 @@ test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root 
       diagnostic ??= error;
     },
   });
-  supervisor.createRoot({ pid: rootState.pid, job: rootState.job, ...rootState.signals });
+  supervisor.createRoot({
+    pid: rootState.pid,
+    job: rootState.job,
+    observation: transport,
+    ...rootState.signals,
+  });
   supervisor.registerRevocation(rootState.pid, () => registry.revoke(rootState.pid));
   const processes = new WorkerProcessBroker({
     supervisor: async () => supervisor,

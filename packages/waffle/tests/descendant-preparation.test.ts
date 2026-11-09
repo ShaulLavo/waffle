@@ -55,7 +55,9 @@ function completionLabel(completion: RootPreparationCompletion): string {
 }
 
 /** A real broker, supervisor and directory; only the adapter's Worker is a launch callback. */
-function fixture(options: { launch?(context: ProcessContext): ProcessHandle | void } = {}) {
+function fixture(
+  options: { launch?(context: ProcessContext): ProcessHandle | void; disposeError?: Error } = {},
+) {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
@@ -90,7 +92,19 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
       errors.push(error);
     },
   });
-  cleanups.push(() => broker.dispose());
+  cleanups.push(async () => {
+    if (options.disposeError) {
+      const result = await broker.dispose().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(AggregateError);
+      if (!(result instanceof AggregateError)) throw result;
+      expect(result.errors).toContain(options.disposeError);
+      return;
+    }
+    await broker.dispose();
+  });
   async function adopt(
     options: (root: WorkerProcessTransport) => Omit<RuntimeRootOptions, "memory"> = () => ({}),
   ) {
@@ -517,11 +531,13 @@ test("postcommit cancellation reports committed/no-entry before exactly one exit
   expect(reconciled.receipt.member(ownedMember!)).toBe("removed");
 });
 
-test("failed adapter invocation transfers committed membership to exit cleanup once", async () => {
+test("failed adapter invocation transfers membership once but retains uncertain native ownership", async () => {
+  const failure = Error("adapter start failed");
   const f = fixture({
     launch() {
-      throw Error("adapter start failed");
+      throw failure;
     },
+    disposeError: failure,
   });
   const order: string[] = [];
   const t = await shellTerminal(f, {

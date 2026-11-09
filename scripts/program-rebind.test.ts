@@ -1,3 +1,4 @@
+import runtimeManifest from "../packages/waffle/package.json" with { type: "json" };
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -16,6 +17,10 @@ import { buildRebind, type RebindOptions } from "./program-rebind.ts";
 import { parseHostInterface } from "../packages/waffle/tooling/host-interface.ts";
 
 const hostInterface = parseHostInterface(1, "fixture");
+const runtimeHostInterface = parseHostInterface(
+  runtimeManifest.waffleHostInterface,
+  "runtime fixture",
+);
 const repository = resolve(import.meta.dirname, "..");
 const fromTag = "programs-v0.0.13";
 const targetTag = "programs-v0.0.14";
@@ -713,7 +718,7 @@ describe("program peer rebind", () => {
       fromAssets: fromOut,
       tag: targetTag,
       out: resolve(scratch, "rebuilt-metadata"),
-      hostInterface: 1,
+      hostInterface: runtimeHostInterface,
       runtime: {
         url: runtimeReleaseUrl("ShaulLavo/waffle", nextVersion),
         sha256: sha256(nextArchive),
@@ -728,8 +733,10 @@ describe("program peer rebind", () => {
     expect(result.schema).toBe("waffle-program-release/2");
     expect(result.installCheck.runtimeRoots).toBe(1);
     expect(result.runtime.version).toBe(nextVersion);
-    expect(result.runtime.waffleHostInterface).toBe(hostInterface);
-    expect(result.packages.every((item) => item.waffleHostInterface === 1)).toBe(true);
+    expect(result.runtime.waffleHostInterface).toBe(runtimeHostInterface);
+    expect(result.packages.every((item) => item.waffleHostInterface === runtimeHostInterface)).toBe(
+      true,
+    );
   }, 180_000);
 
   test("shared runtime checker rejects two physical runtimes", () => {

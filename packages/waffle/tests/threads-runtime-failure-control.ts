@@ -1,3 +1,4 @@
+import { captureProcessObserver } from "../proc/observation.ts";
 import { ProcessError } from "../proc/types.ts";
 import { createRuntime } from "../runtime.ts";
 import { BrowserProcessBroker } from "../browser/process-broker.ts";
@@ -21,6 +22,8 @@ let serviceConstructors = 0;
 let guestConstructors = 0;
 let ordinaryConstructors = 0;
 let cleanupCalls = 0;
+let nativeThreadStops = 0;
+let nativeThreadReturns = 0;
 let canonical: Worker | undefined;
 const readCompleted = Promise.withResolvers<void>();
 const drainRequested = Promise.withResolvers<boolean>();
@@ -34,6 +37,17 @@ function observeCanonical(worker: Worker): void {
   });
 }
 globalThis.Worker = class extends NativeWorker {
+  private readonly threadConsumer: boolean;
+  override terminate(): void | Promise<void> {
+    if (this.threadConsumer) nativeThreadStops++;
+    const returned = () => {
+      if (this.threadConsumer) nativeThreadReturns++;
+    };
+    const terminate: (this: Worker) => void | Promise<void> = NativeWorker.prototype.terminate;
+    const pending = terminate.call(this);
+    if (pending) return pending.then(returned);
+    returned();
+  }
   constructor(url: string | URL, options?: WorkerOptions) {
     const name = String(url);
     if (name.includes("/thread/service-worker")) serviceConstructors++;
@@ -45,6 +59,8 @@ globalThis.Worker = class extends NativeWorker {
     if (selected?.startsWith("service-constructor") && name.includes("/thread/service-worker"))
       throw new Error("service constructor failed before native construction");
     super(url, options);
+    this.threadConsumer =
+      name.includes("/thread/service-worker") || name.includes("/thread/guest-bootstrap");
     workers.push(this);
     if (name.includes("late-read-service")) observeCanonical(this);
     if (selected === "service-handler" && name.includes("/thread/service-worker"))
@@ -261,6 +277,7 @@ try {
     fds: selected === "late-read" ? [{ parent: 0, child: 0 }] : [],
   });
   while (notices.length) await service.runtimeMessage(notices.shift()!, root.pid);
+  const observer = captureProcessObserver(service.rootObservation(pid));
   await supervisor.start(pid);
   let publication: unknown;
   if (selected === "late-read") {
@@ -294,6 +311,9 @@ try {
       helperAfterRefusal,
       helperBeforeLaunch,
       cleanupCalls,
+      nativeThreadStops,
+      nativeThreadReturns,
+      observation: observer.read(),
       exit,
       startStatus,
       collected,

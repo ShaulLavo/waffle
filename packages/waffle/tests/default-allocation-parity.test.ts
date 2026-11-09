@@ -68,12 +68,32 @@ function withoutIdleWorkers(expected: string[]) {
   }
   return expected;
 }
+function withExecutionObservation(expected: string[]) {
+  const oldDirectory = '"initial":720928,"maximum":720928,"growable":false';
+  expect(expected.filter((event) => event.includes(oldDirectory))).toHaveLength(2);
+  const events = expected.map((event) =>
+    event.replace(oldDirectory, '"initial":729120,"maximum":729120,"growable":false'),
+  );
+  for (const purpose of ["connection", "group", "guest"]) {
+    for (const outcome of ["attempt", "success"])
+      events.push(
+        JSON.stringify({
+          realm: "page-owned-javascript",
+          purpose,
+          constructor: "SharedArrayBuffer",
+          descriptor: { initial: 16, maximum: 16, growable: false },
+          outcome,
+        }),
+      );
+  }
+  return events.sort();
+}
 for (const [mode, agent] of [
   ["normal", "desktop"],
   ["fallback", "desktop"],
   ["normal", "ios"],
 ] as const)
-  test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match the reference apart from storage-root and idle-worker changes, ${mode}, ${agent} user agent`, async () => {
+  test(`P7 PRE-IMPORT PAGE-OWNED JavaScript descriptors match the reference apart from approved storage, worker and process-control changes, ${mode}, ${agent} user agent`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "waffle-parity-reference-"));
     try {
       const repository =
@@ -99,7 +119,9 @@ for (const [mode, agent] of [
       expect(current.boundary).toBe("PRE-IMPORT PAGE-OWNED JavaScript");
       expect(current.fixtures).toEqual(baseline.fixtures);
       expect(withoutStorageRoot(current, 33_289_256)).toEqual(
-        withPrivateInputArena(withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024))),
+        withExecutionObservation(
+          withPrivateInputArena(withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024))),
+        ),
       );
     } finally {
       await rm(scratch, { recursive: true, force: true });

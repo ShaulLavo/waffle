@@ -1,5 +1,9 @@
+import {
+  captureProcessObserver,
+  validateObservationOutcome,
+  type ProcessObservationTransfer,
+} from "../proc/observation.js";
 import { ExecutionUnwind } from "../core/unwind.ts";
-import { terminalInterrupt } from "../interrupt/check.ts";
 import { createSupervisedWaitImports, WAIT_REGISTRATION_WORDS } from "../interrupt/wait.ts";
 import {
   Int32ArrayConstructor,
@@ -23,6 +27,7 @@ export interface GuestWorkerRequest {
   readonly thread: ThreadKey;
   readonly entry: GuestEntry;
   readonly outcome: OutcomeTransfer;
+  readonly observation: ProcessObservationTransfer;
   readonly signal: SharedArrayBuffer;
   readonly waits: SharedArrayBuffer;
   readonly lane: ThreadLaneTransfer;
@@ -44,8 +49,6 @@ export async function bootstrapGuestWorker(
   const send = host.postMessage;
   const add = host.addEventListener;
   const remove = host.removeEventListener;
-  const outcome = reviveOutcome(request.outcome);
-  const signal = new Int32ArrayConstructor(request.signal);
   const permission = Promise.withResolvers<boolean>();
   let lane: ThreadLane | undefined;
   function command(event: MessageEvent<unknown>): void {
@@ -59,26 +62,31 @@ export async function bootstrapGuestWorker(
     else reflectApply(closePort, request.lane.port, []);
     reflectApply(remove, host, ["message", command]);
   }
-  const terminal = new GuestTerminal({
-    thread: request.thread,
-    outcome,
-    signal,
-    report: (event) => {
-      if (event.kind === "host-idle") cleanup();
-      reflectApply(send, host, [event]);
-    },
-  });
-  reflectApply(add, host, ["message", command]);
   try {
+    const observer = captureProcessObserver(request.observation);
+    const outcome = reviveOutcome(request.outcome);
+    validateObservationOutcome(request.observation, outcome);
+    const signal = new Int32ArrayConstructor(request.signal);
+    const terminal = new GuestTerminal({
+      thread: request.thread,
+      outcome,
+      observer,
+      signal,
+      report: (event) => {
+        if (event.kind === "host-idle") cleanup();
+        reflectApply(send, host, [event]);
+      },
+    });
+    reflectApply(add, host, ["message", command]);
     await enterGuest(request.entry, terminal, async () => {
       validate(request);
       lane = new ThreadLane(request.lane, () => {
-        if (terminalInterrupt(outcome)) throw new ExecutionUnwind("thread process is terminal");
+        if (terminal.winner) throw new ExecutionUnwind("thread process is terminal");
       });
       const waits = createSupervisedWaitImports(
         request.memory,
         new Int32ArrayConstructor(request.waits),
-        () => terminalInterrupt(outcome),
+        () => (terminal.winner ? 1 : 0),
         {
           registered: (registration) =>
             reflectApply(send, host, [
@@ -104,7 +112,7 @@ export async function bootstrapGuestWorker(
         terminal,
         args: request.args,
         env: request.env,
-        interrupt: { ...waits, __waffle_fatal: () => terminalInterrupt(outcome) },
+        interrupt: { ...waits, __waffle_fatal: () => (terminal.winner ? 1 : 0) },
       });
       const instance = new Instance(request.module, imports);
       reflectApply(send, host, [
@@ -125,7 +133,9 @@ function validate(request: GuestWorkerRequest): void {
     request.lane.reply === memory ||
     request.waits === memory ||
     request.signal === memory ||
-    outcome === memory
+    outcome === memory ||
+    (request.observation.kind === "directory" && request.observation.directory === memory) ||
+    request.observation.lifetime === memory
   )
     throw new TypeError("thread controls must not be guest-writable");
   if (

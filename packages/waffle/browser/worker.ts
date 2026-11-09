@@ -1,3 +1,14 @@
+import {
+  captureProcessObserver,
+  validateObservationOutcome,
+  validateObservationDirectory,
+  type ProcessObservationTransfer,
+  checkProcessObservation,
+  acquireObservedProcess,
+  isProcessExecutionTerminated,
+  observedProcessExit,
+  type ProcessObserver,
+} from "../proc/observation.js";
 import type { GraphicsConnection } from "./display/protocol.js";
 import {
   allocateHostProgramMemory,
@@ -105,6 +116,7 @@ export interface RuntimeWorkerRequest {
   startupStderr?: PipeEndpointHandle;
   /** Authoritative terminal word available before loading process adapters. */
   outcome?: OutcomeTransfer;
+  observation?: ProcessObservationTransfer;
   /** Broker-owned bounded buffer for host terminal output. Without it, output is posted. */
   terminalOutput?: SharedArrayBuffer;
   /** Broker-owned memory group membership. Its PIE image links into the shared group memory. */
@@ -140,6 +152,7 @@ export type RuntimeWorkerMessage =
       cleanupErrors: string[];
       sleep?: SleepMode;
     }
+  | { type: "observation-error"; message: string; cleanupErrors: string[] }
   | { type: "default-signal"; signal: number };
 
 export interface RuntimeWorkerHost {
@@ -465,6 +478,36 @@ function adoptStdio(descriptors: Wasi["descriptors"], discarded: Stream[]): void
   }
 }
 
+function initialProcessOutcome<R extends RuntimeWorkerRequest>(
+  request: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  acquire: <T>(read: () => T) => T,
+): OutcomeWord | SharedArrayBuffer | undefined {
+  if (request.runtimeProcess)
+    return acquire(() => directoryState(request.runtimeProcess!)).signals.outcome;
+  if (request.outcome !== undefined) return reviveOutcome(request.outcome);
+  if (executor.outcome !== undefined) return executor.outcome;
+  if (request.observation?.kind === "standalone") return reviveOutcome(request.observation.source);
+  const observation = request.observation;
+  if (observation?.kind === "directory")
+    return acquire(() => directoryState(observation)).signals.outcome;
+  return undefined;
+}
+
+function requestProcessObserver<R extends RuntimeWorkerRequest>(
+  request: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+): ProcessObserver | undefined {
+  const observation = request.observation ?? request.runtimeProcess;
+  if (!observation) return;
+  if (request.runtimeProcess) validateObservationDirectory(observation, request.runtimeProcess);
+  if (request.outcome !== undefined)
+    validateObservationOutcome(observation, reviveOutcome(request.outcome));
+  if (executor.outcome !== undefined)
+    validateObservationOutcome(observation, outcomeWord(executor.outcome));
+  return captureProcessObserver(observation);
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -506,6 +549,9 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
+  let observer: ProcessObserver | undefined;
+  let terminated = false;
+  let lastObservationFailure: unknown;
   let diagnosticWrite = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal
     ? new Int32ArrayConstructor(executor.requestedSignal)
@@ -514,13 +560,31 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   let localOutcome: ProcessExit | null = null;
   const detachCollectedProcess = (error: unknown): void => {
     if (!isCollectedProcess(error)) throw error;
+    if (observer) {
+      const selected = checkProcessObservation(observer);
+      if (!selected) throw error;
+      localOutcome = selected;
+    }
     // Shared authority can disappear during asynchronous adapter loading, too. Only local
     // cleanup/reporting remains valid; never send an exit for the slot's new incarnation.
     outcome = null;
     runtimeProcess = null;
     requestedSignal = undefined;
   };
+  const observedOutcome = (): ProcessExit | null => {
+    if (!observer) return localOutcome ?? (outcome ? readOutcome(outcome) : null);
+    try {
+      const selected = checkProcessObservation(observer);
+      if (selected) localOutcome = selected;
+      return selected;
+    } catch (error) {
+      lastObservationFailure = error;
+      throw error;
+    }
+  };
   const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => {
+    const selected = observedOutcome();
+    if (selected) return selected;
     try {
       if (outcome) return (localOutcome = claimOutcome(outcome, result));
     } catch (error) {
@@ -530,7 +594,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   };
   const defaultSignal = (signal: number): void => {
     checkedSignal(signal);
-    const settled = localOutcome ?? (outcome ? readOutcome(outcome) : null);
+    const settled = observedOutcome();
     const killed = !settled && requestedSignal && controlLoad(requestedSignal, 0) === 9;
     if (!settled && !killed && !defaultSignalTerminates(signal)) return;
     const winner = settled ?? claim({ kind: "signaled", code: killed ? 9 : signal });
@@ -556,7 +620,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     }
   };
   const checkActive = () => {
-    const winner = localOutcome ?? (outcome ? readOutcome(outcome) : null);
+    const winner = observedOutcome();
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked() || cancellation.signal.aborted) throw new WasiExit(1);
@@ -596,12 +660,25 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     cancelStartup();
     pendingFinish = finishOwned(result);
   };
+  const finishingOutcome = (): ProcessExit | null => {
+    if (observer) {
+      const observed = observer.read();
+      terminated ||= observed.kind === "terminated";
+      if (observed.kind === "selected") localOutcome = observed.result;
+    }
+    if (!terminated && outcome && !localOutcome) return readOutcome(outcome);
+    return localOutcome;
+  };
   const finishOwned = async (result: WorkerResult): Promise<void> => {
     let settled = localOutcome;
+    let observationFailure =
+      observer && isProcessExecutionTerminated(lastObservationFailure, observer)
+        ? undefined
+        : lastObservationFailure;
     try {
-      if (outcome) settled = readOutcome(outcome);
+      settled = finishingOutcome();
     } catch (error) {
-      detachCollectedProcess(error);
+      observationFailure = lastObservationFailure ?? ("error" in result ? result.error : error);
     }
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
@@ -614,10 +691,20 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
     // A parent may act on this exit at once: deliver every byte the guest wrote first.
-    if (!settled) hostOutput?.flush(() => revoked() || outcomeSettled());
-    const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
+    if (!terminated && !settled) hostOutput?.flush(() => revoked() || outcomeSettled());
+    const runtimeDiagnostic =
+      !observationFailure &&
+      !terminated &&
+      !executor.complete &&
+      started &&
+      "error" in result &&
+      !settled;
     let winner =
-      runtimeDiagnostic || !executor.complete || startupFailure ? claim(ownResult) : settled;
+      terminated || observationFailure
+        ? null
+        : runtimeDiagnostic || !executor.complete || startupFailure
+          ? claim(ownResult)
+          : settled;
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length)
@@ -644,13 +731,13 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       } catch (error) {
         collect(error);
       }
-      winner = claim(ownResult);
     }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
     attempt(() => memorySampler?.sample());
     // Legacy transports must buffer diagnostics before publishing logical completion.
     if (
+      !terminated &&
       executor.complete &&
       "error" in result &&
       (startupFailure ? !req.runtimeProcess && winner?.kind === "start-failed" : !settled)
@@ -679,6 +766,19 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         collect(error);
         filesystemReleased = false;
       }
+    }
+    if (observationFailure) {
+      postToHost({
+        type: "observation-error",
+        message: describeWorkerError(observationFailure),
+        cleanupErrors,
+      });
+      return;
+    }
+    if (observer?.read().kind === "terminated") terminated = true;
+    if (terminated) {
+      if (cleanupErrors.length) throw new Error(cleanupErrors.join("\n"));
+      return;
     }
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so
@@ -728,7 +828,26 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         : executor.terminalSignal?.(error);
     return signal === undefined ? null : { code: 128 + signal, signal };
   };
+  const finishError = (error: unknown): void => {
+    if (observer && isProcessExecutionTerminated(error, observer)) {
+      terminated = true;
+      finish({ code: 0 });
+    } else if (observer && observedProcessExit(error, observer)) {
+      const result = observedProcessExit(error, observer)!;
+      localOutcome = result;
+      finish({
+        code: waitStatus(result),
+        signal: result.kind === "signaled" ? result.code : undefined,
+      });
+    } else finish(terminalResult(error) ?? { error });
+  };
   const onError = (event: WorkerTerminalEvent) => {
+    if (observer && isProcessExecutionTerminated(event.error, observer)) {
+      terminated = true;
+      event.preventDefault();
+      finish({ code: 0 });
+      return;
+    }
     const result = terminalResult(event.error);
     if (result) {
       event.preventDefault();
@@ -736,6 +855,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     }
   };
   const onRejection = (event: WorkerTerminalEvent) => {
+    if (observer && isProcessExecutionTerminated(event.reason, observer)) {
+      terminated = true;
+      event.preventDefault();
+      finish({ code: 0 });
+      return;
+    }
     const result = terminalResult(event.reason);
     if (result) {
       event.preventDefault();
@@ -745,11 +870,19 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
   try {
     // A valid process must publish even its first adapter-import failure to shared state.
     // Keep this synchronous, while still routing a stale incarnation through finish().
-    const requestOutcome = req.outcome === undefined ? undefined : reviveOutcome(req.outcome);
-    const sharedOutcome = req.runtimeProcess
-      ? directoryState(req.runtimeProcess).signals.outcome
-      : (requestOutcome ?? executor.outcome);
+    const observation = req.observation ?? req.runtimeProcess;
+    try {
+      observer = requestProcessObserver(req, executor);
+    } catch (error) {
+      lastObservationFailure = error;
+      throw error;
+    }
+    checkActive();
+    const acquire = <T>(read: () => T): T =>
+      observer ? acquireObservedProcess(observer, read) : read();
+    const sharedOutcome = initialProcessOutcome(req, executor, acquire);
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    if (observation && outcome) validateObservationOutcome(observation, outcome);
     if (req.memoryObservation) memorySampler = createWorkerMemorySampler(req.memoryObservation);
     graphics = await prepareGraphics(req.graphics, () => boundMemory, checkActive);
     const processModules = loadProcessModules(req.runtimeProcess);
@@ -761,7 +894,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     }
     const runtime = processModules ? await processModules.client : null;
     const runtimeState = req.runtimeProcess
-      ? runtime!.workerProcessState(req.runtimeProcess)
+      ? acquire(() => runtime!.workerProcessState(req.runtimeProcess!))
       : null;
     if (
       !runtimeState &&
@@ -905,7 +1038,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       // Instrumented source checkpoints use the private fatal import below so a pre-existing
       // interrupted import is never rebound to immutable supervisor-outcome semantics.
       interrupted: () => executor.signal?.(0, 0) ?? 0,
-      __waffle_fatal: () => fatalInterrupt(outcome),
+      __waffle_fatal: () =>
+        observer
+          ? observedOutcome()?.kind === "signaled"
+            ? localOutcome!.code
+            : 0
+          : fatalInterrupt(outcome),
       default_signal: (signal) => {
         try {
           defaultSignal(signal!);
@@ -995,9 +1133,11 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         fallback: createFilesystemDescriptorCodec(fs),
         registry: runtime!.workerProcessPipeRegistry(req.runtimeProcess),
       });
-      runtimeProcess = new runtime!.WorkerProcessClient({
-        transport: req.runtimeProcess,
-        descriptors: wasi.descriptors,
+      const transport = req.runtimeProcess;
+      const descriptors = wasi.descriptors;
+      const clientOptions = {
+        transport,
+        descriptors,
         // Terminal provenance takes priority even when its resolved stream is a PipeEndpoint.
         codec: createRuntimeTerminalCodec({
           fallback: pipes.codec(),
@@ -1049,7 +1189,8 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
             throw error;
           }
         },
-      });
+      } satisfies import("../proc/worker-client.js").WorkerProcessClientOptions;
+      runtimeProcess = acquire(() => new runtime!.WorkerProcessClient(clientOptions));
       // Record original default-terminal destinations before the hook moves/closes any fd.
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
@@ -1164,7 +1305,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     // Synchronous commands claim their result before guest-scheduled microtasks can run.
     finish({ code: typeof completion === "number" ? completion : await completion });
   } catch (error) {
-    finish(terminalResult(error) ?? { error });
+    finishError(error);
   } finally {
     try {
       await pendingFinish;

@@ -195,7 +195,7 @@ test("supervisor refusal preserves an existing process without publishing a new 
   const f = fixture(256 * 1024 ** 2);
   const supervisor = await f.broker.ready();
   const state = workerProcessState(f.root);
-  supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+  supervisor.createRoot({ pid: state.pid, job: state.job, observation: f.root, ...state.signals });
   const existing = supervisor.get(f.root.pid);
   const { registry, data: originalData } = attachRegistry(f, 2);
   try {

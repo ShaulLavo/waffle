@@ -472,13 +472,15 @@ late exit or signal cannot replace a successor's outcome.
 `runtime_proc.wait(pid, out)` consumes one direct child's terminal outcome. It
 returns `-EAGAIN` (`-6`) while the child or its resource/filesystem cleanup fence is
 pending. Success writes the existing 8-byte little-endian kind/code record and
-immediately releases that child's shared process slot, independently of its job.
+immediately completes logical collection, independently of its job. Its shared
+process slot becomes reusable after its captured native consumers return.
 A subsequent wait, or a wait for a non-child, returns `-ECHILD` (`-12`). Pipe-owner
 metadata has been released by the cleanup fence; a consuming wait never retains it.
 An exited but uncollected child remains a zombie and retains process capacity.
 Choosing an outcome alone is not proof that a Worker's resources are safe to release.
 Shared collectibility is published before host exit observers and waiters see the
-result, so a consuming host wait can immediately reserve replacement capacity.
+result. A consuming host wait does not await native termination; pending native
+returns can temporarily retain process capacity. See [Process execution observation](process-observation.md).
 
 Poll kind 2 observes a child's readiness through
 `ProcessService.childExited(parentPid, pid): boolean`; it never consumes the exit
@@ -827,15 +829,15 @@ rights. Duplicate fds share flags, the handle and its final-close
 lifetime. Passing a socket to a `runtime_proc` child returns `NOTSUP`, errno 58, before descriptor
 export. Sockets may be rebound within the same process with `fd_reopen` or `dup`.
 
-| Import                                                   | Socket behavior                                                                                                                                                                                                                                                                                                                     |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sock_send(fd, iovs, count, flags, out_written)`         | Flags must be zero, otherwise `NOTSUP`. Partial writes are valid. It waits for open and credit unless `FDFLAG_NONBLOCK` is set, which returns `AGAIN`. After write shutdown, writes return `PIPE`. A failed connect returns its mapped errno on the first send and `PIPE` on later sends.                                           |
-| `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`.                                                                                               |
-| `sock_shutdown(fd, how)`                                 | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes.                                                                                                                                                                 |
-| `fd_read`, `fd_write`                                    | Same descriptor I/O without socket flags.                                                                                                                                                                                                                                                                                           |
+| Import                                                   | Socket behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sock_send(fd, iovs, count, flags, out_written)`         | Flags must be zero, otherwise `NOTSUP`. Partial writes are valid. It waits for open and credit unless `FDFLAG_NONBLOCK` is set, which returns `AGAIN`. After write shutdown, writes return `PIPE`. A failed connect returns its mapped errno on the first send and `PIPE` on later sends.                                                                                                                                                                                                                |
+| `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`.                                                                                                                                                                                                                                                                    |
+| `sock_shutdown(fd, how)`                                 | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes.                                                                                                                                                                                                                                                                                                                                      |
+| `fd_read`, `fd_write`                                    | Same descriptor I/O without socket flags.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `poll_oneoff`                                            | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. A listener is read-ready while an accept is pending, with `nbytes` zero; it is never write-ready unless reporting an error. Readiness does not consume a connection. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
-| `fd_close`                                               | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens.                                                                                                                                                                                                                 |
-| `sock_accept(fd, flags, out_fd)`                       | A listener waits for a pending connection, or returns `AGAIN` when its own `FDFLAG_NONBLOCK` is set. Flags must be zero or `FDFLAG_NONBLOCK` 4, otherwise `INVAL`. They set the accepted socket's flags independently of the listener. Success writes a new fd as little-endian u32. A connected socket returns `INVAL`.                                                                                                                                                                                                                                                                   |
+| `fd_close`                                               | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `sock_accept(fd, flags, out_fd)`                         | A listener waits for a pending connection, or returns `AGAIN` when its own `FDFLAG_NONBLOCK` is set. Flags must be zero or `FDFLAG_NONBLOCK` 4, otherwise `INVAL`. They set the accepted socket's flags independently of the listener. Success writes a new fd as little-endian u32. A connected socket returns `INVAL`.                                                                                                                                                                                 |
 
 For every `sock_*` call, a valid non-socket fd returns `NOTSOCK`, errno 57; an absent fd returns
 `BADF`, errno 8. The adapter's `HOST_CALL_FD` special case in `sock_send` stays first and unchanged.
@@ -849,8 +851,8 @@ sockets. Accepted sockets use the existing duplex I/O, EOF, shutdown, polling an
 rules. Revocation interrupts a blocking accept through the existing worker liveness check.
 
 Listener bindings and right bit 29 are additive. Existing connected sockets still return `INVAL`
-from `sock_accept`, and non-socket results stay unchanged. `waffleHostInterface` remains 1 under the bump
-rule below. Existing calls retain their behavior; no old-shape fallback or version negotiation
+from `sock_accept`, and non-socket results stay unchanged. This additive socket contract did not require an interface increase under the bump
+rule below. Existing socket calls retain their behavior; no old-shape fallback or version negotiation
 is added. bun-wasm's separate `preview1Launcher` must adopt this connection payload and keep its
 connector on the responsive page. That consumer handoff and a real outside line/echo exchange
 are separate release gates. The scripted SSLRequest fixture proves bytes only, not a Postgres
@@ -859,6 +861,8 @@ query.
 ## Compatibility
 
 Consumers pin the exact runtime build in their dependency and lockfile. Host compatibility is a separate package-metadata check, not a comparison of package versions or build identities.
+
+The native-return execution-observation contract requires `waffleHostInterface` 2.
 
 Installable Waffle packages also carry a positive safe integer named `waffleHostInterface`.
 The runtime provides the integer, and every family requires one. A family can run only when
