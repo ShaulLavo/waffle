@@ -141,12 +141,19 @@ export interface RebindMetadata {
     readonly toolsTree: string;
     readonly command: string;
   };
-  readonly acceptance?: { script: string; commit: string; sha256: string };
+  readonly acceptance?: AcceptanceSource;
   readonly runtimeInput: {
     kind: "local-artifact" | "published-download";
     provisional: boolean;
     sourceCommit?: string;
   };
+}
+
+export interface AcceptanceSource {
+  readonly script: string;
+  readonly commit: string;
+  readonly sha256: string;
+  readonly sources: { path: string; sha256: string }[];
 }
 
 export interface HistoricalRuntimeManifestAsset {
@@ -192,7 +199,7 @@ export interface InstallReceipt {
   readonly runtimeRoots: number;
   readonly runtimeLockEntries: number;
   readonly hostInterfaces: { name: string; waffleHostInterface: HostInterface }[];
-  readonly acceptance?: { script: string; output: string };
+  readonly acceptance?: { script: string; output: string; source?: AcceptanceSource };
 }
 
 function isRecord(value: unknown): value is Json {
@@ -815,6 +822,7 @@ export interface InstallInputs {
   readonly work: string;
   readonly requests: string[];
   readonly acceptance: string | undefined;
+  readonly acceptanceRoot?: string;
   readonly runtimeVersion: string;
   readonly runtimeHostInterface: HostInterface;
   readonly control: Control;
@@ -891,8 +899,112 @@ export async function verifyInstall(inputs: InstallInputs): Promise<InstallRecei
   };
   if (!inputs.acceptance) return receipt;
   const external = Array.from(urls.keys());
-  const acceptance = await runAcceptance(inputs.acceptance, consumer, external, env, control);
+  const acceptance = await runAcceptance(
+    inputs.acceptance,
+    consumer,
+    external,
+    env,
+    control,
+    inputs.acceptanceRoot,
+  );
   return { ...receipt, acceptance };
+}
+
+function assertLiteralModuleLoad(
+  compiler: typeof import("typescript-api"),
+  node: import("typescript-api").Node,
+  path: string,
+) {
+  if (!compiler.isCallExpression(node)) return;
+  const expression = node.expression;
+  const moduleLoad =
+    expression.kind === compiler.SyntaxKind.ImportKeyword ||
+    (compiler.isIdentifier(expression) && expression.text === "require");
+  if (!moduleLoad) return;
+  const argument = node.arguments[0];
+  assert.ok(
+    argument && compiler.isStringLiteralLike(argument),
+    `Acceptance module path must be a string literal: ${path}`,
+  );
+}
+
+async function assertLiteralModuleLoads(contents: Buffer, path: string, loader: Bun.Loader) {
+  if (loader === "json") return;
+  const compiler = (await import("typescript-api")).default;
+  const kind =
+    loader === "tsx" || loader === "jsx" ? compiler.ScriptKind.TSX : compiler.ScriptKind.TS;
+  const source = compiler.createSourceFile(
+    path,
+    contents.toString("utf8"),
+    compiler.ScriptTarget.Latest,
+    false,
+    kind,
+  );
+  function visit(node: import("typescript-api").Node) {
+    assertLiteralModuleLoad(compiler, node, path);
+    compiler.forEachChild(node, visit);
+  }
+  visit(source);
+}
+
+function boundAcceptance(root: string, script: string) {
+  const sourceRoot = realpathSync(root);
+  const commit = git(sourceRoot, ["rev-parse", "HEAD"]);
+  const sources = new Map<string, string>();
+  const loaders = new Map<string, Bun.Loader>([
+    [".ts", "ts"],
+    [".tsx", "tsx"],
+    [".mts", "ts"],
+    [".js", "js"],
+    [".mjs", "js"],
+    [".cjs", "js"],
+    [".jsx", "jsx"],
+    [".json", "json"],
+  ]);
+  function readSource(path: string) {
+    const file = relative(sourceRoot, realpathSync(path));
+    assert.ok(
+      file && file !== ".." && !file.startsWith(`..${sep}`) && !file.startsWith(sep),
+      "Acceptance source escapes its source root",
+    );
+    const tracked = git(sourceRoot, ["ls-tree", commit, "--", file]);
+    assert.ok(
+      tracked.startsWith("100644 ") || tracked.startsWith("100755 "),
+      `Acceptance source is not a tracked regular file: ${file}`,
+    );
+    const original = execFileSync("git", ["-C", sourceRoot, "show", `${commit}:${file}`], {
+      timeout: localCommandTimeoutMs,
+    });
+    const contents = readFileSync(path);
+    assert.deepEqual(contents, original, `Acceptance source identity differs: ${file}`);
+    sources.set(file, sha256(contents));
+    return contents;
+  }
+  const entryHash = sha256(readSource(script));
+  const entry = relative(sourceRoot, realpathSync(script));
+  const plugin: Bun.BunPlugin = {
+    name: "source-bound-acceptance",
+    setup(build) {
+      build.onLoad({ filter: /.*/, namespace: "file" }, async ({ path }) => {
+        const contents = readSource(path);
+        const loader = loaders.get(extname(path));
+        assert.ok(loader, `Unsupported acceptance source: ${path}`);
+        await assertLiteralModuleLoads(contents, path, loader);
+        return { contents, loader };
+      });
+    },
+  };
+  function receipt(): AcceptanceSource {
+    return {
+      script: entry,
+      commit,
+      sha256: entryHash,
+      sources: Array.from(sources, ([path, sha256]) => ({ path, sha256 })).sort((a, b) =>
+        a.path.localeCompare(b.path),
+      ),
+    };
+  }
+  return { plugin, receipt };
 }
 
 /** Bundle the caller's program with every closure package external, so it runs on the installs. */
@@ -902,11 +1014,15 @@ export async function runAcceptance(
   names: string[],
   env: NodeJS.ProcessEnv,
   control: Control,
+  sourceRoot?: string,
 ) {
+  const bound = sourceRoot ? boundAcceptance(sourceRoot, script) : undefined;
   const bundle = await Bun.build({
     entrypoints: [resolve(script)],
     outdir: consumer,
     naming: "acceptance.js",
+    plugins: bound ? [bound.plugin] : [],
+    throw: false,
     target: "bun",
     external: names.concat(names.map((name) => `${name}/*`)),
   });
@@ -915,7 +1031,11 @@ export async function runAcceptance(
   const command = ["sh", "-c", "exec bun acceptance.js > acceptance.out"];
   await runCommand(command, consumer, env, control);
   const output = readFileSync(resolve(consumer, "acceptance.out"), "utf8");
-  return { script: basename(script), output: output.trim().split("\n").at(-1) ?? "" };
+  return {
+    script: basename(script),
+    output: output.trim().split("\n").at(-1) ?? "",
+    ...(bound ? { source: bound.receipt() } : {}),
+  };
 }
 
 interface ConsumerResult {

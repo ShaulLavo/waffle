@@ -2,7 +2,16 @@ import runtimeManifest from "../packages/waffle/package.json" with { type: "json
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -163,10 +172,19 @@ function createFixture(
     config.checker ??
       'import assert from "node:assert/strict";\nassert.notEqual(process.cwd(), import.meta.dirname + "/..");\n',
   );
-  const acceptance = resolve(root, "tools/acceptance.ts");
+  const acceptanceRoot = mkdtempSync(resolve(scratch, "acceptance-"));
+  mkdirSync(resolve(acceptanceRoot, "tools"));
+  git(acceptanceRoot, ["init", "-q"]);
+  const acceptance = resolve(acceptanceRoot, "tools/acceptance.ts");
+  writeFileSync(acceptance, 'import {accept} from "./acceptance-helper.ts";\naccept();\n');
   writeFileSync(
-    acceptance,
-    'import assert from "node:assert/strict";\nimport {runtime} from "waffle";\nassert.equal(runtime, true);\nconsole.log("accepted local runtime bytes");\n',
+    resolve(acceptanceRoot, "tools/acceptance-helper.ts"),
+    'import assert from "node:assert/strict";\nimport {runtime} from "waffle";\nexport function accept() { assert.equal(runtime, true); console.log("accepted local runtime bytes"); }\n',
+  );
+  commit(acceptanceRoot, "matching runtime acceptance");
+  writeFileSync(
+    resolve(root, "tools/acceptance.ts"),
+    'throw new Error("obsolete root-memory API");\n',
   );
   writePackage(
     root,
@@ -265,7 +283,7 @@ function createFixture(
   pack(runtimeRoot, runtimeArchive);
   const out = resolve(root, "out");
   const fixtureOptions: RebindOptions = {
-    root: repository,
+    root: acceptanceRoot,
     fromTag,
     fromManifestSha256: sha256(manifestPath),
     tag: targetTag,
@@ -279,7 +297,16 @@ function createFixture(
     fromAssets: assets,
     commandTimeoutMs: 60_000,
   };
-  return { root, assets, archiveRoot, manifestPath, runtimeArchive, out, options: fixtureOptions };
+  return {
+    root,
+    acceptanceRoot,
+    assets,
+    archiveRoot,
+    manifestPath,
+    runtimeArchive,
+    out,
+    options: fixtureOptions,
+  };
 }
 
 function updateSourceMetadata(fixture: ReturnType<typeof createFixture>) {
@@ -341,7 +368,7 @@ afterEach(() => {
 });
 
 describe("program peer rebind", () => {
-  test("rebinds metadata, preserves payloads, and proves one runtime", async () => {
+  test("rebinds with distinct historical checker and matching acceptance roots", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
     const refuseFetch = Object.assign(
@@ -367,6 +394,11 @@ describe("program peer rebind", () => {
     expect(manifest.runtime.version).toBe("0.0.106");
     expect(manifest.sourceCommit).toBe(git(fixture.root, ["rev-parse", "HEAD"]));
     expect(manifest.rebind?.from.manifestSha256).toBe(fixture.options.fromManifestSha256);
+    expect(manifest.rebind?.toolCommit).toBe(git(repository, ["rev-parse", "HEAD"]));
+    expect(manifest.rebind?.toolDirty).toBe(git(repository, ["status", "--porcelain"]) !== "");
+    expect(manifest.rebind?.toolCommit).not.toBe(
+      git(fixture.acceptanceRoot, ["rev-parse", "HEAD"]),
+    );
     expect(manifest.installCheck.runtimeRoots).toBe(1);
     expect(manifest.packages.map((item) => item.version)).toEqual(["0.0.14", "0.0.14"]);
     expect(manifest.packages[0]?.changedFiles).toEqual(["package.json"]);
@@ -388,6 +420,15 @@ describe("program peer rebind", () => {
     expect(baseJson.dependencies["waffle-child"]).toContain("programs-v0.0.14");
     expect(baseJson.version).toBe("0.0.14");
     assertPayloadsPreserved(fixture, manifest);
+    expect(manifest.rebind?.acceptance?.commit).not.toBe(manifest.sourceCommit);
+    expect(manifest.rebind?.acceptance?.sha256).not.toBe(
+      sha256(resolve(fixture.root, "tools/acceptance.ts")),
+    );
+    expect(manifest.installCheck.acceptance?.source).toEqual(manifest.rebind?.acceptance);
+    const saved = JSON.parse(
+      readFileSync(resolve(fixture.out, "assets/program-release.json"), "utf8"),
+    );
+    expect(saved.rebind.acceptance).toEqual(manifest.rebind?.acceptance);
     expect(manifest.rebind?.runtimeInput).toMatchObject({
       kind: "local-artifact",
       provisional: true,
@@ -395,9 +436,104 @@ describe("program peer rebind", () => {
     expect(manifest.installCheck.acceptance?.output).toBe("accepted local runtime bytes");
     expect(manifest.rebind?.acceptance).toEqual({
       script: "tools/acceptance.ts",
-      commit: manifest.sourceCommit,
-      sha256: sha256(resolve(fixture.root, "tools/acceptance.ts")),
+      commit: git(fixture.acceptanceRoot, ["rev-parse", "HEAD"]),
+      sha256: sha256(resolve(fixture.acceptanceRoot, "tools/acceptance.ts")),
+      sources: ["tools/acceptance-helper.ts", "tools/acceptance.ts"].map((path) => ({
+        path,
+        sha256: sha256(resolve(fixture.acceptanceRoot, path)),
+      })),
     });
+  }, 60_000);
+
+  test.each([
+    "entry",
+    "import",
+    "untracked",
+    "outside",
+    "symlink",
+    "false-root",
+    "empty-root",
+  ] as const)(
+    "rejects acceptance source with %s identity violation",
+    async (violation) => {
+      scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+      const fixture = createFixture();
+      const helper = resolve(fixture.acceptanceRoot, "tools/acceptance-helper.ts");
+      const entry = resolve(fixture.acceptanceRoot, "tools/acceptance.ts");
+      const outside = resolve(scratch, "external.ts");
+      writeFileSync(outside, "export function accept() {}\n");
+      if (violation === "entry") writeFileSync(entry, 'console.log("unchecked");\n');
+      if (violation === "import") writeFileSync(helper, "export function accept() {}\n");
+      if (violation === "untracked") {
+        git(fixture.acceptanceRoot, ["rm", "--cached", helper]);
+        git(fixture.acceptanceRoot, [
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@invalid",
+          "commit",
+          "-qm",
+          "untracked helper",
+        ]);
+      }
+      if (violation === "outside") {
+        writeFileSync(entry, 'import {accept} from "../../external.ts"; accept();\n');
+        commit(fixture.acceptanceRoot, "outside import");
+      }
+      if (violation === "symlink") {
+        rmSync(helper);
+        symlinkSync(outside, helper);
+        commit(fixture.acceptanceRoot, "outside symlink");
+      }
+      let options = fixture.options;
+      if (violation === "false-root") options = { ...options, root: fixture.root };
+      if (violation === "empty-root") options = { ...options, root: "" };
+      await expect(buildRebind(options)).rejects.toThrow(
+        /Acceptance source (identity differs|is not a tracked regular file|escapes its source root)/,
+      );
+      expect(readdirNames(fixture.out)).toEqual(["assets"]);
+    },
+    60_000,
+  );
+
+  test.each(["import", "require"] as const)(
+    "rejects runtime-computed %s before unchecked module executes",
+    async (kind) => {
+      scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+      const fixture = createFixture();
+      const marker = resolve(scratch, "unchecked-executed");
+      const outside = resolve(scratch, "unchecked.ts");
+      writeFileSync(
+        outside,
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "ran"); export const value = 1;\n`,
+      );
+      const entry = resolve(fixture.acceptanceRoot, "tools/acceptance.ts");
+      const load = kind === "import" ? "await import(path)" : "require(path)";
+      writeFileSync(entry, `const path = ${JSON.stringify(outside)}; ${load};\n`);
+      commit(fixture.acceptanceRoot, "computed module load");
+      await expect(buildRebind(fixture.options)).rejects.toThrow(
+        /Acceptance module path must be a string literal/,
+      );
+      expect(existsSync(marker)).toBe(false);
+    },
+    60_000,
+  );
+
+  test("literal dynamic imports remain source-bound without matching comment or string text", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture();
+    const entry = resolve(fixture.acceptanceRoot, "tools/acceptance.ts");
+    writeFileSync(
+      entry,
+      'const text = "import(unchecked) require(unchecked)"; /* import(unchecked) */\nconst helper = await import("./acceptance-helper.ts"); helper.accept();\n',
+    );
+    commit(fixture.acceptanceRoot, "literal module load");
+    const manifest = await buildRebind(fixture.options);
+    expect(manifest.installCheck.acceptance?.output).toBe("accepted local runtime bytes");
+    expect(manifest.rebind?.acceptance?.sources.map((source) => source.path)).toEqual([
+      "tools/acceptance-helper.ts",
+      "tools/acceptance.ts",
+    ]);
   }, 60_000);
 
   test.each([1, 2] as const)(
@@ -472,11 +608,11 @@ describe("program peer rebind", () => {
     );
   });
 
-  test("schema-1 migration is explicit and requires historical acceptance and a matching integer", async () => {
+  test("schema-1 migration is explicit and requires source-bound acceptance and a matching integer", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
     await expect(buildRebind({ ...fixture.options, acceptance: undefined })).rejects.toThrow(
-      /Schema-1 migration requires historical --acceptance/,
+      /Schema-1 migration requires source-bound --acceptance/,
     );
     await expect(
       buildRebind({
