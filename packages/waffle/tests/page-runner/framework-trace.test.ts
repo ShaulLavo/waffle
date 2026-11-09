@@ -156,6 +156,17 @@ async function fixture(
     await control.close();
   }
 }
+function holdResponse(response: ServerResponse) {
+  const ending = Promise.withResolvers<void>();
+  const end = response.end;
+  let finish = () => {};
+  response.end = function (...args: unknown[]) {
+    finish = () => Reflect.apply(end, response, args);
+    ending.resolve();
+    return this;
+  };
+  return { response, ending: ending.promise, finish: () => finish() };
+}
 async function setup(options: TesterTraceOptions) {
   const collector = new FrameworkCollector([]);
   const top = collector.expect("orchestrator", "http://page/top"),
@@ -171,6 +182,7 @@ async function setup(options: TesterTraceOptions) {
   const physical: ServerResponse[] = [];
   const firstBody = Promise.withResolvers<void>();
   const firstTopReceipt = Promise.withResolvers<void>();
+  let bodyHold: ReturnType<typeof Promise.withResolvers<ReturnType<typeof holdResponse>>> | undefined;
   const server = createServer((request, response) => {
     if (request.url === "/physical") {
       const reserve = owner.reserveResponse(response);
@@ -184,6 +196,12 @@ async function setup(options: TesterTraceOptions) {
         response.flushHeaders();
       });
       return;
+    }
+    if (bodyHold && request.url?.startsWith(tracePath + "tester/body")) {
+      const held = holdResponse(response);
+      releases.push(held.finish);
+      bodyHold.resolve(held);
+      bodyHold = undefined;
     }
     middleware(request, response, () => response.writeHead(404).end());
     if (request.url?.startsWith(tracePath + "tester/body")) firstBody.resolve();
@@ -252,6 +270,10 @@ async function setup(options: TesterTraceOptions) {
       close,
       clients,
       physical,
+      holdNextBody: () => {
+        bodyHold = Promise.withResolvers<ReturnType<typeof holdResponse>>();
+        return bodyHold.promise;
+      },
       firstBody: firstBody.promise,
       firstTopReceipt: firstTopReceipt.promise,
       origin,
@@ -274,6 +296,87 @@ async function terminalAndFence(control: Awaited<ReturnType<typeof setup>>) {
   await control.post("tester", "body", { kind: "terminal", text: "actual final cleanup trace" });
   await control.post("orchestrator", "body", { kind: "fence" });
 }
+
+type LiveCommand = "checkpoint" | "release";
+function startCommand(control: Awaited<ReturnType<typeof setup>>, kind: LiveCommand) {
+  return kind === "checkpoint"
+    ? control.owner.capture.checkpoint()
+    : control.owner.capture.releaseOriginalRpc();
+}
+function commandBody(kind: LiveCommand, text: string) {
+  return kind === "checkpoint" ? { kind, text } : { kind };
+}
+function completionTests(kind: LiveCommand): void {
+  test(`${kind} completion frees its actual response slot before an immediate next command`, () =>
+    fixture(async (control) => {
+      const next = await control.stream("tester");
+      const first = startCommand(control, kind);
+      expect(await next()).toEqual({ kind });
+      const firstPost = control.post("tester", "body", commandBody(kind, "first"));
+      void firstPost.catch(() => {});
+      const firstResult = await first;
+      const second = startCommand(control, kind);
+      void second.catch(() => {});
+      expect(await Promise.race([next(), second])).toEqual({ kind });
+      const secondPost = control.post("tester", "body", commandBody(kind, "second"));
+      expect(await second).toEqual(kind === "checkpoint" ? { kind, text: "second" } : undefined);
+      expect(firstResult).toEqual(kind === "checkpoint" ? { kind, text: "first" } : undefined);
+      await Promise.all([firstPost, secondPost]);
+    }));
+  test(`${kind} stays pending until its held HTTP response physically finishes`, () =>
+    fixture(async (control) => {
+      const next = await control.stream("tester");
+      const holding = control.holdNextBody();
+      const operation = startCommand(control, kind);
+      let settled = false;
+      void operation.then(
+        () => {
+          settled = true;
+        },
+        () => {},
+      );
+      expect(await next()).toEqual({ kind });
+      const post = control.post("tester", "body", commandBody(kind, "held"));
+      void post.catch(() => {});
+      const held = await holding;
+      await held.ending;
+      await turn();
+      expect(held.response.writableFinished).toBe(false);
+      expect(settled).toBe(false);
+      held.finish();
+      await operation;
+      expect(held.response.writableFinished).toBe(true);
+      expect(settled).toBe(true);
+      await post;
+    }));
+  test(`${kind} cancellation rejects while its validated HTTP response is still held`, () =>
+    fixture(async (control) => {
+      const next = await control.stream("tester");
+      const holding = control.holdNextBody();
+      const operation = startCommand(control, kind);
+      const outcome = operation.then(
+        () => "fulfilled",
+        (error: unknown) => String(error),
+      );
+      expect(await next()).toEqual({ kind });
+      const post = control.post("tester", "body", commandBody(kind, "cancelled prefix"));
+      void post.catch(() => {});
+      const held = await holding;
+      await held.ending;
+      control.owner.cancelLiveOperations();
+      expect(await outcome).toBe(
+        kind === "checkpoint"
+          ? "Error: Trace checkpoint cancelled"
+          : "Error: Trace RPC release cancelled",
+      );
+      expect(held.response.writableFinished).toBe(false);
+      held.finish();
+      await post;
+      expect(await outcome).not.toBe("fulfilled");
+    }));
+}
+completionTests("checkpoint");
+completionTests("release");
 
 test("actual receiver holds disposal through tester ACK and the final physical top receipt", () =>
   fixture(async (control) => {
