@@ -17,6 +17,7 @@ import { buildRebind, type RebindOptions } from "./program-rebind.ts";
 import { parseHostInterface } from "../packages/waffle/tooling/host-interface.ts";
 
 const hostInterface = parseHostInterface(1, "fixture");
+const reboundHostInterface = parseHostInterface(2, "rebind fixture");
 const runtimeHostInterface = parseHostInterface(
   runtimeManifest.waffleHostInterface,
   "runtime fixture",
@@ -120,10 +121,11 @@ function sourcePackage(
     url: `https://github.com/ShaulLavo/waffle/releases/download/${fromTag}/${name}-0.0.13.tgz`,
     bytes: readFileSync(archive).length,
     sha256: sha256(archive),
-    closureDependencies:
-      name === "waffle-base"
-        ? { waffle: sourceRuntimeUrl, "waffle-child": "asset" }
-        : { waffle: sourceRuntimeUrl },
+    closureDependencies: Object.fromEntries(
+      Object.entries({ ...packageJson.dependencies, ...packageJson.peerDependencies }).filter(
+        ([, spec]) => spec !== "*",
+      ),
+    ),
     registryDependencies: {},
     strippedFields: [],
     typeOnlyUndeclared: [],
@@ -140,8 +142,16 @@ function createFixture(
     mutate?: (root: string, archiveRoot: string) => void;
     rawArchive?: boolean;
     checker?: string;
+    schema?: 1 | 2;
+    sourceHostInterface?: number;
+    targetHostInterface?: number;
   } = {},
 ) {
+  const schema = config.schema ?? 1;
+  const sourceInterface = config.sourceHostInterface ?? (schema === 2 ? 1 : undefined);
+  const sourceMetadata =
+    sourceInterface === undefined ? {} : { waffleHostInterface: sourceInterface };
+  const sourcePeer = schema === 2 ? "*" : sourceRuntimeUrl;
   const root = mkdtempSync(resolve(scratch, "historical-"));
   const assets = resolve(root, "source-assets");
   const archiveRoot = resolve(root, "archive-work");
@@ -161,21 +171,24 @@ function createFixture(
   writePackage(
     root,
     "child",
-    packageManifest("waffle-child", {}, { waffle: sourceRuntimeUrl }),
+    { ...packageManifest("waffle-child", {}, { waffle: sourcePeer }), ...sourceMetadata },
     true,
   );
   writePackage(
     root,
     "base",
-    packageManifest(
-      "waffle-base",
-      {
-        waffle: sourceRuntimeUrl,
-        "waffle-child":
-          "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.13/waffle-child-0.0.13.tgz",
-      },
-      { waffle: sourceRuntimeUrl },
-    ),
+    {
+      ...packageManifest(
+        "waffle-base",
+        {
+          ...(schema === 1 ? { waffle: sourceRuntimeUrl } : {}),
+          "waffle-child":
+            "https://github.com/ShaulLavo/waffle/releases/download/programs-v0.0.13/waffle-child-0.0.13.tgz",
+        },
+        { waffle: sourcePeer },
+      ),
+      ...sourceMetadata,
+    },
     false,
   );
   writeFileSync(
@@ -198,13 +211,14 @@ function createFixture(
     cpSync(archive, resolve(assets, item.filename));
     return {
       ...item,
+      ...(schema === 2 ? sourceMetadata : {}),
       bytes: readFileSync(archive).length,
       sha256: sha256(archive),
     };
   });
   const sourceCommit = git(root, ["rev-parse", "HEAD"]);
   const manifest = {
-    schema: "waffle-program-release/1",
+    schema: `waffle-program-release/${schema}`,
     operation: "release",
     tag: fromTag,
     version: "0.0.13",
@@ -214,6 +228,7 @@ function createFixture(
     assetBase: `https://github.com/ShaulLavo/waffle/releases/download/${fromTag}`,
     runtime: {
       name: "waffle",
+      ...sourceMetadata,
       version: "0.0.105",
       url: sourceRuntimeUrl,
       bytes: 1,
@@ -237,7 +252,7 @@ function createFixture(
       {
         name: "waffle",
         version: "0.0.106",
-        waffleHostInterface: 1,
+        waffleHostInterface: config.targetHostInterface ?? 1,
         type: "module",
         exports: { ".": "./index.js" },
       },
@@ -256,7 +271,7 @@ function createFixture(
     tag: targetTag,
     repository: "ShaulLavo/waffle",
     runtime: { url: targetRuntimeUrl, sha256: sha256(runtimeArchive), tarball: runtimeArchive },
-    hostInterface: 1,
+    hostInterface: config.targetHostInterface ?? 1,
     historicalRoot: root,
     acceptance,
     out,
@@ -299,6 +314,25 @@ function repackSourceArchive(
   rmSync(packageRoot, { recursive: true, force: true });
   rmSync(extracted, { recursive: true, force: true });
   updateSourceMetadata(fixture);
+}
+
+function assertPayloadsPreserved(
+  fixture: ReturnType<typeof createFixture>,
+  manifest: Awaited<ReturnType<typeof buildRebind>>,
+) {
+  for (const item of manifest.packages) {
+    const original = resolve(fixture.assets, item.original!.filename);
+    const rebound = resolve(fixture.out, "assets", item.filename);
+    const originalFiles = execFileSync("tar", ["-tzf", original], { encoding: "utf8" }).split("\n");
+    expect(execFileSync("tar", ["-tzf", rebound], { encoding: "utf8" }).split("\n")).toEqual(
+      originalFiles,
+    );
+    for (const file of originalFiles.filter((name) => name && name !== "package/package.json")) {
+      expect(execFileSync("tar", ["-xzOf", rebound, file])).toEqual(
+        execFileSync("tar", ["-xzOf", original, file]),
+      );
+    }
+  }
 }
 
 afterEach(() => {
@@ -353,21 +387,7 @@ describe("program peer rebind", () => {
     expect(baseJson.waffleHostInterface).toBe(1);
     expect(baseJson.dependencies["waffle-child"]).toContain("programs-v0.0.14");
     expect(baseJson.version).toBe("0.0.14");
-    for (const item of manifest.packages) {
-      const original = resolve(fixture.assets, item.original!.filename);
-      const rebound = resolve(fixture.out, "assets", item.filename);
-      const originalFiles = execFileSync("tar", ["-tzf", original], { encoding: "utf8" }).split(
-        "\n",
-      );
-      expect(execFileSync("tar", ["-tzf", rebound], { encoding: "utf8" }).split("\n")).toEqual(
-        originalFiles,
-      );
-      for (const file of originalFiles.filter((name) => name && name !== "package/package.json")) {
-        expect(execFileSync("tar", ["-xzOf", rebound, file])).toEqual(
-          execFileSync("tar", ["-xzOf", original, file]),
-        );
-      }
-    }
+    assertPayloadsPreserved(fixture, manifest);
     expect(manifest.rebind?.runtimeInput).toMatchObject({
       kind: "local-artifact",
       provisional: true,
@@ -379,6 +399,78 @@ describe("program peer rebind", () => {
       sha256: sha256(resolve(fixture.root, "tools/acceptance.ts")),
     });
   }, 60_000);
+
+  test.each([1, 2] as const)(
+    "schema-%i rebind authenticates interface 1 before rewriting to 2",
+    async (schema) => {
+      scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+      const fixture = createFixture({ schema, sourceHostInterface: 1, targetHostInterface: 2 });
+      const sourceHash = sha256(fixture.manifestPath);
+      const source = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+      const result = await buildRebind(fixture.options);
+      expect(result.runtime.waffleHostInterface).toBe(reboundHostInterface);
+      expect(result.rebind?.from.runtime.waffleHostInterface).toBe(hostInterface);
+      expect(result.rebind?.from.manifestSha256).toBe(sourceHash);
+      expect(sha256(fixture.manifestPath)).toBe(sourceHash);
+      expect(result.sourceCommit).toBe(source.sourceCommit);
+      expect(result.installCheck.runtimeRoots).toBe(1);
+      expect(result.installCheck.runtimeLockEntries).toBe(1);
+      expect(result.installCheck.hostInterfaces).toEqual([
+        { name: "waffle-child", waffleHostInterface: reboundHostInterface },
+        { name: "waffle-base", waffleHostInterface: reboundHostInterface },
+      ]);
+      expect(result.packages.map((item) => item.artifacts)).toEqual(
+        source.packages.map((item: { artifacts: unknown }) => item.artifacts),
+      );
+      expect(result.packages.map((item) => item.guests)).toEqual(
+        source.packages.map((item: { guests: unknown }) => item.guests),
+      );
+      expect(result.packages.map((item) => item.sourceTree)).toEqual(
+        source.packages.map((item: { sourceTree: string }) => item.sourceTree),
+      );
+      assertPayloadsPreserved(fixture, result);
+    },
+    60_000,
+  );
+
+  test.each([1, 2] as const)(
+    "schema-%i rejects source metadata matching target but not source runtime",
+    async (schema) => {
+      scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+      const fixture = createFixture({ schema, sourceHostInterface: 1, targetHostInterface: 2 });
+      repackSourceArchive(fixture, "waffle-child", (root) => {
+        const path = resolve(root, "package.json");
+        const metadata = JSON.parse(readFileSync(path, "utf8"));
+        metadata.waffleHostInterface = 2;
+        writeFileSync(path, `${JSON.stringify(metadata, null, 2)}\n`);
+      });
+      await expect(buildRebind(fixture.options)).rejects.toThrow(
+        schema === 1
+          ? /requires waffleHostInterface 2, runtime provides 1/
+          : /source metadata differs/,
+      );
+    },
+  );
+
+  test("schema-2 refuses a release member inconsistent with its source runtime", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture({ schema: 2, targetHostInterface: 2 });
+    const source = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+    source.packages[0].waffleHostInterface = 2;
+    writeFileSync(fixture.manifestPath, `${JSON.stringify(source, null, 2)}\n`);
+    updateSourceMetadata(fixture);
+    await expect(buildRebind(fixture.options)).rejects.toThrow(
+      /requires waffleHostInterface 2, runtime provides 1/,
+    );
+  });
+
+  test("schema-2 refuses a requested output interface that differs from the target archive", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture({ schema: 2, targetHostInterface: 2 });
+    await expect(buildRebind({ ...fixture.options, hostInterface: 1 })).rejects.toThrow(
+      /rebind requirement requires waffleHostInterface 1, runtime provides 2/,
+    );
+  });
 
   test("schema-1 migration is explicit and requires historical acceptance and a matching integer", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
@@ -402,9 +494,9 @@ describe("program peer rebind", () => {
     ).rejects.toThrow(/positive safe integer/);
   });
 
-  test("migration preserves an explicit old integer rather than inferring compatibility", async () => {
+  test("schema-1 refuses an explicit integer inconsistent with its source runtime", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
-    const fixture = createFixture();
+    const fixture = createFixture({ sourceHostInterface: 1 });
     repackSourceArchive(fixture, "waffle-child", (root) => {
       const path = resolve(root, "package.json");
       const manifest = JSON.parse(readFileSync(path, "utf8"));
@@ -413,6 +505,18 @@ describe("program peer rebind", () => {
     });
     await expect(buildRebind(fixture.options)).rejects.toThrow(
       /requires waffleHostInterface 2, runtime provides 1/,
+    );
+  });
+
+  test("schema-1 refuses an explicit integer without an authenticated source runtime integer", async () => {
+    scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
+    const fixture = createFixture({ sourceHostInterface: 1, targetHostInterface: 2 });
+    const source = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+    delete source.runtime.waffleHostInterface;
+    writeFileSync(fixture.manifestPath, `${JSON.stringify(source, null, 2)}\n`);
+    updateSourceMetadata(fixture);
+    await expect(buildRebind(fixture.options)).rejects.toThrow(
+      /source runtime.*positive safe integer/,
     );
   });
 
