@@ -57,7 +57,7 @@ function update(value: unknown): value is FrameworkUpdate {
     Number.isSafeInteger(value.retryCount)
   );
 }
-function frameworkEvent(value: unknown): value is FrameworkEvent {
+export function frameworkEvent(value: unknown): value is FrameworkEvent {
   if (!record(value) || typeof value.kind !== "string") return false;
   if (value.kind === "collected") return Array.isArray(value.tasks) && value.tasks.every(task);
   if (value.kind === "task-started") return typeof value.id === "string";

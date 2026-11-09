@@ -46,6 +46,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/display/{service-readers,service-protocol,launch-retention}.ts`, `browser/gpu/{access,command-reader}.ts`                         | Original adapter      | Exact-service counted admission, queued grant retirement and original-ticket control charge retention. Original Waffle lifecycle code; no upstream implementation copied.                                                                                                                                                                                                                                                    |
 | `browser/gpu/method-coverage.json`                                                                                                         | Mechanical derivation | Individual object method and global function names from the pinned webgpu-headers YAML above, BSD-3-Clause. Coverage categories, pending slices, reasons and selected-call metadata are original Waffle policy; no method implementations copied.                                                                                                                                                                            |
 | `tests/page-runner/framework-dom-page.ts`                                                                                                  | Adapted control       | Synthetic viewport CSS/event fixture based on the exact `@vitest/browser` 5.0.2 distribution. It preserves iframe-only completion matching to expose the concurrency limit and uses the synchronous snapshot reporting contract, not an installed framework replacement. See [Framework operation controls](#framework-operation-controls).                                                                                  |
+| `tests/page-runner/framework-trace-page.ts`                                                                                                | Original adapter      | Captured native Vitest cleanup-channel observation and finite evidence ownership. No upstream message handler, cleanup implementation, or RPC expression copied. See [Framework tester trace observer](#framework-tester-trace-observer).                                                                                                                                                                                    |
 
 ## GNU diffutils
 
@@ -582,3 +583,19 @@ and guest ABI while closing dedicated-service access before page retirement. The
 listener and retain-only accounting rules are also original adapters. They retain original charges
 across independent shared-buffer clones and late delivery, without identifying backing by wrapper
 equality or charging an open clone again.
+
+## Framework tester trace observer
+
+`tests/page-runner/framework-trace-page.ts` is original Waffle code against
+`@vitest/browser` 5.0.2. The inspected distribution paths are `dist/client.js`,
+`dist/client/__vitest_browser__/orchestrator-M9828UZ-.js`, and
+`dist/client/__vitest_browser__/tester-COH68OX9.js`. The client's SHA-256 is
+`e5a46a0da670e50e7cce2f3eb367c1403911a8c7459f368c058b177a37604270`.
+
+The adapter uses the actual native channel constructed from the own-data session
+identity and matches own-data `event`, `iframeId`, and `messageId` fields. It observes
+the successful terminal post after the original cleanup catch and trace finishing.
+It copies none of Vitest's handler, cleanup, RPC, or error serialization code.
+Waffle owns admission, bounded snapshots, physical receipts, and the distinct final
+disposal authorization. [Framework tester trace ownership](framework-tester-trace.md)
+describes the contract and its CPU-only verification limits.

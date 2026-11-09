@@ -40,10 +40,14 @@ async function runNative<R>(
     });
     return 3;
   }
-  const result = await runPageSuite(adapter, (scratch) => new SafariDriver(udid, scratch), {
-    resultPath,
-    ...options,
-  });
+  const result = await runPageSuite(
+    adapter,
+    (scratch, observeFailure) => new SafariDriver(udid, scratch, observeFailure),
+    {
+      resultPath,
+      ...options,
+    },
+  );
   console.log(`${adapter.suite} result: ${resultPath}, exit ${result.exit}`);
   return result.exit;
 }

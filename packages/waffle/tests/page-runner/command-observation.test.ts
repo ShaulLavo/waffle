@@ -142,6 +142,8 @@ test("direct failures identify headers versus body and preserve the exact caller
         client: "direct",
         stage,
         abort: "caller",
+        errorName: "Error",
+        errorCode: null,
         status: stage === "body" ? 200 : null,
       });
       expect(fact?.settledAt).toBeGreaterThanOrEqual(fact?.dispatchedAt ?? Infinity);
@@ -261,7 +263,13 @@ test("the unchanged direct deadline records a header-stage timeout", async () =>
   Reflect.set(driver, "session", "owned");
   try {
     await expect(driver.handle(new AbortController().signal)).rejects.toThrow();
-    expect(failures[0]).toMatchObject({ abort: "deadline", stage: "headers", status: null });
+    expect(failures[0]).toMatchObject({
+      abort: "deadline",
+      stage: "headers",
+      status: null,
+      errorName: "TimeoutError",
+      errorCode: null,
+    });
   } finally {
     release.resolve();
     await server.stop(true);
