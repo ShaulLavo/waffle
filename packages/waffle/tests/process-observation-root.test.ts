@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BrowserProcessBroker } from "../browser/process-broker.ts";
+import { BrowserProcessBroker, type ProcessController } from "../browser/process-broker.ts";
 import { ProcessIdentityAllocator } from "../proc/identity.ts";
 import { ProcessTable } from "../proc/table.ts";
 import { ExecutableRegistry } from "../proc/registry.ts";
@@ -8,7 +8,7 @@ import { captureProcessObserver } from "../proc/observation.ts";
 import { createFilesystemIdentity } from "../fs/protocol.ts";
 import { testReservations } from "./fixtures/shared-memory-platform.ts";
 
-async function rootFixture() {
+async function rootFixture(controller: ProcessController = {}) {
   const identities = new ProcessIdentityAllocator();
   const broker = new BrowserProcessBroker({
     reservations: testReservations(),
@@ -31,7 +31,7 @@ async function rootFixture() {
   const transport = createWorkerProcessTransport({ identity: identities.buffer });
   transport.data = { filesystem: createFilesystemIdentity() };
   try {
-    await broker.adoptRuntimeRoot(transport, { memory: [] });
+    await broker.adoptRuntimeRoot(transport, { memory: [], ...controller });
     return { broker, transport, observer: captureProcessObserver(transport) };
   } catch (error) {
     await broker.dispose();
@@ -139,3 +139,30 @@ test("a native stop hook reentering its captured owner never invokes the consume
     await broker.dispose();
   }
 });
+
+for (const nativeFirst of [false, true]) {
+  test(`direct root native acknowledgement retires only its controller consumer, native first=${nativeFirst}`, async () => {
+    let calls = 0;
+    const { broker, transport, observer } = await rootFixture({ stop() { calls++; } });
+    const pid = transport.pid;
+    const helperReturn = Promise.withResolvers<void>();
+    const helper = broker.captureRootStop(pid, () => helperReturn.promise);
+    try {
+      if (!nativeFirst) await broker.rootExit(pid, 0);
+      broker.rootStopped(pid);
+      broker.rootStopped(pid);
+      if (nativeFirst) await broker.rootExit(pid, 0);
+      expect(observer.read().kind).toBe("selected");
+      const stopping = helper();
+      expect(observer.read().kind).toBe("selected");
+      helperReturn.resolve();
+      await stopping;
+      expect(observer.read()).toEqual({ kind: "terminated" });
+      await broker.dispose();
+      expect(calls).toBe(0);
+    } finally {
+      helperReturn.resolve();
+      await broker.dispose();
+    }
+  });
+}
