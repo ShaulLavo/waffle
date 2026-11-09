@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { isNativeError } from "node:util/types";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AttachedConnection, CommandFailure } from "./framework-types.js";
@@ -16,6 +17,71 @@ import {
 } from "./driver.js";
 import { record } from "./protocol.js";
 import { commandMethod, commandPath } from "./framework-queue.js";
+export type NativeCommandFailure = CommandFailure & {
+  readonly errorName: string | null;
+  readonly errorCode: string | null;
+};
+const errorNames = new Set([
+  "Error",
+  "TypeError",
+  "SyntaxError",
+  "RangeError",
+  "ReferenceError",
+  "URIError",
+  "EvalError",
+  "AggregateError",
+  "AbortError",
+  "TimeoutError",
+  "WebDriverError",
+]);
+const errorPrototypes = new Map<object, string>([
+  [Error.prototype, "Error"],
+  [TypeError.prototype, "TypeError"],
+  [SyntaxError.prototype, "SyntaxError"],
+  [RangeError.prototype, "RangeError"],
+  [ReferenceError.prototype, "ReferenceError"],
+  [URIError.prototype, "URIError"],
+  [EvalError.prototype, "EvalError"],
+  [AggregateError.prototype, "AggregateError"],
+]);
+function failureName(error: unknown): string | null {
+  // Caller abort reasons can carry accessors or proxy traps.
+  if (!isNativeError(error)) return null;
+  const descriptor = Object.getOwnPropertyDescriptor(error, "name");
+  const name: unknown = descriptor?.value;
+  if (descriptor) return typeof name === "string" && errorNames.has(name) ? name : null;
+  return errorPrototypes.get(Object.getPrototypeOf(error)) ?? null;
+}
+const w3cErrors = new Set([
+  "element click intercepted",
+  "element not interactable",
+  "insecure certificate",
+  "invalid argument",
+  "invalid cookie domain",
+  "invalid element state",
+  "invalid selector",
+  "invalid session id",
+  "javascript error",
+  "move target out of bounds",
+  "no such alert",
+  "no such cookie",
+  "no such element",
+  "no such frame",
+  "no such shadow root",
+  "no such window",
+  "detached shadow root",
+  "script timeout",
+  "session not created",
+  "stale element reference",
+  "timeout",
+  "unable to capture screen",
+  "unable to set cookie",
+  "unexpected alert open",
+  "unknown command",
+  "unknown error",
+  "unknown method",
+  "unsupported operation",
+]);
 const navigationTimeoutMs = 30_000;
 export const driverResponseLimit = 4 * 1024 * 1024;
 export async function readDriverResponse(
@@ -189,7 +255,7 @@ export class SafariDriver implements Driver {
   constructor(
     private readonly udid: string,
     private readonly scratch: string,
-    private readonly observeFailure?: (facts: CommandFailure) => void,
+    private readonly observeFailure?: (facts: NativeCommandFailure) => void,
   ) {}
   async start(signal: AbortSignal): Promise<void> {
     this.port = await availablePort();
@@ -341,6 +407,7 @@ export class SafariDriver implements Driver {
     const requestSignal = AbortSignal.any([signal, deadline]);
     let stage: CommandFailure["stage"] = "headers";
     let status: number | null = null;
+    let errorCode: string | null = null;
     try {
       const response = await fetch(this.base + path, {
         method,
@@ -354,44 +421,53 @@ export class SafariDriver implements Driver {
       stage = "envelope";
       if (!record(answer) || !Object.hasOwn(answer, "value"))
         throw new Error(`WebDriver ${path}: ${JSON.stringify(answer)}`);
-      if (record(answer.value) && typeof answer.value.error === "string")
+      const value = answer.value;
+      const code = record(value) ? value.error : undefined;
+      if (typeof code === "string") {
+        errorCode = w3cErrors.has(code) ? code : null;
         throw new WebDriverError(
-          answer.value.error,
-          typeof answer.value.message === "string"
-            ? answer.value.message
-            : JSON.stringify(answer.value),
+          code,
+          record(value) && typeof value.message === "string"
+            ? value.message
+            : JSON.stringify(value),
         );
+      }
       if (!response.ok) throw new Error(`WebDriver ${path}: ${JSON.stringify(answer)}`);
       return answer.value;
     } catch (error) {
       if (marksUncertain) this.uncertain = true;
       if (this.observeFailure) {
-        this.reportFailure({
-          client: "direct",
-          operation: null,
-          phase: null,
-          method: commandMethod(method),
-          path: commandPath(path),
-          dispatchedAt,
-          settledAt: performance.now(),
-          stage,
-          status,
-          abort:
-            signal.aborted && requestSignal.reason === signal.reason
-              ? "caller"
-              : deadline.aborted && requestSignal.reason === deadline.reason
-                ? "deadline"
-                : requestSignal.aborted
-                  ? "unknown"
-                  : null,
-        });
+        this.reportFailure(
+          {
+            client: "direct",
+            operation: null,
+            phase: null,
+            method: commandMethod(method),
+            path: commandPath(path),
+            dispatchedAt,
+            settledAt: performance.now(),
+            stage,
+            status,
+            abort:
+              signal.aborted && requestSignal.reason === signal.reason
+                ? "caller"
+                : deadline.aborted && requestSignal.reason === deadline.reason
+                  ? "deadline"
+                  : requestSignal.aborted
+                    ? "unknown"
+                    : null,
+          },
+          error,
+          errorCode,
+        );
       }
       throw error;
     }
   }
-  private reportFailure(facts: CommandFailure): void {
+  private reportFailure(facts: CommandFailure, error: unknown, errorCode: string | null): void {
     try {
-      this.observeFailure?.(facts);
+      const errorName = facts.abort === "deadline" ? "TimeoutError" : failureName(error);
+      this.observeFailure?.(Object.freeze({ ...facts, errorName, errorCode }));
     } catch {
       // Observation cannot replace the operation's rejection.
     }
