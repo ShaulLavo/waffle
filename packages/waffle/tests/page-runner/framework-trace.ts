@@ -62,7 +62,7 @@ export class FrameworkTraceOwner {
   private readonly ready = Promise.withResolvers<void>();
   private checkpointJoin: Operation<void> | undefined;
   private releaseJoin: Operation<void> | undefined;
-  private completing: "checkpoint" | "release" | undefined;
+  private completing: TraceCheckpoint | { readonly kind: "release" } | undefined;
   private destructionAllowed = false;
   readonly capture: TesterTraceCapture = {
     checkpoint: () => this.checkpoint(),
@@ -322,8 +322,7 @@ export class FrameworkTraceOwner {
     }
     if (role !== "tester") throw new Error("Wrong trace role");
     if (body.kind === "release" && this.releaseOperation) {
-      this.releaseOperation.resolve();
-      this.completing = "release";
+      this.completing = { kind: "release" };
       return;
     }
     if (body.kind !== "terminal" && body.kind !== "checkpoint")
@@ -335,8 +334,7 @@ export class FrameworkTraceOwner {
     if (body.kind === "checkpoint") {
       if (!this.checkpointOperation) throw new Error("Unowned checkpoint");
       this.prefix = body.text;
-      this.checkpointOperation.resolve({ kind: "checkpoint", text: body.text });
-      this.completing = "checkpoint";
+      this.completing = { kind: "checkpoint", text: body.text };
       return;
     }
     if (this.artifact && this.artifact.text !== body.text) {
@@ -347,25 +345,30 @@ export class FrameworkTraceOwner {
     this.maybeSettle();
   }
   private commandJoined(): void {
+    const completion = this.completing;
+    this.completing = undefined;
     const joined =
-      this.completing === "checkpoint"
+      completion?.kind === "checkpoint"
         ? this.checkpointJoin
-        : this.completing === "release"
+        : completion?.kind === "release"
           ? this.releaseJoin
           : undefined;
     if (joined) {
       this.liveConsumers.delete(joined.promise);
       joined.resolve();
     }
-    if (this.completing === "checkpoint") {
+    if (completion?.kind === "checkpoint") {
+      const operation = this.checkpointOperation;
       this.checkpointJoin = undefined;
       this.checkpointOperation = undefined;
+      operation?.resolve(completion);
     }
-    if (this.completing === "release") {
+    if (completion?.kind === "release") {
+      const operation = this.releaseOperation;
       this.releaseJoin = undefined;
       this.releaseOperation = undefined;
+      operation?.resolve();
     }
-    this.completing = undefined;
   }
   private readonly acknowledged = new Set<Role>();
   private readonly received = new Set<Role>();
