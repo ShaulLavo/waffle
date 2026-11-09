@@ -261,10 +261,15 @@ function compiledFailure(value: unknown, mode: Mode): boolean {
   if (failures.length !== 1) return false;
   if (mode !== "nesting") return failures[0] === "GPU_FAIL stage=fairness-append status=-64";
   const unexpected = lines.filter((line) => line.startsWith("GPU_UNEXPECTED"));
+  const published = lines.indexOf("GPU_FAIRNESS_PUBLISHED");
+  // After publication, scope_barrier appends before draining replies. Either import can see closure.
   return (
-    failures[0] === "GPU_FAIL stage=completions status=-64" &&
+    (failures[0] === "GPU_FAIL stage=append status=-64" ||
+      failures[0] === "GPU_FAIL stage=completions status=-64") &&
     unexpected.length === 0 &&
-    lines.includes("GPU_FAIRNESS_PUBLISHED")
+    published >= 0 &&
+    published === lines.lastIndexOf("GPU_FAIRNESS_PUBLISHED") &&
+    published < lines.indexOf(failures[0]!)
   );
 }
 
