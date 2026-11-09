@@ -2,7 +2,7 @@ import { pieCore } from "./fixtures/memory-group-pie.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createGroupMember } from "../group/member.js";
-import { GroupOp, PAGE_BYTES } from "../group/protocol.js";
+import { GroupOp, PAGE_BYTES, REPLY_WORDS } from "../group/protocol.js";
 import { MemoryGroups } from "../group/state.js";
 import { growthFree } from "../link/code.js";
 import { prepareLinkPlan } from "../link/index.js";
@@ -108,7 +108,7 @@ function member(watches = 4) {
     {
       memory: new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true }),
       control: new SharedArrayBuffer(16 + watches * 16),
-      reply: new SharedArrayBuffer(20),
+      reply: new SharedArrayBuffer(REPLY_WORDS * 4),
       port: channel.port2,
       index: 0,
       watches,
@@ -201,6 +201,42 @@ test("invalid output spans leave regions, holds and pins unchanged", async () =>
     });
     // One region, the creator's hold plus the accepted pin's hold, no pin left.
     expect(groups.owner(lease.group)!.snapshot()).toMatchObject({ regions: 1, pins: 0, holds: 2 });
+  } finally {
+    await worker.terminate();
+    lease.stopped();
+  }
+});
+
+test("publication imports cross a real port with full-width unsigned words", async () => {
+  const groups = new MemoryGroups();
+  // Above the signed boundary, a token read as a return value would look like a negative errno.
+  Reflect.set(Reflect.get(groups, "tokens"), "next", 0xffffffff);
+  const lease = groups.admit(1, "d", "new");
+  const worker = new Worker(new URL("./fixtures/memory-group-abi-worker.ts", import.meta.url).href);
+  try {
+    const result = new Promise<Record<string, number[]>>((resolve, reject) => {
+      worker.onmessage = ({ data }) => resolve(data);
+      worker.onerror = reject;
+    });
+    const launched = lease.launch();
+    worker.postMessage({ request: launched.request, mode: "publications" }, launched.transfer);
+    const report = await result;
+    const [data, base, cell, cellBase] = report.region!;
+    expect(report).toEqual({
+      region: [data!, base!, cell!, cellBase!],
+      publishBad: [-28, -28, -28],
+      published: [0, 0xffffffff],
+      openBad: [-28, -28, -28],
+      opened: [0, data!, base!, PAGE_BYTES, cell!, cellBase!, 16, 1],
+      wrongKind: [-8],
+      withdraw: [0, -8],
+    });
+    // The worker's two creator holds and one opened hold on each region; nothing was published.
+    expect(groups.owner(lease.group)!.snapshot()).toMatchObject({
+      regions: 2,
+      holds: 4,
+      published: 0,
+    });
   } finally {
     await worker.terminate();
     lease.stopped();

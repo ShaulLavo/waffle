@@ -22,7 +22,7 @@ service.launchWorker(context, {
 });
 ```
 
-Admission reserves a member slot before the Worker is constructed. Every member of a group shares its leader's process directory; joining from another directory fails with `EINVAL`. `memoryGroupOf(pid)` returns `{ id, buffer() }` for a launched member: the group's shared bytes, never its growable `Memory`. `memoryGroups()` returns owner-side counters for each live group: members, reserved, retained, pids, regions, pins, holds, watches, `committedBytes`, `freeBytes` and `bypassed`. A settled root membership is dropped by the broker; only unsettled members stay reachable.
+Admission reserves a member slot before the Worker is constructed. Every member of a group shares its leader's process directory; joining from another directory fails with `EINVAL`. `memoryGroupOf(pid)` returns `{ id, buffer() }` for a launched member: the group's shared bytes, never its growable `Memory`. `memoryGroups()` returns owner-side counters for each live group: members, reserved, retained, pids, regions, pins, published, holds, watches, `committedBytes`, `freeBytes` and `bypassed`. A settled root membership is dropped by the broker; only unsettled members stay reachable.
 
 An adopted runtime root that runs its own worker calls `admitRootMemoryGroup(pid, join)` before posting its worker request, and transfers the returned `transfer` list with `request` as the worker request's `memoryGroup` field. The root's membership settles when its controller's `stop` succeeds during disposal, or when the embedder calls `stopped()` after its own successful physical stop. An unsettled member makes runtime disposal fail.
 
@@ -43,6 +43,7 @@ Admission refuses a group image that could grow the shared memory around its own
 | `budgetBytes`                | 2 GiB            | Committed group backing for the whole page, summed across groups             |
 | `maximumPages`               | 65536            | Address-space maximum of one group (4 GiB). Declared maximum is not a charge |
 | `regions`, `pins`, `watches` | 4096, 4096, 1024 | Bounded metadata per group                                                   |
+| `publications`               | 4096             | Publications per group. Counts publications, not the references they hold    |
 | `groups`                     | 64               | Live groups per page                                                         |
 | `stackBytes`                 | 1 MiB            | Private stack per PIE member image                                           |
 
@@ -60,7 +61,7 @@ A member's memory, holds, transit pins, watches and slot return only after the b
 
 A member blocked in `futex_wait` is cancelled by that same hard stop. Group state lives with the page-side owner, never in a lock in guest memory, so it survives the stop.
 
-The group ends when no member is reserved, launched, or retained. Its page-held reservation remains charged until safe pool reuse or a local finalization receipt. An external root receives the memory object in its bootstrap request, so its backing is treated as exposed and is never recycled.
+The group ends when no member is reserved, launched, or retained. Publications, region metadata, pins and arenas are retired exactly once at that point, so a retained ended owner reports zero regions, holds, pins, watches and publications. Its `committedBytes` keeps the historical value; the page budget is what returns to zero. Its page-held reservation remains charged until safe pool reuse or a local finalization receipt. An external root receives the memory object in its bootstrap request, so its backing is treated as exposed and is never recycled.
 
 A FUTEX watch is pending until the first `futex_wake` that selects it. The waker claims the hit atomically, so a later or concurrent one-count wake moves on to the next pending watch and never reports progress twice for one watch. A hit watch stays ready until `futex_unwatch`.
 
@@ -76,6 +77,19 @@ A region is freed when it has no holders and no pins. Every pin has exactly one 
 - The owner's successful physical stop releases every pin it owns. A pin outlives a dead member only when it was routed to a surviving consumer.
 
 There is no group-end-only reclamation: a long-lived group that keeps recycling workers returns to its baseline counters.
+
+## Publications
+
+A publication is a group-owned, immutable set of one or two region references that a later member can attach to without an event-loop turn. Waffle treats `kind` as an opaque nonzero adapter tag and `meta` as an opaque u32.
+
+- `shm_publish` needs a hold on `primary`, and on `companion` if it is nonzero and different. It validates everything first, then creates a complete publication in one owner step, or changes nothing.
+- A publication holds its regions until it is withdrawn or the group ends. Its publisher's stop does not release it. A member that never reaches `shm_publish` has only member-owned staging holds, which its physical stop returns.
+- `shm_publication_open` requires the exact `kind`, takes one hold on each region in one owner step, and returns the owner's own extents. A receiver should validate only the bytes it reads from guest memory.
+- `shm_withdraw` succeeds once, and only for the live incarnation that published. A replacement in the same member slot is a different incarnation.
+
+Allocation handles, pin IDs and publication tokens are separate identities. Each is a checked u32 counter that never wraps or repeats; an exhausted counter refuses with `EAGAIN` before charging anything. Handles and pin IDs are per group. Tokens are per page and return only through an output pointer, so a token above `0x7fffffff` is never mistaken for a negative errno. A token withdrawn, or from another group on the page, is `EBADF`. Numeric values from different identity domains may coincide.
+
+The `publications` and `regions` limits are separate. A publication of two regions uses two region slots.
 
 ## Filesystem
 

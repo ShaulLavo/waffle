@@ -722,6 +722,10 @@ shm_pin(handle, out{pin}) -> 0                        caller must hold; pin owne
 shm_route(pin, pid) -> 0                              owner hands the delivery to member pid
 shm_accept(pin, out{handle, addr, len}) -> 0          owner only: +1 hold, pin consumed
 shm_unpin(pin) -> 0                                   owner only: delivery discarded
+shm_publish(kind, primary, companion, meta, out{token}) -> 0   caller holds both regions
+shm_publication_open(token, kind, out{primary, primary_addr, primary_len,
+                     companion, companion_addr, companion_len, meta}) -> 0   +1 hold per region
+shm_withdraw(token) -> 0                              publishing incarnation only, once
 futex_wait32(addr, expected: i32, timeout_ns: i64) -> 0 ok, 1 not-equal, 2 timed-out
 futex_wait64(addr, expected: i64, timeout_ns: i64) -> same
 futex_wake(addr, count) -> number woken (sync waiters, then watches in registration order)
@@ -733,6 +737,15 @@ parallelism() -> the group's reported parallelism
 `group_grow` chunks need not be contiguous with earlier ones. A negative `timeout_ns` waits
 forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned. Hard
 termination of the member's worker is the cancellation path for a blocked wait.
+
+`shm_publish` returns `-EINVAL` for a zero `kind` or equal `primary` and `companion`, `-EBADF` when
+the caller does not hold a named region, and `-EAGAIN` when the publication limit or token space is
+exhausted. A `companion` of zero means none. `shm_publication_open` returns `-EBADF` for an unknown,
+withdrawn, other-group or wrong-kind token, and takes nothing. A module-style publication reports a
+zero companion in all three companion fields. `shm_withdraw` returns `-EBADF` for repeats and for
+any caller other than the publishing incarnation. Publication tokens and region handles are
+unsigned 32-bit values read from output records. See
+[Publications](memory-groups.md#publications).
 
 Poll subscription **kind 7, FUTEX**, uses a watch ID. It is ready while `*addr != expected`, and
 from the first `futex_wake` that hits the watch until `futex_unwatch`. Readiness consumes nothing.

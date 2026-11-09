@@ -13,6 +13,9 @@ IMPORT("runtime_shm", "shm_pin") int32_t shm_pin(uint32_t handle, uint32_t *out)
 IMPORT("runtime_shm", "shm_route") int32_t shm_route(uint32_t pin, uint32_t pid);
 IMPORT("runtime_shm", "shm_accept") int32_t shm_accept(uint32_t pin, uint32_t *out);
 IMPORT("runtime_shm", "shm_unpin") int32_t shm_unpin(uint32_t pin);
+IMPORT("runtime_shm", "shm_publish") int32_t shm_publish(uint32_t kind, uint32_t primary, uint32_t companion, uint32_t meta, uint32_t *out);
+IMPORT("runtime_shm", "shm_publication_open") int32_t shm_publication_open(uint32_t token, uint32_t kind, uint32_t *out);
+IMPORT("runtime_shm", "shm_withdraw") int32_t shm_withdraw(uint32_t token);
 IMPORT("runtime_shm", "futex_wait32") int32_t futex_wait32(uint32_t addr, int32_t expected, int64_t ns);
 IMPORT("runtime_shm", "futex_wake") int32_t futex_wake(uint32_t addr, uint32_t count);
 IMPORT("runtime_shm", "parallelism") int32_t parallelism(void);
@@ -116,16 +119,16 @@ static int churn(int id, int rounds, uintptr_t *low, uintptr_t *high) {
   return 0;
 }
 
-// [0] request seq (page), [1] done seq (member), [2] op, [3..6] args, [8..11] results.
+// [0] request seq (page), [1] done seq (member), [2] op, [3..7] args, [8..15] results.
 static volatile int32_t command[16] __attribute__((aligned(16)));
 
 static void run(void) {
   int32_t *a = (int32_t *)&command[3];
   int32_t *r = (int32_t *)&command[8];
-  uint32_t out[3] = {0, 0, 0};
+  uint32_t out[7] = {0};
   int total = 0;
   uintptr_t low = 0, high = 0;
-  for (int i = 0; i < 4; i++) r[i] = 0;
+  for (int i = 0; i < 8; i++) r[i] = 0;
   switch (command[2]) {
     case 1:  // INIT(id, which)
       private_counter += a[0];
@@ -180,6 +183,14 @@ static void run(void) {
     case 24: r[0] = shm_accept((uint32_t)a[0], (uint32_t *)(uintptr_t)(uint32_t)a[1]); break;
     case 25: r[0] = shm_attach((uint32_t)a[0], (uint32_t *)(uintptr_t)(uint32_t)a[1]); break;
     case 26: r[0] = shm_pin((uint32_t)a[0], (uint32_t *)(uintptr_t)(uint32_t)a[1]); break;
+    case 27: r[0] = shm_publish((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], out); r[1] = (int32_t)out[0]; break;
+    case 28:  // OPEN(token, kind): status, then the seven descriptor words
+      r[0] = shm_publication_open((uint32_t)a[0], (uint32_t)a[1], out);
+      for (int i = 0; i < 7; i++) r[1 + i] = (int32_t)out[i];
+      break;
+    case 29: r[0] = shm_withdraw((uint32_t)a[0]); break;
+    case 30: r[0] = shm_publish((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t *)(uintptr_t)(uint32_t)a[4]); break;
+    case 31: r[0] = shm_publication_open((uint32_t)a[0], (uint32_t)a[1], (uint32_t *)(uintptr_t)(uint32_t)a[2]); break;
     default: r[0] = -28;
   }
 }

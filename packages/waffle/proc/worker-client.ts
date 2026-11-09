@@ -58,6 +58,7 @@ import {
   checkedJobLifetime,
   type JobLifetime,
   checkedProcessCwd,
+  snapshotSpawnWorker,
   type ProcessExit,
   type SpawnRequest,
 } from "./types.js";
@@ -276,6 +277,7 @@ function snapshotSpawnRequest(
     job,
     ...(jobLifetime === undefined ? {} : { jobLifetime }),
     fds: request.fds.map((binding) => ({ ...binding })),
+    ...snapshotSpawnWorker(request.worker),
   };
 }
 /** Synchronous guest-side process service; only notifications cross the message boundary. */
