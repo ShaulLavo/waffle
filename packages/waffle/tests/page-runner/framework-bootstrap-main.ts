@@ -18,4 +18,5 @@ installFrameworkBootstrap({
   token: config.token,
   kind: config.kind,
   url: config.url,
+  trace: "trace" in config && config.trace === true,
 });

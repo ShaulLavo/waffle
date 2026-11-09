@@ -123,9 +123,54 @@ export type CommandFailure = {
   readonly status: number | null;
   readonly abort: "caller" | "deadline" | "revoked" | "unknown" | null;
 };
+export type CollectorObservation = {
+  readonly event: FrameworkEvent;
+  readonly status: number;
+  readonly accepted: boolean;
+};
+export type CollectorDelivery = "unchanged" | "malformed-ack";
+export type TesterTraceOptions = {
+  readonly collectorResponse: (
+    observation: CollectorObservation,
+    signal: AbortSignal,
+  ) => Promise<CollectorDelivery>;
+};
+export type TraceCheckpoint = { readonly kind: "checkpoint"; readonly text: string };
+export type TraceFailure =
+  | "not-admitted"
+  | "source-lost"
+  | "missing-cleanup-response"
+  | "capacity"
+  | "conversion"
+  | "reentry"
+  | "receipt"
+  | "cancelled"
+  | "deadline"
+  | "consumers-unconfirmed";
+export type TraceSettlement =
+  | { readonly status: "not-requested" }
+  | {
+      readonly status: "confirmed";
+      readonly source: { readonly kind: "tester"; readonly doc: string; readonly url: string };
+      readonly artifact: { readonly text: string; readonly utf8Bytes: number };
+    }
+  | {
+      readonly status: "incomplete";
+      readonly reason: TraceFailure;
+      readonly retained: {
+        readonly kind: "prefix" | "terminal-unconfirmed";
+        readonly text: string;
+      } | null;
+    };
+export interface TesterTraceCapture {
+  checkpoint(): Promise<TraceCheckpoint>;
+  releaseOriginalRpc(): Promise<void>;
+}
 export type FrameworkResult = {
   suite: string;
   run: string;
+  readonly trace: TraceSettlement;
+  readonly cleanupDeadlineAt: number;
   expected: readonly ExpectedCase[];
   cases: {
     expected: ExpectedCase;
@@ -158,6 +203,7 @@ export type FrameworkResult = {
   rootBrowserSuiteComplete: false;
   omittedRootFiles: "not enumerated";
   cleanup: DriverCleanup & {
+    trace: CleanupStep;
     callbacks: CleanupStep;
     provider: CleanupStep;
     context: CleanupStep;
@@ -172,6 +218,7 @@ export type FrameworkMiddlewareStack = {
   ): unknown;
 };
 export interface FrameworkHost {
+  captureTesterTrace(options: TesterTraceOptions): TesterTraceCapture;
   mount(server: FrameworkMiddlewareStack): void;
   readonly middleware: (
     request: IncomingMessage,

@@ -11,6 +11,7 @@ function result(): SuiteResult {
     detail: "Owned resources stopped",
   };
   return {
+    firstCommandFailure: null,
     suite: "process-control",
     run: "control-run",
     required,

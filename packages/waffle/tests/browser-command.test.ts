@@ -301,3 +301,42 @@ try {
     }
   },
 );
+
+linuxTest("passing control output cannot clear an outer supervisor deadline", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wc-deadline-"));
+  const suite = join(root, "suite.ts");
+  const recorder = join(root, "recorder.ts");
+  try {
+    writeFileSync(
+      suite,
+      `import { writeFileSync } from "node:fs";
+const interrupted=Promise.withResolvers<void>();
+process.on("SIGTERM", () => interrupted.resolve());
+await interrupted.promise;
+writeFileSync(process.env.PROBE + "/verdict", JSON.stringify({status:"pass"}));
+`,
+    );
+    writeFileSync(
+      recorder,
+      `import { writeFileSync } from "node:fs";
+process.on("SIGTERM", () => {});
+const child=Bun.spawn([process.execPath, ${JSON.stringify(suite)}], {stdout:"inherit",stderr:"inherit"});
+const code=await child.exited;
+writeFileSync(process.env.PROBE + "/child-exit", String(code));
+process.exitCode=code;
+`,
+    );
+    await expect(
+      runBrowserSuite([process.execPath, recorder], {
+        cwd: root,
+        env: { ...process.env, PROBE: root, STORAGE_SCRATCH_ROOT: root },
+        timeoutMs: 200,
+      }),
+    ).rejects.toThrow("Browser suite failed (1)");
+    expect(readFileSync(join(root, "child-exit"), "utf8")).toBe("0");
+    expect(JSON.parse(readFileSync(join(root, "verdict"), "utf8"))).toEqual({ status: "pass" });
+    expect(readdirSync(root).filter((name) => name.startsWith("wb-"))).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

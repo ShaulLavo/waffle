@@ -169,6 +169,8 @@ Safari WebDriver, not a repository install or native WebTransport peers. The dri
 session, local relay and target listeners. Remove the prepared directory after retaining the small report.
 Actual Safari, iPhone and deployed remote UDP acceptance remain separate checks.
 
+Reporter controls prepare their shared framework bootstrap once, then run Chromium and WebKit in separate serial commands. Each command keeps the existing ten-minute supervisor limit. An outer interruption fails the control even when an expected negative failure was already present.
+
 The libc suite builds guest binaries with a pinned wasi-sdk and runs them under Wasmtime. See [Guest libc](wasi-libc.md) for its requirements. `bun run test:libc` runs it.
 
 ## Where things live

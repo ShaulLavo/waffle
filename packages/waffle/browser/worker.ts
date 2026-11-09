@@ -666,7 +666,10 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       closeDiscardedStdio(streams, new SetConstructor());
     });
     attempt(() => socketNetwork?.dispose());
-    attempt(() => (graphics ? graphics.dispose() : releaseGraphicsPort()));
+    // Only a terminal authenticated before finish may authorize signaled graphics cleanup.
+    attempt(() =>
+      graphics ? graphics.dispose(settled?.kind === "signaled") : releaseGraphicsPort(),
+    );
     attempt(releaseNetworkPort);
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
