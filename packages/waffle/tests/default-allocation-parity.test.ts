@@ -41,6 +41,22 @@ function withoutStorageRoot(value: Parameters<typeof multiset>[0], bytes: number
   }
   return events;
 }
+/** An identity no longer constructs its 95 empty growable data segments. The filesystem owner
+ * builds each fixed segment when a page in it is first needed, so startup declares none. */
+function withoutEagerSegments(expected: string[]) {
+  const segment = (outcome: string) =>
+    JSON.stringify({
+      realm: "page-owned-javascript",
+      purpose: "startup",
+      constructor: "SharedArrayBuffer",
+      descriptor: { initial: 0, maximum: 16 * 1024 * 1024, growable: true },
+      outcome,
+    });
+  const placeholders = [segment("attempt"), segment("success")];
+  for (const placeholder of placeholders)
+    expect(expected.filter((event) => event === placeholder)).toHaveLength(95);
+  return expected.filter((event) => !placeholders.includes(event));
+}
 /** Private large inputs shrank the arena maximum and added one word to each request control. */
 function withPrivateInputArena(expected: string[]) {
   return expected
@@ -130,11 +146,17 @@ for (const [mode, agent] of [
         withPublicationReply(
           withExecutionObservation(
             withPrivateInputArena(
-              withoutIdleWorkers(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+              withoutIdleWorkers(
+                withoutEagerSegments(withoutStorageRoot(baseline, 64 * 1024 * 1024)),
+              ),
             ),
           ),
         ),
       );
+      // No page-owned startup construction is a growable buffer sized for a data segment.
+      expect(
+        multiset(current).filter((event) => event.includes('"maximum":16777216,"growable":true')),
+      ).toEqual([]);
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }

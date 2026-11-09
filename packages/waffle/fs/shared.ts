@@ -26,10 +26,10 @@ import type { FileHandle, FileStat } from "../core/index.js";
 import {
   FilesystemError,
   DEFAULT_SHARED_MAX_BYTES,
-  createSharedSegment,
+  State,
+  createFilesystemSegment,
   normalizeSharedMaxBytes,
   type FilesystemSection,
-  type GrowableSharedSegment,
 } from "./protocol.js";
 export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
@@ -108,6 +108,17 @@ export interface SharedSegment {
   buffer: SharedArrayBuffer;
   index: number;
 }
+/** The owner's private record of one write staged for a client that lacks the target segment.
+ * `cells` is that stage request's own header: word 0 is its state and word 1 the position the
+ * client committed at. `bytes` is the owner's private copy, dropped once the stage settles. */
+export interface StagedWrite {
+  readonly slot: number;
+  readonly handle: FileHandle;
+  readonly cells: Int32Array;
+  bytes: Uint8Array | undefined;
+}
+const STAGE_STATE = 0;
+const STAGE_POSITION = 1;
 
 /** Fix only growable shared sources; ordinary/fixed WASM sources keep their original iovec.
  * A source can grow while waiting for a lock or copying another iovec. Capacity checks,
@@ -130,7 +141,10 @@ interface PlannedIdentityRevision {
   readonly identity: FileIdentity;
   readonly allocation: IdentityAllocator;
 }
-/** Shared metadata and a service-grown pool of prepublished growable SAB data segments. */
+/** Shared metadata and a pool of fixed data segments. The owner state builds a segment when a
+ * page in it is first needed; every other state holds only the segments it was given. A page
+ * table entry can name a page in a segment this agent lacks: each path below resolves its
+ * backing before it changes anything, and a miss sends that operation to the owner. */
 export class SharedFilesystemState {
   readonly buffer: SharedArrayBuffer;
   readonly dirtyAdmission: DirtyAdmission;
@@ -145,6 +159,11 @@ export class SharedFilesystemState {
   readonly pendingSegments: SharedSegment[] = [];
   private readonly firstBytes: Uint8Array;
   private readonly pageViews: (Uint8Array | undefined)[] = [];
+  /** Scratch for one direct read's resolved source pages; see sourcePages. */
+  private readonly readViews: Uint8Array[] = [];
+  private readViewsBusy = false;
+  /** Owner only: unsettled staged writes by file slot. Empty on every client state. */
+  private readonly staged = new Map<number, StagedWrite[]>();
   private serviceMutation = false;
   private globalOwner: number | undefined;
   private globalDepth = 0;
@@ -201,6 +220,7 @@ export class SharedFilesystemState {
     this.globalLock();
     try {
       const slot = this.slot(handle);
+      this.settleUnderLock(slot);
       this.checkFile(slot, handle);
       this.checkAccess(slot, 4);
       if (!this.pageReaders) throw new FilesystemError(58, "page retention is not enabled");
@@ -327,6 +347,9 @@ export class SharedFilesystemState {
       }
     } catch (error) {
       for (const replacement of replacements) this.releasePhysical(replacement.physical);
+      // A copy page can need a new segment. A native refusal there is exhaustion, not EFBIG.
+      if (error instanceof RangeError)
+        throw new FilesystemError(51, "shared filesystem segment allocation failed");
       throw error;
     }
     for (const { entry, previous, physical } of replacements) {
@@ -397,16 +420,17 @@ export class SharedFilesystemState {
     }
   }
 
-  addSegment(buffer: SharedArrayBuffer, index = this.segments.length): void {
+  /** Attaches an announced segment at its index. A segment is always complete when it is
+   * announced. Delivery can repeat, arrive out of order or follow a launch snapshot, so the
+   * first wrapper accepted for an index stays and later ones are ignored. */
+  addSegment(buffer: SharedArrayBuffer, index: number): void {
     if (
-      buffer.byteLength < SHARED_SEGMENT_BYTES ||
+      buffer.byteLength !== SHARED_SEGMENT_BYTES ||
       !Number.isInteger(index) ||
       index < 1 ||
       index >= Atomics.load(this.cells, 4)
     )
       throw new RangeError("invalid shared filesystem segment");
-    // An indexed announcement may arrive after a prepublished wrapper has already grown.
-    // Keep the original wrapper so queued delivery cannot replace a live segment.
     this.segments[index] ??= buffer;
   }
   takeNewSegments(): SharedSegment[] {
@@ -420,14 +444,53 @@ export class SharedFilesystemState {
       throw new MissingSegmentError("shared filesystem segment has not reached this guest");
     return buffer;
   }
+  /** Resolves the backing of logical pages [first, end) in this agent's directory. Callers run
+   * it under the file lock before they change a destination, a page or any accounting, so a
+   * MissingSegmentError always means nothing happened. Every page in the range must be mapped. */
+  private requireBacking(slot: number, first: number, end: number): void {
+    for (let logical = first; logical < end; logical++)
+      this.segmentBuffer(this.pages[this.pageAt(slot, logical)]! - 1);
+  }
+  /** The page views of logical pages [first, end), resolved once and then used for the copy, so
+   * resolving them before the first byte moves costs a read almost nothing. Throws
+   * MissingSegmentError, with nothing copied, for a page this agent cannot reach. `views` is the
+   * state's scratch array unless a read is already using it: a guest iovec getter can reenter
+   * another read during the copy. */
+  private sourcePages(slot: number, first: number, end: number, views: Uint8Array[]): void {
+    const pages = this.pages;
+    for (let index = 0; index < end - first; index++)
+      views[index] = this.segmentFor(pages[this.pageAt(slot, first + index)]! - 1);
+  }
+  /** A write over reader-pinned pages copies each one to the lowest free page. Only the owner
+   * can build the segment such a page may need, so any other agent checks here, before it
+   * prepares anything, that its directory already holds every copy target. */
+  private requireCopyBacking(slot: number, first: number, end: number): void {
+    if (!this.pageReaders || this.lockOwner === SERVICE_OWNER) return;
+    const limit = this.physicalPageLimit();
+    let from = this.cells[PHYSICAL_HINT]!;
+    for (let logical = first; logical < end; logical++) {
+      if (!this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) continue;
+      const free = this.owners.indexOf(0, from);
+      // Exhaustion is reported by the copy itself, with its own errno.
+      if (free < 0 || free >= limit) return;
+      this.segmentBuffer(free);
+      from = free + 1;
+    }
+  }
+  private hasPinnedPage(slot: number, first: number, end: number): boolean {
+    if (!this.pageReaders) return false;
+    for (let logical = first; logical < end; logical++)
+      if (this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) return true;
+    return false;
+  }
   private segmentFor(page: number): Uint8Array {
     const cached = this.pageViews[page];
     if (cached) return cached;
     const segment = Math.floor(page / DATA_PAGES_PER_SEGMENT);
     const local = page % DATA_PAGES_PER_SEGMENT;
     const buffer = this.segmentBuffer(page);
-    // Fixed page views remain valid when a growable segment grows. Physical pages may be
-    // recycled between files, but their backing buffer and byte offset never change.
+    // Physical pages may be recycled between files, but their backing buffer and byte offset
+    // never change, so a page view stays valid for the life of this state.
     const bytes =
       segment === 0
         ? this.firstBytes.subarray(local * DATA_PAGE_BYTES, (local + 1) * DATA_PAGE_BYTES)
@@ -580,6 +643,9 @@ export class SharedFilesystemState {
         this.contend(this.slots, index, revoked, owner);
       held = true;
       if (revoked?.()) throw new FilesystemError(11);
+      // Every owner operation on a file first applies the staged writes its clients committed,
+      // so no owner path can serve, persist or reclaim that file's older bytes.
+      if (this.staged.size) this.settleStaged((index - FILE_LOCK) / SLOT_WORDS);
       if (global) this.fileOwnsGlobal.add(index);
     } catch (error) {
       if (held) Atomics.compareExchange(this.slots, index, owner, 0);
@@ -765,16 +831,15 @@ export class SharedFilesystemState {
   private ensureSegment(segment: number): void {
     if (segment >= Atomics.load(this.cells, 4))
       throw new FilesystemError(51, "shared filesystem storage exhausted");
-    if (segment === 0 || this.segments[segment]?.byteLength === SHARED_SEGMENT_BYTES) return;
-    const existing = this.segments[segment];
-    const buffer = existing ?? createSharedSegment();
-    (buffer as GrowableSharedSegment).grow(SHARED_SEGMENT_BYTES);
-    if (!existing) {
-      // Standalone states can still exchange indexed segments. Connected identities already
-      // own every wrapper, so their synchronous guests need no port delivery after growth.
-      this.segments[segment] = buffer;
-      this.pendingSegments.push({ buffer, index: segment });
-    }
+    if (segment === 0 || this.segments[segment]) return;
+    // A second builder would create backing the owner never sees. Everyone else asks the owner.
+    if (this.lockOwner !== SERVICE_OWNER)
+      throw new MissingSegmentError("only the filesystem owner creates segments");
+    // A native refusal leaves the directory unchanged, and a later request may try again. A
+    // segment that was built stays, even when the allocation that needed it then fails.
+    const buffer = createFilesystemSegment();
+    this.segments[segment] = buffer;
+    this.pendingSegments.push({ buffer, index: segment });
   }
   private allocate(slot: number, needed: number): void {
     const current = Atomics.load(this.slots, this.at(slot, CAPACITY));
@@ -1322,34 +1387,56 @@ export class SharedFilesystemState {
       this.checkAccess(slot, 4);
       if (!(slots[base + REVISION_STATE]! & RESIDENT))
         throw new MissingDataError("shared filesystem file has not been loaded");
-      const size = slots[base + FILE_SIZE]!,
-        pages = this.pages;
-      let position = offset;
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i]!,
-          length = chunk.length;
-        let at = 0;
-        while (at < length && position < size) {
-          const inPage = position % DATA_PAGE_BYTES;
-          const count = Math.min(length - at, size - position, DATA_PAGE_BYTES - inPage);
-          const page = this.segmentFor(
-            pages[this.pageAt(slot, (position - inPage) / DATA_PAGE_BYTES)]! - 1,
-          );
-          copyBytes.call(
-            chunk,
-            count === DATA_PAGE_BYTES ? page : page.subarray(inPage, inPage + count),
-            at,
-          );
-          at += count;
-          position += count;
-        }
-        if (at < length) break;
+      let requested = 0;
+      for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
+      // Resolve every source page before the first destination byte changes: a range can start
+      // in a segment this agent holds and end in one it lacks. Bytes at or past the end of the
+      // file need no backing, so an empty read and a read at EOF never ask for a segment.
+      const size = Math.min(slots[base + FILE_SIZE]!, offset + requested);
+      if (size <= offset) return 0;
+      const first = Math.floor(offset / DATA_PAGE_BYTES);
+      const scratch = !this.readViewsBusy;
+      const views = scratch ? this.readViews : [];
+      this.sourcePages(slot, first, Math.ceil(size / DATA_PAGE_BYTES), views);
+      if (scratch) this.readViewsBusy = true;
+      try {
+        return this.copyPages(views, first, chunks, offset, size);
+      } finally {
+        if (scratch) this.readViewsBusy = false;
       }
-      return position - offset;
     } finally {
       Atomics.compareExchange(slots, lock, owner, 0);
       this.section?.exit();
     }
+  }
+  /** Copies file bytes [offset, size) from resolved page views into the iovecs. */
+  private copyPages(
+    views: readonly Uint8Array[],
+    first: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    size: number,
+  ): number {
+    let position = offset;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!,
+        length = chunk.length;
+      let at = 0;
+      while (at < length && position < size) {
+        const inPage = position % DATA_PAGE_BYTES;
+        const count = Math.min(length - at, size - position, DATA_PAGE_BYTES - inPage);
+        const page = views[(position - inPage) / DATA_PAGE_BYTES - first]!;
+        copyBytes.call(
+          chunk,
+          count === DATA_PAGE_BYTES ? page : page.subarray(inPage, inPage + count),
+          at,
+        );
+        at += count;
+        position += count;
+      }
+      if (at < length) break;
+    }
+    return position - offset;
   }
   private readyGlobal(revoked: () => boolean, owner: number): boolean {
     try {
@@ -1470,15 +1557,13 @@ export class SharedFilesystemState {
           end > slots[base + CAPACITY]! * DATA_PAGE_BYTES
         )
           return -Math.max(1, end);
-        // Resolve every backing page before the first byte is committed. A retry must never
-        // hide a partial write when a segment is not yet available.
-        if (nonblocking || this.publication)
-          for (
-            let page = Math.floor(at / DATA_PAGE_BYTES);
-            page < Math.ceil(end / DATA_PAGE_BYTES);
-            page++
-          )
-            this.segmentFor(this.pages[this.pageAt(slot, page)]! - 1);
+        // Resolve every target page, and every page a reader-pinned target would be copied to,
+        // before dirty admission, identity or publication preparation and the first byte. A
+        // miss then means nothing happened, and the caller takes the write to the owner.
+        const first = Math.floor(at / DATA_PAGE_BYTES),
+          last = Math.ceil(end / DATA_PAGE_BYTES);
+        this.requireBacking(slot, first, last);
+        this.requireCopyBacking(slot, first, last);
         this.checkDirty(slot, Math.max(size, end));
         const mtime = Date.now();
         const identity = this.prepareIdentityVersion(slot, true);
@@ -1642,6 +1727,209 @@ export class SharedFilesystemState {
     );
     return end < 0 ? -end : { written: total, offset: end };
   }
+  /** Client commit of a write the owner has staged, for target pages in a segment this agent
+   * lacks. It runs under the same nonblocking locks, odd epoch and data section as a direct
+   * write and touches only attached metadata: the commit point hands the stage to the owner by
+   * exchanging its state from Complete to Committed, then clears the file's resident bit. That
+   * bit already sends every direct read, write and readiness probe to the owner, and the owner
+   * copies the staged bytes into the file's existing pages before it serves anything. So the
+   * write is visible from the call that returns its count, needs no free page, and does not
+   * depend on what the file held when it was staged.
+   *
+   * Returns the end offset, or undefined when nothing was committed and the stage has to be
+   * prepared again: the owner withdrew it, the file is not resident (another agent's commit is
+   * waiting for the owner, or the file is not loaded), the end no longer fits the capacity, or
+   * a target page became reader-pinned. Lock contention throws errno 6 and keeps the stage. */
+  commitStagedWrite(
+    slot: number,
+    handle: FileHandle,
+    cells: Int32Array,
+    bytes: Uint8Array,
+    append: boolean,
+    offset: number,
+    epoch: Int32Array,
+    revoked: () => boolean,
+    owner: number,
+    admission?: PublicationAdmission,
+  ): number | undefined {
+    const slots = this.slots,
+      base = slot * SLOT_WORDS,
+      lock = base + FILE_LOCK;
+    this.globalLock(revoked, owner, true, "data", "file");
+    Atomics.add(epoch, 0, 1);
+    try {
+      if (Atomics.compareExchange(slots, lock, 0, owner) !== 0) throw new FilesystemError(6);
+      try {
+        if (revoked()) throw new FilesystemError(11);
+        if (slots[base + HANDLE] !== handle + 1) throw new FilesystemError(8);
+        this.checkAccess(slot, 2);
+        this.publication?.assertCurrent();
+        if (this.publication && !admission)
+          throw new FilesystemError(28, "publication admission required");
+        if (Atomics.load(cells, STAGE_STATE) !== State.Complete) return undefined;
+        const size = slots[base + FILE_SIZE]!;
+        const at = append ? size : offset;
+        const end = at + bytes.length;
+        if (
+          !(slots[base + REVISION_STATE]! & RESIDENT) ||
+          end > slots[base + CAPACITY]! * DATA_PAGE_BYTES
+        )
+          return undefined;
+        const first = Math.floor(at / DATA_PAGE_BYTES),
+          last = Math.ceil(end / DATA_PAGE_BYTES);
+        // The owner applies in place, so a pinned page has to be relocated by a new stage.
+        if (this.hasPinnedPage(slot, first, last)) return undefined;
+        this.checkDirty(slot, Math.max(size, end));
+        const mtime = Date.now();
+        const identity = this.prepareIdentityVersion(slot, true);
+        const prepared = this.prepareDirectPublication(
+          slot,
+          [bytes],
+          append,
+          at,
+          end,
+          size,
+          mtime,
+          identity,
+          admission,
+        );
+        this.dirty(slot, Math.max(size, end));
+        // Commit point. The owner's withdrawal is the opposing exchange from the same value,
+        // so exactly one of them wins and a lost race here has changed no file state.
+        Atomics.store(cells, STAGE_POSITION, at);
+        if (
+          Atomics.compareExchange(cells, STAGE_STATE, State.Complete, State.Committed) !==
+          State.Complete
+        )
+          return undefined;
+        try {
+          // The revision moves before the gate closes. If this agent dies between the two, the
+          // owner finds a committed stage on a resident file and finishes the write itself; at
+          // every later point the revision has already moved. Applied bytes are never left
+          // under an old revision.
+          this.changed(slot);
+          slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! & ~RESIDENT;
+          if (end > size) slots[base + FILE_SIZE] = end;
+          slots[base + MTIME_LOW] = mtime >>> 0;
+          slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
+          this.commitIdentityVersion(slot, identity);
+          if (prepared) this.publication!.commit(prepared.publication);
+        } catch (error) {
+          // The write is committed; a failure after that point is unknown, never a retry.
+          this.publication?.stop();
+          throw error;
+        }
+        return end;
+      } finally {
+        Atomics.compareExchange(slots, lock, owner, 0);
+      }
+    } finally {
+      Atomics.add(epoch, 0, 1);
+      this.globalUnlock(owner);
+    }
+  }
+  /** Owner only. Records a write for a client that cannot reach the target pages itself, and
+   * leaves the file so that client can commit without the owner: capacity covers the end and,
+   * with page retention on, no target page is reader-pinned. The file's bytes, size, timestamp
+   * and revision do not change, and the staged bytes take no filesystem page: they stay in this
+   * private record until that client commits and the owner applies them. */
+  stageWrite(
+    handle: FileHandle,
+    offset: number,
+    append: boolean,
+    bytes: Uint8Array,
+    cells: Int32Array,
+  ): StagedWrite {
+    if (this.lockOwner !== SERVICE_OWNER)
+      throw new FilesystemError(58, "only the filesystem owner stages writes");
+    if (!Number.isSafeInteger(offset) || offset < 0 || !bytes.length) throw new FilesystemError(28);
+    this.globalLock();
+    try {
+      const slot = this.slot(handle);
+      this.checkFile(slot, handle);
+      this.checkAccess(slot, 2);
+      const at = append ? this.slots[this.at(slot, FILE_SIZE)]! : offset;
+      const end = at + bytes.length;
+      this.growLocked(handle, end);
+      this.prepareVersionWrite(handle, at, bytes.length, end).commit();
+      const stage: StagedWrite = { slot, handle, cells, bytes };
+      const stages = this.staged.get(slot);
+      if (stages) stages.push(stage);
+      else this.staged.set(slot, [stage]);
+      return stage;
+    } finally {
+      this.globalUnlock();
+    }
+  }
+  /** Owner only. Ends one staged write, exactly once: applies it when its client committed it,
+   * and otherwise withdraws it so that no later commit can succeed. The record remembers that it
+   * settled, so a repeated or late call does nothing: it cannot replay bytes over newer content,
+   * lift the gate of a newer stage on the same file, or read a request block that was reused. */
+  settleStagedWrite(stage: StagedWrite): void {
+    if (!stage.bytes) return;
+    const lock = this.at(stage.slot, FILE_LOCK);
+    // Taking the file lock applies every committed stage of this file, this one included.
+    this.lock(lock, undefined, this.lockOwner, "release");
+    try {
+      if (!stage.bytes) return;
+      this.forgetStaged(stage);
+      Atomics.compareExchange(stage.cells, STAGE_STATE, State.Complete, State.Cancelled);
+      // No commit can be in flight under this file lock, except from an agent that was reaped
+      // while it was still running. Its exchange is then the one that won.
+      if (Atomics.load(stage.cells, STAGE_STATE) === State.Committed) this.applyStaged(stage);
+      else stage.bytes = undefined;
+    } finally {
+      this.unlock(lock);
+    }
+  }
+  private forgetStaged(stage: StagedWrite): void {
+    const stages = this.staged.get(stage.slot);
+    const index = stages ? stages.indexOf(stage) : -1;
+    if (index < 0) return;
+    stages!.splice(index, 1);
+    if (!stages!.length) this.staged.delete(stage.slot);
+  }
+  /** For owner paths that read or reshape a file's pages without taking its file lock. Taking
+   * the lock is what applies the file's committed stages. */
+  private settleUnderLock(slot: number): void {
+    if (!this.staged.size) return;
+    this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, "release");
+    this.unlock(this.at(slot, FILE_LOCK));
+  }
+  /** Owner only, with this slot's file lock held. Commit needs that lock too, so each stage
+   * here is either wholly committed or not committed at all. */
+  private settleStaged(slot: number): void {
+    const stages = this.staged.get(slot);
+    if (!stages) return;
+    const committed = stages.filter(
+      (stage) => Atomics.load(stage.cells, STAGE_STATE) === State.Committed,
+    );
+    for (const stage of committed) {
+      this.forgetStaged(stage);
+      this.applyStaged(stage);
+    }
+  }
+  /** Copies a committed stage into the file's own pages and makes the file resident again. The
+   * committing client already published the size, timestamp and revision. One that died right
+   * after its commit point changed none of them, so the owner finishes that write here. */
+  private applyStaged(stage: StagedWrite): void {
+    const bytes = stage.bytes;
+    stage.bytes = undefined;
+    if (!bytes) return;
+    const slots = this.slots,
+      base = stage.slot * SLOT_WORDS;
+    // A handle never names another file, and a freed slot holds no pages to write into.
+    if (slots[base + HANDLE] !== stage.handle + 1 || slots[base] !== 1) return;
+    const at = Atomics.load(stage.cells, STAGE_POSITION);
+    const end = at + bytes.length;
+    if (!slots[base + CAPACITY]) return;
+    if (at >= 0 && end <= slots[base + CAPACITY]! * DATA_PAGE_BYTES) {
+      this.copyInto(stage.slot, bytes, at);
+      if (slots[base + FILE_SIZE]! < end) slots[base + FILE_SIZE] = end;
+      if (slots[base + REVISION_STATE]! & RESIDENT) this.changed(stage.slot);
+    }
+    slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! | RESIDENT;
+  }
   /** Caller owns the global mutation lock. Undefined asks for service growth after unlock. */
   tryWrite(
     handle: FileHandle,
@@ -1753,6 +2041,9 @@ export class SharedFilesystemState {
   }
   growLocked(handle: FileHandle, size: number): void {
     const slot = this.slot(handle);
+    // A client waiting on a file whose staged write is committed asks for growth to become
+    // ready, so that write is applied here.
+    this.settleUnderLock(slot);
     const needed = Math.ceil(size / DATA_PAGE_BYTES);
     const capacity = this.slots[this.at(slot, CAPACITY)]!;
     this.checkDirty(
@@ -1785,10 +2076,23 @@ export class SharedFilesystemState {
       this.checkAccess(slot, 2);
       const old = Atomics.load(this.slots, this.at(slot, FILE_SIZE));
       const resident = (this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) !== 0;
-      if (!resident && !(truncate && size === 0))
+      const capacity = Atomics.load(this.slots, this.at(slot, CAPACITY));
+      // A file that is not resident but still maps pages can be waiting for the owner to apply
+      // a committed staged write. Only the owner may replace it, after that apply.
+      if (!resident && (!(truncate && size === 0) || (capacity && owner !== SERVICE_OWNER)))
         throw new MissingDataError("shared filesystem file has not been loaded");
-      if (size > Atomics.load(this.slots, this.at(slot, CAPACITY)) * DATA_PAGE_BYTES)
-        throw new RangeError("file needs growth");
+      if (size > capacity * DATA_PAGE_BYTES) throw new RangeError("file needs growth");
+      // Truncation zeroes the removed range and copies a reader-pinned boundary page. Resolve
+      // both before dirty admission, identity or publication preparation.
+      if (resident && truncate && size < old) {
+        const first = Math.floor(size / DATA_PAGE_BYTES);
+        this.requireBacking(slot, first, Math.ceil(old / DATA_PAGE_BYTES));
+        this.requireCopyBacking(
+          slot,
+          first,
+          Math.ceil(truncateBoundaryEnd(size, old) / DATA_PAGE_BYTES),
+        );
+      }
       const next = truncate ? size : Math.max(old, size);
       const mtime = truncate ? Date.now() : this.getMtime(slot);
       const identity = this.prepareIdentityVersion(

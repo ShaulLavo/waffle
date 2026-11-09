@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { SharedFilesystemState, SLOT_WORDS } from "../fs/shared";
-import { CONNECTION_SHARED_BYTES, PAGE, createFilesystemIdentity } from "../fs/protocol";
+import {
+  CONNECTION_SHARED_BYTES,
+  PAGE,
+  createFilesystemIdentity,
+  createFilesystemSegment,
+} from "../fs/protocol";
 import { MAX_SHARED_FILE_BYTES } from "../fs/shared-capacity";
 import { TABLE_BLOCKS } from "../fs/storage-geometry";
 
@@ -26,11 +31,15 @@ interface StateInternals {
 const internals = (state: SharedFilesystemState) => state as unknown as StateInternals;
 const usedBlocks = (state: SharedFilesystemState) =>
   internals(state).tableOwners.reduce((count, owner) => count + (owner !== 0 ? 1 : 0), 0);
+/** `state` is the owner: only it builds segments. `deliver` announces them to `peer`. */
 const connected = (maxBytes?: number) => {
   const identity = createFilesystemIdentity(undefined, maxBytes);
-  const open = () =>
-    new SharedFilesystemState(identity.shared, identity.maxBytes, undefined, identity.segments);
-  return { identity, state: open(), peer: open() };
+  const state = new SharedFilesystemState(identity.shared, identity.maxBytes);
+  const peer = new SharedFilesystemState(identity.shared, identity.maxBytes, identity.owner);
+  const deliver = () => {
+    for (const segment of state.takeNewSegments()) peer.addSegment(segment.buffer, segment.index);
+  };
+  return { identity, state, peer, deliver };
 };
 
 test("one-byte files consume 4 KiB storage pages, not 64 KiB transport pages", () => {
@@ -86,12 +95,13 @@ test("mapping blocks follow direct leaves and the first tail path", () => {
 });
 
 test("two connections cross leaf, direct-tail and tail-branch boundaries", () => {
-  const { state, peer } = connected();
+  const { state, peer, deliver } = connected();
   state.register(1, stat(0));
   const input = Uint8Array.from({ length: PAGE }, (_, index) => index % 251);
   for (const boundary of [262_144, 1_835_008, 18_612_224]) {
     const offset = boundary - 3;
     state.grow(1, offset + input.length);
+    deliver();
     state.write(1, [input], offset);
     const output = new Uint8Array(input.length);
     expect(peer.read(1, [output], offset)).toBe(input.length);
@@ -102,15 +112,20 @@ test("two connections cross leaf, direct-tail and tail-branch boundaries", () =>
 });
 
 test("physical pages cross 16 MiB separately from logical leaves and reuse zeroed holes", () => {
-  const { identity, state, peer } = connected(segmentBytes * 2);
+  const { identity, state, peer, deliver } = connected(segmentBytes * 2);
   state.register(1, stat(segmentBytes - storagePage));
+  expect(state.segments).toHaveLength(1);
   state.register(2, stat(storagePage * 2, 2));
   const slot = state.fileSlot(2);
   const block = state.pages[rootCellBase + slot * rootWords]! - 1;
   expect(Array.from(state.pages.subarray(block * blockWords, block * blockWords + 2))).toEqual([
     4096, 4097,
   ]);
-  expect(identity.segments.map((buffer) => buffer.byteLength)).toEqual([segmentBytes]);
+  // The owner built the second segment when a page in it was first needed, as a fixed buffer.
+  expect(identity.segments).toEqual([]);
+  expect(state.segments.slice(1).map((buffer) => buffer.byteLength)).toEqual([segmentBytes]);
+  expect(Reflect.get(state.segments[1]!, "growable")).toBe(false);
+  deliver();
   state.write(2, [new Uint8Array([91, 92, 93])], storagePage - 1);
   const out = new Uint8Array(3);
   expect(peer.read(2, [out], storagePage - 1)).toBe(3);
@@ -318,8 +333,8 @@ test("the final physical page has a reader counter and stays pinned until releas
   const local = (physical % 4096) * storagePage;
   expect(segment).toBe(95);
   expect(local + storagePage).toBe(segmentBytes);
-  const backing = identity.segments[segment - 1]!;
-  Reflect.apply(Reflect.get(backing, "grow"), backing, [segmentBytes]);
+  const backing = createFilesystemSegment();
+  state.addSegment(backing, segment);
   state.owners[0] = 0;
   state.owners[physical] = slot;
   state.pages[entry] = physical + 1;

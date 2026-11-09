@@ -43,20 +43,27 @@ export interface SharedGuestMemoryPlan {
 }
 type SharedGuestMemoryShape = SharedGuestMemoryPlan & { readonly kind: "shared-guest" };
 type AllocationShape = BufferShape | GroupMemoryShape | SharedGuestMemoryShape;
+/** Admission for backing that does not exist yet. It is not a native reservation: nothing is
+ * constructed for it, and it reports no grown bytes. */
+type CapacityPromiseShape = {
+  readonly kind: "capacity-promise";
+  readonly bytes: ReservedBytes;
+};
 export type ReservationShape =
   | SharedGuestMemoryShape
   | BufferShape
   | GroupMemoryShape
+  | CapacityPromiseShape
   | { readonly kind: "guest"; readonly memories: readonly MemoryDeclaration[] };
 export type RuntimeBufferLabel =
   | "filesystem-root"
-  | "filesystem-segment"
   | "owner-states"
   | "workspace-publication"
   | "pipe-registry"
   | "control";
 type HolderLabel =
   | RuntimeBufferLabel
+  | "filesystem-segment"
   | "request-arena"
   | "memory-group"
   | "guest-memory"
@@ -314,6 +321,13 @@ export interface RuntimeReservations {
   readonly groups: GroupMemorySource;
   readonly sharedGuests: SharedGuestSource;
   buffer(label: RuntimeBufferLabel, shape: BufferShape): SharedArrayBuffer;
+  /** Admits the data segments a filesystem root may still build, as one promise charged at its
+   * full amount on every platform, before any consumer starts. The owner builds each segment
+   * later, in another agent, so nothing is constructed or charged again when one appears. The
+   * promise lasts as long as this page can reach `root`. That receipt proves local reachability
+   * only: not that another agent closed, and not that a segment was reclaimed. The returned
+   * function withdraws the promise when construction of the tree fails afterwards. */
+  dataCapacity(root: SharedArrayBuffer, bytes: ReservedBytes): () => void;
   ownsBuffer(label: RuntimeBufferLabel, buffer: SharedArrayBuffer): boolean;
   admit(plan: ProcessPlan): Ticket;
   snapshot(): SharedMemorySnapshot;
@@ -452,6 +466,7 @@ export class SharedMemoryLedger {
       sharedGuests: { create: (input) => this.createSharedGuest(runtime, input) },
       buffer: (label, shape) =>
         this.construct(runtime, label, shape, null, () => this.allocations.buffer(shape)),
+      dataCapacity: (root, amount) => this.promiseCapacity(runtime, root, amount),
       ownsBuffer: (label, buffer) => {
         const holder = this.values.get(buffer);
         return holder?.runtime === runtime && holder.label === label && holder.state === "live";
@@ -555,6 +570,33 @@ export class SharedMemoryLedger {
       if (memory) this.values.set(memory, holder);
     }
     return holder;
+  }
+  private promiseCapacity(runtime: symbol, root: SharedArrayBuffer, amount: number): () => void {
+    const owner = this.values.get(root);
+    if (owner?.runtime !== runtime || owner.label !== "filesystem-root" || owner.state !== "live")
+      throw new TypeError("a capacity promise needs this runtime's live filesystem root");
+    if (!Number.isSafeInteger(amount) || amount < 0) throw new RangeError("invalid capacity");
+    if (!amount) return () => {};
+    // The whole amount counts whatever the platform says about fixed buffers, as the growable
+    // segment maxima it replaces did. It is its own holder: the root's record is untouched.
+    this.capacity(amount);
+    const holder = this.record(
+      runtime,
+      "filesystem-segment",
+      { kind: "capacity-promise", bytes: bytes(amount) },
+      amount,
+      amount,
+      "runtime",
+    );
+    try {
+      this.registerReceipt(holder, root);
+    } catch (error) {
+      this.holders.delete(holder.id);
+      throw error;
+    }
+    return () => {
+      if (this.holders.get(holder.id) === holder) this.holders.delete(holder.id);
+    };
   }
   private headroom(runtime: symbol, shape: BufferShape | GroupMemoryShape): Headroom {
     const charged = chargeBytes(this.platform, shape);

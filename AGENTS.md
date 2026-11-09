@@ -32,6 +32,10 @@ source-only consumers and the generated Node exports working together.
   `packages/waffle/tooling/runtime-size.ts`.
 - Size budgets catch accidental growth. When a change needs more, raise the budget in the
   same PR and note the measured numbers. Do not contort the design to fit.
+- Safari, especially on iOS, reserves a growable `SharedArrayBuffer`'s `maxByteLength` and a
+  shared Wasm memory's maximum up front. Do not create growable backing ahead of the data it
+  will hold, and count its full declared maximum against the iPhone reservation budget, never
+  its `byteLength` or initial pages. See `docs/shared-memory.md`.
 - Every new or changed copied or adapted upstream implementation needs a classified
   overview row and section in `docs/bun-patches.md`, including upstream path and
   revision, local changes and reasons. Distinguish original adapters.

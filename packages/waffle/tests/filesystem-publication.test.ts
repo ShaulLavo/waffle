@@ -1116,13 +1116,15 @@ test("production recursive removal publishes every edge and retained directory c
 });
 
 test("production host replace append exclusive and move each publish one complete group", async () => {
-  // Crossing a millisecond during creation can add a separate file metadata effect.
   const fixture = await localPublicationFixture(undefined, true, {
     ...limits,
     effectBytes: 4096,
     logBytes: 8192,
   });
   try {
+    // A replacement publishes a metadata effect only when it changes the timestamp. Give the
+    // seeded file an old one, so that does not depend on a millisecond passing during setup.
+    expect(await fixture.root.asyncCall("setMtime", [fixture.handle, 1])).toBe(0);
     const start = await fixture.cut();
     await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9, 8]));
     let page = await fixture.changes(start);

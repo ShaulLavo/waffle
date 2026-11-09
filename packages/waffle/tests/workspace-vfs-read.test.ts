@@ -1,4 +1,5 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { untilReady } from "./fixtures/lazy-backing.js";
 import { expect, test } from "bun:test";
 import { FilesystemClient, MemoryBackend, PersistentBackend } from "../fs";
 import { createFilesystemIdentity } from "../fs/protocol";
@@ -657,9 +658,15 @@ test("a complete 128MiB resident lease preserves never-read distant bytes throug
     if (opened.kind !== "ok") throw new Error(opened.kind);
     const lease = opened.value;
     expect(value.service.resources().readerPinBytes).toBe(payloadSize);
-    expect(
-      value.client.tryWrite(value.handle, [new Uint8Array([90])], payloadSize - PAGE + 3),
-    ).toBe(1);
+    // Every page of the file is reader-pinned, so the write has to copy its page first. The
+    // file fills eight whole segments: the copy needs a page in a ninth, which only the owner
+    // can build. The immediate write returns EAGAIN without waiting, the owner relocates the
+    // page, and the retry writes it.
+    const write = () =>
+      value.client.tryWrite(value.handle, [new Uint8Array([90])], payloadSize - PAGE + 3);
+    expect(write()).toBe(-6);
+    await untilReady(value.client, value.handle, true);
+    expect(write()).toBe(1);
     await value.client.asyncCall("resize", [value.handle, 1, true]);
     await value.client.asyncCall("move", ["/file", "/moved"]);
     await value.client.asyncCall("writeFile", ["/replacement"], new Uint8Array([91]));

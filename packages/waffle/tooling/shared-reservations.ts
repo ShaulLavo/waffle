@@ -15,7 +15,7 @@ const boundaries: Readonly<Record<string, string>> = {
   "fs/request-memory.ts":
     "Runtime pools receive ArenaSource; standalone transport and ResidentConstruction tests retain explicit allocators.",
   "fs/protocol.ts":
-    "Runtime roots receive FilesystemOwnerConstruction; createSharedSegment is a standalone low-level embedding boundary.",
+    "Runtime roots receive FilesystemOwnerConstruction. createFilesystemSegment is the owner's on-demand fixed data segment; the page admits that capacity up front as one promise.",
   "fs/shared.ts":
     "Dedicated service attaches the page-owned root; standalone backends can construct their own storage.",
   "fs/publication.ts":

@@ -12,6 +12,10 @@ const runtime = createRuntime();
 
 Safari allocates requested WebAssembly memory ahead of time; Chrome and Firefox commit lazily. Size memories, shared buffers and workers for Safari.
 
+Safari, especially on iOS, reserves the whole `maxByteLength` of a growable `SharedArrayBuffer` and the whole maximum of a shared WebAssembly memory when it is constructed. A zero initial length is not zero cost. So do not create growable backing ahead of the data it will hold, and count the full declared maximum against the iPhone reservation budget, never `byteLength` or the initial pages. This is a budgeting rule for new code, not an explanation of any particular past failure.
+
+The filesystem follows it. A new tree holds only its fixed root. The filesystem owner builds each further 16 MiB data segment as a fixed buffer when a page in it is first needed, and a tree that stays small never declares the rest. The request arena is the one growable buffer a connection has: it is the transport every guest needs before it runs, and it is counted at its full maximum.
+
 ## Explicit bounded declarations
 
 An application that knows its capacity passes an issued declaration:
@@ -34,7 +38,7 @@ The application asserts the capacity; Waffle does not measure it. The factory re
 | Policy | Default or explicit unbounded | Explicit bounded |
 | --- | --- | --- |
 | Admission | No limit, unless a native refusal set a cap | Declared budget |
-| Request arena | 2,147,479,552 bytes, with a 64 MiB retry on `RangeError` | 64 MiB, no retry |
+| Request arena | 134,316,032 bytes, with a 64 MiB retry on `RangeError` | 64 MiB, no retry |
 | Default group | Growable, 65,536 pages | Fixed, 16,384 pages |
 | Worker controls | Unbounded | 64 MiB lifetime quota per Worker |
 
@@ -42,7 +46,9 @@ Snapshots report `source: "default"` for omission and `source: "application"` fo
 
 ## What is charged
 
-The ledger tracks filesystem roots and segments, request arenas, workspace publication buffers, pipe registries, group memories, Waffle control buffers and declared guest memory. It is a reservation budget, not a resident-memory measurement. Standalone low-level filesystem and process construction outside a page runtime remains an explicit trusted embedding boundary.
+The ledger tracks filesystem roots, request arenas, workspace publication buffers, pipe registries, group memories, Waffle control buffers and declared guest memory. It is a reservation budget, not a resident-memory measurement.
+
+The filesystem's data segments are built later, by the filesystem worker, where the page's ledger cannot see them. The page therefore admits the whole advertised extra capacity once, when the tree is created: one `filesystem-segment` holder with a `capacity-promise` shape for 1,593,835,520 bytes. It is charged in full on every platform, has no buffer behind it and reports `grownBytes: null`. A segment that appears later is not charged again. Standalone low-level filesystem and process construction outside a page runtime remains an explicit trusted embedding boundary.
 
 The interrupt loader and link-plan loader record memory declarations from the bytes they compile. For cooperative modules you compile yourself, call `declareModuleMemory(module, source)` before launch. This is trusted embedder data on the page, not something a guest can call. A bounded runtime refuses undeclared modules.
 
