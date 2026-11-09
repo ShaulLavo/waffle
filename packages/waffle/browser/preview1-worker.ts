@@ -1,7 +1,10 @@
-import { bootstrap, preview1Executor, type RuntimeWorkerRequest } from "./worker.js";
+import type { RuntimeWorkerRequest } from "./worker.js";
 
-// Dedicated entry point: its entire import graph belongs to the reusable runtime.
+// Keep the executable entry out of shared chunks: launch URLs can carry a fragment.
 const context = globalThis as unknown as {
   onmessage: (event: MessageEvent<RuntimeWorkerRequest>) => Promise<void>;
 };
-context.onmessage = (event) => bootstrap(event.data, preview1Executor);
+context.onmessage = async (event) => {
+  const { bootstrap, preview1Executor } = await import("./worker.js");
+  await bootstrap(event.data, preview1Executor);
+};
