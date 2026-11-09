@@ -163,11 +163,20 @@ function createFixture(
     config.checker ??
       'import assert from "node:assert/strict";\nassert.notEqual(process.cwd(), import.meta.dirname + "/..");\n',
   );
-  const acceptance = resolve(root, "tools/acceptance.ts");
+  const acceptanceRoot = mkdtempSync(resolve(scratch, "acceptance-"));
+  mkdirSync(resolve(acceptanceRoot, "tools"));
+  git(acceptanceRoot, ["init", "-q"]);
+  const acceptance = resolve(acceptanceRoot, "tools/acceptance.ts");
   writeFileSync(
     acceptance,
+    'import {accept} from "./acceptance-helper.ts";\naccept();\n',
+  );
+  writeFileSync(
+    resolve(acceptanceRoot, "tools/acceptance-helper.ts"),
     'import assert from "node:assert/strict";\nimport {runtime} from "waffle";\nassert.equal(runtime, true);\nconsole.log("accepted local runtime bytes");\n',
   );
+  commit(acceptanceRoot, "matching runtime acceptance");
+  writeFileSync(resolve(root, "tools/acceptance.ts"), 'throw new Error("obsolete root-memory API");\n');
   writePackage(
     root,
     "child",
@@ -265,7 +274,7 @@ function createFixture(
   pack(runtimeRoot, runtimeArchive);
   const out = resolve(root, "out");
   const fixtureOptions: RebindOptions = {
-    root: repository,
+    root: acceptanceRoot,
     fromTag,
     fromManifestSha256: sha256(manifestPath),
     tag: targetTag,
@@ -279,7 +288,7 @@ function createFixture(
     fromAssets: assets,
     commandTimeoutMs: 60_000,
   };
-  return { root, assets, archiveRoot, manifestPath, runtimeArchive, out, options: fixtureOptions };
+  return { root, acceptanceRoot, assets, archiveRoot, manifestPath, runtimeArchive, out, options: fixtureOptions };
 }
 
 function updateSourceMetadata(fixture: ReturnType<typeof createFixture>) {
@@ -341,7 +350,7 @@ afterEach(() => {
 });
 
 describe("program peer rebind", () => {
-  test("rebinds metadata, preserves payloads, and proves one runtime", async () => {
+  test("rebinds with distinct historical checker and matching acceptance roots", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
     const refuseFetch = Object.assign(
@@ -395,8 +404,12 @@ describe("program peer rebind", () => {
     expect(manifest.installCheck.acceptance?.output).toBe("accepted local runtime bytes");
     expect(manifest.rebind?.acceptance).toEqual({
       script: "tools/acceptance.ts",
-      commit: manifest.sourceCommit,
-      sha256: sha256(resolve(fixture.root, "tools/acceptance.ts")),
+      commit: git(fixture.acceptanceRoot, ["rev-parse", "HEAD"]),
+      sha256: sha256(resolve(fixture.acceptanceRoot, "tools/acceptance.ts")),
+      sources: ["tools/acceptance-helper.ts", "tools/acceptance.ts"].map((path) => ({
+        path,
+        sha256: sha256(resolve(fixture.acceptanceRoot, path)),
+      })),
     });
   }, 60_000);
 
@@ -472,11 +485,11 @@ describe("program peer rebind", () => {
     );
   });
 
-  test("schema-1 migration is explicit and requires historical acceptance and a matching integer", async () => {
+  test("schema-1 migration is explicit and requires source-bound acceptance and a matching integer", async () => {
     scratch = mkdtempSync(resolve(tmpdir(), "waffle-program-rebind-test-"));
     const fixture = createFixture();
     await expect(buildRebind({ ...fixture.options, acceptance: undefined })).rejects.toThrow(
-      /Schema-1 migration requires historical --acceptance/,
+      /Schema-1 migration requires source-bound --acceptance/,
     );
     await expect(
       buildRebind({
