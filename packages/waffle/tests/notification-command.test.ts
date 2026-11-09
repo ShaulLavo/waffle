@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { notificationCommand, notificationSources } from "./notification-command.js";
+import { formatHostError } from "./page-runner/protocol.js";
 
 const calls: [string, ...(string | boolean)[]][] = [
   ["mixedNotificationCases", "/guest.js", "/helper.js"],
@@ -112,3 +113,15 @@ test("stock notification setup uses portable scratch and decoded filesystem path
   expect(source).not.toContain('mkdtemp("/work/tmp/');
   expect(source).not.toContain("new URL(entry, import.meta.url).pathname");
 });
+
+for (let index = 0; index < calls.length; index++) {
+  test(`notification failure context identifies ${labels[index]} without running a later call`, async () => {
+    const observed: unknown[][] = [];
+    const error: unknown = await execute(index, observed).catch((cause: unknown) => cause);
+    expect(formatHostError(error)).toContain(`Notification scenario ${labels[index]} failed`);
+    expect(formatHostError(error)).toContain(`original failure ${index}`);
+    expect(error).toBeInstanceOf(Error);
+    expect(Object.getOwnPropertyDescriptor(error, "cause")?.value).toBeInstanceOf(Error);
+    expect(observed).toEqual(expectedCalls.slice(0, index + 1));
+  });
+}
