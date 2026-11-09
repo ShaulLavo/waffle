@@ -161,9 +161,11 @@ async function run(
     set.wait(set.sample(), Infinity);
     check(performance.now() - fallbackStart < 250, "uncovered fallback parked indefinitely");
     set.setProcessSubscriptions([{ kind: 0, id: fd }]);
+    // Earlier parked news can leave an unread Data record on the first handle.
+    const deadlineHandle = network.fetch('{"url":"https://deadline.invalid"}');
     const deadline = performance.now() + 140;
     let sample = set.sample();
-    globalThis.postMessage({ stage: "deadline" });
+    globalThis.postMessage({ stage: { deadline: deadlineHandle } });
     let turns = 0;
     while (performance.now() < deadline) {
       set.wait(sample, deadline);
@@ -177,7 +179,7 @@ async function run(
     check(Atomics.wait(request.gate, 0, 0, 1500) !== "timed-out", "deadline source missing");
     Atomics.store(request.gate, 0, 0);
     network.poll(0);
-    const deadlinePayload = network.read(handle, 8);
+    const deadlinePayload = network.read(deadlineHandle, 8);
     check(
       deadlinePayload instanceof Uint8Array && deadlinePayload[0] === 82,
       "deadline source payload missing",
