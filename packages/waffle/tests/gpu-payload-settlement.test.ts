@@ -6,6 +6,7 @@ import type { GpuServiceReply } from "../browser/display/service-protocol.js";
 import { CompletionOwner } from "../browser/gpu/completions.js";
 import { RecordRing } from "../browser/gpu/ring.js";
 import { GpuService } from "../browser/gpu/service.js";
+import { LogicalReader } from "../browser/gpu/transport.js";
 import {
   payloadTerminalObservation,
   payloadTerminalReady,
@@ -78,6 +79,8 @@ test("payload terminal observation joins real native settlement with the service
     open = openRecord();
   const requests: ReturnType<typeof deferred<{ messages: [] }>>[] = [];
   const lost = deferred<unknown>();
+  let destroyed = 0;
+  const disposeReader = spyOn(LogicalReader.prototype, "dispose");
   const shader = {
     getCompilationInfo() {
       const request = deferred<{ messages: [] }>();
@@ -90,7 +93,9 @@ test("payload terminal observation joins real native settlement with the service
     queue: {},
     addEventListener() {},
     removeEventListener() {},
-    destroy() {},
+    destroy() {
+      destroyed++;
+    },
     createShaderModule: () => shader,
   };
   const sent: GpuServiceReply[] = [];
@@ -109,6 +114,8 @@ test("payload terminal observation joins real native settlement with the service
   const replies = new RecordRing(open.replies, 16);
   const sample = () => ({
     ...service.snapshot(),
+    destroyed,
+    readerDisposals: disposeReader.mock.calls.length,
     payloadPressure: { allocations: allocations.slice() },
     serviceReplies: sent.slice(),
     attempts: [
@@ -187,12 +194,14 @@ test("payload terminal observation joins real native settlement with the service
       if (index < 63) expect(drain(replies)).toHaveLength(1);
     }
     const refusal = sample();
+    expect(refusal).toMatchObject({ devicesLive: 1, destroyed: 0, readerDisposals: 0 });
     expect(refusal.attempts[0]).toMatchObject({ status: 1, reason: 0, arenaTerminal: 3 });
     expect(refusal.attempts[0]!.commands.terminal).toBe(3);
     expect(refusal.attempts[0]!.replies).toMatchObject({ used: 64, terminal: 3 });
     expect(refusal.serviceReplies).toEqual([]);
     tasks.turn();
     const terminal = sample();
+    expect(terminal).toMatchObject({ devicesLive: 0, destroyed: 1, readerDisposals: 1 });
     expect(terminal.serviceReplies).toEqual([{ type: "closed", grant: 1, id: 1 }]);
     expect(terminal.attempts[0]).toMatchObject({ status: -48, reason: 3, arenaTerminal: 3 });
     expect(terminal.attempts[0]!.retiredAck).toBe(false);
@@ -212,6 +221,7 @@ test("payload terminal observation joins real native settlement with the service
       service.dispose();
     } finally {
       restoreFill();
+      disposeReader.mockRestore();
       lost.resolve({ reason: "destroyed" });
       await settle();
       tasks.clear();
