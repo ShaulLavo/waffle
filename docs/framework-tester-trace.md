@@ -27,6 +27,12 @@ calls only the fixture's bound closure. Neither operation establishes final trac
 evidence. Both reject after cancellation or the orchestrator's destruction fence.
 A checkpoint after the terminal post reuses the sealed bytes without another read.
 
+Checkpoint and release results stay pending until their actual HTTP response and
+handler join. The receiver clears the completed slot before resolving its public
+promise, so the next operation can start immediately. Cancellation can still reject
+a validated reply whose response has not finished. Cancelling that reply does not
+release an original framework RPC.
+
 ## Page contract
 
 `getFrameworkTraceDocument()` comes from

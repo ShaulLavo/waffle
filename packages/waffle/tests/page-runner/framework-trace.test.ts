@@ -165,7 +165,15 @@ function holdResponse(response: ServerResponse) {
     ending.resolve();
     return this;
   };
-  return { response, ending: ending.promise, finish: () => finish() };
+  return {
+    response,
+    ending: ending.promise,
+    finish: () => {
+      const complete = finish;
+      finish = () => {};
+      complete();
+    },
+  };
 }
 async function setup(options: TesterTraceOptions) {
   const collector = new FrameworkCollector([]);
@@ -182,7 +190,9 @@ async function setup(options: TesterTraceOptions) {
   const physical: ServerResponse[] = [];
   const firstBody = Promise.withResolvers<void>();
   const firstTopReceipt = Promise.withResolvers<void>();
-  let bodyHold: ReturnType<typeof Promise.withResolvers<ReturnType<typeof holdResponse>>> | undefined;
+  let bodyHold:
+    | ReturnType<typeof Promise.withResolvers<ReturnType<typeof holdResponse>>>
+    | undefined;
   const server = createServer((request, response) => {
     if (request.url === "/physical") {
       const reserve = owner.reserveResponse(response);
