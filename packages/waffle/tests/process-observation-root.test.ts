@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { BrowserProcessBroker } from "../browser/process-broker.ts";
+import {
+  BrowserProcessBroker,
+  type ProcessController,
+  type RuntimeRootOptions,
+} from "../browser/process-broker.ts";
 import { ProcessIdentityAllocator } from "../proc/identity.ts";
 import { ProcessTable } from "../proc/table.ts";
 import { ExecutableRegistry } from "../proc/registry.ts";
@@ -8,7 +12,10 @@ import { captureProcessObserver } from "../proc/observation.ts";
 import { createFilesystemIdentity } from "../fs/protocol.ts";
 import { testReservations } from "./fixtures/shared-memory-platform.ts";
 
-async function rootFixture() {
+async function rootFixture(
+  controller: ProcessController = {},
+  memory: RuntimeRootOptions["memory"] = [],
+) {
   const identities = new ProcessIdentityAllocator();
   const broker = new BrowserProcessBroker({
     reservations: testReservations(),
@@ -31,7 +38,7 @@ async function rootFixture() {
   const transport = createWorkerProcessTransport({ identity: identities.buffer });
   transport.data = { filesystem: createFilesystemIdentity() };
   try {
-    await broker.adoptRuntimeRoot(transport, { memory: [] });
+    await broker.adoptRuntimeRoot(transport, { memory, ...controller });
     return { broker, transport, observer: captureProcessObserver(transport) };
   } catch (error) {
     await broker.dispose();
@@ -137,5 +144,185 @@ test("a native stop hook reentering its captured owner never invokes the consume
     expect(observer.read()).toEqual({ kind: "terminated" });
   } finally {
     await broker.dispose();
+  }
+});
+
+for (const nativeFirst of [false, true]) {
+  test(`direct root native acknowledgement retires only its controller consumer, native first=${nativeFirst}`, async () => {
+    let calls = 0;
+    const { broker, transport, observer } = await rootFixture({
+      stop() {
+        calls++;
+      },
+    });
+    const pid = transport.pid;
+    const helperReturn = Promise.withResolvers<void>();
+    const helper = broker.captureRootStop(pid, () => helperReturn.promise);
+    try {
+      if (!nativeFirst) await broker.rootExit(pid, 0);
+      broker.rootStopped(pid);
+      broker.rootStopped(pid);
+      if (nativeFirst) await broker.rootExit(pid, 0);
+      expect(observer.read().kind).toBe("selected");
+      const stopping = helper();
+      expect(observer.read().kind).toBe("selected");
+      helperReturn.resolve();
+      await stopping;
+      expect(observer.read()).toEqual({ kind: "terminated" });
+      await broker.dispose();
+      expect(calls).toBe(0);
+    } finally {
+      helperReturn.resolve();
+      await broker.dispose();
+    }
+  });
+}
+
+for (const mode of ["void", "promise", "throw", "reject"] as const) {
+  test(`controller stop keeps its own return authoritative through reentrant acknowledgement: ${mode}`, async () => {
+    const native = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const failure = new Error("root controller failed");
+    let calls = 0;
+    const f = await rootFixture({
+      stop() {
+        calls++;
+        f.broker.rootStopped(f.transport.pid);
+        expect(f.observer.read().kind).toBe("selected");
+        entered.resolve();
+        if (mode === "throw") throw failure;
+        if (mode === "reject") return Promise.reject(failure);
+        if (mode === "promise") return native.promise;
+      },
+    });
+    try {
+      await f.broker.rootExit(f.transport.pid, 0);
+      const disposal = f.broker.dispose();
+      void disposal.catch(() => {});
+      await entered.promise;
+      if (mode === "promise") {
+        expect(f.observer.read().kind).toBe("selected");
+        f.broker.rootStopped(f.transport.pid);
+        expect(f.observer.read().kind).toBe("selected");
+        native.resolve();
+      }
+      if (mode === "throw" || mode === "reject") {
+        await expect(disposal).rejects.toBeInstanceOf(AggregateError);
+        f.broker.rootStopped(f.transport.pid);
+        expect(f.observer.read().kind).toBe("selected");
+      } else {
+        await disposal;
+        expect(f.observer.read()).toEqual({ kind: "terminated" });
+      }
+      expect(calls).toBe(1);
+    } finally {
+      native.resolve();
+      await f.broker.dispose().catch(() => {});
+    }
+  });
+}
+
+for (const activated of [false, true]) {
+  test(`group-root return acknowledges its controller without settling another consumer, activated=${activated}`, async () => {
+    let calls = 0;
+    const f = await rootFixture(
+      {
+        stop() {
+          calls++;
+        },
+      },
+      "group",
+    );
+    const group = f.broker.admitRootMemoryGroup(f.transport.pid);
+    const helper = f.broker.captureRootStop(f.transport.pid, () => {});
+    try {
+      if (activated) await f.broker.ready();
+      await f.broker.rootExit(f.transport.pid, 0);
+      group.stopped();
+      group.stopped();
+      expect(f.observer.read().kind).toBe("selected");
+      helper();
+      expect(f.observer.read()).toEqual({ kind: "terminated" });
+      await f.broker.dispose();
+      expect(calls).toBe(0);
+    } finally {
+      group.stopped();
+      await f.broker.dispose();
+    }
+  });
+}
+
+test("root acknowledgement leaves failed helper debt and accepted admission leases owned", async () => {
+  let calls = 0;
+  const f = await rootFixture({
+    stop() {
+      calls++;
+    },
+  });
+  const release = f.broker.retainRoot(f.transport.pid);
+  const late = f.broker.captureRootStop(f.transport.pid, () =>
+    Promise.reject(new Error("helper stop failed")),
+  );
+  try {
+    await f.broker.rootExit(f.transport.pid, 0);
+    f.broker.rootStopped(f.transport.pid);
+    expect(f.broker.transportFor(f.transport.pid)).toBeDefined();
+    expect(f.observer.read().kind).toBe("selected");
+    await expect(late()).rejects.toThrow("helper stop failed");
+    release();
+    expect(f.broker.transportFor(f.transport.pid)).toBeUndefined();
+    expect(f.observer.read().kind).toBe("selected");
+    await expect(f.broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+    expect(calls).toBe(0);
+    expect(f.observer.read().kind).toBe("selected");
+  } finally {
+    release();
+    await f.broker.dispose().catch(() => {});
+  }
+});
+
+for (const activated of [false, true]) {
+  test(`standalone root native acknowledgement survives lazy adoption, activated=${activated}`, async () => {
+    const f = await rootFixture();
+    let calls = 0;
+    const pid = f.broker.reserveRoot(
+      {},
+      {
+        stop() {
+          calls++;
+        },
+      },
+    );
+    const observer = captureProcessObserver(f.broker.rootObservation(pid));
+    try {
+      if (activated) await f.broker.ready();
+      await f.broker.rootExit(pid, 0);
+      expect(observer.read().kind).toBe("selected");
+      f.broker.rootStopped(pid);
+      expect(observer.read()).toEqual({ kind: "terminated" });
+      await f.broker.dispose();
+      expect(calls).toBe(0);
+    } finally {
+      await f.broker.dispose();
+    }
+  });
+}
+
+test("canonical root termination does not settle its independent memory-group membership", async () => {
+  const f = await rootFixture({ stop() {} }, "group");
+  const group = f.broker.admitRootMemoryGroup(f.transport.pid);
+  try {
+    const before = f.broker.memoryGroups();
+    expect(before).toHaveLength(1);
+    expect(before[0]!.members).toBe(1);
+    await f.broker.rootExit(f.transport.pid, 0);
+    f.broker.rootStopped(f.transport.pid);
+    expect(f.observer.read()).toEqual({ kind: "terminated" });
+    expect(f.broker.memoryGroups()).toEqual(before);
+    group.stopped();
+    expect(f.broker.memoryGroups()).toEqual([]);
+  } finally {
+    group.stopped();
+    await f.broker.dispose();
   }
 });

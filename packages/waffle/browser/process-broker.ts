@@ -362,7 +362,7 @@ export class BrowserProcessBroker {
   private readonly retainedRootStops = new Map<number, ProcessController>();
   private readonly capturedControllerStops = new Map<number, () => void | Promise<void>>();
   private readonly controllerNativeReturns = new Map<number, NativeReturnFollowers>();
-  private readonly controllerNativeStops = new Map<number, () => void | Promise<void>>();
+  private readonly controllerNativeStops = new Map<number, NativeStopHandle>();
   private readonly observationOwners = new Map<number, NativeObservationOwner>();
   private readonly neverConstructed = new WeakMap<object, number>();
   private readonly nativeLaunchReturns = new Map<number, () => void>();
@@ -708,7 +708,8 @@ export class BrowserProcessBroker {
           try {
             const stopped = ownedHandle.terminate();
             const stopController = this.controllerNativeStops.get(context.pid);
-            pending = stopped ? stopped.then(() => stopController?.()) : stopController?.();
+            const stopCapturedController = () => stopController?.terminate();
+            pending = stopped ? stopped.then(stopCapturedController) : stopCapturedController();
           } catch (error) {
             settled();
             throw error;
@@ -966,8 +967,7 @@ export class BrowserProcessBroker {
       this.reservedRoots.delete(pid);
       this.descendantHooks.delete(pid);
       this.signalPolicies.delete(pid);
-      const observation = this.observationOwners.get(pid);
-      if (observation && !observation.completed && controller?.stop)
+      if (controller && this.capturedControllerStops.has(pid))
         this.retainedRootStops.set(pid, controller);
       this.controllers.delete(pid);
       this.quiescedControllers.delete(pid);
@@ -1235,7 +1235,14 @@ export class BrowserProcessBroker {
     this.controllerNativeReturns.set(pid, returned);
     this.controllerNativeStops.set(
       pid,
-      this.captureConsumerStop(pid, stop, () => returned.returned()),
+      this.captureConsumerStop(pid, stop, () => {
+        this.controllerNativeStops.delete(pid);
+        this.capturedControllerStops.delete(pid);
+        this.controllerNativeReturns.delete(pid);
+        this.retainedRootStops.delete(pid);
+        returned.returned();
+        this.rootStopped(pid);
+      }),
     );
   }
   private acquireObservation(transfer: ProcessObservationTransfer, execution = false): void {
@@ -1623,13 +1630,14 @@ export class BrowserProcessBroker {
   }
   /** Capture before handing process controls to an externally owned native consumer. */
   captureRootStop(pid: number, stop: () => void | Promise<void>): () => void | Promise<void> {
-    return this.captureConsumerStop(pid, stop);
+    const captured = this.captureConsumerStop(pid, stop);
+    return () => captured.terminate();
   }
   private captureConsumerStop(
     pid: number,
     stop: () => void | Promise<void>,
     onReturned?: () => void,
-  ): () => void | Promise<void> {
+  ): NativeStopHandle {
     const owner = this.observationOwners.get(pid);
     if (!owner) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
     const returned = owner.acquire();
@@ -1645,10 +1653,15 @@ export class BrowserProcessBroker {
       (error) => owner.fail(error),
     );
     owner.addStop(handle);
-    return () => handle.terminate();
+    return handle;
   }
-  /** The external root's owner proves successful physical termination, not logical exit. */
+  /** A successful external native return acknowledges only this root's controller consumer. */
   rootStopped(pid: number): void {
+    const stop = this.controllerNativeStops.get(pid);
+    if (stop) {
+      stop.acknowledgeReturn();
+      return;
+    }
     this.rootTickets.get(pid)?.stopped();
     this.rootTickets.delete(pid);
     this.rootAdmissions.delete(pid);
@@ -2394,7 +2407,7 @@ export class BrowserProcessBroker {
     const controller = this.controllers.get(pid);
     if (!controller) return;
     const capturedStop =
-      this.controllerNativeStops.get(pid) ?? this.capturedControllerStops.get(pid);
+      this.controllerNativeStops.get(pid)?.terminate ?? this.capturedControllerStops.get(pid);
     const terminal = capturedStop ? this.terminalLifetimes.get(pid) : undefined;
     const stopping = Promise.resolve(this.quiesceProcess(pid))
       .then(() => capturedStop?.())
@@ -2623,7 +2636,7 @@ export class BrowserProcessBroker {
     // A controller's auxiliary cleanup cannot certify a separately owned launch handle
     // or generic Worker, especially when that consumer's stop has failed.
     const capturedStop =
-      this.controllerNativeStops.get(pid) ?? this.capturedControllerStops.get(pid);
+      this.controllerNativeStops.get(pid)?.terminate ?? this.capturedControllerStops.get(pid);
     const ownsConsumer = capturedStop && !this.launches?.has(pid) && !this.children.has(pid);
     const terminal = ownsConsumer ? this.terminalLifetimes.get(pid) : undefined;
     const pending = stopping?.controllerStop
@@ -2889,6 +2902,9 @@ class NativeObservationOwner {
     this.onComplete();
   }
 }
+interface NativeStopHandle extends ProcessHandle {
+  acknowledgeReturn(): void;
+}
 type NativeStopState =
   | { kind: "invoking"; reentrant?: ReturnType<typeof Promise.withResolvers<void>> }
   | { kind: "returned"; result: void | Promise<void> };
@@ -2899,10 +2915,18 @@ function nativeStopHandle(
   returned: (() => void) | undefined,
   closeAdmission?: () => void,
   failed?: (error: unknown) => void,
-): ProcessHandle {
+): NativeStopHandle {
   const terminate = handle.terminate;
   let state: NativeStopState | undefined;
   return {
+    acknowledgeReturn() {
+      // A reentrant acknowledgement cannot erase a stop still invoking, pending or failed.
+      if (state) return;
+      state = { kind: "returned", result: undefined };
+      closeAdmission?.();
+      returned?.();
+      terminal?.stopped();
+    },
     terminate() {
       if (state?.kind === "returned") return state.result;
       if (state) {

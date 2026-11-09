@@ -27,6 +27,8 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        // Bundled and launched in a separate Node --expose-gc process.
+        "tests/fixtures/root-return-gc.ts",
         "tests/page-runner/*-page.ts",
         "tests/page-runner/storage-control-worker.ts",
         "tests/page-runner/host-storage-control-worker.ts",
