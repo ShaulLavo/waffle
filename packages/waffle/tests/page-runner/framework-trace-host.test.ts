@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   createFrameworkHost,
   type FrameworkOptions,
@@ -11,7 +12,7 @@ import {
 
 test("an armed but unadmitted public host never waits for a hypothetical producer or restarts cleanup accounting", async () => {
   const root = await mkdtemp(
-    join(process.env.STORAGE_SCRATCH_ROOT ?? "/work/tmp", "waffle-trace-host-"),
+    join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-trace-host-"),
   );
   let calls = 0;
   const options: FrameworkOptions = {
@@ -30,6 +31,7 @@ test("an armed but unadmitted public host never waits for a hypothetical produce
     resultPath: join(root, "result.json"),
   };
   try {
+    expect(dirname(root)).toBe(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir());
     const host = createFrameworkHost(options);
     const capture = host.captureTesterTrace({
       collectorResponse: async () => {

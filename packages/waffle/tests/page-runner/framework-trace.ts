@@ -40,6 +40,8 @@ export class FrameworkTraceOwner {
   private readonly cancellation = new AbortController();
   private readonly sockets = new Set<ServerResponse>();
   private readonly liveConsumers = new Set<Promise<void>>();
+  private readonly collectorConsumers = new Set<Promise<void>>();
+  private closed = false;
   private readonly evidence = new Set<Promise<void>>();
   private readonly slots = new Set<string>();
   private readonly streams = new Map<Role, Stream>();
@@ -130,15 +132,21 @@ export class FrameworkTraceOwner {
     return operation.promise;
   }
   /** Reserve before parsing or entering a fixture callback. The socket and handler share one owner. */
-  reserveResponse(outgoing: ServerResponse): ((work: () => Promise<void>) => void) | undefined {
-    if (!this.pair || !this.live || this.failure || this.sealed) return;
+  reserveResponse(
+    outgoing: ServerResponse,
+  ): ((work: (fixtureDecision: boolean) => Promise<void>) => void) | undefined {
+    if (this.closed) return;
     if (this.decisions >= 64) {
       this.abandon("capacity");
       return;
     }
+    // Bootstrap and later ordinary retirement stay bounded without admitting fixture callbacks.
+    const evidenceLive = this.live && !this.failure && !this.sealed;
+    const fixtureDecision = !!this.pair && evidenceLive;
+    const group = evidenceLive ? this.liveConsumers : this.collectorConsumers;
     this.decisions++;
     return (work) => {
-      void this.own(outgoing, this.liveConsumers, work).finally(() => this.decisions--);
+      void this.own(outgoing, group, () => work(fixtureDecision)).finally(() => this.decisions--);
     };
   }
   async collectorResponse(observation: CollectorObservation): Promise<CollectorDelivery> {
@@ -468,6 +476,7 @@ export class FrameworkTraceOwner {
     });
   }
   async close(deadlineAt: number, sourceDestroyed = false): Promise<CleanupStep> {
+    this.closed = true;
     this.cancelLiveOperations();
     for (const socket of this.sockets) socket.destroy();
     // Destruction cancels delivery, not a still-running callback/body conversion.
@@ -482,6 +491,7 @@ export class FrameworkTraceOwner {
       await bounded(
         Promise.all([
           this.join(this.liveConsumers),
+          this.join(this.collectorConsumers),
           this.join(this.evidence),
           this.join(this.authorizationConsumers),
         ]),

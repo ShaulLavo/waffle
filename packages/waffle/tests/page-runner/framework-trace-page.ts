@@ -8,6 +8,8 @@ const withoutPrototype = Object.setPrototypeOf;
 const encode = TextEncoder.prototype.encode;
 const Encoder = TextEncoder;
 const parse = JSON.parse;
+const deferred = Promise.withResolvers.bind(Promise);
+const resolved = Promise.resolve.bind(Promise);
 type Role = "orchestrator" | "tester";
 type Match = { readonly iframeId: string; readonly messageId: number };
 type Binding = Parameters<Extract<FrameworkTraceDocument, { kind: "tester" }>["bind"]>[0];
@@ -50,14 +52,18 @@ export class FrameworkTracePageOwner {
   private text: string | undefined;
   private quiet = false;
   private readonly pending = new Set<Promise<void>>();
-  private readonly fence = Promise.withResolvers<void>();
+  private readonly addPending = this.pending.add.bind(this.pending);
+  private readonly deletePending = this.pending.delete.bind(this.pending);
+  private readonly pendingValues = this.pending.values.bind(this.pending);
+  private readonly pulse = resolved();
+  private readonly fence = deferred<void>();
   private fenceEntered = false;
   private checkpointPending = false;
   private releasePending = false;
   private checkpointRequested = false;
   private releaseRequested = false;
   private releasing = false;
-  private outgoing = Promise.resolve();
+  private outgoing = resolved();
   readonly document: FrameworkTraceDocument;
   constructor(
     readonly role: Role,
@@ -106,20 +112,40 @@ export class FrameworkTracePageOwner {
     return next;
   }
   private track(work: () => Promise<void>): void {
-    const ticket = Promise.withResolvers<void>();
-    this.pending.add(ticket.promise);
-    void Promise.resolve()
-      .then(work)
-      .catch(() => this.fail())
-      .finally(() => {
-        this.pending.delete(ticket.promise);
-        ticket.resolve();
-      });
+    let ticket: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+    try {
+      ticket = deferred<void>();
+      this.addPending(ticket.promise);
+      void this.consume(work, ticket);
+    } catch {
+      this.fail();
+      if (!ticket) return;
+      this.deletePending(ticket.promise);
+      ticket.resolve();
+    }
+  }
+  private async consume(
+    work: () => Promise<void>,
+    ticket: ReturnType<typeof Promise.withResolvers<void>>,
+  ): Promise<void> {
+    try {
+      await this.pulse;
+      await work();
+    } catch {
+      this.fail();
+    } finally {
+      this.deletePending(ticket.promise);
+      ticket.resolve();
+    }
   }
   private fail(reason: "conversion" | "source-lost" | "reentry" = "conversion"): void {
     if (this.failed) return;
     this.failed = true;
-    if (this.transport && !this.quiet) this.track(() => this.post({ kind: "failure", reason }));
+    try {
+      if (this.transport && !this.quiet) this.track(() => this.post({ kind: "failure", reason }));
+    } catch {
+      // Failure is already sticky even when its diagnostic cannot be allocated.
+    }
   }
   incoming(value: unknown): void {
     try {
@@ -288,7 +314,9 @@ export class FrameworkTracePageOwner {
   }
   private async settle(artifact: string): Promise<void> {
     await this.transport!.closeEvidence();
-    while (this.pending.size) await Promise.all(this.pending);
+    while (this.pending.size) {
+      for (const work of this.pendingValues()) await work;
+    }
     if (this.failed) return;
     this.binding = undefined;
     this.transport!.receipt(withoutPrototype({ artifact, generation: this.generation }, null));
@@ -305,8 +333,12 @@ export class FrameworkTracePageOwner {
     return this.fence.promise;
   }
   lost(): void {
-    this.fail("source-lost");
-    if (this.transport) this.track(() => this.transport!.closeEvidence());
+    try {
+      this.fail("source-lost");
+      if (this.transport) this.track(() => this.transport!.closeEvidence());
+    } catch {
+      this.failed = true;
+    }
   }
 }
 
@@ -321,7 +353,11 @@ export function tracePostObserver<T extends (...args: never[]) => unknown>(
     try {
       if (this === channel()) owner.posted(args[0]);
     } catch {
-      owner.lost();
+      try {
+        owner.lost();
+      } catch {
+        // Observation failure cannot replace the successful original return.
+      }
     }
     return result;
   } as T;
@@ -402,7 +438,7 @@ export function installFrameworkTracePage(
                 throw new Error("Invalid disposal authorization");
               return text;
             })
-          : Promise.resolve("");
+          : resolved("");
       const transport: PageTransport = {
         post: async (body) => {
           const response = await fetchCaptured(base + "body" + query, {

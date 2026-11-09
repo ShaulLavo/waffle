@@ -91,7 +91,13 @@ slot, all on the existing framework middleware.
 
 Ingress reserves one body reader and one final receipt reader per role before body
 parsing or claimed identity. Collector fixture responses have 64 active slots.
-Extra ingress is refused rather than queued. Existing 65,536-byte and 2,000 ms body
+Extra ingress is refused rather than queued, before a body reader exists. The same
+64-response bound owns bootstrap collector traffic before paired admission and
+ordinary collector traffic after fixture admission closes. Those requests cannot
+invoke a fixture decision. Requests admitted before the evidence fence join that
+fence. Later ordinary retirement responses remain physically owned until cleanup,
+without becoming evidence consumers waiting for their own disposal permission.
+Physical closure stops all new admission. Existing 65,536-byte and 2,000 ms body
 limits apply. Identical terminal retries reuse the stored text. Conflicting,
 foreign, old-generation, or late input cannot overwrite evidence or release a fence.
 

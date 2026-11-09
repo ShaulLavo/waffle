@@ -9,19 +9,22 @@ export function frameworkMiddleware(
 ) {
   return (incoming: IncomingMessage, outgoing: ServerResponse, next: () => void): void => {
     const path = new URL(incoming.url ?? "/", "http://127.0.0.1").pathname;
-    if (trace()?.handle(incoming, outgoing)) return;
+    const owner = trace();
+    if (owner?.handle(incoming, outgoing)) return;
     if (!reservedReportPath(path)) {
       next();
       return;
     }
-    const owner = trace();
-    const reserved = owner?.reserveResponse(outgoing);
-    const work = () => respond(incoming, outgoing, sink, owner, reserved !== undefined);
-    if (reserved) {
-      reserved(work);
+    if (owner) {
+      const reserved = owner.reserveResponse(outgoing);
+      if (!reserved) {
+        outgoing.destroy();
+        return;
+      }
+      reserved((fixtureDecision) => respond(incoming, outgoing, sink, owner, fixtureDecision));
       return;
     }
-    void work().catch((error) => {
+    void respond(incoming, outgoing, sink, undefined, false).catch((error) => {
       sink.fail("middleware", String(error));
       if (!outgoing.headersSent) outgoing.writeHead(409, { "Cache-Control": "no-store" });
       outgoing.end("Collector request failed");
