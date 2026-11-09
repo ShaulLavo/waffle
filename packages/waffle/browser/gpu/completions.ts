@@ -1,3 +1,5 @@
+import type { ServiceAccess } from "../display/service-readers.js";
+import { accessed } from "./access.js";
 import { PayloadDirectory } from "./payload.js";
 import { gpuPayloadLayout } from "../display/generated/graphics-layout.js";
 import { completionBytes, type WireObject } from "./codec.js";
@@ -24,6 +26,9 @@ interface Payload {
   readonly length: number;
 }
 interface CompletionBuffers {
+  readonly access: ServiceAccess;
+  readonly settlementAccess?: ServiceAccess;
+  readonly requestRetirement?: (reason: number) => void;
   readonly commands: RecordRing;
   readonly replies: RecordRing;
   readonly arena?: Uint8Array;
@@ -37,18 +42,27 @@ interface Ready {
   readonly directory: PayloadDirectory | undefined;
   readonly payloads: (Payload | undefined)[];
   readonly generations: number[];
-  retire: (() => void) | undefined;
+  retire: ((reason: number) => void) | undefined;
 }
 
 /** Service realm owner. Retiring replaces the entire ring/arena-bearing state. */
 export class CompletionOwner {
   #state: Ready | { readonly kind: "terminal"; readonly reason: number };
   #lastToken = 0;
+  #logicalTerminal = false;
+  #closedReason: number | undefined;
   #failure: string | undefined;
   get failure(): string | undefined {
     return this.#failure;
   }
-  constructor({ commands, replies, arena = new Uint8Array(0) }: CompletionBuffers) {
+  readonly #lifetime: Pick<CompletionBuffers, "access" | "settlementAccess" | "requestRetirement">;
+  constructor(buffers: CompletionBuffers) {
+    this.#lifetime = {
+      access: buffers.access,
+      settlementAccess: buffers.settlementAccess,
+      requestRetirement: buffers.requestRetirement,
+    };
+    const { commands, replies, arena = new Uint8Array(0) } = buffers;
     if (commands.recordHeaderBytes !== 8 || replies.recordHeaderBytes !== 16)
       throw new RangeError("Expected command and completion rings");
     this.#state = {
@@ -68,29 +82,48 @@ export class CompletionOwner {
     };
   }
   get state(): ConnectionState {
+    return accessed<ConnectionState>(
+      this.#lifetime.access,
+      { kind: "terminal", reason: this.#closedReason ?? GPU_TERMINAL.service },
+      () => this.#readState(),
+    );
+  }
+  #readState(): ConnectionState {
     this.#synchronize();
     return this.#state.kind === "ready" ? { kind: "ready" } : this.#state;
   }
   get pendingCount(): number {
+    return accessed<number>(this.#lifetime.access, 0, () => this.#pendingCount());
+  }
+  #pendingCount(): number {
     this.#synchronize();
     return this.#state.kind === "ready" ? this.#state.pending.size : 0;
   }
   get payloadBytes(): number {
+    return accessed<number>(this.#lifetime.access, 0, () => this.#payloadBytes());
+  }
+  #payloadBytes(): number {
     this.#synchronize();
     return this.#state.kind === "ready"
       ? this.#state.payloads.reduce((sum, slot) => sum + (slot?.length ?? 0), 0)
       : 0;
   }
-  onRetire(retire: () => void): void {
+  onRetire(retire: (reason: number) => void): void {
+    return accessed<void>(this.#lifetime.access, undefined, () => this.#onRetire(retire));
+  }
+  #onRetire(retire: (reason: number) => void): void {
     this.#synchronize();
     if (this.#state.kind === "terminal") {
-      retire();
+      retire(this.#state.reason);
       return;
     }
     if (this.#state.retire) throw new Error("Completion owner already has retirement cleanup");
     this.#state.retire = retire;
   }
   admit(token: number): void {
+    return accessed<void>(this.#lifetime.access, undefined, () => this.#admit(token));
+  }
+  #admit(token: number): void {
     this.#synchronize();
     if (this.#state.kind === "terminal") throw new GpuProtocolError("Terminal completion owner");
     if (!Number.isInteger(token) || token <= this.#lastToken || token > 0xffffffff)
@@ -98,6 +131,11 @@ export class CompletionOwner {
     this.#lastToken = token;
   }
   publish(name: string, token: number, status: number, value: WireObject): boolean {
+    return accessed<boolean>(this.#lifetime.access, false, () =>
+      this.#publishValue(name, token, status, value),
+    );
+  }
+  #publishValue(name: string, token: number, status: number, value: WireObject): boolean {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") return false;
@@ -115,6 +153,18 @@ export class CompletionOwner {
   }
   /** Admit before starting native work. No continuation retains a retired replay or transport. */
   start<T>(
+    token: number,
+    start: () => Promise<T>,
+    settle: (owner: CompletionOwner, value: T) => void,
+    reject: (owner: CompletionOwner, error: unknown) => void,
+    abandon: (value: T) => void,
+  ): void {
+    this.run(() => {
+      this.#start(token, start, settle, reject, abandon);
+      return undefined;
+    });
+  }
+  #start<T>(
     token: number,
     start: () => Promise<T>,
     settle: (owner: CompletionOwner, value: T) => void,
@@ -139,7 +189,13 @@ export class CompletionOwner {
     }
     watchPromise(promise, pending, token);
   }
+  run(work: () => undefined): "ran" | "closed" {
+    return this.#lifetime.access.run(work);
+  }
   settled(token: number): boolean {
+    return accessed<boolean>(this.#lifetime.access, false, () => this.#settled(token));
+  }
+  #settled(token: number): boolean {
     this.#synchronize();
     if (this.#state.kind === "terminal") return false;
     return this.#state.pending.delete(token);
@@ -148,6 +204,11 @@ export class CompletionOwner {
     return this.fillPayload(bytes.byteLength, (destination) => destination.set(bytes));
   }
   fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
+    return accessed<Handle | undefined>(this.#lifetime.access, undefined, () =>
+      this.#fillPayload(length, fill),
+    );
+  }
+  #fillPayload(length: number, fill: (destination: Uint8Array) => void): Handle | undefined {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") return;
@@ -163,6 +224,9 @@ export class CompletionOwner {
     }
   }
   takePayload(handle: Handle, destination: Uint8Array): number {
+    return accessed<number>(this.#lifetime.access, 0, () => this.#takePayload(handle, destination));
+  }
+  #takePayload(handle: Handle, destination: Uint8Array): number {
     this.#synchronize();
     const state = this.#state;
     if (state.kind === "terminal") throw new GpuCallClosed();
@@ -189,11 +253,40 @@ export class CompletionOwner {
     return slot.length;
   }
   terminate(reason: number): void {
+    this.run(() => {
+      this.#requestTermination(reason);
+      return undefined;
+    });
+  }
+  #requestTermination(reason: number): void {
+    if (this.#lifetime.requestRetirement) {
+      const state = this.#state;
+      if (state.kind === "terminal") return;
+      const selected = state.commands.terminate(reason).reason;
+      this.#closedReason = selected;
+      state.directory?.mirror(selected);
+      if (!this.#logicalTerminal) {
+        this.#logicalTerminal = true;
+        publishClosed(state.replies, selected);
+        state.replies.terminate(selected);
+      }
+      this.#lifetime.requestRetirement(selected);
+    } else this.finishRetirement(reason);
+  }
+  /** Called only by the queued connection owner under service-wide admission. */
+  finishRetirement(reason: number): void {
+    (this.#lifetime.settlementAccess ?? this.#lifetime.access).run(() => {
+      this.#finishRetirement(reason);
+      return undefined;
+    });
+  }
+  #finishRetirement(reason: number): void {
     const state = this.#state;
     if (state.kind === "terminal") return;
     if (!Number.isInteger(reason) || reason <= 0 || reason > 0xffffffff)
       throw new RangeError("Invalid terminal reason");
     const selected = state.commands.terminate(reason).reason;
+    this.#closedReason = selected;
     this.#state = { kind: "terminal", reason: selected };
     state.directory?.mirror(selected);
     publishClosed(state.replies, selected);
@@ -204,7 +297,18 @@ export class CompletionOwner {
     state.generations.length = 0;
     const retire = state.retire;
     state.retire = undefined;
-    retire?.();
+    retire?.(selected);
+  }
+  abandon(): void {
+    const state = this.#state;
+    if (state.kind === "terminal") return;
+    const reason = this.#closedReason ?? GPU_TERMINAL.service;
+    this.#state = { kind: "terminal", reason };
+    for (const pending of state.pending.values()) pending.cancel();
+    state.pending.clear();
+    const retire = state.retire;
+    state.retire = undefined;
+    retire?.(reason);
   }
   #synchronize(): void {
     if (this.#state.kind === "terminal") return;
@@ -269,33 +373,45 @@ function detach<T>(pending: Pending<T>): void {
   pending.reject = undefined;
 }
 function complete<T>(pending: Pending<T>, token: number, value: T): void {
-  const owner = pending.owner;
-  const settle = pending.settle;
+  const owner = pending.owner,
+    settle = pending.settle;
   detach(pending);
-  if (!owner?.settled(token) || !settle) {
+  if (!owner || !settle) {
     pending.abandon(value);
     return;
   }
-  try {
-    settle(owner, value);
-  } catch (error) {
-    owner.terminate(
-      error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
-    );
-  }
+  const ran = owner.run(() => {
+    if (!owner.settled(token)) {
+      pending.abandon(value);
+      return undefined;
+    }
+    try {
+      settle(owner, value);
+    } catch (error) {
+      owner.terminate(
+        error instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+      );
+    }
+    return undefined;
+  });
+  if (ran === "closed") pending.abandon(value);
 }
 function fail<T>(pending: Pending<T>, token: number, error: unknown): void {
-  const owner = pending.owner;
-  const reject = pending.reject;
+  const owner = pending.owner,
+    reject = pending.reject;
   detach(pending);
-  if (!owner?.settled(token) || !reject) return;
-  try {
-    reject(owner, error);
-  } catch (failure) {
-    owner.terminate(
-      failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
-    );
-  }
+  if (!owner || !reject) return;
+  owner.run(() => {
+    if (!owner.settled(token)) return undefined;
+    try {
+      reject(owner, error);
+    } catch (failure) {
+      owner.terminate(
+        failure instanceof GpuResourceError ? GPU_TERMINAL.resource : GPU_TERMINAL.protocol,
+      );
+    }
+    return undefined;
+  });
 }
 
 function watchPromise<T>(promise: Promise<T>, pending: Pending<T>, token: number): void {

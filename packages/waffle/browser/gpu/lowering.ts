@@ -218,12 +218,14 @@ export function nativeCall(receiver: object, member: string, args: readonly unkn
     throw new GpuCallError(`Native member ${member} is not callable`);
   return Reflect.apply(method, receiver, args);
 }
+const retainedNativeFailures = new Set<{ value: object; error: unknown }>();
 export function destroyNative(value: unknown): void {
   if (!value || typeof value !== "object") return;
   try {
     if (typeof Reflect.get(value, "destroy") === "function") nativeCall(value, "destroy", []);
-  } catch {
-    /* Retirement must finish even when a native resource is already lost. */
+  } catch (error) {
+    retainedNativeFailures.add({ value, error });
+    throw error;
   }
 }
 

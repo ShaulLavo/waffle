@@ -1,3 +1,8 @@
+import {
+  bindGraphicsLaunch,
+  graphicsLaunchRetention,
+  retainAllocationReceipts,
+} from "./display/launch-retention.js";
 import type { GraphicsGrant } from "./display/protocol.js";
 import { allocateSharedControl, type SharedControlGrant } from "../memory/control.js";
 import {
@@ -303,6 +308,8 @@ interface RuntimeChild {
 }
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
+const originalGraphicsGrants = new WeakMap<GraphicsGrant, GraphicsGrant>();
+
 export class BrowserProcessBroker {
   private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
@@ -344,6 +351,7 @@ export class BrowserProcessBroker {
   private readonly terminalLifetimes = new Map<number, TerminalProcessLifetime>();
   private groups?: MemoryGroups;
   private rootGroups?: Map<number, MemberLease>;
+  private readonly rootAdmissions = new Map<number, Ticket>();
   private readonly rootTickets = new Map<number, LaunchedTicket>();
   private readonly rootGrants = new Map<number, SharedControlGrant>();
   private readonly stopTrackingConsumers: () => void;
@@ -922,6 +930,7 @@ export class BrowserProcessBroker {
       ticket.abort();
       throw error;
     }
+    this.rootAdmissions.set(pid, ticket);
     this.rootTickets.set(pid, ticket.launched());
     this.rootGrants.set(pid, ticket.control);
     // Reservation transfers an external consumer's teardown capabilities to this owner.
@@ -1008,6 +1017,7 @@ export class BrowserProcessBroker {
       this.outputs.set(state.pid, output);
       this.registries.set(state.pid, registry);
       if (descendant) this.descendantHooks.set(state.pid, descendant);
+      this.rootAdmissions.set(state.pid, ticket);
       this.rootTickets.set(state.pid, ticket.launched());
       this.rootGrants.set(state.pid, ticket.control);
     } catch (error) {
@@ -1460,10 +1470,20 @@ export class BrowserProcessBroker {
     if (!grant) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
     return grant;
   }
+  /** Trusted root launcher must enroll before its bootstrap post or graphics port transfer. */
+  retainRootGraphics(pid: number, graphics: GraphicsGrant, worker: Worker): void {
+    const ticket = this.rootAdmissions.get(pid);
+    const launched = this.rootTickets.get(pid);
+    if (!ticket || !launched) throw new ProcessError(ProcessErrno.SRCH, "Root is not admitted");
+    const retention = ticket.retainControlsForGraphics();
+    bindGraphicsLaunch(graphics, retention);
+    retainAllocationReceipts(worker, launched, retention, (error) => this.report(error));
+  }
   /** The external root's owner proves successful physical termination, not logical exit. */
   rootStopped(pid: number): void {
     this.rootTickets.get(pid)?.stopped();
     this.rootTickets.delete(pid);
+    this.rootAdmissions.delete(pid);
     this.rootGrants.delete(pid);
   }
   rootControlAllocated(pid: number, buffer: SharedArrayBuffer): void {
@@ -1543,6 +1563,7 @@ export class BrowserProcessBroker {
       },
       retired: () => graphicsOwner.retired(),
     };
+    if (graphics && graphicsOwner) originalGraphicsGrants.set(graphics, graphicsOwner);
     const owner = options.network;
     let released = false;
     const network = owner && {
@@ -1668,6 +1689,17 @@ export class BrowserProcessBroker {
     }
     const state = workerProcessState(transport);
     const ticket = this.options.reservations.admit(this.workerPlan(context, options));
+    if (options.graphics) {
+      try {
+        const retention = ticket.retainControlsForGraphics();
+        bindGraphicsLaunch(options.graphics, retention);
+        const original = originalGraphicsGrants.get(options.graphics);
+        if (original) bindGraphicsLaunch(original, retention);
+      } catch (error) {
+        ticket.abort();
+        throw error;
+      }
+    }
     let memory: BigInt64Array;
     try {
       memory = new BigInt64Array(allocateSharedControl(8));
@@ -1734,6 +1766,13 @@ export class BrowserProcessBroker {
       connection = this.options.filesystem.connect(filesystem, ticket.arena);
       worker = child.worker = this.workers.take(options.workerUrl);
       child.launched = ticket.launched();
+      if (options.graphics)
+        retainAllocationReceipts(
+          worker,
+          child.launched,
+          graphicsLaunchRetention(options.graphics),
+          (error) => this.report(error),
+        );
     } catch (error) {
       // No Worker exists yet: the group reservation returns exactly once.
       child.group?.abort();
@@ -1763,7 +1802,7 @@ export class BrowserProcessBroker {
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       if (data.type === "shared-control-allocation") {
-        child.launched?.controlAllocated(data.buffer);
+        if (!options.graphics) child.launched?.controlAllocated(data.buffer);
         return;
       }
       if (data.type === "terminal-output") {

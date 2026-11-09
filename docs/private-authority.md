@@ -202,3 +202,10 @@ The fixed GPU payload directory is guest-reachable checked code. Its full-width 
 DataView reads and payload copies use captured intrinsics. The command publication remains
 the terminal selector; the payload header only mirrors its winner. Payload handles name slots
 within the supplied connection, not a global provenance domain. No payload exception is added.
+
+The display service-reader fence, grant frame lease, physical command adapter and launch receipt
+retention modules are trusted page/service implementations. Guest bundle checks reject every
+path to them. Bootstrap carries the private exact-service fence only to the dedicated GPU Worker.
+The join proof is an allocation-local object identity, with no exported constructor. The signed
+admission word uses captured atomics and constructors. [GPU service reader lifetime](architecture.md#gpu-service-reader-lifetime)
+describes the separate reader, normal grant acknowledgement and retained allocation obligations.

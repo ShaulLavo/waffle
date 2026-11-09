@@ -486,7 +486,12 @@ async function malformedCase(page: Page, mode: Mode) {
       controlExit,
       final: await current(page),
     };
-    return { ...result, measurements: validateMalformedResult(result) };
+    try {
+      return { ...result, measurements: validateMalformedResult(result) };
+    } catch (error) {
+      console.log(JSON.stringify({ stage: "malformed-failed", mode, result }));
+      throw error;
+    }
   } finally {
     await invoke(page, "closeIntegration");
   }

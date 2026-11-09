@@ -1,3 +1,4 @@
+import { issueGraphicsRetention, type GraphicsControlRetention } from "./graphics-retention.js";
 import {
   CONTROL_GRANT_BYTES,
   CONTROL_GRANT_STATE_BYTES,
@@ -295,6 +296,7 @@ export interface ProcessPlan {
   readonly controls: boolean;
 }
 export interface Ticket {
+  retainControlsForGraphics(): GraphicsControlRetention;
   readonly control: SharedControlGrant;
   readonly arena: Headroom | null;
   readonly group: Headroom | null;
@@ -531,6 +533,7 @@ export class SharedMemoryLedger {
     scope: Holder["scope"],
     value?: SharedArrayBuffer,
     memory?: WebAssembly.Memory,
+    state: HolderState = "live",
   ): Holder {
     const holder: Holder = {
       id: this.next++,
@@ -540,7 +543,7 @@ export class SharedMemoryLedger {
       scope,
       declaredBytes,
       chargedBytes,
-      state: "live",
+      state,
       receipts: 0,
       ...(memory ? { memory: new WeakRef(memory) } : {}),
       ...(value ? { value: new WeakRef(value) } : {}),
@@ -737,6 +740,7 @@ export class SharedMemoryLedger {
       throw error;
     }
     let phase: "admitted" | "launched" | "settled" = "admitted";
+    let graphics: GraphicsControlRetention | undefined;
     const release = () => {
       this.release(arena);
       this.release(group);
@@ -762,6 +766,11 @@ export class SharedMemoryLedger {
     };
     if (alias) alias.admission = "admitted";
     return {
+      retainControlsForGraphics: () => {
+        if (graphics) return graphics;
+        if (phase === "settled") throw new Error("Graphics retention must precede exposure");
+        return (graphics = control.retain());
+      },
       control: control.grant,
       arena,
       group,
@@ -802,22 +811,41 @@ export class SharedMemoryLedger {
       : length;
   }
   private controlGrant(runtime: symbol, enabled: boolean) {
+    const counted = this.controlCharge(1) !== 0;
+    const charge = (length: number) => (counted ? length : 0);
+    let retention: GraphicsControlRetention | undefined;
+    let receiptsStarted = false;
+    const retain = () => {
+      if (!retention && receiptsStarted)
+        throw new Error("Graphics enrollment must precede allocation receipts");
+      if (!enabled) throw new Error("Graphics launch needs control accounting");
+      retention ??= issueGraphicsRetention();
+      return retention;
+    };
     if (!enabled || this.effectiveBudget() === null)
       return {
+        retain,
         grant: { kind: "unbounded" as const },
         stopped() {},
         failed() {},
         receipt: (buffer: SharedArrayBuffer) => {
           if (!enabled) return;
-          if (this.values.has(buffer)) return;
+          receiptsStarted = true;
+          const existing = this.values.get(buffer);
+          if (existing) {
+            if (retention) existing.state = "debt";
+            return;
+          }
           this.record(
             runtime,
             "guest-control",
             { kind: "fixed-buffer", length: bytes(buffer.byteLength) },
             buffer.byteLength,
-            this.controlCharge(buffer.byteLength),
+            charge(buffer.byteLength),
             "runtime",
             buffer,
+            undefined,
+            retention ? "debt" : "live",
           );
         },
       };
@@ -831,7 +859,7 @@ export class SharedMemoryLedger {
       "guest-control",
       shape,
       CONTROL_GRANT_BYTES,
-      this.controlCharge(CONTROL_GRANT_BYTES),
+      charge(CONTROL_GRANT_BYTES),
       "worker",
     );
     let state: SharedArrayBuffer;
@@ -848,8 +876,10 @@ export class SharedMemoryLedger {
     let settled = false;
     let received = 0;
     return {
+      retain,
       grant,
       receipt: (buffer: SharedArrayBuffer) => {
+        receiptsStarted = true;
         if (seen.has(buffer)) return;
         seen.add(buffer);
         received += buffer.byteLength;
@@ -867,7 +897,7 @@ export class SharedMemoryLedger {
           "guest-control",
           { kind: "fixed-buffer", length: bytes(consumed) },
           consumed,
-          this.controlCharge(consumed),
+          charge(consumed),
           "worker",
         );
         debt.state = "debt";

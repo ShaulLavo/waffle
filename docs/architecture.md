@@ -686,3 +686,46 @@ installing playground dependencies.
 ## Lazy network implementation
 
 `runtime.network()` owns one separate Rust WASM instance through its namespace. Core and process loading do not load this module. Browser helpers retain virtual-only transport and unchanged rings. Native embedders wire the Waffle-owned OS adapter explicitly. See [ADR 005](adr/005-lazy-rust-wasm-network.md).
+
+## GPU service reader lifetime
+
+Each activated display service owns one fresh 64-byte counted admission allocation. The page
+installs it before sending any open. A command reader admits the complete physical ring read,
+including padding, exceptions and tail stores. Scheduler visits and later native callbacks enter
+again. No admitted section spans a promise or task.
+
+Service failure closes that exact service's reader admission synchronously. The page selects
+original transport terminals, joins all admitted sections, then settles those same controls
+again before requesting termination. `Worker.terminate()` is a separate cleanup request.
+An abandoned admitted section leaves retirement pending. A failed join or stop keeps the Runtime,
+allocator and singleton guard owned. Replacement GPU activation waits for successful old-service
+bookkeeping and uses new grants and surfaces.
+
+Healthy Runtime suspension instead closes new display admission synchronously and revokes every
+grant through normal cooperative cleanup. It awaits their actual acknowledgements before closing
+and joining the service reader allocation and requesting termination. A missing acknowledgement
+leaves shutdown pending, without a timeout or termination shortcut.
+
+Normal grant revocation keeps peer admission open. Its irreversible local lease rejects new
+frames immediately. The service queues cleanup after all active callback frames return, then
+queues a separate acknowledgement. A reentrant native map fill may finish its admitted copy before
+that boundary. Neither reentry nor a microtask acknowledges retirement inline. Cleanup errors
+remain retained.
+
+Visible canvases belong to the service surface lifetime, not the carrying grant. The page sends
+an ordered private ID registration before the first canvas transfer, without activating a service
+when a surface is merely created. A retired grant may deliver that registered canvas under service
+admission, but cannot inspect or reopen its old command controls. Surface disposal invalidates the
+identity immediately and retains any in-flight attachment until its returned native context is
+cleaned up. Pending and visible entries share the existing bounded owner; no disposed-ID history
+or new shared allocation supplies authority. Cleanup failures retain their actual resources.
+
+Reader quiescence does not prove that aliases or native memory have been reclaimed. Before
+transferring a graphics-bearing launch, the broker binds its exact ticket to the original grant.
+The ticket retains all that launch's control allocation charges conservatively. The original
+allocation receipt is the sole charging route; receiving a different clone in an open adds no
+charge. An allocation-only listener captures the old ticket independently of child/root maps and
+ordinary message handlers, and survives Runtime disposal. The default unbounded path keeps each
+original receipt holder as non-refundable debt. The bounded path retains its existing aggregate
+consumed debt. Page-created original controls and known service exposures stay rooted through page
+destruction. No guest connection contains the fence, ticket, retention token or join proof.

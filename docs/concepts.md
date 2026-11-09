@@ -15,7 +15,7 @@ Arrows from the page mean "owns and disposes". Arrows from the guests mean "borr
 
 The rule exists because the filesystem, the pid space and the network namespace are shared state. Two owners would mean two trees, two pid counters and two loopback networks. Borrowing gives the question "whose filesystem is this?" one answer.
 
-Disposal follows the same ownership. `Runtime.dispose()` first fences filesystem work that was already admitted. It stops guest consumers only after that work is quiet, then closes the services it owns, and last releases the one-runtime guard. A guest cannot dispose the runtime it borrows, because the capabilities it receives leave out `dispose`.
+Disposal follows the same ownership. `Runtime.dispose()` first fences filesystem work that was already admitted. It stops guest consumers only after that work is quiet, then closes the services it owns, and last releases the one-runtime guard. A guest cannot dispose the runtime it borrows, because the capabilities it receives leave out `dispose`. An activated GPU display also closes and joins its exact service readers before releasing the page. An abandoned reader or failed cleanup keeps that ownership pending.
 
 ## What the runtime owns
 
