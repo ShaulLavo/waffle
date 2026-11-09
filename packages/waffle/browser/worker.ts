@@ -1,6 +1,7 @@
 import {
   captureProcessObserver,
   validateObservationOutcome,
+  validateObservationDirectory,
   type ProcessObservationTransfer,
   checkProcessObservation,
   acquireObservedProcess,
@@ -484,12 +485,27 @@ function initialProcessOutcome<R extends RuntimeWorkerRequest>(
 ): OutcomeWord | SharedArrayBuffer | undefined {
   if (request.runtimeProcess)
     return acquire(() => directoryState(request.runtimeProcess!)).signals.outcome;
+  if (request.outcome !== undefined) return reviveOutcome(request.outcome);
+  if (executor.outcome !== undefined) return executor.outcome;
   if (request.observation?.kind === "standalone") return reviveOutcome(request.observation.source);
   const observation = request.observation;
   if (observation?.kind === "directory")
     return acquire(() => directoryState(observation)).signals.outcome;
-  if (request.outcome !== undefined) return reviveOutcome(request.outcome);
-  return executor.outcome;
+  return undefined;
+}
+
+function requestProcessObserver<R extends RuntimeWorkerRequest>(
+  request: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+): ProcessObserver | undefined {
+  const observation = request.observation ?? request.runtimeProcess;
+  if (!observation) return;
+  if (request.runtimeProcess) validateObservationDirectory(observation, request.runtimeProcess);
+  if (request.outcome !== undefined)
+    validateObservationOutcome(observation, reviveOutcome(request.outcome));
+  if (executor.outcome !== undefined)
+    validateObservationOutcome(observation, outcomeWord(executor.outcome));
+  return captureProcessObserver(observation);
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
@@ -644,6 +660,15 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     cancelStartup();
     pendingFinish = finishOwned(result);
   };
+  const finishingOutcome = (): ProcessExit | null => {
+    if (observer) {
+      const observed = observer.read();
+      terminated ||= observed.kind === "terminated";
+      if (observed.kind === "selected") localOutcome = observed.result;
+    }
+    if (!terminated && outcome && !localOutcome) return readOutcome(outcome);
+    return localOutcome;
+  };
   const finishOwned = async (result: WorkerResult): Promise<void> => {
     let settled = localOutcome;
     let observationFailure =
@@ -651,12 +676,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         ? undefined
         : lastObservationFailure;
     try {
-      if (observer) {
-        const observed = observer.read();
-        terminated ||= observed.kind === "terminated";
-        if (observed.kind === "selected") settled = localOutcome = observed.result;
-      }
-      if (!terminated && outcome && !settled) settled = readOutcome(outcome);
+      settled = finishingOutcome();
     } catch (error) {
       observationFailure = lastObservationFailure ?? ("error" in result ? result.error : error);
     }
@@ -852,7 +872,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     // Keep this synchronous, while still routing a stale incarnation through finish().
     const observation = req.observation ?? req.runtimeProcess;
     try {
-      observer = observation ? captureProcessObserver(observation) : undefined;
+      observer = requestProcessObserver(req, executor);
     } catch (error) {
       lastObservationFailure = error;
       throw error;

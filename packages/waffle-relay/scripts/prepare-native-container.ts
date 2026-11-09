@@ -42,7 +42,12 @@ function metadata(text: string, name: string): { version: string; waffleHostInte
   assert.ok(value && typeof value === "object" && "name" in value && value.name === name);
   assert.ok("version" in value && typeof value.version === "string");
   assert.match(value.version, /^0\.0\.\d+$/);
-  assert.ok("waffleHostInterface" in value && value.waffleHostInterface === 1);
+  assert.ok(
+    "waffleHostInterface" in value &&
+      typeof value.waffleHostInterface === "number" &&
+      Number.isSafeInteger(value.waffleHostInterface) &&
+      value.waffleHostInterface > 0,
+  );
   return { version: value.version, waffleHostInterface: value.waffleHostInterface };
 }
 
@@ -53,12 +58,22 @@ export async function verifyPairedReleaseArchives(input: Omit<NativeContainerInp
   const runtime = metadata(await archiveFile(input.runtime.path, "package.json"), "waffle");
   const relay = metadata(await archiveFile(input.relay.path, "package.json"), "waffle-relay");
   assert.equal(runtime.version, relay.version, "Runtime and relay must be a paired release");
+  assert.equal(
+    runtime.waffleHostInterface,
+    relay.waffleHostInterface,
+    "Runtime and relay host interfaces differ",
+  );
   for (const name of ["waffle", "waffle-relay"]) {
     const recorded = metadata(
       await sourceFile(input.source, `packages/${name}/package.json`),
       name,
     );
     assert.equal(runtime.version, recorded.version, "Archive version differs from source");
+    assert.equal(
+      runtime.waffleHostInterface,
+      recorded.waffleHostInterface,
+      "Archive host interface differs from source",
+    );
   }
   const prefix = "packages/waffle-relay/";
   const files = (

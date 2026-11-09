@@ -507,6 +507,15 @@ export class WorkerProcessClient {
       this.report(error);
     }
   }
+  private discardSpawnResource(codec: WorkerDescriptorCodec, resource: unknown): boolean {
+    try {
+      codec.discard(resource);
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
   private rollbackSpawn(
     child: WorkerProcessTransport | undefined,
     transfer: WorkerSpawnTransfer | undefined,
@@ -521,14 +530,8 @@ export class WorkerProcessClient {
         claimOutcome(state.signals.outcome, startFailure(error));
       }
       const resources = child?.resources ?? [];
-      for (let index = 0; index < resources.length; index++) {
-        try {
-          codec.discard(resources[index]);
-        } catch (cleanupError) {
-          cleaned = false;
-          this.report(cleanupError);
-        }
-      }
+      for (let index = 0; index < resources.length; index++)
+        if (!this.discardSpawnResource(codec, resources[index])) cleaned = false;
       try {
         transfer?.cancel?.();
       } catch (cleanupError) {

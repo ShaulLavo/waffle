@@ -1824,6 +1824,7 @@ export class BrowserProcessBroker {
         reservations: this.options.reservations,
         connect: (headroom) => this.options.filesystem.connect(filesystem, headroom),
         filesystemFence: () => this.options.filesystem.quiesce(filesystem),
+        nativeReturned: () => child.nativeReturned?.(),
         cleanup: () => {
           const dispose = child.cleanup;
           child.cleanup = undefined;
@@ -2298,16 +2299,28 @@ export class BrowserProcessBroker {
   private disposeNotifications(child: RuntimeChild | undefined): void {
     void child?.notifications?.dispose().catch((error) => this.report(error));
   }
+  private async stopUnstartedThread(child: RuntimeChild): Promise<void> {
+    await this.quiesceChild(child);
+    child.nativeReturned?.();
+  }
+  private async stopNotifications(child: RuntimeChild, errors: unknown[]): Promise<boolean> {
+    try {
+      await child.notifications?.dispose();
+      return true;
+    } catch (error) {
+      errors.push(error);
+      return false;
+    }
+  }
   private stop(child: RuntimeChild): void | Promise<void> {
     this.observationOwners.get(child.context.pid)?.close();
     if (child.stopping) return child.stopping;
     if (child.stopped) return;
     if (child.threads) {
       return (child.stopping = child.threads
-        .then((owner) => (owner ? owner.stop() : this.quiesceChild(child)))
+        .then((owner) => (owner ? owner.stop() : this.stopUnstartedThread(child)))
         .then(() => {
           child.stopped = true;
-          child.nativeReturned?.();
           this.terminalLifetimes.get(child.context.pid)?.stopped();
           this.children.delete(child.context.pid);
           this.retireChildController(child.context.pid);
@@ -2320,17 +2333,8 @@ export class BrowserProcessBroker {
       const errors: unknown[] = [];
       this.disposeNetwork(child);
       if (child.graphics) await settleStop(() => child.graphics!.retired(), errors);
-      const notifications = child.notifications;
       let notificationsReturned = true;
-      if (notifications)
-        await settleStop(async () => {
-          try {
-            await notifications.dispose();
-          } catch (error) {
-            notificationsReturned = false;
-            throw error;
-          }
-        }, errors);
+      if (child.notifications) notificationsReturned = await this.stopNotifications(child, errors);
       await settleStop(async () => {
         const worker = child.worker;
         const pending = worker?.terminate();
@@ -2888,6 +2892,7 @@ class NativeObservationOwner {
 type NativeStopState =
   | { kind: "invoking"; reentrant?: ReturnType<typeof Promise.withResolvers<void>> }
   | { kind: "returned"; result: void | Promise<void> };
+function ignoreNativeStopRejection(): void {}
 function nativeStopHandle(
   handle: ProcessHandle,
   terminal: TerminalProcessLifetime | undefined,
@@ -2902,7 +2907,7 @@ function nativeStopHandle(
       if (state?.kind === "returned") return state.result;
       if (state) {
         state.reentrant ??= Promise.withResolvers<void>();
-        void state.reentrant.promise.catch(() => {});
+        void state.reentrant.promise.catch(ignoreNativeStopRejection);
         return state.reentrant.promise;
       }
       const invoking: Extract<NativeStopState, { kind: "invoking" }> = { kind: "invoking" };
@@ -2931,7 +2936,7 @@ function nativeStopHandle(
         failed?.(error);
         invoking.reentrant?.reject(error);
         const result = Promise.reject(error);
-        void result.catch(() => {});
+        void result.catch(ignoreNativeStopRejection);
         state = { kind: "returned", result };
         throw error;
       }

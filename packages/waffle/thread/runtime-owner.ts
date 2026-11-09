@@ -50,6 +50,7 @@ interface OwnerOptions {
   connect(headroom: Headroom | null): FilesystemConnection;
   filesystemFence(): Promise<void>;
   cleanup(): void;
+  nativeReturned(): void;
   failed(error: unknown): void;
 }
 class NoThreadOwner {
@@ -84,6 +85,9 @@ export class RuntimeThreadOwner {
   private stopping?: Promise<void>;
   private serviceFailure: unknown;
   private serviceSafe = false;
+  private readonly nativeWorkers = new Set<Worker>();
+  private nativeClosed = false;
+  private nativePublished = false;
 
   static async create(options: OwnerOptions): Promise<RuntimeThreadOwner | undefined> {
     try {
@@ -112,7 +116,7 @@ export class RuntimeThreadOwner {
     let connection: FilesystemConnection | undefined;
     try {
       connection = options.connect(ticket.arena);
-      worker = new Worker(options.urls.serviceWorkerUrl, { type: "module" });
+      worker = this.createNativeWorker(options.urls.serviceWorkerUrl);
       this.service = worker;
       this.serviceTicket = ticket.launched();
       this.capacity.processes++;
@@ -305,7 +309,7 @@ export class RuntimeThreadOwner {
     let posted = false;
     try {
       channel = new MessageChannel();
-      worker = new Worker(this.options.urls.guestWorkerUrl, { type: "module" });
+      worker = this.createNativeWorker(this.options.urls.guestWorkerUrl);
       const launched = ticket.launched();
       if (this.phase !== "open" || this.winner())
         throw new Error("thread admission sealed during construction");
@@ -394,9 +398,14 @@ export class RuntimeThreadOwner {
         return;
       }
       const constructed = worker;
+      const idle = () => {};
       const rollback = Promise.resolve().then(async () => {
         await control?.settle(cleanup);
-        await alias.stop({ idle: () => {}, terminate: () => constructed.terminate(), cleanup });
+        await alias.stop({
+          idle,
+          terminate: () => this.stopNativeWorker(constructed),
+          cleanup,
+        });
         this.starting.delete(thread.tid);
         this.capacity.guests--;
       });
@@ -486,11 +495,32 @@ export class RuntimeThreadOwner {
       throw error;
     }
   }
+  private createNativeWorker(url: string | URL): Worker {
+    if (this.nativeClosed) throw new Error("thread native admission is closed");
+    const worker = new Worker(url, { type: "module" });
+    this.nativeWorkers.add(worker);
+    return worker;
+  }
+  private stopNativeWorker(worker: Worker): void | Promise<void> {
+    const returned = () => {
+      this.nativeWorkers.delete(worker);
+      this.publishNativeReturn();
+    };
+    const terminate: (this: Worker) => void | Promise<void> = worker.terminate;
+    const pending = terminate.call(worker);
+    if (pending) return pending.then(returned);
+    returned();
+  }
+  private publishNativeReturn(): void {
+    if (!this.nativeClosed || this.nativeWorkers.size || this.nativePublished) return;
+    this.options.nativeReturned();
+    this.nativePublished = true;
+  }
   private stopGuest(guest: Guest): Promise<void> {
     return (guest.stopped ??= guest.alias
       .stop({
         idle: () => deadline(guest.idle.promise, "guest host-idle"),
-        terminate: () => guest.worker.terminate(),
+        terminate: () => this.stopNativeWorker(guest.worker),
         cleanup: () => {
           guest.worker.onmessage = null;
           guest.worker.onerror = null;
@@ -506,6 +536,9 @@ export class RuntimeThreadOwner {
     return (this.stopping ??= Promise.resolve().then(() => this.stopAll()));
   }
   private async stopAll(): Promise<void> {
+    this.nativeClosed = true;
+    if (this.phase === "open") this.phase = "draining";
+    this.publishNativeReturn();
     const errors: unknown[] = [];
     try {
       await this.fence();
@@ -521,7 +554,7 @@ export class RuntimeThreadOwner {
         idle: () => this.fence(),
         terminate: () => {
           if (!this.serviceSafe) throw new Error("service safety fence has not passed");
-          return this.service.terminate();
+          return this.stopNativeWorker(this.service);
         },
         cleanup: () => {
           this.service.onmessage = null;

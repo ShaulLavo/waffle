@@ -1,5 +1,9 @@
 import { allocateSharedControl } from "../memory/control.ts";
-import { directoryObservationLocation, returnDirectoryProcess } from "./directory.js";
+import {
+  directoryObservationLocation,
+  returnDirectoryProcess,
+  type DirectoryHandle,
+} from "./directory.js";
 import { packedControl } from "./control.js";
 import {
   processOutcome,
@@ -266,4 +270,24 @@ export function validateObservationOutcome(
     domain !== location.domain
   )
     throw new TypeError("Process observation differs from its canonical outcome");
+}
+
+/** Validate the admitted source without reacquiring an already collected producer. */
+export function validateObservationDirectory(
+  transfer: ProcessObservationTransfer,
+  process: DirectoryHandle,
+): void {
+  if (
+    transfer.kind !== "directory" ||
+    transfer.pid !== process.pid ||
+    transfer.slot !== process.slot
+  )
+    throw new TypeError("Process observation differs from its canonical directory");
+  if (
+    directoryObservationLocation(transfer).domain !==
+      directoryObservationLocation(process).domain ||
+    sharedArrayBufferByteLength(transfer.directory) !==
+      sharedArrayBufferByteLength(process.directory)
+  )
+    throw new TypeError("Process observation differs from its canonical directory");
 }

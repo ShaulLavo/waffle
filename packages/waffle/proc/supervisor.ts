@@ -1273,14 +1273,13 @@ export class ProcessSupervisor {
         if (retiring) return retiring.then(completeNative);
         completeNative();
       };
+      const handleFailed = (error: unknown): never => {
+        completion.handleFailed(error);
+        throw error;
+      };
       const pending = consumer?.terminate();
       if (pending) {
-        void pending
-          .then(afterHandle, (error) => {
-            completion.handleFailed(error);
-            throw error;
-          })
-          .catch(completion.failed);
+        void pending.then(afterHandle, handleFailed).catch(completion.failed);
       } else {
         const retiring = afterHandle();
         if (retiring) void retiring.catch(completion.failed);
