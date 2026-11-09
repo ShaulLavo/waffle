@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { releaseDownload, saveReleaseResponse } from "./ci-release-download.ts";
@@ -99,6 +99,8 @@ async function setupTools(
   );
   if (execFileSync(join(bin, "bun"), ["--version"], { encoding: "utf8" }).trim() !== bunVersion)
     throw new Error("Bun version mismatch");
+  await rm(join(bin, "bunx"), { force: true });
+  await symlink("bun", join(bin, "bunx"));
   paths.push(bin);
   return paths;
 }

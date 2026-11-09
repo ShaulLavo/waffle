@@ -1,7 +1,7 @@
 import { releaseCacheInventory } from "./ci-release-cache.ts";
 import { nativePrebuild, prebuildCachePath, seedNativePrebuild } from "./ci-native-prebuild.ts";
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, readdir, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -304,5 +304,47 @@ test("cache CLI does not request a save for an unchanged warm inventory", async 
     });
     expect(unchanged.status, unchanged.stderr).toBe(0);
     expect(await Bun.file(output).text()).toContain("changed=false");
+  });
+});
+
+test("bootstrap exposes bunx and can provision the same Bun version twice", async () => {
+  await scratch(async (root) => {
+    const fixture = join(root, "fixture");
+    await mkdir(join(fixture, "bun-linux-x64"), { recursive: true });
+    await writeFile(join(fixture, "bun-linux-x64/bun"), "#!/bin/sh\nprintf '1.4.4\\n'\n", {
+      mode: 0o755,
+    });
+    const archive = join(root, "bun.zip");
+    const zip = spawnSync("zip", ["-q", archive, "bun-linux-x64/bun"], {
+      cwd: fixture,
+      encoding: "utf8",
+    });
+    expect(zip.status, zip.stderr).toBe(0);
+    const cache = join(root, "cache");
+    await mkdir(cache);
+    const url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip";
+    await writeFile(join(cache, releaseCacheKey(url)), await readFile(archive));
+    const output = join(root, "path");
+    const env = {
+      ...process.env,
+      RUNNER_TEMP: root,
+      GITHUB_PATH: output,
+      CI_RELEASE_CACHE: cache,
+      CI_BUN_VERSION: "1.4.4",
+      CI_NODE_VERSION: "",
+      GITHUB_ACTIONS: "true",
+      GITHUB_TOKEN: "",
+    };
+    const script = new URL("./ci-bootstrap-tools.ts", import.meta.url).pathname;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const install = spawnSync("node", [script], { env, encoding: "utf8" });
+      expect(install.status, install.stderr).toBe(0);
+      const bin = join(root, "ci-tools/bun-1.4.4/bun-linux-x64");
+      expect((await readFile(output, "utf8")).trim().split("\n")).toContain(bin);
+      expect(await readlink(join(bin, "bunx"))).toBe("bun");
+      const bunx = spawnSync(join(bin, "bunx"), ["--version"], { encoding: "utf8" });
+      expect(bunx.status, bunx.stderr).toBe(0);
+      expect(bunx.stdout.trim()).toBe("1.4.4");
+    }
   });
 });
