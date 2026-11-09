@@ -1316,6 +1316,7 @@ jobs:
           GPU_FIXTURE_DIR: ${{ runner.temp }}/gpu-fixture
           MEMORY_GROUP_FIXTURE_DIR: ${{ runner.temp }}/memory-group-fixture
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
+          BROWSER_CONTROLS_RESULT: ${{ runner.temp }}/browser-controls-results.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
           WAFFLE_BROWSER_GROUP: ${{ matrix.group }}
@@ -1330,6 +1331,14 @@ jobs:
           name: browser-recovery-report-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/recovery-r42-report.json
           if-no-files-found: ignore
+          retention-days: 7
+      - name: Retain browser controls result and process outcome
+        if: always() && matrix.group == 'serial'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-controls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-controls-results.json*
+          if-no-files-found: warn
           retention-days: 7
       - name: Retain browser failure protocol
         if: failure()
