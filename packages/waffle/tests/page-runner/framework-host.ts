@@ -1,3 +1,4 @@
+import { FrameworkTraceOwner, tracePath } from "./framework-trace.js";
 import { writeResult } from "./result-file.js";
 import { readFileSync, existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -113,6 +114,9 @@ export class PageFrameworkHost implements FrameworkHost {
   private monitorTimer: ReturnType<typeof setInterval> | undefined;
   private monitorBusy = false;
   private retired = false;
+  private traceOwner: FrameworkTraceOwner | undefined;
+  private destructionStarted = false;
+  private traceGeneration: string | undefined;
   private retirementStarted: number | null = null;
   constructor(
     private readonly options: FrameworkOptions,
@@ -131,8 +135,23 @@ export class PageFrameworkHost implements FrameworkHost {
       () => this.check(),
       (detail) => this.fault("transport", detail),
     );
-    this.controller.signal.addEventListener("abort", () => this.queue.revoke(), { once: true });
-    this.middleware = frameworkMiddleware(this.collector);
+    this.controller.signal.addEventListener(
+      "abort",
+      () => {
+        this.queue.revoke();
+        this.traceOwner?.cancelLiveOperations();
+      },
+      { once: true },
+    );
+    this.middleware = frameworkMiddleware(this.collector, () => this.traceOwner);
+  }
+  captureTesterTrace(
+    options: Parameters<FrameworkHost["captureTesterTrace"]>[0],
+  ): ReturnType<FrameworkHost["captureTesterTrace"]> {
+    if (this.running || this.finalizing || this.traceOwner)
+      throw new Error("Trace capture must be armed exactly once before run");
+    this.traceOwner = new FrameworkTraceOwner(options, (reason) => this.fault("trace", reason));
+    return this.traceOwner.capture;
   }
   mount(server: FrameworkMiddlewareStack): void {
     if (this.driver?.uncertain || this.frames || this.finalizing)
@@ -143,6 +162,7 @@ export class PageFrameworkHost implements FrameworkHost {
       server.stack.some(
         (item) =>
           ["/report", "/heartbeat", "/retire"].includes(item.route) ||
+          item.route.startsWith(tracePath) ||
           item.handle === this.middleware,
       )
     )
@@ -183,6 +203,7 @@ export class PageFrameworkHost implements FrameworkHost {
       token: state.token,
       kind: state.kind,
       url: state.url,
+      trace: this.traceOwner !== undefined,
     }).replaceAll("<", "\\u003c");
     const script = bootstrapSource().replaceAll("</script", "<\\/script");
     return input.html.replace(
@@ -204,7 +225,8 @@ export class PageFrameworkHost implements FrameworkHost {
         server.stack.some(
           (item) =>
             item.handle !== this.middleware &&
-            ["/report", "/heartbeat", "/retire"].includes(item.route),
+            (["/report", "/heartbeat", "/retire"].includes(item.route) ||
+              item.route.startsWith(tracePath)),
         )
       )
         throw new Error("Collector mount conflicts with a reserved route before session creation");
@@ -477,6 +499,7 @@ export class PageFrameworkHost implements FrameworkHost {
       top.url !== this.openedUrl
     )
       throw new Error("Top document challenge mismatch");
+    if (this.traceOwner && (await this.script("return bridge.traceReady();")) !== true) return;
     const capture = await this.script("return bridge.capture();");
     if (capture === null) return;
     if (
@@ -493,8 +516,14 @@ export class PageFrameworkHost implements FrameworkHost {
       const source = `const b=window.__waffleFramework; return !!b && b.challenge(${JSON.stringify(tester.token)},${JSON.stringify(tester.doc)});`;
       if ((await this.driver?.script(source, this.controller.signal)) !== true)
         throw new Error("Tester document challenge mismatch");
+      if (this.traceOwner) {
+        top.admitted = true;
+        tester.admitted = true;
+      }
+      const generation = this.traceOwner?.admit(top, tester);
+      this.traceGeneration = generation;
       await this.driver?.script(
-        `return window.__waffleFramework.admit(${JSON.stringify(tester.token)},${JSON.stringify(tester.doc)},null);`,
+        `return window.__waffleFramework.admit(${JSON.stringify(tester.token)},${JSON.stringify(tester.doc)},null,${JSON.stringify(generation) ?? "undefined"});`,
         this.controller.signal,
       );
     } finally {
@@ -512,7 +541,7 @@ export class PageFrameworkHost implements FrameworkHost {
     tester.admitted = true;
     this.bound = true;
     await this.script(
-      `return bridge.admit(${JSON.stringify(top.token)},${JSON.stringify(top.doc)},${JSON.stringify(this.viewportPermit)});`,
+      `return bridge.admit(${JSON.stringify(top.token)},${JSON.stringify(top.doc)},${JSON.stringify(this.viewportPermit)},${JSON.stringify(this.traceGeneration) ?? "undefined"});`,
     );
   }
   private async probe(): Promise<void> {
@@ -538,6 +567,7 @@ export class PageFrameworkHost implements FrameworkHost {
   }
   private async retire(): Promise<void> {
     this.retirementStarted ??= performance.now();
+    if (this.traceOwner?.pending) return;
     const tester = this.collector.document("tester"),
       top = this.collector.document("orchestrator");
     if (!tester || !top) throw new Error("Missing paired documents at retirement");
@@ -638,7 +668,8 @@ export class PageFrameworkHost implements FrameworkHost {
   private registerContextClose(close: () => Promise<void>): void {
     if (this.closeContext) throw new Error("Framework context closer registered twice");
     this.closeContext = close;
-    if (this.controller.signal.aborted) void this.closeRegisteredContext().catch(() => {});
+    if (this.controller.signal.aborted && (!this.traceOwner?.pending || this.destructionStarted))
+      void this.closeRegisteredContext().catch(() => {});
   }
   async run(execute: Parameters<FrameworkHost["run"]>[0]): Promise<FrameworkResult> {
     if (this.running) throw new Error("Framework run invoked twice");
@@ -697,11 +728,32 @@ export class PageFrameworkHost implements FrameworkHost {
   private finish(): Promise<FrameworkResult> {
     return (this.finalizing ??= Promise.resolve().then(() => this.teardown()));
   }
+  private async joinContext(context: Promise<void>, deadlineAt: number): Promise<CleanupStep> {
+    const detail = "Registered framework context closed";
+    try {
+      await bounded(context, Math.max(1, deadlineAt - performance.now()), detail);
+      return { status: "confirmed", detail };
+    } catch (error) {
+      this.collector.fail("cleanup", String(error));
+      return { status: "unconfirmed", detail: String(error) };
+    }
+  }
   private async teardown(): Promise<FrameworkResult> {
     const cleanupDeadline = performance.now() + 60000;
     const remaining = () => Math.max(1, Math.min(12000, cleanupDeadline - performance.now()));
     clearInterval(this.monitorTimer);
     this.queue.revoke();
+    const contextStepEnd = Math.min(
+      cleanupDeadline,
+      performance.now() + 12000,
+      this.started + 900000,
+      this.fileStarted === null ? Infinity : this.fileStarted + 600000,
+    );
+    const trace = this.traceOwner
+      ? await this.traceOwner.settleBeforeDestruction(contextStepEnd)
+      : { status: "not-requested" as const };
+    if (trace.status === "incomplete") this.collector.fail("trace", trace.reason);
+    this.destructionStarted = true;
     const context = this.closeContext ? this.closeRegisteredContext() : undefined;
     let contextStep = absent(),
       provider = absent();
@@ -722,8 +774,15 @@ export class PageFrameworkHost implements FrameworkHost {
         this.consumers.invoke(this.disconnect),
         "Attached provider detached without DELETE",
       );
-    if (context) contextStep = await step(context, "Registered framework context closed");
-    const callbacksStopped = await this.consumers.join(remaining());
+    if (context)
+      contextStep = await this.joinContext(
+        context,
+        this.traceOwner ? contextStepEnd : performance.now() + remaining(),
+      );
+    const callbackStepEnd = Math.min(cleanupDeadline, performance.now() + 12000);
+    const callbacksStopped = await this.consumers.join(
+      Math.max(1, callbackStepEnd - performance.now()),
+    );
     if (!context && this.closeContext)
       contextStep = await step(
         this.closeRegisteredContext(),
@@ -751,9 +810,12 @@ export class PageFrameworkHost implements FrameworkHost {
         driverCleanup.session = { status: "unconfirmed", detail: String(error) };
       }
     }
+    const traceCleanup = this.traceOwner
+      ? await this.traceOwner.close(callbackStepEnd, driverCleanup.session.status === "confirmed")
+      : absent();
     const stopped =
       callbacksStopped &&
-      [provider, contextStep, driverCleanup.session, driverCleanup.launcher].every(
+      [traceCleanup, provider, contextStep, driverCleanup.session, driverCleanup.launcher].every(
         (step) => step.status !== "unconfirmed",
       );
     let scratch = absent();
@@ -765,7 +827,14 @@ export class PageFrameworkHost implements FrameworkHost {
             detail: `Retained ${this.scratch}; owned consumers unconfirmed`,
           };
     this.queue.releaseObservers();
-    const cleanup = { ...driverCleanup, callbacks, provider, context: contextStep, scratch };
+    const cleanup = {
+      ...driverCleanup,
+      trace: traceCleanup,
+      callbacks,
+      provider,
+      context: contextStep,
+      scratch,
+    };
     if (
       Object.values(cleanup).some(
         (value) => typeof value === "object" && value.status === "unconfirmed",
@@ -773,6 +842,7 @@ export class PageFrameworkHost implements FrameworkHost {
     )
       this.collector.fail("cleanup", "Owned cleanup unconfirmed");
     const fileComplete =
+      trace.status !== "incomplete" &&
       this.retired &&
       this.collector.executionFlushed &&
       this.collector.cleanupResponse &&
@@ -781,6 +851,8 @@ export class PageFrameworkHost implements FrameworkHost {
           item.started && item.outcome !== null && !["skip", "todo"].includes(item.outcome.state),
       );
     const result: FrameworkResult = {
+      trace,
+      cleanupDeadlineAt: cleanupDeadline,
       suite: this.options.suite,
       run: this.collector.run,
       expected: this.options.expected,

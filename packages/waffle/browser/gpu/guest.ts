@@ -68,11 +68,11 @@ export function createGraphicsGuest(
     synchronize(entry);
     return entry;
   };
-  const close = (id: number): number => {
+  const close = (id: number, terminalReason: number = GPU_TERMINAL.closed): number => {
     const entry = mapGet(connections, id);
     if (!entry) return id > 0 && id < next ? 0 : -8;
     entry.closed = true;
-    const reason = entry.commands.terminate(GPU_TERMINAL.closed).reason;
+    const reason = entry.commands.terminate(terminalReason).reason;
     entry.replies.terminate(reason);
     entry.payload.mirror(reason);
     publishTerminal(entry, reason);
@@ -223,19 +223,20 @@ export function createGraphicsGuest(
         }),
       close: (id: number) => invoke(() => close(id)),
     };
-  const retireConnection = (entry: GuestGpuConnection, id: number): void => {
+  const retireConnection = (entry: GuestGpuConnection, id: number, reason: number): void => {
     if (entry.closed) return;
     try {
-      close(id);
+      close(id, reason);
     } catch {
       /* Continue retiring the remaining connections. */
     }
   };
   return {
     imports,
-    dispose() {
+    dispose(signaled = false) {
+      const reason = signaled ? GPU_TERMINAL.revoked : GPU_TERMINAL.closed;
       try {
-        mapForEach(connections, retireConnection);
+        mapForEach(connections, (entry, id) => retireConnection(entry, id, reason));
       } finally {
         reflectApply(closeMethod, port, []);
       }
