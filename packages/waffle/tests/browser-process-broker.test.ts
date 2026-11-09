@@ -3915,3 +3915,52 @@ for (const bounded of [false, true])
         for (const port of ports) port.close();
       }
     });
+
+for (const mode of ["throw", "reject", "owned-start-failure"] as const) {
+  test(`external launch failure needs an owned native return, not just a selected result: ${mode}`, async () => {
+    const identities = new ProcessIdentityAllocator();
+    const registry = new ExecutableRegistry();
+    registry.register("fixture", {
+      adapter: "external",
+      module: new WebAssembly.Module(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0)),
+    });
+    const failure = new Error("Intentional adapter rejection");
+    let stops = 0;
+    const broker = new BrowserProcessBroker({
+      reservations: testReservations(),
+      identities,
+      table: new ProcessTable(identities),
+      registry,
+      filesystem: unusedFilesystem(),
+      onError() {},
+      launch(context) {
+        if (mode === "throw") throw failure;
+        if (mode === "reject") return Promise.reject(failure);
+        context.startFailed(failure);
+        return {
+          terminate() {
+            stops++;
+          },
+        };
+      },
+    });
+    try {
+      const { root, supervisor, pid } = await reserveFixtureChild(broker, "fixture");
+      const { captureProcessObserver } = await import("../proc/observation.ts");
+      const observer = captureProcessObserver(supervisor.get(pid)!.observation);
+      await supervisor.start(pid);
+      expect((await supervisor.waitForExit(root, pid)).kind).toBe("start-failed");
+      if (mode === "owned-start-failure") {
+        await broker.dispose();
+        expect(observer.read()).toEqual({ kind: "terminated" });
+        expect(stops).toBe(1);
+      } else {
+        await expect(broker.dispose()).rejects.toBeInstanceOf(AggregateError);
+        expect(observer.read().kind).toBe("selected");
+        expect(stops).toBe(0);
+      }
+    } finally {
+      await broker.dispose().catch(() => {});
+    }
+  });
+}

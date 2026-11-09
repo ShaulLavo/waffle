@@ -60,8 +60,13 @@ The bootstrap request carries `observation` alongside the original outcome.
 `stop` is idempotent and remains valid after logical root retirement. It invokes
 its captured native consumer, not a fresh PID lookup. The owner must capture an
 accepted asynchronous acquisition before it can race shutdown. A controller's
-captured `stop` hook remains part of that inventory. A metadata-only root with no
-accepted native consumer does not invent a native-return event.
+captured `stop` hook remains part of that inventory. After directly terminating that
+root consumer successfully, the external owner calls `rootStopped(pid)`. This retires
+only the captured controller consumer and releases its stop closure. Other accepted
+consumers still need their own returns. If the captured hook is already invoking or
+has returned a promise, its result remains authoritative. Reentrant acknowledgement
+cannot settle a pending or failed stop. A metadata-only root with no accepted native
+consumer does not invent a native-return event.
 
 Native return is a product boundary. It does not prove that every physical reader
 has closed, reclaim operating-system memory, or discharge memory-group, GPU,
