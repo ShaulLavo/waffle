@@ -185,17 +185,66 @@ export function validateWorkerLabel(returned: unknown, expected: string): void {
 export const resultByteLimit = 48 * 1024;
 
 export function formatHostError(error: unknown): string {
-  let text = errorDetail(error).slice(0, 16_384);
+  let text = errorDetail(error, { seen: new Set(), remaining: 16 }, 0).slice(0, 16_384);
   const encoder = new TextEncoder();
   while (encoder.encode(JSON.stringify(text)).byteLength > 8192)
     text = text.slice(0, Math.floor(text.length / 2));
   return text;
 }
 
-function errorDetail(error: unknown, depth = 0): string {
-  if (!(error instanceof AggregateError) || depth >= 3) return String(error);
-  const causes = error.errors
-    .slice(0, 8)
-    .map((cause: unknown) => errorDetail(cause, depth + 1).slice(0, 1600));
-  return `${String(error)}\nCauses, primary first:\n${causes.join("\n")}`;
+type ErrorTraversal = { seen: Set<object>; remaining: number };
+
+function errorField(error: object, key: string): unknown {
+  try {
+    let current: object | null = error;
+    for (let depth = 0; current && depth < 8; depth++) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor) return "value" in descriptor ? descriptor.value : undefined;
+      current = Object.getPrototypeOf(current);
+    }
+  } catch {}
+  return undefined;
+}
+
+function errorText(value: unknown, limit: number): string {
+  return typeof value === "string" ? value.slice(0, limit) : "";
+}
+
+function errorDetail(error: unknown, traversal: ErrorTraversal, depth: number): string {
+  if (typeof error === "string") return error.slice(0, 1600);
+  if (error === null || (typeof error !== "object" && typeof error !== "function"))
+    return typeof error === "bigint" ? "[bigint thrown]" : String(error);
+  if (traversal.seen.has(error)) return "[circular]";
+  if (traversal.remaining-- <= 0) return "[error limit]";
+  traversal.seen.add(error);
+  const name = errorText(errorField(error, "name"), 128) || "Error";
+  const message = errorText(errorField(error, "message"), 512);
+  const errno = errorField(error, "errno");
+  let text = `${name}${message ? `: ${message}` : ""}`;
+  if (typeof errno === "number" && Number.isFinite(errno)) text += ` (errno=${errno})`;
+  if (depth < 3) text += errorCauses(error, traversal, depth);
+  const stack = errorText(errorField(error, "stack"), 1024);
+  return stack ? `${text}\nStack:\n${stack}` : text;
+}
+
+function errorCauses(error: object, traversal: ErrorTraversal, depth: number): string {
+  let text = "";
+  const cause = errorField(error, "cause");
+  if (cause !== undefined) text += `\nCause:\n${errorDetail(cause, traversal, depth + 1)}`;
+  const errors = errorField(error, "errors");
+  if (!errorArray(errors)) return text;
+  const length = errorField(errors, "length");
+  if (typeof length !== "number") return text;
+  const causes: string[] = [];
+  for (let index = 0; index < Math.min(length, 8); index++)
+    causes.push(errorDetail(errorField(errors, String(index)), traversal, depth + 1));
+  return `${text}\nCauses, primary first:\n${causes.join("\n")}`;
+}
+
+function errorArray(value: unknown): value is unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
