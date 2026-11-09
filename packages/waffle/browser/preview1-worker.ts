@@ -5,6 +5,14 @@ const context = globalThis as unknown as {
   onmessage: (event: MessageEvent<RuntimeWorkerRequest>) => Promise<void>;
 };
 context.onmessage = async (event) => {
-  const { bootstrap, preview1Executor } = await import("./worker.js");
-  await bootstrap(event.data, preview1Executor);
+  let implementation: typeof import("./worker.js");
+  try {
+    implementation = await import("./worker.js");
+  } catch (error) {
+    queueMicrotask(() => {
+      throw error;
+    });
+    return;
+  }
+  await implementation.bootstrap(event.data, implementation.preview1Executor);
 };
