@@ -303,6 +303,13 @@ export class SafariDriver implements Driver {
     const path = await inspectorEndpoint(this.inspectorReceipt, this.udid);
     const observer = await SafariObserver.open(path, binding);
     this.observation = observer;
+    binding.signal.throwIfAborted();
+    if (
+      (await this.handle(actual)) !== binding.window ||
+      (await this.url(actual)) !== binding.bootstrapURL ||
+      (await this.script(`return ${observationIdentityExpression};`, actual)) !== wanted
+    )
+      throw new Error("SafariDriver bootstrap ownership changed during Inspector admission");
     const stop = observer.stop.bind(observer);
     let retirement: Promise<void> | undefined;
     const owned: DriverObservation = {

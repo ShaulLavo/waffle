@@ -9,6 +9,7 @@ const bootstrapURL = "https://owned.test/_waffle_observation_bootstrap?token=uni
 function fixture(
   options: {
     rejectEnable?: boolean;
+    rejectInitialization?: boolean;
     pendingSend?: Promise<void>;
     pendingInit?: Promise<void>;
   } = {},
@@ -28,6 +29,7 @@ function fixture(
     sender = "",
     detached = false;
   const methods: string[] = [];
+  const initializationDispatched = Promise.withResolvers<void>();
   const feed = (value: PlistDict) => {
     const bytes = frame(value);
     // Every control uses the actual reused binary-plist streaming decoder, fragmented at byte 3.
@@ -79,11 +81,17 @@ function fixture(
         : {};
     if (message.method === "Worker.enable")
       event("Worker.workerCreated", { workerId: "first", url: "https://owned.test/worker.js" });
-    if (message.method === "Worker.enable" && options.rejectEnable)
+    if (
+      (message.method === "Worker.enable" && options.rejectEnable) ||
+      (message.method === "Worker.initialized" && options.rejectInitialization)
+    )
       inner({ id: message.id, error: { code: -1, message: "domain refused" } });
     else inner({ id: message.id, result });
     envelope({ id: outer.id, result: {} });
-    if (message.method === "Worker.initialized") return options.pendingInit ?? Promise.resolve();
+    if (message.method === "Worker.initialized") {
+      initializationDispatched.resolve();
+      return options.pendingInit ?? Promise.resolve();
+    }
     return options.pendingSend ?? Promise.resolve();
   };
   const transport: InspectorTransport = {
@@ -119,7 +127,7 @@ function fixture(
     async close() {},
   };
   observer.connectTransport(transport);
-  return { observer, consumers, abort, event, envelope, methods };
+  return { observer, consumers, abort, event, envelope, methods, initializationDispatched };
 }
 
 test("events during Worker.enable reduce before ack and initialized is promptly owned", async () => {
@@ -155,12 +163,17 @@ test("domain rejection is unqualified, not an empty worker set", async () => {
 test("abort never settles a real outstanding send or initialization promise", async () => {
   const send = Promise.withResolvers<void>();
   const f = fixture({ pendingInit: send.promise });
-  const ledger = await f.observer.attach();
+  const attaching = f.observer.attach().then(
+    () => ({ kind: "ready" }),
+    (error: unknown) => ({ kind: "rejected", error }),
+  );
+  await f.initializationDispatched.promise;
   f.abort.abort();
-  expect(() => ledger.workers()).toThrow("aborted");
   expect(await f.consumers.join(1)).toBe(false);
   send.resolve();
-  await expect(ledger.stop()).rejects.toThrow();
+  expect((await attaching).kind).toBe("rejected");
+  await f.observer.close();
+  expect(f.methods).not.toContain("Network.enable");
   expect(await f.consumers.join(100)).toBe(true);
 });
 
@@ -230,4 +243,13 @@ test("navigation window binds actual frame/loader and refuses replacement docume
   });
   expect(() => ledger.workers()).toThrow("lifetime replaced");
   await expect(ledger.stop()).rejects.toThrow();
+});
+
+test("startup continuation refusal fails admission once and leaves no invented Worker inventory", async () => {
+  const f = fixture({ rejectInitialization: true });
+  await expect(f.observer.attach()).rejects.toThrow();
+  await expect(f.observer.close()).rejects.toThrow();
+  expect(f.methods.filter((method) => method === "Worker.initialized")).toHaveLength(1);
+  expect(f.methods).not.toContain("Network.enable");
+  expect(await f.consumers.join(100)).toBe(true);
 });

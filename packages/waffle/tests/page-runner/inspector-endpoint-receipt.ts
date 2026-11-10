@@ -2,13 +2,13 @@
 // Only assigned-mode parsing remains; selected device comes from the sole SafariDriver.
 // Exact parser for the helper's JSON receipt. Returns a typed unique endpoint or a refusal; never a partial.
 
-export const LAUNCHD_BASENAME = "launchd_sim";
-export const SOCKET_BASENAME = "com.apple.webinspectord_sim.socket";
+const LAUNCHD_BASENAME = "launchd_sim";
+const SOCKET_BASENAME = "com.apple.webinspectord_sim.socket";
 export const RECEIPT_MAX_BYTES = 16384;
 const SUN_MAX_LEN = 106;
 const UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
 
-export const REFUSAL_CODES = [
+const REFUSAL_CODES = [
   "USAGE",
   "DEADLINE",
   "LIST_FAILED",
@@ -36,19 +36,11 @@ export const REFUSAL_CODES = [
   "BOOT_SESSION",
   "INTERNAL",
 ] as const;
-// Adapter-side refusals for a helper that did not produce a valid receipt.
-export type AdapterRefusalCode =
-  | "TIMEOUT"
-  | "OUTPUT_OVERFLOW"
-  | "EXIT_MISMATCH"
-  | "UNSUPPORTED_PLATFORM"
-  | "SPAWN_FAILED"
-  | "MALFORMED_RECEIPT";
-export type RefusalCode = (typeof REFUSAL_CODES)[number] | AdapterRefusalCode;
+type RefusalCode = (typeof REFUSAL_CODES)[number];
 
 export type Expectation = { readonly deviceId: string };
 
-export type Counts = {
+type Counts = {
   readonly ownUidPids: number;
   readonly vanished: number;
   readonly candidates: number;
@@ -105,7 +97,7 @@ export type Refusal = {
 
 type Json = Record<string, unknown>;
 
-export class ReceiptError extends Error {}
+class ReceiptError extends Error {}
 
 function fail(detail: string): never {
   throw new ReceiptError(detail);

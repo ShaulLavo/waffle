@@ -109,3 +109,69 @@ test("malformed payloads, missing identities and local buffer overflow fail clos
   ledger.requested(request());
   expect(() => ledger.requested(request())).toThrow("bound");
 });
+
+test("revocation stops public delivery but receive reduction remains live until detach", async () => {
+  const ledger = new BrowserObservation("target", new HostConsumers(), async () => {});
+  const urls: string[] = [];
+  ledger.onRequest((url) => {
+    urls.push(url);
+  });
+  ledger.created("first");
+  ledger.revoke();
+  ledger.requested(request());
+  ledger.terminated("first");
+  expect(urls).toEqual([]);
+  expect(() => ledger.workers()).toThrow("revoked");
+  await ledger.stop();
+});
+
+test("memory-cache notifications retain their distinct original payload and ordered URL delivery", async () => {
+  const ledger = new BrowserObservation("target", new HostConsumers(), async () => {});
+  const event = requestEvent(
+    "Network.requestServedFromMemoryCache",
+    {
+      requestId: "cached",
+      frameId: "main",
+      loaderId: "original",
+      timestamp: 2,
+      documentURL: "https://owned.test/",
+      initiator: { type: "script" },
+      resource: { url: "https://owned.test/cached", type: "Script", bodySize: 123 },
+    },
+    3,
+  );
+  ledger.requested(event);
+  const urls: string[] = [];
+  ledger.onRequest((url) => {
+    urls.push(url);
+  });
+  expect(urls).toEqual(["https://owned.test/cached"]);
+  expect(ledger.evidence()[0]?.kind).toBe("memory-cache");
+  expect(ledger.evidence()[0]?.details.resource).toEqual({
+    url: "https://owned.test/cached",
+    type: "Script",
+    bodySize: 123,
+  });
+  await ledger.stop();
+});
+
+test("ignored unsubscribe wait cannot detach callback debt from the document owner", async () => {
+  const consumers = new HostConsumers();
+  const ledger = new BrowserObservation("target", consumers, async () => {});
+  const callback = Promise.withResolvers<void>();
+  const unsubscribe = ledger.onRequest(() => callback.promise);
+  ledger.requested(request());
+  const removed = unsubscribe();
+  expect(unsubscribe()).toBe(removed);
+  const stopped = ledger.stop();
+  let settled = false;
+  void stopped.then(() => {
+    settled = true;
+  });
+  expect(await consumers.join(1)).toBe(false);
+  expect(settled).toBe(false);
+  callback.resolve();
+  await stopped;
+  await removed;
+  expect(await consumers.join(100)).toBe(true);
+});

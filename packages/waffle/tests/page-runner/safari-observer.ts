@@ -218,6 +218,7 @@ export class SafariObserver {
     this.enabledWorker = true;
     await this.command("Network.enable", {});
     this.enabledNetwork = true;
+    await Promise.all(Array.from(this.initializations));
     this.check();
     return ledger;
   }

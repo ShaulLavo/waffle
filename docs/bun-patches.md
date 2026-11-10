@@ -645,7 +645,7 @@ change.
 
 ## Native page observation sources
 
-`tests/page-runner/inspector-plist.ts` adapts the owner's original bounded binary-plist codec from the November 6, 2026 `bun-inspector-owned-page-dev/wir/plist.ts` diagnostic. Its four-byte framing and binary-plist parsing are retained. An equivalent allocation-free ASCII check replaces the original control-character regular expression for the repository lint rule. It is not an Apple or Appium implementation copy.
+`tests/page-runner/inspector-plist.ts` adapts the owner's original bounded binary-plist codec from the November 6, 2026 `bun-inspector-owned-page-dev/wir/plist.ts` diagnostic. Its four-byte framing and binary-plist parsing are retained. Equivalent allocation-free ASCII and surrogate checks replace the original regular expression and ES2024 string helper for the repository lint and ES2023 type target. It is not an Apple or Appium implementation copy.
 
 `inspector-endpoint-receipt.ts` adapts the same original diagnostic family's `bun-inspector-native-helper/adapter/receipt.ts`. It retains exact receipt validation and removes control-mode parsing and the hard-coded device. The sole SafariDriver supplies the selected Simulator ID.
 

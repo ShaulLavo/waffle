@@ -18,7 +18,7 @@ export type Plist =
 export type PlistDict = { [key: string]: Plist };
 
 /** A local decode/encode limit or unsupported construct. Not a protocol answer. */
-export class CodecError extends Error {
+class CodecError extends Error {
   constructor(readonly reason: string) {
     super(`codec: ${reason}`);
   }
@@ -65,15 +65,26 @@ function ascii(value: string): boolean {
   return true;
 }
 
+function wellFormed(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0xd800 || code > 0xdfff) continue;
+    if (code > 0xdbff) return false;
+    const next = value.charCodeAt(++index);
+    if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+  }
+  return true;
+}
+
 function stringBytes(value: string): Buffer {
-  check(value.isWellFormed(), "encoder: malformed Unicode string");
+  check(wellFormed(value), "encoder: malformed Unicode string");
   if (ascii(value))
     return Buffer.concat([counted(0x50, value.length), Buffer.from(value, "ascii")]);
   return Buffer.concat([counted(0x60, value.length), Buffer.from(value, "utf16le").swap16()]);
 }
 
 /** Encodes the subset a frontend sends: strings, unsigned 32-bit integers, booleans, data and containers. */
-export function encodePlist(value: Plist): Buffer {
+function encodePlist(value: Plist): Buffer {
   const objects: Buffer[] = [];
   let total = 0;
   const add = (item: Plist, depth: number): number => {
@@ -139,7 +150,7 @@ function encodeItem(
 
 type Table = { bytes: Buffer; offsets: number[]; ends: Map<number, number>; refs: number };
 
-export function decodePlist(bytes: Buffer): Plist {
+function decodePlist(bytes: Buffer): Plist {
   check(bytes.length >= 40 && bytes.length <= plistLimits.frame, "decoder: frame size");
   check(
     bytes.subarray(0, 8).toString("latin1") === "bplist00",
@@ -278,7 +289,7 @@ function decodeItem(bytes: Buffer, refs: number, parse: (id: number) => Plist): 
     const value = Buffer.from(exact(bytes, start, count * 2))
       .swap16()
       .toString("utf16le");
-    check(value.isWellFormed(), "decoder: malformed UTF-16");
+    check(wellFormed(value), "decoder: malformed UTF-16");
     return value;
   }
   check(count <= plistLimits.objects, "decoder: container bound");
@@ -312,7 +323,7 @@ export function frame(value: Plist): Buffer {
 }
 
 /** A peer answer that does not look like this framing at all: kept distinct from a codec limit. */
-export class FramingError extends Error {
+class FramingError extends Error {
   constructor(
     readonly reason: string,
     readonly headerHex: string,

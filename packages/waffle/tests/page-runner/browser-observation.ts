@@ -146,8 +146,10 @@ export class BrowserObservation implements DriverObservation {
     let drain: Promise<void> | undefined;
     return () => {
       listener.open = false;
-      this.listeners.delete(listener);
-      drain ??= Promise.all(Array.from(listener.pending)).then(() => {});
+      drain ??= Promise.all(Array.from(listener.pending))
+        .then(() => {})
+        .finally(() => this.listeners.delete(listener));
+      void drain.catch(() => {});
       return drain;
     };
   }
