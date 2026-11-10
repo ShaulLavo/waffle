@@ -261,6 +261,7 @@ export type SuiteCase<R> = {
   request: (run: string) => R;
   query?: (run: string) => Readonly<Record<string, string>>;
   drive?: (host: HostCase) => Promise<unknown>;
+  observation?: "workers-and-requests";
 };
 export type SuiteAdapter<R> = {
   suite: string;

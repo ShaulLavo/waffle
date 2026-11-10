@@ -1,5 +1,5 @@
 import type { AssetOwner } from "./asset-owner.js";
-import { bounded, type Driver, type DriverPressControl } from "./driver.js";
+import { bounded, type Driver, type DriverPressControl, type DriverObservation } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
 import {
   record,
@@ -63,6 +63,7 @@ export class HostDrive {
     private readonly signal: AbortSignal,
     private readonly configurePeer?: (state: DocumentState, lookupToken: string) => void,
     private readonly assets?: AssetOwner,
+    private readonly observation?: DriverObservation,
   ) {
     this.body.signal.addEventListener("abort", () => this.beginTeardown(), { once: true });
     consumers.register(() => {
@@ -249,6 +250,13 @@ try {
     check();
     signal.throwIfAborted();
     return value;
+  }
+  private async workers() {
+    this.checkBody();
+    if (!this.observation) throw new Error("Browser observation was not declared before navigation");
+    await this.execute("", "body");
+    this.checkBody();
+    return this.observation.workers();
   }
   private press(key: HostKey): Promise<void> {
     if (key !== "Home" && key !== "ArrowUp" && key !== "ArrowRight" && key !== "Enter")
@@ -467,6 +475,7 @@ try {
     );
   }
   revoke(): void {
+    this.observation?.revoke();
     this.beginTeardown();
     this.active = false;
     for (const controller of this.peerSignals.values())
@@ -557,6 +566,12 @@ try {
       this.bodyStartedAt = performance.now();
       this.deadline = Math.min(this.bodyStartedAt + this.budgets.case, this.bodyLimit());
       const host: HostCase = {
+        workers: () => this.workers(),
+        onRequest: (callback) => {
+          this.checkBody();
+          if (!this.observation) throw new Error("Browser observation was not declared before navigation");
+          return this.observation.onRequest(callback);
+        },
         holdAsset: (path, callback) => {
           this.checkBody();
           if (!this.assets) throw new Error("Asset response owner unavailable");
