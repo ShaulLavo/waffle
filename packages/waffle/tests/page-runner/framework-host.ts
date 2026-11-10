@@ -738,6 +738,18 @@ export class PageFrameworkHost implements FrameworkHost {
       return { status: "unconfirmed", detail: String(error) };
     }
   }
+  private completedFile(trace: FrameworkResult["trace"], stopped: boolean): boolean {
+    return (
+      stopped &&
+      this.collector.failures.length === 0 &&
+      this.framework?.status === "passed" &&
+      trace.status !== "incomplete" &&
+      this.retired &&
+      this.collector.executionFlushed &&
+      this.collector.cleanupResponse &&
+      this.collector.cases.every((item) => item.started && item.outcome?.state === "pass")
+    );
+  }
   private async teardown(): Promise<FrameworkResult> {
     const cleanupDeadline = performance.now() + 60000;
     const remaining = () => Math.max(1, Math.min(12000, cleanupDeadline - performance.now()));
@@ -841,15 +853,7 @@ export class PageFrameworkHost implements FrameworkHost {
       )
     )
       this.collector.fail("cleanup", "Owned cleanup unconfirmed");
-    const fileComplete =
-      trace.status !== "incomplete" &&
-      this.retired &&
-      this.collector.executionFlushed &&
-      this.collector.cleanupResponse &&
-      this.collector.cases.every(
-        (item) =>
-          item.started && item.outcome !== null && !["skip", "todo"].includes(item.outcome.state),
-      );
+    const fileComplete = this.completedFile(trace, stopped);
     const result: FrameworkResult = {
       trace,
       cleanupDeadlineAt: cleanupDeadline,
@@ -873,11 +877,11 @@ export class PageFrameworkHost implements FrameworkHost {
       geometry: this.geometryValue,
       framework: this.framework,
       failures: this.collector.failures,
-      fileComplete: fileComplete && stopped,
+      fileComplete,
       rootBrowserSuiteComplete: false,
       omittedRootFiles: "not enumerated",
       cleanup,
-      exit: this.collector.failures.length ? 2 : 4,
+      exit: fileComplete ? 4 : 2,
     };
     try {
       await bounded(
