@@ -24,18 +24,7 @@ for (const failChild of [false, true]) {
           scratch: root,
           signal: new AbortController().signal,
         });
-        if (failChild) {
-          const child = assets["/child.js"];
-          if (!child || typeof child === "string") throw new Error("Missing actual child producer");
-          const source = await child.text();
-          expect(source.split("output.length === bytes")).toHaveLength(2);
-          assets["/child.js"] = new Blob(
-            [source.replace("output.length === bytes", "output.length !== bytes")],
-            {
-              type: "text/javascript",
-            },
-          );
-        }
+        if (failChild) await corruptChild(assets);
         const resultPath = process.env.FS_TRANSPORT_RESULTS_DIR
           ? join(
               process.env.FS_TRANSPORT_RESULTS_DIR,
@@ -60,9 +49,10 @@ for (const failChild of [false, true]) {
           expect(JSON.stringify(result.outcomes)).toContain("large private transfer regression");
         else adapter.policy.check(id, result.results[id]);
         expect(await Bun.file(resultPath).json()).toEqual(result);
-        for (const step of Object.values(result.cleanup)) {
-          if (typeof step === "object") expect(step.status).not.toBe("unconfirmed");
-        }
+        const cleanup = Object.values(result.cleanup)
+          .filter((step) => typeof step === "object")
+          .map((step) => step.status);
+        expect(cleanup).not.toContain("unconfirmed");
         expect(await readdir(scratch)).toEqual([]);
       } finally {
         await driver?.stop();
@@ -70,5 +60,16 @@ for (const failChild of [false, true]) {
       }
     },
     180_000,
+  );
+}
+
+async function corruptChild(assets: Record<string, Blob | string>): Promise<void> {
+  const child = assets["/child.js"];
+  if (!child || typeof child === "string") throw new Error("Missing actual child producer");
+  const source = await child.text();
+  expect(source.split("output.length === bytes")).toHaveLength(2);
+  assets["/child.js"] = new Blob(
+    [source.replace("output.length === bytes", "output.length !== bytes")],
+    { type: "text/javascript" },
   );
 }
