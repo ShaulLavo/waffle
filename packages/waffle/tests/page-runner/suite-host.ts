@@ -10,7 +10,7 @@ import type { WorkerDeclaration } from "./service-worker-page.js";
 import type { ServiceWorkerEntry } from "../storage-allocation.js";
 import { writeResult } from "./result-file.js";
 export { writeResult } from "./result-file.js";
-import { dispatchReports } from "./collector-fetch.js";
+import { readReportBody, dispatchReports } from "./collector-fetch.js";
 import { HostDrive } from "./host-drive.js";
 import { HostConsumers } from "./owned-consumers.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -70,6 +70,12 @@ export function serveCollector(
     async fetch(request, server) {
       const url = new URL(request.url);
       try {
+        if (url.pathname === "/_waffle_worker_close") {
+          if (request.method !== "POST")
+            return new Response("Method not allowed", { status: 405, headers });
+          server.timeout(request, 0);
+          return workerCloseResponse(request, collector);
+        }
         const report = await dispatchReports(request, {
           receive: (body) => collector.receive(body),
           heartbeat: (body) => collector.heartbeat(body),
@@ -114,6 +120,18 @@ export function serveCollector(
   });
   return { server, configurations, assetOwner, origin: `http://127.0.0.1:${server.port}` };
 }
+async function workerCloseResponse(request: Request, collector: Collector): Promise<Response> {
+  try {
+    await collector.workerCloseQuery(await readReportBody(request));
+    return Response.json({ closed: true }, { headers });
+  } catch (error) {
+    return Response.json(
+      { error: String(error) },
+      { status: error instanceof ObservationClosed ? 410 : 409, headers },
+    );
+  }
+}
+
 async function observeDocument(
   driver: Driver,
   item: SuiteCase<unknown> | null,
@@ -539,6 +557,7 @@ export async function runPageSuite<R>(
       signal: operationSignal,
       consumers,
     });
+    collector.bindObservation(state, observation, consumers, () => started + budgets.run);
     await navigateDocument({
       driver,
       url,
@@ -562,7 +581,7 @@ export async function runPageSuite<R>(
           (peer, lookup) => {
             if (!fixture || peer.owner.kind !== "peer" || !("request" in configuration))
               throw new Error("Missing peer configuration owner");
-            fixture.configurations.set(lookup, {
+            const peerConfiguration = {
               run,
               token: peer.token,
               group: group.id,
@@ -573,7 +592,9 @@ export async function runPageSuite<R>(
               generation: peer.owner.generation,
               execution: "host",
               ledger: collector.ledger,
-            });
+            };
+            fixture.configurations.set(lookup, peerConfiguration);
+            fixture.configurations.set(peer.token, peerConfiguration);
           },
           fixture.assetOwner,
           observation,

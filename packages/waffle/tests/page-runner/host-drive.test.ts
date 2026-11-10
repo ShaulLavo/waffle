@@ -2032,7 +2032,7 @@ class ObservedHostDriver extends HostDriver {
     }
     if (this.ledger) {
       this.trace.push("case-navigation");
-      this.ledger.created("native-fixture-worker");
+      this.ledger.created("native-fixture-worker", "https://owned.test/worker.js");
       this.ledger.requested(
         requestEvent(
           "Network.requestWillBeSent",
@@ -2072,7 +2072,7 @@ async function observedHostCase(root: string): Promise<void> {
     const first = await host.workers();
     expect(first).toHaveLength(1);
     expect((await host.workers())[0]).toBe(first[0]);
-    d.ledger?.terminated("native-fixture-worker");
+    d.ledger?.terminated("native-fixture-worker", "playwright-worker-close");
     expect(await host.workers()).toEqual([]);
     await drain();
     return { cpu: true };

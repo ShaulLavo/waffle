@@ -17,6 +17,8 @@ export type {
   Budgets,
   HostCase,
   HostWorker,
+  HostWorkerCallback,
+  HostWorkerEvent,
   HostRequestCallback,
   HostKey,
   HostPeer,

@@ -115,9 +115,18 @@ for (const outcome of ["fulfill", "reject"] as const) {
 test("observer failure does not skip the existing browser owner's containment", async () => {
   const driver = new PlaywrightDriver("chromium", "/unused/observer-control");
   const closed = spyOn(BrowserRunnerLifecycle.prototype, "close").mockResolvedValue();
-  Reflect.set(driver, "browserObservation", {
-    stop: () => Promise.reject(new Error("observer lost")),
-  });
+  Reflect.set(
+    driver,
+    "observations",
+    new Map([
+      [
+        "owned",
+        {
+          stop: () => Promise.reject(new Error("observer lost")),
+        },
+      ],
+    ]),
+  );
   try {
     const result = await driver.stop();
     expect(closed).toHaveBeenCalledTimes(1);

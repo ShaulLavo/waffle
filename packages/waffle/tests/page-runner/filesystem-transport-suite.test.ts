@@ -65,6 +65,12 @@ test("the HostCase invokes the original global with complete options and returns
     workers: async () => {
       throw new Error("Browser observation not declared");
     },
+    onWorker: () => {
+      throw new Error("Browser observation not declared");
+    },
+    waitForWorkerClose: async () => {
+      throw new Error("Browser observation not declared");
+    },
     onRequest: () => {
       throw new Error("Browser observation not declared");
     },

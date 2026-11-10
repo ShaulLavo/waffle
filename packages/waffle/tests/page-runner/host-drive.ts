@@ -10,6 +10,8 @@ import {
   type HostKey,
   type HostPeer,
   type HostVerdict,
+  type HostWorker,
+  type HostWorkerCallback,
 } from "./protocol.js";
 import type { Collector, DocumentState, PeerTransition } from "./collector.js";
 
@@ -462,23 +464,39 @@ try {
             () => {},
           )
         : Promise.resolve();
-    const joined = await Promise.all([
-      bounded(body, Math.max(0, until - performance.now()), "host body join").then(
-        () => true,
-        () => false,
-      ),
-      this.assets?.join(this.state, until) ?? true,
-      this.observation
-        ? bounded(
-            this.observation.stop(),
+    const peerObservations = this.collector.documents.filter(
+      (state) => state.owner.kind === "peer" && state.owner.coordinator === this.state,
+    );
+    const joined = await Promise.all(
+      [
+        bounded(body, Math.max(0, until - performance.now()), "host body join").then(
+          () => true,
+          () => false,
+        ),
+        this.assets?.join(this.state, until) ?? true,
+        this.observation
+          ? bounded(
+              this.observation.stop(),
+              Math.max(0, until - performance.now()),
+              "browser observation detach and callback join",
+            ).then(
+              () => true,
+              () => false,
+            )
+          : true,
+      ].concat(
+        peerObservations.map((state) =>
+          bounded(
+            this.collector.observation(state)?.stop() ?? Promise.resolve(),
             Math.max(0, until - performance.now()),
-            "browser observation detach and callback join",
+            "peer lifecycle drain",
           ).then(
             () => true,
             () => false,
-          )
-        : true,
-    ]);
+          ),
+        ),
+      ),
+    );
     if (joined.every(Boolean) && performance.now() <= until) return;
     this.containmentFailed = true;
     this.collector.fail(
@@ -488,7 +506,7 @@ try {
     );
   }
   revoke(): void {
-    this.observation?.revoke();
+    this.observation?.revokeActions();
     this.beginTeardown();
     this.active = false;
     for (const controller of this.peerSignals.values())
@@ -580,6 +598,11 @@ try {
       this.deadline = Math.min(this.bodyStartedAt + this.budgets.case, this.bodyLimit());
       const host: HostCase = {
         workers: () => this.workers(),
+        onWorker: (callback) => {
+          this.checkBody();
+          return this.workerObservation(this.state).onWorker(callback);
+        },
+        waitForWorkerClose: (worker) => this.waitForWorkerClose(this.state, worker),
         onRequest: (callback) => {
           this.checkBody();
           if (!this.observation)
@@ -649,12 +672,12 @@ try {
           this.state,
         );
       await this.deliver(verdict);
-      if (this.signal.aborted || this.collector.failures.length) await this.recoverTeardown();
+      await this.recoverTeardown();
     });
     const completed = await Promise.allSettled([
       delivery,
       this.livenessProbe,
-      this.joinBodyAndAssets(),
+      delivery.then(() => this.joinBodyAndAssets()),
     ]);
     const failure = completed.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
@@ -666,6 +689,15 @@ try {
       );
   }
 
+  private workerObservation(state: DocumentState): DriverObservation {
+    const observation =
+      this.collector.observation(state) ?? (state === this.state ? this.observation : undefined);
+    if (!observation) throw new Error("Browser observation was not declared before navigation");
+    return observation;
+  }
+  private waitForWorkerClose(state: DocumentState, worker: HostWorker): Promise<void> {
+    return abortable(this.workerObservation(state).waitForWorkerClose(worker), this.body.signal);
+  }
   private peerCapability(state: DocumentState): HostPeer {
     const controller = new AbortController();
     this.peerSignals.set(state, controller);
@@ -676,6 +708,16 @@ try {
     };
     return Object.freeze({
       signal: controller.signal,
+      workers: async () => {
+        valid();
+        await this.execute("", "body", this.signal, undefined, false, state);
+        return this.workerObservation(state).workers();
+      },
+      onWorker: (callback: HostWorkerCallback) => {
+        valid();
+        return this.workerObservation(state).onWorker(callback);
+      },
+      waitForWorkerClose: (worker: HostWorker) => this.waitForWorkerClose(state, worker),
       script: (source: string) => {
         valid();
         return abortable(
@@ -873,6 +915,33 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     this.collector.completeTransition(transition, state.handle, state, null);
     return this.peerCapability(state);
   }
+  private async observePeer(
+    state: DocumentState,
+    signal: AbortSignal,
+    bootstrapped = false,
+  ): Promise<void> {
+    if (!this.observation) return;
+    const observe = this.driver.observe?.bind(this.driver);
+    if (!observe) throw new Error("Peer browser observation unavailable");
+    const bootstrapURL = `${new URL(state.expectedURL).origin}/_waffle_observation_bootstrap?token=${state.token}`;
+    if (!bootstrapped) await this.driver.navigate(bootstrapURL, signal);
+    const observation = await observe({
+      window: state.handle,
+      bootstrapURL,
+      expectedURL: state.expectedURL,
+      signal: this.signal,
+      consumers: this.consumers,
+    });
+    this.collector.bindObservation(
+      state,
+      observation,
+      this.consumers,
+      () => this.teardownUntil ?? this.deadline,
+    );
+    void observation.failure.then((error) =>
+      this.fault(new ObservationFailure(error.message), state),
+    );
+  }
   private async openPeer(): Promise<HostPeer> {
     this.checkBody();
     const transition = this.collector.prepareTransition(
@@ -911,7 +980,9 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       await this.driver.selectWindow(handle, signal);
       this.checkBody();
       this.checkTransition(transition, signal);
+      await this.observePeer(state, signal);
       await this.driver.navigate(url.href, signal);
+      this.collector.observation(state)?.navigationComplete();
       this.checkBody();
       return state;
     });
@@ -938,7 +1009,22 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       this.checkTransition(transition, signal);
       this.configure(successor);
       this.checkTransition(transition, signal);
-      await this.driver.reloadWindow(signal);
+      const previous = this.collector.observation(state);
+      if (previous) {
+        const workers = previous.workers();
+        const bootstrapURL = `${new URL(successor.expectedURL).origin}/_waffle_observation_bootstrap?token=${successor.token}`;
+        previous.beginDocumentClose(bootstrapURL);
+        await this.driver.navigate(bootstrapURL, signal);
+        await bounded(
+          Promise.all(workers.map((worker) => previous.waitForWorkerClose(worker))),
+          Math.max(0, transition.deadline - performance.now()),
+          "old generation Worker close",
+        );
+        await previous.stop();
+        await this.observePeer(successor, signal, true);
+        await this.driver.navigate(successor.expectedURL, signal);
+        this.collector.observation(successor)?.navigationComplete();
+      } else await this.driver.reloadWindow(signal);
       this.checkBody();
       if ((await this.driver.handle(signal)) !== state.handle)
         throw new Error("Reload changed peer handle");
@@ -960,10 +1046,13 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
       : this.operationDeadline();
     const transition = this.collector.prepareTransition(state, "close", until);
     this.peerSignals.get(state)?.abort(new Error("Peer closed"));
+    const observation = this.collector.observation(state);
+    const workers = observation?.workers() ?? [];
     const closing = this.transitionCommand(transition, cleanup, async (signal, before) => {
       this.infrastructure(cleanup);
       if (!cleanup) this.checkBody();
       this.checkTransition(transition, signal, cleanup);
+      this.collector.observation(state)?.beginDocumentClose();
       await this.driver.closeWindow(signal);
       this.checkTransition(transition, signal, cleanup);
       const remaining = await this.driver.handles(signal);
@@ -974,8 +1063,16 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
         throw new Error("Exact peer close not confirmed");
       this.collector.completeTransition(transition, state.handle, null, remaining);
     });
-    this.closes.set(state, closing);
-    return closing;
+    const completed = closing.then(async () => {
+      if (!observation) return;
+      await bounded(
+        Promise.all(workers.map((worker) => observation.waitForWorkerClose(worker))),
+        Math.max(0, until - performance.now()),
+        "owned peer browser Worker close",
+      );
+    });
+    this.closes.set(state, completed);
+    return completed;
   }
   private async closeRemainingPeers(): Promise<void> {
     const peers = this.collector.documents.filter(

@@ -1,4 +1,10 @@
-import { record, type HostKey, type HostWorker, type HostRequestCallback } from "./protocol.js";
+import {
+  record,
+  type HostKey,
+  type HostWorker,
+  type HostWorkerCallback,
+  type HostRequestCallback,
+} from "./protocol.js";
 export class DeadlineError extends Error {
   constructor(label: string) {
     super(`${label} timed out`);
@@ -31,6 +37,12 @@ export interface DriverObservation {
   check(): void;
   workers(): readonly HostWorker[];
   onRequest(callback: HostRequestCallback): () => Promise<void>;
+  onWorker(callback: HostWorkerCallback): () => Promise<void>;
+  waitForWorkerClose(worker: HostWorker): Promise<void>;
+  waitForWorkerURLClose(url: string): Promise<void>;
+  beginDocumentClose(nextURL?: string): void;
+  documentClosed(): void;
+  revokeActions(): void;
   revoke(): void;
   stop(): Promise<void>;
 }
