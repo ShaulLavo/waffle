@@ -184,7 +184,7 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type DriverPressControl, type HostKey, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
 import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
@@ -212,6 +212,20 @@ const hostCase: SuiteCase<{ databaseName: string }> = {
     host.holdAsset("/programs/shell-engine.wasm", callback);
     // @ts-expect-error response replacement is not supported
     host.holdAsset("/programs/test-guest.wasm", async () => new Response("replacement"));
+    const key: HostKey = "Enter";
+    const pressed: Promise<void> = host.press(key);
+    await pressed;
+    await host.press("Home");
+    await host.press("ArrowUp");
+    await host.press("ArrowRight");
+    // @ts-expect-error shortcuts are not host keys
+    host.press("Control+c");
+    // @ts-expect-error arbitrary actions are not host keys
+    host.press({ actions: [] });
+    // @ts-expect-error text insertion is a separate unsupported capability
+    host.insertText("text");
+    // @ts-expect-error options cannot widen the four-key contract
+    host.press("Enter", { modifiers: ["Shift"] });
     await host.script("window.fixture = 1;");
     await host.task("await Promise.resolve();");
     const peer = await host.openPeer();
@@ -247,6 +261,7 @@ const hostSuite: PageSuite<{ databaseName: string }> = {
 export { hostAdapter, hostSuite };
 export function customDriver(driver: Driver): Driver {
   return {
+    press: (key: HostKey, control: DriverPressControl) => driver.press(key, control),
     start: signal => driver.start(signal),
     navigate: (url, signal) => driver.navigate(url, signal),
     createWindow: signal => driver.createWindow(signal),

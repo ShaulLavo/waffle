@@ -44,7 +44,7 @@ export function commandMethod(method: unknown): string | null {
 }
 export function commandPath(path: string): string | null {
   const safe = path.replace(/^\/session\/[^/]+/, "/session/:session");
-  return /^\/(status|session|session\/:session(\/(timeouts|url|window(\/(handles|new))?|refresh|execute\/(sync|async)))?)$/.test(
+  return /^\/(status|session|session\/:session(\/(timeouts|url|actions|window(\/(handles|new))?|refresh|execute\/(sync|async)))?)$/.test(
     safe,
   )
     ? safe

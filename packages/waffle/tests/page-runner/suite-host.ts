@@ -796,7 +796,7 @@ async function awaitState(
   state: DocumentState,
   done: () => boolean,
   collector: Collector,
-  driver: Driver,
+  driver: Omit<Driver, "press">,
   budgets: Budgets,
   started: number,
   signal: AbortSignal,
@@ -828,7 +828,7 @@ async function awaitState(
 }
 export async function probeDocument(
   state: DocumentState,
-  driver: Driver,
+  driver: Omit<Driver, "press">,
   signal: AbortSignal,
 ): Promise<string> {
   const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(4000)]);
@@ -840,7 +840,7 @@ export async function probeDocument(
 }
 async function inspectDocument(
   state: DocumentState,
-  driver: Driver,
+  driver: Omit<Driver, "press">,
   signal: AbortSignal,
 ): Promise<string> {
   try {
@@ -861,7 +861,7 @@ async function inspectDocument(
 export async function retireDocument(
   state: DocumentState,
   collector: Collector,
-  driver: Driver,
+  driver: Omit<Driver, "press">,
   signal: AbortSignal,
   priorFailures = 0,
 ): Promise<void> {

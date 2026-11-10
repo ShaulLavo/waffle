@@ -1,3 +1,4 @@
+import type { HostKey } from "./protocol.js";
 import { driverResponseLimit } from "./safari-driver.js";
 import { navigateTestPage } from "../browser-navigation.js";
 import { dirname } from "node:path";
@@ -9,6 +10,7 @@ import {
   WebDriverError,
   type Driver,
   type DriverCleanup,
+  type DriverPressControl,
 } from "./driver.js";
 /** Local runner regressions only. Not an iOS adapter or a replacement storage body. */
 export class PlaywrightDriver implements Driver {
@@ -16,6 +18,7 @@ export class PlaywrightDriver implements Driver {
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private readonly pages = new Map<string, Page>();
+  private readonly evaluations = new Set<Promise<void>>();
   private stopping: Promise<DriverCleanup> | undefined;
   uncertain = false;
   constructor(
@@ -107,11 +110,14 @@ export class PlaywrightDriver implements Driver {
   async script(source: string, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
     try {
-      const value: unknown = await bounded(
-        this.current().evaluate((script) => new Function(script)(), source),
-        3000,
-        "script probe",
+      const raw = this.current().evaluate((script) => new Function(script)(), source);
+      const settled = raw.then(
+        () => {},
+        () => {},
       );
+      this.evaluations.add(settled);
+      void settled.then(() => this.evaluations.delete(settled));
+      const value: unknown = await bounded(raw, 3000, "script probe");
       const encoded = JSON.stringify({ value });
       if (new TextEncoder().encode(encoded).byteLength > driverResponseLimit)
         throw new Error("WebDriver response exceeds 4 MiB UTF-8 limit");
@@ -122,12 +128,21 @@ export class PlaywrightDriver implements Driver {
       throw error;
     }
   }
+  async press(key: HostKey, control: DriverPressControl): Promise<void> {
+    try {
+      await control.dispatch(() => this.current().keyboard.press(key));
+    } catch (error) {
+      this.uncertain = true;
+      throw error;
+    }
+  }
   stop(): Promise<DriverCleanup> {
     return (this.stopping ??= this.stopOnce());
   }
   private async stopOnce(): Promise<DriverCleanup> {
     try {
       await this.lifecycle.close();
+      await Promise.all(this.evaluations);
       return {
         session: { status: "confirmed", detail: "Local browser context stopped" },
         launcher: { status: "confirmed", detail: "Local browser joined" },

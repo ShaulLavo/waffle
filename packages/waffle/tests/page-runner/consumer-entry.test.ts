@@ -8,6 +8,9 @@ import {
   type SuiteAdapter,
   type RunOptions,
   type HostCase,
+  type HostKey,
+  type Driver,
+  type DriverPressControl,
   type AssetHoldCallback,
   type HeldAssetRequest,
   type HostPeer,
@@ -665,6 +668,20 @@ test("public entries expose authoritative host domain types without widening dri
       host.holdAsset("/programs/test-guest.wasm", () => {});
       const updated: void = host.setTimeout(60_000);
       void updated;
+      const key: HostKey = "Enter";
+      const pressed: Promise<void> = host.press(key);
+      await pressed;
+      await host.press("Home");
+      await host.press("ArrowUp");
+      await host.press("ArrowRight");
+      // @ts-expect-error shortcuts are unsupported
+      host.press("Control+c");
+      // @ts-expect-error arbitrary actions are unsupported
+      host.press({ actions: [] });
+      // @ts-expect-error whole-text insertion is separate
+      host.insertText("text");
+      // @ts-expect-error no optional modifiers or target
+      host.press("Enter", { target: "textarea" });
       await host.script("return null");
       await host.task("await Promise.resolve()");
       const peer = await host.openPeer();
@@ -797,4 +814,39 @@ test("document tokens and generated worker queries are bound to their exact host
   } finally {
     await f.server.stop(true);
   }
+});
+
+test("public custom drivers require the authoritative press control", () => {
+  const press: Driver["press"] = async (key: HostKey, control: DriverPressControl) => {
+    control.signal.throwIfAborted();
+    const value: string = await control.dispatch(async () => key);
+    expect(value).toBe("Enter");
+  };
+  function withoutPress(driver: Omit<Driver, "press">): Driver {
+    // @ts-expect-error all matching drivers must implement press
+    return driver;
+  }
+  void withoutPress;
+  expect(typeof press).toBe("function");
+});
+
+test("the tiny native key control loads no Playwright driver or guest suites", async () => {
+  const built = await Bun.build({
+    entrypoints: [join(import.meta.dir, "key-press-controls-native.ts")],
+    target: "bun",
+    metafile: true,
+  });
+  expect(built.success).toBe(true);
+  if (!built.metafile) throw new Error("Missing native control graph");
+  const inputs = Object.keys(built.metafile.inputs);
+  expect(
+    inputs.filter((path) =>
+      /playwright|browser-runner-lifecycle|storage-browser|network-relay|\/(core|fs|proc|browser|network)\//.test(
+        path,
+      ),
+    ),
+  ).toEqual([]);
+  expect(inputs.some((path) => path.endsWith("/native.ts"))).toBe(true);
+  expect(inputs.some((path) => path.endsWith("/host-drive.ts"))).toBe(true);
+  expect(inputs.some((path) => path.endsWith("/safari-driver.ts"))).toBe(true);
 });

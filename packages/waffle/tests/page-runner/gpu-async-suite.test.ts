@@ -94,6 +94,9 @@ test("pre-aborted command does not import, qualify or launch a guest", async () 
   let calls = 0;
   const signal = AbortSignal.abort(new Error("CANCELLED"));
   const host: HostCase = {
+    async press() {
+      throw new Error("Unexpected key press");
+    },
     signal,
     remainingMs: () => 0,
     setTimeout: () => signal.throwIfAborted(),

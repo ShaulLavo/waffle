@@ -20,7 +20,9 @@ export type DriverCleanup = {
   serviceDisposition: string;
 };
 export interface DriverPressControl {
+  /** Admission/waiter lifetime, not cancellation of an already-admitted action. */
   readonly signal: AbortSignal;
+  /** Await sequentially. The callback starts its send synchronously, without preparation. */
   dispatch<T>(send: () => Promise<T>): Promise<T>;
 }
 export interface Driver {
