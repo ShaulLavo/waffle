@@ -738,9 +738,15 @@ export class PageFrameworkHost implements FrameworkHost {
       return { status: "unconfirmed", detail: String(error) };
     }
   }
-  private executionPassed(): boolean {
+  private completedFile(trace: FrameworkResult["trace"], stopped: boolean): boolean {
     return (
+      stopped &&
+      this.collector.failures.length === 0 &&
       this.framework?.status === "passed" &&
+      trace.status !== "incomplete" &&
+      this.retired &&
+      this.collector.executionFlushed &&
+      this.collector.cleanupResponse &&
       this.collector.cases.every((item) => item.started && item.outcome?.state === "pass")
     );
   }
@@ -847,14 +853,7 @@ export class PageFrameworkHost implements FrameworkHost {
       )
     )
       this.collector.fail("cleanup", "Owned cleanup unconfirmed");
-    const fileComplete =
-      stopped &&
-      this.collector.failures.length === 0 &&
-      this.executionPassed() &&
-      trace.status !== "incomplete" &&
-      this.retired &&
-      this.collector.executionFlushed &&
-      this.collector.cleanupResponse;
+    const fileComplete = this.completedFile(trace, stopped);
     const result: FrameworkResult = {
       trace,
       cleanupDeadlineAt: cleanupDeadline,
