@@ -738,6 +738,12 @@ export class PageFrameworkHost implements FrameworkHost {
       return { status: "unconfirmed", detail: String(error) };
     }
   }
+  private executionPassed(): boolean {
+    return (
+      this.framework?.status === "passed" &&
+      this.collector.cases.every((item) => item.started && item.outcome?.state === "pass")
+    );
+  }
   private async teardown(): Promise<FrameworkResult> {
     const cleanupDeadline = performance.now() + 60000;
     const remaining = () => Math.max(1, Math.min(12000, cleanupDeadline - performance.now()));
@@ -844,12 +850,11 @@ export class PageFrameworkHost implements FrameworkHost {
     const fileComplete =
       stopped &&
       this.collector.failures.length === 0 &&
-      this.framework?.status === "passed" &&
+      this.executionPassed() &&
       trace.status !== "incomplete" &&
       this.retired &&
       this.collector.executionFlushed &&
-      this.collector.cleanupResponse &&
-      this.collector.cases.every((item) => item.started && item.outcome?.state === "pass");
+      this.collector.cleanupResponse;
     const result: FrameworkResult = {
       trace,
       cleanupDeadlineAt: cleanupDeadline,
