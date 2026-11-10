@@ -320,6 +320,13 @@ interface RuntimeChild {
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
 const originalGraphicsGrants = new WeakMap<GraphicsGrant, GraphicsGrant>();
 
+function senderRevoked(
+  result: ReturnType<typeof readOutcome>,
+  filesystemRevoked: boolean,
+): boolean {
+  return result?.kind === "signaled" || (!result && filesystemRevoked);
+}
+
 export class BrowserProcessBroker {
   private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
@@ -1390,6 +1397,20 @@ export class BrowserProcessBroker {
   async runtimeMessage(message: WorkerProcessMessage, senderPid: number): Promise<void> {
     this.traceSpawn(message, "received");
     const sender = this.transport.getIdentity(senderPid);
+    const consumingReceipt =
+      message.operation === "reap-job" || message.operation === "reap-process";
+    let filesystemRevoked = false;
+    if (sender && !consumingReceipt) {
+      try {
+        // Ordinary exit claims its outcome before reap revokes the filesystem.
+        // Sample revocation first so a new reap cannot pair with an old running outcome.
+        filesystemRevoked = isRevoked(this.filesystem(sender));
+      } catch (error) {
+        // Sender validation owns rejection cleanup for incoming transferred resources.
+        this.rejectMessage(message, senderPid, "sender-revoked");
+        throw error;
+      }
+    }
     let result: ReturnType<typeof readOutcome> = null;
     try {
       if (sender) result = readOutcome(workerProcessState(sender).signals.outcome);
@@ -1430,7 +1451,7 @@ export class BrowserProcessBroker {
         }
       }
     }
-    const revoked = this.senderRevoked(message, senderPid, sender, result);
+    const revoked = !consumingReceipt && senderRevoked(result, filesystemRevoked);
     if ((!sender && !retainedNotice) || this.suspended || revoked) {
       this.rejectMessage(
         message,
@@ -1461,22 +1482,6 @@ export class BrowserProcessBroker {
     await this.transport.handle(message, senderPid);
     this.retireRoots();
     if (message.operation !== "pipe") this.watch();
-  }
-  private senderRevoked(
-    message: WorkerProcessMessage,
-    senderPid: number,
-    sender: WorkerProcessTransport | undefined,
-    result: ReturnType<typeof readOutcome>,
-  ): boolean {
-    if (!sender || message.operation === "reap-job" || message.operation === "reap-process")
-      return false;
-    try {
-      return result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)));
-    } catch (error) {
-      // Sender validation owns rejection cleanup for any incoming transferred resources.
-      this.rejectMessage(message, senderPid, "sender-revoked");
-      throw error;
-    }
   }
   rejectRuntimeMessage(
     message: WorkerProcessMessage,
@@ -2001,6 +2006,7 @@ export class BrowserProcessBroker {
         this.serviceTerminalOutput(state.rootPid);
         return;
       }
+      const filesystemRevoked = data.type === "runtime-proc" && isRevoked(filesystem);
       let selected: ReturnType<typeof readOutcome>,
         entered = false;
       try {
@@ -2018,7 +2024,7 @@ export class BrowserProcessBroker {
       if (data.type === "runtime-proc") {
         if (workerProcessDirectoryId(data.transport) !== workerProcessDirectoryId(transport))
           return;
-        if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem)))
+        if (senderRevoked(selected, filesystemRevoked))
           this.rejectRuntimeMessage(
             data,
             context.pid,
