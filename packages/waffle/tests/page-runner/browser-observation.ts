@@ -12,7 +12,16 @@ export type RequestObservation = Readonly<{
   timestamp: number;
   details: Readonly<Record<string, unknown>>;
 }>;
-type Listener = { callback: HostRequestCallback; open: boolean; pending: Set<Promise<void>> };
+type Listener = {
+  callback: HostRequestCallback;
+  open: boolean;
+  pending: Set<Promise<void>>;
+  failure?: { error: unknown };
+};
+async function drainListener(listener: Listener): Promise<void> {
+  await Promise.allSettled(Array.from(listener.pending));
+  if (listener.failure) throw listener.failure.error;
+}
 type Lifetime = { kind: "active" } | { kind: "revoked" } | { kind: "lost"; error: Error };
 
 function text(value: unknown, label: string): string {
@@ -125,6 +134,7 @@ export class BrowserObservation implements DriverObservation {
       () => listener.pending.delete(work),
       (error: unknown) => {
         listener.pending.delete(work);
+        listener.failure ??= { error };
         this.lose(error);
       },
     );
@@ -146,9 +156,7 @@ export class BrowserObservation implements DriverObservation {
     let drain: Promise<void> | undefined;
     return () => {
       listener.open = false;
-      drain ??= Promise.all(Array.from(listener.pending))
-        .then(() => {})
-        .finally(() => this.listeners.delete(listener));
+      drain ??= drainListener(listener).finally(() => this.listeners.delete(listener));
       void drain.catch(() => {});
       return drain;
     };
@@ -162,8 +170,8 @@ export class BrowserObservation implements DriverObservation {
     return (this.retirement ??= this.consumers.invoke(() => this.stopOnce()));
   }
   private async stopOnce(): Promise<void> {
-    const callbacks = Array.from(this.listeners, (listener) => Array.from(listener.pending)).flat();
-    const results = await Promise.allSettled(callbacks.concat([this.cleanup()]));
+    const results = await Promise.allSettled(Array.from(this.listeners, drainListener));
+    await this.cleanup();
     const failed = results.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
     if (this.lifetime.kind === "lost") throw this.lifetime.error;

@@ -87,7 +87,9 @@ for (const truncated of [false, true]) {
     const lost = Promise.withResolvers<unknown>();
     const server = createServer((socket) => {
       sockets.add(socket);
-      socket.on("data", () => socket.end(truncated ? frame({ __selector: "x" }).subarray(0, 9) : undefined));
+      socket.on("data", () =>
+        socket.end(truncated ? frame({ __selector: "x" }).subarray(0, 9) : Buffer.alloc(0)),
+      );
     });
     let stream: InspectorStream | undefined;
     try {
@@ -103,3 +105,39 @@ for (const truncated of [false, true]) {
     }
   });
 }
+
+test("planned close still reports a truncated final frame as loss", async () => {
+  const root = await mkdtemp("/work/tmp/wi-final-");
+  const path = join(root, "s");
+  const sockets = new Set<Socket>();
+  const partial = Promise.withResolvers<void>();
+  let loss: unknown;
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("data", () => {
+      socket.write(frame({ __selector: "x" }).subarray(0, 9));
+      partial.resolve();
+    });
+  });
+  let stream: InspectorStream | undefined;
+  try {
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    stream = await InspectorStream.connect(
+      path,
+      new HostConsumers(),
+      () => {},
+      (error) => {
+        loss = error;
+      },
+    );
+    await stream.send("request", {});
+    await partial.promise;
+    await stream.close();
+    expect(String(loss)).toContain("frame boundary false");
+  } finally {
+    await stream?.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+});

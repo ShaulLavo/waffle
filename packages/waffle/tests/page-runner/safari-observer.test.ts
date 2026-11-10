@@ -14,6 +14,7 @@ function fixture(
     pendingInit?: Promise<void>;
     omitOuter?: string;
     rejectOuter?: string;
+    delayOuterDisable?: Promise<void>;
   } = {},
 ) {
   const consumers = new HostConsumers();
@@ -89,10 +90,15 @@ function fixture(
     )
       inner({ id: message.id, error: { code: -1, message: "domain refused" } });
     else inner({ id: message.id, result });
-    if (message.method !== options.omitOuter)
-      envelope(message.method === options.rejectOuter
-        ? { id: outer.id, error: { code: -1, message: "outer refused" } }
-        : { id: outer.id, result: {} });
+    const answerOuter = () =>
+      envelope(
+        message.method === options.rejectOuter
+          ? { id: outer.id, error: { code: -1, message: "outer refused" } }
+          : { id: outer.id, result: {} },
+      );
+    if (message.method === "Network.disable" && options.delayOuterDisable)
+      void options.delayOuterDisable.then(answerOuter);
+    else if (message.method !== options.omitOuter) answerOuter();
     if (message.method === "Worker.initialized") {
       initializationDispatched.resolve();
       return options.pendingInit ?? Promise.resolve();
@@ -259,12 +265,19 @@ test("startup continuation refusal fails admission once and leaves no invented W
   expect(await f.consumers.join(100)).toBe(true);
 });
 
-for (const method of ["Runtime.evaluate", "Worker.initialized", "Network.disable"]) {
+for (const method of [
+  "Runtime.evaluate",
+  "Worker.enable",
+  "Worker.initialized",
+  "Network.enable",
+  "Network.disable",
+  "Worker.disable",
+]) {
   test(`missing outer ${method} reply prevents successful completion`, async () => {
     const f = fixture({ omitOuter: method });
-    if (method === "Network.disable") {
+    if (method.endsWith(".disable")) {
       const ledger = await f.observer.attach();
-      await expect(ledger.stop()).rejects.toThrow("completion uncertain");
+      await expect(ledger.stop()).rejects.toThrow("timed out");
     } else {
       await expect(f.observer.attach()).rejects.toThrow();
       await expect(f.observer.close()).rejects.toThrow();
@@ -277,5 +290,22 @@ test("outer refusal after the inner answer still fails command completion", asyn
   const f = fixture({ rejectOuter: "Network.disable" });
   const ledger = await f.observer.attach();
   await expect(ledger.stop()).rejects.toThrow("refused");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+test("shutdown owns the outer reply after its inner answer and socket write complete", async () => {
+  const outer = Promise.withResolvers<void>();
+  const f = fixture({ delayOuterDisable: outer.promise });
+  const ledger = await f.observer.attach();
+  let settled = false;
+  const stopped = ledger.stop();
+  void stopped.then(() => {
+    settled = true;
+  });
+  expect(await f.consumers.join(1)).toBe(false);
+  expect(settled).toBe(false);
+  expect(f.methods).not.toContain("Worker.disable");
+  outer.resolve();
+  await stopped;
   expect(await f.consumers.join(100)).toBe(true);
 });

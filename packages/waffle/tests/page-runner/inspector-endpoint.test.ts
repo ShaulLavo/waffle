@@ -120,11 +120,15 @@ async function liveFixture() {
     const helper = join(root, "helper.ts");
     await writeFile(saved, bytes(value));
     await writeFile(current, bytes(value));
-    await writeFile(helper, `#!${process.execPath}
+    await writeFile(
+      helper,
+      `#!${process.execPath}
 import { readFileSync } from "node:fs";
 if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["discover", "--udid", "${udid}", "--deadline-ms", "5000"])) process.exit(2);
 process.stdout.write(readFileSync(${JSON.stringify(current)}));
-`, { mode: 0o700 });
+`,
+      { mode: 0o700 },
+    );
     return { value, saved, current, helper, path, cleanup };
   } catch (error) {
     await cleanup();
@@ -142,7 +146,16 @@ test("endpoint reader refuses a shaped live socket receipt without available fre
   }
 });
 
-for (const field of ["boot", "pid", "generation", "executable", "argv", "device", "socket", "uid"]) {
+for (const field of [
+  "boot",
+  "pid",
+  "generation",
+  "executable",
+  "argv",
+  "device",
+  "socket",
+  "uid",
+]) {
   test(`endpoint reader rejects changed live ${field} binding despite an unchanged socket node`, async () => {
     const f = await liveFixture();
     try {
@@ -171,6 +184,27 @@ test("endpoint reader accepts matching freshly invoked helper metadata without s
     await writeFile(f.current, bytes(f.value));
     await expect(inspectorEndpoint(f.saved, udid, f.helper)).resolves.toBe(f.path);
     await writeFile(f.current, Buffer.from("truncated"));
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("endpoint reader refuses a live helper refusal or failed invocation", async () => {
+  const f = await liveFixture();
+  try {
+    await writeFile(
+      f.current,
+      bytes({
+        ...f.value,
+        outcome: "REFUSED",
+        refusal: { code: "NO_PROCESS", call: null, errno: 0 },
+        process: null,
+        socket: null,
+      }),
+    );
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow("live helper refused");
+    await writeFile(f.helper, `#!${process.execPath}\nprocess.exit(2);\n`);
     await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
   } finally {
     await f.cleanup();

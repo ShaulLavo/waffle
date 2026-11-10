@@ -39,9 +39,10 @@ export class InspectorStream implements InspectorTransport {
     this.closed = new Promise((resolve) => socket.once("close", resolve));
     socket.on("data", (chunk) => this.receive(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     socket.on("error", (error) => this.fail(error));
-    socket.on("end", () =>
-      this.fail(new Error(`Inspector EOF, frame boundary ${this.frames.atBoundary()}`)),
-    );
+    socket.on("end", () => {
+      if (this.closing && this.frames.atBoundary()) return;
+      this.fail(new Error(`Inspector EOF, frame boundary ${this.frames.atBoundary()}`));
+    });
     socket.on("close", () => {
       if (!this.closing) this.fail(new Error("Inspector socket lost"));
     });

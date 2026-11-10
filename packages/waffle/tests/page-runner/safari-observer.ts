@@ -66,7 +66,6 @@ export class SafariObserver {
   private detaching = false;
   private detachConfirmed = false;
   private readonly pending = new Map<number, Pending>();
-  private readonly outer = new Map<number, number>();
   private readonly initializations = new Set<Promise<unknown>>();
   private readonly metadata = new Set<MetadataWait>();
   private readonly applications = new Set<string>();
@@ -115,6 +114,7 @@ export class SafariObserver {
     this.dispatchOpen = false;
     this.ledger?.lose(this.failed);
     for (const pending of this.pending.values()) pending.reject(this.failed);
+    this.pending.clear();
     for (const waiter of this.metadata) waiter.pending.reject(this.failed);
   }
   private check(cleanup = false): void {
@@ -332,16 +332,11 @@ export class SafariObserver {
     this.target = info.targetId;
   }
   private reply(message: Extract<Message, { kind: "reply" }>): void {
-    const forwarded = this.outer.get(message.id);
-    const pending = this.pending.get(forwarded ?? message.id);
+    const pending = this.pending.get(message.id);
     if ("error" in message.answer) {
       const error = new Error(`Inspector command refused: ${JSON.stringify(message.answer.error)}`);
       pending?.reject(error);
       this.lose(error);
-      return;
-    }
-    if (forwarded !== undefined) {
-      this.outer.delete(message.id);
       return;
     }
     if (!pending) throw new Error("Unowned Inspector reply");
@@ -405,7 +400,8 @@ export class SafariObserver {
         outer = this.nextID++;
       const pending = Promise.withResolvers<unknown>();
       this.pending.set(id, pending);
-      this.outer.set(outer, id);
+      const forwarded = Promise.withResolvers<unknown>();
+      this.pending.set(outer, forwarded);
       const data = JSON.stringify({
         id: outer,
         method: "Target.sendMessageToTarget",
@@ -421,7 +417,7 @@ export class SafariObserver {
       );
       try {
         const [answer] = await bounded(
-          Promise.all([pending.promise, sent]),
+          Promise.all([pending.promise, forwarded.promise, sent]),
           3000,
           `Inspector ${method}`,
         );
