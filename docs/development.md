@@ -55,6 +55,23 @@ Set `STORAGE_SCRATCH_ROOT` to a scratch directory before you run a storage suite
 
 [Run storage tests on iOS Safari](storage-browser-runner.md) covers the native command and local reporter failure controls. [Run process recycling tests on iOS Safari](process-recycling-browser-runner.md) covers the complete process command and its failure controls.
 
+### Run the complete filesystem transport command
+
+```sh
+FS_TRANSPORT_SCRATCH_ROOT=/absolute/scratch/root IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/filesystem-transport-browser-runner.ts ios-safari --result /absolute/result.json
+```
+
+This runs the original ordinary command in one page-owned HostCase, with 60 rounds,
+concurrency 2, prestarted Workers, segment growth and the 8 MiB private-transfer check.
+The original operation deadlines and the 180-second command budget remain unchanged.
+The result includes actual Worker events and shared buffers passed to those Workers.
+`FS_TRANSPORT_ROUNDS` remains an explicit diagnostic override, not stock acceptance.
+The desktop command is unchanged. The separate historical `--old-source` negative control
+is not accepted by the native entry. Local adapter regressions run with
+`FS_TRANSPORT_BROWSER_CONTROLS=1 bun test packages/waffle/tests/page-runner/filesystem-transport-browser.test.ts`.
+Playwright controls do not establish iOS Safari acceptance.
+
 ### Run the complete notification command
 
 The notification runner keeps all nine original lifecycle scenarios in one page. Its stock
