@@ -4,6 +4,13 @@ import { createHash } from "node:crypto";
 import { runOwned } from "../scripts/owned-command.js";
 import { runBrowserSuite } from "../scripts/browser-command.js";
 
+const startedAt = performance.now();
+if (process.argv[2] === "ios-safari") {
+  const { filesystemTransportNative } =
+    await import("./page-runner/filesystem-transport-native.js");
+  process.exit(await filesystemTransportNative(process.argv.slice(3), startedAt));
+}
+
 const args = process.argv.slice(2);
 const oldAt = args.indexOf("--old-source");
 const old = oldAt < 0 ? undefined : args[oldAt + 1];
