@@ -66,6 +66,7 @@ export class HostDrive {
     private readonly observation?: DriverObservation,
   ) {
     this.body.signal.addEventListener("abort", () => this.beginTeardown(), { once: true });
+    void observation?.failure.then((error) => this.fault(new ObservationFailure(error.message)));
     consumers.register(() => {
       this.closed = true;
       this.revoke();
@@ -125,6 +126,7 @@ export class HostDrive {
   }
   private checkBody(): void {
     this.infrastructure();
+    this.observation?.check();
     if (performance.now() >= this.deadline && !this.body.signal.aborted)
       this.body.abort(new Error("Host setup/body timed out"));
     this.body.signal.throwIfAborted();
@@ -253,7 +255,8 @@ try {
   }
   private async workers() {
     this.checkBody();
-    if (!this.observation) throw new Error("Browser observation was not declared before navigation");
+    if (!this.observation)
+      throw new Error("Browser observation was not declared before navigation");
     await this.execute("", "body");
     this.checkBody();
     return this.observation.workers();
@@ -465,6 +468,16 @@ try {
         () => false,
       ),
       this.assets?.join(this.state, until) ?? true,
+      this.observation
+        ? bounded(
+            this.observation.stop(),
+            Math.max(0, until - performance.now()),
+            "browser observation detach and callback join",
+          ).then(
+            () => true,
+            () => false,
+          )
+        : true,
     ]);
     if (joined.every(Boolean) && performance.now() <= until) return;
     this.containmentFailed = true;
@@ -569,8 +582,12 @@ try {
         workers: () => this.workers(),
         onRequest: (callback) => {
           this.checkBody();
-          if (!this.observation) throw new Error("Browser observation was not declared before navigation");
-          return this.observation.onRequest(callback);
+          if (!this.observation)
+            throw new Error("Browser observation was not declared before navigation");
+          return this.observation.onRequest((url) => {
+            this.checkBody();
+            return callback(url);
+          });
         },
         holdAsset: (path, callback) => {
           this.checkBody();

@@ -1,3 +1,5 @@
+import { inspectorEndpoint } from "./inspector-endpoint.js";
+import { SafariObserver, observationIdentityExpression } from "./safari-observer.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { isNativeError } from "node:util/types";
 import { createServer } from "node:net";
@@ -14,6 +16,8 @@ import {
   type Driver,
   type DriverCleanup,
   type DriverPressControl,
+  type DriverObservation,
+  type DriverObservationBinding,
   type CleanupStep,
 } from "./driver.js";
 import { record, type HostKey } from "./protocol.js";
@@ -273,7 +277,48 @@ export class SafariDriver implements Driver {
     private readonly udid: string,
     private readonly scratch: string,
     private readonly observeFailure?: (facts: NativeCommandFailure) => void,
+    private readonly inspectorReceipt = process.env.WAFFLE_SAFARI_INSPECTOR_ENDPOINT,
   ) {}
+  private observation: DriverObservation | undefined;
+  async observe(binding: DriverObservationBinding): Promise<DriverObservation> {
+    if (this.observation) throw new Error("Prior browser observer was not retired");
+    if (!this.inspectorReceipt)
+      throw new Error(
+        "Safari observation requires an exact read-only endpoint helper receipt in WAFFLE_SAFARI_INSPECTOR_ENDPOINT",
+      );
+    if (!this.descriptor || this.descriptor.capabilities["safari:deviceUDID"] !== this.udid)
+      throw new Error("No exact SafariDriver session owns observation");
+    const actual = new AbortController().signal;
+    if (
+      (await this.handle(actual)) !== binding.window ||
+      (await this.url(actual)) !== binding.bootstrapURL
+    )
+      throw new Error("SafariDriver bootstrap ownership changed");
+    const identity = await this.script(`return ${observationIdentityExpression};`, actual);
+    const wanted = JSON.stringify({
+      url: binding.bootstrapURL,
+      marker: new URL(binding.bootstrapURL).searchParams.get("token"),
+    });
+    if (identity !== wanted) throw new Error("SafariDriver bootstrap document changed");
+    const path = await inspectorEndpoint(this.inspectorReceipt, this.udid);
+    const observer = await SafariObserver.open(path, binding);
+    this.observation = observer;
+    const stop = observer.stop.bind(observer);
+    let retirement: Promise<void> | undefined;
+    const owned: DriverObservation = {
+      failure: observer.failure,
+      navigationComplete: () => observer.navigationComplete(),
+      check: () => observer.check(),
+      workers: () => observer.workers(),
+      onRequest: (callback) => observer.onRequest(callback),
+      revoke: () => observer.revoke(),
+      stop: () =>
+        (retirement ??= stop().then(() => {
+          this.observation = undefined;
+        })),
+    };
+    return owned;
+  }
   async start(signal: AbortSignal): Promise<void> {
     this.port = await availablePort();
     this.base = `http://127.0.0.1:${this.port}`;
@@ -360,7 +405,7 @@ export class SafariDriver implements Driver {
       signal,
     );
   }
-  private async observe(): Promise<Association | null> {
+  private async observeListener(): Promise<Association | null> {
     const child = this.child;
     if (!child || child.exitCode !== null || child.signalCode !== null)
       throw new Error("SafariDriver launcher exited");
@@ -394,7 +439,7 @@ export class SafariDriver implements Driver {
     const until = performance.now() + 15_000;
     while (performance.now() < until) {
       signal.throwIfAborted();
-      const first = await this.observe();
+      const first = await this.observeListener();
       if (first && (await this.confirm(first, signal))) return;
       await delay(100);
     }
@@ -403,7 +448,7 @@ export class SafariDriver implements Driver {
   private async confirm(first: Association, signal: AbortSignal): Promise<boolean> {
     try {
       await this.request("GET", "/status", undefined, signal, 1000, false);
-      const again = await this.observe();
+      const again = await this.observeListener();
       if (JSON.stringify(first) !== JSON.stringify(again)) return false;
       this.association = again;
       return true;
@@ -591,6 +636,12 @@ export class SafariDriver implements Driver {
     return (this.stopping ??= this.stopOnce());
   }
   private async stopOnce(): Promise<DriverCleanup> {
+    let observerFailure: unknown;
+    try {
+      await this.observation?.stop();
+    } catch (error) {
+      observerFailure = error;
+    }
     let session: CleanupStep = { status: "not-created", detail: "No session created" };
     if (this.session) {
       try {
@@ -610,6 +661,11 @@ export class SafariDriver implements Driver {
       session = {
         status: "unconfirmed",
         detail: "Session creation may have completed without an answer",
+      };
+    if (observerFailure)
+      session = {
+        status: "unconfirmed",
+        detail: `Inspector observation cleanup unconfirmed: ${String(observerFailure)}; ${session.detail}`,
       };
     const launcher = await this.stopLauncher();
     const serviceDisposition =

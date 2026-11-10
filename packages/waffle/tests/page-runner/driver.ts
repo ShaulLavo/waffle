@@ -26,6 +26,9 @@ export interface DriverPressControl {
   dispatch<T>(send: () => Promise<T>): Promise<T>;
 }
 export interface DriverObservation {
+  readonly failure: Promise<Error>;
+  navigationComplete(): void;
+  check(): void;
   workers(): readonly HostWorker[];
   onRequest(callback: HostRequestCallback): () => Promise<void>;
   revoke(): void;

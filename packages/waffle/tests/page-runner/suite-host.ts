@@ -83,6 +83,15 @@ export function serveCollector(
           return new Response("Method not allowed", { status: 405, headers });
         if (url.pathname === "/report" || url.pathname === "/heartbeat")
           return new Response("Method not allowed", { status: 405, headers });
+        if (url.pathname === "/_waffle_observation_bootstrap") {
+          const token = url.searchParams.get("token");
+          if (!token || !configurations.has(token))
+            return new Response("Unbound bootstrap", { status: 404, headers });
+          return new Response(
+            `<!doctype html><html data-waffle-observation="${token}"><meta charset="utf-8"><title>Observation bootstrap</title></html>`,
+            { headers: { ...headers, "Content-Type": "text/html" } },
+          );
+        }
         if (url.pathname === "/favicon.ico") return new Response(null, { status: 204, headers });
         const token = url.searchParams.get("token") ?? "";
         const expected = collector.documents.find((item) => item.token === token);
@@ -104,6 +113,35 @@ export function serveCollector(
     },
   });
   return { server, configurations, assetOwner, origin: `http://127.0.0.1:${server.port}` };
+}
+async function observeDocument(
+  driver: Driver,
+  item: SuiteCase<unknown> | null,
+  binding: import("./driver.js").DriverObservationBinding,
+) {
+  if (!item?.observation) return;
+  const observe = driver.observe?.bind(driver);
+  if (!item.drive || !observe)
+    throw new Error("Declared browser observation is unavailable on this driver");
+  await driver.navigate(binding.bootstrapURL, binding.signal);
+  return binding.consumers.invoke(() => observe(binding));
+}
+async function navigateDocument(options: {
+  driver: Driver;
+  url: string;
+  signal: AbortSignal;
+  hello: number;
+  observation: import("./driver.js").DriverObservation | undefined;
+}): Promise<void> {
+  await bounded(
+    options.driver.navigate(
+      options.url,
+      AbortSignal.any([options.signal, AbortSignal.timeout(options.hello)]),
+    ),
+    options.hello,
+    "navigation",
+  );
+  options.observation?.navigationComplete();
 }
 function sealAssets(fixture: ReturnType<typeof serveCollector> | undefined): void {
   fixture?.assetOwner.seal();
@@ -494,11 +532,20 @@ export async function runPageSuite<R>(
       ...capabilities,
       registrationAttempts: collector.registrationAttempts,
     });
-    await bounded(
-      driver.navigate(url, AbortSignal.any([operationSignal, AbortSignal.timeout(budgets.hello)])),
-      budgets.hello,
-      "navigation",
-    );
+    const observation = await observeDocument(driver, item, {
+      window: handle,
+      bootstrapURL: `${fixture.origin}/_waffle_observation_bootstrap?token=${token}`,
+      expectedURL: url,
+      signal: operationSignal,
+      consumers,
+    });
+    await navigateDocument({
+      driver,
+      url,
+      signal: operationSignal,
+      hello: budgets.hello,
+      observation,
+    });
     const resultDeadline =
       group.role === "case" && adapter.resultWaitMs !== undefined
         ? performance.now() + adapter.resultWaitMs
@@ -529,6 +576,7 @@ export async function runPageSuite<R>(
             });
           },
           fixture.assetOwner,
+          observation,
         )
       : undefined;
     if (host) hostCases.push(host);
