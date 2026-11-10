@@ -94,6 +94,12 @@ test("pre-aborted command does not import, qualify or launch a guest", async () 
   let calls = 0;
   const signal = AbortSignal.abort(new Error("CANCELLED"));
   const host: HostCase = {
+    workers: async () => {
+      throw new Error("Browser observation not declared");
+    },
+    onRequest: () => {
+      throw new Error("Browser observation not declared");
+    },
     async press() {
       throw new Error("Unexpected key press");
     },

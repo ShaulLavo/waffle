@@ -1,4 +1,4 @@
-import { record, type HostKey } from "./protocol.js";
+import { record, type HostKey, type HostWorker, type HostRequestCallback } from "./protocol.js";
 export class DeadlineError extends Error {
   constructor(label: string) {
     super(`${label} timed out`);
@@ -25,7 +25,24 @@ export interface DriverPressControl {
   /** Await sequentially. The callback starts its send synchronously, without preparation. */
   dispatch<T>(send: () => Promise<T>): Promise<T>;
 }
+export interface DriverObservation {
+  readonly failure: Promise<Error>;
+  navigationComplete(): void;
+  check(): void;
+  workers(): readonly HostWorker[];
+  onRequest(callback: HostRequestCallback): () => Promise<void>;
+  revoke(): void;
+  stop(): Promise<void>;
+}
+export type DriverObservationBinding = {
+  window: string;
+  bootstrapURL: string;
+  expectedURL: string;
+  signal: AbortSignal;
+  consumers: import("./owned-consumers.js").HostConsumers;
+};
 export interface Driver {
+  observe?(binding: DriverObservationBinding): Promise<DriverObservation>;
   press(key: HostKey, control: DriverPressControl): Promise<void>;
   start(signal: AbortSignal): Promise<void>;
   createWindow(signal: AbortSignal): Promise<string>;

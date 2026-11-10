@@ -1,3 +1,5 @@
+import { BrowserObservation, requestEvent } from "./browser-observation.js";
+import type { DriverObservationBinding } from "./driver.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
 import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
 import { expect, test, spyOn } from "bun:test";
@@ -2015,3 +2017,86 @@ for (const stage of ["preflight", "input"] as const) {
       }
     }));
 }
+
+class ObservedHostDriver extends HostDriver {
+  readonly trace: string[] = [];
+  ledger: BrowserObservation | undefined;
+  override async navigate(url: string): Promise<void> {
+    if (new URL(url).pathname === "/_waffle_observation_bootstrap") {
+      const response = await fetch(url);
+      if (!response.ok || !(await response.text()).includes("data-waffle-observation"))
+        throw new Error("No owned inert bootstrap");
+      this.currentURL = url;
+      this.trace.push("bootstrap");
+      return;
+    }
+    if (this.ledger) {
+      this.trace.push("case-navigation");
+      this.ledger.created("native-fixture-worker");
+      this.ledger.requested(
+        requestEvent(
+          "Network.requestWillBeSent",
+          {
+            requestId: "early",
+            frameId: "f",
+            loaderId: "l",
+            timestamp: 1,
+            request: { url: new URL("/fs-worker.js", url).href },
+          },
+          1,
+        ),
+      );
+    }
+    await super.navigate(url);
+  }
+  async observe(binding: DriverObservationBinding) {
+    expect(this.currentURL).toBe(binding.bootstrapURL);
+    expect(binding.window).toBe("root");
+    this.trace.push("armed");
+    const ledger = new BrowserObservation("cpu-only-target", binding.consumers, async () => {
+      this.trace.push("detached");
+      this.ledger = undefined;
+    });
+    this.ledger = ledger;
+    return ledger;
+  }
+}
+async function observedHostCase(root: string): Promise<void> {
+  const d = new ObservedHostDriver();
+  const a = adapter(async (host) => {
+    const requests: string[] = [];
+    const drain = host.onRequest((url) => {
+      requests.push(new URL(url).pathname);
+    });
+    expect(requests).toEqual(["/fs-worker.js"]);
+    const first = await host.workers();
+    expect(first).toHaveLength(1);
+    expect((await host.workers())[0]).toBe(first[0]);
+    d.ledger?.terminated("native-fixture-worker");
+    expect(await host.workers()).toEqual([]);
+    await drain();
+    return { cpu: true };
+  });
+  const inventory = a.inventory();
+  const selected = inventory[0];
+  if (!selected) throw new Error("Missing CPU case");
+  selected.observation = "workers-and-requests";
+  a.inventory = () => inventory;
+  const result = await runPageSuite(a, () => d, options(root));
+  expect(result.exit).toBe(0);
+  expect(d.trace).toEqual(["bootstrap", "armed", "case-navigation", "detached"]);
+  expect(d.stopCalls).toBe(1);
+}
+test("declared observation arms before original navigation, replays requests and retires under the host owner", () =>
+  fixture(observedHostCase));
+async function undeclaredHostCase(root: string): Promise<void> {
+  const drive = async (host: HostCase) => {
+    await expect(host.workers()).rejects.toThrow("not declared");
+    expect(() => host.onRequest(() => {})).toThrow("not declared");
+    return null;
+  };
+  const result = await runPageSuite(adapter(drive), () => new HostDriver(), options(root));
+  expect(result.exit).toBe(0);
+}
+test("undeclared browser observation refuses instead of substituting an empty inventory", () =>
+  fixture(undeclaredHostCase));

@@ -184,7 +184,7 @@ const pageRunnerScript = `
   }
 `;
 const adapterTypes = `
-import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type DriverPressControl, type HostKey, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict } from "waffle/testing/page-runner";
+import { runPageSuite, nativeMain, ownedDatabase, type SuiteAdapter, type NativeOptions, type PreparationContext, type Driver, type DriverPressControl, type HostKey, type HostCase, type AssetHoldCallback, type HeldAssetRequest, type HostPeer, type SuiteCase, type HostVerdict, type HostWorker, type HostRequestCallback } from "waffle/testing/page-runner";
 import { isHostedPage, startPage, cleanupStorage, type PageSuite, type HostPageRun } from "waffle/testing/page-runner/page";
 const adapter: SuiteAdapter<{ databaseName: string }> = {
   suite: "consumer-types",
@@ -199,7 +199,16 @@ const adapter: SuiteAdapter<{ databaseName: string }> = {
 };
 const hostCase: SuiteCase<{ databaseName: string }> = {
   id: "host", label: "host case", request: run => ({ databaseName: run }),
+  observation: "workers-and-requests",
   drive: async (host: HostCase) => {
+    const workers: readonly HostWorker[] = await host.workers();
+    const requestCallback: HostRequestCallback = url => { new URL(url); };
+    const drain: () => Promise<void> = host.onRequest(requestCallback);
+    await drain();
+    // @ts-expect-error Worker URLs are not part of the minimal observation contract
+    workers[0]?.url();
+    // @ts-expect-error Inspector engine identifiers are private
+    workers[0]?.workerId;
     host.signal.throwIfAborted();
     const remaining = host.remainingMs();
     const callback: AssetHoldCallback = async (request: HeldAssetRequest) => {

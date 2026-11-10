@@ -12,7 +12,12 @@ export type HeldAssetRequest = {
 };
 export type AssetHoldCallback = (request: HeldAssetRequest) => Promise<void>;
 export type HostKey = "Home" | "ArrowUp" | "ArrowRight" | "Enter";
+/** Host-only stable identity. No runtime, process or constructor ledger is exposed. */
+export type HostWorker = Readonly<{ kind: "dedicated-worker" }>;
+export type HostRequestCallback = (url: string) => void | PromiseLike<void>;
 export type HostCase = {
+  workers(): Promise<readonly HostWorker[]>;
+  onRequest(callback: HostRequestCallback): () => Promise<void>;
   press(key: HostKey): Promise<void>;
   holdAsset(path: string, callback: AssetHoldCallback): void;
   openPeer(): Promise<HostPeer>;

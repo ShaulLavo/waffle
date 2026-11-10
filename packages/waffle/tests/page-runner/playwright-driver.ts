@@ -1,3 +1,4 @@
+import { observePlaywrightPage } from "./playwright-observer.js";
 import type { HostKey } from "./protocol.js";
 import { driverResponseLimit } from "./safari-driver.js";
 import { navigateTestPage } from "../browser-navigation.js";
@@ -11,6 +12,8 @@ import {
   type Driver,
   type DriverCleanup,
   type DriverPressControl,
+  type DriverObservationBinding,
+  type DriverObservation,
 } from "./driver.js";
 /** Local runner regressions only. Not an iOS adapter or a replacement storage body. */
 export class PlaywrightDriver implements Driver {
@@ -44,6 +47,31 @@ export class PlaywrightDriver implements Driver {
     this.page.on("requestfailed", (request) =>
       console.error("Local runner request failed", request.url(), request.failure()),
     );
+  }
+  private browserObservation: DriverObservation | undefined;
+  async observe(binding: DriverObservationBinding): Promise<DriverObservation> {
+    if (this.browserObservation) throw new Error("Prior browser observer was not retired");
+    const page = this.current();
+    if (
+      (await this.handle(binding.signal)) !== binding.window ||
+      page.url() !== binding.bootstrapURL
+    )
+      throw new Error("Observation is not the exact existing Page");
+    const observation = observePlaywrightPage(page, binding);
+    this.browserObservation = observation;
+    let retirement: Promise<void> | undefined;
+    return {
+      failure: observation.failure,
+      navigationComplete: () => observation.navigationComplete(),
+      check: () => observation.check(),
+      workers: () => observation.workers(),
+      onRequest: (callback) => observation.onRequest(callback),
+      revoke: () => observation.revoke(),
+      stop: () =>
+        (retirement ??= observation.stop().then(() => {
+          this.browserObservation = undefined;
+        })),
+    };
   }
   private current(): Page {
     if (!this.page) throw new Error("No page");
@@ -142,9 +170,16 @@ export class PlaywrightDriver implements Driver {
     return (this.stopping ??= this.stopOnce());
   }
   private async stopOnce(): Promise<DriverCleanup> {
+    let observationFailure: { reason: unknown } | undefined;
+    try {
+      await this.browserObservation?.stop();
+    } catch (error) {
+      observationFailure = { reason: error };
+    }
     try {
       await this.lifecycle.close();
       await Promise.allSettled(this.evaluations);
+      if (observationFailure) throw observationFailure.reason;
       return {
         session: { status: "confirmed", detail: "Local browser context stopped" },
         launcher: { status: "confirmed", detail: "Local browser joined" },

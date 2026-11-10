@@ -1,5 +1,5 @@
 import type { AssetOwner } from "./asset-owner.js";
-import { bounded, type Driver, type DriverPressControl } from "./driver.js";
+import { bounded, type Driver, type DriverPressControl, type DriverObservation } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
 import {
   record,
@@ -63,8 +63,10 @@ export class HostDrive {
     private readonly signal: AbortSignal,
     private readonly configurePeer?: (state: DocumentState, lookupToken: string) => void,
     private readonly assets?: AssetOwner,
+    private readonly observation?: DriverObservation,
   ) {
     this.body.signal.addEventListener("abort", () => this.beginTeardown(), { once: true });
+    void observation?.failure.then((error) => this.fault(new ObservationFailure(error.message)));
     consumers.register(() => {
       this.closed = true;
       this.revoke();
@@ -124,6 +126,7 @@ export class HostDrive {
   }
   private checkBody(): void {
     this.infrastructure();
+    this.observation?.check();
     if (performance.now() >= this.deadline && !this.body.signal.aborted)
       this.body.abort(new Error("Host setup/body timed out"));
     this.body.signal.throwIfAborted();
@@ -249,6 +252,14 @@ try {
     check();
     signal.throwIfAborted();
     return value;
+  }
+  private async workers() {
+    this.checkBody();
+    if (!this.observation)
+      throw new Error("Browser observation was not declared before navigation");
+    await this.execute("", "body");
+    this.checkBody();
+    return this.observation.workers();
   }
   private press(key: HostKey): Promise<void> {
     if (key !== "Home" && key !== "ArrowUp" && key !== "ArrowRight" && key !== "Enter")
@@ -457,6 +468,16 @@ try {
         () => false,
       ),
       this.assets?.join(this.state, until) ?? true,
+      this.observation
+        ? bounded(
+            this.observation.stop(),
+            Math.max(0, until - performance.now()),
+            "browser observation detach and callback join",
+          ).then(
+            () => true,
+            () => false,
+          )
+        : true,
     ]);
     if (joined.every(Boolean) && performance.now() <= until) return;
     this.containmentFailed = true;
@@ -467,6 +488,7 @@ try {
     );
   }
   revoke(): void {
+    this.observation?.revoke();
     this.beginTeardown();
     this.active = false;
     for (const controller of this.peerSignals.values())
@@ -557,6 +579,16 @@ try {
       this.bodyStartedAt = performance.now();
       this.deadline = Math.min(this.bodyStartedAt + this.budgets.case, this.bodyLimit());
       const host: HostCase = {
+        workers: () => this.workers(),
+        onRequest: (callback) => {
+          this.checkBody();
+          if (!this.observation)
+            throw new Error("Browser observation was not declared before navigation");
+          return this.observation.onRequest((url) => {
+            this.checkBody();
+            return callback(url);
+          });
+        },
         holdAsset: (path, callback) => {
           this.checkBody();
           if (!this.assets) throw new Error("Asset response owner unavailable");

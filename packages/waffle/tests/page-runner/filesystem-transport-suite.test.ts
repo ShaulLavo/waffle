@@ -62,6 +62,12 @@ test("the HostCase invokes the original global with complete options and returns
   const tasks: string[] = [];
   const scripts: string[] = [];
   const host: HostCase = {
+    workers: async () => {
+      throw new Error("Browser observation not declared");
+    },
+    onRequest: () => {
+      throw new Error("Browser observation not declared");
+    },
     async press() {
       throw new Error("Unexpected key press");
     },

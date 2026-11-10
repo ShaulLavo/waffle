@@ -16,6 +16,8 @@ export type {
   HeldAssetRequest,
   Budgets,
   HostCase,
+  HostWorker,
+  HostRequestCallback,
   HostKey,
   HostPeer,
   HostVerdict,
