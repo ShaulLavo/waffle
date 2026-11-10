@@ -39,33 +39,30 @@ function deleteFiles(fs: FilesystemClient, count: number) {
   }
 }
 
+function runScenario(fs: FilesystemClient, input: Input) {
+  if (input.scenario === "directory") return enumerateDirectory(fs, input.count, input.capacity);
+  if (input.scenario === "reload") return reload(fs);
+  if (input.scenario === "delete") return deleteFiles(fs, input.count);
+  const peer = new FilesystemClient(input.peer);
+  const observer = metadataGuest(peer, input.root);
+  try {
+    return linkLifecycle(fs, input.root, observer);
+  } finally {
+    observer.wasi.descriptors.dispose();
+    peer.dispose();
+  }
+}
+
 self.onmessage = (event: MessageEvent<Input>) => {
   const fs = new FilesystemClient(event.data.connection);
+  let result: ReturnType<typeof runScenario> | { error: string | undefined };
   try {
-    if (event.data.scenario === "directory") {
-      self.postMessage(enumerateDirectory(fs, event.data.count, event.data.capacity));
-      return;
-    }
-    if (event.data.scenario === "reload") {
-      self.postMessage(reload(fs));
-      return;
-    }
-    if (event.data.scenario === "delete") {
-      self.postMessage(deleteFiles(fs, event.data.count));
-      return;
-    }
-    const peer = new FilesystemClient(event.data.peer);
-    const observer = metadataGuest(peer, event.data.root);
-    try {
-      self.postMessage(linkLifecycle(fs, event.data.root, observer));
-    } finally {
-      observer.wasi.descriptors.dispose();
-      peer.dispose();
-    }
+    result = runScenario(fs, event.data);
   } catch (error) {
-    self.postMessage({ error: error instanceof Error ? error.stack : String(error) });
+    result = { error: error instanceof Error ? error.stack : String(error) };
   } finally {
     fs.dispose();
     event.data.peer.port.close();
   }
+  self.postMessage(result);
 };
