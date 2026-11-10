@@ -18,7 +18,7 @@ export class PlaywrightDriver implements Driver {
   private context: BrowserContext | undefined;
   private page: Page | undefined;
   private readonly pages = new Map<string, Page>();
-  private readonly evaluations = new Set<Promise<void>>();
+  private readonly evaluations = new Set<Promise<unknown>>();
   private stopping: Promise<DriverCleanup> | undefined;
   uncertain = false;
   constructor(
@@ -110,13 +110,15 @@ export class PlaywrightDriver implements Driver {
   async script(source: string, signal: AbortSignal): Promise<unknown> {
     signal.throwIfAborted();
     try {
-      const raw = this.current().evaluate((script) => new Function(script)(), source);
-      const settled = raw.then(
-        () => {},
-        () => {},
+      const raw: Promise<unknown> = this.current().evaluate(
+        (script) => new Function(script)(),
+        source,
       );
-      this.evaluations.add(settled);
-      void settled.then(() => this.evaluations.delete(settled));
+      this.evaluations.add(raw);
+      const settled = () => {
+        this.evaluations.delete(raw);
+      };
+      void raw.then(settled, settled);
       const value: unknown = await bounded(raw, 3000, "script probe");
       const encoded = JSON.stringify({ value });
       if (new TextEncoder().encode(encoded).byteLength > driverResponseLimit)
@@ -142,7 +144,7 @@ export class PlaywrightDriver implements Driver {
   private async stopOnce(): Promise<DriverCleanup> {
     try {
       await this.lifecycle.close();
-      await Promise.all(this.evaluations);
+      await Promise.allSettled(this.evaluations);
       return {
         session: { status: "confirmed", detail: "Local browser context stopped" },
         launcher: { status: "confirmed", detail: "Local browser joined" },
