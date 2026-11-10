@@ -842,14 +842,14 @@ export class PageFrameworkHost implements FrameworkHost {
     )
       this.collector.fail("cleanup", "Owned cleanup unconfirmed");
     const fileComplete =
+      stopped &&
+      this.collector.failures.length === 0 &&
+      this.framework?.status === "passed" &&
       trace.status !== "incomplete" &&
       this.retired &&
       this.collector.executionFlushed &&
       this.collector.cleanupResponse &&
-      this.collector.cases.every(
-        (item) =>
-          item.started && item.outcome !== null && !["skip", "todo"].includes(item.outcome.state),
-      );
+      this.collector.cases.every((item) => item.started && item.outcome?.state === "pass");
     const result: FrameworkResult = {
       trace,
       cleanupDeadlineAt: cleanupDeadline,
@@ -873,11 +873,11 @@ export class PageFrameworkHost implements FrameworkHost {
       geometry: this.geometryValue,
       framework: this.framework,
       failures: this.collector.failures,
-      fileComplete: fileComplete && stopped,
+      fileComplete,
       rootBrowserSuiteComplete: false,
       omittedRootFiles: "not enumerated",
       cleanup,
-      exit: this.collector.failures.length ? 2 : 4,
+      exit: fileComplete ? 4 : 2,
     };
     try {
       await bounded(

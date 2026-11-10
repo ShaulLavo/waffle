@@ -29,7 +29,7 @@ async function verdict(root: string, scenario: VerdictCase): Promise<void> {
   const documents = new Map<string, ReturnType<typeof document>>();
   function document(kind: "orchestrator" | "tester", url: string) {
     const html = host.instrumentDocument({ kind, url, html: "<head></head>" });
-    const config = JSON.parse(
+    const config: unknown = JSON.parse(
       html.split("window.__waffleFrameworkConfiguration=")[1]?.split(";\n")[0] ?? "null",
     );
     if (!record(config) || typeof config.run !== "string" || typeof config.token !== "string")
@@ -90,7 +90,11 @@ async function verdict(root: string, scenario: VerdictCase): Promise<void> {
         iframe: { x: 0, y: 0, width: 414, height: 896 },
       };
     if (source.includes("bridge.admit(")) {
-      const args = JSON.parse(`[${source.split("bridge.admit(")[1]?.split(",undefined)")[0]}]`);
+      const args: unknown = JSON.parse(
+        `[${source.split("bridge.admit(")[1]?.split(",undefined)")[0]}]`,
+      );
+      if (!Array.isArray(args) || typeof args[2] !== "string")
+        throw new Error("Missing actual viewport permit");
       permit.resolve({ permit: args[2], width: 414, height: 896 });
     }
     if (source.includes("bridge.cutoff(")) cutoff.resolve();
@@ -118,19 +122,21 @@ async function verdict(root: string, scenario: VerdictCase): Promise<void> {
       body: JSON.stringify({ ...state, seq: state.ackedThrough + 1, ...body }),
     });
     expect(response.status).toBe(200);
-    const ack = await response.json();
+    const ack: unknown = await response.json();
     expect(ack).toEqual({ ackedThrough: state.ackedThrough + 1 });
     state.ackedThrough++;
   }
   async function waitForRetirement(kind: "orchestrator" | "tester"): Promise<void> {
     const state = documents.get(kind);
-    for (;;) {
+    const deadline = performance.now() + 2000;
+    while (performance.now() < deadline) {
       const response = await fetch(`${origin}/retire?run=${state?.run}&doc=${kind}`);
-      const reply = await response.json();
+      const reply: unknown = await response.json();
       expect(response.status).toBe(200);
       if (record(reply) && reply.kind === "live" && reply.retire === true) return;
       await Bun.sleep(1);
     }
+    throw new Error("Control retirement readiness timed out");
   }
   const event = (kind: "orchestrator" | "tester", event: FrameworkEvent) =>
     send(kind, { kind: "event", event });
@@ -186,8 +192,8 @@ async function verdict(root: string, scenario: VerdictCase): Promise<void> {
       await event("tester", { kind: "execution-flushed" });
       await event("tester", { kind: "tester-cleanup-settled" });
       await event("orchestrator", { kind: "cleanup-response-received" });
-      await bounded(waitForRetirement("tester"), 2000, "Control retirement readiness");
-      await bounded(waitForRetirement("orchestrator"), 2000, "Control retirement readiness");
+      await waitForRetirement("tester");
+      await waitForRetirement("orchestrator");
       await send("tester", { kind: "retire-ready" });
       await send("orchestrator", { kind: "retire-ready" });
       await bounded(cutoff.promise, 2000, "Control final cutoff");
