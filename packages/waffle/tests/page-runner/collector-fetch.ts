@@ -9,7 +9,7 @@ const collectorHeaders = {
   "Cross-Origin-Embedder-Policy": "require-corp",
 };
 export type ReportSink = {
-  receive(body: unknown): { ackedThrough: number };
+  receive(body: unknown, inspect?: (body: unknown) => void): { ackedThrough: number };
   heartbeat(body: unknown): HostReply;
   retirement(url: URL): HostReply;
   fail(category: string, detail: string): void;
@@ -68,12 +68,20 @@ function receiveReport(
   sink: ReportSink,
   observe: ((observation: CollectorObservation) => void) | undefined,
 ): Response {
-  const event =
+  let event =
     typeof body === "object" && body !== null && "event" in body && frameworkEvent(body.event)
       ? body.event
       : undefined;
   try {
-    const answer = sink.receive(body);
+    const answer = sink.receive(body, (complete) => {
+      if (
+        typeof complete === "object" &&
+        complete !== null &&
+        "event" in complete &&
+        frameworkEvent(complete.event)
+      )
+        event = complete.event;
+    });
     if (event) observe?.({ event, status: 200, accepted: true });
     return Response.json(answer, { headers: collectorHeaders });
   } catch (error) {

@@ -1,8 +1,8 @@
 import { reportingFailure, type HostReply } from "./report-control.js";
 import { randomUUID } from "node:crypto";
 import { ObservationClosed } from "./collector.js";
-import { record, resultByteLimit } from "./protocol.js";
-import { reportSequence } from "./report-stream.js";
+import { record } from "./protocol.js";
+import { ReportChunks, type ReportAck } from "./report-chunks.js";
 import { jsonValue } from "./framework-validation.js";
 import type {
   ExpectedCase,
@@ -81,9 +81,11 @@ export class FrameworkCollector {
   cleanupResponse = false;
   viewportConsumed = false;
   private cancelled = false;
+  private readonly reports = new ReportChunks();
   private readonly reportingFailed = new Set<FrameworkDocument>();
   cancel(): void {
     this.cancelled = true;
+    this.reports.clear();
   }
   private reply(retire = false): HostReply {
     return this.cancelled ? { kind: "cancelled" } : { kind: "live", retire };
@@ -138,16 +140,26 @@ export class FrameworkCollector {
     if (document.cutoff !== null) throw new ObservationClosed("Framework document retired");
     return { document, body: value };
   }
-  receive(value: unknown): { ackedThrough: number } {
-    const { document, body } = this.bound(value);
-    const encoded = JSON.stringify(value);
-    if (new TextEncoder().encode(encoded).byteLength > resultByteLimit)
-      throw new Error("Framework report exceeds 48 KiB");
-    if (typeof body.seq !== "number") throw new Error("Missing report sequence");
-    if (reportSequence(document, body.seq, encoded) === "retry") return { ackedThrough: body.seq };
-    this.apply(document, body);
-    document.messages.push(encoded);
-    return { ackedThrough: body.seq };
+  receive(value: unknown, inspect?: (body: unknown) => void): ReportAck {
+    const { document } = this.bound(value);
+    if (
+      this.cancelled &&
+      record(value) &&
+      value.kind === "report-chunk" &&
+      typeof value.seq === "number" &&
+      value.seq >= document.messages.length
+    )
+      throw new ObservationClosed("Framework reporting cancelled");
+    return this.reports.receive(
+      document,
+      value,
+      (body) => {
+        if (this.cancelled) throw new ObservationClosed("Framework reporting cancelled");
+        if (!record(body)) throw new Error("Invalid framework report");
+        this.apply(document, body);
+      },
+      inspect,
+    );
   }
   private apply(document: FrameworkDocument, body: Record<string, unknown>): void {
     if (body.kind === "hello") {

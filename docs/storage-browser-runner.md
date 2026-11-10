@@ -186,10 +186,18 @@ without inspecting the rejection. These facts do not establish a native cause.
 
 Snapshot factories run immediately after Waffle reserves one of the same 64 outbox slots.
 A null case-settlement snapshot releases its slot without a record. Conversion and encoding
-reentry fails explicitly. Waffle encodes the complete envelope once, checks its 48 KiB UTF-8
-limit, and then commits its sequence. Retries reuse those exact bytes. This bounds additional
-reporting state, including active conversion, rather than the framework's own RPC promise list
-or the collector's retained output history.
+reentry fails explicitly. Waffle snapshots the complete logical report once, then commits its
+sequence. Reports above the unchanged 48 KiB UTF-8 envelope limit travel in bounded chunks on
+`/report`, without shortening assertions. Intermediate ACKs confirm chunk offsets but do not
+advance the event watermark. Only complete, validated reassembly applies the event and advances
+its ACK once. Retries compare the exact saved text, including after the final ACK is lost.
+
+One logical report is limited to 4 MiB of UTF-8, queued reports share an 8 MiB byte budget, and
+collectors reserve at most 8 MiB for incomplete reports. Each collector document retains at most
+32 MiB of original report text for replay. Budget exhaustion fails reporting explicitly; it does
+not truncate data or invent later records. Cancellation releases incomplete assemblies. The
+original retry deadline covers the whole logical report, not a fresh deadline per chunk. These
+limits bound Waffle's reporting data, not the framework's own RPC promise list or other output.
 
 Admission failure closes `observation.signal` and refuses further conversion. Already admitted
 healthy records can still drain under their original budgets. The existing single-flight
@@ -199,7 +207,7 @@ cancellation or document invalidation can end delivery, leaving admitted but una
 records incomplete. Abort does not release a slot until actual transport and ACK parsing settle.
 Collector acceptance, page ACK, cleanup and both actual document cutoffs remain separate facts.
 
-The CPU controls in `reporting-contract.test.ts`, `framework-reporting.test.ts` and
-`reporting-host.test.ts` exercise the actual reporter, bootstrap accessor, collector and host.
+The CPU controls in `reporting-contract.test.ts`, `framework-reporting.test.ts`,
+`large-reporting.test.ts`, `report-chunks.test.ts` and `reporting-host.test.ts` exercise the actual reporter, bootstrap accessor, collector and host.
 Their isolated CPU realm is not an installed Vitest runner or browser qualification. A consumer
 must also qualify its exact official patch with real installed synthetic cases before native use.

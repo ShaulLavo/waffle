@@ -1,5 +1,5 @@
 import { reportingFailure, type HostReply } from "./report-control.js";
-import { reportSequence } from "./report-stream.js";
+import { ReportChunks, type ReportAck } from "./report-chunks.js";
 import {
   exactInventory,
   sameStorageEntry,
@@ -135,8 +135,10 @@ export class Collector {
   private reporting:
     | { kind: "live" | "cancelled" | "cleanup-failed" }
     | { kind: "cleanup"; document: DocumentState } = { kind: "live" };
+  private readonly reports = new ReportChunks();
   private readonly reportingFailed = new Set<DocumentState>();
   cancel(): void {
+    this.reports.clear();
     this.reporting = {
       kind:
         this.reporting.kind === "cleanup" || this.reporting.kind === "cleanup-failed"
@@ -395,7 +397,7 @@ export class Collector {
     }
     return this.reply(false, state);
   }
-  receive(value: unknown): { ackedThrough: number } {
+  receive(value: unknown): ReportAck {
     const known =
       record(value) && value.run === this.run
         ? this.documents.find((state) => state.doc !== null && state.doc === value.doc)
@@ -407,6 +409,14 @@ export class Collector {
         ? this.documents.find((item) => item.doc === null && item.token === value.token)
         : undefined;
     const state = known ?? pending;
+    if (record(value) && value.kind === "report-chunk") {
+      if (!known || !this.owns(known)) return this.violation("Unbound report chunks", known);
+      try {
+        return this.reports.receive(known, value, (body) => this.apply(known, parseMessage(body)));
+      } catch (error) {
+        return this.violation(String(error), known);
+      }
+    }
     let message: Message;
     try {
       message = parseMessage(value);
@@ -421,25 +431,19 @@ export class Collector {
           : undefined;
       return this.violation("Wrong run or no expected document", rejected);
     }
-    const encoded = JSON.stringify(message);
     try {
-      if (reportSequence(state, message.seq, encoded) === "retry")
-        return { ackedThrough: message.seq };
-    } catch (error) {
-      return this.violation(String(error), state);
-    }
-    if (!this.owns(state)) return this.violation("Report sequence conflict or gap", state);
-    if (!state.doc && message.kind !== "hello") return this.violation("Report before hello", state);
-    if (state.doc && state.doc !== message.doc)
-      return this.violation("Unexpected new document", state);
-    try {
-      this.apply(state, message);
+      return this.reports.receive(state, message, () => {
+        if (!this.owns(state)) return this.violation("Report sequence conflict or gap", state);
+        if (!state.doc && message.kind !== "hello")
+          return this.violation("Report before hello", state);
+        if (state.doc && state.doc !== message.doc)
+          return this.violation("Unexpected new document", state);
+        this.apply(state, message);
+      });
     } catch (error) {
       if (error instanceof ReportRejected) throw error;
       return this.violation(String(error), state);
     }
-    state.messages.push(encoded);
-    return { ackedThrough: message.seq };
   }
   private apply(state: DocumentState, body: Message): void {
     if (

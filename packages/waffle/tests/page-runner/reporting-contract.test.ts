@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { OrderedReporter } from "./ordered-reporter.js";
+import { reportEventByteLimit } from "./report-chunks.js";
 import { record, resultByteLimit } from "./protocol.js";
 
 function ack(init: RequestInit): Response {
@@ -48,8 +49,8 @@ test("full envelope is encoded once before sequence commit", async () => {
   }));
   expect(reads).toBe(1);
   await expect(
-    reporter.sendSnapshot(() => ({ value: "x".repeat(resultByteLimit) })),
-  ).rejects.toThrow("48 KiB");
+    reporter.sendSnapshot(() => ({ value: "x".repeat(reportEventByteLimit) })),
+  ).rejects.toThrow("4 MiB");
   expect(reporter.observation.ackedThrough).toBe(0);
   expect(reporter.observation.pending).toBe(0);
 });
