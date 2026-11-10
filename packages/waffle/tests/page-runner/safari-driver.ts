@@ -13,10 +13,27 @@ import {
   stringValue,
   type Driver,
   type DriverCleanup,
+  type DriverPressControl,
   type CleanupStep,
 } from "./driver.js";
-import { record } from "./protocol.js";
+import { record, type HostKey } from "./protocol.js";
 import { commandMethod, commandPath } from "./framework-queue.js";
+function nativeKey(key: HostKey): string {
+  switch (key) {
+    case "Home":
+      return "\uE011";
+    case "ArrowUp":
+      return "\uE013";
+    case "ArrowRight":
+      return "\uE014";
+    case "Enter":
+      return "\uE006";
+    default: {
+      const exhaustive: never = key;
+      return exhaustive;
+    }
+  }
+}
 export type NativeCommandFailure = CommandFailure & {
   readonly errorName: string | null;
   readonly errorCode: string | null;
@@ -550,6 +567,25 @@ export class SafariDriver implements Driver {
   }
   script(source: string, signal: AbortSignal): Promise<unknown> {
     return this.command("POST", "/execute/sync", { script: source, args: [] }, signal);
+  }
+  async press(key: HostKey, control: DriverPressControl): Promise<void> {
+    const value = nativeKey(key);
+    const body = {
+      actions: [
+        {
+          type: "key",
+          id: "waffle-keyboard",
+          actions: [
+            { type: "keyDown", value },
+            { type: "keyUp", value },
+          ],
+        },
+      ],
+    };
+    await control.dispatch(async () => {
+      const answer = await this.command("POST", "/actions", body, new AbortController().signal);
+      this.emptyAnswer(answer, "key press");
+    });
   }
   stop(): Promise<DriverCleanup> {
     return (this.stopping ??= this.stopOnce());

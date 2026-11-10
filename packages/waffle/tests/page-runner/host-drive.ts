@@ -1,5 +1,5 @@
 import type { AssetOwner } from "./asset-owner.js";
-import { bounded, type Driver } from "./driver.js";
+import { bounded, type Driver, type DriverPressControl } from "./driver.js";
 import { HostConsumers } from "./owned-consumers.js";
 import {
   record,
@@ -7,6 +7,7 @@ import {
   resultByteLimit,
   type Budgets,
   type HostCase,
+  type HostKey,
   type HostPeer,
   type HostVerdict,
 } from "./protocol.js";
@@ -51,7 +52,7 @@ export class HostDrive {
   private readonly peerSignals = new Map<DocumentState, AbortController>();
   private readonly closes = new Map<DocumentState, Promise<void>>();
   private bodyFailure: { message: string; stack: string | null; details: unknown } | null = null;
-  readonly transport: Driver;
+  readonly transport: Omit<Driver, "press">;
   constructor(
     private readonly driver: Driver,
     private readonly collector: Collector,
@@ -185,34 +186,19 @@ try {
     const queued = this.enqueue(async () => {
       if (user) this.checkBody();
       try {
-        this.infrastructure(recovery);
-        this.checkTarget(state, until, transitioning);
-        await this.driver.selectWindow(state.handle, operationSignal);
-        this.checkTarget(state, until, transitioning);
-        if (user) this.checkBody();
-        if ((await this.driver.handle(operationSignal)) !== state.handle)
-          throw new Error("Host window handle changed");
-        this.infrastructure(recovery);
-        if (user) this.checkBody();
-        this.checkTarget(state, until, transitioning);
-        beforeDispatch?.();
-        if (user) this.checkBody();
-        const value = await this.driver.script(
-          this.guard(source, mode, recovery, state),
+        return await this.boundCommand(
+          source,
+          mode,
           operationSignal,
+          () => {
+            this.infrastructure(recovery);
+            this.checkTarget(state, until, transitioning);
+            if (user) this.checkBody();
+          },
+          beforeDispatch,
+          recovery,
+          state,
         );
-        this.infrastructure(recovery);
-        this.checkTarget(state, until, transitioning);
-        if (!record(value)) throw new Error("Malformed bound command answer");
-        if (value.kind === "binding-error") throw new Error("Host document binding changed");
-        if (value.kind === "reporter-error")
-          throw new ObservationFailure(`Page reporting failed: ${String(value.error)}`);
-        if (value.kind === "expression-error" && typeof value.error === "string")
-          throw new ExpressionFailure(value.error);
-        if (value.kind !== "void" && (value.kind !== "value" || !("value" in value)))
-          throw new Error("Invalid bound command answer");
-        if (user) this.checkBody();
-        return value.kind === "void" ? undefined : value.value;
       } catch (error) {
         if (!(error instanceof ExpressionFailure) && error !== this.body.signal.reason)
           this.fault(error, state);
@@ -221,6 +207,122 @@ try {
       }
     });
     return abortable(queued, operationSignal);
+  }
+  private async boundCommand(
+    source: string,
+    mode: ScriptMode,
+    signal: AbortSignal,
+    check: () => void,
+    beforeDispatch?: () => void,
+    recovery = false,
+    state = this.state,
+  ): Promise<unknown> {
+    const request = <T>(send: () => Promise<T>) => this.checkedRequest(check, signal, send);
+    await request(() => this.driver.selectWindow(state.handle, signal));
+    if ((await request(() => this.driver.handle(signal))) !== state.handle)
+      throw new Error("Host window handle changed");
+    check();
+    beforeDispatch?.();
+    const value = await request(() =>
+      this.driver.script(this.guard(source, mode, recovery, state), signal),
+    );
+    if (!record(value)) throw new Error("Malformed bound command answer");
+    if (value.kind === "binding-error") throw new Error("Host document binding changed");
+    if (value.kind === "reporter-error")
+      throw new ObservationFailure(`Page reporting failed: ${String(value.error)}`);
+    if (value.kind === "expression-error" && typeof value.error === "string")
+      throw new ExpressionFailure(value.error);
+    if (value.kind !== "void" && (value.kind !== "value" || !("value" in value)))
+      throw new Error("Invalid bound command answer");
+    return value.kind === "void" ? undefined : value.value;
+  }
+  private async checkedRequest<T>(
+    check: () => void,
+    signal: AbortSignal,
+    send: () => Promise<T>,
+  ): Promise<T> {
+    const value = await this.consumers.invoke(() => {
+      check();
+      signal.throwIfAborted();
+      return send();
+    });
+    check();
+    signal.throwIfAborted();
+    return value;
+  }
+  private press(key: HostKey): Promise<void> {
+    if (key !== "Home" && key !== "ArrowUp" && key !== "ArrowRight" && key !== "Enter")
+      throw new TypeError("Unsupported host key");
+    this.checkBody();
+    const until = this.operationDeadline();
+    const signal = AbortSignal.any([
+      this.signal,
+      this.body.signal,
+      AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
+    ]);
+    return abortable(
+      this.enqueue(() => this.pressEntry(key, until, signal)),
+      signal,
+    );
+  }
+  private async pressEntry(key: HostKey, until: number, signal: AbortSignal): Promise<void> {
+    let open = true;
+    let busy = false;
+    let active: Promise<unknown> | undefined;
+    let failure: { error: unknown } | undefined;
+    const ignoreDrainRejection = () => undefined;
+    const check = () => {
+      if (!open) throw new Error("Driver press dispatch lease closed");
+      this.checkBody();
+      this.checkTarget(this.state, until);
+      signal.throwIfAborted();
+    };
+    const fail = (error: unknown) => {
+      failure ??= { error };
+      this.fault(error);
+    };
+    const dispatch = <T>(send: () => Promise<T>): Promise<T> => {
+      if (!open) return Promise.reject(new Error("Driver press dispatch lease closed"));
+      if (busy) {
+        const error = new Error("Overlapping driver press dispatch");
+        fail(error);
+        return Promise.reject(error);
+      }
+      busy = true;
+      const result = this.consumers.invoke(async () => {
+        await this.boundCommand("", "body", signal, check);
+        const value = await this.checkedRequest(check, signal, send);
+        await this.boundCommand("", "body", signal, check);
+        return value;
+      });
+      active = result;
+      const settled = () => {
+        busy = false;
+        active = undefined;
+      };
+      void result.then(settled, (error: unknown) => {
+        settled();
+        fail(error);
+      });
+      return result;
+    };
+    const control: DriverPressControl = { signal, dispatch };
+    try {
+      check();
+      await this.driver.press(key, control);
+    } catch (error) {
+      open = false;
+      fail(error);
+    } finally {
+      open = false;
+      if (active) {
+        fail(new Error("Driver press settled with an active dispatch"));
+        await active.catch(ignoreDrainRejection);
+      }
+    }
+    if (failure) throw failure.error;
+    this.checkBody();
+    this.checkTarget(this.state, until);
   }
   private bodyLimit(): number {
     return Math.min(
@@ -467,6 +569,10 @@ try {
         script: (source) => {
           this.checkBody();
           return abortable(this.execute(source, "body"), this.body.signal);
+        },
+        press: (key, ...extra: unknown[]) => {
+          if (extra.length) throw new TypeError("Host press accepts only a key");
+          return this.press(key);
         },
         task: (source) =>
           this.task(

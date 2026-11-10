@@ -72,3 +72,42 @@ test("embedded driver construction and repeated stop never acquire process inter
   }
   expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
 });
+
+for (const outcome of ["fulfill", "reject"] as const) {
+  test(`raw evaluation survives its bounded timeout and context close until late ${outcome}`, async () => {
+    const raw = Promise.withResolvers<unknown>();
+    const driver = new PlaywrightDriver("chromium", "/unused/key-control");
+    let evaluations = 0;
+    Reflect.set(driver, "page", {
+      evaluate() {
+        evaluations++;
+        return raw.promise;
+      },
+    });
+    const close = spyOn(BrowserRunnerLifecycle.prototype, "close").mockResolvedValue();
+    let stopped = false;
+    try {
+      await expect(
+        driver.script("return true;", new AbortController().signal),
+      ).rejects.toMatchObject({ name: "WebDriverError", code: "script timeout" });
+      expect(driver.uncertain).toBe(true);
+      const stopping = driver.stop();
+      void stopping.then(() => {
+        stopped = true;
+      });
+      await Bun.sleep(10);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(stopped).toBe(false);
+      if (outcome === "fulfill") raw.resolve(true);
+      else raw.reject(new Error("late raw rejection"));
+      expect((await stopping).session.status).toBe("confirmed");
+      expect(stopped).toBe(true);
+      expect(evaluations).toBe(1);
+      expect(driver.stop()).toBe(stopping);
+    } finally {
+      raw.resolve(null);
+      await driver.stop();
+      close.mockRestore();
+    }
+  }, 8000);
+}

@@ -1,3 +1,5 @@
+import { PlaywrightDriver } from "./playwright-driver.js";
+import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
 import { expect, test, spyOn } from "bun:test";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -1453,3 +1455,563 @@ test(
     }
   }),
 );
+
+function keyUnit(limits: Budgets = { ...budgets, case: 500, teardown: 30 }) {
+  const f = unitDrive(limits);
+  f.d.config = { run: "r", token: "token", caseId: "host", role: "case", execution: "host" };
+  f.d.currentURL = "http://fixture/";
+  f.d.currentDoc = "doc";
+  f.d.phase = "driving";
+  const script = f.d.script.bind(f.d);
+  f.d.script = async (source) => {
+    if (!source.includes("h.verdict(")) return script(source);
+    f.send({ kind: "case-teardown", caseId: "host" });
+    const result = f.c.results.host;
+    const passed = record(result) && record(result.body) && result.body.status === "pass";
+    f.send(
+      passed
+        ? { kind: "case-end", caseId: "host", status: "pass", result: true }
+        : { kind: "case-end", caseId: "host", status: "fail", error: "host body failed" },
+    );
+    return { kind: "void" };
+  };
+  return f;
+}
+async function keyBody(
+  f: ReturnType<typeof keyUnit>,
+  callback: (host: HostCase) => Promise<unknown>,
+): Promise<void> {
+  try {
+    await f.host.drive(callback);
+  } catch {}
+}
+for (const key of ["Home", "ArrowUp", "ArrowRight", "Enter"] as const) {
+  test(`host press ${key} uses the existing queue and guarded script afterward`, async () => {
+    const f = keyUnit();
+    const effects: string[] = [];
+    f.d.press = async (actual, control) => {
+      await control.dispatch(async () => {
+        effects.push(actual);
+      });
+    };
+    await keyBody(f, async (host) => {
+      await host.script("window.effects.push(1)");
+      await host.press(key);
+      await host.script("window.effects.push(2)");
+      return true;
+    });
+    expect(effects).toEqual([key]);
+    expect(f.d.effects).toEqual([1, 2]);
+    expect(await f.consumers.join(100)).toBe(true);
+    expect(f.c.outcomes.host?.status).toBe("pass");
+    expect("press" in f.host.transport).toBe(false);
+  });
+}
+test("malformed runtime keys and extra press arguments reject before remote work", async () => {
+  const f = keyUnit();
+  const selecting = spyOn(f.d, "selectWindow");
+  let checked = false;
+  await keyBody(f, async (host) => {
+    const before = selecting.mock.calls.length;
+    for (const key of [
+      undefined,
+      null,
+      1,
+      {},
+      [],
+      "",
+      "Control+c",
+      "NumpadEnter",
+      "text",
+      "\uE006",
+    ]) {
+      expect(() => Reflect.apply(host.press, host, [key])).toThrow("Unsupported host key");
+    }
+    expect(() => Reflect.apply(host.press, host, ["Enter", {}])).toThrow("only a key");
+    expect(selecting.mock.calls.length).toBe(before);
+    checked = true;
+    return true;
+  });
+  expect(checked).toBe(true);
+  selecting.mockRestore();
+});
+for (const binding of [
+  "run",
+  "token",
+  "caseId",
+  "role",
+  "execution",
+  "url",
+  "doc",
+  "phase",
+  "retired",
+  "reporter",
+  "cutoff",
+  "physical",
+  "handle",
+] as const) {
+  test(`press rejects changed ${binding} before input`, async () => {
+    const f = keyUnit();
+    let sent = 0;
+    f.d.press = async (_key, control) => {
+      await control.dispatch(async () => {
+        sent++;
+      });
+    };
+    await keyBody(f, async (host) => {
+      if (["run", "token", "caseId", "role", "execution"].includes(binding))
+        f.d.config[binding] = "wrong";
+      if (binding === "url") f.d.currentURL = "http://wrong/";
+      if (binding === "doc") f.d.currentDoc = "replacement";
+      if (binding === "phase") f.d.phase = "terminal";
+      if (binding === "retired") f.d.retired = true;
+      if (binding === "reporter") f.d.reportFailure = "report failed";
+      if (binding === "cutoff") f.state.cutoff = 0;
+      if (binding === "physical") f.state.physical = "closed";
+      if (binding === "handle") f.d.handle = async () => "foreign";
+      await host.press("Home");
+      return true;
+    });
+    expect(sent).toBe(0);
+    expect(f.c.outcomes.host?.status).not.toBe("pass");
+    expect(await f.consumers.join(100)).toBe(true);
+  });
+}
+for (const boundary of ["select", "handle", "preflight", "first-request"] as const) {
+  for (const reason of ["operation", "body", "run", "document", "collector", "reporter"] as const) {
+    test(`press checks ${reason} synchronously after ${boundary} before another send`, async () => {
+      const now = spyOn(performance, "now").mockReturnValue(100);
+      const f = keyUnit({ ...budgets, case: 300, operation: 200, run: 1500, caseDocument: 1000 });
+      let sends = 0;
+      const expire = () => {
+        if (reason === "operation") now.mockReturnValue(301);
+        if (reason === "body") now.mockReturnValue(401);
+        if (reason === "run") now.mockReturnValue(1601);
+        if (reason === "document") now.mockReturnValue(1101);
+        if (reason === "collector") f.c.fail("control", "sticky", f.state);
+        if (reason === "reporter") f.d.reportFailure = "reporter revoked";
+      };
+      const select = f.d.selectWindow.bind(f.d),
+        handle = f.d.handle.bind(f.d),
+        script = f.d.script.bind(f.d);
+      if (boundary === "select")
+        f.d.selectWindow = async (value) => {
+          await select(value);
+          expire();
+        };
+      if (boundary === "handle")
+        f.d.handle = async () => {
+          const value = await handle();
+          expire();
+          return value;
+        };
+      if (boundary === "preflight")
+        f.d.script = async (source) => {
+          if (reason === "reporter") expire();
+          const value = await script(source);
+          if (reason !== "reporter") expire();
+          return value;
+        };
+      f.d.press = async (_key, control) => {
+        await control.dispatch(async () => {
+          sends++;
+          if (boundary === "first-request") expire();
+        });
+        await control.dispatch(async () => {
+          sends++;
+        });
+      };
+      try {
+        await keyBody(f, async (host) => {
+          await host.press("Home");
+          return true;
+        });
+        expect(sends).toBe(boundary === "first-request" ? 1 : 0);
+        expect(f.c.outcomes.host?.status).not.toBe("pass");
+        expect(await f.consumers.join(100)).toBe(true);
+      } finally {
+        now.mockRestore();
+      }
+    });
+  }
+}
+test("overlap reserves busy synchronously and sends no second preparation", async () => {
+  const f = keyUnit();
+  const held = Promise.withResolvers<void>();
+  let selects = 0,
+    inputs = 0;
+  f.d.selectWindow = async () => {
+    selects++;
+    await held.promise;
+  };
+  f.d.press = async (_key, control) => {
+    const first = control.dispatch(async () => {
+      inputs++;
+    });
+    await expect(
+      control.dispatch(async () => {
+        inputs++;
+      }),
+    ).rejects.toThrow("Overlapping");
+    expect(selects).toBe(1);
+    held.resolve();
+    await first;
+  };
+  try {
+    await keyBody(f, async (host) => {
+      await host.press("Enter");
+      return true;
+    });
+    expect(inputs).toBe(0);
+    expect(selects).toBe(1);
+  } finally {
+    held.resolve();
+    expect(await f.consumers.join(100)).toBe(true);
+  }
+});
+test("a retained dispatch rejects after normal press return while body is still active", async () => {
+  const f = keyUnit();
+  let retained: import("./driver.js").DriverPressControl | undefined;
+  let sends = 0;
+  f.d.press = async (_key, control) => {
+    retained = control;
+    await control.dispatch(async () => {
+      sends++;
+    });
+  };
+  await keyBody(f, async (host) => {
+    await host.press("Home");
+    const selects = spyOn(f.d, "selectWindow");
+    try {
+      await expect(
+        retained?.dispatch(async () => {
+          sends++;
+        }),
+      ).rejects.toThrow("lease closed");
+      expect(selects).not.toHaveBeenCalled();
+      expect(host.signal.aborted).toBe(false);
+    } finally {
+      selects.mockRestore();
+    }
+    return true;
+  });
+  expect(sends).toBe(1);
+  expect(f.c.outcomes.host?.status).toBe("pass");
+});
+for (const stage of ["preflight", "input"] as const) {
+  for (const driverEnd of ["return", "throw"] as const) {
+    for (const requestEnd of ["fulfill", "reject", "pending"] as const) {
+      test(`early driver ${driverEnd} during ${stage}, request ${requestEnd}, holds the queue through real drainage`, async () => {
+        const f = keyUnit({ ...budgets, case: 250, teardown: 30 });
+        const held = Promise.withResolvers<void>(),
+          entered = Promise.withResolvers<void>();
+        let sends = 0,
+          laterWork = 0,
+          postflight = 0;
+        const select = f.d.selectWindow.bind(f.d);
+        f.d.selectWindow = async (value) => {
+          postflight++;
+          await select(value);
+          if (stage === "preflight") {
+            entered.resolve();
+            await held.promise;
+          }
+        };
+        let dispatch: Promise<void> | undefined;
+        f.d.press = async (_key, control) => {
+          dispatch = control.dispatch(async () => {
+            sends++;
+            entered.resolve();
+            await held.promise;
+          });
+          void dispatch.catch(() => {});
+          await entered.promise;
+          if (driverEnd === "throw") throw new Error("early driver throw");
+        };
+        try {
+          await keyBody(f, async (host) => {
+            const pressing = host.press("Enter");
+            const next = host.script("window.effects.push(55)").then(
+              () => {
+                laterWork++;
+              },
+              () => {},
+            );
+            await expect(pressing).rejects.toThrow();
+            expect(await f.consumers.join(1)).toBe(false);
+            if (requestEnd === "fulfill") held.resolve();
+            if (requestEnd === "reject") held.reject(new Error("late request rejection"));
+            await next;
+            return true;
+          });
+          expect(laterWork).toBe(0);
+          expect(f.d.effects).toEqual([]);
+          expect(sends).toBe(stage === "input" ? 1 : 0);
+          expect(postflight).toBe(1);
+          expect(f.c.outcomes.host?.status).not.toBe("pass");
+          expect(await f.consumers.join(1)).toBe(requestEnd !== "pending");
+        } finally {
+          held.resolve();
+          await dispatch?.catch(() => {});
+          expect(await f.consumers.join(100)).toBe(true);
+        }
+      });
+    }
+  }
+}
+
+for (const end of ["fulfill", "reject"] as const) {
+  test(
+    `real Playwright preflight timeout retains run scratch until raw ${end}, even after context close`,
+    () =>
+      fixture(async (root) => {
+        const raw = Promise.withResolvers<unknown>();
+        const local = new PlaywrightDriver("chromium", "/unused/raw-preflight");
+        let evaluations = 0;
+        Reflect.set(local, "page", {
+          evaluate() {
+            evaluations++;
+            return raw.promise;
+          },
+        });
+        const closed = spyOn(BrowserRunnerLifecycle.prototype, "close").mockResolvedValue();
+        const driver = new HostDriver();
+        const originalScript = driver.script.bind(driver),
+          originalStop = driver.stop.bind(driver);
+        let hold = false,
+          inputs = 0,
+          later = 0;
+        Object.defineProperty(driver, "uncertain", { get: () => local.uncertain });
+        driver.script = (source, signal?: AbortSignal) => {
+          if (!hold || driver.phase !== "driving") return originalScript(source);
+          hold = false;
+          return local.script(source, signal ?? new AbortController().signal);
+        };
+        driver.press = async (_key, control) => {
+          await control.dispatch(async () => {
+            inputs++;
+          });
+        };
+        driver.stop = () => {
+          void originalStop();
+          return local.stop();
+        };
+        const a = adapter(async (host) => {
+          hold = true;
+          try {
+            await host.press("Home");
+          } catch {}
+          try {
+            await host.press("Enter");
+            later++;
+          } catch {}
+          try {
+            await host.script("window.effects.push(91)");
+            later++;
+          } catch {}
+          return true;
+        });
+        a.budgets = () => ({
+          ...budgets,
+          case: 8000,
+          heartbeat: 10_000,
+          operation: 5000,
+          teardown: 40,
+          caseDocument: 12_000,
+          group: 12_000,
+          run: 15_000,
+        });
+        try {
+          const result = await runPageSuite(a, () => driver, options(root));
+          expect(result.exit).toBe(2);
+          expect(result.cleanup.session.status).toBe("unconfirmed");
+          expect(result.cleanup.scratch.status).toBe("unconfirmed");
+          expect(closed).toHaveBeenCalledTimes(1);
+          expect(JSON.stringify(result)).toContain("script timeout");
+          expect(inputs).toBe(0);
+          expect(later).toBe(0);
+          expect(evaluations).toBe(1);
+          expect(driver.effects).toEqual([]);
+          const saved = JSON.stringify(result);
+          if (end === "fulfill") raw.resolve({ kind: "void" });
+          else raw.reject(new Error("late raw evaluation rejection"));
+          expect((await local.stop()).session.status).toBe("confirmed");
+          expect(JSON.stringify(result)).toBe(saved);
+          expect(driver.stopCalls).toBe(1);
+        } finally {
+          raw.resolve(null);
+          await local.stop();
+          closed.mockRestore();
+        }
+      }),
+    10_000,
+  );
+}
+for (const end of ["fulfill", "reject", "pending"] as const) {
+  test(`admitted opaque action ${end} is not rolled back, owns scratch, and blocks next task`, () =>
+    fixture(async (root) => {
+      const driver = new HostDriver();
+      const held = Promise.withResolvers<void>();
+      const edges: string[] = [];
+      let dispatch: Promise<void> | undefined;
+      driver.press = async (_key, control) => {
+        dispatch = control.dispatch(async () => {
+          edges.push("down");
+          await held.promise;
+          edges.push("up");
+        });
+        await dispatch;
+      };
+      let queued: Promise<void> | undefined;
+      let taskEntered = false;
+      void driver.taskEntered.promise.then(function markTaskEntered() {
+        taskEntered = true;
+      });
+      const a = adapter(async (host) => {
+        const pressing = host.press("Home");
+        queued = host.task("await laterTask;").catch(ignoreKeyRejection);
+        await expect(pressing).rejects.toThrow();
+        if (end === "fulfill") held.resolve();
+        if (end === "reject") held.reject(new Error("late native failure, key release unknown"));
+        await queued;
+        return true;
+      });
+      a.budgets = () => ({ ...budgets, teardown: 35 });
+      try {
+        const result = await runPageSuite(a, () => driver, options(root));
+        expect(result.exit).toBe(2);
+        expect(edges).toEqual(end === "fulfill" ? ["down", "up"] : ["down"]);
+        expect(taskEntered).toBe(false);
+        expect(result.runComplete).toBe(false);
+        expect(driver.navigations).toBe(2);
+        expect(result.cleanup.scratch.status).toBe(end === "pending" ? "unconfirmed" : "confirmed");
+        if (end === "pending") expect(result.cleanup.scratch.detail).toContain("Retained");
+      } finally {
+        held.resolve();
+        await dispatch?.catch(() => {});
+        await queued;
+      }
+    }));
+}
+
+function ignoreKeyRejection(): void {}
+
+for (const expired of [false, true]) {
+  test(`press queued behind a live script preserves ${expired ? "original admission deadline" : "ordering"}`, async () => {
+    const now = spyOn(performance, "now").mockReturnValue(100);
+    const f = keyUnit({ ...budgets, case: 1000, operation: 200, heartbeat: 5000 });
+    const held = Promise.withResolvers<void>(),
+      entered = Promise.withResolvers<void>();
+    const original = f.d.script.bind(f.d);
+    const order: string[] = [];
+    f.d.script = async (source) => {
+      if (source.includes("FIRST_QUEUED_COMMAND")) {
+        entered.resolve();
+        await held.promise;
+        order.push("script");
+      }
+      return original(source);
+    };
+    f.d.press = async (key, control) => {
+      await control.dispatch(async () => {
+        order.push(key);
+      });
+    };
+    try {
+      await keyBody(f, async (host) => {
+        const first = host.script("return 'FIRST_QUEUED_COMMAND';");
+        await entered.promise;
+        const next = host.press("Home");
+        if (expired) now.mockReturnValue(301);
+        held.resolve();
+        await Promise.allSettled([first, next]);
+        return true;
+      });
+      expect(order).toEqual(expired ? ["script"] : ["script", "Home"]);
+      expect(await f.consumers.join(100)).toBe(true);
+    } finally {
+      held.resolve();
+      now.mockRestore();
+    }
+  });
+}
+
+for (const kind of ["throw", "reject"] as const) {
+  test(`synchronous send ${kind} stays sticky even if the driver catches it`, async () => {
+    const f = keyUnit();
+    let sends = 0;
+    f.d.press = async (_key, control) => {
+      await control
+        .dispatch(() => {
+          sends++;
+          if (kind === "throw") throw new Error("synchronous send failed");
+          return Promise.reject(new Error("rejected native action"));
+        })
+        .catch(ignoreKeyRejection);
+    };
+    await keyBody(f, async (host) => {
+      await expect(host.press("Enter")).rejects.toThrow();
+      await expect(host.task("await forbiddenTask;")).rejects.toThrow();
+      return true;
+    });
+    expect(sends).toBe(1);
+    expect(f.c.outcomes.host?.status).not.toBe("pass");
+    expect(await f.consumers.join(100)).toBe(true);
+  });
+}
+
+for (const stage of ["preflight", "input"] as const) {
+  test(`early driver return with ${stage} still pending retains actual suite scratch`, () =>
+    fixture(async (root) => {
+      const driver = new HostDriver();
+      const held = Promise.withResolvers<void>(),
+        entered = Promise.withResolvers<void>();
+      let dispatch: Promise<void> | undefined;
+      let inputs = 0,
+        next = false;
+      const select = driver.selectWindow.bind(driver);
+      driver.selectWindow = async (handle) => {
+        await select(handle);
+        if (stage === "preflight" && driver.phase === "driving") {
+          entered.resolve();
+          await held.promise;
+        }
+      };
+      driver.press = async (_key, control) => {
+        dispatch = control.dispatch(async () => {
+          inputs++;
+          entered.resolve();
+          await held.promise;
+        });
+        void dispatch.catch(ignoreKeyRejection);
+        await entered.promise;
+      };
+      const markNext = () => {
+        next = true;
+      };
+      const a = adapter(async (host) => {
+        const pressing = host.press("Enter");
+        const later = host.task("await forbiddenTask;").then(markNext, ignoreKeyRejection);
+        await expect(pressing).rejects.toThrow("active dispatch");
+        await later;
+        return true;
+      });
+      a.budgets = () => ({ ...budgets, teardown: 35 });
+      try {
+        const result = await runPageSuite(a, () => driver, options(root));
+        expect(result.exit).toBe(2);
+        expect(result.cleanup.session.status).toBe("confirmed");
+        expect(result.cleanup.scratch.status).toBe("unconfirmed");
+        expect(result.runComplete).toBe(false);
+        expect(driver.navigations).toBe(2);
+        expect(inputs).toBe(stage === "input" ? 1 : 0);
+        expect(next).toBe(false);
+        const retained = result.cleanup.scratch.detail.match(/^Retained (.*), consumers/);
+        if (!retained?.[1]) throw new Error("Missing retained scratch location");
+        expect((await stat(retained[1])).isDirectory()).toBe(true);
+      } finally {
+        held.resolve();
+        await dispatch?.catch(ignoreKeyRejection);
+      }
+    }));
+}

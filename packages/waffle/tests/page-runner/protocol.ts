@@ -11,7 +11,9 @@ export type HeldAssetRequest = {
   continue(): Promise<void>;
 };
 export type AssetHoldCallback = (request: HeldAssetRequest) => Promise<void>;
+export type HostKey = "Home" | "ArrowUp" | "ArrowRight" | "Enter";
 export type HostCase = {
+  press(key: HostKey): Promise<void>;
   holdAsset(path: string, callback: AssetHoldCallback): void;
   openPeer(): Promise<HostPeer>;
   readonly signal: AbortSignal;

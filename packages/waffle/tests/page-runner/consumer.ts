@@ -16,10 +16,11 @@ export type {
   HeldAssetRequest,
   Budgets,
   HostCase,
+  HostKey,
   HostPeer,
   HostVerdict,
 } from "./protocol.js";
-export type { Driver, DriverCleanup } from "./driver.js";
+export type { Driver, DriverCleanup, DriverPressControl } from "./driver.js";
 export type { StorageEntry } from "../storage-allocation.js";
 
 export type { WorkerDeclaration } from "./service-worker-page.js";

@@ -1,7 +1,7 @@
 import { hostReply } from "./report-control.js";
 import type { StorageEntry } from "../storage-allocation.js";
-import type { Driver, DriverCleanup } from "./driver.js";
-import { record, type Body } from "./protocol.js";
+import type { Driver, DriverCleanup, DriverPressControl } from "./driver.js";
+import { record, type Body, type HostKey } from "./protocol.js";
 import { listIds } from "./storage-policy.js";
 import { storageTests, opfsStorageTests } from "../storage-browser.js";
 import type { Observation } from "./reporter.js";
@@ -44,6 +44,9 @@ export class FakeDriver implements Driver {
     readonly mode: FakeMode,
     readonly command?: FakeCommand,
   ) {}
+  async press(_key: HostKey, control: DriverPressControl): Promise<void> {
+    await control.dispatch(async () => {});
+  }
   async start(): Promise<void> {}
   async createWindow(): Promise<string> {
     throw new Error("Unexpected fake peer creation");

@@ -84,3 +84,53 @@ but permits already admitted continuation. Body, callback and response work rema
 owned until actual settlement. Verdict delivery, diagnostics, disposal and joins share
 one teardown deadline from body revocation. Unsettled work forbids the next document
 and leaves containment unconfirmed. Holds do not change any original case clock.
+
+## Press one native key
+
+`host.press(key: HostKey): Promise<void>` accepts only `Home`, `ArrowUp`, `ArrowRight`,
+and ordinary `Enter`. `HostKey` is exported from `waffle/testing/page-runner`.
+The action targets the bound page's current focus. It does not look up an element,
+refocus a textarea, insert text, parse shortcuts, or accept modifiers. Peers have no
+press capability. Consumers can reject known wrong focus using a guarded script.
+
+Press uses the existing command queue and captures one operation bound before queue
+residence. Preflight and postflight check the exact run, token, document, case, role,
+execution mode, URL, receiver phase, retirement, and reporting state. Local body,
+run, document, cutoff, and physical-liveness checks run again immediately before
+Waffle invokes each send. These observations do not lock focus or navigation.
+A postflight error cannot undo input already delivered.
+
+The required driver signature is
+`press(key: HostKey, control: DriverPressControl): Promise<void>`.
+`DriverPressControl` is exported with `Driver`. Its `signal` closes admission and
+public waiting, not physical browser effects. Drivers must await sequential
+`control.dispatch(send)` calls. Each callback starts its request synchronously.
+It cannot await preparation before sending. The host rejects overlapping or
+retained dispatches. An early driver return or throw closes admission and fails
+the contract while the same queue entry owns actual pending dispatch drainage.
+The lifecycle-only document transport does not expose raw press.
+
+Playwright retains the current Page's original `keyboard.press`. Safari sends one
+owned-session W3C Actions packet with matching down and up, using U+E006 for ordinary
+Enter rather than keypad U+E007. No element-send-keys fallback or automatic retry
+runs. The admitted opaque action may finish key-up after body cancellation.
+A malformed, lost, or timed-out response leaves delivery and release uncertain.
+Session deletion does not prove key release. Uncertain dispatch blocks later user
+work. Actual pending commands, including raw Playwright evaluations beyond their
+unchanged script waiter timeout, prevent confirmed cleanup and retain run scratch.
+
+The shared textarea and decoy control is selectable without guest suites:
+
+```sh
+PAGE_RUNNER_CONTROL_FILTER=key-press bun packages/waffle/tests/page-runner/browser-controls-runner.ts chromium firefox --result /absolute/controls.json
+```
+
+The thin native entry uses the same adapter through `nativeMain`:
+
+```sh
+IOS_UDID="$EXACT_SELECTED_UDID" bun packages/waffle/tests/page-runner/key-press-controls-native.ts --result /absolute/native-keys.json
+```
+
+Local Chromium and Firefox controls do not qualify installed Safari. The native
+control must pass on the final reviewed host selection before a consumer's full
+native workload. Native whole-text insertion remains unsupported and separate.

@@ -1,4 +1,4 @@
-import { record } from "./protocol.js";
+import { record, type HostKey } from "./protocol.js";
 export class DeadlineError extends Error {
   constructor(label: string) {
     super(`${label} timed out`);
@@ -19,7 +19,14 @@ export type DriverCleanup = {
   launcher: CleanupStep;
   serviceDisposition: string;
 };
+export interface DriverPressControl {
+  /** Admission/waiter lifetime, not cancellation of an already-admitted action. */
+  readonly signal: AbortSignal;
+  /** Await sequentially. The callback starts its send synchronously, without preparation. */
+  dispatch<T>(send: () => Promise<T>): Promise<T>;
+}
 export interface Driver {
+  press(key: HostKey, control: DriverPressControl): Promise<void>;
   start(signal: AbortSignal): Promise<void>;
   createWindow(signal: AbortSignal): Promise<string>;
   selectWindow(handle: string, signal: AbortSignal): Promise<void>;

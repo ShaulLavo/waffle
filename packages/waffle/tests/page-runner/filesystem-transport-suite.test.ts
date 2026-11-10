@@ -62,6 +62,9 @@ test("the HostCase invokes the original global with complete options and returns
   const tasks: string[] = [];
   const scripts: string[] = [];
   const host: HostCase = {
+    async press() {
+      throw new Error("Unexpected key press");
+    },
     signal: new AbortController().signal,
     remainingMs: () => 180000,
     setTimeout: () => {

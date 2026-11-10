@@ -71,14 +71,14 @@ test("browser controls retain default results after removing owned scratch", asy
 test("browser controls retain the process failure and original top-level exception", async () => {
   await temporary(async (root) => {
     const resultPath = join(root, "result.json");
-    const { code, stderr } = await invoke(root, ["firefox", "--result", resultPath]);
+    const { code, stderr } = await invoke(root, ["unsupported", "--result", resultPath]);
     expect(code).toBe(1);
     const summary = await Bun.file(resultPath).json();
     expect(summary.controls).toEqual([]);
     expect(summary.process.exitCode).toBe(code);
     expect(summary.process.signalCode).toBeNull();
     expect(await Bun.file(summary.stderrPath).text()).toBe(stderr);
-    expect(stderr).toContain("Unsupported control engine firefox");
+    expect(stderr).toContain("Unsupported control engine unsupported");
     expect(stderr).toContain("at engineControls");
   });
 });

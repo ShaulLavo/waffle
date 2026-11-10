@@ -1,3 +1,4 @@
+import { keyPressControl } from "./key-press-controls.js";
 import { ControlRun } from "./control-run.js";
 import { fixtureCapabilityControl, fixtureControlModes } from "./fixture-capability-controls.js";
 import { workerCapabilityControl, workerControlModes } from "./worker-capability-controls.js";
@@ -280,9 +281,17 @@ async function engineControls(
   root: string,
   results: ControlResults,
 ): Promise<void> {
+  const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  if (engine === "firefox") {
+    if (selected && selected !== "key-press")
+      throw new Error("Firefox controls select key-press only");
+    await checkControl(engine, "key-press", () => keyPressControl(engine, root), results);
+    return;
+  }
   if (engine !== "chromium" && engine !== "webkit")
     throw new Error(`Unsupported control engine ${engine}`);
-  const selected = process.env.PAGE_RUNNER_CONTROL_FILTER;
+  if (engine === "chromium" && (!selected || "key-press".includes(selected)))
+    await checkControl(engine, "key-press", () => keyPressControl(engine, root), results);
   for (const mode of fixtureControlModes.filter(
     (mode) => !selected || `fixture-capability-${mode}`.includes(selected),
   ))

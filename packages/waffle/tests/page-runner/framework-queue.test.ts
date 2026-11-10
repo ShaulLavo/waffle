@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FrameworkQueue } from "./framework-queue.js";
+import { commandPath, FrameworkQueue } from "./framework-queue.js";
 import { HostConsumers } from "./owned-consumers.js";
 
 function fixture() {
@@ -397,3 +397,9 @@ test("transport observers remain until an unjoined actual request settles", asyn
   await Bun.sleep(0);
   expect(removed).toBe(1);
 }, 8000);
+
+test("native Actions diagnostics retain only the sanitized owned-session path", () => {
+  expect(commandPath("/session/owned/actions")).toBe("/session/:session/actions");
+  expect(commandPath("/session/owned/actions?secret=redacted")).toBeNull();
+  expect(commandPath("/session/owned/actions/foreign")).toBeNull();
+});
