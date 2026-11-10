@@ -9,12 +9,15 @@ const bootstrapURL = "https://owned.test/_waffle_observation_bootstrap?token=uni
 function fixture(
   options: {
     rejectEnable?: boolean;
+    rejectPageEnable?: boolean;
     rejectInitialization?: boolean;
     pendingSend?: Promise<void>;
     pendingInit?: Promise<void>;
     omitOuter?: string;
     rejectOuter?: string;
     delayOuterDisable?: Promise<void>;
+    delayPageInner?: Promise<void>;
+    delayPageOuter?: Promise<void>;
   } = {},
 ) {
   const consumers = new HostConsumers();
@@ -30,8 +33,12 @@ function fixture(
   let sequence = 0,
     connection = "",
     sender = "",
-    detached = false;
+    detached = false,
+    pageEnabled = false,
+    networkEnabled = false;
   const methods: string[] = [];
+  const lifecycle: string[] = [];
+  const pageDispatched = Promise.withResolvers<void>();
   const initializationDispatched = Promise.withResolvers<void>();
   const feed = (value: PlistDict) => {
     const bytes = frame(value);
@@ -49,12 +56,41 @@ function fixture(
         WIRMessageDataKey: Buffer.from(JSON.stringify(message)),
       },
     });
-  const inner = (message: unknown) =>
+  const inner = (message: unknown, targetId = "page-1") =>
     envelope({
       method: "Target.dispatchMessageFromTarget",
-      params: { targetId: "page-1", message: JSON.stringify(message) },
+      params: { targetId, message: JSON.stringify(message) },
     });
   const event = (method: string, params: unknown) => inner({ method, params });
+  const navigate = () => {
+    if (!networkEnabled) throw new Error("CPU Network domain is disabled");
+    // WebKit webkitgtk-2.50.0 PageNetworkAgent delegates both IDs to enabledPageAgent().
+    event("Network.requestWillBeSent", {
+      requestId: "navigation",
+      frameId: pageEnabled ? "main" : "",
+      loaderId: pageEnabled ? "original" : "",
+      documentURL: "https://owned.test/case",
+      type: "Document",
+      request: { url: "https://owned.test/case", method: "GET" },
+      timestamp: 1,
+    });
+  };
+  const domain = (method: string) => {
+    if (method === "Page.enable") {
+      if (pageEnabled) throw new Error("CPU Page domain already enabled");
+      pageEnabled = true;
+      return;
+    }
+    if (method === "Page.disable") {
+      if (!pageEnabled || networkEnabled) throw new Error("CPU Page disable order");
+      pageEnabled = false;
+      return;
+    }
+    if (method === "Network.enable") networkEnabled = true;
+    if (method === "Network.disable") networkEnabled = false;
+    if (!["Runtime.evaluate", "Worker.enable", "Worker.disable", "Worker.initialized", "Network.enable", "Network.disable"].includes(method))
+      throw new Error(`Unexpected CPU command: ${method}`);
+  };
   const listing = () =>
     feed({
       __selector: "_rpc_applicationSentListing:",
@@ -78,6 +114,7 @@ function fixture(
     const message: unknown = JSON.parse(outer.params.message);
     if (!record(message) || typeof message.method !== "string") throw new Error("Bad CPU command");
     methods.push(message.method);
+    lifecycle.push(message.method);
     const result =
       message.method === "Runtime.evaluate"
         ? { result: { value: JSON.stringify({ url: bootstrapURL, marker: "unique" }) } }
@@ -86,19 +123,29 @@ function fixture(
       event("Worker.workerCreated", { workerId: "first", url: "https://owned.test/worker.js" });
     if (
       (message.method === "Worker.enable" && options.rejectEnable) ||
+      (message.method === "Page.enable" && options.rejectPageEnable) ||
       (message.method === "Worker.initialized" && options.rejectInitialization)
     )
       inner({ id: message.id, error: { code: -1, message: "domain refused" } });
-    else inner({ id: message.id, result });
+    else {
+      domain(message.method);
+      const answerInner = () => inner({ id: message.id, result });
+      if (message.method === "Page.enable" && options.delayPageInner)
+        void options.delayPageInner.then(answerInner);
+      else answerInner();
+    }
     const answerOuter = () =>
       envelope(
         message.method === options.rejectOuter
           ? { id: outer.id, error: { code: -1, message: "outer refused" } }
           : { id: outer.id, result: {} },
       );
-    if (message.method === "Network.disable" && options.delayOuterDisable)
+    if (message.method === "Page.enable" && options.delayPageOuter)
+      void options.delayPageOuter.then(answerOuter);
+    else if (message.method === "Network.disable" && options.delayOuterDisable)
       void options.delayOuterDisable.then(answerOuter);
     else if (message.method !== options.omitOuter) answerOuter();
+    if (message.method === "Page.enable") pageDispatched.resolve();
     if (message.method === "Worker.initialized") {
       initializationDispatched.resolve();
       return options.pendingInit ?? Promise.resolve();
@@ -131,15 +178,30 @@ function fixture(
       }
       if (selector === "_rpc_forwardSocketData:") return command(args);
       if (selector === "_rpc_forwardDidClose:") {
+        if (pageEnabled || networkEnabled) throw new Error("CPU detach before domain disable");
+        lifecycle.push("detach");
         detached = true;
         listing();
       }
     },
-    async close() {},
+    async close() { lifecycle.push("close"); },
   };
   observer.connectTransport(transport);
-  return { observer, consumers, abort, event, envelope, methods, initializationDispatched };
+  return { observer, consumers, abort, event, inner, navigate, envelope, methods, lifecycle, pageDispatched, initializationDispatched };
 }
+
+test("Page domain supplies real frame and loader IDs before the case navigation", async () => {
+  const f = fixture();
+  const ledger = await f.observer.attach();
+  f.navigate();
+  try {
+    ledger.navigationComplete();
+    expect(ledger.evidence()).toMatchObject([{ frameId: "main", loaderId: "original" }]);
+  } finally {
+    await ledger.stop();
+  }
+  expect(await f.consumers.join(100)).toBe(true);
+});
 
 test("events during Worker.enable reduce before ack and initialized is promptly owned", async () => {
   const f = fixture();
