@@ -238,6 +238,14 @@ test("Safari retains the complete first network phase and original budgets", () 
   expect(adapter.budgets(1)).toEqual(networkBudgets());
 });
 
+function expectCleanupConfirmed(
+  cleanup: Awaited<ReturnType<typeof runPageSuite>>["cleanup"],
+): void {
+  for (const entry of Object.values(cleanup)) {
+    if (typeof entry === "object") expect(entry.status).not.toBe("unconfirmed");
+  }
+}
+
 test.skipIf(process.env.NETWORK_SAFARI_WEBSOCKET_CONTROLS !== "1")(
   "desktop Chromium profile parity executes the unchanged Safari WebSocket relay adapter, not native evidence",
   async () => {
@@ -255,9 +263,7 @@ test.skipIf(process.env.NETWORK_SAFARI_WEBSOCKET_CONTROLS !== "1")(
       expect(result.exit).toBe(0);
       expect(result.runComplete).toBe(true);
       expect(result.omitted).toEqual([]);
-      for (const cleanup of Object.values(result.cleanup)) {
-        if (typeof cleanup === "object") expect(cleanup.status).not.toBe("unconfirmed");
-      }
+      expectCleanupConfirmed(result.cleanup);
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
