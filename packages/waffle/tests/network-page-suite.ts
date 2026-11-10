@@ -9,7 +9,7 @@ import {
   type NetworkTarget,
 } from "./network-page-contract.js";
 import type { NetworkInputs } from "./network-page-inputs.js";
-import type { RelayModeResult } from "./network-relay-contract.js";
+import { requireCertificateRejection, type RelayModeResult } from "./network-relay-contract.js";
 
 function inventory(id: string) {
   return [{ id, label: "complete", request: () => null }];
@@ -94,7 +94,27 @@ function relayResult(value: unknown): RelayModeResult {
     },
   };
 }
+function verifyRelayMode(result: RelayModeResult): void {
+  assert.equal(result.helperBytes, 98317, "Incomplete relay helper bytes");
+  assert.deepEqual(result.preview1, { echo: 0, denied: 2, reset: 15 });
+  assert.ok(result.fallbackMs < 15000, "Carrier fallback exceeded its bounded deadline");
+  assert.equal(result.probe.closed, result.probe.constructed, "WebTransport session survived");
+  if (result.mode === "selected") {
+    assert.equal(result.carrier, "webtransport", "Real complete WebTransport probe failed");
+    assert.ok(result.probe.ready > 0 && result.probe.streams > 0 && result.probe.fragments >= 3);
+    return;
+  }
+  assert.equal(result.carrier, "websocket", `${result.mode} did not use WebSocket`);
+  if (result.mode === "bad-certificate") {
+    requireCertificateRejection(result.probe);
+    return;
+  }
+  assert.deepEqual(result.probe, {
+    constructed: 0, ready: 0, streams: 0, fragments: 0, closed: 0, failures: [],
+  }, "WebSocket-only profile touched WebTransport");
+}
 export function relayAdapter(inputs: NetworkInputs, target: NetworkTarget): SuiteAdapter<null> {
+  const native = target === "chromium" || target === "firefox";
   const fixture = createRelayBrowserFixture();
   let created = false;
   return {
@@ -109,7 +129,7 @@ export function relayAdapter(inputs: NetworkInputs, target: NetworkTarget): Suit
         created = true;
         return {
           async start({ origin, signal }) {
-            const config = await fixture.start(origin, target !== "webkit", signal);
+            const config = await fixture.start(origin, native, signal);
             return [
               { path: "/relay-config", get: async () => config },
               {
@@ -130,16 +150,22 @@ export function relayAdapter(inputs: NetworkInputs, target: NetworkTarget): Suit
         const results = value.map(relayResult);
         assert.deepEqual(
           results.map((result) => result.mode),
-          target === "webkit" ? ["websocket"] : ["selected", "websocket", "bad-certificate"],
+          native ? ["selected", "websocket", "bad-certificate"] : ["websocket"],
         );
+        results.forEach(verifyRelayMode);
         fixture.verify(results.map((result) => result.carrier));
-        if (target !== "webkit")
-          assert.equal(
-            results[0]?.carrier,
-            "webtransport",
-            `${target}'s real complete WebTransport probe failed`,
-          );
-        console.log(JSON.stringify({ browser: target, results: value }));
+        console.log(JSON.stringify({
+          browser: target,
+          profile: native ? "webtransport-and-websocket" : "websocket-only",
+          ...(target === "ios-safari" && {
+            deferred: {
+              modes: ["selected", "bad-certificate"],
+              status: "deferred",
+              reason: "Owner decision, November 10, 2026: Safari WebTransport draft mismatch",
+            },
+          }),
+          results: value,
+        }));
       },
     },
   };
