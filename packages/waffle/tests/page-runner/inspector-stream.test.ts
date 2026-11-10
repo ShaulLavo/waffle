@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { createServer, type Socket } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { frame, Frames, plistLimits } from "./inspector-plist.js";
 import { InspectorStream, inspectorEnvelope, type InspectorEnvelope } from "./inspector-stream.js";
 import { HostConsumers } from "./owned-consumers.js";
+
+const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
 
 function respond(socket: Socket): void {
   const parser = new Frames();
@@ -21,7 +24,7 @@ function respond(socket: Socket): void {
 }
 
 test("real Unix stream handles fragmented and batched messages while a send waits", async () => {
-  const root = await mkdtemp("/work/tmp/wi-cpu-");
+  const root = await mkdtemp(join(scratchRoot, "wi-cpu-"));
   const path = join(root, "s");
   const sockets = new Set<Socket>();
   const received = Promise.withResolvers<void>();
@@ -39,6 +42,7 @@ test("real Unix stream handles fragmented and batched messages while a send wait
       server.once("error", reject);
       server.listen(path, resolve);
     });
+    expect(dirname(root)).toBe(resolve(scratchRoot));
     stream = await InspectorStream.connect(
       path,
       consumers,
@@ -81,7 +85,7 @@ test("real framing rejects malformed, oversized and incomplete input rather than
 
 for (const truncated of [false, true]) {
   test(`unexpected ${truncated ? "truncated" : "boundary-aligned"} EOF remains loss`, async () => {
-    const root = await mkdtemp("/work/tmp/wi-eof-");
+    const root = await mkdtemp(join(scratchRoot, "wi-eof-"));
     const path = join(root, "s");
     const sockets = new Set<Socket>();
     const lost = Promise.withResolvers<unknown>();
@@ -94,6 +98,7 @@ for (const truncated of [false, true]) {
     let stream: InspectorStream | undefined;
     try {
       await new Promise<void>((resolve) => server.listen(path, resolve));
+      expect(dirname(root)).toBe(resolve(scratchRoot));
       stream = await InspectorStream.connect(path, new HostConsumers(), () => {}, lost.resolve);
       await stream.send("request", {});
       expect(String(await lost.promise)).toContain(`frame boundary ${!truncated}`);
@@ -107,7 +112,7 @@ for (const truncated of [false, true]) {
 }
 
 test("planned close still reports a truncated final frame as loss", async () => {
-  const root = await mkdtemp("/work/tmp/wi-final-");
+  const root = await mkdtemp(join(scratchRoot, "wi-final-"));
   const path = join(root, "s");
   const sockets = new Set<Socket>();
   const partial = Promise.withResolvers<void>();
@@ -122,6 +127,7 @@ test("planned close still reports a truncated final frame as loss", async () => 
   let stream: InspectorStream | undefined;
   try {
     await new Promise<void>((resolve) => server.listen(path, resolve));
+    expect(dirname(root)).toBe(resolve(scratchRoot));
     stream = await InspectorStream.connect(
       path,
       new HostConsumers(),

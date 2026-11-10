@@ -643,11 +643,11 @@ export class SafariDriver implements Driver {
     return (this.stopping ??= this.stopOnce());
   }
   private async stopOnce(): Promise<DriverCleanup> {
-    let observerFailure: unknown;
+    let observerFailure: { reason: unknown } | undefined;
     try {
       await this.observation?.stop();
     } catch (error) {
-      observerFailure = error;
+      observerFailure = { reason: error };
     }
     let session: CleanupStep = { status: "not-created", detail: "No session created" };
     if (this.session) {
@@ -672,7 +672,7 @@ export class SafariDriver implements Driver {
     if (observerFailure)
       session = {
         status: "unconfirmed",
-        detail: `Inspector observation cleanup unconfirmed: ${String(observerFailure)}; ${session.detail}`,
+        detail: `Inspector observation cleanup unconfirmed: ${String(observerFailure.reason)}; ${session.detail}`,
       };
     const launcher = await this.stopLauncher();
     const serviceDisposition =

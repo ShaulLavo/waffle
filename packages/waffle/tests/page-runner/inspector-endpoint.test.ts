@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { inspectorEndpoint } from "./inspector-endpoint.js";
 import { parseReceipt } from "./inspector-endpoint-receipt.js";
+
+const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
 
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
 function receipt() {
@@ -96,7 +99,7 @@ test("helper parser refuses wrong device, UID, unstable generation, ambiguous en
 });
 
 async function liveFixture() {
-  const root = await mkdtemp("/work/tmp/wi-endpoint-");
+  const root = await mkdtemp(join(scratchRoot, "wi-endpoint-"));
   const path = join(root, "com.apple.webinspectord_sim.socket");
   const server = createServer();
   const cleanup = async () => {
@@ -108,6 +111,7 @@ async function liveFixture() {
       server.once("error", reject);
       server.listen(path, resolve);
     });
+    expect(dirname(root)).toBe(resolve(scratchRoot));
     const node = await lstat(path);
     const value = receipt();
     value.helper.uid = value.process.uid = value.socket.pathNode.uid = node.uid;

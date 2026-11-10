@@ -170,16 +170,16 @@ export class PlaywrightDriver implements Driver {
     return (this.stopping ??= this.stopOnce());
   }
   private async stopOnce(): Promise<DriverCleanup> {
-    let observationFailure: unknown;
+    let observationFailure: { reason: unknown } | undefined;
     try {
       await this.browserObservation?.stop();
     } catch (error) {
-      observationFailure = error;
+      observationFailure = { reason: error };
     }
     try {
       await this.lifecycle.close();
       await Promise.allSettled(this.evaluations);
-      if (observationFailure) throw observationFailure;
+      if (observationFailure) throw observationFailure.reason;
       return {
         session: { status: "confirmed", detail: "Local browser context stopped" },
         launcher: { status: "confirmed", detail: "Local browser joined" },
