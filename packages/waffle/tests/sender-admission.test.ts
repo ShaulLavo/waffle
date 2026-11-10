@@ -6,6 +6,7 @@ import {
   createFilesystemIdentity,
   reapFilesystem,
   revokeFilesystem,
+  type FilesystemIdentity,
 } from "../fs/protocol.js";
 import type { ProcessAdmissionEvent } from "../proc/admission.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
@@ -18,6 +19,7 @@ import {
   type WorkerProcessMessage,
   type WorkerProcessTransport,
 } from "../proc/worker-client.js";
+import { WorkerPipeHost } from "../proc/worker-pipes.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 
 type Delivery = "runtimeMessage" | "worker dispatch";
@@ -58,13 +60,16 @@ async function admissionFixture() {
   const ports: MessagePort[] = [];
   const descriptors: DescriptorTable[] = [];
   const messages: WorkerProcessMessage[] = [];
+  const filesystems = new Map<number, FilesystemIdentity>();
   const broker = new BrowserProcessBroker({
     reservations: testReservations(),
     identities,
     table,
     registry,
     onError: (error) => errors.push(error),
-    onProcessAdmission: (event) => events.push(event),
+    onProcessAdmission(event) {
+      events.push(event);
+    },
     filesystem: {
       connect(identity) {
         const { client, server } = connectFilesystemIdentity(identity);
@@ -93,11 +98,20 @@ async function admissionFixture() {
   const clientFor = (transport: WorkerProcessTransport) => {
     const entry = new DescriptorTable();
     descriptors.push(entry);
+    const postMessage = (message: WorkerProcessMessage) => {
+      messages.push(message);
+    };
+    const host = new WorkerPipeHost({ transport, postMessage });
     return new WorkerProcessClient({
       transport,
       descriptors: entry,
-      postMessage: (message) => messages.push(message),
-      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
+      codec: host.codec(),
+      postMessage,
+      prepareSpawn(pid) {
+        const filesystem = createFilesystemIdentity();
+        filesystems.set(pid, filesystem);
+        return { data: { filesystem } };
+      },
     });
   };
   try {
@@ -115,7 +129,7 @@ async function admissionFixture() {
     await supervisor.start(senderPid);
     const transport = broker.transportFor(senderPid)!;
     const sender = clientFor(transport);
-    const filesystem = transport.data.filesystem;
+    const filesystem = filesystems.get(senderPid)!;
     const pid = spawn(sender);
     const notice = takeSpawn(messages);
     events.length = 0;
