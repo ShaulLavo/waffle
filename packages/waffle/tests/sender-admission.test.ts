@@ -204,15 +204,18 @@ async function checkAdmission(delivery: Delivery, transition: Transition, timing
       transition === "ordinary exit" ? "exited" : transition === "signal" ? "signaled" : undefined,
     );
     if (transition === "ordinary exit") {
+      expect(fixture.events.filter((event) => event.stage === "rejected")).toEqual([]);
+      expect(fixture.supervisor.get(fixture.pid)?.parentPid).toBe(fixture.sender.pid);
+      await fixture.supervisor.start(fixture.pid);
       expect(fixture.events.map((event) => event.stage)).toEqual([
         "received",
         "queued",
         "reserved",
         "bound",
         "starting",
+        "launching",
+        "launched",
       ]);
-      expect(fixture.supervisor.get(fixture.pid)?.parentPid).toBe(fixture.sender.pid);
-      await fixture.supervisor.start(fixture.pid);
       expect(AdmissionWorker.instances).toHaveLength(2);
     } else {
       expect(fixture.events.map((event) => event.stage)).toEqual(["received", "rejected"]);
