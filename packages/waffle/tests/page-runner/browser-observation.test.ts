@@ -381,3 +381,18 @@ test("action-only revocation preserves lifecycle subscriptions and close queries
   expect(events).toEqual(["created", "closed"]);
   await ledger.stop();
 });
+
+test("settled ignored removal cannot hide a falsy callback when later transport cleanup fails", async () => {
+  const cleanup = new Error("detach failed after removal");
+  const ledger = new BrowserObservation("owned", new HostConsumers(), () =>
+    Promise.reject(cleanup),
+  );
+  const remove = ledger.onWorker(() => Promise.reject(false));
+  ledger.created("one", "https://owned.test/worker.js");
+  await ledger.failure;
+  await expect(remove()).rejects.toBe(false);
+  const [result] = await Promise.allSettled([ledger.stop()]);
+  if (result?.status !== "rejected" || !(result.reason instanceof AggregateError))
+    throw new Error("Missing callback and cleanup causes after removal");
+  expect(result.reason.errors).toEqual([false, cleanup]);
+});

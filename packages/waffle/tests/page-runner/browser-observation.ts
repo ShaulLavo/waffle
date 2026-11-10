@@ -93,6 +93,7 @@ export class BrowserObservation implements DriverObservation {
   private readonly failureResult = Promise.withResolvers<Error>();
   readonly failure = this.failureResult.promise;
   private readonly stopped = Promise.withResolvers<Error>();
+  private callbackFailure: { error: unknown } | undefined;
   private readonly identities = new Map<string, WorkerRecord>();
   private readonly live = new Map<string, WorkerRecord>();
   private readonly listeners = new Set<Listener<string>>();
@@ -201,6 +202,7 @@ export class BrowserObservation implements DriverObservation {
       (error: unknown) => {
         listener.pending.delete(work);
         listener.failure ??= { error };
+        this.callbackFailure ??= { error };
         this.lose(error);
       },
     );
@@ -304,12 +306,14 @@ export class BrowserObservation implements DriverObservation {
     );
     const cleanup = await Promise.allSettled([this.consumers.invoke(this.cleanup)]);
     const failed = results.find((result) => result.status === "rejected");
-    if (failed?.status === "rejected" && cleanup[0]?.status === "rejected")
+    const callback =
+      failed?.status === "rejected" ? { error: failed.reason } : this.callbackFailure;
+    if (callback && cleanup[0]?.status === "rejected")
       throw new AggregateError(
-        [failed.reason, cleanup[0].reason],
+        [callback.error, cleanup[0].reason],
         "Callback and observation cleanup failed",
       );
-    if (failed?.status === "rejected") throw failed.reason;
+    if (callback) throw callback.error;
     if (cleanup[0]?.status === "rejected") throw cleanup[0].reason;
     if (this.lifetime.kind === "lost") throw this.lifetime.error;
   }
