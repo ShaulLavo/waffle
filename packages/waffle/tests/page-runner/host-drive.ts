@@ -270,6 +270,7 @@ try {
     let busy = false;
     let active: Promise<unknown> | undefined;
     let failure: { error: unknown } | undefined;
+    const ignoreDrainRejection = () => undefined;
     const check = () => {
       if (!open) throw new Error("Driver press dispatch lease closed");
       this.checkBody();
@@ -316,7 +317,7 @@ try {
       open = false;
       if (active) {
         fail(new Error("Driver press settled with an active dispatch"));
-        await active.catch(() => {});
+        await active.catch(ignoreDrainRejection);
       }
     }
     if (failure) throw failure.error;
