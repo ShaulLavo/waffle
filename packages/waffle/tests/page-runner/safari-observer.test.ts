@@ -12,6 +12,8 @@ function fixture(
     rejectInitialization?: boolean;
     pendingSend?: Promise<void>;
     pendingInit?: Promise<void>;
+    omitOuter?: string;
+    rejectOuter?: string;
   } = {},
 ) {
   const consumers = new HostConsumers();
@@ -87,7 +89,10 @@ function fixture(
     )
       inner({ id: message.id, error: { code: -1, message: "domain refused" } });
     else inner({ id: message.id, result });
-    envelope({ id: outer.id, result: {} });
+    if (message.method !== options.omitOuter)
+      envelope(message.method === options.rejectOuter
+        ? { id: outer.id, error: { code: -1, message: "outer refused" } }
+        : { id: outer.id, result: {} });
     if (message.method === "Worker.initialized") {
       initializationDispatched.resolve();
       return options.pendingInit ?? Promise.resolve();
@@ -251,5 +256,26 @@ test("startup continuation refusal fails admission once and leaves no invented W
   await expect(f.observer.close()).rejects.toThrow();
   expect(f.methods.filter((method) => method === "Worker.initialized")).toHaveLength(1);
   expect(f.methods).not.toContain("Network.enable");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+for (const method of ["Runtime.evaluate", "Worker.initialized", "Network.disable"]) {
+  test(`missing outer ${method} reply prevents successful completion`, async () => {
+    const f = fixture({ omitOuter: method });
+    if (method === "Network.disable") {
+      const ledger = await f.observer.attach();
+      await expect(ledger.stop()).rejects.toThrow("completion uncertain");
+    } else {
+      await expect(f.observer.attach()).rejects.toThrow();
+      await expect(f.observer.close()).rejects.toThrow();
+    }
+    expect(await f.consumers.join(100)).toBe(true);
+  });
+}
+
+test("outer refusal after the inner answer still fails command completion", async () => {
+  const f = fixture({ rejectOuter: "Network.disable" });
+  const ledger = await f.observer.attach();
+  await expect(ledger.stop()).rejects.toThrow("refused");
   expect(await f.consumers.join(100)).toBe(true);
 });

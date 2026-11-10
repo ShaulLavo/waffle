@@ -175,3 +175,41 @@ test("ignored unsubscribe wait cannot detach callback debt from the document own
   await removed;
   expect(await consumers.join(100)).toBe(true);
 });
+
+
+test("unsubscribe retains an earlier callback failure and waits for later pending callbacks", async () => {
+  const consumers = new HostConsumers();
+  let cleaned = false;
+  const ledger = new BrowserObservation("target", consumers, async () => { cleaned = true; });
+  const pending = Promise.withResolvers<void>();
+  let count = 0;
+  const unsubscribe = ledger.onRequest(() => {
+    if (++count === 1) throw new Error("earlier callback rejection");
+    return pending.promise;
+  });
+  ledger.requested(request());
+  ledger.requested(request("https://owned.test/second", 2));
+  await ledger.failure;
+  const removed = unsubscribe();
+  let drained = false;
+  void removed.then(() => { drained = true; }, () => { drained = true; });
+  const stopped = ledger.stop();
+  void stopped.catch(() => {});
+  expect(await consumers.join(1)).toBe(false);
+  expect(drained).toBe(false);
+  expect(cleaned).toBe(false);
+  pending.resolve();
+  await expect(removed).rejects.toThrow("earlier callback rejection");
+  await expect(stopped).rejects.toThrow("earlier callback rejection");
+  expect(cleaned).toBe(true);
+  expect(await consumers.join(100)).toBe(true);
+});
+
+test("unsubscribe after a settled callback rejection does not report success", async () => {
+  const ledger = new BrowserObservation("target", new HostConsumers(), async () => {});
+  const unsubscribe = ledger.onRequest(() => { throw new Error("settled failure"); });
+  ledger.requested(request());
+  await ledger.failure;
+  await expect(unsubscribe()).rejects.toThrow("settled failure");
+  await expect(ledger.stop()).rejects.toThrow("settled failure");
+});

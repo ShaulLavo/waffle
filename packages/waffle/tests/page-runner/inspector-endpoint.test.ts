@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { createServer } from "node:net";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { inspectorEndpoint } from "./inspector-endpoint.js";
 import { parseReceipt } from "./inspector-endpoint-receipt.js";
 
 const udid = "10128D70-92A7-4626-9CE5-1537CF27BE84";
@@ -89,4 +93,86 @@ test("helper parser refuses wrong device, UID, unstable generation, ambiguous en
   ambiguous.enumeration.match = 2;
   expect(() => parseReceipt(bytes(ambiguous), { deviceId: udid })).toThrow();
   expect(() => parseReceipt(bytes({ ...receipt(), extra: true }), { deviceId: udid })).toThrow();
+});
+
+async function liveFixture() {
+  const root = await mkdtemp("/work/tmp/wi-endpoint-");
+  const path = join(root, "com.apple.webinspectord_sim.socket");
+  const server = createServer();
+  const cleanup = async () => {
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(path, resolve);
+    });
+    const node = await lstat(path);
+    const value = receipt();
+    value.helper.uid = value.process.uid = value.socket.pathNode.uid = node.uid;
+    value.socket.path = path;
+    value.socket.addressLength = Buffer.byteLength(path) + 2;
+    value.socket.pathNode.dev = node.dev;
+    value.socket.pathNode.ino = node.ino;
+    const saved = join(root, "receipt.json");
+    const current = join(root, "current.json");
+    const helper = join(root, "helper.ts");
+    await writeFile(saved, bytes(value));
+    await writeFile(current, bytes(value));
+    await writeFile(helper, `#!${process.execPath}
+import { readFileSync } from "node:fs";
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["discover", "--udid", "${udid}", "--deadline-ms", "5000"])) process.exit(2);
+process.stdout.write(readFileSync(${JSON.stringify(current)}));
+`, { mode: 0o700 });
+    return { value, saved, current, helper, path, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+test("endpoint reader refuses a shaped live socket receipt without available freshness checks", async () => {
+  const f = await liveFixture();
+  try {
+    await expect(inspectorEndpoint(f.saved, udid, "/missing/endpoint-helper")).rejects.toThrow();
+    await expect(inspectorEndpoint(f.saved, udid, "")).rejects.toThrow();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const field of ["boot", "pid", "generation", "executable", "argv", "device", "socket", "uid"]) {
+  test(`endpoint reader rejects changed live ${field} binding despite an unchanged socket node`, async () => {
+    const f = await liveFixture();
+    try {
+      const value = f.value;
+      if (field === "boot") value.bootSession = "22222222-2222-2222-2222-222222222222";
+      if (field === "pid") value.process.pid++;
+      if (field === "generation") value.process.generation.startAbstime++;
+      if (field === "executable") value.process.executableUUID = "2".repeat(32);
+      if (field === "argv") value.process.argv1 += "/changed";
+      if (field === "device") value.target.deviceId = "22222222-2222-2222-2222-222222222222";
+      if (field === "socket") value.socket.pathNode.ino++;
+      if (field === "uid") value.helper.uid = value.process.uid = value.socket.pathNode.uid = 99;
+      await writeFile(f.current, bytes(value));
+      await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("endpoint reader accepts matching freshly invoked helper metadata without stronger claims", async () => {
+  const f = await liveFixture();
+  try {
+    f.value.helper.pid += 10;
+    f.value.enumeration.elapsedMs++;
+    await writeFile(f.current, bytes(f.value));
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).resolves.toBe(f.path);
+    await writeFile(f.current, Buffer.from("truncated"));
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
+  } finally {
+    await f.cleanup();
+  }
 });

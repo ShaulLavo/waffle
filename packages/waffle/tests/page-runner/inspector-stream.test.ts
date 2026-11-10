@@ -61,6 +61,7 @@ test("real Unix stream handles fragmented and batched messages while a send wait
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(root, { recursive: true, force: true });
   }
+  expect(loss).toBeUndefined();
   expect(await consumers.join(100)).toBe(true);
 });
 
@@ -77,3 +78,28 @@ test("real framing rejects malformed, oversized and incomplete input rather than
   });
   expect(split.atBoundary()).toBe(false);
 });
+
+for (const truncated of [false, true]) {
+  test(`unexpected ${truncated ? "truncated" : "boundary-aligned"} EOF remains loss`, async () => {
+    const root = await mkdtemp("/work/tmp/wi-eof-");
+    const path = join(root, "s");
+    const sockets = new Set<Socket>();
+    const lost = Promise.withResolvers<unknown>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("data", () => socket.end(truncated ? frame({ __selector: "x" }).subarray(0, 9) : undefined));
+    });
+    let stream: InspectorStream | undefined;
+    try {
+      await new Promise<void>((resolve) => server.listen(path, resolve));
+      stream = await InspectorStream.connect(path, new HostConsumers(), () => {}, lost.resolve);
+      await stream.send("request", {});
+      expect(String(await lost.promise)).toContain(`frame boundary ${!truncated}`);
+    } finally {
+      await stream?.close();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
