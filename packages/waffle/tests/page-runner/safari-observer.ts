@@ -19,6 +19,8 @@ type Message =
   | { kind: "event"; method: string; params: Record<string, unknown> };
 type Pending = ReturnType<typeof Promise.withResolvers<unknown>>;
 type Command =
+  | "Page.enable"
+  | "Page.disable"
   | "Worker.enable"
   | "Worker.disable"
   | "Worker.initialized"
@@ -73,6 +75,7 @@ export class SafariObserver {
   private attached = false;
   private document: { frame: string; loader: string } | undefined;
   private navigationConfirmed = false;
+  private enabledPage = false;
   private enabledWorker = false;
   private enabledNetwork = false;
   private ledger: BrowserObservation | undefined;
@@ -213,6 +216,9 @@ export class SafariObserver {
     });
     if (identity.result.value !== wanted)
       throw new Error("Inspector exact owned bootstrap identity mismatch");
+    // Page supplies Network frame/loader identities; acknowledge it before admitting requests.
+    await this.command("Page.enable", {});
+    this.enabledPage = true;
     // Events during enable are reduced before its acknowledgement. Every created worker is resumed immediately.
     await this.command("Worker.enable", {});
     this.enabledWorker = true;
@@ -440,6 +446,7 @@ export class SafariObserver {
       await Promise.all(Array.from(this.initializations));
       if (this.enabledNetwork) await this.command("Network.disable", {}, true);
       if (this.enabledWorker) await this.command("Worker.disable", {}, true);
+      if (this.enabledPage) await this.command("Page.disable", {}, true);
       if (this.attached && !this.failed) await this.detach();
       if (this.failed) throw this.failed;
     } finally {

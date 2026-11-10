@@ -10,6 +10,7 @@ function fixture(
   options: {
     rejectEnable?: boolean;
     rejectPageEnable?: boolean;
+    noWorkers?: boolean;
     rejectInitialization?: boolean;
     pendingSend?: Promise<void>;
     pendingInit?: Promise<void>;
@@ -88,7 +89,16 @@ function fixture(
     }
     if (method === "Network.enable") networkEnabled = true;
     if (method === "Network.disable") networkEnabled = false;
-    if (!["Runtime.evaluate", "Worker.enable", "Worker.disable", "Worker.initialized", "Network.enable", "Network.disable"].includes(method))
+    if (
+      ![
+        "Runtime.evaluate",
+        "Worker.enable",
+        "Worker.disable",
+        "Worker.initialized",
+        "Network.enable",
+        "Network.disable",
+      ].includes(method)
+    )
       throw new Error(`Unexpected CPU command: ${method}`);
   };
   const listing = () =>
@@ -119,7 +129,7 @@ function fixture(
       message.method === "Runtime.evaluate"
         ? { result: { value: JSON.stringify({ url: bootstrapURL, marker: "unique" }) } }
         : {};
-    if (message.method === "Worker.enable")
+    if (message.method === "Worker.enable" && !options.noWorkers)
       event("Worker.workerCreated", { workerId: "first", url: "https://owned.test/worker.js" });
     if (
       (message.method === "Worker.enable" && options.rejectEnable) ||
@@ -184,19 +194,34 @@ function fixture(
         listing();
       }
     },
-    async close() { lifecycle.push("close"); },
+    async close() {
+      lifecycle.push("close");
+    },
   };
   observer.connectTransport(transport);
-  return { observer, consumers, abort, event, inner, navigate, envelope, methods, lifecycle, pageDispatched, initializationDispatched };
+  return {
+    observer,
+    consumers,
+    abort,
+    event,
+    inner,
+    navigate,
+    envelope,
+    methods,
+    lifecycle,
+    pageDispatched,
+    initializationDispatched,
+  };
 }
 
 test("Page domain supplies real frame and loader IDs before the case navigation", async () => {
-  const f = fixture();
+  const f = fixture({ noWorkers: true });
   const ledger = await f.observer.attach();
   f.navigate();
   try {
     ledger.navigationComplete();
     expect(ledger.evidence()).toMatchObject([{ frameId: "main", loaderId: "original" }]);
+    expect(ledger.workers()).toEqual([]);
   } finally {
     await ledger.stop();
   }
@@ -209,6 +234,7 @@ test("events during Worker.enable reduce before ack and initialized is promptly 
   expect(ledger.workers()).toHaveLength(1);
   expect(f.methods).toEqual([
     "Runtime.evaluate",
+    "Page.enable",
     "Worker.enable",
     "Worker.initialized",
     "Network.enable",
@@ -221,7 +247,13 @@ test("events during Worker.enable reduce before ack and initialized is promptly 
   expect(ledger.workers()[0]).toBe(before[1]);
   f.event("Worker.workerTerminated", { workerId: "second" });
   await ledger.stop();
-  expect(f.methods.slice(-2)).toEqual(["Network.disable", "Worker.disable"]);
+  expect(f.lifecycle.slice(-5)).toEqual([
+    "Network.disable",
+    "Worker.disable",
+    "Page.disable",
+    "detach",
+    "close",
+  ]);
   expect(await f.consumers.join(100)).toBe(true);
 });
 
@@ -232,6 +264,102 @@ test("domain rejection is unqualified, not an empty worker set", async () => {
   expect(f.methods).not.toContain("Network.enable");
   expect(await f.consumers.join(100)).toBe(true);
 });
+
+test("Page enable refusal prevents admission and never claims a successful detach", async () => {
+  const f = fixture({ rejectPageEnable: true });
+  await expect(f.observer.attach()).rejects.toThrow("domain refused");
+  await expect(f.observer.close()).rejects.toThrow("domain refused");
+  expect(f.lifecycle).toEqual(["Runtime.evaluate", "Page.enable", "close"]);
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+test("Page outer refusal after its inner success still prevents admission", async () => {
+  const f = fixture({ rejectOuter: "Page.enable" });
+  await expect(f.observer.attach()).rejects.toThrow("outer refused");
+  await expect(f.observer.close()).rejects.toThrow("outer refused");
+  expect(f.lifecycle).toEqual(["Runtime.evaluate", "Page.enable", "close"]);
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+for (const answer of ["inner", "outer"]) {
+  test(`Page enable waits for its ${answer} acknowledgement before Worker or Network admission`, async () => {
+    const reply = Promise.withResolvers<void>();
+    const f = fixture(
+      answer === "inner" ? { delayPageInner: reply.promise } : { delayPageOuter: reply.promise },
+    );
+    let admitted = false;
+    const attaching = f.observer.attach().then((ledger) => {
+      admitted = true;
+      return ledger;
+    });
+    await f.pageDispatched.promise;
+    expect(admitted).toBe(false);
+    expect(f.methods).toEqual(["Runtime.evaluate", "Page.enable"]);
+    expect(await f.consumers.join(1)).toBe(false);
+    reply.resolve();
+    const ledger = await attaching;
+    f.navigate();
+    ledger.navigationComplete();
+    await ledger.stop();
+    expect(await f.consumers.join(100)).toBe(true);
+  });
+}
+
+test("abort after acknowledged Page enable disables the known domain before detach", async () => {
+  const reply = Promise.withResolvers<void>();
+  const f = fixture({ delayPageOuter: reply.promise });
+  const attaching = f.observer.attach().then(
+    () => "ready",
+    () => "rejected",
+  );
+  await f.pageDispatched.promise;
+  f.abort.abort();
+  reply.resolve();
+  expect(await attaching).toBe("rejected");
+  await f.observer.close();
+  expect(f.lifecycle).toEqual([
+    "Runtime.evaluate",
+    "Page.enable",
+    "Page.disable",
+    "detach",
+    "close",
+  ]);
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+for (const control of ["frame", "loader", "target", "document", "lifetime"]) {
+  test(`enabled Page domain still rejects invalid ${control} request identity`, async () => {
+    const f = fixture();
+    const ledger = await f.observer.attach();
+    f.navigate();
+    ledger.navigationComplete();
+    f.inner(
+      {
+        method: "Network.requestWillBeSent",
+        params: {
+          requestId: "payload",
+          frameId: control === "frame" ? "" : "main",
+          loaderId: control === "loader" ? "" : control === "lifetime" ? "replacement" : "original",
+          documentURL:
+            control === "document" ? "https://owned.test/other" : "https://owned.test/case",
+          request: { url: "https://owned.test/payload.wasm" },
+          timestamp: 2,
+        },
+      },
+      control === "target" ? "other-page" : "page-1",
+    );
+    const errors: Record<string, string> = {
+      frame: "Invalid Inspector frame ID",
+      loader: "Invalid Inspector loader ID",
+      target: "Inspector target lifetime changed",
+      document: "Inspector request is outside the exact case document",
+      lifetime: "Inspector document/frame lifetime replaced",
+    };
+    expect(() => ledger.evidence()).toThrow(errors[control]);
+    await expect(ledger.stop()).rejects.toThrow(errors[control]);
+    expect(await f.consumers.join(100)).toBe(true);
+  });
+}
 
 test("abort never settles a real outstanding send or initialization promise", async () => {
   const send = Promise.withResolvers<void>();
@@ -329,11 +457,13 @@ test("startup continuation refusal fails admission once and leaves no invented W
 
 for (const method of [
   "Runtime.evaluate",
+  "Page.enable",
   "Worker.enable",
   "Worker.initialized",
   "Network.enable",
   "Network.disable",
   "Worker.disable",
+  "Page.disable",
 ]) {
   test(`missing outer ${method} reply prevents successful completion`, async () => {
     const f = fixture({ omitOuter: method });
