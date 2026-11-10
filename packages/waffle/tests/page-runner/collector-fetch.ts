@@ -3,13 +3,14 @@ import type { CollectorObservation } from "./framework-types.js";
 import { bounded } from "./driver.js";
 import { ObservationClosed, ReportRejected } from "./collector.js";
 import type { HostReply } from "./report-control.js";
+import { record } from "./protocol.js";
 const collectorHeaders = {
   "Cache-Control": "no-store",
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
 };
 export type ReportSink = {
-  receive(body: unknown): { ackedThrough: number };
+  receive(body: unknown, inspect?: (body: unknown) => void): { ackedThrough: number };
   heartbeat(body: unknown): HostReply;
   retirement(url: URL): HostReply;
   fail(category: string, detail: string): void;
@@ -68,12 +69,20 @@ function receiveReport(
   sink: ReportSink,
   observe: ((observation: CollectorObservation) => void) | undefined,
 ): Response {
-  const event =
-    typeof body === "object" && body !== null && "event" in body && frameworkEvent(body.event)
+  let event =
+    record(body) && body.kind !== "report-chunk" && frameworkEvent(body.event)
       ? body.event
       : undefined;
   try {
-    const answer = sink.receive(body);
+    const answer = sink.receive(body, (complete) => {
+      if (
+        typeof complete === "object" &&
+        complete !== null &&
+        "event" in complete &&
+        frameworkEvent(complete.event)
+      )
+        event = complete.event;
+    });
     if (event) observe?.({ event, status: 200, accepted: true });
     return Response.json(answer, { headers: collectorHeaders });
   } catch (error) {

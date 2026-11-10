@@ -1,3 +1,10 @@
+import {
+  reportChunk,
+  reportChunkLength,
+  reportEventByteLimit,
+  reportQueuedByteLimit,
+  type ReportIdentity,
+} from "./report-chunks.js";
 import { record, resultByteLimit } from "./protocol.js";
 import { hostReply, type HostReply, type ReportingFailure } from "./report-control.js";
 export type Observation = {
@@ -47,6 +54,7 @@ export class OrderedReporter<B extends object> {
     this.closeAdmission("cancelled", detail);
     if (!this.delivery.signal.aborted) this.delivery.abort(new Error(detail));
   }
+  private queuedBytes = 0;
   private sequence = 0;
   private tail = Promise.resolve();
   private heartbeatBusy = false;
@@ -84,6 +92,8 @@ export class OrderedReporter<B extends object> {
     this.observation.pending++;
     this.converting = true;
     let encoded: string;
+    let bytes: number;
+    let identity: ReportIdentity;
     try {
       const body = snapshot();
       this.signal.throwIfAborted();
@@ -91,6 +101,12 @@ export class OrderedReporter<B extends object> {
         this.observation.pending--;
         return Promise.resolve();
       }
+      identity = {
+        run: this.run,
+        doc: this.observation.doc,
+        seq: this.sequence,
+        token: this.identity.token,
+      };
       encoded = JSON.stringify({
         ...body,
         run: this.run,
@@ -98,8 +114,22 @@ export class OrderedReporter<B extends object> {
         seq: this.sequence,
       });
       this.signal.throwIfAborted();
-      if (this.encode(encoded).byteLength > resultByteLimit)
-        throw new Error("Report envelope exceeds 48 KiB");
+      bytes = this.encode(encoded).byteLength;
+      if (bytes > reportEventByteLimit) throw new Error("Report event exceeds 4 MiB");
+      if (this.queuedBytes + bytes > reportQueuedByteLimit) {
+        this.closeAdmission("capacity", "Reporter queued byte capacity exceeded");
+        throw this.signal.reason;
+      }
+      if (bytes > resultByteLimit) {
+        const snapshot: unknown = JSON.parse(encoded);
+        if (
+          !record(snapshot) ||
+          (snapshot.token !== undefined && typeof snapshot.token !== "string")
+        )
+          throw new Error("Invalid chunked report identity");
+        identity.token = snapshot.token;
+      }
+      if (bytes > resultByteLimit) this.checkEnvelope(reportChunk(encoded, identity, bytes, 0));
       this.signal.throwIfAborted();
     } catch (error) {
       this.observation.pending--;
@@ -108,10 +138,12 @@ export class OrderedReporter<B extends object> {
     } finally {
       this.converting = false;
     }
-    const seq = this.sequence++;
-    const next = this.tail.then(() => this.deliver(encoded, seq));
+    this.queuedBytes += bytes;
+    this.sequence++;
+    const next = this.tail.then(() => this.deliverReport(encoded, bytes, identity));
     const owned = next.finally(() => {
       this.observation.pending--;
+      this.queuedBytes -= bytes;
     });
     this.tail = owned.catch((error: unknown) => {
       this.cancelDelivery("Reporter delivery failed");
@@ -120,13 +152,37 @@ export class OrderedReporter<B extends object> {
     void this.tail.catch(() => {});
     return owned;
   }
-  private async deliver(encoded: string, seq: number): Promise<void> {
+  private checkEnvelope(encoded: string): void {
+    if (this.encode(encoded).byteLength > resultByteLimit)
+      throw new Error("Report envelope exceeds 48 KiB");
+  }
+  private async deliverReport(
+    encoded: string,
+    bytes: number,
+    identity: ReportIdentity,
+  ): Promise<void> {
+    const seq = identity.seq;
     const deadline = this.clock.now() + this.retryMs;
+    if (bytes <= resultByteLimit) return this.deliver(encoded, seq, deadline);
+    for (let offset = 0; offset < encoded.length; offset += reportChunkLength) {
+      const part = reportChunk(encoded, identity, bytes, offset);
+      this.checkEnvelope(part);
+      const end = Math.min(encoded.length, offset + reportChunkLength);
+      await this.deliver(part, end === encoded.length ? seq : seq - 1, deadline, end);
+    }
+    this.observation.ackedThrough = seq;
+  }
+  private async deliver(
+    encoded: string,
+    seq: number,
+    deadline: number,
+    offset?: number,
+  ): Promise<void> {
     let last: unknown;
     while (this.clock.now() < deadline) {
       try {
         this.delivery.signal.throwIfAborted();
-        await this.attempt(encoded, seq);
+        await this.attempt(encoded, seq, offset);
         return;
       } catch (error) {
         this.delivery.signal.throwIfAborted();
@@ -136,7 +192,7 @@ export class OrderedReporter<B extends object> {
     }
     throw new Error(`Report acknowledgement lost: ${String(last)}`);
   }
-  private async attempt(encoded: string, seq: unknown): Promise<void> {
+  private async attempt(encoded: string, seq: number, offset?: number): Promise<void> {
     const response = await this.post("/report", {
       method: "POST",
       body: encoded,
@@ -146,10 +202,10 @@ export class OrderedReporter<B extends object> {
       ]),
     });
     const ack: unknown = await response.json();
-    if (!response.ok || !record(ack) || ack.ackedThrough !== seq || typeof seq !== "number")
+    if (!response.ok || !record(ack) || ack.ackedThrough !== seq || ack.offset !== offset)
       throw new Error("Invalid collector acknowledgement");
     this.delivery.signal.throwIfAborted();
-    this.observation.ackedThrough = seq;
+    if (offset === undefined) this.observation.ackedThrough = seq;
   }
   startHeartbeat(interval = 1000): void {
     this.heartbeatEnabled = true;
