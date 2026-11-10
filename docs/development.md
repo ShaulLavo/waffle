@@ -165,7 +165,7 @@ It checks a worker's Bun-shaped `NetHost` calls and the shipped Preview 1 worker
 NETWORK_SCRATCH_ROOT=/work/tmp bun packages/waffle/tests/network-browser-runner.ts chromium firefox webkit
 ```
 
-[Run the complete network command](network-browser-runner.md) describes owned phase evidence, interruption, the native entry, and its actual WebTransport qualification gate.
+[Run the complete network command](network-browser-runner.md) describes owned phase evidence, interruption, the native entry, and its explicit per-target carrier policy.
 
 For just the relay cases, run `packages/waffle/tests/network-relay-browser-runner.ts` with the same engines.
 Use a physically short scratch root, at most 36 bytes, so browser profile socket paths fit.
@@ -173,7 +173,7 @@ The Chromium and Firefox cases require the relay package's declared optional nat
 A normal frozen root install runs their installer. After an `--ignore-scripts` install, run
 `bun run --cwd packages/waffle-relay/node_modules/@fails-components/webtransport-transport-http3-quiche install`.
 The production native entry still verifies the exact package versions and addon checksum.
-WebSocket-only WebKit never loads that entry.
+WebSocket-only WebKit and iOS Safari never load that entry.
 
 The report includes the engine version and actual carrier. Chromium and Firefox exercise the
 complete WebTransport probe with fragmented open headers, forced WebSocket, and real invalid-certificate
