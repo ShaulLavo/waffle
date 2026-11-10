@@ -213,8 +213,16 @@ test("ordinary shared reporter and collector keep full failed-case text and subs
     "http://fixture/",
     "root",
   );
+  const sink = {
+    receive: collector.receive.bind(collector),
+    heartbeat: collector.heartbeat.bind(collector),
+    retirement() {
+      throw new Error("Unexpected retirement in shared caller control");
+    },
+    fail: collector.fail.bind(collector),
+  };
   const reporter = new OrderedReporter<Body>(collector.run, async (url, init) => {
-    const response = await dispatchReports(new Request(`http://fixture${url}`, init), collector);
+    const response = await dispatchReports(new Request(`http://fixture${url}`, init), sink);
     if (!response) throw new Error("Missing collector route");
     return response;
   });
