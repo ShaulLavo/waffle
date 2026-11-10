@@ -3,6 +3,7 @@ import type { CollectorObservation } from "./framework-types.js";
 import { bounded } from "./driver.js";
 import { ObservationClosed, ReportRejected } from "./collector.js";
 import type { HostReply } from "./report-control.js";
+import { record } from "./protocol.js";
 const collectorHeaders = {
   "Cache-Control": "no-store",
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -69,7 +70,7 @@ function receiveReport(
   observe: ((observation: CollectorObservation) => void) | undefined,
 ): Response {
   let event =
-    typeof body === "object" && body !== null && "event" in body && frameworkEvent(body.event)
+    record(body) && body.kind !== "report-chunk" && frameworkEvent(body.event)
       ? body.event
       : undefined;
   try {

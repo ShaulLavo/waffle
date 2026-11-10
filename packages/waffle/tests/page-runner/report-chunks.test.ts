@@ -246,3 +246,50 @@ test("ordinary shared reporter and collector keep full failed-case text and subs
     collector.cancel();
   }
 });
+
+test("ordinary chunked result rejection records one protocol failure", () => {
+  const collector = new Collector("run", ["first"], ["first"], {
+    listIds: () => ["first"],
+    check() {},
+  });
+  const document = collector.expect(
+    { id: "cases", role: "case", caseIds: ["first"] },
+    "token",
+    "http://fixture/",
+    "root",
+  );
+  const identity = { run: "run", doc: "doc", seq: 2 };
+  const encoded = JSON.stringify({
+    ...identity,
+    kind: "case-end",
+    caseId: "first",
+    status: "pass",
+    result: "x".repeat(60000),
+  });
+  const bytes = new TextEncoder().encode(encoded).byteLength;
+  const deliver = () => {
+    for (let offset = 0; offset < encoded.length; offset += reportChunkLength) {
+      const part: unknown = JSON.parse(reportChunk(encoded, identity, bytes, offset));
+      collector.receive(part);
+    }
+  };
+  try {
+    collector.receive({
+      run: "run",
+      doc: "doc",
+      seq: 0,
+      kind: "hello",
+      token: "token",
+      group: "cases",
+    });
+    collector.receive({ run: "run", doc: "doc", seq: 1, kind: "case-start", caseId: "first" });
+    expect(deliver).toThrow("Invalid or oversized result snapshot");
+    expect(document.messages).toHaveLength(2);
+    expect(collector.outcomes.first?.status).toBe("running");
+    expect(collector.failures.map((failure) => failure.detail)).toEqual([
+      "Invalid or oversized result snapshot",
+    ]);
+  } finally {
+    collector.cancel();
+  }
+});

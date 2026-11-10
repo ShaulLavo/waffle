@@ -6,7 +6,7 @@ import { FrameworkCollector } from "./framework-collector.js";
 import { frameworkMiddleware } from "./framework-middleware.js";
 import { OrderedReporter } from "./ordered-reporter.js";
 import { reportChunk, reportChunkLength } from "./report-chunks.js";
-import { resultByteLimit } from "./protocol.js";
+import { record, resultByteLimit } from "./protocol.js";
 import type {
   ExpectedCase,
   FrameworkEvent,
@@ -290,7 +290,7 @@ test("collector response observation sees the complete source event, never trans
     let last = "";
     for (let offset = 0; offset < encoded.length; offset += reportChunkLength) {
       expect(observed).toHaveLength(0);
-      last = reportChunk(encoded, identity, bytes, offset);
+      last = chunkWithEvent(reportChunk(encoded, identity, bytes, offset));
       const response = await dispatchReports(
         new Request("http://fixture/report", { method: "POST", body: last }),
         collector,
@@ -343,3 +343,9 @@ test("chunk cancellation joins the actual held response before releasing queued 
     () => release.resolve(),
   );
 });
+
+function chunkWithEvent(encoded: string): string {
+  const chunk: unknown = JSON.parse(encoded);
+  if (!record(chunk)) throw new Error("Missing transport chunk");
+  return JSON.stringify({ ...chunk, event: { kind: "task-started", id: "never-applied" } });
+}

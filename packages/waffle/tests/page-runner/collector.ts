@@ -414,6 +414,7 @@ export class Collector {
       try {
         return this.reports.receive(known, value, (body) => this.apply(known, parseMessage(body)));
       } catch (error) {
+        if (error instanceof ReportRejected) throw error;
         return this.violation(String(error), known);
       }
     }
