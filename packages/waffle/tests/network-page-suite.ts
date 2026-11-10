@@ -109,9 +109,18 @@ function verifyRelayMode(result: RelayModeResult): void {
     requireCertificateRejection(result.probe);
     return;
   }
-  assert.deepEqual(result.probe, {
-    constructed: 0, ready: 0, streams: 0, fragments: 0, closed: 0, failures: [],
-  }, "WebSocket-only profile touched WebTransport");
+  assert.deepEqual(
+    result.probe,
+    {
+      constructed: 0,
+      ready: 0,
+      streams: 0,
+      fragments: 0,
+      closed: 0,
+      failures: [],
+    },
+    "WebSocket-only profile touched WebTransport",
+  );
 }
 export function relayAdapter(inputs: NetworkInputs, target: NetworkTarget): SuiteAdapter<null> {
   const native = target === "chromium" || target === "firefox";
@@ -154,18 +163,20 @@ export function relayAdapter(inputs: NetworkInputs, target: NetworkTarget): Suit
         );
         results.forEach(verifyRelayMode);
         fixture.verify(results.map((result) => result.carrier));
-        console.log(JSON.stringify({
-          browser: target,
-          profile: native ? "webtransport-and-websocket" : "websocket-only",
-          ...(target === "ios-safari" && {
-            deferred: {
-              modes: ["selected", "bad-certificate"],
-              status: "deferred",
-              reason: "Owner decision, November 10, 2026: Safari WebTransport draft mismatch",
-            },
+        console.log(
+          JSON.stringify({
+            browser: target,
+            profile: native ? "webtransport-and-websocket" : "websocket-only",
+            ...(target === "ios-safari" && {
+              deferred: {
+                modes: ["selected", "bad-certificate"],
+                status: "deferred",
+                reason: "Owner decision, November 10, 2026: Safari WebTransport draft mismatch",
+              },
+            }),
+            results: value,
           }),
-          results: value,
-        }));
+        );
       },
     },
   };
