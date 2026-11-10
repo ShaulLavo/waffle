@@ -792,10 +792,10 @@ export class WorkerProcessClient {
       kind: "signaled",
       code: controlLoad(this.signals.requestedSignal, 0) === 9 ? 9 : signal,
     });
-    this.completeSelectedDefaultSignal(winner);
+    this.completeSelectedOutcome(winner);
   }
   /** @internal Bootstrap already authenticated this immutable outcome before bookkeeping. */
-  completeSelectedDefaultSignal(winner: ProcessExit): boolean {
+  completeSelectedOutcome(winner: ProcessExit): boolean {
     try {
       // These captured controls can be collected after the caller selected its winner.
       // Keep callback errors outside this catch, even when they use the same errno.

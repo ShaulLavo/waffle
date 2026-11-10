@@ -600,7 +600,7 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
     const winner = settled ?? claim({ kind: "signaled", code: killed ? 9 : signal });
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     localOutcome = winner;
-    if (runtimeProcess && !runtimeProcess.completeSelectedDefaultSignal(winner)) {
+    if (runtimeProcess && !runtimeProcess.completeSelectedOutcome(winner)) {
       outcome = null;
       runtimeProcess = null;
       requestedSignal = undefined;
@@ -798,21 +798,21 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       attempt(() => {
         winner = executor.complete!(ownCode, ownSignal);
       });
-    winner ??= claim(ownResult);
-    const code = waitStatus(winner);
-    const signal = winner.kind === "signaled" ? winner.code : undefined;
-    if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
+    const completed = winner ?? claim(ownResult);
+    const code = waitStatus(completed);
+    const signal = completed.kind === "signaled" ? completed.code : undefined;
+    if (!executor.complete) attempt(() => runtimeProcess?.completeSelectedOutcome(completed));
     const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
     if (
-      (executor.complete || "code" in result || settled || winner.kind === "signaled") &&
-      !(req.runtimeProcess && startupFailure && winner.kind === "start-failed")
+      (executor.complete || "code" in result || settled || completed.kind === "signaled") &&
+      !(req.runtimeProcess && startupFailure && completed.kind === "start-failed")
     ) {
       postToHost({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
       postToHost({
         type: "error",
         code,
-        errno: winner.kind === "start-failed" ? winner.error : undefined,
+        errno: completed.kind === "start-failed" ? completed.error : undefined,
         message: describeWorkerError(result.error),
         sleep: sleepMode,
         ...diagnostics,
