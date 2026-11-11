@@ -6,12 +6,12 @@ export interface SharedLinkPlan {
   readonly [sharedLinkPlan]: "waffle.SharedLinkPlan";
 }
 
-export interface SelfPlan {
+export interface SelfImage {
   readonly targets: readonly string[];
   readonly targetSlots: readonly { readonly name: string; readonly slot: number }[];
   readonly relay: WebAssembly.Module | undefined;
 }
-export interface CompiledMember {
+export interface MemberImage {
   readonly id: string;
   readonly module: WebAssembly.Module;
   readonly layout: Readonly<MemoryInfo> | undefined;
@@ -19,11 +19,11 @@ export interface CompiledMember {
   readonly initializeMemory: readonly string[];
   readonly initialize: readonly string[];
   readonly automaticRelocation: boolean;
-  readonly self: SelfPlan;
+  readonly self: SelfImage;
 }
-export interface PlanData {
-  readonly core: CompiledMember;
-  readonly libraries: readonly CompiledMember[];
+export interface PlanImage {
+  readonly core: MemberImage;
+  readonly libraries: readonly MemberImage[];
   readonly reserve: string;
   readonly pie: boolean;
   readonly relativeAddresses: readonly string[];
@@ -70,7 +70,7 @@ function layout(value: unknown): Readonly<MemoryInfo> | undefined {
     tableAlignment: integer(info.tableAlignment, 31),
   });
 }
-function self(value: unknown): SelfPlan {
+function self(value: unknown): SelfImage {
   const info = record(value);
   const targets = strings(info.targets);
   const names = new Set<string>();
@@ -88,7 +88,7 @@ function self(value: unknown): SelfPlan {
   if (Boolean(targets.length) !== Boolean(relay)) invalid("plan", "invalid self relay");
   return Object.freeze({ targets, targetSlots, relay });
 }
-function member(value: unknown): CompiledMember {
+function member(value: unknown): MemberImage {
   const info = record(value);
   const offsets = record(info.baseOffsets);
   return Object.freeze({
@@ -104,7 +104,7 @@ function member(value: unknown): CompiledMember {
 }
 
 /** Own the small metadata snapshot; retain compiled module references without copying code. */
-export function snapshotImage(value: unknown): PlanData & SharedLinkPlan {
+export function snapshotImage(value: unknown): PlanImage & SharedLinkPlan {
   const info = record(value);
   const core = member(info.core);
   const libraries = Object.freeze(Array.from(array(info.libraries), member));
@@ -113,12 +113,12 @@ export function snapshotImage(value: unknown): PlanData & SharedLinkPlan {
   if (libraries.some((entry) => !entry.layout)) invalid("plan", "missing side layout");
   const pie = boolean(info.pie);
   if (pie && !core.layout) invalid("plan", "missing PIE layout");
-  const image: PlanData = Object.freeze({
+  const image: PlanImage = Object.freeze({
     core,
     libraries,
     pie,
     reserve: string(info.reserve),
     relativeAddresses: strings(info.relativeAddresses),
   });
-  return image as PlanData & SharedLinkPlan;
+  return image as PlanImage & SharedLinkPlan;
 }

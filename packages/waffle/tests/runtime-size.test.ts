@@ -67,7 +67,7 @@ for (const entry of ["core/index.ts", "proc/index.ts"]) {
 }
 
 for (const entry of ["index.ts", "core/index.ts", "proc/index.ts", "browser/worker.ts"]) {
-  test(`${entry} does not load the optional linker`, async () => {
+  test(`${entry} excludes the linker implementation`, async () => {
     const root = resolve(import.meta.dir, "..");
     const build = await Bun.build({
       entrypoints: [resolve(root, entry)],
@@ -78,7 +78,25 @@ for (const entry of ["index.ts", "core/index.ts", "proc/index.ts", "browser/work
     expect(build.success).toBe(true);
     if (!build.metafile) throw new Error("missing bundle metadata");
     expect(
-      Object.keys(build.metafile.inputs).filter((path) => /(?:^|\/)link\//.test(path)),
-    ).toEqual([]);
+      Object.keys(build.metafile.inputs)
+        .filter((path) => /(?:^|\/)link\//.test(path))
+        .map((path) => relative(root, resolve(path))),
+    ).toEqual(entry === "index.ts" ? ["link/issuance.ts"] : []);
   });
 }
+
+test("the process broker imports only the tiny page issuance leaf", async () => {
+  const root = resolve(import.meta.dir, "..");
+  const build = await Bun.build({
+    entrypoints: [resolve(root, "browser/process-broker.ts")],
+    target: "browser",
+    metafile: true,
+  });
+  expect(build.success).toBe(true);
+  if (!build.metafile) throw new Error("missing broker build metadata");
+  expect(
+    Object.keys(build.metafile.inputs)
+      .filter((path) => /(?:^|\/)link\//.test(path))
+      .map((path) => relative(root, resolve(path))),
+  ).toEqual(["link/issuance.ts"]);
+});

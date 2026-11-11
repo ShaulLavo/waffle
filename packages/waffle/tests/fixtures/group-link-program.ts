@@ -5,9 +5,9 @@ export async function groupLinkProgram() {
   const plan = await prepareLinkPlan({
     core: {
       id: "core",
-      source: pieCore([0x10, 0]),
+      source: pieCore([0x10, 0], false, "test"),
       cooperative: true,
-      checkpoint: { module: "env", name: "check" },
+      checkpoint: { module: "test", name: "check" },
       initializeMemory: [],
       initialize: [],
     },

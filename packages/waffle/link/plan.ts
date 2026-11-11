@@ -5,9 +5,9 @@ import {
 } from "../memory/declarations.js";
 import {
   snapshotImage,
-  type CompiledMember,
-  type PlanData,
-  type SelfPlan,
+  type MemberImage,
+  type PlanImage,
+  type SelfImage,
   type SharedLinkPlan,
 } from "./image.js";
 import { issueGroupPlan } from "./issuance.js";
@@ -55,11 +55,21 @@ interface ValidatedMember {
   readonly declarations: readonly MemoryDeclaration[];
   readonly automaticRelocation: boolean;
 }
-interface ProfiledMember extends CompiledMember {
+interface SelfPlan extends Omit<SelfImage, "targetSlots"> {
+  readonly targetSlots: ReadonlyMap<string, number>;
+}
+export interface CompiledMember extends Omit<MemberImage, "self"> {
+  readonly self: SelfPlan;
+}
+export interface PlanData extends Omit<PlanImage, "core" | "libraries"> {
+  readonly core: CompiledMember;
+  readonly libraries: readonly CompiledMember[];
+}
+interface ProfiledMember extends MemberImage {
   readonly profile: ModuleProfile;
 }
 const plans = new WeakMap<PreparedLinkPlan, PlanData>();
-const NO_SELF: SelfPlan = { targets: [], targetSlots: [], relay: undefined };
+const NO_SELF: SelfImage = { targets: [], targetSlots: [], relay: undefined };
 
 export class PreparedLinkPlan {
   private constructor(
@@ -95,7 +105,7 @@ export class PreparedLinkPlan {
         if (WebAssembly.Module.exports(member.module).some((entry) => entry.kind === "memory"))
           invalid(member.id, "a memory group image cannot export the shared memory");
       });
-    const libraries: CompiledMember[] = [];
+    const libraries: MemberImage[] = [];
     for (const member of compiled.slice(1))
       libraries.push({ ...member, self: await selectProviders(core, member) });
     const importedAddresses = new Set(
@@ -118,7 +128,7 @@ export class PreparedLinkPlan {
       relativeAddresses,
     });
     const plan = Object.freeze(new PreparedLinkPlan(core.module, image));
-    plans.set(plan, image);
+    plans.set(plan, localData(image));
     if (image.pie) issueGroupPlan(image, core.module);
     return plan;
   }
@@ -126,9 +136,19 @@ export class PreparedLinkPlan {
   static adopt(shared: SharedLinkPlan): PreparedLinkPlan {
     const image = snapshotImage(shared);
     const plan = Object.freeze(new PreparedLinkPlan(image.core.module, image));
-    plans.set(plan, image);
+    plans.set(plan, localData(image));
     return plan;
   }
+}
+
+function localMember(member: MemberImage): CompiledMember {
+  const targetSlots = new Map(
+    member.self.targetSlots.map((entry): [string, number] => [entry.name, entry.slot]),
+  );
+  return { ...member, self: { ...member.self, targetSlots } };
+}
+function localData(image: PlanImage): PlanData {
+  return { ...image, core: localMember(image.core), libraries: image.libraries.map(localMember) };
 }
 
 function selfTarget(member: ProfiledMember, name: string, kind: string): void {
@@ -138,7 +158,7 @@ function selfTarget(member: ProfiledMember, name: string, kind: string): void {
 }
 
 /** Core preempts; otherwise only a defined same-member export of the exact type binds. */
-async function selectProviders(core: ProfiledMember, member: ProfiledMember): Promise<SelfPlan> {
+async function selectProviders(core: ProfiledMember, member: ProfiledMember): Promise<SelfImage> {
   const exports = WebAssembly.Module.exports(core.module);
   const targets: string[] = [];
   const targetSlots = new Map<string, number>();

@@ -282,6 +282,7 @@ function memberReply(worker: Worker): Promise<MemberObservation> {
 }
 
 test("two real members initialize their own core and side TLS and retain carved stacks", async () => {
+  const prepared = await prepareLinkPlan(source(true, true));
   const { MemoryGroups } = await import("../group/state.js");
   const groups = new MemoryGroups({ stackBytes: 65536, maximumPages: 32, budgetBytes: 32 * 65536 });
   await withMemberWorkers(
@@ -306,7 +307,12 @@ test("two real members initialize their own core and side TLS and retain carved 
         const response = memberReply(entry.worker);
         const launch = entry.lease.launch();
         entry.worker.postMessage(
-          { kind: "launch", request: launch.request, mark: 111 + index * 111 },
+          {
+            kind: "launch",
+            request: launch.request,
+            mark: 111 + index * 111,
+            linkPlan: prepared.shared,
+          },
           launch.transfer,
         );
         observed.push(await response);

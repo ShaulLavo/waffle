@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -8,17 +8,16 @@ import {
   requireAllocationReference,
 } from "../tooling/prepare-allocation-reference.js";
 
-function capture(root: string, fallback: string, agent = "desktop") {
-  const result = spawnSync(
-    process.execPath,
-    [
-      new URL("./fixtures/default-allocation-capture.ts", import.meta.url).pathname,
-      root,
-      fallback,
-      agent,
-    ],
-    { encoding: "utf8", timeout: 20000 },
-  );
+function capture(
+  root: string,
+  fallback: string,
+  agent = "desktop",
+  fixture = new URL("./fixtures/default-allocation-capture.ts", import.meta.url).pathname,
+) {
+  const result = spawnSync(process.execPath, [fixture, root, fallback, agent], {
+    encoding: "utf8",
+    timeout: 20000,
+  });
   expect(result.stderr).toBe("");
   expect(result.status).toBe(0);
   return JSON.parse(result.stdout);
@@ -128,7 +127,23 @@ for (const [mode, agent] of [
         maxBuffer: 32 * 1024 * 1024,
       });
       execFileSync("tar", ["-x", "-C", scratch], { input: archive });
-      const baseline = capture(join(scratch, "packages/waffle"), mode);
+      // The immutable historical runtime consumes source plans. Give that comparison its
+      // own fixture; the candidate and all shipped callers use compiled images only.
+      const baselineFixture = join(scratch, "allocation-baseline.ts");
+      const fixtureSource = await readFile(
+        new URL("./fixtures/default-allocation-capture.ts", import.meta.url),
+        "utf8",
+      );
+      await writeFile(
+        baselineFixture,
+        fixtureSource
+          .replace("groupPlan.shared", "groupInput")
+          .replace(
+            '"./memory-group-pie.js"',
+            JSON.stringify(new URL("./fixtures/memory-group-pie.ts", import.meta.url).href),
+          ),
+      );
+      const baseline = capture(join(scratch, "packages/waffle"), mode, "desktop", baselineFixture);
       const current = capture(
         process.env.WAFFLE_PARITY_CANDIDATE_ROOT ?? resolve(import.meta.dir, ".."),
         mode,

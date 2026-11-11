@@ -6,6 +6,7 @@ import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
 const runners = [
   "browser-navigation",
+  "link",
   "safe-staging",
   "storage",
   "storage-lock",

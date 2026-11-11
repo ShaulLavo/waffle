@@ -49,6 +49,7 @@ export default {
         "tests/network-{page,relay-page,control-page,signal-control,browser-service-worker,relay-browser-runner}.ts",
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",
+        "tests/link-browser-runner.ts",
         "tests/gpu-async-browser-runner.ts",
         "tests/fixtures/gpu/async-page.ts",
         "tests/fixtures/gpu/async-native.ts",

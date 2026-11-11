@@ -1,5 +1,4 @@
-import type { LinkHost } from "./plan.js";
-import type { CompiledMember, PlanData } from "./image.js";
+import type { CompiledMember, LinkHost, PlanData } from "./plan.js";
 import { invalid } from "./metadata.js";
 
 const RELOCATION = "__wasm_apply_data_relocs";
@@ -151,7 +150,7 @@ function functionCells(
     const address =
       typeof provider === "function"
         ? functionSlot(table, provider, member.id, ranges)
-        : slots.base + member.self.targetSlots.find((slot) => slot.name === entry.name)!.slot;
+        : slots.base + member.self.targetSlots.get(entry.name)!;
     cells[entry.name] = new WebAssembly.Global({ value: "i32", mutable: true }, address);
   }
   return cells;
@@ -184,7 +183,7 @@ function sideImports(
     const shared = coreEnv?.[entry.name];
     const value =
       core.exports[entry.name] ?? (shared instanceof WebAssembly.Global ? shared : undefined);
-    const slot = member.self.targetSlots.find((slot) => slot.name === entry.name)?.slot;
+    const slot = member.self.targetSlots.get(entry.name);
     if (entry.name === "memory") env[entry.name] = memory;
     else if (entry.name === "__indirect_function_table") env[entry.name] = table;
     else if (entry.name === "__memory_base")
