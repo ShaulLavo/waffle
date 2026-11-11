@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 for (const mode of ["shutdown", "assigned", "confirmed"] as const)
@@ -10,7 +11,10 @@ for (const mode of ["shutdown", "assigned", "confirmed"] as const)
         mode,
       ],
       {
-        env: { ...process.env, STORAGE_SCRATCH_ROOT: "/work/tmp", TMPDIR: "/work/tmp" },
+        env: {
+          ...process.env,
+          STORAGE_SCRATCH_ROOT: process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(),
+        },
         timeout: 5_000,
       },
     );
