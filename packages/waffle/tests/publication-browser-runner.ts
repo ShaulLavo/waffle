@@ -2,6 +2,8 @@ import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 
+import type { Browser, BrowserContext } from "playwright";
+
 const startedAt = performance.now();
 const nativeArgs = process.argv.slice(2).filter((argument) => argument !== "--workspace");
 if (nativeArgs[0] === "ios-safari") {
@@ -33,14 +35,22 @@ async function desktopMain(): Promise<void> {
     if (name !== "chromium" && name !== "firefox" && name !== "webkit")
       throw new Error(`Unknown browser: ${name}`);
     const previousTmp = process.env.TMPDIR;
-    if (name === "firefox" && process.platform === "linux")
-      process.env.TMPDIR = await lifecycle.directory(
-        process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm",
-        "waffle-ff-",
-      );
-    const browser = await lifecycle.launch(name);
+    let browser: Browser | undefined,
+      context: BrowserContext | undefined,
+      profile: string | undefined;
     try {
-      const page = await browser.newPage();
+      if (name === "firefox" && process.platform === "linux")
+        process.env.TMPDIR = await lifecycle.directory(
+          process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm",
+          "waffle-ff-",
+        );
+      if (name === "webkit" && workspace) {
+        profile = await lifecycle.directory(lifecycle.scratch, "webkit-opfs-profile-");
+        context = await lifecycle.persistent("webkit", profile);
+        browser = context.browser() ?? undefined;
+      } else browser = await lifecycle.launch(name);
+      if (!browser) throw new Error("Persistent WebKit context has no browser");
+      const page = await (context ?? browser).newPage();
       page.on("console", (message) => console.log(message.text()));
       await installDeathObserver(page);
       await navigateTestPage(page, origin);
@@ -58,9 +68,14 @@ async function desktopMain(): Promise<void> {
       );
       for (const label of passed) console.log(`  PASS ${label}`);
     } finally {
-      await lifecycle.closeBrowser(browser);
-      if (previousTmp === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = previousTmp;
+      try {
+        if (context) await lifecycle.closeContext(context);
+        else if (browser) await lifecycle.closeBrowser(browser);
+        if (profile) await lifecycle.removeDirectory(profile);
+      } finally {
+        if (previousTmp === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previousTmp;
+      }
     }
   }
   try {

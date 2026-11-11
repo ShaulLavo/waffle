@@ -30,13 +30,24 @@ test("original fixture bodies, channel observer, and follow-on command files rem
     expect(hash(await readFile(join(import.meta.dir, "..", path), "utf8"))).toBe(expected);
 });
 
-test("ordinary desktop dispatch is the exact extracted original body", async () => {
+test("desktop dispatch preserves the original body outside browser setup and cleanup", async () => {
   const text = await readFile(join(import.meta.dir, "../publication-browser-runner.ts"), "utf8");
   const body = text.slice(text.indexOf("const lifecycle ="), text.lastIndexOf("\n}"));
+  const setup = body.indexOf("    const previousTmp =");
+  const dispatch = body.indexOf('      page.on("console"');
+  const cleanup = body.indexOf("    } finally {", dispatch);
+  const root = body.indexOf("\n  try {\n    await lifecycle.init();", cleanup);
+  // Only browser context policy differs from the original extracted dispatcher.
+  const unchanged =
+    body.slice(0, setup) +
+    "    try {\n" +
+    body.slice(dispatch, cleanup) +
+    "    } finally {}\n  }" +
+    body.slice(root);
   const normalized = new Bun.Transpiler({ loader: "ts", minifyWhitespace: true }).transformSync(
-    body,
+    unchanged,
   );
-  expect(hash(normalized)).toBe("0dcf9d714885a15a3875a810e1b757e8de019e2b0686845bfb6194371dd7e961");
+  expect(hash(normalized)).toBe("3ba59108f7de674fcdefa7e7cb4ec28bdd27966b6853af448a61032e3a77319a");
 });
 
 test("both whole-command inventories and ordered results reject omissions, reorderings and extra labels", async () => {
