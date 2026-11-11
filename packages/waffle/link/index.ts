@@ -1,6 +1,8 @@
 export {
   PreparedLinkPlan,
   prepareLinkPlan,
+  adoptLinkPlan,
+  type SharedLinkPlan,
   instantiateLinkPlan,
   type LinkMemberSource,
   type LinkPlanSource,

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
 import {
+  adoptLinkPlan,
   instantiateLinkPlan,
   linkedWorkerHooks,
   prepareLinkPlan,
@@ -231,7 +232,7 @@ test("weak import metadata binds an exact real core provider and survives readmi
   } finally {
     group.dispose();
   }
-  const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
+  const restored = adoptLinkPlan(structuredClone(plan.shared));
   const readmitted = instantiateLinkPlan(restored, host());
   readmitted.initialize();
   try {
@@ -528,7 +529,7 @@ test("cancelled initialization poisons group and never calls later initializer",
   group.dispose();
 });
 
-test("structured-cloned exact source is re-admitted, not a cloned opaque prepared object", async () => {
+test("structured-cloned prepared object is refused while shared images adopt", async () => {
   const plan = await prepareLinkPlan(structuredClone(source()));
   const group = instantiateLinkPlan(plan, host());
   try {
@@ -540,7 +541,7 @@ test("structured-cloned exact source is re-admitted, not a cloned opaque prepare
   expect(() => instantiateLinkPlan(structuredClone(plan), host())).toThrow("local prepared plan");
 });
 
-test("normal worker structured-clones exact source, re-admits it, links and executes", async () => {
+test("normal worker structured-clones modules, adopts without compiling, links and executes", async () => {
   const { Worker } = await import("node:worker_threads");
   const plan = await prepareLinkPlan(source());
   const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
@@ -563,7 +564,7 @@ test("normal worker structured-clones exact source, re-admits it, links and exec
 })().catch(error=>{parentPort.postMessage({error:String(error)});parentPort.close()});`;
   const worker = new Worker(script, {
     eval: true,
-    workerData: { module: plan.entryModule, linkPlan: plan.toSource() },
+    workerData: { module: plan.entryModule, linkPlan: plan.shared },
   });
   const messages: unknown[] = [];
   try {
@@ -590,19 +591,22 @@ test("normal worker structured-clones exact source, re-admits it, links and exec
   }
 });
 
-test("transport snapshots cannot mutate admitted configuration or bytes", async () => {
+test("shared metadata and adopted snapshots cannot mutate an existing plan", async () => {
   const plan = await prepareLinkPlan(source());
-  const transfer = plan.toSource();
-  transfer.core.source.fill(0);
-  const group = instantiateLinkPlan(plan, host());
-  try {
-    group.initialize();
-    expect(call(group.entry, "invoke", 1)).toBe(8);
-  } finally {
-    group.dispose();
+  const received = structuredClone(plan.shared);
+  const restored = adoptLinkPlan(received);
+  expect(plan.shared).toBe(plan.shared);
+  expect(Object.isFrozen(plan.shared)).toBe(true);
+  Reflect.set(received, "reserve", "absent");
+  for (const local of [plan, restored]) {
+    const group = instantiateLinkPlan(local, host());
+    try {
+      group.initialize();
+      expect(call(group.entry, "invoke", 1)).toBe(8);
+    } finally {
+      group.dispose();
+    }
   }
-  const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
-  expect(restored.entryModule).toBe(plan.entryModule);
 });
 
 for (const symbol of ["stdout", "_CLOCK_MONOTONIC", "errno"]) {
@@ -696,14 +700,12 @@ test("GOT.func without a function provider and true Wasm start fail before any i
 });
 
 for (const member of ["core", "engine"]) {
-  test(`duplicate ${member} initializers reject during preparation and readmission`, async () => {
+  test(`duplicate ${member} initializers reject during preparation`, async () => {
     const input = source();
-    const plan = await prepareLinkPlan(input);
-    const transfer = plan.toSource();
-    const target = member === "core" ? transfer.core : transfer.libraries[0]!;
+    const target = member === "core" ? input.core : input.libraries[0]!;
     const repeated = { ...target, initialize: ["init", "init"] };
     const changed =
-      member === "core" ? { ...transfer, core: repeated } : { ...transfer, libraries: [repeated] };
+      member === "core" ? { ...input, core: repeated } : { ...input, libraries: [repeated] };
     await expect(prepareLinkPlan(changed)).rejects.toThrow("duplicate initializer");
     await expect(prepareLinkPlan(structuredClone(changed))).rejects.toThrow(
       "duplicate initializer",
@@ -779,7 +781,7 @@ test("finish reentered by the final relocation clears linked table slots", async
       {
         controlGrant: { kind: "unbounded" },
         module: plan.entryModule,
-        linkPlan: plan.toSource(),
+        linkPlan: plan.shared,
         args: [],
         env: {},
         filesystem: connection.client,

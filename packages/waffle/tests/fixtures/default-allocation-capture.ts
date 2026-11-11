@@ -162,7 +162,7 @@ try {
         module: context.module,
         args: [],
         env: {},
-        ...(context.request.argv[0] === "group" ? { linkPlan: groupPlan.toSource() } : {}),
+        ...(context.request.argv[0] === "group" ? { linkPlan: groupPlan.shared } : {}),
       },
       ...(context.request.argv[0] === "group" ? { memoryGroup: "new" as const } : {}),
     }),

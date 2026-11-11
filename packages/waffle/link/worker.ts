@@ -1,13 +1,13 @@
 import type { RuntimeWorkerRequest, WorkerExecutor } from "../browser/worker.js";
 import {
   instantiateLinkPlan,
-  prepareLinkPlan,
-  type LinkPlanSource,
+  adoptLinkPlan,
+  type SharedLinkPlan,
   type LinkedGroup,
 } from "./plan.js";
 
 export interface LinkedWorkerRequest extends RuntimeWorkerRequest {
-  readonly linkPlan: LinkPlanSource;
+  readonly linkPlan: SharedLinkPlan;
 }
 
 /** Compose these hooks into the ordinary executor. Its beforeFinish must call ours. */
@@ -18,12 +18,10 @@ export function linkedWorkerHooks(): Pick<
   let group: LinkedGroup | undefined;
   let finished = false;
   return {
-    async instantiate(imports, context) {
+    instantiate(imports, context) {
       context.checkActive();
       if (finished || group) throw new Error("link executor already used");
-      const plan = await prepareLinkPlan(context.request.linkPlan);
-      context.checkActive();
-      if (finished) throw new Error("link executor finished during admission");
+      const plan = adoptLinkPlan(context.request.linkPlan);
       const linked = instantiateLinkPlan(plan, {
         wasi: context.wasi,
         coreImports: imports,

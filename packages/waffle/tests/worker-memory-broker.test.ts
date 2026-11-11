@@ -55,6 +55,7 @@ async function fixture(
   reservations: RuntimeReservations = testReservations(),
   launchOptions: Pick<WorkerLaunchOptions, "memoryGroup" | "memories"> & {
     module?: WebAssembly.Module;
+    linkPlan?: import("../link/index.js").SharedLinkPlan;
   } = {},
 ) {
   const previousWorker = globalThis.Worker;
@@ -120,7 +121,7 @@ async function fixture(
       broker.launchWorker(context, {
         ...launchOptions,
         workerUrl: "generic",
-        request: { module, args: [], env: {} },
+        request: { module, args: [], env: {}, linkPlan: launchOptions.linkPlan },
       }),
   });
   const root = createWorkerProcessTransport({
@@ -452,6 +453,7 @@ async function groupAdapterFixture(maximumPages: number) {
   const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
   const f = await fixture(false, Promise.resolve(), undefined, reservations, {
     module: linked.entryModule,
+    linkPlan: linked.shared,
     memoryGroup: "new",
     memories: [{ kind: "private", maximumPages: pages(maximumPages), origin: "defined" }],
   });

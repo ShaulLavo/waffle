@@ -332,7 +332,7 @@ async function stopStackMember(member: { lease: MemberLease; worker: Worker }) {
 
 async function launchStackMember(
   member: ReturnType<typeof stackMember>,
-  source: Parameters<typeof prepareLinkPlan>[0],
+  source: import("../link/index.js").SharedLinkPlan,
   mark = 1,
 ) {
   const response = memberReply(member.worker);
@@ -357,8 +357,8 @@ test("real image, stack and all granted worker chunks jointly consume the member
   const b = stackMember(groups, 202, a.lease.group);
   const owner = groups.owner(a.lease.group)!;
   try {
-    stackObservation(await launchStackMember(a, prepared.toSource()));
-    stackObservation(await launchStackMember(b, prepared.toSource()));
+    stackObservation(await launchStackMember(a, prepared.shared));
+    stackObservation(await launchStackMember(b, prepared.shared));
     expect(owner.snapshot().memberPages).toBe(4);
     expect(await growStackMember(a, 1)).toBeGreaterThan(0);
     // Every granted page counts, including any chunk space the worker has not used yet.
@@ -383,7 +383,7 @@ test("partial image admission remains charged through abort until its worker act
   const partial = stackMember(groups, 302, leader.group);
   const owner = groups.owner(leader.group)!;
   try {
-    expect(await launchStackMember(partial, prepared.toSource())).toEqual({
+    expect(await launchStackMember(partial, prepared.shared)).toEqual({
       error: "memory group could not carve member stack",
     });
     expect(owner.snapshot().memberPages).toBe(1);
@@ -426,7 +426,7 @@ test("real members bind nonoverlapping stack bounds and the matching stack point
       {
         kind: "launch",
         request: started.request,
-        source: prepared.toSource(),
+        source: prepared.shared,
         mark,
       },
       started.transfer,

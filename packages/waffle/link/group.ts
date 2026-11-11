@@ -1,4 +1,5 @@
-import type { CompiledMember, LinkHost, PlanData } from "./plan.js";
+import type { LinkHost } from "./plan.js";
+import type { CompiledMember, PlanData } from "./image.js";
 import { invalid } from "./metadata.js";
 
 const RELOCATION = "__wasm_apply_data_relocs";
@@ -50,7 +51,7 @@ function reserveMemory(
   memory: WebAssembly.Memory,
   libraries: readonly LinkedLibrary[],
 ): number {
-  const info = member.profile.memory;
+  const info = member.layout;
   if (!info) return invalid(member.id, "missing side layout");
   const size = Math.max(1, info.memorySize),
     alignment = 2 ** info.memoryAlignment;
@@ -150,7 +151,7 @@ function functionCells(
     const address =
       typeof provider === "function"
         ? functionSlot(table, provider, member.id, ranges)
-        : slots.base + member.self.targetSlots.get(entry.name)!;
+        : slots.base + member.self.targetSlots.find((slot) => slot.name === entry.name)!.slot;
     cells[entry.name] = new WebAssembly.Global({ value: "i32", mutable: true }, address);
   }
   return cells;
@@ -171,7 +172,7 @@ function sideImports(
   memoryBase: number,
   tableBase: number,
   got: WebAssembly.ModuleImports,
-  coreProfile: CompiledMember["profile"],
+  relativeAddresses: readonly string[],
   slots: SelfSlots,
   ranges: Range[],
   coreBase: number,
@@ -183,7 +184,7 @@ function sideImports(
     const shared = coreEnv?.[entry.name];
     const value =
       core.exports[entry.name] ?? (shared instanceof WebAssembly.Global ? shared : undefined);
-    const slot = member.self.targetSlots.get(entry.name);
+    const slot = member.self.targetSlots.find((slot) => slot.name === entry.name)?.slot;
     if (entry.name === "memory") env[entry.name] = memory;
     else if (entry.name === "__indirect_function_table") env[entry.name] = table;
     else if (entry.name === "__memory_base")
@@ -196,13 +197,11 @@ function sideImports(
   }
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "GOT.mem" || Object.hasOwn(got, entry.name)) continue;
-    if (!coreProfile.immutableI32Exports.has(entry.name))
-      invalid(member.id, `GOT.mem.${entry.name} requires an immutable core i32 address export`);
     const symbol = core.exports[entry.name];
     if (!(symbol instanceof WebAssembly.Global) || typeof symbol.value !== "number")
       invalid(member.id, `GOT.mem.${entry.name} requires a core i32 address export`);
     // PIE data exports without extended-const are relative to the core's __memory_base.
-    const relative = coreProfile.relativeExports.has(entry.name) ? coreBase : 0;
+    const relative = relativeAddresses.includes(entry.name) ? coreBase : 0;
     const address = (symbol.value + relative) >>> 0;
     if (!dataAddress(entry.name, address, memory))
       invalid(member.id, `GOT.mem.${entry.name} address is outside core memory`);
@@ -267,11 +266,11 @@ function linkLibrary(
   live();
   host.checkActive();
   live();
-  const layout = member.profile.memory!;
+  const layout = member.layout!;
   const tableBase = reserveTable(table, member.id, layout.tableSize, layout.tableAlignment, ranges);
   if (
-    memoryBase + member.profile.baseOffsets.memory > 4294967295 ||
-    tableBase + member.profile.baseOffsets.table > 4294967295
+    memoryBase + member.baseOffsets.memory > 4294967295 ||
+    tableBase + member.baseOffsets.table > 4294967295
   )
     invalid(member.id, "relative global address overflows wasm32");
   new Uint8Array(memory.buffer, memoryBase, layout.memorySize).fill(0);
@@ -285,7 +284,7 @@ function linkLibrary(
     memoryBase,
     tableBase,
     got,
-    plan.core.profile,
+    plan.relativeAddresses,
     slots,
     ranges,
     coreBase,
@@ -312,7 +311,7 @@ type LifecycleState = "linking" | "linked" | "initializing" | "ready" | "poisone
 
 export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   host.checkActive();
-  const pie = plan.core.profile.pie;
+  const pie = plan.pie;
   // A PIE core runs in a memory group: its env image (shared memory, own table) is supplied.
   if (pie && !host.coreImports?.env?.memory)
     invalid(plan.core.id, "PIE core requires a memory group");
