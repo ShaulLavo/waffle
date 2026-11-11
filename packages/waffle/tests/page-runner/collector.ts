@@ -139,6 +139,11 @@ export class Collector {
       this.reply(false, state).kind !== "live"
     )
       throw new ObservationClosed("Worker close query is not the exact live document");
+    try {
+      owner.observation.check();
+    } catch (error) {
+      throw new ObservationClosed("Worker close query observation is not active", { cause: error });
+    }
     const ms = owner.deadline() - this.now();
     if (ms <= 0 || owner.pending >= 4096)
       throw new ObservationClosed("Worker close query admission expired or full");

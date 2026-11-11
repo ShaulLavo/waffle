@@ -262,7 +262,7 @@ export class BrowserObservation implements DriverObservation {
     );
   }
   waitForWorkerURLClose(workerURL: string): Promise<void> {
-    this.reduceCheck();
+    this.check();
     const entry = this.latest.get(workerURL);
     if (!entry)
       return Promise.reject(new Error(`Worker was not observed by the browser: ${workerURL}`));

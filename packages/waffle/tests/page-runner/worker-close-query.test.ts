@@ -105,3 +105,42 @@ test("retirement rejects an outstanding close query without fabricating close", 
   await expect(query).rejects.toThrow("retired");
   expect(await f.consumers.join(100)).toBe(true);
 });
+
+test("retirement closes new URL query admission before asynchronous cleanup finishes", async () => {
+  const f = fixture();
+  const cleanup = Promise.withResolvers<void>();
+  const observation = new BrowserObservation("owned", f.consumers, () => cleanup.promise);
+  observation.created("worker", f.query.url);
+  const worker = observation.workers()[0]!;
+  observation.terminated("worker", "safari-worker-terminated");
+  const admitted = observation.waitForWorkerURLClose(f.query.url);
+  const stopped = observation.stop();
+  try {
+    expect(() => observation.waitForWorkerURLClose(f.query.url)).toThrow("revoked");
+    await admitted;
+    await observation.waitForWorkerClose(worker);
+    expect(await f.consumers.join(1)).toBe(false);
+  } finally {
+    cleanup.resolve();
+    await stopped;
+    await f.observation.stop();
+    expect(await f.consumers.join(100)).toBe(true);
+  }
+});
+
+test("a retired observation rejects a new authenticated close query for a closed Worker", async () => {
+  const f = fixture();
+  f.observation.terminated("worker", "playwright-worker-close");
+  const server = serveCollector(f.collector, {}, undefined, 0, undefined, f.consumers);
+  await f.observation.stop();
+  try {
+    const response = await fetch(`${server.origin}/_waffle_worker_close`, {
+      method: "POST",
+      body: JSON.stringify(f.query),
+    });
+    expect(response.status).toBe(410);
+  } finally {
+    expect(await f.consumers.join(100)).toBe(true);
+    await server.server.stop(true);
+  }
+});

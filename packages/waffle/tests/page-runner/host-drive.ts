@@ -996,44 +996,94 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     const transition = this.collector.prepareTransition(state, "reload", this.operationDeadline());
     if (transition.action !== "reload") throw new Error("Wrong reload action");
     this.peerSignals.get(state)?.abort(new Error("Peer generation superseded"));
-    const successor = await this.transitionCommand(transition, false, async (signal) => {
-      const successor = this.collector.expectPeer(
-        this.state,
-        transition.target.peer,
-        transition.target.generation,
-        transition.target.token,
-        transition.target.url,
-        state.handle,
-        transition,
-      );
-      this.checkTransition(transition, signal);
-      this.configure(successor);
-      this.checkTransition(transition, signal);
-      const previous = this.collector.observation(state);
-      if (previous) {
-        const workers = previous.workers();
-        const bootstrapURL = `${new URL(successor.expectedURL).origin}/_waffle_observation_bootstrap?token=${successor.token}`;
-        previous.beginDocumentClose(bootstrapURL);
-        await this.driver.navigate(bootstrapURL, signal);
-        await bounded(
-          Promise.all(workers.map((worker) => previous.waitForWorkerClose(worker))),
-          Math.max(0, transition.deadline - performance.now()),
-          "old generation Worker close",
+    const previous = this.collector.observation(state);
+    const { successor, workers } = await this.transitionCommand(
+      transition,
+      false,
+      async (signal) => {
+        const successor = this.collector.expectPeer(
+          this.state,
+          transition.target.peer,
+          transition.target.generation,
+          transition.target.token,
+          transition.target.url,
+          state.handle,
+          transition,
         );
-        await previous.stop();
-        await this.observePeer(successor, signal, true);
-        await this.driver.navigate(successor.expectedURL, signal);
-        this.collector.observation(successor)?.navigationComplete();
-      } else await this.driver.reloadWindow(signal);
-      this.checkBody();
-      if ((await this.driver.handle(signal)) !== state.handle)
-        throw new Error("Reload changed peer handle");
-      this.checkBody();
-      return successor;
-    });
+        this.checkTransition(transition, signal);
+        this.configure(successor);
+        this.checkTransition(transition, signal);
+        const workers = previous?.workers() ?? [];
+        if (previous) {
+          const bootstrapURL = `${new URL(successor.expectedURL).origin}/_waffle_observation_bootstrap?token=${successor.token}`;
+          previous.beginDocumentClose(bootstrapURL);
+          await this.driver.navigate(bootstrapURL, signal);
+        } else await this.driver.reloadWindow(signal);
+        this.checkTransition(transition, signal);
+        if ((await this.driver.handle(signal)) !== state.handle)
+          throw new Error("Reload changed peer handle");
+        return { successor, workers };
+      },
+    );
+    if (previous) await this.finishObservedReload(transition, successor, previous, workers);
     const capability = await this.admitPeer(successor, transition);
     if (successor.doc === state.doc) throw new Error("Reload retained old document");
     return capability;
+  }
+  private async finishObservedReload(
+    transition: PeerTransition,
+    successor: DocumentState,
+    previous: DriverObservation,
+    workers: readonly HostWorker[],
+  ): Promise<void> {
+    const signal = AbortSignal.any([
+      this.signal,
+      AbortSignal.timeout(Math.max(1, Math.ceil(transition.deadline - performance.now()))),
+    ]);
+    try {
+      await abortable(
+        Promise.all(workers.map((worker) => previous.waitForWorkerClose(worker))).then(() =>
+          previous.stop(),
+        ),
+        signal,
+      );
+      await abortable(
+        this.enqueue(() => this.resumeObservedReload(transition, successor, signal)),
+        signal,
+      );
+    } catch (error) {
+      transition.progress = { kind: "failed", detail: String(error) };
+      transition.source.physical = "unconfirmed";
+      this.fault(error, transition.source);
+      throw error;
+    }
+  }
+  private async resumeObservedReload(
+    transition: PeerTransition,
+    successor: DocumentState,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.checkTransition(transition, signal);
+    this.checkTarget(successor, transition.deadline);
+    if (transition.progress.kind !== "executing") throw new Error("Reload is not executing");
+    await this.driver.selectWindow(successor.handle, signal);
+    this.checkTransition(transition, signal);
+    const handles = await this.driver.handles(signal);
+    this.checkTransition(transition, signal);
+    if (!handles.includes(successor.handle) || !handles.includes(this.state.handle))
+      throw new Error("Reload peer or coordinator handle missing");
+    const bootstrapURL = `${new URL(successor.expectedURL).origin}/_waffle_observation_bootstrap?token=${successor.token}`;
+    if ((await this.driver.handle(signal)) !== successor.handle)
+      throw new Error("Reload changed peer handle");
+    this.checkTransition(transition, signal);
+    if ((await this.driver.url(signal)) !== bootstrapURL)
+      throw new Error("Reload bootstrap document changed");
+    this.checkTransition(transition, signal);
+    await this.observePeer(successor, signal, true);
+    this.checkTransition(transition, signal);
+    await this.driver.navigate(successor.expectedURL, signal);
+    this.collector.observation(successor)?.navigationComplete();
+    this.checkTransition(transition, signal);
   }
   private closePeer(state: DocumentState, cleanup: boolean): Promise<void> {
     const prior = this.closes.get(state);
