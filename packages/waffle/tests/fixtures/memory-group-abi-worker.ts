@@ -31,10 +31,23 @@ function publications(shm: GroupMember["imports"], memory: WebAssembly.Memory) {
   };
 }
 
-onmessage = ({ data }: MessageEvent<{ request: MemoryGroupMemberRequest; mode: string }>) => {
+type Request =
+  | { request: MemoryGroupMemberRequest; mode: "grow"; pages: readonly number[] }
+  | { request: MemoryGroupMemberRequest; mode: "outputs" | "publications" };
+
+onmessage = ({ data }: MessageEvent<Request>) => {
   const member = createGroupMember(data.request, { checkActive() {} });
   const shm = member.imports;
   try {
+    if (data.mode === "grow") {
+      postMessage(
+        data.pages.map((pages) => ({
+          page: shm.group_grow!(pages),
+          bytes: member.memory.buffer.byteLength,
+        })),
+      );
+      return;
+    }
     if (data.mode === "publications") {
       postMessage(publications(shm, member.memory));
       return;

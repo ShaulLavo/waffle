@@ -35,14 +35,9 @@ const moduleImports = WebAssembly.Module.imports;
 const NativeTable = WebAssembly.Table;
 const NativeGlobal = WebAssembly.Global;
 const memoryBuffer = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
-const { ceil, max, min } = Math;
+const { ceil, max } = Math;
 const toNumber = Number;
 const asIntN = BigInt.asIntN;
-
-// group_grow serves sbrk from a member-owned lease, so most calls need no owner round trip.
-// Unused lease pages stay charged to the member until its physical stop.
-const LEASE_MIN = 16,
-  LEASE_MAX = 64;
 
 /** Memory-info (subsection 1) of a `dylink.0` payload. The full validator lives in waffle/link. */
 function memoryInfo(payload: Uint8Array) {
@@ -117,8 +112,6 @@ export function createGroupMember(
   const table = new Int32ArrayConstructor(request.control);
   const watches = new Map<number, Watch>();
   let seq = 0;
-  let lease = { page: 0, pages: 0 },
-    leaseSize = LEASE_MIN;
   let disposed = false;
 
   const buffer = (): SharedArrayBuffer => reflectApply(memoryBuffer, memory, []);
@@ -208,21 +201,9 @@ export function createGroupMember(
     group_grow(pages: number): number {
       pages >>>= 0;
       if (pages === 0) return -GroupErrno.INVAL;
-      if (pages > lease.pages) {
-        const wanted = max(pages, leaseSize);
-        let page = chunk(wanted);
-        let granted = wanted;
-        if (page < 0 && wanted > pages) {
-          page = chunk(pages);
-          granted = pages;
-        }
-        if (page < 0) return page;
-        lease = { page, pages: granted };
-        leaseSize = min(LEASE_MAX, leaseSize * 2);
-      }
-      const page = lease.page;
-      lease = { page: page + pages, pages: lease.pages - pages };
-      return page;
+      // The owner reuses free ranges or grows exactly this many pages. No speculative
+      // member lease: a one-page call must not acquire or retain unused backing.
+      return chunk(pages);
     },
     shm_create(len: number, align: number, out: number): number {
       return answer(out, 2, GroupOp.CREATE, len, align);
