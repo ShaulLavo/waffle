@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { browserBundle } from "../browser-runner-lifecycle.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
@@ -11,7 +12,9 @@ for (const engine of ["chromium"] as const) {
   test.skipIf(process.env.PUBLICATION_BROWSER_CONTROLS !== "1")(
     `real ${engine} peer generations keep independent lifecycle owners and close bridge`,
     async () => {
-      const root = await mkdtemp("/work/tmp/wpl-");
+      const scratchRoot =
+        process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "win32" ? tmpdir() : "/tmp");
+      const root = await mkdtemp(join(scratchRoot, "wpl-"));
       const adapter: SuiteAdapter<null> = {
         suite: "worker-lifecycle-control",
         inventory: () => [
@@ -86,7 +89,7 @@ for (const engine of ["chromium"] as const) {
         const result = await runPageSuite(
           adapter,
           (scratch) => new PlaywrightDriver(engine, scratch),
-          { resultPath: join(root, "result.json"), scratchRoot: "/work/tmp", port: "ephemeral" },
+          { resultPath: join(root, "result.json"), scratchRoot, port: "ephemeral" },
         );
         expect(result.failures).toEqual([]);
         assert.equal(result.exit, 0, JSON.stringify(result));

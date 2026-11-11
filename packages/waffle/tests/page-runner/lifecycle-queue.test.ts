@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrowserObservation } from "./browser-observation.js";
 import { bounded, type DriverObservationBinding } from "./driver.js";
@@ -68,7 +69,9 @@ async function reloadCallbackControl(
   rootCommand: boolean,
   action: "reload" | "close" = "reload",
 ): Promise<void> {
-  const root = await mkdtemp("/work/tmp/waffle-lifecycle-");
+  const root = await mkdtemp(
+    join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-lifecycle-"),
+  );
   const driver = new ObservedPeerFixture();
   const release = Promise.withResolvers<void>();
   const callbacks: Promise<unknown>[] = [];
