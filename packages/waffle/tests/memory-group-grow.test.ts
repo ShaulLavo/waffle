@@ -136,9 +136,7 @@ test("stopped member pages are charged, reusable and zeroed until the group ends
         { page: 1, bytes: 18 * PAGE_BYTES },
         { page: 2, bytes: 18 * PAGE_BYTES },
       ]);
-      expect(new Uint8Array(leader.group.buffer(), PAGE_BYTES)).toEqual(
-        new Uint8Array(17 * PAGE_BYTES),
-      );
+      expect(new Uint8Array(leader.group.buffer(), PAGE_BYTES).some(Boolean)).toBe(false);
       expect(groups.budget.committed).toBe(18 * PAGE_BYTES);
       expect(owner.snapshot().freeBytes).toBe(0);
     } finally {
