@@ -67,7 +67,9 @@ try {
       throw new Error(`unknown browser ${name}`);
     const scratch = await mkdtemp(join(root, "link-"));
     profiles.push(scratch);
-    browser = await engines[name].launch({ env: { ...process.env, TMPDIR: scratch } });
+    browser = await engines[name].launch({
+      env: { ...process.env, TMPDIR: process.env.TMPDIR ?? scratch },
+    });
     const tab = await browser.newPage();
     await navigateTestPage(tab, `http://127.0.0.1:${server.port}/`);
     const result = await tab.evaluate(async () => {
