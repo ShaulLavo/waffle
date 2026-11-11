@@ -1,3 +1,4 @@
+import { groupLinkProgram } from "./fixtures/group-link-program.js";
 import { pieCore } from "./fixtures/memory-group-pie.js";
 import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
@@ -268,14 +269,14 @@ test("a settled external root no longer retains its group lease", async () => {
     });
     root.data = { filesystem: createFilesystemIdentity() };
     await broker.adoptRuntimeRoot(root, { memory: [] });
-    const first = broker.admitRootMemoryGroup(root.pid);
+    const first = broker.admitRootMemoryGroup(root.pid, await groupLinkProgram());
     first.request.port.close();
     first.stopped();
     first.stopped();
     expect(broker.memoryGroups()).toEqual([]);
     expect((Reflect.get(broker, "rootGroups") as Map<number, unknown>).size).toBe(0);
     // A later admission for the same root starts a fresh group.
-    const second = broker.admitRootMemoryGroup(root.pid);
+    const second = broker.admitRootMemoryGroup(root.pid, await groupLinkProgram());
     second.request.port.close();
     expect(broker.memoryGroups()).toHaveLength(1);
     second.stopped();

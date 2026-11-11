@@ -119,7 +119,7 @@ async function harness() {
         module: context.module,
         args: context.request.argv,
         env: {},
-        linkPlan: plan.toSource(),
+        linkPlan: plan.shared,
       },
       memoryGroup: context.request.argv[0] === "member" ? group! : "new",
       onMessage(message) {

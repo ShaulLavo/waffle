@@ -50,7 +50,7 @@ function reserveMemory(
   memory: WebAssembly.Memory,
   libraries: readonly LinkedLibrary[],
 ): number {
-  const info = member.profile.memory;
+  const info = member.layout;
   if (!info) return invalid(member.id, "missing side layout");
   const size = Math.max(1, info.memorySize),
     alignment = 2 ** info.memoryAlignment;
@@ -171,7 +171,7 @@ function sideImports(
   memoryBase: number,
   tableBase: number,
   got: WebAssembly.ModuleImports,
-  coreProfile: CompiledMember["profile"],
+  relativeAddresses: readonly string[],
   slots: SelfSlots,
   ranges: Range[],
   coreBase: number,
@@ -196,13 +196,11 @@ function sideImports(
   }
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "GOT.mem" || Object.hasOwn(got, entry.name)) continue;
-    if (!coreProfile.immutableI32Exports.has(entry.name))
-      invalid(member.id, `GOT.mem.${entry.name} requires an immutable core i32 address export`);
     const symbol = core.exports[entry.name];
     if (!(symbol instanceof WebAssembly.Global) || typeof symbol.value !== "number")
       invalid(member.id, `GOT.mem.${entry.name} requires a core i32 address export`);
     // PIE data exports without extended-const are relative to the core's __memory_base.
-    const relative = coreProfile.relativeExports.has(entry.name) ? coreBase : 0;
+    const relative = relativeAddresses.includes(entry.name) ? coreBase : 0;
     const address = (symbol.value + relative) >>> 0;
     if (!dataAddress(entry.name, address, memory))
       invalid(member.id, `GOT.mem.${entry.name} address is outside core memory`);
@@ -267,11 +265,11 @@ function linkLibrary(
   live();
   host.checkActive();
   live();
-  const layout = member.profile.memory!;
+  const layout = member.layout!;
   const tableBase = reserveTable(table, member.id, layout.tableSize, layout.tableAlignment, ranges);
   if (
-    memoryBase + member.profile.baseOffsets.memory > 4294967295 ||
-    tableBase + member.profile.baseOffsets.table > 4294967295
+    memoryBase + member.baseOffsets.memory > 4294967295 ||
+    tableBase + member.baseOffsets.table > 4294967295
   )
     invalid(member.id, "relative global address overflows wasm32");
   new Uint8Array(memory.buffer, memoryBase, layout.memorySize).fill(0);
@@ -285,7 +283,7 @@ function linkLibrary(
     memoryBase,
     tableBase,
     got,
-    plan.core.profile,
+    plan.relativeAddresses,
     slots,
     ranges,
     coreBase,
@@ -312,7 +310,7 @@ type LifecycleState = "linking" | "linked" | "initializing" | "ready" | "poisone
 
 export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   host.checkActive();
-  const pie = plan.core.profile.pie;
+  const pie = plan.pie;
   // A PIE core runs in a memory group: its env image (shared memory, own table) is supplied.
   if (pie && !host.coreImports?.env?.memory)
     invalid(plan.core.id, "PIE core requires a memory group");

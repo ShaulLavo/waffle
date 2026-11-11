@@ -1,4 +1,17 @@
-import { declareModuleMemory } from "../memory/declarations.js";
+import {
+  recordModuleMemory,
+  parseModuleMemory,
+  type MemoryDeclaration,
+} from "../memory/declarations.js";
+import {
+  snapshotImage,
+  type MemberImage,
+  type PlanImage,
+  type SelfImage,
+  type SharedLinkPlan,
+} from "./image.js";
+import { issueGroupPlan } from "./issuance.js";
+export type { SharedLinkPlan } from "./image.js";
 import type { Wasi } from "../core/wasi.js";
 import {
   invalid,
@@ -33,84 +46,119 @@ export interface LinkHost {
   checkActive(): void;
   bindMemory?(memory: WebAssembly.Memory): void;
 }
-/** Definitions a side binds to itself because core does not preempt them. */
-export interface SelfPlan {
-  /** Defined exports, in target-slot order. */
-  readonly targets: readonly string[];
-  /** Same-side symbol name -> target slot for its defined function identity. */
-  readonly targetSlots: ReadonlyMap<string, number>;
-  /** Relay with export `f<slot>` for every target; absent when nothing binds to self. */
-  readonly relay: WebAssembly.Module | undefined;
+interface OwnedMember extends LinkMemberSource {
+  readonly source: Uint8Array<ArrayBuffer>;
 }
-export interface CompiledMember {
-  readonly id: string;
-  readonly module: WebAssembly.Module;
+interface ValidatedMember {
+  readonly source: OwnedMember;
   readonly profile: ModuleProfile;
-  readonly initializeMemory: readonly string[];
-  readonly initialize: readonly string[];
+  readonly declarations: readonly MemoryDeclaration[];
   readonly automaticRelocation: boolean;
+}
+interface SelfPlan extends Omit<SelfImage, "targetSlots"> {
+  readonly targetSlots: ReadonlyMap<string, number>;
+}
+export interface CompiledMember extends Omit<MemberImage, "self"> {
   readonly self: SelfPlan;
 }
-export interface PlanData {
+export interface PlanData extends Omit<PlanImage, "core" | "libraries"> {
   readonly core: CompiledMember;
   readonly libraries: readonly CompiledMember[];
-  readonly reserve: string;
-  readonly source: LinkPlanSource;
+}
+interface ProfiledMember extends MemberImage {
+  readonly profile: ModuleProfile;
 }
 const plans = new WeakMap<PreparedLinkPlan, PlanData>();
-const NO_SELF: SelfPlan = { targets: [], targetSlots: new Map(), relay: undefined };
-const code = new Map<string, Promise<WebAssembly.Module>>();
+const NO_SELF: SelfImage = { targets: [], targetSlots: [], relay: undefined };
 
 export class PreparedLinkPlan {
-  private constructor(readonly entryModule: WebAssembly.Module) {}
-  /** Exact-byte structured-clone transport. Receivers must prepare it again. */
-  toSource(): LinkPlanSource {
-    const data = plans.get(this);
-    if (!data) return invalid("plan", "expected a local prepared plan");
-    return snapshotPlan(data.source);
-  }
+  private constructor(
+    readonly entryModule: WebAssembly.Module,
+    readonly shared: SharedLinkPlan,
+  ) {}
   static async prepare(source: LinkPlanSource): Promise<PreparedLinkPlan> {
     const owned = snapshotPlan(source);
     const members = [owned.core].concat(owned.libraries);
-    const reserve = owned.reserve;
     const ids = members.map((member) => member.id);
     if (new Set(ids).size !== ids.length) invalid("plan", "duplicate member id");
-    const compiled: CompiledMember[] = [];
-    for (let index = 0; index < members.length; index++)
-      compiled.push(await compile(members[index]!, index !== 0));
+    const validated = members.map((member, index) => validateMember(member, index !== 0));
+    const coreInput = validated[0]!;
+    if (coreInput.profile.pie)
+      validated.forEach((member) => {
+        if (!growthFree(member.source.source, member.source.id))
+          invalid(
+            member.source.id,
+            "a memory group image cannot use memory.grow; grow through group_grow",
+          );
+      });
+    requireSignature(coreInput.profile, coreInput.source.id, "_start", [], []);
+    requireSignature(coreInput.profile, coreInput.source.id, owned.reserve, [0x7f, 0x7f], [0x7f]);
+    // Every rejection is observed as compilation starts. All byte reads end before this await.
+    const results = await Promise.allSettled(validated.map(compileMember));
+    const compiled = results.map((result, index) => {
+      if (result.status === "rejected") return formatError(members[index]!.id, result.reason);
+      return result.value;
+    });
     const core = compiled[0]!;
     if (core.profile.pie)
-      members.forEach((member, index) => groupAdmission(member, compiled[index]!));
-    requireSignature(core.profile, core.id, "_start", [], []);
-    requireSignature(core.profile, core.id, reserve, [0x7f, 0x7f], [0x7f]);
-    const libraries: CompiledMember[] = [];
+      compiled.forEach((member) => {
+        if (WebAssembly.Module.exports(member.module).some((entry) => entry.kind === "memory"))
+          invalid(member.id, "a memory group image cannot export the shared memory");
+      });
+    const libraries: MemberImage[] = [];
     for (const member of compiled.slice(1))
       libraries.push({ ...member, self: await selectProviders(core, member) });
-    const plan = Object.freeze(new PreparedLinkPlan(core.module));
-    plans.set(plan, { core, libraries, reserve, source: owned });
+    const importedAddresses = new Set(
+      compiled
+        .slice(1)
+        .flatMap((member) =>
+          member.profile.globalImports
+            .filter((entry) => entry.module === "GOT.mem")
+            .map((entry) => entry.name),
+        ),
+    );
+    const relativeAddresses = Array.from(core.profile.relativeExports).filter((name) =>
+      importedAddresses.has(name),
+    );
+    const image = snapshotImage({
+      core,
+      libraries,
+      reserve: owned.reserve,
+      pie: core.profile.pie,
+      relativeAddresses,
+    });
+    const plan = Object.freeze(new PreparedLinkPlan(core.module, image));
+    plans.set(plan, localData(image));
+    if (image.pie) issueGroupPlan(image, core.module);
+    return plan;
+  }
+  /** Synchronous receiving-side adoption. No parsing, hashing or compilation. */
+  static adopt(shared: SharedLinkPlan): PreparedLinkPlan {
+    const image = snapshotImage(shared);
+    const plan = Object.freeze(new PreparedLinkPlan(image.core.module, image));
+    plans.set(plan, localData(image));
     return plan;
   }
 }
 
-const admitted = new WeakMap<WebAssembly.Module, true>();
-/** W3: images in a memory group cannot grow or re-export the shared memory themselves. */
-function groupAdmission(source: LinkMemberSource, member: CompiledMember): void {
-  if (WebAssembly.Module.exports(member.module).some((entry) => entry.kind === "memory"))
-    invalid(member.id, "a memory group image cannot export the shared memory");
-  if (admitted.has(member.module)) return;
-  if (!growthFree(source.source, member.id))
-    invalid(member.id, "a memory group image cannot use memory.grow; grow through group_grow");
-  admitted.set(member.module, true);
+function localMember(member: MemberImage): CompiledMember {
+  const targetSlots = new Map(
+    member.self.targetSlots.map((entry): [string, number] => [entry.name, entry.slot]),
+  );
+  return { ...member, self: { ...member.self, targetSlots } };
+}
+function localData(image: PlanImage): PlanData {
+  return { ...image, core: localMember(image.core), libraries: image.libraries.map(localMember) };
 }
 
-function selfTarget(member: CompiledMember, name: string, kind: string): void {
+function selfTarget(member: ProfiledMember, name: string, kind: string): void {
   const local = member.profile.functions.get(name);
   if (local && !local.defined)
     invalid(member.id, `${kind}.${name} same-side export re-exports an import, not a definition`);
 }
 
 /** Core preempts; otherwise only a defined same-member export of the exact type binds. */
-async function selectProviders(core: CompiledMember, member: CompiledMember): Promise<SelfPlan> {
+async function selectProviders(core: ProfiledMember, member: ProfiledMember): Promise<SelfImage> {
   const exports = WebAssembly.Module.exports(core.module);
   const targets: string[] = [];
   const targetSlots = new Map<string, number>();
@@ -171,10 +219,18 @@ async function selectProviders(core: CompiledMember, member: CompiledMember): Pr
   }
   if (!targets.length) return NO_SELF;
   const signatures = targets.map((name) => member.profile.functions.get(name)!);
-  return { targets, targetSlots, relay: await WebAssembly.compile(relayModule(signatures)) };
+  return {
+    targets,
+    targetSlots: Array.from(targetSlots, ([name, slot]) => ({ name, slot })),
+    relay: await WebAssembly.compile(relayModule(signatures)),
+  };
 }
 
-function snapshotPlan(source: LinkPlanSource): LinkPlanSource {
+function snapshotPlan(source: LinkPlanSource): {
+  core: OwnedMember;
+  libraries: OwnedMember[];
+  reserve: string;
+} {
   return {
     core: snapshot(source.core),
     libraries: Array.from(source.libraries, snapshot),
@@ -182,12 +238,15 @@ function snapshotPlan(source: LinkPlanSource): LinkPlanSource {
   };
 }
 
-function snapshot(member: LinkMemberSource): LinkMemberSource {
+function snapshot(member: LinkMemberSource): OwnedMember {
   if (!(member.source instanceof Uint8Array)) invalid(member.id, "source must be exact bytes");
   if (member.cooperative !== true) invalid(member.id, "explicit cooperative trust is required");
   return {
     id: member.id,
-    source: new Uint8Array(member.source),
+    source:
+      member.source.buffer instanceof ArrayBuffer
+        ? new Uint8Array(member.source.buffer, member.source.byteOffset, member.source.byteLength)
+        : new Uint8Array(member.source),
     cooperative: true,
     checkpoint: { module: member.checkpoint.module, name: member.checkpoint.name },
     initializeMemory: copyStageNames(member, "initializeMemory"),
@@ -244,29 +303,32 @@ function validateStages(member: LinkMemberSource, profile: ModuleProfile, side: 
   return Boolean(relocation && side && !listedRelocation);
 }
 
-async function compile(member: LinkMemberSource, side: boolean): Promise<CompiledMember> {
+function formatError(id: string, error: unknown): never {
+  if (error instanceof WebAssembly.CompileError) invalid(id, error.message);
+  throw error;
+}
+
+function validateMember(member: OwnedMember, side: boolean): ValidatedMember {
   const profile = inspectProfile(member.source, member.id, side);
   const automaticRelocation = validateStages(member, profile, side);
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new Uint8Array(member.source)),
-  );
-  const key = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  let pending = code.get(key);
-  if (!pending) {
-    pending = WebAssembly.compile(new Uint8Array(member.source));
-    code.set(key, pending);
-    if (code.size > 16) code.delete(code.keys().next().value!);
-  }
-  let module: WebAssembly.Module;
+  if (profile.functions.has(RELOCATION)) requireSignature(profile, member.id, RELOCATION, [], []);
   try {
-    module = await pending;
-    declareModuleMemory(module, member.source);
+    return {
+      source: member,
+      profile,
+      automaticRelocation,
+      declarations: parseModuleMemory(member.source),
+    };
   } catch (error) {
-    if (code.get(key) === pending) code.delete(key);
-    if (error instanceof WebAssembly.CompileError) invalid(member.id, error.message);
-    throw error;
+    return formatError(member.id, error);
   }
-  const checkpoint = member.checkpoint;
+}
+
+async function compileMember(member: ValidatedMember): Promise<ProfiledMember> {
+  const source = member.source;
+  const module = await WebAssembly.compile(source.source);
+  recordModuleMemory(module, member.declarations);
+  const checkpoint = source.checkpoint;
   if (
     !WebAssembly.Module.imports(module).some(
       (entry) =>
@@ -275,20 +337,22 @@ async function compile(member: LinkMemberSource, side: boolean): Promise<Compile
         entry.name === checkpoint.name,
     )
   )
-    invalid(member.id, `checkpoint import ${checkpoint.module}.${checkpoint.name} is absent`);
-  if (profile.functions.has(RELOCATION)) requireSignature(profile, member.id, RELOCATION, [], []);
+    invalid(source.id, `checkpoint import ${checkpoint.module}.${checkpoint.name} is absent`);
   return {
-    id: member.id,
+    id: source.id,
     module,
-    profile,
-    initializeMemory: member.initializeMemory,
-    initialize: member.initialize,
-    automaticRelocation,
+    profile: member.profile,
+    layout: member.profile.memory,
+    baseOffsets: member.profile.baseOffsets,
+    initializeMemory: source.initializeMemory,
+    initialize: source.initialize,
+    automaticRelocation: member.automaticRelocation,
     self: NO_SELF,
   };
 }
 
 export const prepareLinkPlan = PreparedLinkPlan.prepare;
+export const adoptLinkPlan = PreparedLinkPlan.adopt;
 export function instantiateLinkPlan(plan: PreparedLinkPlan, host: LinkHost): LinkedGroup {
   const data = plans.get(plan);
   if (!data) invalid("plan", "expected a local prepared plan, not a clone or manifest");

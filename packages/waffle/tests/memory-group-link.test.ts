@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
-import { instantiateLinkPlan, prepareLinkPlan } from "../link/index.js";
+import { adoptLinkPlan, instantiateLinkPlan, prepareLinkPlan } from "../link/index.js";
 import { inspectProfile } from "../link/metadata.js";
 import { PAGE_BYTES } from "../group/protocol.js";
 import { MemoryGroups, type MemberLease } from "../group/state.js";
@@ -30,6 +30,7 @@ interface CoreResourceImports {
   readonly memory?: number[] | null;
   readonly table?: number[] | null;
   readonly globals?: readonly number[][];
+  readonly extendedData?: boolean;
 }
 
 /** A PIE core: imports shared memory, table, bases and stack; exports a const data address. */
@@ -83,7 +84,14 @@ function pieCore(
         ),
       ),
       section(3, vec([[1], [0]])),
-      section(6, vec([[0x7f, 0, 0x41, 16, 0x0b]])),
+      section(
+        6,
+        vec([
+          [0x7f, 0].concat(
+            resources.extendedData ? [0x23, 1, 0x41, 16, 0x6a, 0x0b] : [0x41, 16, 0x0b],
+          ),
+        ]),
+      ),
       section(
         7,
         vec([
@@ -174,30 +182,53 @@ test("a core with dylink.0 is a PIE image with base-relative constant data expor
   expect(inspectProfile(pieCore(), "core", false).memory?.memorySize).toBe(16);
 });
 
-test("a PIE core links only into a supplied group memory and table", async () => {
-  const prepared = await plan();
-  expect(() => instantiateLinkPlan(prepared, host())).toThrow("PIE core requires a memory group");
-  const memory = new WebAssembly.Memory({ initial: 4, maximum: 65536, shared: true });
-  const table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
-  const global = (value: number, mutable = false) =>
-    new WebAssembly.Global({ value: "i32", mutable }, value);
-  const env = {
-    check() {},
-    memory,
-    __indirect_function_table: table,
-    __stack_pointer: global(4 * 65536, true),
-    __memory_base: global(65536),
-    __table_base: global(1),
-  };
-  const group = instantiateLinkPlan(prepared, host({ env }));
-  group.initialize();
-  expect(group.memory).toBe(memory);
-  expect(group.table).toBe(table);
-  // The core's constant export 16 is relative to its own __memory_base.
-  expect((group.libraries[0]!.instance.exports.read as () => number)()).toBe(65536 + 16);
-  group.initialize();
-  group.dispose();
-});
+for (const extendedData of [false, true]) {
+  test(`PIE ${extendedData ? "extended-const" : "relative"} data relocation survives a shared module roundtrip`, async () => {
+    const input = {
+      core: {
+        id: "core",
+        source: pieCore(false, false, { extendedData }),
+        cooperative: true as const,
+        checkpoint: { module: "env", name: "check" },
+        initializeMemory: [],
+        initialize: [],
+      },
+      libraries: [
+        {
+          id: "side",
+          source: side(),
+          cooperative: true as const,
+          checkpoint: { module: "env", name: "check" },
+          initializeMemory: [],
+          initialize: [],
+        },
+      ],
+      reserve: "bun_core_alloc",
+    };
+    const prepared = adoptLinkPlan(structuredClone((await prepareLinkPlan(input)).shared));
+    expect(() => instantiateLinkPlan(prepared, host())).toThrow("PIE core requires a memory group");
+    const memory = new WebAssembly.Memory({ initial: 4, maximum: 65536, shared: true });
+    const table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
+    const global = (value: number, mutable = false) =>
+      new WebAssembly.Global({ value: "i32", mutable }, value);
+    const env = {
+      check() {},
+      memory,
+      __indirect_function_table: table,
+      __stack_pointer: global(4 * 65536, true),
+      __memory_base: global(65536),
+      __table_base: global(1),
+    };
+    const group = instantiateLinkPlan(prepared, host({ env }));
+    group.initialize();
+    expect(group.memory).toBe(memory);
+    expect(group.table).toBe(table);
+    // The core's constant export 16 is relative to its own __memory_base.
+    expect((group.libraries[0]!.instance.exports.read as () => number)()).toBe(65536 + 16);
+    group.initialize();
+    group.dispose();
+  });
+}
 
 test("a PIE core admits only weak carved stack-bound GOT.mem imports", async () => {
   const source = pieCore(true);
@@ -332,7 +363,7 @@ async function stopStackMember(member: { lease: MemberLease; worker: Worker }) {
 
 async function launchStackMember(
   member: ReturnType<typeof stackMember>,
-  source: Parameters<typeof prepareLinkPlan>[0],
+  source: import("../link/index.js").SharedLinkPlan,
   mark = 1,
 ) {
   const response = memberReply(member.worker);
@@ -357,8 +388,8 @@ test("real image, stack and all granted worker chunks jointly consume the member
   const b = stackMember(groups, 202, a.lease.group);
   const owner = groups.owner(a.lease.group)!;
   try {
-    stackObservation(await launchStackMember(a, prepared.toSource()));
-    stackObservation(await launchStackMember(b, prepared.toSource()));
+    stackObservation(await launchStackMember(a, prepared.shared));
+    stackObservation(await launchStackMember(b, prepared.shared));
     expect(owner.snapshot().memberPages).toBe(4);
     expect(await growStackMember(a, 1)).toBeGreaterThan(0);
     // Every granted page counts, including any chunk space the worker has not used yet.
@@ -383,7 +414,7 @@ test("partial image admission remains charged through abort until its worker act
   const partial = stackMember(groups, 302, leader.group);
   const owner = groups.owner(leader.group)!;
   try {
-    expect(await launchStackMember(partial, prepared.toSource())).toEqual({
+    expect(await launchStackMember(partial, prepared.shared)).toEqual({
       error: "memory group could not carve member stack",
     });
     expect(owner.snapshot().memberPages).toBe(1);
@@ -426,7 +457,7 @@ test("real members bind nonoverlapping stack bounds and the matching stack point
       {
         kind: "launch",
         request: started.request,
-        source: prepared.toSource(),
+        source: prepared.shared,
         mark,
       },
       started.transfer,

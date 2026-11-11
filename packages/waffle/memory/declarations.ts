@@ -122,7 +122,14 @@ export function parseModuleMemory(data: Uint8Array): readonly MemoryDeclaration[
 }
 const declarations = new WeakMap<WebAssembly.Module, readonly MemoryDeclaration[]>();
 export function declareModuleMemory(module: WebAssembly.Module, data: Uint8Array): void {
-  declarations.set(module, parseModuleMemory(data));
+  recordModuleMemory(module, parseModuleMemory(data));
+}
+/** Internal preparation path: byte validation already produced these immutable declarations. */
+export function recordModuleMemory(
+  module: WebAssembly.Module,
+  parsed: readonly MemoryDeclaration[],
+): void {
+  declarations.set(module, parsed);
 }
 export function moduleMemoryDeclarations(
   module: WebAssembly.Module,

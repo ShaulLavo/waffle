@@ -1,5 +1,6 @@
+import { groupLinkProgram } from "./fixtures/group-link-program.js";
 import { pieCore } from "./fixtures/memory-group-pie.js";
-import { prepareLinkPlan } from "../link/index.js";
+import { adoptLinkPlan, prepareLinkPlan, type SharedLinkPlan } from "../link/index.js";
 import {
   SharedMemoryLedger,
   SharedMemoryAdmissionError,
@@ -55,6 +56,8 @@ async function fixture(
   reservations: RuntimeReservations = testReservations(),
   launchOptions: Pick<WorkerLaunchOptions, "memoryGroup" | "memories"> & {
     module?: WebAssembly.Module;
+    linkPlan?: import("../link/index.js").SharedLinkPlan;
+    inheritGroup?: boolean;
   } = {},
 ) {
   const previousWorker = globalThis.Worker;
@@ -117,10 +120,24 @@ async function fixture(
       quiesce: waitForFilesystemQuiescence,
     },
     launch: (context) =>
-      broker.launchWorker(context, {
+      broker.launchWorker<
+        RuntimeWorkerRequest & {
+          readonly linkPlan?: SharedLinkPlan;
+          readonly worker?: Readonly<Record<string, unknown>>;
+        }
+      >(context, {
         ...launchOptions,
         workerUrl: "generic",
-        request: { module, args: [], env: {} },
+        memoryGroup: launchOptions.inheritGroup
+          ? (broker.memoryGroupOf(context.parentPid) ?? "new")
+          : launchOptions.memoryGroup,
+        request: {
+          module,
+          args: context.request.argv,
+          env: {},
+          linkPlan: launchOptions.linkPlan,
+          worker: context.request.worker,
+        },
       }),
   });
   const root = createWorkerProcessTransport({
@@ -431,7 +448,7 @@ test("actual supervisor returns ENOMEM before allocating a child arena, group, o
   }
 });
 
-async function groupAdapterFixture(maximumPages: number) {
+async function groupAdapterFixture(maximumPages: number, variant = "issued") {
   const linked = await prepareLinkPlan({
     core: {
       id: "core",
@@ -450,8 +467,14 @@ async function groupAdapterFixture(maximumPages: number) {
     counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
   });
   const reservations = new SharedMemoryLedger(platform).openRuntime(platform);
+  const program = { module: linked.entryModule, linkPlan: linked.shared };
+  if (variant === "missing") Reflect.deleteProperty(program, "linkPlan");
+  if (variant === "forged") Reflect.set(program, "linkPlan", {});
+  if (variant === "cloned") program.linkPlan = structuredClone(linked.shared);
+  if (variant === "adopted") program.linkPlan = adoptLinkPlan(linked.shared).shared;
+  if (variant === "mismatched") program.module = (await groupLinkProgram()).module;
   const f = await fixture(false, Promise.resolve(), undefined, reservations, {
-    module: linked.entryModule,
+    ...program,
     memoryGroup: "new",
     memories: [{ kind: "private", maximumPages: pages(maximumPages), origin: "defined" }],
   });
@@ -492,5 +515,57 @@ test("a small group adapter memory is charged without charging the shared import
     ).toMatchObject([{ declaredBytes: 0 }]);
   } finally {
     await f.dispose();
+  }
+});
+
+for (const variant of ["missing", "forged", "cloned", "adopted", "mismatched"]) {
+  test(`child ${variant} group plan is rejected before group, arena or Worker acquisition`, async () => {
+    const { f, reservations } = await groupAdapterFixture(8, variant);
+    try {
+      expect(await f.supervisor.waitForExit(f.root.pid, f.pid)).toMatchObject({
+        kind: "start-failed",
+        error: "ENOEXEC",
+      });
+      expect(f.workers).toHaveLength(0);
+      expect(f.broker.memoryGroups()).toEqual([]);
+      expect(
+        reservations
+          .snapshot()
+          .holders.filter((entry) => ["request-arena", "memory-group"].includes(entry.label)),
+      ).toEqual([]);
+    } finally {
+      await f.dispose();
+    }
+  });
+}
+
+test("real nested and inherited-thread launches reuse the admitted compiled group image", async () => {
+  const previous = process.env.WAFFLE_MEMORY_WORKER_ENTRY;
+  process.env.WAFFLE_MEMORY_WORKER_ENTRY = new URL(
+    "./fixtures/linked-nested-node-worker.ts",
+    import.meta.url,
+  ).href;
+  const program = await groupLinkProgram();
+  let f: Awaited<ReturnType<typeof fixture>> | undefined;
+  try {
+    f = await fixture(true, Promise.resolve(), undefined, testReservations(), {
+      ...program,
+      memoryGroup: "new",
+      inheritGroup: true,
+    });
+    const exit = await f.supervisor.waitForExit(f.root.pid, f.pid);
+    expect(exit).toMatchObject({ kind: "exited", code: 0 });
+    expect(f.workers).toHaveLength(2);
+    const parent = f.workers[0]!.request!;
+    const child = f.workers[1]!.request!;
+    expect(child.memoryGroup?.memory).toBe(parent.memoryGroup?.memory);
+    expect(child.module).toBe(parent.module);
+    expect(Reflect.get(child, "linkPlan")).toBe(program.linkPlan);
+    expect(Reflect.get(child, "worker")).toEqual({ resourceLimits: { stackSizeMb: 4 } });
+    expect(f.errors).toEqual([]);
+  } finally {
+    await f?.dispose();
+    if (previous === undefined) delete process.env.WAFFLE_MEMORY_WORKER_ENTRY;
+    else process.env.WAFFLE_MEMORY_WORKER_ENTRY = previous;
   }
 });

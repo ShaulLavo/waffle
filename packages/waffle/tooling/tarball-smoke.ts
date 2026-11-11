@@ -108,6 +108,10 @@ async function run(): Promise<void> {
   }
   const nodeScript = `
     for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
+    const link = await import("waffle/link");
+    if (link.adoptLinkPlan !== link.PreparedLinkPlan.adopt || link.prepareLinkPlan !== link.PreparedLinkPlan.prepare)
+      throw new Error("packed link exports changed");
+    if ("toSource" in link.PreparedLinkPlan.prototype) throw new Error("legacy link transport remains");
     const { loadNetworkModule } = await import("waffle/network");
     const network = (await loadNetworkModule()).create();
     try { if (network.call("net_listen", 40, 23456) !== 23456) throw new Error("packed network failed"); }
@@ -128,7 +132,7 @@ async function run(): Promise<void> {
   );
   await writeFile(
     join(consumerDirectory, "src/main.ts"),
-    'import { bootstrap } from "waffle/browser/worker";\nimport searchUrl from "waffle/search/search-worker?worker&url";\nimport shardUrl from "waffle/search/shard-worker?worker&url";\nexport { bootstrap, searchUrl, shardUrl };\n',
+    'import { bootstrap } from "waffle/browser/worker";\nimport { adoptLinkPlan, prepareLinkPlan } from "waffle/link";\nimport searchUrl from "waffle/search/search-worker?worker&url";\nimport shardUrl from "waffle/search/shard-worker?worker&url";\nexport { bootstrap, adoptLinkPlan, prepareLinkPlan, searchUrl, shardUrl };\n',
   );
   execFileSync("bun", ["run", "vite", "build", "--outDir", join(scratch, "vite-dist")], {
     cwd: consumerDirectory,

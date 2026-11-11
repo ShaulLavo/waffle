@@ -1,3 +1,4 @@
+import { groupLinkProgram } from "./fixtures/group-link-program.js";
 import { expect, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { createFilesystemIdentity } from "../fs/protocol.js";
@@ -135,7 +136,10 @@ test("group reply refusal aborts the unlaunched member while retaining its poole
   const f = fixture(budget);
   try {
     await f.broker.adoptRuntimeRoot(f.root, { memory: [], stop() {} });
-    expect(() => f.broker.admitRootMemoryGroup(f.root.pid)).toThrow(SharedMemoryAdmissionError);
+    const program = await groupLinkProgram();
+    expect(() => f.broker.admitRootMemoryGroup(f.root.pid, program)).toThrow(
+      SharedMemoryAdmissionError,
+    );
     expect(f.broker.memoryGroups()).toEqual([]);
     const snapshot = f.reservations.snapshot();
     expect(snapshot.reservedBytes).toBe(budget);

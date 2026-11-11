@@ -8,7 +8,11 @@ const binary = (...sections: number[][]) =>
   new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0].concat(sections.flat()));
 
 /** A PIE core whose _start body is `ops`; optionally re-exports the imported memory. */
-export function pieCore(ops: number[], exportMemory = false): Uint8Array<ArrayBuffer> {
+export function pieCore(
+  ops: number[],
+  exportMemory = false,
+  checkpointModule = "env",
+): Uint8Array<ArrayBuffer> {
   const exports = [
     name("check").concat([0, 0]),
     name("reserve").concat([0, 1]),
@@ -27,7 +31,7 @@ export function pieCore(ops: number[], exportMemory = false): Uint8Array<ArrayBu
     section(
       2,
       vec([
-        env("check", [0, 0]),
+        name(checkpointModule).concat(name("check"), [0, 0]),
         env("memory", [2, 3, 1].concat(leb(65536))),
         env("__indirect_function_table", [1, 0x70, 0, 1]),
         env("__stack_pointer", [3, 0x7f, 1]),
