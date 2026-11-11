@@ -764,7 +764,13 @@ export class ProcessSupervisor {
   }
   spawnDiagnostic(parentPid: number, pid: number): string | null {
     this.cwd(parentPid);
-    return readStartDiagnostic(this.child(parentPid, pid).outcome);
+    try {
+      return readStartDiagnostic(this.child(parentPid, pid).outcome);
+    } catch (error) {
+      if (error instanceof ProcessError && error.errno === ProcessErrno.SRCH)
+        throw new ProcessError(ProcessErrno.CHILD, "not a retained child process");
+      throw error;
+    }
   }
   registerChildStartWake(parentPid: number, pid: number, wake: Int32Array): () => void {
     if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)

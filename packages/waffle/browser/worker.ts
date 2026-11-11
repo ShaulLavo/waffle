@@ -266,6 +266,13 @@ const defaultRemoveEventListener = globalThis.removeEventListener;
 
 /** `Name: message` plus the first stack frames. */
 export function describeWorkerError(err: unknown): string {
+  try {
+    return workerErrorText(err);
+  } catch {
+    return describeStartError(err);
+  }
+}
+function workerErrorText(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const head = `${err.name}: ${err.message}`;
   const frames = (err.stack ?? "")
@@ -672,7 +679,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         type: "error",
         code,
         errno: winner.kind === "start-failed" ? winner.error : undefined,
-        message: startupDiagnostic ?? describeWorkerError(result.error),
+        message: describeWorkerError(result.error),
         diagnostic: startupDiagnostic ?? describeStartError(result.error),
         sleep: sleepMode,
         ...diagnostics,

@@ -1,4 +1,4 @@
-import { objectHasOwn, objectKeys } from "./intrinsics.ts";
+import { objectHasOwn, objectKeys, RangeErrorConstructor } from "./intrinsics.ts";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { FilesystemError } from "../fs/protocol.ts";
 import { ProcessError, type ProcessExit } from "./types.ts";
@@ -23,7 +23,7 @@ export function startFailure(error: unknown): Extract<ProcessExit, { kind: "star
     (name) => failures[name].wasi === wasi,
   );
   const failure: StartFailure =
-    errorInstance(error, RangeError) || wasi === 48
+    errorInstance(error, RangeErrorConstructor) || wasi === 48
       ? "ENOMEM"
       : wasi === 6 || wasi === 33 || wasi === 41 || wasi === 51
         ? "EAGAIN"
@@ -38,7 +38,7 @@ export function startFailure(error: unknown): Extract<ProcessExit, { kind: "star
 export function spawnError(error: unknown): ProcessError {
   if (errorInstance(error, ExecutionUnwind)) throw error;
   if (errorInstance(error, ProcessError) && error.errno !== 41) return error;
-  const errno = errorInstance(error, RangeError)
+  const errno = errorInstance(error, RangeErrorConstructor)
     ? 48
     : errorInstance(error, ProcessError) || errorInstance(error, FilesystemError)
       ? error.errno === 33 || error.errno === 41 || error.errno === 51

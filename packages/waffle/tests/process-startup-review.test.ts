@@ -279,13 +279,21 @@ test("worker bootstrap and broker preserve nested original errors through a real
   const f = await fixture(guest("valid"));
   const memory = new WebAssembly.Memory({ initial: 1 });
   const descriptors = new DescriptorTable();
-  const abi = new ProcessABI({ memory, pid: f.parent.pid, service: f.parent,
-    descriptors, signals: f.parent.signals, fs: new MemFS() });
+  const abi = new ProcessABI({
+    memory,
+    pid: f.parent.pid,
+    service: f.parent,
+    descriptors,
+    signals: f.parent.signals,
+    fs: new MemFS(),
+  });
   const parentGuest = spawnDiagnosticGuest(abi, memory);
   try {
     const messages = await runWorker(f.worker.request, {
       instantiated() {
-        throw new Error("adapter setup", { cause: new TypeError("original clone failure", { cause: "deepest cause" }) });
+        throw new Error("adapter setup", {
+          cause: new TypeError("original clone failure", { cause: "deepest cause" }),
+        });
       },
     });
     const notice = messages.find((message) => message.type === "error");
@@ -294,7 +302,9 @@ test("worker bootstrap and broker preserve nested original errors through a real
     f.worker.emit(transfer);
     await f.supervisor.waitForExit(f.parent.pid, f.pid);
     expect(f.failureCalls).toEqual(["startFailed"]);
-    expect(describeStartError(f.failureErrors[0])).toContain("Caused by: TypeError: original clone failure");
+    expect(describeStartError(f.failureErrors[0])).toContain(
+      "Caused by: TypeError: original clone failure",
+    );
     const length = parentGuest.spawn_error(f.pid, 0, 0);
     expect(parentGuest.spawn_error(f.pid, 64, length)).toBe(length);
     const text = new TextDecoder().decode(new Uint8Array(memory.buffer, 64, length));

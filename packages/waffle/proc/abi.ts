@@ -294,6 +294,7 @@ export class ProcessABI {
     const bytes = diagnosticBytes(text),
       length = typedArrayLength(bytes);
     this.options.service.cwd(this.options.pid);
+    if (pid !== 0) this.options.service.spawnDiagnostic?.(this.options.pid, pid);
     if (length <= capacity >>> 0) typedArraySet(output, bytes);
     return length;
   }

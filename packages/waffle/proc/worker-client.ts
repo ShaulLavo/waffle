@@ -46,7 +46,13 @@ import {
   type Stream,
 } from "../core/descriptors.js";
 import { ProcessIdentityAllocator } from "./identity.js";
-import { claimOutcome, readOutcome, markStarted, startStatus, readStartDiagnostic } from "./outcome.js";
+import {
+  claimOutcome,
+  readOutcome,
+  markStarted,
+  startStatus,
+  readStartDiagnostic,
+} from "./outcome.js";
 import { defaultSignalTerminates, requestSignal, type SignalTransport } from "./signals.js";
 import {
   ProcessErrno,
@@ -558,7 +564,13 @@ export class WorkerProcessClient {
   }
   spawnDiagnostic(parentPid: number, pid: number): string | null {
     this.cwd(parentPid);
-    return readStartDiagnostic(this.child(parentPid, pid).signals.outcome);
+    try {
+      return readStartDiagnostic(this.child(parentPid, pid).signals.outcome);
+    } catch (error) {
+      if (isCollectedProcess(error))
+        throw new ProcessError(ProcessErrno.CHILD, "not a retained child process");
+      throw error;
+    }
   }
   /** Readiness never consumes the exit or releases a zombie's storage. */
   childExited(parentPid: number, pid: number): boolean {

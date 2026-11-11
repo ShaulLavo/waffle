@@ -30,6 +30,24 @@ export const arrayFrom = Array.from;
 export const reflectGet = Reflect.get;
 export const reflectSet = Reflect.set;
 export const ProxyConstructor = Proxy;
+export const StringConstructor = String;
+export const RangeErrorConstructor = RangeError;
+const stringSliceMethod = String.prototype.slice;
+const utf8Encoder = new TextEncoder();
+const utf8EncodeInto = TextEncoder.prototype.encodeInto;
+const utf8Decoder = new TextDecoder();
+const utf8DecodeMethod = TextDecoder.prototype.decode;
+export function stringSlice(value: string, start: number, end: number): string {
+  return apply(stringSliceMethod, value, [start, end]);
+}
+export function encodeUtf8Prefix(text: string, capacity: number): Uint8Array {
+  const bytes = new Uint8ArrayConstructor(capacity);
+  const result = apply(utf8EncodeInto, utf8Encoder, [text, bytes]) as TextEncoderEncodeIntoResult;
+  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), 0, result.written);
+}
+export function decodeUtf8(bytes: Uint8Array): string {
+  return apply(utf8DecodeMethod, utf8Decoder, [bytes]);
+}
 
 const prototype = objectGetPrototypeOf(Int32ArrayConstructor.prototype);
 type TypedArray = Parameters<typeof typedArrayBuffer>[0];

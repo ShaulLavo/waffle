@@ -1,24 +1,19 @@
 import {
-  reflectApply,
   reflectGet,
   isInstance,
-  Uint8ArrayConstructor,
   arrayAppend,
-  typedArrayBuffer,
+  StringConstructor,
+  stringSlice,
+  encodeUtf8Prefix,
+  decodeUtf8,
 } from "./intrinsics.ts";
 import type { StartFailure } from "./start-errno.ts";
 
 export const START_DIAGNOSTIC_BYTES = 4096;
 export const START_DIAGNOSTIC_WORDS = 1 + START_DIAGNOSTIC_BYTES / 4;
-const NativeString = String;
-const slice = String.prototype.slice;
-const encoder = new TextEncoder();
-const encodeInto = TextEncoder.prototype.encodeInto;
-const decoder = new TextDecoder();
-const decode = TextDecoder.prototype.decode;
 
 function prefix(value: string, length: number): string {
-  return reflectApply(slice, value, [0, length]) + (value.length > length ? " [truncated]" : "");
+  return stringSlice(value, 0, length) + (value.length > length ? " [truncated]" : "");
 }
 export function errorInstance<T>(
   value: unknown,
@@ -46,7 +41,7 @@ function property(value: unknown, key: string): unknown {
 function scalar(value: unknown, limit: number): string | undefined {
   if (typeof value === "string") return prefix(value, limit);
   if (value === null || (typeof value !== "object" && typeof value !== "function"))
-    return prefix(NativeString(value), limit);
+    return prefix(StringConstructor(value), limit);
   return undefined;
 }
 function errorLine(error: unknown): string {
@@ -99,10 +94,8 @@ export function describeStartError(error: unknown): string {
 }
 
 export function diagnosticBytes(text: string): Uint8Array {
-  const bytes = new Uint8ArrayConstructor(START_DIAGNOSTIC_BYTES);
-  const result = reflectApply(encodeInto, encoder, [text, bytes]) as TextEncoderEncodeIntoResult;
-  return new Uint8ArrayConstructor(typedArrayBuffer(bytes), 0, result.written);
+  return encodeUtf8Prefix(text, START_DIAGNOSTIC_BYTES);
 }
 export function diagnosticText(bytes: Uint8Array): string {
-  return reflectApply(decode, decoder, [bytes]);
+  return decodeUtf8(bytes);
 }

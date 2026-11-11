@@ -18,10 +18,12 @@ import {
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
+  workerProcessState,
   type WorkerProcessMessage,
 } from "../proc/worker-client.ts";
 import { WorkerProcessBroker } from "../proc/worker-broker.ts";
 import { spawnDiagnosticGuest } from "./fixtures/spawn-diagnostic-guest.ts";
+import { isolatedProcess } from "./fixtures/isolated-process.ts";
 
 const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
 const bytes = new TextEncoder().encode(JSON.stringify(request));
@@ -205,6 +207,59 @@ test("standalone outcome transfer copies only the winning startup diagnostic", (
   expect(readStartDiagnostic(source)).toBe("worker original cause");
 });
 
+test("a terminal publication racing diagnostic copy reports pending rather than an empty error", async () => {
+  const isolated = await isolatedProcess();
+  const { claimOutcome, outcomeWord, readStartDiagnostic } =
+    isolated.load<typeof import("../proc/outcome.ts")>("outcome");
+  const word = outcomeWord();
+  const compareExchange = isolated.atomics.compareExchange;
+  let observed = false;
+  isolated.atomics.compareExchange = ((...args: Parameters<typeof compareExchange>) => {
+    const previous = Reflect.apply(compareExchange, Atomics, args);
+    if (args[0] === word) {
+      observed = true;
+      expect(readStartDiagnostic(word)).toBeNull();
+    }
+    return previous;
+  }) as typeof compareExchange;
+  try {
+    claimOutcome(word, { kind: "start-failed", code: 5 }, undefined, "original cause");
+    expect(observed).toBe(true);
+    expect(readStartDiagnostic(word)).toBe("original cause");
+  } finally {
+    isolated.atomics.compareExchange = compareExchange;
+  }
+});
+
+test("diagnostic state belongs to each caller even when they share one supervisor", () => {
+  const f = fixture();
+  const root = f.supervisor.createRoot(),
+    memory = new WebAssembly.Memory({ initial: 1 });
+  const abi = new ProcessABI({
+    memory,
+    pid: root,
+    service: f.supervisor,
+    descriptors: f.supervisor.get(root)!.descriptors,
+    signals: f.supervisor.get(root)!,
+    fs: new MemFS(),
+  });
+  const second = spawnDiagnosticGuest(abi, memory);
+  new Uint8Array(memory.buffer).set(bytes, 128);
+  f.supervisor.spawn = (pid) => {
+    throw new Error(`failure for ${pid}`);
+  };
+  try {
+    expect(f.guest.spawn(128, bytes.length)).toBe(-29);
+    expect(read(second, memory, 0)).toBe("");
+    expect(second.spawn(128, bytes.length)).toBe(-29);
+    expect(read(second, memory, 0)).toContain(`failure for ${root}`);
+    expect(read(f.guest, f.memory, 0)).toContain(`failure for ${f.root}`);
+    expect(second.spawn_error(f.root, 0, 0)).toBe(-12);
+  } finally {
+    f.supervisor.dispose();
+  }
+});
+
 test("broker admission failures reach a blocked guest through shared storage without retention", async () => {
   const root = createWorkerProcessTransport({ pid: 1, job: 1, capacity: 3 });
   const descriptors = new DescriptorTable(),
@@ -244,6 +299,7 @@ test("broker admission failures reach a blocked guest through shared storage wit
   new Uint8Array(memory.buffer).set(bytes, 128);
   try {
     const pid = guest.spawn(128, bytes.length);
+    const capturedOutcome = workerProcessState(notices[0]!.transport).signals.outcome;
     await expect(broker.handle(notices[0]!, parent.pid)).rejects.toThrow("broker activation");
     expect(abi.imports.start_status!(pid)).toBe(29);
     expect(read(guest, memory, pid)).toContain("Caused by: TypeError: original import");
@@ -251,8 +307,12 @@ test("broker admission failures reach a blocked guest through shared storage wit
     expect(guest.spawn_error(sibling.pid, 0, 0)).toBe(-12);
     expect(abi.imports.wait!(pid, 64)).toBe(0);
     expect(guest.spawn_error(pid, 0, 0)).toBe(-12);
+    expect(() => readStartDiagnostic(capturedOutcome)).toThrow("collected");
     expect(parent.waitJob(parent.pid, 2)).toMatchObject({ kind: "start-failed", error: "EIO" });
     const replacement = parent.spawn(parent.pid, request);
+    expect(() =>
+      claimOutcome(capturedOutcome, { kind: "start-failed", code: 5 }, undefined, "stale secret"),
+    ).toThrow("collected");
     expect(read(guest, memory, replacement)).toBe("");
     claimOutcome(parent.signals.outcome, { kind: "exited", code: 0 });
     expect(guest.spawn_error(0, 0, 0)).toBe(-71);
