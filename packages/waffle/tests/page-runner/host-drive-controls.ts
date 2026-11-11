@@ -123,6 +123,31 @@ window.setTimeout(()=>{},8);`);
   return { ok: true };
 }
 const sharedDeadlineModes = ["verdict-delivery", "teardown-report", "sync-hook"];
+type DeadlineResult = Pick<
+  Awaited<ReturnType<typeof runPageSuite>>,
+  "results" | "failures" | "runComplete"
+>;
+export function checkTeardownDeadline(result: DeadlineResult): void {
+  if (JSON.stringify(result.results).includes('"status":"timeout"')) return;
+  const host = result.results.host;
+  const failure = result.failures[0];
+  // Host waiting and the page hook share one cutoff. The host can stop before
+  // the page's timeout report arrives, leaving the initial teardown snapshot.
+  if (
+    record(host) &&
+    record(host.body) &&
+    host.body.status === "pass" &&
+    record(host.teardown) &&
+    host.teardown.status === "not-entered" &&
+    !result.runComplete &&
+    result.failures.length === 1 &&
+    failure?.group === "host" &&
+    failure.category === "host" &&
+    failure.detail.includes("timed out")
+  )
+    return;
+  throw new Error("Body timeout extension changed the independent teardown clock");
+}
 function sharedDeadlineControl(
   mode: string,
   result: Awaited<ReturnType<typeof runPageSuite>>,
@@ -244,11 +269,7 @@ export async function hostControl(
     throw new Error("Host selection changed inventory");
   if (Object.values(result.cleanup).some((step) => record(step) && step.status === "unconfirmed"))
     throw new Error(`Host ${mode} cleanup unconfirmed ${JSON.stringify(result.cleanup)}`);
-  if (
-    mode === "deadline-teardown" &&
-    !JSON.stringify(result.results).includes('"status":"timeout"')
-  )
-    throw new Error("Body timeout extension changed the independent teardown clock");
+  if (mode === "deadline-teardown") checkTeardownDeadline(result);
   if (mode === "interruption" && !JSON.stringify(result.results).includes('"disposed":1'))
     throw new Error("Interrupted command skipped settled original teardown");
   if (mode === "disposal-twice" && !JSON.stringify(result.results).includes('"disposed":2'))
