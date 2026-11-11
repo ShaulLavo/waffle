@@ -271,6 +271,45 @@ after execution starts remain ordinary execution failures.
 The public `waffle/proc` entry exports `startFailure(error)` to normalize host setup
 errors into the same typed result. Consumers must not duplicate that errno mapping.
 
+### Spawn error details
+
+```text
+runtime_proc.spawn_error(pid: i32, buf: u32, capacity: u32) -> i32
+```
+
+This nonblocking, non-consuming query returns the UTF-8 byte count of copied diagnostic
+text, without a NUL terminator. PID `0` reads this caller's latest synchronous `spawn`
+failure. Every `spawn` attempt clears that value first; a successful reservation leaves
+it empty. Other imports do not overwrite it. A positive PID reads a retained direct
+child's startup diagnostic, with the same child authorization as `start_status`.
+Read it before consuming `wait` or `wait_job`. Collection discards the diagnostic along
+with the process row; it never retains a process or job just for error reporting.
+
+The text includes error names, messages, scalar code/errno fields, up to eight nested
+causes, and a bounded original stack. Unknown thrown values, circular causes and throwing
+accessors remain diagnosable. Fields and total output are truncated; the final text is at
+most 4,096 UTF-8 bytes and ends on a complete code point. It is diagnostic text, not a
+machine-readable error schema. Errno remains the authoritative result of `spawn`,
+`start_status` and `wait`; this query changes none of their values or lifecycle rules.
+
+A zero capacity or short buffer writes nothing and returns the required count. A sufficient
+buffer receives all bytes. The entire supplied span is validated even for an empty result;
+an invalid span returns `-EFAULT` (`-21`). Invalid PID or non-i32 JavaScript arguments return
+`-EINVAL` (`-28`). A live child without a startup failure returns zero. A producer that has
+selected startup failure but has not finished copying its text returns `-EAGAIN` (`-6`);
+cooperatively yield and query again without re-subscribing to an already-ready startup
+notification. If the producer cannot copy its diagnostic, it publishes an empty completed
+result instead; the original startup errno remains available. Unauthorized or collected children
+return `-ECHILD` (`-12`). A dead, disposed, collected or foreign caller returns `-ESRCH`
+(`-71`). A custom process service without the diagnostic query returns `-ENOSYS` (`-52`)
+for positive PIDs. No output is written on an error. Caller-local details become inaccessible
+when the caller exits or its service is disposed.
+
+Standalone outcomes created with `outcomeWord()` keep their diagnostic storage in the same
+shared buffer as the terminal word. Raw-buffer reservations use that complete factory-created
+buffer, so separate views and structured clones observe the same publication. An isolated
+eight-byte buffer is not a complete standalone outcome.
+
 A browser worker may select START_FAILED before its ordered error message reaches
 the broker. Startup queries can observe that result immediately, but consuming waits
 and inherited-descriptor release remain gated on the final error acknowledgement (or
@@ -278,8 +317,8 @@ an observed worker failure). The supervisor handles the selected startup failure
 regardless of which producer selected the result; a competing exit or signal emits none.
 The generic worker does not also emit this startup diagnostic.
 
-For a child spawned through `runtime_proc`, the typed START_FAILED outcome is the only
-Waffle report delivered to its guest parent. Waffle's generic startup fallback writes zero
+For a child spawned through `runtime_proc`, the typed START_FAILED outcome and the optional
+`spawn_error` query let its guest parent inspect the failure. Waffle's generic startup fallback writes zero
 bytes to that child's stdio, pipes or terminal, including failures during registry resolution,
 lazy loading, invalid Wasm, missing `_start` and adapter entry. The full error and stack are
 reported once through the broker's host-side diagnostic channel (`onError`, or `console.error`

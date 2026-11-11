@@ -18,6 +18,7 @@ import {
   reviveOutcome,
 } from "../proc/outcome.js";
 import { ExecutableFormatError, startFailure } from "../proc/start-failure.js";
+import { describeStartError } from "../proc/start-diagnostic.ts";
 import { waitStatus } from "../proc/wait-status.js";
 import type {
   RuntimeWorkerRequest,
@@ -81,6 +82,7 @@ export async function failFirstWorkerImport(
     waitStatus,
     ExecutableFormatError,
     startFailure,
+    describeStartError,
     FilesystemClient: class {
       connection = request.filesystem;
       dispose() {

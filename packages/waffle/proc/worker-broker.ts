@@ -9,6 +9,7 @@ import {
 } from "./intrinsics.ts";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "./worker-access.js";
 import { startFailure } from "./start-failure.js";
+import { describeStartError } from "./start-diagnostic.ts";
 import {
   collectDirectoryProcess,
   collectDirectoryJob,
@@ -672,7 +673,7 @@ export class WorkerProcessBroker {
       this.transports.set(state.pid, transport);
       this.failedCleanup.add(state.pid);
     }
-    claimOutcome(state.signals.outcome, startFailure(error));
+    claimOutcome(state.signals.outcome, startFailure(error), undefined, describeStartError(error));
     const cleanup = { resourcesReleased: this.discardResources(transport, codec), fenced: false };
     if (!existing) this.rejectedCleanup.set(state.pid, cleanup);
     const returned = this.options.nativeReturn?.(transport) ?? captureNativeReturn(transport);

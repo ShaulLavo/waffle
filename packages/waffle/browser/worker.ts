@@ -65,6 +65,7 @@ import { withFileOffset } from "../core/open-file.js";
 import type { ProcessABI } from "../proc/abi.js";
 
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
+import { describeStartError } from "../proc/start-diagnostic.ts";
 import { waitStatus } from "../proc/wait-status.js";
 
 import { fatalInterrupt } from "../interrupt/check.js";
@@ -140,6 +141,7 @@ export type RuntimeWorkerMessage =
       code: number;
       errno?: StartFailure;
       message: string;
+      diagnostic: string;
       sleep?: SleepMode;
       cleanupErrors?: string[];
     }
@@ -290,6 +292,13 @@ const defaultRemoveEventListener = globalThis.removeEventListener;
 
 /** `Name: message` plus the first stack frames. */
 export function describeWorkerError(err: unknown): string {
+  try {
+    return workerErrorText(err);
+  } catch {
+    return describeStartError(err);
+  }
+}
+function workerErrorText(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const head = `${err.name}: ${err.message}`;
   const frames = (err.stack ?? "")
@@ -582,11 +591,11 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       throw error;
     }
   };
-  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => {
+  const claim = (result: Pick<ProcessExit, "kind" | "code">, diagnostic?: string): ProcessExit => {
     const selected = observedOutcome();
     if (selected) return selected;
     try {
-      if (outcome) return (localOutcome = claimOutcome(outcome, result));
+      if (outcome) return (localOutcome = claimOutcome(outcome, result, undefined, diagnostic));
     } catch (error) {
       detachCollectedProcess(error);
     }
@@ -699,11 +708,12 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
       started &&
       "error" in result &&
       !settled;
+    const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
     let winner =
       terminated || observationFailure
         ? null
         : runtimeDiagnostic || !executor.complete || startupFailure
-          ? claim(ownResult)
+          ? claim(ownResult, startupDiagnostic)
           : settled;
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
@@ -813,7 +823,8 @@ async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
         type: "error",
         code,
         errno: completed.kind === "start-failed" ? completed.error : undefined,
-        message: describeWorkerError(result.error),
+        message: describeStartError(result.error, false),
+        diagnostic: startupDiagnostic ?? describeStartError(result.error),
         sleep: sleepMode,
         ...diagnostics,
       });

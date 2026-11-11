@@ -17,6 +17,7 @@ import {
   typedArrayByteLength,
   typedArrayByteOffset,
   typedArrayLength,
+  typedArraySet,
   reflectApply,
   SetConstructor,
   setHas,
@@ -38,6 +39,7 @@ import { readOutcome } from "./outcome.js";
 import { WasiExit } from "../core/wasi.js";
 import { waitStatus } from "./wait-status.js";
 import { spawnError, startFailureErrno } from "./start-failure.js";
+import { describeStartError, diagnosticBytes } from "./start-diagnostic.ts";
 import { FilesystemError } from "../fs/protocol.js";
 import {
   checkedSignalNumber,
@@ -70,6 +72,7 @@ export interface ProcessService {
   /** Observe child readiness without consuming its status or capacity. */
   childExited(parentPid: number, pid: number): boolean;
   startStatus(parentPid: number, pid: number): number;
+  spawnDiagnostic?(parentPid: number, pid: number): string | null;
   registerChildStartWake?(parentPid: number, pid: number, wake: Int32Array): () => void;
   waitJob(callerPid: number, job: number): ProcessExit | null;
   jobEmpty(callerPid: number, job: number): boolean;
@@ -200,6 +203,7 @@ function sameWord(first: Int32Array | undefined, second: Int32Array): boolean {
 export class ProcessABI {
   readonly imports: Record<string, (...args: number[]) => number>;
   private readonly now: () => number;
+  private spawnFailure = "";
   constructor(private readonly options: ProcessABIOptions) {
     if (
       options.wake &&
@@ -219,12 +223,17 @@ export class ProcessABI {
         this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
       spawn: (ptr, length) =>
         this.result(() => {
+          this.spawnFailure = "";
           try {
             return options.service.spawn(options.pid, this.spawnRequest(ptr!, length!));
           } catch (error) {
-            throw spawnError(error);
+            const normalized = spawnError(error);
+            this.spawnFailure = describeStartError(error);
+            throw normalized;
           }
         }),
+      spawn_error: (pid, ptr, capacity) =>
+        this.result(() => this.spawnDiagnostic(pid!, ptr!, capacity!)),
       job_of: (pid) => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: (ptr) => this.result(() => this.pipe(ptr!)),
       dup: (fd) => options.descriptors.dup(fd! >>> 0),
@@ -262,6 +271,32 @@ export class ProcessABI {
       signal: (signal, mode) => this.signal(signal!, mode!),
       default_signal: (signal) => this.result(() => this.defaultSignal(signal!)),
     };
+  }
+  private spawnDiagnostic(pid: number, ptr: number, capacity: number): number {
+    if (
+      !Number.isInteger(pid) ||
+      pid < 0 ||
+      pid > 0x7fffffff ||
+      !Number.isInteger(ptr) ||
+      ptr < -0x80000000 ||
+      ptr > 0xffffffff ||
+      !Number.isInteger(capacity) ||
+      capacity < -0x80000000 ||
+      capacity > 0xffffffff
+    )
+      return -ProcessErrno.INVAL;
+    this.options.service.cwd(this.options.pid);
+    const output = this.span(ptr, capacity);
+    const text =
+      pid === 0 ? this.spawnFailure : this.options.service.spawnDiagnostic?.(this.options.pid, pid);
+    if (text === undefined) return -NOSYS;
+    if (text === null) return -ProcessErrno.AGAIN;
+    const bytes = diagnosticBytes(text),
+      length = typedArrayLength(bytes);
+    this.options.service.cwd(this.options.pid);
+    if (pid !== 0) this.options.service.spawnDiagnostic?.(this.options.pid, pid);
+    if (length <= capacity >>> 0) typedArraySet(output, bytes);
+    return length;
   }
   private cwd(ptr: number, capacity: number): number {
     if (

@@ -35,6 +35,8 @@ async function isolatedIntrinsics(
     clearInterval,
     AbortSignal,
     EventTarget,
+    TextEncoder: class extends TextEncoder {},
+    TextDecoder: class extends TextDecoder {},
     captured: undefined as unknown as Pick<typeof Intrinsics, "arrayAppend" | "cryptoRandomUUID">,
     guestObject: undefined as unknown as ObjectConstructor,
   };
@@ -43,6 +45,20 @@ async function isolatedIntrinsics(
 }
 
 describe("private process authority builtin boundary", () => {
+  test("diagnostic encoding keeps native methods after guest prototype replacement", async () => {
+    const context = await isolatedIntrinsics();
+    const text = runInNewContext(
+      `
+      TextEncoder.prototype.encodeInto = () => { throw new Error("guest encoder"); };
+      TextDecoder.prototype.decode = () => { throw new Error("guest decoder"); };
+      String.prototype.slice = () => { throw new Error("guest slice"); };
+      const api = module.exports;
+      api.decodeUtf8(api.encodeUtf8Prefix(api.stringSlice("底🙂tail", 0, 3), 7));
+    `,
+      context,
+    );
+    expect(text).toBe("底🙂");
+  });
   test("captured array appends ignore inherited descriptor fields and replaced defineProperty", async () => {
     const { captured, guestObject } = await isolatedIntrinsics();
     const inherited = () => {

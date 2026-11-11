@@ -8,6 +8,10 @@ import {
 } from "../browser/worker.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
+import { ProcessABI } from "../proc/abi.ts";
+import { MemFS } from "../fs/memory.ts";
+import { describeStartError } from "../proc/start-diagnostic.ts";
+import { spawnDiagnosticGuest } from "./fixtures/spawn-diagnostic-guest.ts";
 import { connectFilesystemIdentity, createFilesystemIdentity } from "../fs/protocol.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
@@ -55,7 +59,8 @@ async function fixture(
   const previousWorker = globalThis.Worker;
   const ports: MessagePort[] = [],
     workers: TestWorker[] = [],
-    failureCalls: string[] = [];
+    failureCalls: string[] = [],
+    failureErrors: unknown[] = [];
   class TestWorker {
     request!: RuntimeWorkerRequest;
     onmessage?: (event: { data: RuntimeWorkerMessage }) => void;
@@ -103,6 +108,7 @@ async function fixture(
           },
           startFailed(error) {
             failureCalls.push("startFailed");
+            failureErrors.push(error);
             context.startFailed(error);
           },
         },
@@ -182,6 +188,7 @@ async function fixture(
       state,
       pid,
       failureCalls,
+      failureErrors,
       dispose: async () => {
         childDescriptors.dispose();
         await dispose();
@@ -269,6 +276,57 @@ for (const shape of [
     }
   });
 }
+
+test("worker bootstrap and broker preserve nested original errors through a real guest import", async () => {
+  const longCause = "original clone failure " + "detail ".repeat(300) + "original cause tail";
+  const f = await fixture(guest("valid"));
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const descriptors = new DescriptorTable();
+  const abi = new ProcessABI({
+    memory,
+    pid: f.parent.pid,
+    service: f.parent,
+    descriptors,
+    signals: f.parent.signals,
+    fs: new MemFS(),
+  });
+  const parentGuest = spawnDiagnosticGuest(abi, memory);
+  try {
+    const messages = await runWorker(f.worker.request, {
+      instantiated() {
+        throw new Error("adapter setup", {
+          cause: new TypeError(longCause, { cause: "deepest cause" }),
+        });
+      },
+    });
+    const notice = messages.find((message) => message.type === "error");
+    expect(notice?.type).toBe("error");
+    const transfer = structuredClone(notice!);
+    expect(notice?.type === "error" && notice.message).toContain("original cause tail");
+    f.worker.emit(transfer);
+    await f.supervisor.waitForExit(f.parent.pid, f.pid);
+    expect(f.failureCalls).toEqual(["startFailed"]);
+    const forwarded = f.failureErrors[0];
+    if (!(forwarded instanceof Error)) throw new Error("Missing forwarded startup error");
+    expect(forwarded.message).toContain("original cause tail");
+    expect(describeStartError(f.failureErrors[0])).toContain(
+      "Caused by: TypeError: original clone failure",
+    );
+    const length = parentGuest.spawn_error(f.pid, 0, 0);
+    expect(parentGuest.spawn_error(f.pid, 64, length)).toBe(length);
+    const text = new TextDecoder().decode(new Uint8Array(memory.buffer, 64, length));
+    expect(text).toContain("adapter setup");
+    expect(text).toContain("Caused by: TypeError: original clone failure");
+    expect(text).toContain("deepest cause");
+    expect(length).toBeLessThanOrEqual(4096);
+    expect(abi.imports.start_status!(f.pid)).toBe(29);
+    expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);
+    expect(parentGuest.spawn_error(f.pid, 0, 0)).toBe(-12);
+  } finally {
+    descriptors.dispose();
+    await f.dispose();
+  }
+});
 
 test("a runnable guest still advertises readiness and completes with its ordinary exit", async () => {
   const f = await fixture(guest("valid"));
@@ -426,7 +484,12 @@ test("late worker error collection between message reads cannot escape its handl
     };
     try {
       expect(() =>
-        f.worker.emit({ type: "error", code: 126, message: "late worker error" }),
+        f.worker.emit({
+          type: "error",
+          code: 126,
+          message: "late worker error",
+          diagnostic: "late worker error",
+        }),
       ).not.toThrow();
     } finally {
       filesystem.reap = reap;

@@ -8,6 +8,7 @@ import {
   type CellValidity,
 } from "./control.js";
 import { OutcomeCell, claimOutcome, readOutcome } from "./outcome.js";
+import { START_DIAGNOSTIC_WORDS } from "./start-diagnostic.ts";
 import { ProcessErrno, ProcessError, type ProcessExit, type JobLifetime } from "./types.js";
 import { requestSignal, type SignalTransport } from "./signals.js";
 import {
@@ -38,7 +39,7 @@ import {
 } from "./intrinsics.ts";
 
 const HEADER_BYTES = 32;
-const PROCESS_WORDS = 79;
+const PROCESS_WORDS = 79 + START_DIAGNOSTIC_WORDS;
 const JOB_WORDS = 10;
 export interface DirectoryHandle {
   readonly directory: SharedArrayBuffer;
@@ -178,7 +179,12 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     signals: {
       interrupt: liveCells(raw, pid, 3),
       requestedSignal: liveCells(raw, pid, 4),
-      outcome: new OutcomeCell(typedArraySubarray(raw, 5, 6), pid, validity(raw, pid)),
+      outcome: new OutcomeCell(
+        typedArraySubarray(raw, 5, 6),
+        pid,
+        validity(raw, pid),
+        liveCells(raw, pid, 79, START_DIAGNOSTIC_WORDS),
+      ),
       signalState: liveCells(raw, pid, 6, 65),
     } satisfies SignalTransport,
     wake: new Int32ArrayConstructor(handle.directory, 4, 1),

@@ -1,10 +1,23 @@
 import { allocateSharedControl } from "../memory/control.ts";
 import { startFailureName, startFailureErrno } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
-import { packedControl, type CellValidity } from "./control.ts";
+import {
+  packedControl,
+  type CellValidity,
+  type ControlCells,
+  TaggedCells,
+  controlLoad,
+  controlStore,
+  controlCas,
+  serializeTaggedCells,
+  reviveTaggedCells,
+  type TaggedCellsTransfer,
+} from "./control.ts";
+import { START_DIAGNOSTIC_WORDS, diagnosticBytes, diagnosticText } from "./start-diagnostic.ts";
 import {
   atomicsCompareExchange,
   atomicsLoad,
+  atomicsStore,
   BigInt64ArrayConstructor,
   objectFreeze,
   typedArrayBuffer,
@@ -13,6 +26,9 @@ import {
   isSharedArrayBuffer,
   isBigInt64Array,
   isInstance,
+  sharedArrayBufferByteLength,
+  Int32ArrayConstructor,
+  Uint8ArrayConstructor,
 } from "./intrinsics.ts";
 
 export interface OutcomeCellTransfer {
@@ -22,6 +38,7 @@ export interface OutcomeCellTransfer {
   pid: number;
   running: bigint;
   validity: CellValidity;
+  diagnostic?: TaggedCellsTransfer;
 }
 export interface OutcomeWordTransfer {
   type: "outcome-word";
@@ -37,11 +54,13 @@ export class OutcomeCell {
   readonly cells: BigInt64Array;
   readonly pid: number;
   readonly validity: CellValidity;
+  readonly diagnostic?: TaggedCells;
   private readonly identity: BigInt64Array;
-  constructor(cells: BigInt64Array, pid: number, validity: CellValidity) {
+  constructor(cells: BigInt64Array, pid: number, validity: CellValidity, diagnostic?: TaggedCells) {
     this.cells = cells;
     this.pid = pid;
     this.validity = validity;
+    this.diagnostic = diagnostic;
     this.running = BigInt(pid) << 3n;
     this.identity = new BigInt64ArrayConstructor(validity.buffer, validity.byteOffset, 1);
   }
@@ -60,15 +79,79 @@ export class OutcomeCell {
   }
 }
 export type OutcomeWord = BigInt64Array | OutcomeCell;
+const STANDALONE_WORDS = 1 + Math.ceil((START_DIAGNOSTIC_WORDS * 4) / 8);
+function diagnosticCells(word: OutcomeWord): ControlCells | undefined {
+  if (isInstance(word, OutcomeCell)) return word.diagnostic;
+  return standaloneDiagnostic(word);
+}
+function standaloneDiagnostic(word: BigInt64Array): Int32Array {
+  return new Int32ArrayConstructor(
+    typedArrayBuffer(word),
+    typedArrayByteOffset(word) + 8,
+    START_DIAGNOSTIC_WORDS,
+  );
+}
+function writeDiagnostic(word: OutcomeWord, text: string): void {
+  const cells = diagnosticCells(word);
+  if (!cells || controlCas(cells, 0, 0, -1) !== 0) return;
+  const bytes = diagnosticBytes(text),
+    length = typedArrayLength(bytes);
+  for (let offset = 0; offset < length; offset += 4) {
+    const value =
+      (bytes[offset] ?? 0) |
+      ((bytes[offset + 1] ?? 0) << 8) |
+      ((bytes[offset + 2] ?? 0) << 16) |
+      ((bytes[offset + 3] ?? 0) << 24);
+    controlStore(cells, 1 + offset / 4, value);
+  }
+  controlStore(cells, 0, length + 1);
+}
+function publishDiagnostic(word: OutcomeWord, text: string): void {
+  try {
+    writeDiagnostic(word, text);
+  } catch {
+    // A failed copy is complete with no text. Only a live producer may remain pending.
+    settleUnavailableDiagnostic(word);
+  }
+}
+function settleUnavailableDiagnostic(word: OutcomeWord): void {
+  try {
+    if (isInstance(word, OutcomeCell)) {
+      if (word.diagnostic) controlStore(word.diagnostic, 0, 1);
+      return;
+    }
+    atomicsStore(word, 1, 1n);
+  } catch {
+    // Collection revokes diagnostic writes along with the original process incarnation.
+  }
+}
+/** Null means the winning producer is still copying its diagnostic. */
+export function readStartDiagnostic(word: OutcomeWord): string | null {
+  if (readOutcome(word)?.kind !== "start-failed") return "";
+  const cells = diagnosticCells(word);
+  if (!cells) return "";
+  const published = controlLoad(cells);
+  if (published <= 0) return null;
+  const length = published - 1;
+  const bytes = new Uint8ArrayConstructor(length);
+  for (let offset = 0; offset < length; offset++)
+    bytes[offset] = controlLoad(cells, 1 + (offset >>> 2)) >>> ((offset & 3) * 8);
+  return diagnosticText(bytes);
+}
 /** Standalone outcomes do not recycle and use the zero running sentinel. */
 export function outcomeWord(source?: OutcomeWord | SharedArrayBuffer): OutcomeWord {
   if (isInstance(source, OutcomeCell)) return source;
-  const word = isBigInt64Array(source)
-    ? source
-    : new BigInt64ArrayConstructor(source ?? allocateSharedControl(8));
-  if (!isSharedArrayBuffer(typedArrayBuffer(word)) || typedArrayLength(word) !== 1)
-    throw new TypeError("outcome word must be one shared int64");
-  return word;
+  const buffer = isBigInt64Array(source)
+    ? typedArrayBuffer(source)
+    : (source ?? allocateSharedControl(STANDALONE_WORDS * 8));
+  const offset = isBigInt64Array(source) ? typedArrayByteOffset(source) : 0;
+  if (
+    !isSharedArrayBuffer(buffer) ||
+    sharedArrayBufferByteLength(buffer) - offset < STANDALONE_WORDS * 8
+  )
+    throw new TypeError("standalone outcome requires its shared diagnostic storage");
+  if (isBigInt64Array(source) && typedArrayLength(source) === STANDALONE_WORDS) return source;
+  return new BigInt64ArrayConstructor(buffer, offset, STANDALONE_WORDS);
 }
 export function serializeOutcome(source: OutcomeWord): OutcomeTransfer {
   if (isInstance(source, OutcomeCell))
@@ -79,19 +162,23 @@ export function serializeOutcome(source: OutcomeWord): OutcomeTransfer {
       pid: source.pid,
       running: source.running,
       validity: source.validity,
+      diagnostic: source.diagnostic ? serializeTaggedCells(source.diagnostic) : undefined,
     };
-  if (!isSharedArrayBuffer(typedArrayBuffer(source)) || typedArrayLength(source) !== 1)
-    throw new TypeError("outcome word must be one shared int64");
+  outcomeWord(source);
+  const word = source;
   return {
     type: "outcome-word",
-    buffer: typedArrayBuffer(source) as SharedArrayBuffer,
-    byteOffset: typedArrayByteOffset(source),
+    buffer: typedArrayBuffer(word) as SharedArrayBuffer,
+    byteOffset: typedArrayByteOffset(word),
   };
 }
 export function reviveOutcome(source: OutcomeTransfer): OutcomeWord {
   if (isSharedArrayBuffer(source)) return outcomeWord(source);
-  if (source.type === "outcome-word")
-    return outcomeWord(new BigInt64ArrayConstructor(source.buffer, source.byteOffset, 1));
+  if (source.type === "outcome-word") {
+    return outcomeWord(
+      new BigInt64ArrayConstructor(source.buffer, source.byteOffset, STANDALONE_WORDS),
+    );
+  }
   if (source.type === "outcome-cell") {
     if (source.running !== BigInt(source.pid) << 3n)
       throw new TypeError("invalid outcome running sentinel");
@@ -99,6 +186,7 @@ export function reviveOutcome(source: OutcomeTransfer): OutcomeWord {
       new BigInt64ArrayConstructor(source.buffer, source.byteOffset, 1),
       source.pid,
       source.validity,
+      source.diagnostic ? reviveTaggedCells(source.diagnostic) : undefined,
     );
   }
   throw new TypeError("invalid outcome transfer");
@@ -164,6 +252,7 @@ export function claimOutcome(
   word: OutcomeWord,
   result: Pick<ProcessExit, "kind" | "code">,
   onClaim?: () => void,
+  diagnostic?: string,
 ): ProcessExit {
   if (!Number.isSafeInteger(result.code))
     throw new RangeError("process outcome code must be a safe integer");
@@ -179,9 +268,9 @@ export function claimOutcome(
     const encoded = value | (previous & STARTED);
     const observed = atomicsCompareExchange(cells(word), 0, previous, encoded);
     if (isInstance(word, OutcomeCell)) word.check();
-    if (observed === previous) {
-      onClaim?.();
-      return decode(encoded);
-    }
+    if (observed !== previous) continue;
+    if (result.kind === "start-failed") publishDiagnostic(word, diagnostic ?? "");
+    onClaim?.();
+    return decode(encoded);
   }
 }

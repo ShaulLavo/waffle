@@ -281,6 +281,7 @@ const supervisorCapabilities = {
   start: "async",
   started: "method",
   startStatus: "method",
+  spawnDiagnostic: "method",
   registerChildStartWake: "method",
   failStart: "method",
   exit: "method",

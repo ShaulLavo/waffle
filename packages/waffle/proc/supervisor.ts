@@ -12,6 +12,7 @@ import {
   typedArrayLength,
 } from "./intrinsics.ts";
 import { ExecutableFormatError, spawnError, startFailure } from "./start-failure.js";
+import { describeStartError } from "./start-diagnostic.ts";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
 import {
@@ -35,6 +36,7 @@ import {
   readOutcome,
   markStarted,
   startStatus,
+  readStartDiagnostic,
 } from "./outcome.js";
 import {
   ProcessErrno,
@@ -781,6 +783,16 @@ export class ProcessSupervisor {
       throw error;
     }
   }
+  spawnDiagnostic(parentPid: number, pid: number): string | null {
+    this.cwd(parentPid);
+    try {
+      return readStartDiagnostic(this.child(parentPid, pid).outcome);
+    } catch (error) {
+      if (error instanceof ProcessError && error.errno === ProcessErrno.SRCH)
+        throw new ProcessError(ProcessErrno.CHILD, "not a retained child process");
+      throw error;
+    }
+  }
   registerChildStartWake(parentPid: number, pid: number, wake: Int32Array): () => void {
     if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
       throw new TypeError("startup wake must be one shared int32");
@@ -1043,7 +1055,12 @@ export class ProcessSupervisor {
       claimed = true;
     };
     try {
-      winner = claimOutcome(record.outcome, result, ownClaim);
+      winner = claimOutcome(
+        record.outcome,
+        result,
+        ownClaim,
+        result.kind === "start-failed" ? describeStartError(startError) : undefined,
+      );
     } catch (error) {
       // Entry and a host-side setup error can race. Entry's CAS changes this into an
       // execution failure, never START_FAILED after observers saw successful entry.

@@ -1193,9 +1193,10 @@ test("shared signal helper imports directly under Node strip-only TypeScript", (
   const script = `
     import assert from "node:assert/strict";
     const { createSignalState, requestSignal, setSignalDisposition, SignalDisposition, takeSignal } = await import(${JSON.stringify(url)});
+    const { outcomeWord } = await import(${JSON.stringify(new URL("../proc/outcome.ts", import.meta.url).href)});
     const transport = {
       signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)),
-      requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: new BigInt64Array(new SharedArrayBuffer(8)),
+      requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord(),
     };
     setSignalDisposition(transport.signalState, 64, SignalDisposition.HANDLE);
     assert.equal(requestSignal(transport, 64).action, "handled");

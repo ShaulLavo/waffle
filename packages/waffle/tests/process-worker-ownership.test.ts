@@ -1843,7 +1843,7 @@ for (const stopAt of ["seal", "job-retiring", "member-retiring", "member-freed"]
     const original = Atomics.compareExchange;
     const stopped = new Error("collector terminated");
     let interrupted = false;
-    const identityOffset = leaderTransport.slot * 79 * 8 + 32;
+    const identityOffset = workerProcessState(leaderTransport).signals.outcome.byteOffset - 5 * 8;
     const groupOffset = group.outcome.byteOffset - 3 * 8;
     Atomics.compareExchange = ((
       array: BigInt64Array,
@@ -2478,6 +2478,7 @@ for (const joining of [false, true]) {
   test(`process initialization failure rolls back ${joining ? "joined membership" : "private job"} and its captured process reservation`, () => {
     const root = createWorkerProcessTransport({ capacity: 2 });
     const rootState = workerProcessState(root);
+    const processStride = (rootState.jobOutcome.byteOffset - 32 - 3 * 8) / 2;
     const original = Atomics.store;
     const failure = new Error("initialization interrupted");
     let interrupted = false;
@@ -2486,7 +2487,7 @@ for (const joining of [false, true]) {
         !interrupted &&
         array instanceof BigInt64Array &&
         array.buffer === root.directory &&
-        array.byteOffset === 32 + 79 * 8 &&
+        array.byteOffset === 32 + processStride &&
         index === 1 &&
         value === packedControl(2, 1)
       ) {
