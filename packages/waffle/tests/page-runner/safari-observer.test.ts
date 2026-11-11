@@ -501,3 +501,113 @@ test("shutdown owns the outer reply after its inner answer and socket write comp
   await stopped;
   expect(await f.consumers.join(100)).toBe(true);
 });
+
+for (const order of ["before", "after"]) {
+  test(`intentional exact target retirement preserves final browser close ${order} destruction`, async () => {
+    const f = fixture();
+    const ledger = await f.observer.attach();
+    const worker = ledger.workers()[0]!;
+    const received: string[] = [];
+    ledger.onWorker((event) => {
+      received.push(event.kind);
+    });
+    const closed = ledger.waitForWorkerClose(worker);
+    ledger.beginDocumentClose();
+    if (order === "before") f.event("Worker.workerTerminated", { workerId: "first" });
+    f.envelope({ method: "Target.targetDestroyed", params: { targetId: "page-1" } });
+    if (order === "after") f.event("Worker.workerTerminated", { workerId: "first" });
+    await closed;
+    expect(received).toEqual(["created", "closed"]);
+    await ledger.stop();
+    expect(f.lifecycle.at(-1)).toBe("close");
+    expect(f.lifecycle.includes("detach")).toBe(false);
+    expect(f.methods.includes("Worker.disable")).toBe(false);
+    expect(await f.consumers.join(100)).toBe(true);
+  });
+}
+
+test("matching page-listing removal preserves queued close but changed frontend still fails", async () => {
+  const f = fixture();
+  const ledger = await f.observer.attach();
+  const worker = ledger.workers()[0]!;
+  ledger.beginDocumentClose();
+  f.observer.accept({
+    selector: "_rpc_applicationSentListing:",
+    argument: { WIRApplicationIdentifierKey: "app", WIRListingKey: {} },
+    sequence: 100,
+  });
+  f.event("Worker.workerTerminated", { workerId: "first" });
+  await ledger.waitForWorkerClose(worker);
+  await ledger.stop();
+  const replaced = fixture();
+  const other = await replaced.observer.attach();
+  other.beginDocumentClose();
+  replaced.observer.accept({
+    selector: "_rpc_applicationSentListing:",
+    argument: {
+      WIRApplicationIdentifierKey: "app",
+      WIRListingKey: {
+        p: { WIRPageIdentifierKey: 7, WIRConnectionIdentifierKey: "other-frontend" },
+      },
+    },
+    sequence: 100,
+  });
+  expect((await other.failure).message).toContain("replaced");
+  await expect(other.stop()).rejects.toThrow("replaced");
+});
+
+test("termination requests and wrong owners cannot supply a browser close", async () => {
+  const f = fixture();
+  const ledger = await f.observer.attach();
+  const worker = ledger.workers()[0]!;
+  let completed = false;
+  const closed = ledger.waitForWorkerClose(worker).then(() => {
+    completed = true;
+  });
+  f.event("Worker.terminate", { workerId: "first" });
+  f.inner({ method: "Worker.workerTerminated", params: { workerId: "first" } }, "unrelated-target");
+  await Promise.resolve();
+  expect(completed).toBe(false);
+  await expect(closed).rejects.toThrow("lifetime changed");
+  await expect(ledger.stop()).rejects.toThrow("lifetime changed");
+  const genuine = fixture();
+  const accepted = await genuine.observer.attach();
+  const actual = accepted.waitForWorkerClose(accepted.workers()[0]!);
+  genuine.event("Worker.workerTerminated", { workerId: "first" });
+  await actual;
+  await accepted.stop();
+});
+
+test("stream loss and missing final close during owned destruction fail, never empty success", async () => {
+  for (const loss of ["stream", "missing"]) {
+    const f = fixture();
+    const ledger = await f.observer.attach();
+    const waiting = ledger.waitForWorkerClose(ledger.workers()[0]!);
+    ledger.beginDocumentClose();
+    f.envelope({ method: "Target.targetDestroyed", params: { targetId: "page-1" } });
+    if (loss === "stream") f.observer.lose(new Error("stream lost"));
+    const results = await Promise.allSettled([ledger.stop(), waiting]);
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(f.lifecycle.at(-1)).toBe("close");
+    expect(await f.consumers.join(100)).toBe(true);
+  }
+});
+
+test("pending lifecycle callbacks cannot delay Worker.initialized and must drain before transport stop", async () => {
+  const f = fixture({ noWorkers: true });
+  const ledger = await f.observer.attach();
+  const callback = Promise.withResolvers<void>();
+  const remove = ledger.onWorker(() => callback.promise);
+  f.event("Worker.workerCreated", { workerId: "later", url: "https://owned.test/later.js" });
+  await f.initializationDispatched.promise;
+  expect(f.methods.at(-1)).toBe("Worker.initialized");
+  const removed = remove();
+  expect(remove()).toBe(removed);
+  const stopped = ledger.stop();
+  expect(await f.consumers.join(1)).toBe(false);
+  expect(f.lifecycle.includes("Network.disable")).toBe(false);
+  callback.resolve();
+  await Promise.all([removed, stopped]);
+  expect(f.lifecycle.at(-1)).toBe("close");
+  expect(await f.consumers.join(100)).toBe(true);
+});

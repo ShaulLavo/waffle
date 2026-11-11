@@ -279,9 +279,11 @@ export class SafariDriver implements Driver {
     private readonly observeFailure?: (facts: NativeCommandFailure) => void,
     private readonly inspectorReceipt = process.env.WAFFLE_SAFARI_INSPECTOR_ENDPOINT,
   ) {}
-  private observation: DriverObservation | undefined;
+  private readonly observedWindows = new Map<string, string>();
+  private readonly observations = new Map<string, DriverObservation>();
   async observe(binding: DriverObservationBinding): Promise<DriverObservation> {
-    if (this.observation) throw new Error("Prior browser observer was not retired");
+    if (this.observations.has(binding.expectedURL) || this.observedWindows.has(binding.window))
+      throw new Error("Document generation already observed");
     if (!this.inspectorReceipt)
       throw new Error(
         "Safari observation requires an exact read-only endpoint helper receipt in WAFFLE_SAFARI_INSPECTOR_ENDPOINT",
@@ -302,7 +304,8 @@ export class SafariDriver implements Driver {
     if (identity !== wanted) throw new Error("SafariDriver bootstrap document changed");
     const path = await inspectorEndpoint(this.inspectorReceipt, this.udid);
     const observer = await SafariObserver.open(path, binding);
-    this.observation = observer;
+    this.observations.set(binding.expectedURL, observer);
+    this.observedWindows.set(binding.window, binding.expectedURL);
     binding.signal.throwIfAborted();
     if (
       (await this.handle(actual)) !== binding.window ||
@@ -318,10 +321,17 @@ export class SafariDriver implements Driver {
       check: () => observer.check(),
       workers: () => observer.workers(),
       onRequest: (callback) => observer.onRequest(callback),
+      onWorker: (callback) => observer.onWorker(callback),
+      waitForWorkerClose: (worker) => observer.waitForWorkerClose(worker),
+      waitForWorkerURLClose: (url) => observer.waitForWorkerURLClose(url),
+      beginDocumentClose: (nextURL) => observer.beginDocumentClose(nextURL),
+      documentClosed: () => observer.documentClosed(),
+      revokeActions: () => observer.revokeActions(),
       revoke: () => observer.revoke(),
       stop: () =>
         (retirement ??= stop().then(() => {
-          this.observation = undefined;
+          this.observations.delete(binding.expectedURL);
+          this.observedWindows.delete(binding.window);
         })),
     };
     return owned;
@@ -645,7 +655,11 @@ export class SafariDriver implements Driver {
   private async stopOnce(): Promise<DriverCleanup> {
     let observerFailure: { reason: unknown } | undefined;
     try {
-      await this.observation?.stop();
+      const results = await Promise.allSettled(
+        Array.from(this.observations.values(), (owner) => owner.stop()),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     } catch (error) {
       observerFailure = { reason: error };
     }

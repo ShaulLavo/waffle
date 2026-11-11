@@ -66,6 +66,7 @@ export class SafariObserver {
   private failed: Error | undefined;
   private dispatchOpen = true;
   private detaching = false;
+  private targetRetired = false;
   private detachConfirmed = false;
   private readonly pending = new Map<number, Pending>();
   private readonly initializations = new Set<Promise<unknown>>();
@@ -287,7 +288,12 @@ export class SafariObserver {
     const page = Object.values(listing).find(
       (row) => isDict(row) && row.WIRPageIdentifierKey === this.selection?.page,
     );
-    if (!isDict(page)) throw new Error("Owned Inspector page disappeared");
+    if (!isDict(page)) {
+      if (!this.ledger?.closing) throw new Error("Owned Inspector page disappeared");
+      this.targetRetired = true;
+      this.ledger.documentClosed();
+      return;
+    }
     if (this.detaching && page.WIRConnectionIdentifierKey !== this.connection) {
       this.detachConfirmed = true;
       return;
@@ -310,8 +316,13 @@ export class SafariObserver {
     const message = parseMessage(messageText(args.WIRMessageDataKey));
     if (message.kind === "reply") return this.reply(message);
     if (message.method === "Target.targetCreated") return this.createdTarget(message.params);
-    if (message.method === "Target.targetDestroyed")
-      throw new Error("Owned Inspector target destroyed");
+    if (message.method === "Target.targetDestroyed") {
+      if (message.params.targetId !== this.target || !this.ledger?.closing)
+        throw new Error("Owned Inspector target destroyed");
+      this.targetRetired = true;
+      this.ledger.documentClosed();
+      return;
+    }
     if (message.method !== "Target.dispatchMessageFromTarget") {
       if (message.method.startsWith("Target."))
         throw new Error(`Unsupported Inspector target transition: ${message.method}`);
@@ -362,6 +373,14 @@ export class SafariObserver {
   }
   private request(params: Record<string, unknown>, method: string, sequence: number): void {
     const event = requestEvent(method, params, sequence);
+    if (
+      this.ledger?.closing &&
+      event.url === this.ledger.closingNavigationURL &&
+      params.documentURL === event.url
+    ) {
+      this.ledger.documentClosed();
+      return;
+    }
     if (params.documentURL !== this.binding.expectedURL)
       throw new Error("Inspector request is outside the exact case document");
     if (!this.document) {
@@ -380,7 +399,7 @@ export class SafariObserver {
     if (!ledger) throw new Error("Inspector target event before observer admission");
     if (method === "Worker.workerCreated") {
       const worker = workerEvent(params);
-      if (!ledger.created(worker.id)) return;
+      if (!ledger.created(worker.id, worker.url)) return;
       const initialization = this.command("Worker.initialized", { workerId: worker.id });
       this.initializations.add(initialization);
       void initialization.then(
@@ -391,7 +410,8 @@ export class SafariObserver {
         },
       );
     }
-    if (method === "Worker.workerTerminated") ledger.terminated(terminatedWorker(params));
+    if (method === "Worker.workerTerminated")
+      ledger.terminated(terminatedWorker(params), "safari-worker-terminated");
     if (method === "Network.requestWillBeSent" || method === "Network.requestServedFromMemoryCache")
       this.request(params, method, sequence);
   }
@@ -444,6 +464,7 @@ export class SafariObserver {
     if (this.abort) this.binding.signal.removeEventListener("abort", this.abort);
     try {
       await Promise.all(Array.from(this.initializations));
+      if (this.targetRetired) return;
       if (this.enabledNetwork) await this.command("Network.disable", {}, true);
       if (this.enabledWorker) await this.command("Worker.disable", {}, true);
       if (this.enabledPage) await this.command("Page.disable", {}, true);

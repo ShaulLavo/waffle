@@ -734,6 +734,39 @@ test("runtime-owned source admission avoids a second byte snapshot", async () =>
 });
 
 test("compiled program loaders release their owned source while registration stays live", async () => {
+  if (!process.env.WAFFLE_OWNED_SOURCE_GC_CHILD) {
+    // Concurrent JIT plans can root a parser Reader and its source after compilation returns.
+    // Keep this ownership assertion independent of that engine worklist, as in root release.
+    const child = Bun.spawn(
+      [process.execPath, "test", import.meta.path, "-t", "^compiled program loaders release"],
+      {
+        env: {
+          ...process.env,
+          WAFFLE_OWNED_SOURCE_GC_CHILD: "1",
+          BUN_JSC_useConcurrentJIT: "0",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 4000,
+        killSignal: "SIGKILL",
+      },
+    );
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, signal: child.signalCode, stdout, stderr }).toMatchObject({
+        code: 0,
+        signal: null,
+      });
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    return;
+  }
   const source = new Uint8Array(1024 * 1024 + 13);
   source.set(bytes);
   source.set([0, 0x81, 0x80, 0x40, 0], bytes.length);

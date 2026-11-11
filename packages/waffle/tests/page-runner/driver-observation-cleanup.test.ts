@@ -30,7 +30,7 @@ for (const reason of [undefined, null, false, 0, ""]) {
     const ledger = await failedObservation(reason);
     const driver = new PlaywrightDriver("chromium", "/unused/no-browser");
     const close = spyOn(BrowserRunnerLifecycle.prototype, "close").mockResolvedValue();
-    Reflect.set(driver, "browserObservation", ledger);
+    Reflect.set(driver, "observations", new Map([["owned", ledger]]));
     try {
       const result = await driver.stop();
       expect(close).toHaveBeenCalledTimes(1);
@@ -47,7 +47,7 @@ for (const reason of [undefined, null, false, 0, ""]) {
     const ledger = await failedObservation(reason);
     const driver = new SafariDriver("10128D70-92A7-4626-9CE5-1537CF27BE84", "/unused/no-native");
     const commands: string[] = [];
-    Reflect.set(driver, "observation", ledger);
+    Reflect.set(driver, "observations", new Map([["owned", ledger]]));
     Reflect.set(driver, "session", "cpu-owned-session");
     Reflect.set(driver, "request", async (method: string, path: string) => {
       commands.push(`${method} ${path}`);

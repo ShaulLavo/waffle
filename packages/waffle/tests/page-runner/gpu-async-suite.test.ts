@@ -97,6 +97,12 @@ test("pre-aborted command does not import, qualify or launch a guest", async () 
     workers: async () => {
       throw new Error("Browser observation not declared");
     },
+    onWorker: () => {
+      throw new Error("Browser observation not declared");
+    },
+    waitForWorkerClose: async () => {
+      throw new Error("Browser observation not declared");
+    },
     onRequest: () => {
       throw new Error("Browser observation not declared");
     },

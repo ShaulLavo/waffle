@@ -1,3 +1,5 @@
+import { bounded, type DriverObservation } from "./driver.js";
+import type { HostConsumers } from "./owned-consumers.js";
 import { reportingFailure, type HostReply } from "./report-control.js";
 import { ReportChunks, type ReportAck } from "./report-chunks.js";
 import {
@@ -89,6 +91,72 @@ export type DocumentState = {
   tasks: Map<string, PageTask>;
 };
 export class Collector {
+  private readonly observations = new Map<
+    DocumentState,
+    {
+      observation: DriverObservation;
+      consumers: HostConsumers;
+      deadline: () => number;
+      pending: number;
+    }
+  >();
+  bindObservation(
+    state: DocumentState,
+    observation: DriverObservation | undefined,
+    consumers: HostConsumers,
+    deadline: () => number,
+  ): void {
+    if (!observation) return;
+    if (!this.owns(state) || this.observations.has(state))
+      throw new Error("Observation owner already bound or unrelated");
+    this.observations.set(state, { observation, consumers, deadline, pending: 0 });
+  }
+  observation(state: DocumentState): DriverObservation | undefined {
+    return this.observations.get(state)?.observation;
+  }
+  async workerCloseQuery(value: unknown): Promise<void> {
+    if (
+      !record(value) ||
+      value.run !== this.run ||
+      typeof value.token !== "string" ||
+      typeof value.url !== "string"
+    )
+      throw new ObservationClosed("Unbound Worker close query");
+    const state = this.documents.find((item) => item.token === value.token);
+    const owner = state && this.observations.get(state);
+    if (
+      !state ||
+      !owner ||
+      !state.doc ||
+      state.doc !== value.doc ||
+      state.expectedURL !== value.documentURL ||
+      !this.owns(state) ||
+      state.cutoff !== null ||
+      state.physical !== "live" ||
+      state.complete ||
+      state.retiring ||
+      !["driving", "teardown"].includes(this.active?.host?.kind ?? "") ||
+      this.reply(false, state).kind !== "live"
+    )
+      throw new ObservationClosed("Worker close query is not the exact live document");
+    try {
+      owner.observation.check();
+    } catch (error) {
+      throw new ObservationClosed("Worker close query observation is not active", { cause: error });
+    }
+    const ms = owner.deadline() - this.now();
+    if (ms <= 0 || owner.pending >= 4096)
+      throw new ObservationClosed("Worker close query admission expired or full");
+    const workerURL = value.url;
+    owner.pending++;
+    try {
+      await owner.consumers.invoke(() =>
+        bounded(owner.observation.waitForWorkerURLClose(workerURL), ms, "Worker close query"),
+      );
+    } finally {
+      owner.pending--;
+    }
+  }
   readonly outcomes: Record<string, Outcome> = {};
   readonly results: Record<string, unknown> = {};
   readonly failures: Failure[] = [];

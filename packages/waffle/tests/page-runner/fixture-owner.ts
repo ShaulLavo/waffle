@@ -38,7 +38,14 @@ export function localPath(path: string): void {
 }
 export function reservedPath(path: string): boolean {
   return (
-    ["/report", "/heartbeat", "/retire", "/favicon.ico"].includes(path) ||
+    [
+      "/report",
+      "/heartbeat",
+      "/retire",
+      "/favicon.ico",
+      "/_waffle_worker_close",
+      "/_waffle_observation_bootstrap",
+    ].includes(path) ||
     path === "/_waffle_owned" ||
     path.startsWith("/_waffle_owned/")
   );

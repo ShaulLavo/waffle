@@ -48,9 +48,11 @@ export class PlaywrightDriver implements Driver {
       console.error("Local runner request failed", request.url(), request.failure()),
     );
   }
-  private browserObservation: DriverObservation | undefined;
+  private readonly observedWindows = new Map<string, string>();
+  private readonly observations = new Map<string, DriverObservation>();
   async observe(binding: DriverObservationBinding): Promise<DriverObservation> {
-    if (this.browserObservation) throw new Error("Prior browser observer was not retired");
+    if (this.observations.has(binding.expectedURL) || this.observedWindows.has(binding.window))
+      throw new Error("Document generation already observed");
     const page = this.current();
     if (
       (await this.handle(binding.signal)) !== binding.window ||
@@ -58,7 +60,8 @@ export class PlaywrightDriver implements Driver {
     )
       throw new Error("Observation is not the exact existing Page");
     const observation = observePlaywrightPage(page, binding);
-    this.browserObservation = observation;
+    this.observations.set(binding.expectedURL, observation);
+    this.observedWindows.set(binding.window, binding.expectedURL);
     let retirement: Promise<void> | undefined;
     return {
       failure: observation.failure,
@@ -66,10 +69,17 @@ export class PlaywrightDriver implements Driver {
       check: () => observation.check(),
       workers: () => observation.workers(),
       onRequest: (callback) => observation.onRequest(callback),
+      onWorker: (callback) => observation.onWorker(callback),
+      waitForWorkerClose: (worker) => observation.waitForWorkerClose(worker),
+      waitForWorkerURLClose: (url) => observation.waitForWorkerURLClose(url),
+      beginDocumentClose: (nextURL) => observation.beginDocumentClose(nextURL),
+      documentClosed: () => observation.documentClosed(),
+      revokeActions: () => observation.revokeActions(),
       revoke: () => observation.revoke(),
       stop: () =>
         (retirement ??= observation.stop().then(() => {
-          this.browserObservation = undefined;
+          this.observations.delete(binding.expectedURL);
+          this.observedWindows.delete(binding.window);
         })),
     };
   }
@@ -172,7 +182,11 @@ export class PlaywrightDriver implements Driver {
   private async stopOnce(): Promise<DriverCleanup> {
     let observationFailure: { reason: unknown } | undefined;
     try {
-      await this.browserObservation?.stop();
+      const results = await Promise.allSettled(
+        Array.from(this.observations.values(), (owner) => owner.stop()),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     } catch (error) {
       observationFailure = { reason: error };
     }

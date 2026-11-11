@@ -1,6 +1,6 @@
 import type { ServiceWorkerEntry, StorageEntry } from "../storage-allocation.js";
 export type HostVerdict = { status: "pass"; result: unknown } | { status: "fail"; error: string };
-export type HostPeer = {
+export type HostPeer = HostWorkerObservation & {
   readonly signal: AbortSignal;
   script(source: string): Promise<unknown>;
   task(source: string): Promise<void>;
@@ -13,10 +13,18 @@ export type HeldAssetRequest = {
 export type AssetHoldCallback = (request: HeldAssetRequest) => Promise<void>;
 export type HostKey = "Home" | "ArrowUp" | "ArrowRight" | "Enter";
 /** Host-only stable identity. No runtime, process or constructor ledger is exposed. */
-export type HostWorker = Readonly<{ kind: "dedicated-worker" }>;
-export type HostRequestCallback = (url: string) => void | PromiseLike<void>;
-export type HostCase = {
+export type HostWorker = Readonly<{ kind: "dedicated-worker"; url: string }>;
+export type HostWorkerEvent =
+  | Readonly<{ kind: "created"; worker: HostWorker }>
+  | Readonly<{ kind: "closed"; worker: HostWorker }>;
+export type HostWorkerCallback = (event: HostWorkerEvent) => void | PromiseLike<void>;
+type HostWorkerObservation = {
   workers(): Promise<readonly HostWorker[]>;
+  onWorker(callback: HostWorkerCallback): () => Promise<void>;
+  waitForWorkerClose(worker: HostWorker): Promise<void>;
+};
+export type HostRequestCallback = (url: string) => void | PromiseLike<void>;
+export type HostCase = HostWorkerObservation & {
   onRequest(callback: HostRequestCallback): () => Promise<void>;
   press(key: HostKey): Promise<void>;
   holdAsset(path: string, callback: AssetHoldCallback): void;

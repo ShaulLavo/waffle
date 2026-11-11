@@ -225,3 +225,35 @@ The repository root is a private workspace. Installable runtime archives are pac
 After the reviewed move and main checks pass, cut a patch release from main: update both `packages/waffle/package.json` and `packages/waffle-relay/package.json` to the same version and update the workspace lockfile, then create and push the matching `waffle-v<version>` tag. The runtime release workflow checks that the tag version matches the package and that its commit belongs to main. It restores the exact network artifact from CI, packs `waffle-<version>.tgz` and `waffle-relay-<version>.tgz`, and creates a draft GitHub release with both archives and their separate `.sha256` checksums. It uses GitHub's existing workflow token and does not publish to npm. Repeated publication fails instead of replacing release assets.
 
 Only after the release assets exist, update consumer dependency and peer pins to the release archive URL and remove Waffle's lifecycle trust entry. The archive includes prepared Node modules, source and browser worker entries, network assets, and licenses; installation needs no prepare step. For local development, run `bun link` from `packages/waffle` and `bun link waffle` from the consumer.
+
+### Run the complete publication command
+
+The native entry runs the unchanged ordinary or workspace fixture through the same page host.
+The ordinary command retains all 15 ordered controls. Workspace retains its memory, persistent
+flush and reopen, writer handoff, cursor cancellation, owner close and independent read Worker.
+
+```sh
+STORAGE_SCRATCH_ROOT=/absolute/scratch/root IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/publication-browser-runner.ts ios-safari --result /absolute/publication.json
+STORAGE_SCRATCH_ROOT=/absolute/scratch/root IOS_UDID=<exact-simulator-uuid> \
+  bun packages/waffle/tests/publication-browser-runner.ts --workspace ios-safari --result /absolute/workspace.json
+```
+
+Both modes keep the original 180-second command budget. Desktop dispatch is unchanged.
+Worker observation requires the supported Safari Inspector endpoint receipt. Each document,
+including every peer generation, owns its own observation. `HostCase` and `HostPeer` expose
+immutable Worker URLs, ordered `onWorker` creation and close replay, and exact-object
+`waitForWorkerClose` promises. URL-based fixture queries retain the original latest-creation
+lookup, including already-closed Workers. Playwright Firefox can report the original relative
+script URL. The host preserves that metadata rather than rewriting the original URL oracle.
+
+An intentional peer close revokes actions before closing the window, but retains lifecycle
+callbacks until the matching browser events arrive. Safari's `Worker.workerTerminated` and
+Playwright's real Worker `close` event establish browser lifecycle closure. Window disappearance,
+a termination request, or a cleanup result cannot supply that event. Browser close does not prove
+OS-thread joining, memory reclamation, lock release or database deletion. The original later
+resource checks remain required. Cross-tab and recovery commands are separate ports.
+
+Local adapter controls run with `PUBLICATION_BROWSER_CONTROLS=1 bun test
+packages/waffle/tests/page-runner/worker-lifecycle-browser.test.ts`. These controls and desktop
+publication results do not qualify actual iOS Safari.
