@@ -27,7 +27,8 @@ export function errorInstance<T>(
 }
 export function startErrorMessage(error: unknown): string {
   const message = property(error, "message");
-  return typeof message === "string" ? message : (scalar(error, 256) ?? "[object thrown]");
+  if (typeof message === "string") return message;
+  return typeof error === "string" ? error : (scalar(error, 256) ?? "[object thrown]");
 }
 function property(value: unknown, key: string): unknown {
   if ((typeof value !== "object" || value === null) && typeof value !== "function")
@@ -44,13 +45,20 @@ function scalar(value: unknown, limit: number): string | undefined {
     return prefix(StringConstructor(value), limit);
   return undefined;
 }
-function errorLine(error: unknown): string {
+function errorLine(error: unknown, bounded: boolean): string {
   const name = property(error, "name"),
     message = property(error, "message"),
     code = property(error, "code"),
     errno = property(error, "errno");
   const label = typeof name === "string" ? prefix(name, 80) : "Thrown value";
-  const text = typeof message === "string" ? prefix(message, 256) : scalar(error, 256);
+  const text =
+    typeof message === "string"
+      ? bounded
+        ? prefix(message, 256)
+        : message
+      : typeof error === "string" && !bounded
+        ? error
+        : scalar(error, 256);
   let line = `${label}: ${text ?? "[object]"}`;
   if (code !== undefined) line += ` [code=${scalar(code, 80) ?? "[object]"}]`;
   if (errno !== undefined) line += ` [errno=${scalar(errno, 32) ?? "[object]"}]`;
@@ -69,7 +77,7 @@ export class WorkerStartError extends Error {
 }
 
 /** Bounded, non-coercing inspection also handles cycles and throwing accessors. */
-export function describeStartError(error: unknown): string {
+export function describeStartError(error: unknown, bounded = true): string {
   const forwarded = errorInstance(error, WorkerStartError)
     ? property(error, "diagnostic")
     : undefined;
@@ -82,14 +90,14 @@ export function describeStartError(error: unknown): string {
     for (let i = 0; i < seen.length; i++) repeated ||= seen[i] === current;
     if (repeated) return `${text}\nCaused by: [circular cause]`;
     arrayAppend(seen, current);
-    text += `${depth ? "\nCaused by: " : ""}${errorLine(current)}`;
+    text += `${depth ? "\nCaused by: " : ""}${errorLine(current, bounded)}`;
     const cause = property(current, "cause");
     if (cause === undefined) break;
     current = cause;
     if (depth === 7) text += "\n[cause depth limit]";
   }
   const stack = property(error, "stack");
-  if (typeof stack === "string") text += `\n${prefix(stack, 512)}`;
+  if (typeof stack === "string") text += `\n${bounded ? prefix(stack, 512) : stack}`;
   return text;
 }
 

@@ -331,7 +331,7 @@ function readNameSection(section: ArrayBuffer, names: Map<string, number>) {
   }
 }
 
-function functionNames(module: WebAssembly.Module) {
+export function functionNames(module: WebAssembly.Module): Map<string, number> {
   const names = new Map<string, number>();
   for (const section of WebAssembly.Module.customSections(module, "name")) {
     readNameSection(section, names);

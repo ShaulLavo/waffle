@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { Worker } from "node:worker_threads";
 import type { TerminalControlWorkerData } from "./fixtures/terminal-control-worker.js";
 import { controlLoad } from "../proc/control.js";
@@ -54,7 +55,9 @@ function completionLabel(completion: RootPreparationCompletion): string {
 }
 
 /** A real broker, supervisor and directory; only the adapter's Worker is a launch callback. */
-function fixture(options: { launch?(context: ProcessContext): ProcessHandle | void } = {}) {
+function fixture(
+  options: { launch?(context: ProcessContext): ProcessHandle | void; disposeError?: Error } = {},
+) {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
@@ -63,6 +66,7 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
     terminated: number[] = [],
     errors: unknown[] = [];
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -88,15 +92,29 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
       errors.push(error);
     },
   });
-  cleanups.push(() => broker.dispose());
-  async function adopt(options: (root: WorkerProcessTransport) => RuntimeRootOptions = () => ({})) {
+  cleanups.push(async () => {
+    if (options.disposeError) {
+      const result = await broker.dispose().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(AggregateError);
+      if (!(result instanceof AggregateError)) throw result;
+      expect(result.errors).toContain(options.disposeError);
+      return;
+    }
+    await broker.dispose();
+  });
+  async function adopt(
+    options: (root: WorkerProcessTransport) => Omit<RuntimeRootOptions, "memory"> = () => ({}),
+  ) {
     const root = createWorkerProcessTransport({
       pid: identities.pid(),
       job: identities.job(),
       identity: identities.buffer,
     });
     root.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(root, options(root));
+    await broker.adoptRuntimeRoot(root, { memory: [], ...options(root) });
     return root;
   }
   /** Reserve in the parent's directory exactly as a guest would, then post to the page. */
@@ -141,7 +159,7 @@ function fixture(options: { launch?(context: ProcessContext): ProcessHandle | vo
 /** The Shell recipe: root admission in the hook, one-shot membership cleanup on child exit. */
 async function shellTerminal(
   f: ReturnType<typeof fixture>,
-  extra: Omit<RuntimeRootOptions, "prepareDescendant"> & {
+  extra: Omit<RuntimeRootOptions, "prepareDescendant" | "memory"> & {
     run?: RootDescendantPreparation["run"];
     settled?: RootDescendantPreparation["settled"];
   } = {},
@@ -431,6 +449,7 @@ test("only the descendant's own preparation runs, as captured at adoption", asyn
       }),
     );
     captured = {
+      memory: [],
       prepareDescendant: {
         terminal,
         run() {
@@ -512,11 +531,13 @@ test("postcommit cancellation reports committed/no-entry before exactly one exit
   expect(reconciled.receipt.member(ownedMember!)).toBe("removed");
 });
 
-test("failed adapter invocation transfers committed membership to exit cleanup once", async () => {
+test("failed adapter invocation transfers membership once but retains uncertain native ownership", async () => {
+  const failure = Error("adapter start failed");
   const f = fixture({
     launch() {
-      throw Error("adapter start failed");
+      throw failure;
     },
+    disposeError: failure,
   });
   const order: string[] = [];
   const t = await shellTerminal(f, {

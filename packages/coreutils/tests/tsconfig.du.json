@@ -1,0 +1,9 @@
+{
+  "extends": "../../../tools/tsconfig.programs.json",
+  "include": [
+    "../scripts/build-du.ts",
+    "../scripts/du-oracle.ts",
+    "../scripts/du-source.test.ts",
+    "../fixtures/du-cases.ts"
+  ]
+}

@@ -4,11 +4,20 @@ import { createHash } from "node:crypto";
 import { runOwned } from "../scripts/owned-command.js";
 import { runBrowserSuite } from "../scripts/browser-command.js";
 
-const engine = process.argv[2] ?? "firefox";
-const oldAt = process.argv.indexOf("--old-source");
-const old = oldAt < 0 ? undefined : process.argv[oldAt + 1];
+const startedAt = performance.now();
+if (process.argv[2] === "ios-safari") {
+  const { filesystemTransportNative } =
+    await import("./page-runner/filesystem-transport-native.js");
+  process.exit(await filesystemTransportNative(process.argv.slice(3), startedAt));
+}
+
+const args = process.argv.slice(2);
+const oldAt = args.indexOf("--old-source");
+const old = oldAt < 0 ? undefined : args[oldAt + 1];
+const engines = args.filter((_, index) => oldAt < 0 || (index !== oldAt && index !== oldAt + 1));
 const rounds = process.env.FS_TRANSPORT_ROUNDS ?? "60";
-const port = Number(process.env.FS_TRANSPORT_PORT ?? 4301);
+// The browser matrix runs runners side by side, so the default leaves port choice to the kernel.
+const requestedPort = Number(process.env.FS_TRANSPORT_PORT ?? 0);
 const packageRoot = resolve(import.meta.dir, "..");
 const repository = resolve(packageRoot, "../..");
 const scratchRoot =
@@ -26,8 +35,8 @@ try {
     JSON.stringify({
       resources: "filesystem-transport",
       scratch,
-      port,
-      engine,
+      requestedPort,
+      engines,
       oldSource: old ?? null,
     }),
   );
@@ -91,7 +100,7 @@ try {
   };
   server = Bun.serve({
     hostname: "127.0.0.1",
-    port,
+    port: requestedPort,
     fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/")
@@ -105,13 +114,17 @@ try {
       });
     },
   });
-  console.log(JSON.stringify({ source, hashes }));
-  await runBrowserSuite(["node", join(scratch, "drive.mjs"), engine, String(port), rounds, "2"], {
-    cwd: repository,
-    env: process.env,
-    signal: stopped.signal,
-    timeoutMs: 180000,
-  });
+  console.log(JSON.stringify({ source, hashes, port: server.port }));
+  for (const engine of engines.length ? engines : ["firefox"])
+    await runBrowserSuite(
+      ["node", join(scratch, "drive.mjs"), engine, String(server.port), rounds, "2"],
+      {
+        cwd: repository,
+        env: process.env,
+        signal: stopped.signal,
+        timeoutMs: 180000,
+      },
+    );
 } finally {
   server?.stop(true);
   process.removeListener("SIGTERM", stop);

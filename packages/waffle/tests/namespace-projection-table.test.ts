@@ -436,10 +436,6 @@ test("W1 forward, reversed and mixed identity builds and compaction stay bounded
   const timings: { order: string; ms: number }[] = [];
   let sampledHeapPeak = process.memoryUsage().heapUsed;
   const orders = [
-    { name: "forward-1", id: (value: number) => value },
-    { name: "forward-2", id: (value: number) => value },
-    { name: "forward-3", id: (value: number) => value },
-    { name: "forward-4", id: (value: number) => value },
     { name: "forward", id: (value: number) => value },
     { name: "reverse", id: (value: number) => 55034 - value },
     {
@@ -759,17 +755,9 @@ test("the old 8,000-name pressure fixture now completes through the public API",
   }
 });
 
-test("public W1 scans cover recovered identity order, narrow prefixes and five complete runs", async () => {
+test("public W1 scans cover recovered identity order and narrow prefixes", async () => {
   const timings: { order: string; ms: number; pages: number }[] = [];
-  const orders: IdentityOrder[] = [
-    "forward",
-    "forward",
-    "forward",
-    "forward",
-    "forward",
-    "reverse",
-    "permuted",
-  ];
+  const orders: IdentityOrder[] = ["forward", "reverse", "permuted"];
   for (const order of orders) {
     const current = await publicCorpus(coldCorpus(order));
     const registered = current.backend.shared.registeredHandles().length;

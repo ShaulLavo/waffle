@@ -11,7 +11,7 @@ replacement happens to return the right answer:
 > Never pass an authority-bearing runtime value through a guest-mutable builtin.
 
 Private authority includes process directory and identity buffers, incarnation
-cells, signal/outcome controls, pipe buffers and lifetimes, descriptor tables,
+cells, execution observation tokens and canonical-source transfers, signal/outcome controls, pipe buffers and lifetimes, descriptor tables,
 open descriptions, endpoint callbacks, and collections containing these values.
 A `Map<number, Stream>` is private even though its keys are ordinary numbers.
 A callback that closes over a private endpoint is authority too.
@@ -74,12 +74,17 @@ Terminal modules remain enforced even when an individual entry point is intended
 trusted host. Their runtime graph is reachable from guest bootstrap imports, and their
 closures and buffers carry process authority:
 
-| Enforced module                | Authority role                                                                                                              |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.       |
-| `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                          |
-| `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.       |
-| `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal. |
+| Enforced module                | Authority role                                                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `browser/preview1-socket.ts`   | Socket descriptions retain their handle, captured request-port hooks and descriptor flags in the guest worker. Payload copies use captured typed-array helpers. |
+| `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.                                           |
+| `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                                                              |
+| `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.                                           |
+| `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal.                                     |
+
+`proc/observation.ts` is checked alongside `proc/outcome.ts` and `proc/directory.ts`.
+Its source variants, tokens, views, branded unwinds, and acquisition callbacks use captured
+constructors, atomics, and WeakMap operations. Token expiry grants no producer authority.
 
 Terminal identity/context, policy/turn, attachment/authority, input and process-lifetime
 handles are named private types in the checker. None of these modules is classified as a
@@ -124,7 +129,7 @@ It contains no whole-file or wildcard suppression. The allowed cases are:
 | Owner                                      | Payload-only operation                                                                          | Why it carries no private authority                                                                                             |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `proc/pipes.ts` `length`                   | Reduce caller-supplied byte iovecs to a count                                                   | Elements are the caller's payload; the callback captures no ring or lifetime state.                                             |
-| `Ring.read` / `Ring.write`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
+| `Ring.read` / `Ring.writeEntered`          | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
 | Worker bootstrap `output`, `write`, `post` | Read `data.buffer` / `data.length`                                                              | Guest stdout/stderr bytes, not directory, signal or endpoint buffers.                                                           |
 | Terminal codec `import.write`              | Count/iterate terminal chunks, allocate an outbound byte array, copy payload, read byte lengths | These values are guest iovecs and fresh output bytes. The separate WeakMap of Stream provenance is private and remains checked. |
 
@@ -162,3 +167,49 @@ require zero private-authority observations during real process lifecycles.
 `proc/command-runner.ts` and `proc/command-stdio.ts` run only on the page and are lazy-loaded for host commands. Their trusted-module classification does not extend to guest bootstrap. The command context borrows asynchronous stdio and copied root-local process data. It never receives the descriptor table, filesystem connection, process service, or raw supervisor. Host commands remain trusted JavaScript in the page realm, not a sandbox.
 
 Delegated command signals are broker-created closures bound to the actual admitted holder, its root record, the root controller's captured package grant, and the target found at delivery. No command field supplies an anchor or a caller PID. Installation alone grants nothing. Root-local copied queries and a `send` method are the only process operations in the command context. The existing guest authority checks are unchanged.
+
+## Internal threaded process boundary
+
+The source-admitted threaded path keeps `thread/runtime-owner.ts` on the page and
+`thread/service-worker.ts` with `thread/service.ts` in the dedicated canonical service
+Worker. Neither executes guest code. The guest entry, imports, terminal adapter and
+lane implementation are checked through the `thread/guest-bootstrap.ts` root. This
+classification does not exempt their buffers, collections or callbacks.
+
+Argument and environment byte arrays are copied immutable launch payload, not process
+controls. Their construction and byte-length reads still use captured array and typed-array
+operations. Terminal wait timers use captured scheduling and cancellation functions because
+the callbacks retain private wait ownership. No payload exception is added for either path.
+
+## GPU guest boundary
+
+`browser/display/guest.ts`, `browser/gpu/guest.ts`, `browser/gpu/ring.ts` and
+`browser/gpu/transport.ts` are checked guest-reachable implementations. The inventory names
+`GraphicsConnection`, `GraphicsGrant`, `GraphicsOpen`, `GuestGpuConnection`, `RecordRing`,
+`RingWriter`, `PayloadDirectory`, `LogicalAppend` and `LogicalReader` as private authority. Launch ports and their
+native send/close methods are captured before executor hooks or guest execution. Fixed GPU
+controls use the installed shared-control allocator before construction. Each launch also borrows
+a fixed 64-byte revocation cell allocated and counted by the page owner. Guest imports capture
+its view before executor hooks. A revoke is observable even before an open message reaches the
+page. Open then settles its own controls without requiring a port reply. The cell stays owned
+through physical process cleanup and follows the existing conservative ledger lifetime. Views, ring copies,
+collection access and waits use the existing reviewed intrinsic captures. No payload exception
+is added for GPU control buffers.
+
+The display owner runs only on the page. GPU service, scheduler, replay, object table, completion
+owner, descriptor lowering and native presenters run only in the dedicated responsive service
+Worker. Guest bundle-graph tests reject paths to those implementations, including dynamic paths.
+The visible canvas and bitmaprenderer context stay strongly owned by that service after guest
+exit. Device-backed frame textures and private presentation canvases do not.
+
+The fixed GPU payload directory is guest-reachable checked code. Its full-width slot atomics,
+DataView reads and payload copies use captured intrinsics. The command publication remains
+the terminal selector; the payload header only mirrors its winner. Payload handles name slots
+within the supplied connection, not a global provenance domain. No payload exception is added.
+
+The display service-reader fence, grant frame lease, physical command adapter and launch receipt
+retention modules are trusted page/service implementations. Guest bundle checks reject every
+path to them. Bootstrap carries the private exact-service fence only to the dedicated GPU Worker.
+The join proof is an allocation-local object identity, with no exported constructor. The signed
+admission word uses captured atomics and constructors. [GPU service reader lifetime](architecture.md#gpu-service-reader-lifetime)
+describes the separate reader, normal grant acknowledgement and retained allocation obligations.

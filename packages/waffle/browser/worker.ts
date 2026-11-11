@@ -1,3 +1,23 @@
+import {
+  captureProcessObserver,
+  validateObservationOutcome,
+  validateObservationDirectory,
+  type ProcessObservationTransfer,
+  checkProcessObservation,
+  acquireObservedProcess,
+  isProcessExecutionTerminated,
+  observedProcessExit,
+  type ProcessObserver,
+} from "../proc/observation.js";
+import type { GraphicsConnection } from "./display/protocol.js";
+import {
+  allocateHostProgramMemory,
+  allocateSharedControl,
+  createSharedControlAllocator,
+  installSharedControlAllocator,
+  type SharedControlGrant,
+} from "../memory/control.js";
+import type { Preview1NetworkConnection } from "./preview1-network-types.js";
 import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
@@ -80,9 +100,12 @@ import type { MemoryGroupMemberRequest } from "../group/protocol.js";
 import type { GroupMember } from "../group/member.js";
 
 export interface RuntimeWorkerRequest {
+  readonly controlGrant: SharedControlGrant;
   /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
   memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
+  network?: Preview1NetworkConnection;
+  graphics?: GraphicsConnection;
   /** Supplied by the owning page or broker, never read from guest env. */
   hostIdentity?: RuntimeHostIdentity | null;
   module: WebAssembly.Module;
@@ -94,6 +117,7 @@ export interface RuntimeWorkerRequest {
   startupStderr?: PipeEndpointHandle;
   /** Authoritative terminal word available before loading process adapters. */
   outcome?: OutcomeTransfer;
+  observation?: ProcessObservationTransfer;
   /** Broker-owned bounded buffer for host terminal output. Without it, output is posted. */
   terminalOutput?: SharedArrayBuffer;
   /** Broker-owned memory group membership. Its PIE image links into the shared group memory. */
@@ -106,6 +130,7 @@ export interface RuntimeWorkerRequest {
 export type SleepMode = "atomics" | "busy-wait";
 export type RuntimeWorkerMessage =
   | WorkerProcessMessage
+  | { type: "shared-control-allocation"; buffer: SharedArrayBuffer }
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
   /** The page drained terminalOutput and waits for this before reading it again. */
@@ -129,6 +154,7 @@ export type RuntimeWorkerMessage =
       cleanupErrors: string[];
       sleep?: SleepMode;
     }
+  | { type: "observation-error"; message: string; cleanupErrors: string[] }
   | { type: "default-signal"; signal: number };
 
 export interface RuntimeWorkerHost {
@@ -286,7 +312,7 @@ function workerErrorText(err: unknown): string {
 
 function createSleepCell(host: RuntimeWorkerHost): Int32Array | null {
   if (!host.crossOriginIsolated || typeof SharedArrayBufferConstructor !== "function") return null;
-  return new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+  return new Int32ArrayConstructor(allocateSharedControl(4));
 }
 
 function captureWorkerHost(host: RuntimeWorkerHost) {
@@ -461,13 +487,61 @@ function adoptStdio(descriptors: Wasi["descriptors"], discarded: Stream[]): void
   }
 }
 
+function initialProcessOutcome<R extends RuntimeWorkerRequest>(
+  request: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  acquire: <T>(read: () => T) => T,
+): OutcomeWord | SharedArrayBuffer | undefined {
+  if (request.runtimeProcess)
+    return acquire(() => directoryState(request.runtimeProcess!)).signals.outcome;
+  if (request.outcome !== undefined) return reviveOutcome(request.outcome);
+  if (executor.outcome !== undefined) return executor.outcome;
+  if (request.observation?.kind === "standalone") return reviveOutcome(request.observation.source);
+  const observation = request.observation;
+  if (observation?.kind === "directory")
+    return acquire(() => directoryState(observation)).signals.outcome;
+  return undefined;
+}
+
+function requestProcessObserver<R extends RuntimeWorkerRequest>(
+  request: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+): ProcessObserver | undefined {
+  const observation = request.observation ?? request.runtimeProcess;
+  if (!observation) return;
+  if (request.runtimeProcess) validateObservationDirectory(observation, request.runtimeProcess);
+  if (request.outcome !== undefined)
+    validateObservationOutcome(observation, reviveOutcome(request.outcome));
+  if (executor.outcome !== undefined)
+    validateObservationOutcome(observation, outcomeWord(executor.outcome));
+  return captureProcessObserver(observation);
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
   executor: WorkerExecutor<R> | HostProgramExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
-  const { postToHost, addListener, removeListener } = captureWorkerHost(host);
+  const hooks = captureWorkerHost(host);
+  if (!req.controlGrant) throw new TypeError("Worker bootstrap requires a shared control grant");
+  const allocateShared = createSharedControlAllocator(req.controlGrant, (buffer) =>
+    hooks.postToHost({ type: "shared-control-allocation", buffer }),
+  );
+  const restoreAllocator = installSharedControlAllocator(allocateShared);
+  try {
+    await bootstrapAllocated(req, executor, host, hooks, allocateShared);
+  } finally {
+    restoreAllocator();
+  }
+}
+async function bootstrapAllocated<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R> | HostProgramExecutor<R>,
+  host: RuntimeWorkerHost,
+  { postToHost, addListener, removeListener }: ReturnType<typeof captureWorkerHost>,
+  allocateShared: (length: number) => SharedArrayBuffer,
+): Promise<void> {
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
@@ -484,6 +558,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
+  let observer: ProcessObserver | undefined;
+  let terminated = false;
+  let lastObservationFailure: unknown;
   let diagnosticWrite = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal
     ? new Int32ArrayConstructor(executor.requestedSignal)
@@ -492,15 +569,33 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let localOutcome: ProcessExit | null = null;
   const detachCollectedProcess = (error: unknown): void => {
     if (!isCollectedProcess(error)) throw error;
+    if (observer) {
+      const selected = checkProcessObservation(observer);
+      if (!selected) throw error;
+      localOutcome = selected;
+    }
     // Shared authority can disappear during asynchronous adapter loading, too. Only local
     // cleanup/reporting remains valid; never send an exit for the slot's new incarnation.
     outcome = null;
     runtimeProcess = null;
     requestedSignal = undefined;
   };
-  const claim = (result: Pick<ProcessExit, "kind" | "code">, diagnostic?: string): ProcessExit => {
+  const observedOutcome = (): ProcessExit | null => {
+    if (!observer) return localOutcome ?? (outcome ? readOutcome(outcome) : null);
     try {
-      if (outcome) return claimOutcome(outcome, result, undefined, diagnostic);
+      const selected = checkProcessObservation(observer);
+      if (selected) localOutcome = selected;
+      return selected;
+    } catch (error) {
+      lastObservationFailure = error;
+      throw error;
+    }
+  };
+  const claim = (result: Pick<ProcessExit, "kind" | "code">, diagnostic?: string): ProcessExit => {
+    const selected = observedOutcome();
+    if (selected) return selected;
+    try {
+      if (outcome) return (localOutcome = claimOutcome(outcome, result, undefined, diagnostic));
     } catch (error) {
       detachCollectedProcess(error);
     }
@@ -508,16 +603,17 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   };
   const defaultSignal = (signal: number): void => {
     checkedSignal(signal);
-    const killed = requestedSignal && controlLoad(requestedSignal, 0) === 9;
-    if (
-      !(outcome ? readOutcome(outcome) : localOutcome) &&
-      !killed &&
-      !defaultSignalTerminates(signal)
-    )
-      return;
-    const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
+    const settled = observedOutcome();
+    const killed = !settled && requestedSignal && controlLoad(requestedSignal, 0) === 9;
+    if (!settled && !killed && !defaultSignalTerminates(signal)) return;
+    const winner = settled ?? claim({ kind: "signaled", code: killed ? 9 : signal });
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
-    runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
+    localOutcome = winner;
+    if (runtimeProcess && !runtimeProcess.completeSelectedOutcome(winner)) {
+      outcome = null;
+      runtimeProcess = null;
+      requestedSignal = undefined;
+    }
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.
     if (!outcome && winner.kind === "signaled")
@@ -533,7 +629,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
   };
   const checkActive = () => {
-    const winner = outcome ? readOutcome(outcome) : localOutcome;
+    const winner = observedOutcome();
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked() || cancellation.signal.aborted) throw new WasiExit(1);
@@ -556,6 +652,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
+  let socketNetwork:
+    | ReturnType<(typeof import("./preview1-socket.js"))["attachPreview1Sockets"]>
+    | undefined;
+  const releaseNetworkPort = captureNetworkPort(req.network);
+  const releaseGraphicsPort = captureNetworkPort(req.graphics);
+  // Import/capture before executor hooks or guest entry can poison builtins.
+  let boundMemory: WebAssembly.Memory | undefined;
+  let graphics: ReturnType<(typeof import("./gpu/guest.js"))["createGraphicsGuest"]> | undefined;
   let writeDiagnostic: ((data: Uint8Array) => number) | undefined;
   let pendingFinish: Promise<void> | undefined;
   const finish = (result: WorkerResult): void => {
@@ -565,12 +669,25 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     cancelStartup();
     pendingFinish = finishOwned(result);
   };
+  const finishingOutcome = (): ProcessExit | null => {
+    if (observer) {
+      const observed = observer.read();
+      terminated ||= observed.kind === "terminated";
+      if (observed.kind === "selected") localOutcome = observed.result;
+    }
+    if (!terminated && outcome && !localOutcome) return readOutcome(outcome);
+    return localOutcome;
+  };
   const finishOwned = async (result: WorkerResult): Promise<void> => {
     let settled = localOutcome;
+    let observationFailure =
+      observer && isProcessExecutionTerminated(lastObservationFailure, observer)
+        ? undefined
+        : lastObservationFailure;
     try {
-      if (outcome) settled = readOutcome(outcome);
+      settled = finishingOutcome();
     } catch (error) {
-      detachCollectedProcess(error);
+      observationFailure = lastObservationFailure ?? ("error" in result ? result.error : error);
     }
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
@@ -583,13 +700,21 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
     // A parent may act on this exit at once: deliver every byte the guest wrote first.
-    if (!settled) hostOutput?.flush(() => revoked() || outcomeSettled());
-    const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
+    if (!terminated && !settled) hostOutput?.flush(() => revoked() || outcomeSettled());
+    const runtimeDiagnostic =
+      !observationFailure &&
+      !terminated &&
+      !executor.complete &&
+      started &&
+      "error" in result &&
+      !settled;
     const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
     let winner =
-      runtimeDiagnostic || !executor.complete || startupFailure
-        ? claim(ownResult, startupDiagnostic)
-        : settled;
+      terminated || observationFailure
+        ? null
+        : runtimeDiagnostic || !executor.complete || startupFailure
+          ? claim(ownResult, startupDiagnostic)
+          : settled;
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length)
@@ -616,13 +741,13 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       } catch (error) {
         collect(error);
       }
-      winner = claim(ownResult);
     }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
     attempt(() => memorySampler?.sample());
     // Legacy transports must buffer diagnostics before publishing logical completion.
     if (
+      !terminated &&
       executor.complete &&
       "error" in result &&
       (startupFailure ? !req.runtimeProcess && winner?.kind === "start-failed" : !settled)
@@ -637,6 +762,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const streams = ownedStreams(ownedStdio);
       closeDiscardedStdio(streams, new SetConstructor());
     });
+    attempt(() => socketNetwork?.dispose());
+    // Only a terminal authenticated before finish may authorize signaled graphics cleanup.
+    attempt(() =>
+      graphics ? graphics.dispose(settled?.kind === "signaled") : releaseGraphicsPort(),
+    );
+    attempt(releaseNetworkPort);
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
       try {
@@ -645,6 +776,19 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         collect(error);
         filesystemReleased = false;
       }
+    }
+    if (observationFailure) {
+      postToHost({
+        type: "observation-error",
+        message: describeWorkerError(observationFailure),
+        cleanupErrors,
+      });
+      return;
+    }
+    if (observer?.read().kind === "terminated") terminated = true;
+    if (terminated) {
+      if (cleanupErrors.length) throw new Error(cleanupErrors.join("\n"));
+      return;
     }
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so
@@ -664,22 +808,22 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       attempt(() => {
         winner = executor.complete!(ownCode, ownSignal);
       });
-    winner ??= claim(ownResult);
-    const code = waitStatus(winner);
-    const signal = winner.kind === "signaled" ? winner.code : undefined;
-    if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
+    const completed = winner ?? claim(ownResult);
+    const code = waitStatus(completed);
+    const signal = completed.kind === "signaled" ? completed.code : undefined;
+    if (!executor.complete) attempt(() => runtimeProcess?.completeSelectedOutcome(completed));
     const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
     if (
-      (executor.complete || "code" in result || settled || winner.kind === "signaled") &&
-      !(req.runtimeProcess && startupFailure && winner.kind === "start-failed")
+      (executor.complete || "code" in result || settled || completed.kind === "signaled") &&
+      !(req.runtimeProcess && startupFailure && completed.kind === "start-failed")
     ) {
       postToHost({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
       postToHost({
         type: "error",
         code,
-        errno: winner.kind === "start-failed" ? winner.error : undefined,
-        message: describeWorkerError(result.error),
+        errno: completed.kind === "start-failed" ? completed.error : undefined,
+        message: describeStartError(result.error, false),
         diagnostic: startupDiagnostic ?? describeStartError(result.error),
         sleep: sleepMode,
         ...diagnostics,
@@ -695,7 +839,26 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         : executor.terminalSignal?.(error);
     return signal === undefined ? null : { code: 128 + signal, signal };
   };
+  const finishError = (error: unknown): void => {
+    if (observer && isProcessExecutionTerminated(error, observer)) {
+      terminated = true;
+      finish({ code: 0 });
+    } else if (observer && observedProcessExit(error, observer)) {
+      const result = observedProcessExit(error, observer)!;
+      localOutcome = result;
+      finish({
+        code: waitStatus(result),
+        signal: result.kind === "signaled" ? result.code : undefined,
+      });
+    } else finish(terminalResult(error) ?? { error });
+  };
   const onError = (event: WorkerTerminalEvent) => {
+    if (observer && isProcessExecutionTerminated(event.error, observer)) {
+      terminated = true;
+      event.preventDefault();
+      finish({ code: 0 });
+      return;
+    }
     const result = terminalResult(event.error);
     if (result) {
       event.preventDefault();
@@ -703,6 +866,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
   };
   const onRejection = (event: WorkerTerminalEvent) => {
+    if (observer && isProcessExecutionTerminated(event.reason, observer)) {
+      terminated = true;
+      event.preventDefault();
+      finish({ code: 0 });
+      return;
+    }
     const result = terminalResult(event.reason);
     if (result) {
       event.preventDefault();
@@ -712,12 +881,21 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   try {
     // A valid process must publish even its first adapter-import failure to shared state.
     // Keep this synchronous, while still routing a stale incarnation through finish().
-    const requestOutcome = req.outcome === undefined ? undefined : reviveOutcome(req.outcome);
-    const sharedOutcome = req.runtimeProcess
-      ? directoryState(req.runtimeProcess).signals.outcome
-      : (requestOutcome ?? executor.outcome);
+    const observation = req.observation ?? req.runtimeProcess;
+    try {
+      observer = requestProcessObserver(req, executor);
+    } catch (error) {
+      lastObservationFailure = error;
+      throw error;
+    }
+    checkActive();
+    const acquire = <T>(read: () => T): T =>
+      observer ? acquireObservedProcess(observer, read) : read();
+    const sharedOutcome = initialProcessOutcome(req, executor, acquire);
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    if (observation && outcome) validateObservationOutcome(observation, outcome);
     if (req.memoryObservation) memorySampler = createWorkerMemorySampler(req.memoryObservation);
+    graphics = await prepareGraphics(req.graphics, () => boundMemory, checkActive);
     const processModules = loadProcessModules(req.runtimeProcess);
     if (req.filesystem.residentPublication) await fs.attachResidentPublication();
     if (req.startupStderr) {
@@ -727,7 +905,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const runtime = processModules ? await processModules.client : null;
     const runtimeState = req.runtimeProcess
-      ? runtime!.workerProcessState(req.runtimeProcess)
+      ? acquire(() => runtime!.workerProcessState(req.runtimeProcess!))
       : null;
     if (
       !runtimeState &&
@@ -871,7 +1049,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // Instrumented source checkpoints use the private fatal import below so a pre-existing
       // interrupted import is never rebound to immutable supervisor-outcome semantics.
       interrupted: () => executor.signal?.(0, 0) ?? 0,
-      __waffle_fatal: () => fatalInterrupt(outcome),
+      __waffle_fatal: () =>
+        observer
+          ? observedOutcome()?.kind === "signaled"
+            ? localOutcome!.code
+            : 0
+          : fatalInterrupt(outcome),
       default_signal: (signal) => {
         try {
           defaultSignal(signal!);
@@ -882,9 +1065,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         }
       },
     };
-    const reservedFds = bindingTargets(req.runtimeProcess);
+    const hostCallFd = executor.hostCallFd;
+    const reservedFds = bindingTargets(req.runtimeProcess, req.network, hostCallFd);
     wasi = new Wasi({
-      hostCallFd: executor.hostCallFd,
+      hostCallFd,
       args: req.args,
       env,
       fs,
@@ -926,10 +1110,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         controlWait(word, 0, expected, ms);
         checkActive();
       },
-      namespaces: { ...namespaces, ...groupMember.namespaces, runtime_proc: processImports },
+      namespaces: {
+        ...namespaces,
+        ...groupMember.namespaces,
+        ...graphics?.imports,
+        runtime_proc: processImports,
+      },
       trace: req.trace ? (line) => console.debug(`[wasi] ${line}`) : undefined,
     });
-    let boundMemory: WebAssembly.Memory | undefined;
     const bindMemory = (memory: WebAssembly.Memory) => {
       checkActive();
       if (boundMemory && boundMemory !== memory)
@@ -950,18 +1138,17 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
+        allocateShared,
         transport: req.runtimeProcess,
         postMessage,
         fallback: createFilesystemDescriptorCodec(fs),
-        registry: (
-          req.runtimeProcess.data as
-            | { pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle }
-            | undefined
-        )?.pipeRegistry,
+        registry: runtime!.workerProcessPipeRegistry(req.runtimeProcess),
       });
-      runtimeProcess = new runtime!.WorkerProcessClient({
-        transport: req.runtimeProcess,
-        descriptors: wasi.descriptors,
+      const transport = req.runtimeProcess;
+      const descriptors = wasi.descriptors;
+      const clientOptions = {
+        transport,
+        descriptors,
         // Terminal provenance takes priority even when its resolved stream is a PipeEndpoint.
         codec: createRuntimeTerminalCodec({
           fallback: pipes.codec(),
@@ -1013,7 +1200,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
             throw error;
           }
         },
-      });
+      } satisfies import("../proc/worker-client.js").WorkerProcessClientOptions;
+      runtimeProcess = acquire(() => new runtime!.WorkerProcessClient(clientOptions));
       // Record original default-terminal destinations before the hook moves/closes any fd.
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
@@ -1053,6 +1241,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     } else {
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
+    }
+    if (req.network?.sockets.length) {
+      const { attachPreview1Sockets } = await import("./preview1-socket.js");
+      checkActive();
+      socketNetwork = attachPreview1Sockets(req.network, checkActive, socketWait(checkActive));
+      socketNetwork.install(wasi.descriptors, checkIoActive);
     }
     const enter = () => {
       checkActive();
@@ -1122,7 +1316,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // Synchronous commands claim their result before guest-scheduled microtasks can run.
     finish({ code: typeof completion === "number" ? completion : await completion });
   } catch (error) {
-    finish(terminalResult(error) ?? { error });
+    finishError(error);
   } finally {
     try {
       await pendingFinish;
@@ -1133,12 +1327,39 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   }
 }
 
+function socketWait(checkActive: () => void): (word: Int32Array, expected: number) => void {
+  return (word, expected) => {
+    checkActive();
+    assertTerminalWaitAllowed();
+    controlWait(word, 0, expected, 10);
+    checkActive();
+  };
+}
+
+function captureNetworkPort(connection: { readonly port: MessagePort } | undefined): () => void {
+  if (!connection) return () => {};
+  const port = connection.port;
+  const close = port.close;
+  return () => reflectApply(close, port, []);
+}
+
 /** Child descriptor numbers the process's bindings reserve before preopens are placed. */
-function bindingTargets(transport: WorkerProcessTransport | undefined): number[] | undefined {
-  if (!transport) return undefined;
+function bindingTargets(
+  transport: WorkerProcessTransport | undefined,
+  network?: Preview1NetworkConnection,
+  hostCallFd?: number,
+): number[] {
   const fds: number[] = [];
-  for (let index = 0; index < transport.bindings.length; index++)
-    fds[index] = transport.bindings[index]!.fd;
+  if (transport)
+    for (let index = 0; index < transport.bindings.length; index++)
+      arrayAppend(fds, transport.bindings[index]!.fd);
+  if (!network) return fds;
+  for (let index = 0; index < network.sockets.length; index++) {
+    const fd = network.sockets[index]!.fd;
+    if (fd === hostCallFd)
+      throw new ExecutableFormatError("socket descriptor collides with executor.hostCallFd");
+    arrayAppend(fds, fd);
+  }
   return fds;
 }
 
@@ -1156,7 +1377,7 @@ function hostProgramContext<R extends RuntimeWorkerRequest>(
 ): HostProgramContext<R> {
   const { wasi, fs, checkActive } = context;
   const cwd = context.request.runtimeProcess?.cwd ?? "/";
-  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const memory = allocateHostProgramMemory(context.request.controlGrant);
   bindMemory(memory);
   enter();
   const buffer = wasmMemoryBuffer(memory);
@@ -1246,3 +1467,22 @@ function entryMemory(
 
 /** Plain preview1 commands have no engine, native slots or module-cache policy. */
 export const preview1Executor: WorkerExecutor = { run: (_context, exited) => exited ?? 0 };
+
+async function prepareGraphics(
+  connection: GraphicsConnection | undefined,
+  memory: () => WebAssembly.Memory | undefined,
+  live: () => void,
+) {
+  if (!connection) return undefined;
+  const { createGraphicsGuest } = await import("./gpu/guest.js");
+  live();
+  return createGraphicsGuest(
+    connection,
+    () => {
+      const value = memory();
+      if (!value) throw new ExecutableFormatError("Graphics memory is not bound");
+      return value;
+    },
+    live,
+  );
+}

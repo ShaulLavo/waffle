@@ -552,7 +552,7 @@ test("normal worker structured-clones exact source, re-admits it, links and exec
  const connection=createFilesystemConnection(), hooks=linkedWorkerHooks();
  let initialized=false;
  try {
- await bootstrap({...workerData,filesystem:connection.client,args:[],env:{}},{...hooks,
+ await bootstrap({controlGrant:{kind:"unbounded"},...workerData,filesystem:connection.client,args:[],env:{}},{...hooks,
  setup({fs}){fs.preopen=()=>1;fs.retain=()=>{};fs.release=()=>{}},
  namespaces(){return {env:{check(){}}}},
  instantiated({instance}){if(instance.exports.initialized.value!==0)throw Error('eager initializer')},
@@ -777,6 +777,7 @@ test("finish reentered by the final relocation clears linked table slots", async
   try {
     await bootstrap(
       {
+        controlGrant: { kind: "unbounded" },
         module: plan.entryModule,
         linkPlan: plan.toSource(),
         args: [],

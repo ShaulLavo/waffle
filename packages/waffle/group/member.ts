@@ -35,14 +35,9 @@ const moduleImports = WebAssembly.Module.imports;
 const NativeTable = WebAssembly.Table;
 const NativeGlobal = WebAssembly.Global;
 const memoryBuffer = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype, "buffer")!.get!;
-const { ceil, max, min } = Math;
+const { ceil, max } = Math;
 const toNumber = Number;
 const asIntN = BigInt.asIntN;
-
-// group_grow serves sbrk from a member-owned lease, so most calls need no owner round trip.
-// Unused lease pages stay charged to the member until its physical stop.
-const LEASE_MIN = 16,
-  LEASE_MAX = 64;
 
 /** Memory-info (subsection 1) of a `dylink.0` payload. The full validator lives in waffle/link. */
 function memoryInfo(payload: Uint8Array) {
@@ -117,18 +112,16 @@ export function createGroupMember(
   const table = new Int32ArrayConstructor(request.control);
   const watches = new Map<number, Watch>();
   let seq = 0;
-  let lease = { page: 0, pages: 0 },
-    leaseSize = LEASE_MIN;
   let disposed = false;
 
   const buffer = (): SharedArrayBuffer => reflectApply(memoryBuffer, memory, []);
   const bytes = () => sharedArrayBufferByteLength(buffer());
   const words = () => new Int32ArrayConstructor(buffer());
-  const call = (op: number, a = 0, b = 0, c = 0): number[] => {
+  const call = (op: number, a = 0, b = 0, c = 0, d = 0): number[] => {
     hooks.checkActive();
     if (disposed) return [-GroupErrno.BADF];
     const sent = (seq = (seq % 0x7fffffff) + 1);
-    reflectApply(postPort, port, [{ seq: sent, op, args: [a >>> 0, b >>> 0, c >>> 0] }]);
+    reflectApply(postPort, port, [{ seq: sent, op, args: [a >>> 0, b >>> 0, c >>> 0, d >>> 0] }]);
     for (;;) {
       const current = atomicsLoad(reply, 0);
       if (current === sent) break;
@@ -140,6 +133,10 @@ export function createGroupMember(
       atomicsLoad(reply, 2),
       atomicsLoad(reply, 3),
       atomicsLoad(reply, 4),
+      atomicsLoad(reply, 5),
+      atomicsLoad(reply, 6),
+      atomicsLoad(reply, 7),
+      atomicsLoad(reply, 8),
     ];
   };
   const inBounds = (addr: number, size: number) => addr % size === 0 && addr + size <= bytes();
@@ -153,9 +150,17 @@ export function createGroupMember(
       dataViewSetUint32(data, (out >>> 0) + index * 4, values[from + index]! >>> 0, true);
   };
   /** Validates the output span first, so a bad pointer leaves owner state untouched. */
-  const answer = (out: number, count: number, op: number, a: number, b = 0): number => {
+  const answer = (
+    out: number,
+    count: number,
+    op: number,
+    a: number,
+    b = 0,
+    c = 0,
+    d = 0,
+  ): number => {
     if (!span(out, count)) return -GroupErrno.INVAL;
-    const values = call(op, a, b);
+    const values = call(op, a, b, c, d);
     if (values[0]! < 0) return values[0]!;
     write(out, values, 1, count);
     return 0;
@@ -196,21 +201,9 @@ export function createGroupMember(
     group_grow(pages: number): number {
       pages >>>= 0;
       if (pages === 0) return -GroupErrno.INVAL;
-      if (pages > lease.pages) {
-        const wanted = max(pages, leaseSize);
-        let page = chunk(wanted);
-        let granted = wanted;
-        if (page < 0 && wanted > pages) {
-          page = chunk(pages);
-          granted = pages;
-        }
-        if (page < 0) return page;
-        lease = { page, pages: granted };
-        leaseSize = min(LEASE_MAX, leaseSize * 2);
-      }
-      const page = lease.page;
-      lease = { page: page + pages, pages: lease.pages - pages };
-      return page;
+      // The owner reuses free ranges or grows exactly this many pages. No speculative
+      // member lease: a one-page call must not acquire or retain unused backing.
+      return chunk(pages);
     },
     shm_create(len: number, align: number, out: number): number {
       return answer(out, 2, GroupOp.CREATE, len, align);
@@ -232,6 +225,21 @@ export function createGroupMember(
     },
     shm_unpin(pin: number): number {
       return call(GroupOp.UNPIN, pin)[0]!;
+    },
+    shm_publish(
+      kind: number,
+      primary: number,
+      companion: number,
+      meta: number,
+      out: number,
+    ): number {
+      return answer(out, 1, GroupOp.PUBLISH, kind, primary, companion, meta);
+    },
+    shm_publication_open(token: number, kind: number, out: number): number {
+      return answer(out, 7, GroupOp.OPEN, token, kind);
+    },
+    shm_withdraw(token: number): number {
+      return call(GroupOp.WITHDRAW, token)[0]!;
     },
     futex_wait32(addr: number, expected: number, ns: bigint): number {
       hooks.checkActive();

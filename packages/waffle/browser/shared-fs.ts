@@ -1,4 +1,3 @@
-import { isRevoked } from "../fs/protocol.js";
 import { type FilesystemRequestPool } from "../fs/request-memory.js";
 import {
   localMemory,
@@ -6,6 +5,15 @@ import {
   type PublicationConfiguration,
 } from "../fs/publication-internal.js";
 import { MemoryBudget } from "../fs/memory-budget.js";
+import { bytes, type Headroom, type RuntimeReservations } from "../memory/reservations.js";
+import {
+  isRevoked,
+  mergeSegmentDirectories,
+  CONNECTION_SHARED_BYTES,
+  DEFAULT_SHARED_MAX_BYTES,
+  MAX_CONNECTION_OWNERS,
+  SHARED_SEGMENT_BYTES,
+} from "../fs/protocol.js";
 import { mutationValue, type PublicationAdmission } from "../fs/publication.js";
 import {
   reportRuntimeStartup,
@@ -133,7 +141,11 @@ export class SharedFilesystem {
   ownershipLost = false;
   onOwnershipLost?: () => void;
   onStateChange?: SharedFilesystemStateObserver;
-  constructor(options: SharedFilesystemOptions = {}, onStartupStage?: RuntimeStartupObserver) {
+  constructor(
+    options: SharedFilesystemOptions = {},
+    onStartupStage?: RuntimeStartupObserver,
+    reservations?: RuntimeReservations,
+  ) {
     const projectionBudget = options[localMemory];
     if (projectionBudget !== undefined && !(projectionBudget instanceof MemoryBudget))
       throw new TypeError("localMemory requires a same-realm MemoryBudget");
@@ -143,11 +155,43 @@ export class SharedFilesystem {
     this.vfs = selection.descriptor;
     this.onStateChange = options.onStateChange;
     this.cancellableStartup = this.vfs.persistent;
+    const construction = reservations
+      ? {
+          shared: reservations.buffer("filesystem-root", {
+            kind: "fixed-buffer" as const,
+            length: bytes(CONNECTION_SHARED_BYTES),
+          }),
+          arenas: reservations.arenas,
+          allocateShared: (length: number, maximum?: number) =>
+            reservations.buffer(
+              length === MAX_CONNECTION_OWNERS * 4 ? "owner-states" : "control",
+              maximum !== undefined && maximum !== length
+                ? {
+                    kind: "growable-buffer" as const,
+                    initial: length,
+                    maximum: bytes(maximum),
+                  }
+                : { kind: "fixed-buffer" as const, length: bytes(length) },
+            ),
+          allocatePublication: (length: number) =>
+            reservations.buffer("workspace-publication", {
+              kind: "fixed-buffer" as const,
+              length: bytes(length),
+            }),
+        }
+      : undefined;
+    // The filesystem owner builds data segments later, in its own agent, where this page's
+    // ledger cannot see them. Admit the whole advertised extra capacity now, once, in the place
+    // the segment buffers used to be charged: after the root and before any consumer starts.
+    const withdrawCapacity =
+      construction && reservations
+        ? reservations.dataCapacity(
+            construction.shared,
+            bytes(DEFAULT_SHARED_MAX_BYTES - SHARED_SEGMENT_BYTES),
+          )
+        : undefined;
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
-    const connection = createFilesystemConnection(
-      undefined,
-      options[localPublication] ?? (options.workspace ? { workspace: true } : undefined),
-    );
+    const connection = this.createConnection(options, construction, withdrawCapacity);
     this.requestPool = connection.pool;
     let worker: Worker | undefined;
     let client: FilesystemClient | undefined;
@@ -199,11 +243,29 @@ export class SharedFilesystem {
         () => connection.client.port.close(),
         () => connection.server.port.close(),
         () => worker?.terminate(),
+        () => withdrawCapacity?.(),
       ]) {
         try {
           cleanup();
         } catch {}
       }
+      throw error;
+    }
+  }
+  /** A tree whose construction fails holds no capacity promise either. */
+  private createConnection(
+    options: SharedFilesystemOptions,
+    construction: Parameters<typeof createFilesystemConnection>[2],
+    withdrawCapacity: (() => void) | undefined,
+  ) {
+    try {
+      return createFilesystemConnection(
+        undefined,
+        options[localPublication] ?? (options.workspace ? { workspace: true } : undefined),
+        construction,
+      );
+    } catch (error) {
+      withdrawCapacity?.();
       throw error;
     }
   }
@@ -330,7 +392,7 @@ export class SharedFilesystem {
     delete identity.residentPublication;
     let pair;
     try {
-      pair = connectFilesystemIdentity(identity, this.requestPool);
+      pair = connectFilesystemIdentity(identity, this.requestPool, undefined, null);
     } catch (error) {
       if (error instanceof FilesystemError && error.errno === 11) throw error;
       throw new FilesystemError(76);
@@ -342,7 +404,10 @@ export class SharedFilesystem {
         this.worker.postMessage(
           {
             connect: pair.server,
-            socketScope: { guest: { owner: guest.owner, sections: guest.sections }, directory },
+            socketScope: {
+              guest: { owner: guest.owner, sections: guest.sections },
+              directory,
+            },
             reply: channel.port2,
           },
           [pair.server.port, channel.port2],
@@ -407,9 +472,16 @@ export class SharedFilesystem {
     this.assertLive();
     return this.client.fork();
   }
-  connect(identity: FilesystemIdentity): FilesystemConnection {
+  connect(identity: FilesystemIdentity, headroom: Headroom | null = null): FilesystemConnection {
     this.assertLive();
-    const connection = connectFilesystemIdentity(identity, this.requestPool);
+    // An identity can be older than the tree: a blocked guest creates its child's identity from
+    // its own directory. This page attaches every announced segment, so a child starts with all
+    // of those and reads them directly even if it never returns to its event loop.
+    const current = {
+      ...identity,
+      segments: mergeSegmentDirectories(this.client.connection.segments, identity.segments),
+    };
+    const connection = connectFilesystemIdentity(current, this.requestPool, undefined, headroom);
     this.worker.postMessage({ connect: connection.server }, [connection.server.port]);
     return connection.client;
   }

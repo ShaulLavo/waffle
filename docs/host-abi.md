@@ -99,9 +99,10 @@ kind inferred from WASI preview1's filetype (which has no FIFO value).
 |     2 | Terminal                            |
 |     3 | Regular file                        |
 |     4 | Directory                           |
+|     5 | Socket stream                       |
 
 These values are append-only: existing numbers must never be reused or renumbered.
-No socket kind is assigned. Guests must not interpret preview1 `UNKNOWN` as a pipe.
+Guests must not interpret preview1 `UNKNOWN` as a pipe.
 The shared `ProcessABI` exposes the import in host and worker process adapters;
 the browser's signal-only worker namespace also exposes it without activating the
 process service. The descriptor number itself (including stdio 0, 1 and 2) never
@@ -141,7 +142,7 @@ the requested rights must fit its inheriting rights, and `TRUNC` requires its
 `PATH_FILESTAT_SET_SIZE` right (`ENOTCAPABLE`, 76). No root preopen means no regular-file
 reopen. Rights stripped from the root are not restored by reopening another descriptor.
 
-Pipes, terminals and directories receive a new binding to the **same** description, like
+Pipes, terminals, sockets and directories receive a new binding to the **same** description, like
 `dup`, rather than a new cursor or flags. Requested rights must fit the source's rights
 (`EACCES`); directory truncation returns `EISDIR` (31). Invalid or closed descriptors
 return `EBADF` (8). Both process adapters and signal-only browser workers expose the import;
@@ -296,11 +297,18 @@ buffer receives all bytes. The entire supplied span is validated even for an emp
 an invalid span returns `-EFAULT` (`-21`). Invalid PID or non-i32 JavaScript arguments return
 `-EINVAL` (`-28`). A live child without a startup failure returns zero. A producer that has
 selected startup failure but has not finished copying its text returns `-EAGAIN` (`-6`);
-query again after its existing startup notification. Unauthorized or collected children
+cooperatively yield and query again without re-subscribing to an already-ready startup
+notification. If the producer cannot copy its diagnostic, it publishes an empty completed
+result instead; the original startup errno remains available. Unauthorized or collected children
 return `-ECHILD` (`-12`). A dead, disposed, collected or foreign caller returns `-ESRCH`
 (`-71`). A custom process service without the diagnostic query returns `-ENOSYS` (`-52`)
 for positive PIDs. No output is written on an error. Caller-local details become inaccessible
 when the caller exits or its service is disposed.
+
+Standalone outcomes created with `outcomeWord()` keep their diagnostic storage in the same
+shared buffer as the terminal word. Raw-buffer reservations use that complete factory-created
+buffer, so separate views and structured clones observe the same publication. An isolated
+eight-byte buffer is not a complete standalone outcome.
 
 A browser worker may select START_FAILED before its ordered error message reaches
 the broker. Startup queries can observe that result immediately, but consuming waits
@@ -394,6 +402,17 @@ exactly once. Invalid kinds or IDs are rejected at this boundary. A registration
 failure unwinds earlier registrations before rethrowing. This wrapper does not alter
 `poll` readiness, publication, CHILD_START handling or the existing 10 ms fallback
 for uncovered sources.
+
+### Zero-time read observation
+
+`runtime_proc.poll` with timeout 0 scans once without waiting. Kind 0 observes
+regular files as ready, including write-only files and files with pending I/O or
+a contended shared offset. The observation neither acquires that offset nor
+starts filesystem I/O. The actual read still enforces descriptor rights and may
+return `EAGAIN`. Positive and indefinite polls retain their I/O-completion wait.
+Null is ready. A pipe reader is ready with data or no writers; a pipe writer is
+read-ready only when no readers remain. A pending signal returns zero events
+without consuming the signal or input.
 
 ### Host executable-entry boundary
 
@@ -492,13 +511,15 @@ late exit or signal cannot replace a successor's outcome.
 `runtime_proc.wait(pid, out)` consumes one direct child's terminal outcome. It
 returns `-EAGAIN` (`-6`) while the child or its resource/filesystem cleanup fence is
 pending. Success writes the existing 8-byte little-endian kind/code record and
-immediately releases that child's shared process slot, independently of its job.
+immediately completes logical collection, independently of its job. Its shared
+process slot becomes reusable after its captured native consumers return.
 A subsequent wait, or a wait for a non-child, returns `-ECHILD` (`-12`). Pipe-owner
 metadata has been released by the cleanup fence; a consuming wait never retains it.
 An exited but uncollected child remains a zombie and retains process capacity.
 Choosing an outcome alone is not proof that a Worker's resources are safe to release.
 Shared collectibility is published before host exit observers and waiters see the
-result, so a consuming host wait can immediately reserve replacement capacity.
+result. A consuming host wait does not await native termination; pending native
+returns can temporarily retain process capacity. See [Process execution observation](process-observation.md).
 
 Poll kind 2 observes a child's readiness through
 `ProcessService.childExited(parentPid, pid): boolean`; it never consumes the exit
@@ -628,7 +649,7 @@ Pipe publication owners are enrolled before descriptor export under the spawn
 admission fence. Owner collection freezes old cursors and releases owner metadata;
 a delayed Worker cannot reenroll a collected identity. Cursor cells themselves
 are not reused: retained endpoint views have no cursor-incarnation field, and the
-separate cursor arena remains bounded at 16,777,216 cells (256 MiB).
+separate cursor arena defaults to 1,048,576 cells (16 MiB), with an explicit maximum up to 16,777,216 cells. Slot reuse never recycles these cells.
 
 ## Runtime-authored error diagnostics
 
@@ -740,6 +761,10 @@ shm_pin(handle, out{pin}) -> 0                        caller must hold; pin owne
 shm_route(pin, pid) -> 0                              owner hands the delivery to member pid
 shm_accept(pin, out{handle, addr, len}) -> 0          owner only: +1 hold, pin consumed
 shm_unpin(pin) -> 0                                   owner only: delivery discarded
+shm_publish(kind, primary, companion, meta, out{token}) -> 0   caller holds both regions
+shm_publication_open(token, kind, out{primary, primary_addr, primary_len,
+                     companion, companion_addr, companion_len, meta}) -> 0   +1 hold per region
+shm_withdraw(token) -> 0                              publishing incarnation only, once
 futex_wait32(addr, expected: i32, timeout_ns: i64) -> 0 ok, 1 not-equal, 2 timed-out
 futex_wait64(addr, expected: i64, timeout_ns: i64) -> same
 futex_wake(addr, count) -> number woken (sync waiters, then watches in registration order)
@@ -748,9 +773,25 @@ futex_unwatch(id) -> 0
 parallelism() -> the group's reported parallelism
 ```
 
+`group_grow(n)` grants exactly `n` pages without speculative leases. A one-page call adds at
+most 64 KiB to the owner's backing charge, or zero when reusing a free range. Granted heap
+pages remain owned until the member physically stops; free backing stays charged until the
+group ends. Fixed backing is reserved separately at group creation. See
+[heap acquisition and retention](memory-groups.md#heap-acquisition-and-retention) for the
+profile's bounds and their limits.
+
 `group_grow` chunks need not be contiguous with earlier ones. A negative `timeout_ns` waits
 forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned. Hard
 termination of the member's worker is the cancellation path for a blocked wait.
+
+`shm_publish` returns `-EINVAL` for a zero `kind` or equal `primary` and `companion`, `-EBADF` when
+the caller does not hold a named region, and `-EAGAIN` when the publication limit or token space is
+exhausted. A `companion` of zero means none. `shm_publication_open` returns `-EBADF` for an unknown,
+withdrawn, other-group or wrong-kind token, and takes nothing. A module-style publication reports a
+zero companion in all three companion fields. `shm_withdraw` returns `-EBADF` for repeats and for
+any caller other than the publishing incarnation. Publication tokens and region handles are
+unsigned 32-bit values read from output records. See
+[Publications](memory-groups.md#publications).
 
 Poll subscription **kind 7, FUTEX**, uses a watch ID. It is ready while `*addr != expected`, and
 from the first `futex_wake` that hits the watch until `futex_unwatch`. Readiness consumes nothing.
@@ -766,9 +807,147 @@ The network helper performs injected `fetch` operations and writes responses to 
 
 Shared hosts also carry pathname stream sockets through `listenPath` and `connectPath`. Their wire requests are `unix-listen`, `unix-connect` and the acknowledged `unix-close`, answered in the same 12-byte reply cell with a WASI errno on failure. Socket nodes report Preview1 filetype 6 (`SOCKET_STREAM`). See [Unix-domain stream sockets](unix-sockets.md).
 
+### Outbound connector
+
+`RuntimeNetwork.createHelper` accepts an optional page-owned `connect?: NetConnect`. The connector
+is called only for non-loopback `tcp-connect` requests and receives `{ host, port }` without a DNS
+lookup in Waffle. It returns a `NetOutboundStream` with `readable`, `writable` and the actual remote
+`PeerAddr`. Waffle does not import relay or carrier modules.
+
+A configured non-loopback connect returns a handle immediately with `TCP_PENDING = 1` and local port
+zero. The ring later carries `Kind.Open` with `{ local, peer }`, or `Kind.Error` with the mapped
+`NetConnectError` code. While connecting, `read` and `write` return `AGAIN`, readiness is false,
+and address calls return `ENOTCONN`. A shutdown is remembered until open. Close aborts a pending
+connector; helper disposal cancels every connector stream.
+
+The helper limits unread inbound bytes and unsettled outbound writes to 1 MiB per direction. A
+`tcp-read` acknowledgement releases inbound credit; `Kind.Writable` releases a blocked writer.
+Target EOF is `Kind.End` and does not prevent guest writes. Shutdown closes only the local write
+side, while full close closes the write side gracefully and cancels reads.
+
+### Preview 1 launch sockets
+
+Preview 1 has no standard `connect` import. A launcher can bind an already-connecting socket
+at an explicit fd. Arbitrary unmodified programs cannot initiate connections through a missing
+standard import. Unknown imports still fail linking. A launcher can also bind a virtual loopback
+listener for standard `sock_accept` calls. This exposes no OS listener or inbound relay.
+
+`waffle/browser/preview1-network` exports `createPreview1Network(runtime, options)` and the types
+`Preview1NetworkOptions`, `Preview1SocketBinding`, `Preview1NetworkConnection` and `Preview1Network`.
+The options are `{ sockets: readonly Preview1SocketBinding[], connect?: NetConnect }`.
+Each binding is either `{ fd, socket: { connect: { host, port } } }` or
+`{ fd, socket: { listen: { host, port } } }`. Targets use the existing `NetHost` connect and
+virtual loopback bind rules. Wildcard binds still stay inside this runtime. The fd must be a
+unique integer in `0..0x7fffffff`. Connect ports are in `1..65535`; listen also accepts port zero
+for an ephemeral virtual port. Preview 1 has no standard address-query import.
+The selected executor's `hostCallFd` is reserved for its host-call trampoline. Bootstrap rejects
+socket bindings at that number with `ENOEXEC` before opening sockets or installing descriptors.
+The launcher still disposes its network helper on this startup failure. Accepted descriptors
+also skip that reserved number.
+
+The function snapshots bindings before awaiting `runtime.network()`. Empty bindings resolve to
+`undefined` without activating networking or process services. Nonempty bindings create a helper
+on the responsive owner and return a single-launch `{ connection, dispose() }` owner. The
+connector, credentials and Web Streams stay in that owner's realm. `dispose()` is idempotent.
+
+`BrowserProcessBroker.launchWorker(context, { network, ...options })` takes this owner, transfers
+its port and supplies `RuntimeWorkerRequest.network`. It disposes the helper on launch failure,
+worker error, ordinary exit, revocation and physical stop. Do not pass the owner through
+`request`. A manually launched worker instead receives `network.connection` in its request and
+transfers `connection.port`; that launcher must dispose the owner on every exit and failed setup.
+
+The exact cloneable connection payload is:
+
+```ts
+interface Preview1NetworkConnection {
+  readonly ring: SharedArrayBuffer;
+  readonly port: MessagePort;
+  readonly sockets: readonly {
+    readonly fd: number;
+    readonly socket:
+      | { readonly connect: { readonly host: string; readonly port: number } }
+      | { readonly listen: { readonly host: string; readonly port: number } };
+  }[];
+}
+```
+
+The ring is Waffle's single-producer helper response ring. The port carries existing `NetRequest`
+messages to that helper, including synchronous reply cells. The descriptor-only `tcp-ready`
+request is `{ type: "tcp-ready", id, reply }`; its 12-byte reply contains completion 1, status
+1 for writable or 0 for blocked, and value 0. Existing `tcp-write` reply bytes are unchanged. No function, helper instance, stream,
+relay endpoint, token or credential is part of this payload. The generic bootstrap dynamically
+loads the descriptor adapter only when socket bindings exist, reserves their exact numbers before
+preopen placement, and installs them before instantiation. The root preopen moves from fd 3 to
+the lowest free number. Socket targets 0, 1 and 2 replace default stdio. `inherited_fd` includes these sockets; `fd_prestat_get` excludes them.
+
+A socket is a `Stream` with `kind: "socket"`. `fd_kind` returns 5. Both `fd_fdstat_get` and
+`fd_filestat_get` report `SOCKET_STREAM`, filetype 6. Its rights allow read, write, setting fd
+flags, filestat, polling and shutdown. Listeners additionally carry `SOCK_ACCEPT`, right bit 29.
+Accepted descriptors receive the listener's current rights without `SOCK_ACCEPT`, with zero inheriting
+rights. Duplicate fds share flags, the handle and its final-close
+lifetime. Passing a socket to a `runtime_proc` child returns `NOTSUP`, errno 58, before descriptor
+export. Sockets may be rebound within the same process with `fd_reopen` or `dup`.
+
+| Import                                                   | Socket behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sock_send(fd, iovs, count, flags, out_written)`         | Flags must be zero, otherwise `NOTSUP`. Partial writes are valid. It waits for open and credit unless `FDFLAG_NONBLOCK` is set, which returns `AGAIN`. After write shutdown, writes return `PIPE`. A failed connect returns its mapped errno on the first send and `PIPE` on later sends.                                                                                                                                                                                                                |
+| `sock_recv(fd, iovs, count, flags, out_read, out_flags)` | Flag 2 is `RECV_WAITALL`; it reads until full, EOF or error. Nonblocking calls return available partial bytes, or `AGAIN`. `RECV_PEEK` and unknown flags return `NOTSUP`. EOF returns zero bytes. Success writes zero to `out_flags`.                                                                                                                                                                                                                                                                    |
+| `sock_shutdown(fd, how)`                                 | `1` discards and ends local reads without a wire FIN. `2` sends FIN after queued writes. `3` does both. Other values return `INVAL`. Peer FIN still permits writes.                                                                                                                                                                                                                                                                                                                                      |
+| `fd_read`, `fd_write`                                    | Same descriptor I/O without socket flags.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `poll_oneoff`                                            | Uses the existing multi-source readiness wait and the network ring's notification word. FD_READ reports buffered bytes in `nbytes`. A listener is read-ready while an accept is pending, with `nbytes` zero; it is never write-ready unless reporting an error. Readiness does not consume a connection. Errors appear in the event's errno. A peer FIN read event has HANGUP but does not end the local write side. FD_WRITE becomes unavailable when credit is exhausted and resumes after `Writable`. |
+| `fd_close`                                               | The last reference closes gracefully. Worker or owner disposal resets outstanding streams, including pending opens.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `sock_accept(fd, flags, out_fd)`                         | A listener waits for a pending connection, or returns `AGAIN` when its own `FDFLAG_NONBLOCK` is set. Flags must be zero or `FDFLAG_NONBLOCK` 4, otherwise `INVAL`. They set the accepted socket's flags independently of the listener. Success writes a new fd as little-endian u32. A connected socket returns `INVAL`.                                                                                                                                                                                 |
+
+For every `sock_*` call, a valid non-socket fd returns `NOTSOCK`, errno 57; an absent fd returns
+`BADF`, errno 8. The adapter's `HOST_CALL_FD` special case in `sock_send` stays first and unchanged.
+Socket iovecs and result spans are validated before I/O; faults return `FAULT`, errno 21.
+Accept validates flags and the entire output span before consuming a connection or allocating a
+socket descriptor. Errors leave the output and pending accept unchanged. Listener read, write and
+shutdown return `NOTCONN`, errno 53, or the original bind error. Non-loopback listen returns
+`NOTSUP` even with an outbound connector. A bind conflict reports `ADDRINUSE`, errno 3.
+Closing the last listener reference closes queued unaccepted connections but preserves accepted
+sockets. Accepted sockets use the existing duplex I/O, EOF, shutdown, polling and final-close
+rules. Revocation interrupts a blocking accept through the existing worker liveness check.
+
+Listener bindings and right bit 29 are additive. Existing connected sockets still return `INVAL`
+from `sock_accept`, and non-socket results stay unchanged. This additive socket contract did not require an interface increase under the bump
+rule below. Existing socket calls retain their behavior; no old-shape fallback or version negotiation
+is added. bun-wasm's separate `preview1Launcher` must adopt this connection payload and keep its
+connector on the responsive page. That consumer handoff and a real outside line/echo exchange
+are separate release gates. The scripted SSLRequest fixture proves bytes only, not a Postgres
+query.
+
 ## Compatibility
 
-Waffle does not promise compatibility with an older runtime package or a stale consumer. Consumers pin one exact Git commit and use the matching exports and lockfile.
+Consumers pin the exact runtime build in their dependency and lockfile. Host compatibility is a separate package-metadata check, not a comparison of package versions or build identities.
+
+The native-return execution-observation contract requires `waffleHostInterface` 2.
+
+Installable Waffle packages also carry a positive safe integer named `waffleHostInterface`.
+The runtime provides the integer, and every family requires one. A family can run only when
+its required integer equals the runtime integer. Missing, malformed, non-positive, non-safe,
+and mismatched values fail before installation or execution.
+
+The integer covers the guest imports and public family modules that a family can observe. This
+includes Preview 1, `runtime_fs`, `runtime_proc`, `runtime_shm`, the filesystem, process, and
+memory-group services behind them, the network module, and the exported `waffle/programs`,
+`waffle/programs/catalog`, `waffle/search`, `waffle/core/filesystem`, and declared `waffle/fs/*`
+and `waffle/proc/*` modules. It covers signatures, results, errors, readiness, ordering,
+authority, revocation, and lifetime rules.
+
+Package versions, source commits, URLs, archive hashes, transformer inputs, producer receipts,
+and artifact hashes remain integrity evidence. They do not substitute for
+`waffleHostInterface`. A runtime implementation can change without an interface bump when the
+observable contract stays compatible. Increase the integer monotonically when an old family cannot safely run on
+the new contract. A family changes its required integer only when it starts using a newer
+contract. A new export that preserves existing calls does not require a bump. A removed export,
+changed signature, or incompatible result, error, readiness, authority, or lifetime rule does.
+
+The family peer `waffle: "*"` controls package-manager placement only. It does not assert any
+compatibility range. Source workspaces keep `devDependencies.waffle = "workspace:*"`; published
+families have only the wildcard peer and never a Waffle dependency or optional dependency.
+Release and consumer tools enforce integer equality and one physical runtime independently of
+that wildcard.
 
 ## Inode permission query
 
@@ -899,7 +1078,7 @@ spawned processes. The service, bounds and overflow rules are in
 
 ## Internal network module
 
-The Rust socket module is not a guest import namespace. Guest network calls, numeric results, ring records, addresses, and JSON errors are unchanged. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.
+The Rust socket module is not a guest import namespace. Its virtual loopback commands and address rules are unchanged by the outbound connector. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.
 
 ## Internal filesystem walk operations
 

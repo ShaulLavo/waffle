@@ -15,11 +15,12 @@ import {
   requestCancelled,
   receiveRequestBuffer,
   releaseRequestBuffer,
+  requestMemoryExhausted,
   REQUEST_SERVICE,
   type FilesystemRequestMemory,
   type FilesystemRequestBuffer,
 } from "./request-memory.js";
-import { atomicsWaitAsync } from "../proc/intrinsics.js";
+import { atomicsWaitAsync, typedArrayBuffer } from "../proc/intrinsics.js";
 import { WatchService } from "./watch-service.js";
 import { checkDirectoryPage } from "./directory-pages.js";
 import type { SocketBinding, ResolvedPath } from "../core/filesystem.js";
@@ -38,11 +39,13 @@ import {
 } from "./publication.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
+import type { SharedFilesystemState, StagedWrite } from "./shared.js";
 import {
   CAPABILITY_HEADER,
   CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
+  PAGE,
   TRANSIENT_HANDLES,
   State,
   FilesystemError,
@@ -60,6 +63,7 @@ import {
   type FilesystemIdentity,
   type FilesystemConnection,
   type RequestMessage,
+  type SegmentAnnouncement,
 } from "./protocol.js";
 
 const mutations = new Set([
@@ -98,6 +102,15 @@ interface WatchTransaction {
   readonly cancel: () => void;
   readonly release: (() => void) | undefined;
 }
+/** A write staged for a client that lacks the target segment, keyed by its request id. The
+ * request block stays held by the service while the entry exists, because the stage's state and
+ * committed position live in that block's header. */
+interface SessionStage {
+  readonly shared: SharedFilesystemState;
+  readonly stage: StagedWrite;
+  /** Refunds the owner's private copy to the connection's retained-bytes budget. */
+  readonly release: () => void;
+}
 interface Session {
   watchTransactions: Map<number, WatchTransaction>;
   watchResponses: Map<number, () => void>;
@@ -118,8 +131,11 @@ interface Session {
   references: Map<number, number>;
   responses: Map<number, Response>;
   responseMemory: Map<number, () => void>;
+  stages: Map<number, SessionStage>;
   retainedRequests: Map<number, FilesystemRequestBuffer>;
   pending: Map<number, FilesystemRequestBuffer>;
+  /** Transferred inputs by request id. Removed only when that request's work settles. */
+  privateInputs: Map<number, Uint8Array>;
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
@@ -133,6 +149,25 @@ interface Session {
 }
 function sessionRevoked(session: Session): boolean {
   return isRevoked(session.connection) || !!requestTransportError(session.requests);
+}
+function requestInput(session: Session, id: number, response: Uint8Array): Uint8Array {
+  return session.privateInputs.get(id) ?? response;
+}
+/** A retained reply must not keep a refunded private input reachable through a shared backing.
+ * An inline input cannot alias an overflowing result: it fits the response room by construction. */
+function independentResponse(
+  result: Uint8Array,
+  input: Uint8Array,
+  release: () => void,
+): Uint8Array {
+  if (typedArrayBuffer(result) !== typedArrayBuffer(input)) return result;
+  try {
+    return result.slice();
+  } catch (error) {
+    release();
+    if (error instanceof RangeError) throw requestMemoryExhausted();
+    throw error;
+  }
 }
 interface ShutdownOwner {
   readonly done: Promise<void>;
@@ -232,8 +267,10 @@ export class FilesystemService {
       references: new Map(),
       responses: new Map(),
       responseMemory: new Map(),
+      stages: new Map(),
       retainedRequests: new Map(),
       pending: new Map(),
+      privateInputs: new Map(),
       preparingHandles: new Map(),
       preparations: new Set(),
       ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
@@ -268,8 +305,9 @@ export class FilesystemService {
     this.sweep();
     // Adopting a child pin can make the live parent's final detached pin collectible.
     for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
-    for (const segment of this.backend.sharedSegments?.() ?? [])
-      connection.port.postMessage({ segment: segment.index });
+    // The launch snapshot can be older than the tree. Every segment that exists now is offered
+    // again, so an agent that reaches its event loop attaches what its snapshot lacked.
+    this.announceSegments(this.backend.sharedSegments?.() ?? [], [session]);
     connection.port.onmessage = ({ data }: MessageEvent<RequestMessage>) => {
       try {
         this.receive(session, data);
@@ -280,6 +318,22 @@ export class FilesystemService {
     connection.port.onmessageerror = () => this.signalTransportFailure(session);
     connection.port.start();
     if (!session.closed) this.trackWork(session, this.watchTransport(session));
+  }
+  /** Offers segments by index. Delivery is never awaited or acknowledged: a blocked agent
+   * cannot receive it, and reaches those pages through the owner until it can. */
+  private announceSegments(
+    segments: readonly { buffer: SharedArrayBuffer; index: number }[],
+    sessions: Iterable<Session>,
+  ): void {
+    if (!segments.length) return;
+    const announcements = segments.map(({ index, buffer }): SegmentAnnouncement => ({
+      segment: index,
+      buffer,
+    }));
+    for (const peer of sessions) {
+      if (peer.closed || sessionRevoked(peer)) continue;
+      for (const announcement of announcements) peer.connection.port.postMessage(announcement);
+    }
   }
   private signalTransportFailure(
     session: Session,
@@ -331,13 +385,16 @@ export class FilesystemService {
       data.generation,
       data.offset,
       data.length,
+      data.payload,
     );
     if (this.ownerStopping) {
       this.cancelRequest(session, data.id, buffer);
       return;
     }
-    if (session.pending.has(data.id)) throw new FilesystemError(28, "duplicate filesystem request");
+    if (session.pending.has(data.id) || session.retainedRequests.has(data.id))
+      throw new FilesystemError(28, "duplicate filesystem request");
     session.pending.set(data.id, buffer);
+    if (data.payload) session.privateInputs.set(data.id, new Uint8Array(data.payload));
     this.enqueue(session, data.id, buffer);
   }
   private retireTransport(session: Session): void {
@@ -416,7 +473,7 @@ export class FilesystemService {
     let barrier = false;
     try {
       const cells = requestCells(buffer);
-      const input = unpack(requestBytes(buffer).subarray(0, cells[1]!));
+      const input = unpack(requestInput(session, id, requestBytes(buffer)).subarray(0, cells[1]!));
       barrier = input.operation === "flush" || input.operation === "sync";
     } catch {
       /* request() reports malformed input through its completion */
@@ -521,7 +578,53 @@ export class FilesystemService {
     session.responseMemory.get(id)?.();
     session.responseMemory.delete(id);
   }
+  /** Ends a staged write: applied when its client committed it, withdrawn otherwise. The shared
+   * state settles each stage once, so a repeated discard or a late one does nothing. */
+  private settleStage(session: Session, id: number): void {
+    const staged = session.stages.get(id);
+    if (!staged) return;
+    session.stages.delete(id);
+    try {
+      staged.shared.settleStagedWrite(staged.stage);
+    } finally {
+      staged.release();
+    }
+  }
+  private stageWrite(
+    session: Session,
+    id: number,
+    handle: unknown,
+    offset: unknown,
+    append: unknown,
+    data: Uint8Array,
+  ): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    if (
+      typeof handle !== "number" ||
+      typeof offset !== "number" ||
+      typeof append !== "boolean" ||
+      !data.length ||
+      data.length > PAGE
+    )
+      throw new FilesystemError(28);
+    const pending = session.pending.get(id);
+    if (!pending) throw new FilesystemError(11);
+    // The same checks as growth: a regular file this session may write.
+    this.backend.execute("grow", [handle, 0], new Uint8Array());
+    const shared = this.backend.shared;
+    const release = retainResponseBytes(session.requests, data.length);
+    try {
+      // The request's bytes belong to the transport. The stage keeps its own private copy.
+      const stage = shared.stageWrite(handle, offset, append, data.slice(), requestCells(pending));
+      session.stages.set(id, { shared, stage, release });
+    } catch (error) {
+      release();
+      throw error;
+    }
+    return this.finishResult(session, id, "stageWrite", undefined);
+  }
   private discardResponse(session: Session, id: number): void {
+    this.settleStage(session, id);
     const watch = session.watchResponses.get(id);
     session.watchResponses.delete(id);
     const request = session.retainedRequests.get(id);
@@ -716,6 +819,7 @@ export class FilesystemService {
         "write",
         "append",
         "grow",
+        "stageWrite",
         "resize",
         "setMtime",
         "readdir",
@@ -858,6 +962,7 @@ export class FilesystemService {
     this.checkSocketTree(session, operation, args);
     if (operation.startsWith("walk")) return this.walkRequest(session, id, operation, args);
     if (operation.startsWith("watch")) return this.watchRequest(session, id, operation, args);
+    if (operation === "stageWrite") return this.stageWrite(session, id, a, b, c, data);
     if (operation === "take") {
       const response = session.responses.get(a);
       const bytes =
@@ -1005,17 +1110,19 @@ export class FilesystemService {
     prepared?: PreparedRequest,
   ): Promise<void> {
     const cells = requestCells(buffer);
-    const bytes = requestBytes(buffer);
+    const response = requestBytes(buffer);
+    const bytes = requestInput(session, id, response);
     let state = State.Complete;
     let mutation = false;
     let preparing = false;
+    let staging = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
     const epoch = new Int32Array(session.connection.epoch);
     try {
       if (sessionRevoked(session) || !this.sessions.has(session) || requestCancelled(buffer))
         throw new FilesystemError(11);
-      const { inputLength, dataLength } = requestLengths(buffer);
+      const { inputLength, dataLength } = requestLengths(buffer, bytes);
       const input = unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
       if (session.connection.publication && input.publication)
@@ -1051,11 +1158,9 @@ export class FilesystemService {
         : local && operation !== "flush" && operation !== "sync"
           ? this.executePublication(session, id, operation, args, payload, admission)
           : await this.execute(session, id, operation, args, payload);
-      const segments = this.backend.takeSharedSegments?.() ?? [];
-      for (const segment of segments)
-        for (const peer of this.sessions)
-          peer.connection.port.postMessage({ segment: segment.index });
-      state = this.writeResponse(session, id, cells, bytes, value);
+      this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
+      state = this.writeResponse(session, id, cells, response, value, bytes);
+      staging = operation === "stageWrite";
     } catch (error) {
       this.discardResponse(session, id);
       if (
@@ -1074,11 +1179,10 @@ export class FilesystemService {
         state = cells[3] === 11 ? State.Cancelled : State.Failed;
       }
     } finally {
-      // Allocation may complete before cancellation/failure. Publish every allocated segment,
-      // indexed so a newly connected peer can receive both its snapshot and this broadcast.
-      for (const segment of this.backend.takeSharedSegments?.() ?? [])
-        for (const peer of this.sessions)
-          peer.connection.port.postMessage({ segment: segment.index });
+      // A segment that was built stays, even when the request that needed it was cancelled or
+      // failed afterwards. Offer every one exactly once, indexed so a peer that connected in
+      // between can take both its snapshot and this broadcast.
+      this.announceSegments(this.backend.takeSharedSegments?.() ?? [], this.sessions);
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
@@ -1091,12 +1195,16 @@ export class FilesystemService {
           this.discardResponse(session, id);
           state = State.Cancelled;
         }
+        // Complete is what lets the client commit a stage. Never publish it for a stage the
+        // owner no longer holds, or that commit would have nothing to apply.
+        if (staging && !session.stages.has(id)) state = State.Cancelled;
         this.settleWalk(session, id, state === State.Complete);
         this.settleWatch(session, id, state === State.Complete || state === State.Overflow);
         Atomics.store(cells, 0, state);
         Atomics.notify(cells, 0);
         wake(session.connection);
         session.pending.delete(id);
+        session.privateInputs.delete(id);
         this.retainRequestReply(session, id, buffer);
         session.connection.port.postMessage({ completed: id });
         this.sweep();
@@ -1135,7 +1243,8 @@ export class FilesystemService {
     if (
       session.responses.has(id) ||
       session.walkResponses.has(id) ||
-      session.watchResponses.has(id)
+      session.watchResponses.has(id) ||
+      session.stages.has(id)
     ) {
       session.retainedRequests.set(id, buffer);
       return;
@@ -1148,6 +1257,7 @@ export class FilesystemService {
     cells: Int32Array,
     bytes: Uint8Array,
     value: unknown,
+    input: Uint8Array,
   ): State {
     const binary = value instanceof Uint8Array;
     const result = binary ? value : pack(value);
@@ -1155,9 +1265,11 @@ export class FilesystemService {
     cells[4] = binary ? 1 : 0;
     const response = session.responses.get(id);
     if (result.length > bytes.length) {
-      this.holdResponseMemory(session, id, retainResponseBytes(session.requests, result.length));
-      if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: result };
-      else session.responses.set(id, { kind: "bytes", bytes: result });
+      const release = retainResponseBytes(session.requests, result.length);
+      const stored = independentResponse(result, input, release);
+      this.holdResponseMemory(session, id, release);
+      if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: stored };
+      else session.responses.set(id, { kind: "bytes", bytes: stored });
       return State.Overflow;
     }
     if (response?.kind === "resolve") response.payload = { kind: "inline" };
@@ -1215,16 +1327,23 @@ export class FilesystemService {
             args[1],
             () => sessionRevoked(session) || requestCancelled(buffer),
           )
-        : this.backend.prepare?.(
-            operation === "publicationPin" ? "read" : operation,
-            operation === "publicationPin" ? [args[1]] : args,
-            payload,
-          );
+        : this.prepareBackend(operation, args, payload);
     if (!preparation) return;
     const continuation = prepared ?? { handles: [] };
     this.checkRequest(session, operation, args, continuation.handles);
     this.joinPreparation(session, id, buffer, continuation, preparation);
     return continuation;
+  }
+  /** Storage work a backend finishes before the request owns the queue. A pin reads its file,
+   * and a staged write needs its file loaded and writable, exactly as growth does. */
+  private prepareBackend(
+    operation: string,
+    args: Parameters<NonNullable<FilesystemBackend["prepare"]>>[1],
+    payload: Uint8Array,
+  ): void | Promise<void> {
+    if (operation === "publicationPin") return this.backend.prepare?.("read", [args[1]], payload);
+    if (operation === "stageWrite") return this.backend.prepare?.("grow", [args[0], 0], payload);
+    return this.backend.prepare?.(operation, args, payload);
   }
   private prepareDescriptorRead(
     session: Session,
@@ -1613,6 +1732,9 @@ export class FilesystemService {
         session.connection.owner,
         new Int32Array(session.connection.epoch),
       );
+    // A discard can be lost when a port closes. Retirement settles what remains, before this
+    // session's file pins and request blocks go: a committed write is applied, never dropped.
+    for (const id of Array.from(session.stages.keys())) this.settleStage(session, id);
     for (const [id, buffer] of session.pending) {
       const cells = requestCells(buffer);
       Atomics.store(cells, 6, 1);
@@ -1959,7 +2081,8 @@ export function installFilesystemWorker(
     onStartupStage?: RuntimeStartupObserver,
     signal?: AbortSignal,
     onWaiting?: () => void,
-  ) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
+  ) => FilesystemBackend | Promise<FilesystemBackend> = (options) =>
+    new MemoryBackend(undefined, undefined, undefined, undefined, options.connect),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;

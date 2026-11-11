@@ -135,3 +135,65 @@ hello from a guest
 - **Result.** `waitForExit` resolves to `{ kind: "exited" | "signaled", code, status }` or `{ kind: "start-failed", code, error, status: null }`. Spawning `/bin/missing` gives `start-failed` with `ENOENT`.
 
 For adapters with their own startup hooks, see [Guest executor extensions](../architecture.md#guest-executor-extensions). For every guest import and result shape, see [Host ABI](../host-abi.md).
+
+## Bind a socket before launch
+
+A Preview 1 guest cannot call `connect`. Bind a socket at launch and give its fd to a program
+that uses `send`, `recv` and `shutdown`, or the equivalent WASI `sock_*` imports. This example
+binds fd 3. The root directory preopen moves to fd 4. When using a custom executor, do not bind
+its reserved `hostCallFd`; bootstrap rejects that collision before socket installation.
+
+```ts
+import { createPreview1Network } from "waffle/browser/preview1-network";
+import type { NetConnect } from "waffle/browser/net/outbound";
+
+// Supply the application's trusted connector on the page, never in guest env or worker data.
+const connect: NetConnect = appConnect;
+runtime.registerAdapter("preview1", async (context, service) => {
+  const network = await createPreview1Network(runtime, {
+    connect,
+    sockets: [{ fd: 3, socket: { connect: { host: "echo.example", port: 4321 } } }],
+  });
+  return service.launchWorker(context, {
+    workerUrl: "/preview1-worker.js",
+    network,
+    request: { module: context.module, args: context.request.argv, env: context.request.env },
+  });
+});
+```
+
+The helper runs on the page, so the guest worker can block without preventing the connector
+from making progress. `launchWorker` owns cleanup after the handoff, including failed setup,
+revocation and normal exit. Empty `sockets` creates no helper. Without `connect`, virtual
+loopback still works and a non-loopback socket reports `ENOTSUP` when the guest uses it.
+
+Use `FDFLAG_NONBLOCK` for immediate I/O and `poll_oneoff` for readiness. `RECV_WAITALL` waits for
+the requested bytes unless EOF or an error occurs. `SHUT_WR` allows replies after local FIN;
+`SHUT_RD` discards local input without sending FIN. This does not let arbitrary unmodified
+programs connect to destinations they choose at runtime.
+
+To accept connections from a Bun-shaped peer in the same runtime, replace the binding with:
+
+```ts
+const network = await createPreview1Network(runtime, {
+  sockets: [{ fd: 3, socket: { listen: { host: "127.0.0.1", port: 4321 } } }],
+});
+```
+
+The guest calls `sock_accept(3, flags, out_fd)` and uses the returned descriptor for I/O.
+Set the listener's fd flags to `FDFLAG_NONBLOCK` to get `AGAIN` when its queue is empty.
+Pass `FDFLAG_NONBLOCK` to `sock_accept` to make the accepted socket nonblocking instead.
+Use an FD_READ subscription to wait for a pending accept. This listener is virtual and private
+to the one runtime, even when its host is a wildcard. It cannot receive OS or relay connections.
+
+The runnable fixtures are `packages/waffle/tests/fixtures/preview1-socket.wat` and
+`preview1-socket.c`. `preview1-listener.wat` accepts a same-runtime loopback peer in the regular
+Node-worker suite and network browser matrix. The C fixture takes the socket fd in argv and uses the published patched
+wasi-libc build route to discover the moved preopen. `bun run test:libc` builds and discovers its
+blocking and nonblocking tests. The regular test suite discovers the WAT matrix without a native
+guest compiler. The SSLRequest case is transport coverage, not a database query.
+
+For a custom launcher such as bun-wasm's `preview1Launcher`, pass only `network.connection` to
+`bootstrap` as `request.network`, transfer its `port`, and keep `network.dispose()` on the page.
+The [Host ABI](../host-abi.md#preview-1-launch-sockets) lists the exact cloneable payload and
+socket results. Do not clone `NetConnect`, credentials, streams or the helper into the guest.

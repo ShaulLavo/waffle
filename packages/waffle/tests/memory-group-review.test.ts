@@ -1,6 +1,8 @@
+import { pieCore } from "./fixtures/memory-group-pie.js";
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import { createGroupMember } from "../group/member.js";
-import { GroupOp, PAGE_BYTES } from "../group/protocol.js";
+import { GroupOp, PAGE_BYTES, REPLY_WORDS } from "../group/protocol.js";
 import { MemoryGroups } from "../group/state.js";
 import { growthFree } from "../link/code.js";
 import { prepareLinkPlan } from "../link/index.js";
@@ -16,46 +18,12 @@ import { createFilesystemIdentity } from "../fs/protocol.js";
 
 const leb = (n: number): number[] =>
   n < 128 ? [n] : [(n % 128) + 128].concat(leb(Math.floor(n / 128)));
-const name = (s: string) => leb(s.length).concat(Array.from(new TextEncoder().encode(s)));
 const vec = (items: readonly number[][]) => leb(items.length).concat(items.flat());
 const section = (id: number, bytes: number[]) => [id].concat(leb(bytes.length), bytes);
 const body = (ops: number[]) => leb(ops.length + 2).concat([0], ops, [0x0b]);
 const binary = (...sections: number[][]) =>
   new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0].concat(sections.flat()));
 
-/** A PIE core whose _start body is `ops`; optionally re-exports the imported memory. */
-function pieCore(ops: number[], exportMemory = false): Uint8Array<ArrayBuffer> {
-  const exports = [
-    name("check").concat([0, 0]),
-    name("reserve").concat([0, 1]),
-    name("_start").concat([0, 2]),
-  ].concat(exportMemory ? [name("memory").concat([2, 0])] : []);
-  const env = (field: string, descriptor: number[]) => name("env").concat(name(field), descriptor);
-  return binary(
-    section(0, name("dylink.0").concat([1, 4, 16, 2, 0, 0])),
-    section(
-      1,
-      vec([
-        [0x60, 0, 0],
-        [0x60, 2, 0x7f, 0x7f, 1, 0x7f],
-      ]),
-    ),
-    section(
-      2,
-      vec([
-        env("check", [0, 0]),
-        env("memory", [2, 3, 1].concat(leb(65536))),
-        env("__indirect_function_table", [1, 0x70, 0, 1]),
-        env("__stack_pointer", [3, 0x7f, 1]),
-        env("__memory_base", [3, 0x7f, 0]),
-        env("__table_base", [3, 0x7f, 0]),
-      ]),
-    ),
-    section(3, vec([[1], [0]])),
-    section(7, vec(exports)),
-    section(10, vec([body([0x41, 0]), body(ops)])),
-  );
-}
 const plan = (source: Uint8Array) =>
   prepareLinkPlan({
     core: {
@@ -140,7 +108,7 @@ function member(watches = 4) {
     {
       memory: new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true }),
       control: new SharedArrayBuffer(16 + watches * 16),
-      reply: new SharedArrayBuffer(20),
+      reply: new SharedArrayBuffer(REPLY_WORDS * 4),
       port: channel.port2,
       index: 0,
       watches,
@@ -239,6 +207,42 @@ test("invalid output spans leave regions, holds and pins unchanged", async () =>
   }
 });
 
+test("publication imports cross a real port with full-width unsigned words", async () => {
+  const groups = new MemoryGroups();
+  // Above the signed boundary, a token read as a return value would look like a negative errno.
+  Reflect.set(Reflect.get(groups, "tokens"), "next", 0xffffffff);
+  const lease = groups.admit(1, "d", "new");
+  const worker = new Worker(new URL("./fixtures/memory-group-abi-worker.ts", import.meta.url).href);
+  try {
+    const result = new Promise<Record<string, number[]>>((resolve, reject) => {
+      worker.onmessage = ({ data }) => resolve(data);
+      worker.onerror = reject;
+    });
+    const launched = lease.launch();
+    worker.postMessage({ request: launched.request, mode: "publications" }, launched.transfer);
+    const report = await result;
+    const [data, base, cell, cellBase] = report.region!;
+    expect(report).toEqual({
+      region: [data!, base!, cell!, cellBase!],
+      publishBad: [-28, -28, -28],
+      published: [0, 0xffffffff],
+      openBad: [-28, -28, -28],
+      opened: [0, data!, base!, PAGE_BYTES, cell!, cellBase!, 16, 1],
+      wrongKind: [-8],
+      withdraw: [0, -8],
+    });
+    // The worker's two creator holds and one opened hold on each region; nothing was published.
+    expect(groups.owner(lease.group)!.snapshot()).toMatchObject({
+      regions: 2,
+      holds: 4,
+      published: 0,
+    });
+  } finally {
+    await worker.terminate();
+    lease.stopped();
+  }
+});
+
 test("a settled external root no longer retains its group lease", async () => {
   const identities = new ProcessIdentityAllocator();
   const refuse = (): never => {
@@ -249,6 +253,7 @@ test("a settled external root no longer retains its group lease", async () => {
   const table = new ProcessTable(identities);
   const registry = new ExecutableRegistry();
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -262,7 +267,7 @@ test("a settled external root no longer retains its group lease", async () => {
       identity: identities.buffer,
     });
     root.data = { filesystem: createFilesystemIdentity() };
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const first = broker.admitRootMemoryGroup(root.pid);
     first.request.port.close();
     first.stopped();

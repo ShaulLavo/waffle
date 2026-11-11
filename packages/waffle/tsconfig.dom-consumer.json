@@ -5,5 +5,5 @@
     "types": [],
     "skipLibCheck": false
   },
-  "include": ["tests/fixtures/interrupt-dom-consumer.ts"]
+  "include": ["tests/fixtures/interrupt-dom-consumer.ts", "thread/guest-imports.ts"]
 }

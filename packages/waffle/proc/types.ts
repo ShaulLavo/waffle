@@ -1,3 +1,4 @@
+import type { ProcessObservationTransfer } from "./observation.js";
 import { ProcessError, ProcessErrno } from "./errors.ts";
 export { ProcessError, ProcessErrno } from "./errors.ts";
 import { objectFreeze } from "./intrinsics.ts";
@@ -81,6 +82,12 @@ export interface SpawnRequest {
   /** New jobs only; omission preserves independent foreground/background jobs. */
   jobLifetime?: JobLifetime;
   fds: DescriptorBinding[];
+  /** A guest thread started as a process. Waffle gives its contents no meaning. */
+  worker?: Readonly<Record<string, unknown>>;
+}
+/** Owned copy of the guest-supplied Worker field. A non-object value is not a Worker. */
+export function snapshotSpawnWorker(worker: unknown): Pick<SpawnRequest, "worker"> {
+  return worker !== null && typeof worker === "object" ? { worker: { ...worker } } : {};
 }
 /** Immutable shared-directory job identity, independent of controller message order. */
 export interface SharedJobIdentity {
@@ -92,6 +99,9 @@ export interface SharedJobIdentity {
   readonly jobLifetime?: JobLifetime;
 }
 export interface SpawnReservation {
+  readonly observation?: ProcessObservationTransfer;
+  /** Captured owner callback, invoked only at successful native return or proved no-agent rollback. */
+  nativeReturn?(): void;
   controlParent?: number;
   rootPid?: number;
   pid?: number;
@@ -106,6 +116,7 @@ export interface ProcessHandle {
   terminate(): void | Promise<void>;
 }
 export interface ProcessLifecycle {
+  readonly observation: ProcessObservationTransfer;
   readonly pid: number;
   readonly parentPid: number;
   readonly job: number;

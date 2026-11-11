@@ -1,7 +1,9 @@
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
+import { untilReady } from "./fixtures/lazy-backing.js";
 import { expect, test } from "bun:test";
 import { FilesystemClient, MemoryBackend, PersistentBackend } from "../fs";
-import { PAGE, createFilesystemIdentity } from "../fs/protocol";
+import { createFilesystemIdentity } from "../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 import { workspacePublication } from "../fs/workspace-protocol";
 import { Wasi } from "../core/wasi";
 import { shareFileResource } from "../core/open-file";
@@ -543,7 +545,7 @@ test("aborted native public range keeps actual debt until the original I/O settl
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(closed).toBe(false);
     expect(storage.resources().opfsReaderWork).toBe(1);
-    expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
+    expect(storage.resources().readerStorageBytes).toBe(65536 * 3);
     gate.resolve();
     expect(await reading).toEqual({ kind: "stopped" });
     await closing;
@@ -656,9 +658,15 @@ test("a complete 128MiB resident lease preserves never-read distant bytes throug
     if (opened.kind !== "ok") throw new Error(opened.kind);
     const lease = opened.value;
     expect(value.service.resources().readerPinBytes).toBe(payloadSize);
-    expect(
-      value.client.tryWrite(value.handle, [new Uint8Array([90])], payloadSize - PAGE + 3),
-    ).toBe(1);
+    // Every page of the file is reader-pinned, so the write has to copy its page first. The
+    // file fills eight whole segments: the copy needs a page in a ninth, which only the owner
+    // can build. The immediate write returns EAGAIN without waiting, the owner relocates the
+    // page, and the retry writes it.
+    const write = () =>
+      value.client.tryWrite(value.handle, [new Uint8Array([90])], payloadSize - PAGE + 3);
+    expect(write()).toBe(-6);
+    await untilReady(value.client, value.handle, true);
+    expect(write()).toBe(1);
     await value.client.asyncCall("resize", [value.handle, 1, true]);
     await value.client.asyncCall("move", ["/file", "/moved"]);
     await value.client.asyncCall("writeFile", ["/replacement"], new Uint8Array([91]));
@@ -710,6 +718,40 @@ test("reversed open arrival is not cancelled by unrelated newer closes", async (
         { offset: 0, length: 1 },
       ]),
     ).toEqual({ kind: "cancelled" });
+  } finally {
+    await value.close();
+  }
+});
+
+test("full 256 MiB resident pins charge compact descriptors until structured metadata pressure", async () => {
+  const size = 256 * 1024 * 1024;
+  const value = await residentReadFixture(size);
+  try {
+    expect((await value.workspace.read("/file", { offset: 0, length: 0 })).kind).toBe("ok");
+    const base = value.service.resources().readerMetadataBytes!;
+    expect(base).toBe(65536 + 64 * 8 + 1280);
+    const fullPinCharge = 262_656;
+    const pins = [];
+    for (let count = 1; count <= 7; count++) {
+      const pin = await value.workspace.pin("/file");
+      if (pin.kind !== "ok") throw new Error(JSON.stringify(pin));
+      pins.push(pin.value);
+      expect(value.service.resources().readerMetadataBytes).toBe(base + count * fullPinCharge);
+    }
+    expect(value.service.resources().readerPinBytes).toBe(size);
+    const blocked = await value.workspace.pin("/file");
+    expect(blocked).toEqual({ kind: "pressure", resource: "metadata" });
+    expect(value.service.resources().readerLeases).toBe(7);
+    expect(value.service.resources().readerPinBytes).toBe(size);
+    expect((await pins[0]!.read({ offset: size - 1, length: 1 })).kind).toBe("ok");
+    for (const pin of pins) await pin.close();
+    expect(value.service.resources().readerPinBytes).toBe(0);
+    expect(value.service.resources().readerMetadataBytes).toBe(base);
+    const next = await value.workspace.pin("/file");
+    if (next.kind !== "ok") throw new Error(JSON.stringify(next));
+    await next.value.close();
+    expect(value.service.resources().readerLeases).toBe(0);
+    expect(value.service.resources().readerMetadataBytes).toBe(base);
   } finally {
     await value.close();
   }

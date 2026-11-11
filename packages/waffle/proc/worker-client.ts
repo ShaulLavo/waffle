@@ -1,7 +1,11 @@
+import { captureNativeReturn } from "./observation.js";
+import type { PipePublicationRegistryHandle } from "./pipes.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   arrayAppend,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
+  isSharedArrayBuffer,
+  isInstance,
   Uint32ArrayConstructor,
   atomicsLoad,
   atomicsStore,
@@ -52,6 +56,7 @@ import {
   markStarted,
   startStatus,
   readStartDiagnostic,
+  OutcomeCell,
 } from "./outcome.js";
 import { defaultSignalTerminates, requestSignal, type SignalTransport } from "./signals.js";
 import {
@@ -61,6 +66,7 @@ import {
   checkedJobLifetime,
   type JobLifetime,
   checkedProcessCwd,
+  snapshotSpawnWorker,
   type ProcessExit,
   type SpawnRequest,
 } from "./types.js";
@@ -86,7 +92,9 @@ export interface WorkerDescriptorCodec {
   discard(token: unknown): void;
 }
 export interface WorkerProcessTransport {
+  readonly kind: "directory";
   directory: SharedArrayBuffer;
+  readonly lifetime: SharedArrayBuffer;
   identity: SharedArrayBuffer;
   slot: number;
   pid: number;
@@ -97,6 +105,35 @@ export interface WorkerProcessTransport {
   /** Host adapter context, such as an independently reserved filesystem identity. */
   data?: unknown;
 }
+/** Read only after awaited root adoption, or from a broker-produced child request. */
+export function workerProcessPipeRegistry(
+  transport: WorkerProcessTransport,
+): PipePublicationRegistryHandle {
+  const data = transport.data;
+  if (!data || typeof data !== "object" || !("pipeRegistry" in data))
+    throw new TypeError("Worker bootstrap requires the admitted root pipe registry");
+  const registry = data.pipeRegistry;
+  if (
+    !registry ||
+    typeof registry !== "object" ||
+    !("buffer" in registry) ||
+    !isSharedArrayBuffer(registry.buffer) ||
+    !("wake" in registry) ||
+    !isInstance(registry.wake, Int32ArrayConstructor) ||
+    !("processCapacity" in registry) ||
+    typeof registry.processCapacity !== "number" ||
+    !("cellsPerProcess" in registry) ||
+    typeof registry.cellsPerProcess !== "number"
+  )
+    throw new TypeError("Invalid admitted pipe registry");
+  return {
+    buffer: registry.buffer,
+    wake: registry.wake,
+    processCapacity: registry.processCapacity,
+    cellsPerProcess: registry.cellsPerProcess,
+  };
+}
+
 export type WorkerProcessMessage =
   | {
       type: "runtime-proc";
@@ -130,7 +167,7 @@ export type WorkerProcessMessage =
 
 export const workerProcessState = directoryState;
 function reserveRecord(
-  transport: WorkerProcessTransport,
+  transport: Pick<WorkerProcessTransport, "directory" | "slot" | "pid" | "identity">,
   pid: number,
   parentPid: number,
   job: number,
@@ -181,7 +218,7 @@ export function createWorkerProcessTransport(
   const identities = new ProcessIdentityAllocator(options.identity);
   identities.observePid(pid);
   identities.observeJob(job);
-  const transport: WorkerProcessTransport = {
+  const transport = {
     directory: createDirectory(capacity),
     identity: identities.buffer,
     slot: 0,
@@ -248,6 +285,7 @@ function snapshotSpawnRequest(
     job,
     ...(jobLifetime === undefined ? {} : { jobLifetime }),
     fds: request.fds.map((binding) => ({ ...binding })),
+    ...snapshotSpawnWorker(request.worker),
   };
 }
 /** Synchronous guest-side process service; only notifications cross the message boundary. */
@@ -296,7 +334,7 @@ export class WorkerProcessClient {
     )
       return -ProcessErrno.AGAIN;
     const id = this.nextAccess++,
-      cells = new Int32ArrayConstructor(new SharedArrayBufferConstructor(8));
+      cells = new Int32ArrayConstructor(allocateSharedControl(8));
     mapSet((this.accesses ??= new MapConstructor()), id, cells);
     try {
       this.options.postMessage({
@@ -378,6 +416,8 @@ export class WorkerProcessClient {
       setAdd(fds, binding.child);
       const source = this.options.descriptors.get(binding.parent);
       if (!source) throw new ProcessError(ProcessErrno.BADF, "missing inherited descriptor");
+      if (source.resource.kind === "socket")
+        throw new ProcessError(ProcessErrno.NOTSUP, "socket inheritance is unsupported");
       arrayAppend(sources, source);
     }
     return sources;
@@ -405,6 +445,7 @@ export class WorkerProcessClient {
     let child: WorkerProcessTransport | undefined;
     let transfer: WorkerSpawnTransfer | undefined;
     let codec = this.options.codec;
+    let publishing = false;
     try {
       // Acquire the host admission fence before touching shared membership. Fatal
       // teardown must not stop this worker with an anonymous outstanding reservation.
@@ -442,6 +483,7 @@ export class WorkerProcessClient {
       this.admit();
       const group = directoryJob(child.directory, workerProcessState(child).jobSlot);
       checkDirectoryJobAdmission(child.directory, group);
+      publishing = true;
       this.options.postMessage({
         type: "runtime-proc",
         operation: "spawn",
@@ -449,57 +491,8 @@ export class WorkerProcessClient {
         request: snapshot,
       });
     } catch (error) {
-      let cleaned = true;
-      let state: ReturnType<typeof workerProcessState> | undefined;
-      try {
-        if (child) {
-          state = workerProcessState(child);
-          claimOutcome(
-            state.signals.outcome,
-            startFailure(error),
-            undefined,
-            describeStartError(error),
-          );
-        }
-        const resources = child?.resources ?? [];
-        for (let index = 0; index < resources.length; index++) {
-          try {
-            codec.discard(resources[index]);
-          } catch (cleanupError) {
-            cleaned = false;
-            this.report(cleanupError);
-          }
-        }
-        try {
-          transfer?.cancel?.();
-        } catch (cleanupError) {
-          cleaned = false;
-          this.report(cleanupError);
-        }
-        if (child && state && cleaned) {
-          controlStore(state.confirmed, 0, 1);
-          confirmWorkerProcessJob(child);
-        }
-      } finally {
-        transfer?.release?.();
-      }
-      if (child && state && cleaned) {
-        // Confirmation may orphan-collect this child when its parent died during export.
-        // Keep its independently captured job authority, not a fresh process-row lookup.
-        try {
-          collectDirectoryProcess(child);
-        } catch (cleanupError) {
-          if (!isCollectedProcess(cleanupError)) throw cleanupError;
-        }
-        // A reentrant exporter may have admitted another member; a release callback may
-        // instead have collected/reused the job. Never adopt that replacement's identity.
-        try {
-          if (controlLoad(state.jobPending) === 0)
-            collectDirectoryJob(child.directory, state.jobSlot, state.job);
-        } catch (cleanupError) {
-          if (!isCollectedProcess(cleanupError)) throw cleanupError;
-        }
-      }
+      if (publishing) this.releaseUncertainSpawn(transfer);
+      else this.rollbackSpawn(child, transfer, codec, error);
       throw error;
     }
     // Publication transferred ownership. Never discard published resources if a host
@@ -516,6 +509,75 @@ export class WorkerProcessClient {
       }
     }
     return pid;
+  }
+  private releaseUncertainSpawn(transfer: WorkerSpawnTransfer | undefined): void {
+    try {
+      transfer?.release?.();
+    } catch (error) {
+      this.report(error);
+    }
+  }
+  private discardSpawnResource(codec: WorkerDescriptorCodec, resource: unknown): boolean {
+    try {
+      codec.discard(resource);
+      return true;
+    } catch (error) {
+      this.report(error);
+      return false;
+    }
+  }
+  private rollbackSpawn(
+    child: WorkerProcessTransport | undefined,
+    transfer: WorkerSpawnTransfer | undefined,
+    codec: WorkerDescriptorCodec,
+    error: unknown,
+  ): void {
+    let cleaned = true;
+    let state: ReturnType<typeof workerProcessState> | undefined;
+    try {
+      if (child) {
+        state = workerProcessState(child);
+        claimOutcome(
+          state.signals.outcome,
+          startFailure(error),
+          undefined,
+          describeStartError(error),
+        );
+      }
+      const resources = child?.resources ?? [];
+      for (let index = 0; index < resources.length; index++)
+        if (!this.discardSpawnResource(codec, resources[index])) cleaned = false;
+      try {
+        transfer?.cancel?.();
+      } catch (cleanupError) {
+        cleaned = false;
+        this.report(cleanupError);
+      }
+      if (child && state && cleaned) {
+        captureNativeReturn(child)();
+        controlStore(state.confirmed, 0, 1);
+        confirmWorkerProcessJob(child);
+      }
+    } finally {
+      transfer?.release?.();
+    }
+    if (child && state && cleaned) {
+      // Confirmation may orphan-collect this child when its parent died during export.
+      // Keep its independently captured job authority, not a fresh process-row lookup.
+      try {
+        collectDirectoryProcess(child);
+      } catch (cleanupError) {
+        if (!isCollectedProcess(cleanupError)) throw cleanupError;
+      }
+      // A reentrant exporter may have admitted another member; a release callback may
+      // instead have collected/reused the job. Never adopt that replacement's identity.
+      try {
+        if (controlLoad(state.jobPending) === 0)
+          collectDirectoryJob(child.directory, state.jobSlot, state.job);
+      } catch (cleanupError) {
+        if (!isCollectedProcess(cleanupError)) throw cleanupError;
+      }
+    }
   }
   private find(pid: number, retained = false) {
     const directory = this.options.transport.directory;
@@ -753,17 +815,37 @@ export class WorkerProcessClient {
       kind: "signaled",
       code: controlLoad(this.signals.requestedSignal, 0) === 9 ? 9 : signal,
     });
+    this.completeSelectedOutcome(winner);
+  }
+  /** @internal Bootstrap already authenticated this immutable outcome before bookkeeping. */
+  completeSelectedOutcome(winner: ProcessExit): boolean {
+    try {
+      // These captured controls can be collected after the caller selected its winner.
+      // Keep callback errors outside this catch, even when they use the same errno.
+      readOutcome(this.signals.outcome);
+      controlLoad(this.signals.requestedSignal, 0);
+    } catch (error) {
+      if (
+        !isCollectedProcess(error) ||
+        !isInstance(this.signals.outcome, OutcomeCell) ||
+        this.signals.outcome.valid()
+      )
+        throw error;
+      this.retireAccesses();
+      return false;
+    }
     settleDirectoryJobLifetimes(this.options.transport.directory);
     this.retireAccesses();
-    if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
+    if (winner.kind === "signaled") this.options.revokeProcess?.(this.pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);
     settleDirectoryJobLifetimes(this.options.transport.directory);
     this.options.postMessage({
       type: "runtime-proc",
       operation: "exit",
       transport: this.options.transport,
-      targets: [pid],
+      targets: [this.pid],
     });
+    return true;
   }
   exit(code: number): void {
     claimOutcome(this.signals.outcome, { kind: "exited", code });

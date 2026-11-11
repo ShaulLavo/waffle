@@ -23,7 +23,7 @@ const limits = {
   pinBytes: 256,
 };
 function memory(
-  bytes = 64 * MiB,
+  bytes = 128 * MiB,
   allocator?: MemoryAllocator,
   producers = { allocations: 128, references: 256, leases: 16 },
 ) {
@@ -165,14 +165,14 @@ test("resident real factory refuses an individually fitting root plus fixed bund
 });
 
 for (const producers of [
-  { allocations: 117, references: 118, leases: 2 },
-  { allocations: 118, references: 117, leases: 2 },
-  { allocations: 118, references: 118, leases: 1 },
+  { allocations: 22, references: 23, leases: 2 },
+  { allocations: 23, references: 22, leases: 2 },
+  { allocations: 23, references: 23, leases: 1 },
 ]) {
   test(`resident refuses insufficient holding records before allocation ${JSON.stringify(producers)}`, async () => {
     const env = environment();
     const allocator = controlledAllocator();
-    const budget = memory(64 * MiB, allocator, producers);
+    const budget = memory(128 * MiB, allocator, producers);
     const before = budget.snapshot();
     const owner = env.owner(budget);
     try {
@@ -190,17 +190,17 @@ for (const producers of [
   });
 }
 
-test("resident retains all 118 allocation/reference records and two holding leases after close", async () => {
+test("resident retains all 23 allocation/reference records and two holding leases after close", async () => {
   const env = environment();
   const allocator = controlledAllocator();
-  const budget = memory(64 * MiB, allocator, { allocations: 118, references: 118, leases: 2 });
+  const budget = memory(128 * MiB, allocator, { allocations: 23, references: 23, leases: 2 });
   const before = budget.snapshot();
   const owner = env.owner(budget);
   try {
     await owner.ready;
-    expect(allocator.specs).toHaveLength(117);
-    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(62_848_172);
-    expect(budget.snapshot().allocated - before.allocated).toBe(62_848_684);
+    expect(allocator.specs).toHaveLength(22);
+    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(35_270_156);
+    expect(budget.snapshot().allocated - before.allocated).toBe(35_270_668);
     expect(budget.snapshot().producerFree).toEqual({ allocations: 0, references: 0, leases: 0 });
     expect(budget.snapshot().obligations).toBe(0);
     const published = budget.snapshot();
@@ -237,7 +237,7 @@ const fixedBytes =
   49156 +
   12 +
   FILESYSTEM_SECTION_BYTES +
-  98304 +
+  1572864 +
   limits.sessions * 8 +
   44 +
   limits.sessions * 16 +
@@ -249,7 +249,7 @@ const fixedBytes =
   limits.pins * 12 +
   limits.pinBytes +
   32 +
-  64 +
+  72 +
   4096 * 12;
 const startupCharge = rootCharge();
 function exactCapacity() {
@@ -325,11 +325,14 @@ test("resident real open borrows one physical backend root and charges the whole
       connection.revocations,
       Object.values(arena).filter((value) => value instanceof SharedArrayBuffer),
     );
-    expect(new Set(backing).size).toBe(117);
-    expect(allocator.specs).toHaveLength(117);
-    expect(allocator.specs.filter((spec) => spec.bytes > MiB)).toHaveLength(1);
-    expect(allocator.specs.filter((spec) => spec.bytes === 0)).toHaveLength(96);
-    expect(arena.pageReaders?.byteLength).toBe(98304);
+    // No data segment exists at construction: the owner builds each one on demand.
+    expect(connection.segments).toEqual([]);
+    expect(new Set(backing).size).toBe(22);
+    expect(allocator.specs).toHaveLength(22);
+    expect(allocator.specs.filter((spec) => spec.bytes > 2 * MiB)).toHaveLength(1);
+    // The request arena is the one growable buffer, and the only zero-length one.
+    expect(allocator.specs.filter((spec) => spec.bytes === 0)).toHaveLength(1);
+    expect(arena.pageReaders?.byteLength).toBe(1572864);
     expect(arena.readerLifetimes?.byteLength).toBe(limits.sessions * 8);
     expect(arena.versions.byteLength).toBe(49152);
     expect(budget.snapshot().backingBytes - before.backingBytes).toBe(
@@ -341,8 +344,8 @@ test("resident real open borrows one physical backend root and charges the whole
     );
     expect(budget.snapshot().allocated).toBe(budget.snapshot().limit);
     expect(budget.snapshot().obligations).toBe(0);
-    expect(before.producerFree.allocations - budget.snapshot().producerFree.allocations).toBe(118);
-    expect(before.producerFree.references - budget.snapshot().producerFree.references).toBe(118);
+    expect(before.producerFree.allocations - budget.snapshot().producerFree.allocations).toBe(23);
+    expect(before.producerFree.references - budget.snapshot().producerFree.references).toBe(23);
     expect(before.producerFree.leases - budget.snapshot().producerFree.leases).toBe(2);
     const alias = new MemoryBackend(undefined, undefined, backend);
     const cloned = structuredClone(connection.shared);
@@ -356,7 +359,7 @@ test("resident real open borrows one physical backend root and charges the whole
         arena,
       ),
     ).toThrow();
-    expect(allocator.specs).toHaveLength(117);
+    expect(allocator.specs).toHaveLength(22);
     const published = budget.snapshot();
     await owner.stop();
     expect(budget.snapshot()).toEqual(published);
@@ -373,7 +376,7 @@ test("resident real open borrows one physical backend root and charges the whole
   }
 });
 
-for (let failedAt = 1; failedAt <= 117; failedAt++) {
+for (let failedAt = 1; failedAt <= 22; failedAt++) {
   test(`resident construction rolls back private fixed backing after allocator failure ${failedAt}`, async () => {
     const env = environment();
     const failure = new Error(`allocation-${failedAt}`);
@@ -415,7 +418,7 @@ test("every construction allocator reentry sees reserved capacity and cannot adm
   const owner = env.owner(budget);
   try {
     await owner.ready;
-    expect(allocator.specs).toHaveLength(117);
+    expect(allocator.specs).toHaveLength(22);
   } finally {
     await owner.stop();
     env.restore();
@@ -443,7 +446,7 @@ test("service attachment failure retains published raw aliases and repeated atte
     second = env.owner(budget);
     await expect(second.ready).rejects.toMatchObject({ code: "capacity" });
     await second.stop();
-    expect(allocator.specs).toHaveLength(117);
+    expect(allocator.specs).toHaveLength(22);
     expect(budget.snapshot().allocated).toBe(retained.allocated);
     expect(budget.snapshot().obligations).toBe(0);
     expect(env.held.size).toBe(0);
@@ -487,7 +490,7 @@ test("stopping guarded native opening joins completion without late construction
   }
 });
 
-for (const stopAt of [1, 2, 97, 99, 110, 117]) {
+for (const stopAt of [1, 2, 4, 15, 22]) {
   test(`stopping inside allocator ${stopAt} prevents further fixed allocation and late ready`, async () => {
     const env = environment();
     const allocator = controlledAllocator((_spec, index) => {
@@ -594,7 +597,7 @@ test("failed service attachment after registration joins its actual session befo
   }
 });
 
-for (const failedAt of [1, 65]) {
+for (const failedAt of [1, 12]) {
   test(`retry after allocator failure ${failedAt} never creates a replacement authority`, async () => {
     const env = environment();
     const failure = new Error("first attempt allocation failure");
@@ -611,7 +614,7 @@ for (const failedAt of [1, 65]) {
       if (failedAt === 1) await second.ready;
       else await expect(second.ready).rejects.toMatchObject({ code: "capacity" });
       await second.stop();
-      expect(allocator.specs).toHaveLength(failedAt === 1 ? 118 : failedAt);
+      expect(allocator.specs).toHaveLength(failedAt === 1 ? 23 : failedAt);
       expect(budget.snapshot().obligations).toBe(0);
       expect(env.held.size).toBe(0);
     } finally {

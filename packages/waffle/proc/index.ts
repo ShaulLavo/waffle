@@ -54,6 +54,7 @@ export {
   WorkerProcessClient,
   createWorkerProcessTransport,
   workerProcessState,
+  workerProcessPipeRegistry,
   workerProcessDirectoryId,
   wakeWorkerProcess,
   confirmWorkerProcessJob,

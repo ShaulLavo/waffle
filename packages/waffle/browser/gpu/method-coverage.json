@@ -1,0 +1,1933 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "webgpu-native/webgpu-headers",
+    "revision": "a1dc77409bb2b8bd80540cbf4b8db219e123e909",
+    "sha256": "9268864efc29edc2e4fa40949643d14ae5bf6664447eadfccdeaefe7e14d130b",
+    "licenseSha256": "17420d366df90c474bd70ad474694956cdb7fc64be70387a49a45458c4152d22",
+    "headerSha256": "0314dc40d4641dfe9638ae82071926c0a4136a4bf525c54098b58be345e9b4ed"
+  },
+  "methods": [
+    {
+      "name": "adapter.get_limits",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 110,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "limits"
+        }
+      }
+    },
+    {
+      "name": "adapter.has_feature",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 109,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "has-feature"
+        }
+      }
+    },
+    {
+      "name": "adapter.get_features",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 108,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "features"
+        }
+      }
+    },
+    {
+      "name": "adapter.get_info",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 107,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "info"
+        }
+      }
+    },
+    {
+      "name": "adapter.request_device",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes adapter.request_device through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 2,
+        "context": "top",
+        "lowering": {
+          "kind": "request-device",
+          "descriptor": "device-descriptor"
+        }
+      }
+    },
+    {
+      "name": "bind_group.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 89,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "bind_group_layout.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 90,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "buffer.map_async",
+      "group": "mapping",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 115,
+        "context": "top",
+        "lowering": {
+          "kind": "async",
+          "member": "mapAsync"
+        }
+      }
+    },
+    {
+      "name": "buffer.get_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.get_const_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.read_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.write_mapped_range",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 91,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "buffer.get_usage",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.get_size",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.get_map_state",
+      "group": "mapping",
+      "category": "c-only-adaptation",
+      "reason": "Client-local buffer descriptor cache or checked mapping shadow operation; no native pointer or getter call crosses the stream.",
+      "slice": "G2"
+    },
+    {
+      "name": "buffer.unmap",
+      "group": "mapping",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 116,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "unmap"
+        }
+      }
+    },
+    {
+      "name": "buffer.destroy",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 87,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
+    },
+    {
+      "name": "command_buffer.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 92,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.finish",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Existing selected stream routes command_encoder.finish through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 16,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "finish"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.begin_compute_pass",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Begin an optional compute-pass descriptor with timestamp sentinel adaptation and retain its pass identity across bounded replay slices.",
+      "call": {
+        "opcode": 35,
+        "context": "encoder",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "beginComputePass",
+          "descriptor": "compute_pass_descriptor"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.begin_render_pass",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Existing selected stream routes command_encoder.begin_render_pass through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 12,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "beginRenderPass"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.copy_buffer_to_buffer",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 69,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyBufferToBuffer"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.copy_buffer_to_texture",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 70,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyBufferToTexture"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.copy_texture_to_buffer",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 71,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyTextureToBuffer"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.copy_texture_to_texture",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 72,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "copyTextureToTexture"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.clear_buffer",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 73,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "clearBuffer"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.insert_debug_marker",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 74,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.pop_debug_group",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 75,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.push_debug_group",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 76,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.resolve_query_set",
+      "group": "encoder",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 63,
+        "context": "encoder",
+        "lowering": {
+          "kind": "method",
+          "member": "resolveQuerySet"
+        }
+      }
+    },
+    {
+      "name": "command_encoder.write_timestamp",
+      "group": "encoder",
+      "category": "unsupported",
+      "reason": "The browser command encoder has no standalone writeTimestamp method. Approved browser timestamp writes use pass descriptor timestampWrites; do not fabricate an arbitrary-position native call.",
+      "boundary": "no-native-api"
+    },
+    {
+      "name": "command_encoder.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 93,
+        "context": "encoder",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.insert_debug_marker",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Insert the pinned UTF-8 compute marker label on the current native compute pass.",
+      "call": {
+        "opcode": 36,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.pop_debug_group",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Pop the current compute debug group and leave balance validation to native WebGPU.",
+      "call": {
+        "opcode": 37,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.push_debug_group",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Push the pinned UTF-8 group label on the current native compute pass.",
+      "call": {
+        "opcode": 38,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.set_pipeline",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Resolve a compute-pipeline handle and bind its exact native identity on the current compute pass.",
+      "call": {
+        "opcode": 39,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.set_bind_group",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Bind a native group or explicit null with the original group index and u32 dynamic-offset array.",
+      "call": {
+        "opcode": 40,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.set_immediates",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Replace the C data pointer and size with one byte span; pass the exact byte offset and Uint8Array to native setImmediates.",
+      "call": {
+        "opcode": 41,
+        "context": "pass",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.dispatch_workgroups",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Dispatch the pinned three u32 workgroup counts without defaulting zero counts or changing their order.",
+      "call": {
+        "opcode": 42,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "dispatchWorkgroups"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.dispatch_workgroups_indirect",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "Dispatch through the exact native indirect buffer and checked safe-number u64 byte offset.",
+      "call": {
+        "opcode": 43,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "dispatchWorkgroupsIndirect"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.end",
+      "group": "compute-pass",
+      "category": "selected",
+      "reason": "End the native compute pass and return resumable replay to encoder context.",
+      "call": {
+        "opcode": 44,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "end"
+        }
+      }
+    },
+    {
+      "name": "compute_pass_encoder.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Assign the pinned label string to the native compute-pass label property, not a fictional method.",
+      "call": {
+        "opcode": 45,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "label"
+        }
+      }
+    },
+    {
+      "name": "compute_pipeline.get_bind_group_layout",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 67,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "getBindGroupLayout"
+        }
+      }
+    },
+    {
+      "name": "compute_pipeline.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 94,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "device.create_bind_group",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Resolve the C resource alternatives into the browser buffer-binding, sampler or texture-view resource union.",
+      "call": {
+        "opcode": 27,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroup",
+          "descriptor": "bind_group_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_bind_group_layout",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Lower explicit C binding-layout arms to native dictionaries, omitting BindingNotUsed arms and rejecting browser-unsupported arrays.",
+      "call": {
+        "opcode": 25,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBindGroupLayout",
+          "descriptor": "bind_group_layout_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_buffer",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create native buffers with exact u64 size, usage flags and mapped-at-creation state; shadow mapping remains G2.",
+      "call": {
+        "opcode": 22,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createBuffer",
+          "descriptor": "buffer_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_command_encoder",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.create_command_encoder through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 11,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "createCommandEncoder"
+        }
+      }
+    },
+    {
+      "name": "device.create_compute_pipeline",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create a synchronous native compute pipeline with explicit or automatic layout, checked shader identity and constant-record adaptation.",
+      "call": {
+        "opcode": 34,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createComputePipeline",
+          "descriptor": "compute_pipeline_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_compute_pipeline_async",
+      "group": "creation",
+      "category": "c-only-adaptation",
+      "reason": "The approved sync-pipeline policy lowers create_compute_pipeline_async in a future C client to synchronous creation plus an error scope and local callback delivery; that adapter is not implemented.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_pipeline_layout",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Resolve ordered bind-group-layout handles and lower immediate_size to the native immediateSize member.",
+      "call": {
+        "opcode": 26,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createPipelineLayout",
+          "descriptor": "pipeline_layout_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_query_set",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 62,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createQuerySet",
+          "descriptor": "query_set_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_render_pipeline_async",
+      "group": "creation",
+      "category": "c-only-adaptation",
+      "reason": "The approved sync-pipeline policy lowers create_render_pipeline_async in a future C client to synchronous creation plus an error scope and local callback delivery; that adapter is not implemented.",
+      "slice": "G1"
+    },
+    {
+      "name": "device.create_render_bundle_encoder",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 46,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createRenderBundleEncoder",
+          "descriptor": "render_bundle_encoder_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_render_pipeline",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.create_render_pipeline through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 9,
+        "context": "top",
+        "lowering": {
+          "kind": "render-pipeline",
+          "descriptor": "auto-layout"
+        }
+      }
+    },
+    {
+      "name": "device.create_sampler",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create native samplers with optional descriptor, C enum defaults and two-byte anisotropy.",
+      "call": {
+        "opcode": 24,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createSampler",
+          "descriptor": "sampler_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.create_shader_module",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.create_shader_module through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 8,
+        "context": "top",
+        "lowering": {
+          "kind": "shader-module",
+          "descriptor": "wgsl-chain"
+        }
+      }
+    },
+    {
+      "name": "device.create_texture",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Create native textures with explicit dimensions, extent, format, sample count and view formats.",
+      "call": {
+        "opcode": 23,
+        "context": "top",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "createTexture",
+          "descriptor": "texture_descriptor"
+        }
+      }
+    },
+    {
+      "name": "device.destroy",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.destroy through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 18,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
+    },
+    {
+      "name": "device.get_lost_future",
+      "group": "async",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must associate the device-lost completion with a local WGPUFuture; service event delivery alone is not a C future implementation.",
+      "slice": "G2"
+    },
+    {
+      "name": "device.get_limits",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 113,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "limits"
+        }
+      }
+    },
+    {
+      "name": "device.has_feature",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 112,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "has-feature"
+        }
+      }
+    },
+    {
+      "name": "device.get_features",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 111,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "features"
+        }
+      }
+    },
+    {
+      "name": "device.get_adapter_info",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 114,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "info"
+        }
+      }
+    },
+    {
+      "name": "device.get_queue",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.get_queue through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 7,
+        "context": "top",
+        "lowering": {
+          "kind": "property",
+          "member": "queue"
+        }
+      }
+    },
+    {
+      "name": "device.push_error_scope",
+      "group": "async",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.push_error_scope through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 19,
+        "context": "top",
+        "lowering": {
+          "kind": "error-scope",
+          "member": "pushErrorScope"
+        }
+      }
+    },
+    {
+      "name": "device.pop_error_scope",
+      "group": "async",
+      "category": "selected",
+      "reason": "Existing selected stream routes device.pop_error_scope through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 20,
+        "context": "top",
+        "lowering": {
+          "kind": "error-scope",
+          "member": "popErrorScope"
+        }
+      }
+    },
+    {
+      "name": "device.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 95,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "external_texture.set_label",
+      "group": "labels",
+      "category": "unsupported",
+      "reason": "External video texture import and guest external-texture handles are outside the approved bridge boundary; this receiver cannot be obtained.",
+      "boundary": "no-external-textures"
+    },
+    {
+      "name": "instance.create_surface",
+      "group": "instance",
+      "category": "selected",
+      "reason": "Existing selected stream routes instance.create_surface through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 3,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-create",
+          "descriptor": "waffle-surface"
+        }
+      }
+    },
+    {
+      "name": "instance.get_WGSL_language_features",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 119,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "wgsl-features"
+        }
+      }
+    },
+    {
+      "name": "instance.has_WGSL_language_feature",
+      "group": "metadata",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 120,
+        "context": "top",
+        "lowering": {
+          "kind": "query",
+          "adapter": "has-wgsl-feature"
+        }
+      }
+    },
+    {
+      "name": "instance.process_events",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must implement process_events by pumping guest-local completion tokens; C callbacks and wait arrays cannot execute in the service worker.",
+      "slice": "G2"
+    },
+    {
+      "name": "instance.request_adapter",
+      "group": "instance",
+      "category": "selected",
+      "reason": "Existing selected stream routes instance.request_adapter through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 1,
+        "context": "top",
+        "lowering": {
+          "kind": "request-adapter",
+          "descriptor": "adapter-options"
+        }
+      }
+    },
+    {
+      "name": "instance.wait_any",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must implement wait_any by pumping guest-local completion tokens; C callbacks and wait arrays cannot execute in the service worker.",
+      "slice": "G2"
+    },
+    {
+      "name": "pipeline_layout.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 96,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "query_set.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 97,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "query_set.get_type",
+      "group": "query",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_type from the future C client's retained query-set descriptor; query-set creation and caching remain G1 work.",
+      "slice": "G1"
+    },
+    {
+      "name": "query_set.get_count",
+      "group": "query",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_count from the future C client's retained query-set descriptor; query-set creation and caching remain G1 work.",
+      "slice": "G1"
+    },
+    {
+      "name": "query_set.destroy",
+      "group": "query",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 66,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
+    },
+    {
+      "name": "queue.submit",
+      "group": "queue",
+      "category": "selected",
+      "reason": "Existing selected stream routes queue.submit through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 17,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "submit"
+        }
+      }
+    },
+    {
+      "name": "queue.on_submitted_work_done",
+      "group": "async",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 118,
+        "context": "top",
+        "lowering": {
+          "kind": "async",
+          "member": "onSubmittedWorkDone"
+        }
+      }
+    },
+    {
+      "name": "queue.write_buffer",
+      "group": "queue",
+      "category": "selected",
+      "reason": "Replace the C data pointer and paired size with a checked byte span and upload it at an exact buffer offset.",
+      "call": {
+        "opcode": 28,
+        "context": "top",
+        "lowering": {
+          "kind": "write-buffer",
+          "member": "writeBuffer",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
+    },
+    {
+      "name": "queue.write_texture",
+      "group": "queue",
+      "category": "selected",
+      "reason": "Upload checked byte spans with native texture identity, origin, extent and declared copy-stride sentinel omission.",
+      "call": {
+        "opcode": 29,
+        "context": "top",
+        "lowering": {
+          "kind": "write-texture",
+          "member": "writeTexture",
+          "span": {
+            "pointer": "data",
+            "size": "data_size"
+          }
+        }
+      }
+    },
+    {
+      "name": "queue.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 98,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "render_bundle.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 99,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.set_pipeline",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 47,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.set_bind_group",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 48,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.set_immediates",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 49,
+        "context": "bundle",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.draw",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 50,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "draw"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.draw_indexed",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 51,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexed"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.draw_indirect",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 52,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndirect"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.draw_indexed_indirect",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 53,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexedIndirect"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.insert_debug_marker",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 54,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.pop_debug_group",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 55,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.push_debug_group",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 56,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.set_vertex_buffer",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 57,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setVertexBuffer"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.set_index_buffer",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 58,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "setIndexBuffer"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.finish",
+      "group": "bundle",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 59,
+        "context": "bundle",
+        "lowering": {
+          "kind": "descriptor-method",
+          "member": "finish",
+          "descriptor": "render_bundle_descriptor"
+        }
+      }
+    },
+    {
+      "name": "render_bundle_encoder.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 60,
+        "context": "bundle",
+        "lowering": {
+          "kind": "method",
+          "member": "label"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_pipeline",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Existing selected stream routes render_pass_encoder.set_pipeline through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 13,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setPipeline"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_bind_group",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Bind native group identity or explicit null with a bounded array of dynamic offsets inside a recorded render pass.",
+      "call": {
+        "opcode": 30,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBindGroup"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_immediates",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 77,
+        "context": "pass",
+        "lowering": {
+          "kind": "set-immediates",
+          "member": "setImmediates",
+          "span": {
+            "pointer": "data",
+            "size": "size"
+          }
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.draw",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Existing selected stream routes render_pass_encoder.draw through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 14,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "draw"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.draw_indexed",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Replay indexed draws with exact counts and first offsets, including signed base_vertex values.",
+      "call": {
+        "opcode": 33,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexed"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.draw_indirect",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 78,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndirect"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.draw_indexed_indirect",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 79,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "drawIndexedIndirect"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.execute_bundles",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 61,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "executeBundles"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.insert_debug_marker",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 80,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "insertDebugMarker"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.pop_debug_group",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 81,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "popDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.push_debug_group",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 82,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "pushDebugGroup"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_stencil_reference",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 83,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setStencilReference"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_blend_constant",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 84,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setBlendConstant"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_viewport",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 85,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setViewport"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_scissor_rect",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 86,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setScissorRect"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_vertex_buffer",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Bind vertex-buffer identity or explicit null, retaining byte offsets and omitting only the whole-size sentinel.",
+      "call": {
+        "opcode": 31,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setVertexBuffer"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_index_buffer",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Bind native index-buffer identity, index format and exact offset/range with declared whole-size omission.",
+      "call": {
+        "opcode": 32,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "setIndexBuffer"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.begin_occlusion_query",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 64,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "beginOcclusionQuery"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.end_occlusion_query",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 65,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "endOcclusionQuery"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.end",
+      "group": "render-pass",
+      "category": "selected",
+      "reason": "Existing selected stream routes render_pass_encoder.end through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 15,
+        "context": "pass",
+        "lowering": {
+          "kind": "method",
+          "member": "end"
+        }
+      }
+    },
+    {
+      "name": "render_pass_encoder.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 100,
+        "context": "pass",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "render_pipeline.get_bind_group_layout",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Selected typed bundle/query stream operation with guest-owned result handles and explicit native lowering.",
+      "call": {
+        "opcode": 68,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "getBindGroupLayout"
+        }
+      }
+    },
+    {
+      "name": "render_pipeline.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 101,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "sampler.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 102,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "shader_module.get_compilation_info",
+      "group": "async",
+      "category": "selected",
+      "reason": "Generated G2 stream and named browser lowering preserve the pinned C result and output contract.",
+      "call": {
+        "opcode": 117,
+        "context": "top",
+        "lowering": {
+          "kind": "async",
+          "member": "getCompilationInfo"
+        }
+      }
+    },
+    {
+      "name": "shader_module.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 103,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "surface.configure",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.configure through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 4,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-configure",
+          "descriptor": "stable-frame"
+        }
+      }
+    },
+    {
+      "name": "surface.get_capabilities",
+      "group": "surface",
+      "category": "deferred",
+      "reason": "Return explicit browser-supported surface formats, usages, alpha and presentation policy via checked capability metadata; do not expose native window handles.",
+      "slice": "G2"
+    },
+    {
+      "name": "surface.get_current_texture",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.get_current_texture through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 5,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-acquire",
+          "output": "surface_texture"
+        }
+      }
+    },
+    {
+      "name": "surface.present",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.present through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 6,
+        "context": "top",
+        "lowering": {
+          "kind": "surface-present",
+          "result": "enum.status"
+        }
+      }
+    },
+    {
+      "name": "surface.unconfigure",
+      "group": "surface",
+      "category": "selected",
+      "reason": "Existing selected stream routes surface.unconfigure through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 21,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "unconfigure"
+        }
+      }
+    },
+    {
+      "name": "surface.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the connection-local Waffle surface reference only; no native surface, canvas or context label exists.",
+      "call": {
+        "opcode": 104,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "surface-reference"
+        }
+      }
+    },
+    {
+      "name": "texture.create_view",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Existing selected stream routes texture.create_view through its explicit lowering; broader object coverage is not implied.",
+      "call": {
+        "opcode": 10,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "createView"
+        }
+      }
+    },
+    {
+      "name": "texture.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 105,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "texture.get_width",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_width from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_height",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_height from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_depth_or_array_layers",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_depth_or_array_layers from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_mip_level_count",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_mip_level_count from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_sample_count",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_sample_count from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_dimension",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_dimension from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_texture_binding_view_dimension",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_texture_binding_view_dimension from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_format",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_format from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.get_usage",
+      "group": "metadata",
+      "category": "c-only-adaptation",
+      "reason": "Answer get_usage from the future C client's retained texture descriptor or acquired-frame metadata; do not invent a browser C getter.",
+      "slice": "G1"
+    },
+    {
+      "name": "texture.destroy",
+      "group": "creation",
+      "category": "selected",
+      "reason": "Selected copy/draw-state protocol unit uses explicit browser lowering and native validation; this does not imply full G1 or guest mapping support.",
+      "call": {
+        "opcode": 88,
+        "context": "top",
+        "lowering": {
+          "kind": "method",
+          "member": "destroy"
+        }
+      }
+    },
+    {
+      "name": "texture_view.set_label",
+      "group": "labels",
+      "category": "selected",
+      "reason": "Ordered assignment to the native label property, retaining native identity and handle validation.",
+      "call": {
+        "opcode": 106,
+        "context": "top",
+        "lowering": {
+          "kind": "label",
+          "target": "native"
+        }
+      }
+    },
+    {
+      "name": "function.create_instance",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client maps its instance to the connection root prebound by runtime_gpu.open; no browser GPUInstance is allocated and no C client is implemented.",
+      "slice": "G1"
+    },
+    {
+      "name": "function.get_instance_features",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client reports only its supported callback/wait capabilities, not native implementation features; that local capability contract remains unimplemented.",
+      "slice": "G2"
+    },
+    {
+      "name": "function.get_instance_limits",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client must fill checked instance wait limits for its completion pump; native C instance limits are not browser device limits.",
+      "slice": "G2"
+    },
+    {
+      "name": "function.has_instance_feature",
+      "group": "instance",
+      "category": "c-only-adaptation",
+      "reason": "A future C client answers from the same explicit local instance-feature set as get_instance_features; no native feature probing crosses the stream.",
+      "slice": "G2"
+    }
+  ]
+}

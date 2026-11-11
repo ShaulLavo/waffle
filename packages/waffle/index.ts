@@ -1,7 +1,15 @@
 export { createRuntime } from "./runtime.js";
+export type {
+  NetConnect,
+  NetConnectErrorCode,
+  NetOutboundStream,
+  NetOutboundTarget,
+} from "./browser/net/outbound.js";
 export { RuntimeNetworkLookupError } from "./runtime.js";
 export type {
   Runtime,
+  RuntimeDisplay,
+  DisplaySurface,
   RuntimeOptions,
   RuntimeNetwork,
   RuntimeNetworkHelper,
@@ -105,3 +113,25 @@ export type {
 export type { CommandProcessContext } from "./proc/types.js";
 
 export type { SignalDelegation } from "./programs/index.js";
+
+export {
+  bytes,
+  pages,
+  declareSharedMemoryPlatform,
+  SharedMemoryAdmissionError,
+  declareModuleMemory,
+  createSharedControlAllocator,
+} from "./memory/index.js";
+export type {
+  SharedControlGrant,
+  ReservedBytes,
+  WasmPages,
+  CountedKinds,
+  SharedMemoryPlatform,
+  SharedMemoryDeclaration,
+  SharedMemorySnapshot,
+  SharedMemoryRefusal,
+  MemoryDeclaration,
+  ProcessPlan,
+  ProcessGuestPlan,
+} from "./memory/index.js";

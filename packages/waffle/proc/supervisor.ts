@@ -1,9 +1,10 @@
+import { admitProcessObservation, captureNativeReturn } from "./observation.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   isInstance,
   isSharedArrayBuffer,
   isInt32Array,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsAdd,
   atomicsNotify,
   objectFreeze,
@@ -44,6 +45,7 @@ import {
   checkedSignal,
   checkedJobLifetime,
   checkedProcessCwd,
+  snapshotSpawnWorker,
   type ChildExitEvent,
   type ProcessContext,
   type ProcessLifecycle,
@@ -114,7 +116,7 @@ function signalWord(source?: ControlCells | SharedArrayBuffer): ControlCells {
     ? source
     : isInt32Array(source)
       ? source
-      : new Int32ArrayConstructor(source ?? new SharedArrayBufferConstructor(4));
+      : new Int32ArrayConstructor(source ?? allocateSharedControl(4));
   if (
     !isSharedArrayBuffer(isInstance(word, TaggedCells) ? word.buffer : typedArrayBuffer(word)) ||
     (isInstance(word, TaggedCells) ? word.length : typedArrayLength(word)) !== 1
@@ -138,7 +140,15 @@ function snapshot(
     job: selection.job,
     ...(selection.jobLifetime === undefined ? {} : { jobLifetime: selection.jobLifetime }),
     fds: spec.fds.map((binding) => ({ ...binding })),
+    ...snapshotSpawnWorker(spec.worker),
   };
+}
+
+function checkInheritedDescriptor(table: DescriptorTable, fd: number): void {
+  const source = table.get(fd);
+  if (!source) throw new ProcessError(ProcessErrno.BADF, `missing parent descriptor ${fd}`);
+  if (source.resource.kind === "socket")
+    throw new ProcessError(ProcessErrno.NOTSUP, "socket inheritance is unsupported");
 }
 
 /** Responsive control plane. launch must hand execution to a worker, never run a guest inline. */
@@ -442,6 +452,7 @@ export class ProcessSupervisor {
       requestedSignal = signalWord(options.requestedSignal),
       outcome = outcomeWord(options.outcome),
       signalState = createSignalState(options.signalState);
+    const observation = admitProcessObservation(pid, outcome, options.observation);
     // Explicit root ids may share an existing job, as with an externally reserved guest root.
     const job =
       options.job !== undefined && this.table.job(options.job)
@@ -470,6 +481,8 @@ export class ProcessSupervisor {
         requestedSignal,
         signalState,
         outcome,
+        observation,
+        nativeAcquisition: { kind: "not-invoked" },
         request: null,
         state: "running",
         result: null,
@@ -541,8 +554,7 @@ export class ProcessSupervisor {
       if (!validFd(binding.child) || !validFd(binding.parent) || bindings.has(binding.child)) {
         throw new ProcessError(ProcessErrno.INVAL, "invalid or duplicate descriptor binding");
       }
-      if (!parentDescriptors.get(binding.parent))
-        throw new ProcessError(ProcessErrno.BADF, `missing parent descriptor ${binding.parent}`);
+      checkInheritedDescriptor(parentDescriptors, binding.parent);
       bindings.add(binding.child);
     }
     const interrupt = signalWord(reservation.interrupt),
@@ -552,6 +564,7 @@ export class ProcessSupervisor {
     const request = snapshot(spec, { job: selector, jobLifetime: requestedLifetime });
     const pid = reservation.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, admitted ? reservation.outcome : undefined);
+    const observation = admitProcessObservation(pid, outcome, reservation.observation);
     let job = reservation.job ?? (selector > 0 ? selector : undefined);
     let createdJob = false;
     if (job !== undefined && !this.table.job(job)) {
@@ -627,6 +640,9 @@ export class ProcessSupervisor {
           result: null,
           jobSafe: false,
           signal: 0,
+          observation,
+          nativeAcquisition: { kind: "not-invoked" },
+          nativeReturn: reservation.nativeReturn ?? captureNativeReturn(observation),
           revoked: false,
           revocations,
           waiters: new Set(),
@@ -703,6 +719,7 @@ export class ProcessSupervisor {
         requestedSignal: record.requestedSignal,
         signalState: record.signalState,
         outcome: record.outcome,
+        observation: record.observation,
         started: () => this.started(record.pid),
         exit: (code) => this.exit(record.pid, code),
         fail: () => this.finish(record.pid, { kind: "exited", code: 126 }, undefined, true),
@@ -723,6 +740,8 @@ export class ProcessSupervisor {
       if (record.result) this.stopHandle(record);
       else if (!record.revoked) record.state = "running";
     } catch (error) {
+      if (record.nativeAcquisition.kind === "invoked" && !record.handle)
+        record.nativeAcquisition = { kind: "failed", error };
       this.failStart(record.pid, error);
     }
   }
@@ -733,8 +752,10 @@ export class ProcessSupervisor {
     if (executable.kind === "command") {
       if (!this.options.launchCommand)
         throw new ExecutableFormatError("Host commands are unavailable in this supervisor");
+      this.table.require(context.pid).nativeAcquisition = { kind: "invoked" };
       return this.options.launchCommand({ ...context, command: executable });
     }
+    this.table.require(context.pid).nativeAcquisition = { kind: "invoked" };
     return this.options.launch({
       ...context,
       module: executable.module,
@@ -1254,19 +1275,34 @@ export class ProcessSupervisor {
       const consumer = record.handle;
       record.stopping!.consumer = consumer;
       record.handle = undefined;
-      const pending = consumer?.terminate();
-      void Promise.resolve(pending)
-        .then(
-          () => {
-            completion.handleDone();
-            return this.options.retire?.(record.pid);
-          },
-          (error) => {
-            completion.handleFailed(error);
-            throw error;
-          },
+      const completeNative = () => {
+        if (!consumer && record.nativeAcquisition.kind === "failed" && !this.options.retire)
+          throw record.nativeAcquisition.error;
+        if (
+          consumer ||
+          (record.nativeAcquisition.kind === "not-invoked" &&
+            record.observation.kind === "directory")
         )
-        .then(completion.complete, completion.failed);
+          record.nativeReturn?.();
+        completion.complete();
+      };
+      const afterHandle = () => {
+        completion.handleDone();
+        const retiring = this.options.retire?.(record.pid);
+        if (retiring) return retiring.then(completeNative);
+        completeNative();
+      };
+      const handleFailed = (error: unknown): never => {
+        completion.handleFailed(error);
+        throw error;
+      };
+      const pending = consumer?.terminate();
+      if (pending) {
+        void pending.then(afterHandle, handleFailed).catch(completion.failed);
+      } else {
+        const retiring = afterHandle();
+        if (retiring) void retiring.catch(completion.failed);
+      }
     } catch (error) {
       completion.handleFailed(error);
       completion.failed(error);

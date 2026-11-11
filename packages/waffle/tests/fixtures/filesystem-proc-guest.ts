@@ -1,8 +1,6 @@
 import { DescriptorTable } from "../../core/descriptors.js";
 import { FilesystemClient, type FilesystemConnection } from "../../fs/index.js";
-import { ProcessABI } from "../../proc/abi.js";
-import { outcomeWord } from "../../proc/outcome.js";
-import { createSignalState } from "../../proc/signals.js";
+import { fileOnlyABI } from "./file-only-abi.js";
 
 self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) => {
   const fs = new FilesystemClient(data.connection);
@@ -22,36 +20,12 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) 
       (1n << 29n) - 1n,
       0n,
     );
-    const unused = (): never => {
-      throw new Error("unexpected process service call");
-    };
     const wake = new Int32Array(data.connection.signal);
     let blocked = false;
-    const abi = new ProcessABI({
+    const abi = fileOnlyABI({
       memory,
       descriptors,
       fs,
-      pid: 1,
-      service: {
-        cwd: unused,
-        spawn: unused,
-        startStatus: unused,
-        waitJob: unused,
-        jobEmpty: unused,
-        jobCleanupReady: unused,
-        wait: unused,
-        childExited: unused,
-        kill: unused,
-        killJob: unused,
-        jobOf: unused,
-        defaultSignal: unused,
-      },
-      signals: {
-        signalState: createSignalState(),
-        interrupt: new Int32Array(new SharedArrayBuffer(4)),
-        requestedSignal: new Int32Array(new SharedArrayBuffer(4)),
-        outcome: outcomeWord(),
-      },
       wake,
       wait(milliseconds) {
         if (!blocked) {

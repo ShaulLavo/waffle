@@ -7,6 +7,7 @@ import {
   type RuntimeConsumer,
 } from "../index.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
+import { moduleMemoryDeclarations, parseModuleMemory } from "../memory/declarations.js";
 import {
   CONNECTION_SHARED_BYTES,
   FilesystemSection,
@@ -100,6 +101,18 @@ test("page guard uses the global stable symbol and remains held until disposal c
     release = resolve;
   });
   const runtime = create({ processHost: processHost(() => gate) });
+  const platform = runtime.sharedMemory.snapshot().platform;
+  const { declareSharedMemoryPlatform, bytes } = await import("../memory/index.js");
+  expect(() =>
+    createRuntime({
+      sharedMemory: declareSharedMemoryPlatform({
+        kind: "bounded",
+        budgetBytes: bytes(1),
+        counts: { fixedBuffer: true, sharedMemory: true, privateMemory: true },
+      }),
+    }),
+  ).toThrow(/live|owner|runtime/i);
+  expect(runtime.sharedMemory.snapshot().platform).toEqual(platform);
   expect(Reflect.get(globalThis, Symbol.for("waffle.runtime.owner"))).toBeDefined();
   expect(() => create()).toThrow(/live|owner|runtime/i);
   await runtime.processes();
@@ -116,6 +129,18 @@ test("page guard uses the global stable symbol and remains held until disposal c
   expect(events.slice(-3)).toEqual(["process:outcomes", "process:stop", "filesystem:stop"]);
   const next = create();
   expect(next.disposed).toBe(false);
+});
+
+test("runtime ownership is held while host option getters run", () => {
+  const runtime = createRuntime({
+    filesystem: { workerURL: "fixture", mode: "memory" },
+    get hostIdentity() {
+      expect(() => create()).toThrow(/live page runtime/);
+      return undefined;
+    },
+  });
+  runtimes.push(runtime);
+  expect(events.filter((event) => event === "filesystem:start")).toHaveLength(1);
 });
 
 test("constructor failure releases the owner guard", () => {
@@ -625,6 +650,165 @@ test("source admission snapshots borrowed bytes before the lazy loader starts", 
   source.fill(255);
   await runtime.processes();
   expect((await registry!.resolve("/snapshot")).module).toBeInstanceOf(WebAssembly.Module);
+});
+
+test("runtime-owned source admission declares the guest's memory maxima", async () => {
+  const source = new Uint8Array(Array.from(bytes).concat([5, 5, 1, 1, 1, 128, 2]));
+  const { registry } = await resolveSource(source);
+  const { module } = await registry.resolve("/snapshot");
+  if (!module) throw new Error("Program source did not resolve to a module");
+  expect(moduleMemoryDeclarations(module)).toEqual(parseModuleMemory(source));
+  expect(parseModuleMemory(source)).toHaveLength(1);
+});
+
+test("runtime-owned source admission avoids a second byte snapshot", async () => {
+  const publicLoader = await import("../interrupt/loader.js");
+  expect("compileInterruptibleOwned" in publicLoader).toBe(false);
+  const source = bytes.slice();
+  const loaderSource = new Uint8Array(Array.from(bytes).concat([0, 2, 1, 102]));
+  const Bytes = Uint8Array;
+  let copies = 0;
+  let directOwned: Uint8Array | undefined;
+  let directSourceCopies = 0;
+  let loaderSourceCopies = 0;
+  let releaseLoader!: () => void;
+  let enterLoader!: () => void;
+  const loaderEntered = new Promise<void>((resolve) => {
+    enterLoader = resolve;
+  });
+  const loaderReady = new Promise<Uint8Array>((resolve) => {
+    releaseLoader = () => {
+      resolve(loaderSource);
+      queueMicrotask(() => loaderSource.fill(255));
+    };
+  });
+  const previous = globalThis.Uint8Array;
+  globalThis.Uint8Array = new Proxy(Bytes, {
+    construct(target, args) {
+      const result = Reflect.construct(target, args, target);
+      if (args[0] instanceof Bytes) copies++;
+      if (args[0] === source) {
+        directSourceCopies++;
+        directOwned = result;
+      }
+      if (args[0] === directOwned) directSourceCopies++;
+      if (args[0] === loaderSource) loaderSourceCopies++;
+      return result;
+    },
+  });
+  try {
+    let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+    const factory = processHost();
+    const runtime = create({
+      processHost: (options) => {
+        registry = options.registry;
+        return factory(options);
+      },
+    });
+    runtime.registerAdapter("test", () => ({ terminate() {} }));
+    const removeSnapshot = runtime.registerProgram("/snapshot", { adapter: "test", source });
+    const registrationCopies = copies;
+    await runtime.processes();
+    await registry!.resolve("/snapshot");
+    const directCopies = directSourceCopies;
+    removeSnapshot();
+    runtime.registerProgram("/snapshot", {
+      adapter: "test",
+      source: () => {
+        enterLoader();
+        return loaderReady;
+      },
+    });
+    const first = registry!.resolve("/snapshot");
+    const second = registry!.resolve("/snapshot");
+    await loaderEntered;
+    releaseLoader();
+    const [firstResolved, secondResolved] = await Promise.all([first, second]);
+    expect(firstResolved.module).toBe(secondResolved.module);
+    expect(registrationCopies).toBe(1);
+    expect(directCopies).toBe(1);
+    expect(loaderSourceCopies).toBe(1);
+  } finally {
+    globalThis.Uint8Array = previous;
+  }
+});
+
+test("compiled program loaders release their owned source while registration stays live", async () => {
+  if (!process.env.WAFFLE_OWNED_SOURCE_GC_CHILD) {
+    // Concurrent JIT plans can root a parser Reader and its source after compilation returns.
+    // Keep this ownership assertion independent of that engine worklist, as in root release.
+    const child = Bun.spawn(
+      [process.execPath, "test", import.meta.path, "-t", "^compiled program loaders release"],
+      {
+        env: {
+          ...process.env,
+          WAFFLE_OWNED_SOURCE_GC_CHILD: "1",
+          BUN_JSC_useConcurrentJIT: "0",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 4000,
+        killSignal: "SIGKILL",
+      },
+    );
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, signal: child.signalCode, stdout, stderr }).toMatchObject({
+        code: 0,
+        signal: null,
+      });
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+    return;
+  }
+  const source = new Uint8Array(1024 * 1024 + 13);
+  source.set(bytes);
+  source.set([0, 0x81, 0x80, 0x40, 0], bytes.length);
+  const Bytes = globalThis.Uint8Array;
+  let owned: WeakRef<ArrayBuffer> | undefined;
+  globalThis.Uint8Array = new Proxy(Bytes, {
+    construct(target, args) {
+      const result = Reflect.construct(target, args, target);
+      if (args[0] === source) owned = new WeakRef(result.buffer);
+      return result;
+    },
+  });
+  let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+  const factory = processHost();
+  const runtime = create({
+    processHost: (options) => {
+      registry = options.registry;
+      return factory(options);
+    },
+  });
+  runtime.registerAdapter("test", () => ({ terminate() {} }));
+  try {
+    runtime.registerProgram("/snapshot", { adapter: "test", source });
+  } finally {
+    globalThis.Uint8Array = Bytes;
+  }
+  expect(owned!.deref()?.byteLength).toBe(source.byteLength);
+  await runtime.processes();
+  const first = await registry!.resolve("/snapshot");
+  let released = false;
+  for (let round = 0; round < 20 && !released; round++) {
+    await Bun.sleep(5);
+    Bun.gc(true);
+    released = owned!.deref() === undefined;
+  }
+  expect(released).toBe(true);
+  expect((await registry!.resolve("/snapshot")).module).toBe(first.module);
+  const executable = await registry!.check("/snapshot");
+  if ("command" in executable) throw new Error("Expected a compiled program loader");
+  const reloaded =
+    typeof executable.module === "function" ? await executable.module() : executable.module;
+  expect(reloaded).toBe(first.module);
 });
 
 test("disposal blocks previously borrowed capabilities and never activates unused processes", async () => {
@@ -1759,7 +1943,7 @@ test("source registrations compile once across concurrent spawns and replace by 
   expect(modules[4]).toBe(modules[3]);
 });
 
-test("the borrowed process service queries exact idle ownership without exposing the pool", async () => {
+test("the borrowed process service creates demand-only workers without exposing the pool", async () => {
   const BaseWorker = globalThis.Worker;
   const observed: Worker[] = [];
   globalThis.Worker = class extends BaseWorker {
@@ -1775,16 +1959,41 @@ test("the borrowed process service queries exact idle ownership without exposing
   try {
     expect(service.isIdleWorker(first)).toBe(false);
     await Bun.sleep(10);
-    const idle = observed[2]!;
-    expect(service.isIdleWorker(idle)).toBe(true);
+    expect(observed).toHaveLength(2);
     expect(Reflect.get(service, "workers")).toBeUndefined();
     leased = service.takeWorker("https://example.test/process.js");
-    expect(leased).toBe(idle);
+    expect(leased).not.toBe(first);
+    expect(observed).toHaveLength(3);
     expect(service.isIdleWorker(leased)).toBe(false);
+    await Bun.sleep(10);
+    expect(observed).toHaveLength(3);
     await runtime.dispose();
-    expect(() => service.isIdleWorker(idle)).toThrow("disposed");
+    expect(() => service.isIdleWorker(first)).toThrow("disposed");
+    expect(() => service.takeWorker("https://example.test/process.js")).toThrow("disposed");
+    await Bun.sleep(10);
+    expect(observed).toHaveLength(3);
   } finally {
     first.terminate();
     leased?.terminate();
   }
+});
+
+test("display activation is lazy, cached and owned without process or GPU workers", async () => {
+  const runtime = create();
+  const first = runtime.display();
+  expect(runtime.display()).toBe(first);
+  const display = await first;
+  expect(typeof display.createSurface).toBe("function");
+  expect(events).toEqual(["filesystem:start"]);
+  await runtime.dispose();
+  await expect(runtime.display()).rejects.toThrow("disposed");
+});
+
+test("disposal wins an unstarted lazy display activation without leaking its owner", async () => {
+  const runtime = create();
+  const pending = runtime.display();
+  const disposal = runtime.dispose();
+  await expect(pending).rejects.toThrow("disposed");
+  await disposal;
+  expect(events).toEqual(["filesystem:start", "filesystem:stop"]);
 });

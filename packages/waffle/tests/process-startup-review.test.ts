@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import {
   bootstrap,
@@ -82,6 +83,7 @@ async function fixture(
     registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "fixture" });
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -151,7 +153,7 @@ async function fixture(
   }
   globalThis.Worker = TestWorker as unknown as typeof Worker;
   try {
-    await broker.adoptRuntimeRoot(root);
+    await broker.adoptRuntimeRoot(root, { memory: [] });
     const pid = parent.spawn(parent.pid, {
       executable: "fixture",
       argv: [],
@@ -276,6 +278,7 @@ for (const shape of [
 }
 
 test("worker bootstrap and broker preserve nested original errors through a real guest import", async () => {
+  const longCause = "original clone failure " + "detail ".repeat(300) + "original cause tail";
   const f = await fixture(guest("valid"));
   const memory = new WebAssembly.Memory({ initial: 1 });
   const descriptors = new DescriptorTable();
@@ -292,16 +295,20 @@ test("worker bootstrap and broker preserve nested original errors through a real
     const messages = await runWorker(f.worker.request, {
       instantiated() {
         throw new Error("adapter setup", {
-          cause: new TypeError("original clone failure", { cause: "deepest cause" }),
+          cause: new TypeError(longCause, { cause: "deepest cause" }),
         });
       },
     });
     const notice = messages.find((message) => message.type === "error");
     expect(notice?.type).toBe("error");
     const transfer = structuredClone(notice!);
+    expect(notice?.type === "error" && notice.message).toContain("original cause tail");
     f.worker.emit(transfer);
     await f.supervisor.waitForExit(f.parent.pid, f.pid);
     expect(f.failureCalls).toEqual(["startFailed"]);
+    const forwarded = f.failureErrors[0];
+    if (!(forwarded instanceof Error)) throw new Error("Missing forwarded startup error");
+    expect(forwarded.message).toContain("original cause tail");
     expect(describeStartError(f.failureErrors[0])).toContain(
       "Caused by: TypeError: original clone failure",
     );
@@ -311,6 +318,7 @@ test("worker bootstrap and broker preserve nested original errors through a real
     expect(text).toContain("adapter setup");
     expect(text).toContain("Caused by: TypeError: original clone failure");
     expect(text).toContain("deepest cause");
+    expect(length).toBeLessThanOrEqual(4096);
     expect(abi.imports.start_status!(f.pid)).toBe(29);
     expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);
     expect(parentGuest.spawn_error(f.pid, 0, 0)).toBe(-12);

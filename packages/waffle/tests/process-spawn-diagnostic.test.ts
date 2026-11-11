@@ -22,7 +22,8 @@ import {
   type WorkerProcessMessage,
 } from "../proc/worker-client.ts";
 import { WorkerProcessBroker } from "../proc/worker-broker.ts";
-import { spawnDiagnosticGuest } from "./fixtures/spawn-diagnostic-guest.ts";
+import { spawnDiagnosticGuest, spawnDiagnosticSource } from "./fixtures/spawn-diagnostic-guest.ts";
+import { InterruptModuleCache } from "../interrupt/loader.ts";
 import { isolatedProcess } from "./fixtures/isolated-process.ts";
 
 const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
@@ -91,6 +92,21 @@ test("real guest preserves synchronous errno, original causes, overwrite, clear 
   } finally {
     f.supervisor.dispose();
     other.supervisor.dispose();
+  }
+});
+
+test("normal source admission accepts the spawn diagnostic import and executes it", async () => {
+  const compiled = await new InterruptModuleCache().compile(spawnDiagnosticSource);
+  const f = fixture();
+  const guest = spawnDiagnosticGuest(f.abi, f.memory, compiled);
+  f.supervisor.spawn = () => {
+    throw new Error("source admitted original cause");
+  };
+  try {
+    expect(guest.spawn(128, bytes.length)).toBe(-29);
+    expect(read(guest, f.memory, 0)).toContain("source admitted original cause");
+  } finally {
+    f.supervisor.dispose();
   }
 });
 
@@ -205,6 +221,52 @@ test("standalone outcome transfer copies only the winning startup diagnostic", (
   claimOutcome(remote, result, undefined, "worker original cause");
   claimOutcome(source, result, undefined, "late host failure");
   expect(readStartDiagnostic(source)).toBe("worker original cause");
+});
+
+test("raw-buffer aliases and cloned transfers share standalone diagnostic publication", () => {
+  const f = fixture();
+  const word = outcomeWord();
+  const alias = outcomeWord(word.buffer as SharedArrayBuffer);
+  const remote = reviveOutcome(structuredClone(serializeOutcome(word)));
+  try {
+    const pid = f.supervisor.reserveSpawn(f.root, request, {
+      outcome: alias.buffer as SharedArrayBuffer,
+    });
+    claimOutcome(remote, { kind: "start-failed", code: 5 }, undefined, "original remote cause");
+    f.supervisor.failStart(pid, new Error("later host acknowledgement"));
+    expect(readStartDiagnostic(word)).toBe("original remote cause");
+    expect(read(f.guest, f.memory, pid)).toBe("original remote cause");
+    expect(f.abi.imports.wait!(pid, 64)).toBe(0);
+  } finally {
+    f.supervisor.dispose();
+  }
+});
+
+test("failed diagnostic allocation completes publication and does not prevent collection", async () => {
+  const isolated = await isolatedProcess();
+  const outcomes = isolated.load<typeof import("../proc/outcome.ts")>("outcome");
+  const f = fixture();
+  const word = outcomes.outcomeWord();
+  let attempts = 0;
+  isolated.hooks.encodeUtf8Prefix = () => {
+    attempts++;
+    throw new RangeError("allocation failed");
+  };
+  try {
+    const pid = f.supervisor.reserveSpawn(f.root, request, {
+      outcome: word.buffer as SharedArrayBuffer,
+    });
+    outcomes.claimOutcome(word, { kind: "start-failed", code: 5 }, undefined, "original cause");
+    f.supervisor.failStart(pid, new Error("host acknowledgement"));
+    expect(attempts).toBe(1);
+    expect(outcomes.readStartDiagnostic(word)).toBe("");
+    expect(f.abi.imports.start_status!(pid)).toBe(29);
+    expect(f.guest.spawn_error(pid, 0, 0)).toBe(0);
+    expect(f.abi.imports.wait!(pid, 64)).toBe(0);
+    expect(f.guest.spawn_error(pid, 0, 0)).toBe(-12);
+  } finally {
+    f.supervisor.dispose();
+  }
 });
 
 test("a terminal publication racing diagnostic copy reports pending rather than an empty error", async () => {

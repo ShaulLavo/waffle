@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.105",
+  "version": "0.0.121",
   "private": true,
   "files": [
     "dist",
@@ -12,6 +12,8 @@
     "interrupt",
     "group",
     "link",
+    "memory",
+    "thread",
     "search",
     "proc",
     "programs",
@@ -37,6 +39,11 @@
       "bun": "./index.ts",
       "browser": "./index.ts",
       "default": "./index.ts"
+    },
+    "./program-build-tools": {
+      "types": "./tooling/program/program-build-tools.ts",
+      "bun": "./tooling/program/program-build-tools.ts",
+      "node": "./dist/tooling/program/program-build-tools.js"
     },
     "./runtime": {
       "types": "./runtime.ts",
@@ -241,6 +248,13 @@
       "browser": "./proc/outcome.ts",
       "default": "./proc/outcome.ts"
     },
+    "./proc/observation": {
+      "types": "./proc/observation.ts",
+      "node": "./dist/proc/observation.js",
+      "bun": "./proc/observation.ts",
+      "browser": "./proc/observation.ts",
+      "default": "./proc/observation.ts"
+    },
     "./proc/wait-status": {
       "types": "./proc/wait-status.ts",
       "node": "./dist/proc/wait-status.js",
@@ -362,6 +376,13 @@
       "types": "./browser/fs-worker.ts",
       "bun": "./browser/fs-worker.ts",
       "browser": "./browser/fs-worker.ts"
+    },
+    "./browser/net/outbound": {
+      "types": "./browser/net/outbound.ts",
+      "node": "./dist/browser/net/outbound.js",
+      "bun": "./browser/net/outbound.ts",
+      "browser": "./browser/net/outbound.ts",
+      "default": "./browser/net/outbound.ts"
     },
     "./browser/net/helper": {
       "types": "./browser/net/helper.ts",
@@ -569,6 +590,51 @@
       "bun": "./proc/command.ts",
       "browser": "./proc/command.ts",
       "default": "./proc/command.ts"
+    },
+    "./browser/preview1-network": {
+      "types": "./browser/preview1-network.ts",
+      "node": "./dist/browser/preview1-network.js",
+      "bun": "./browser/preview1-network.ts",
+      "browser": "./browser/preview1-network.ts",
+      "default": "./browser/preview1-network.ts"
+    },
+    "./browser/display": {
+      "types": "./browser/display/owner.ts",
+      "node": "./dist/browser/display/owner.js",
+      "bun": "./browser/display/owner.ts",
+      "browser": "./browser/display/owner.ts",
+      "default": "./browser/display/owner.ts"
+    },
+    "./browser/gpu/service-worker": {
+      "types": "./browser/gpu/service-worker.ts",
+      "node": "./dist/browser/gpu/service-worker.js",
+      "bun": "./browser/gpu/service-worker.ts",
+      "browser": "./browser/gpu/service-worker.ts",
+      "default": "./browser/gpu/service-worker.ts"
+    },
+    "./testing/page-runner": {
+      "types": "./tests/page-runner/consumer.ts",
+      "bun": "./tests/page-runner/consumer.ts"
+    },
+    "./testing/page-runner/page": {
+      "types": "./tests/page-runner/consumer-page.ts",
+      "bun": "./tests/page-runner/consumer-page.ts",
+      "browser": "./tests/page-runner/consumer-page.ts"
+    },
+    "./testing/page-runner/playwright": {
+      "types": "./tests/page-runner/playwright-driver.ts",
+      "bun": "./tests/page-runner/playwright-driver.ts"
+    },
+    "./testing/page-runner/framework": {
+      "types": "./tests/page-runner/framework.ts",
+      "bun": "./tests/page-runner/framework.ts",
+      "node": "./dist/tests/page-runner/framework.js"
+    },
+    "./testing/page-runner/framework-page": {
+      "types": "./tests/page-runner/framework-page.ts",
+      "bun": "./tests/page-runner/framework-page.ts",
+      "browser": "./tests/page-runner/framework-page.ts",
+      "node": "./dist/tests/page-runner/framework-page.js"
     }
   },
   "scripts": {
@@ -586,27 +652,38 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check:tooling": "tsc -p tsconfig.tooling.json",
-    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts",
+    "check:source": "bun test tooling/typescript-source.test.ts && bun tooling/typescript-source.ts && bun ../../tools/waffle-family-metadata.ts",
     "unused": "knip --no-progress",
     "duplicates": "jscpd --fail-on-new-clones 0",
-    "quality": "bun run check:source && bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
+    "quality": "bun run check:gpu-stream && bun run check:source && bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
     "build:network": "bun tooling/build-network.ts",
     "size:network": "bun tooling/network-size.ts",
     "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked",
-    "pack": "bun pm pack --destination dist",
-    "pack:check": "bun tooling/tarball-smoke.ts"
+    "pack": "bun tooling/check-package-metadata.ts && bun pm pack --destination dist",
+    "pack:check": "bun tooling/tarball-smoke.ts",
+    "check:gpu-stream": "bun tooling/gpu-stream.ts --check",
+    "size:gpu": "bun tooling/gpu-size.ts",
+    "build:gpu-fixture": "bun scripts/build-gpu-fixture.ts"
   },
   "dependencies": {},
   "devDependencies": {
     "@astrojs/compiler-rs": "0.5.2",
     "@types/bun": "^1.4.3",
+    "@vitest/browser": "5.0.2",
+    "@vitest/browser-webdriverio": "5.0.0",
     "jscpd": "5.4.1",
     "knip": "6.41.0",
+    "oxc-parser": "0.153.0",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",
     "playwright": "^1.64.1",
     "playwright-core": "1.64.1",
     "typescript": "^7.0.2",
-    "vite": "8.3.4"
-  }
+    "undici": "6.29.1",
+    "vite": "8.3.4",
+    "vitest": "5.0.2",
+    "wabt": "1.0.39",
+    "webdriverio": "9.29.1"
+  },
+  "waffleHostInterface": 2
 }

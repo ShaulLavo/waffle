@@ -14,18 +14,14 @@ test("the browser matrix runs the native staged adapter once in each engine", as
 
 test("the native matrix discovers checkpoint decoding once", async () => {
   const browser = await Bun.file(new URL("safe-staging-browser.ts", import.meta.url)).text();
-  expect(browser).toContain(
-    'import { checkpointDecodeControl } from "./indexeddb-checkpoint-decode-browser.js";',
-  );
-  expect(browser).toContain(
-    "async function checkpointDecodeBounds(): Promise<void> {\n  await checkpointDecodeControl.run();\n}",
-  );
+  expect(browser).toContain('from "./indexeddb-checkpoint-decode-browser.js"');
+  expect(browser).toContain("await checkpointDecodeControl.run(databaseName);");
   const cases = browser.slice(
     browser.indexOf("const cases = {"),
     browser.indexOf("/** @browserEntry"),
   );
   expect(cases.match(/^  checkpointDecodeBounds,$/gm)).toHaveLength(1);
-  expect(browser.split("checkpointDecodeControl.run()").length - 1).toBe(1);
+  expect(browser.split("checkpointDecodeControl.run(databaseName)").length - 1).toBe(1);
   const units = await Bun.file(
     new URL("indexeddb-checkpoint-decode.test.ts", import.meta.url),
   ).text();

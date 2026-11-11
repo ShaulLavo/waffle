@@ -1,9 +1,8 @@
 import { readIdentityWords, writeIdentityWords } from "./file-identity.js";
 import type { PublicationEffect } from "./publication.js";
 
-export const WATCH_CAPACITY = 128;
-const RECORD_WORDS = 288;
-export const WATCH_BYTES = (4 + WATCH_CAPACITY * RECORD_WORDS) * 4;
+import { WATCH_CAPACITY, WATCH_RECORD_WORDS as RECORD_WORDS } from "./storage-geometry.js";
+export { WATCH_CAPACITY, WATCH_BYTES } from "./storage-geometry.js";
 const POINTER = 26;
 const NAME_OFFSET = 20;
 const WATCH_NAME_BYTES = 1024;

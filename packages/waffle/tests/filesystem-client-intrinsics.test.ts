@@ -18,14 +18,24 @@ const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
 /** Exercise the actual client with explicit protocol/shared boundaries. Those modules have
  * their own shared-state responsibilities; their implementations are not under test here.
  * No ports, services, module mocks, or background workers are created by this fixture. */
-function fixture() {
+function fixture(overrides: Partial<typeof native> = {}) {
+  const posted: { message: unknown; transfer: unknown[] }[] = [];
   const connection = (): protocol.FilesystemConnection => {
     const requestBudget = requests.createRequestBudget();
     const revocation = new native.SharedArrayBufferConstructor(4);
     return {
       requestBudget,
       requests: new requests.FilesystemRequestPool(requestBudget).take(revocation),
-      port: { start() {}, close() {}, postMessage() {} } as unknown as MessagePort,
+      port: {
+        start() {},
+        close() {},
+        // A real port converts its transfer list; walk it the same way under poisoned natives.
+        postMessage(message: unknown, list?: Iterable<unknown>) {
+          const transfer: unknown[] = [];
+          if (list) for (const item of list) transfer[transfer.length] = item;
+          posted[posted.length] = { message, transfer };
+        },
+      } as unknown as MessagePort,
       epoch: new native.SharedArrayBufferConstructor(4),
       signal: new native.SharedArrayBufferConstructor(4),
       revocations: [revocation],
@@ -60,6 +70,7 @@ function fixture() {
   let allocation = 0;
   const captures = {
     ...native,
+    ...overrides,
     SharedArrayBufferConstructor: new Proxy(native.SharedArrayBufferConstructor, {
       construct(_target, args) {
         const buffer = allocations[allocation++];
@@ -70,6 +81,7 @@ function fixture() {
     }),
   };
   const bindings = {
+    allocateSharedControl: (length: number) => new captures.SharedArrayBufferConstructor(length),
     localPublication,
     mutationIntent,
     ...protocol,
@@ -116,8 +128,94 @@ function fixture() {
     target.revocations[0]!,
     target.sections,
   ]);
-  return { client, source, target, buffers, capabilities, revocation, wake };
+  return { client, source, target, buffers, capabilities, revocation, wake, posted };
 }
+
+const LARGE = 70_000;
+
+test("the private input branch stays out of guest intrinsics and rolls back its failures", () => {
+  const backing = new native.ArrayBufferConstructor(LARGE);
+  const { client, source, buffers, posted } = fixture({
+    ArrayBufferConstructor: new Proxy(native.ArrayBufferConstructor, {
+      construct: () => backing,
+    }),
+  });
+  const data = new native.Uint8ArrayConstructor(LARGE);
+  data[0] = 9;
+  let completion: FilesystemCompletion | undefined;
+  let report: IntrinsicsReport | undefined;
+  const observer = poisonProcessIntrinsics(buffers);
+  observer.track(backing as unknown as SharedArrayBuffer);
+  try {
+    completion = client.submit("write", [], data, 200_000);
+  } finally {
+    report = observer.restore();
+  }
+  expect(report.leaks).toEqual([]);
+  expect(native.typedArrayLength(requests.requestBytes(completion.buffer))).toBe(protocol.PAGE);
+  expect(completion.buffer.privateBytes).toBe(LARGE);
+  expect(posted).toHaveLength(1);
+  expect(posted[0]!.transfer).toEqual([backing]);
+  expect(new native.Uint8ArrayConstructor(backing)[0]).toBe(9);
+  completion.release();
+  requests.releaseRequestBuffer(completion.buffer, requests.REQUEST_SERVICE);
+  expect(requests.requestMemoryResources(source.requests).privateBytes).toBe(0);
+  client.dispose();
+});
+
+function failingPrivateBranch(
+  overrides: Partial<typeof native>,
+  expected: { errno?: number; message?: string },
+): void {
+  const { client, source, posted } = fixture(overrides);
+  const before = requests.requestBudgetBytes(source.requestBudget);
+  let failure: unknown;
+  try {
+    client.submit("write", [], new native.Uint8ArrayConstructor(LARGE));
+  } catch (error) {
+    failure = error;
+  }
+  if (expected.errno !== undefined) {
+    expect(failure).toBeInstanceOf(protocol.FilesystemError);
+    expect((failure as protocol.FilesystemError).errno).toBe(expected.errno);
+  }
+  if (expected.message) expect(String(failure)).toContain(expected.message);
+  expect(posted).toHaveLength(0);
+  expect(requests.requestMemoryResources(source.requests)).toMatchObject({
+    requests: 0,
+    pendingBytes: 0,
+    privateBytes: 0,
+    namespaceRequests: 0,
+  });
+  // The arena block's growth stays charged; the private input does not.
+  expect(requests.requestBudgetBytes(source.requestBudget) - before).toBeLessThan(LARGE);
+  client.dispose();
+}
+
+test("a private allocation RangeError becomes errno 48 after a single rollback", () => {
+  failingPrivateBranch(
+    {
+      ArrayBufferConstructor: new Proxy(native.ArrayBufferConstructor, {
+        construct() {
+          throw new RangeError("simulated private allocation refusal");
+        },
+      }),
+    },
+    { errno: 48 },
+  );
+});
+
+test("a failed private copy rolls back without posting", () => {
+  failingPrivateBranch(
+    {
+      typedArraySet: ((target: Uint8Array, source: Uint8Array, offset?: number) => {
+        if (native.typedArrayLength(target) === LARGE) throw new TypeError("simulated copy fault");
+        native.typedArraySet(target, source, offset);
+      }) as typeof native.typedArraySet,
+    },
+    { message: "simulated copy fault" },
+  );
+});
 
 test("filesystem client keeps completion, capability, and revocation views out of guest intrinsics", async () => {
   const { client, source, target, buffers, capabilities, revocation, wake } = fixture();

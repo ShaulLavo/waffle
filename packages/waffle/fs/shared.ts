@@ -1,13 +1,11 @@
-import { WatchRing, WATCH_BYTES } from "./watch-ring.js";
-import { MAX_SHARED_FILE_BYTES } from "./shared-capacity.js";
+import { WatchRing } from "./watch-ring.js";
 import type { MemoryBudget } from "./memory-budget.js";
 import { allocateStartupRoot } from "./root-memory-budget.js";
-import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
+import { DirtyAdmission, DIRTY_NODE_UNITS } from "./dirty-admission.js";
 import {
   ReaderPagePressure,
   SharedPageVersion,
   truncateBoundaryEnd,
-  type RetainedSharedPage,
 } from "./shared-version-pages.js";
 import {
   IdentityAllocator,
@@ -26,44 +24,45 @@ import {
 import type { PublicationBuffers, PublicationConnection } from "./publication-internal.js";
 import type { FileHandle, FileStat } from "../core/index.js";
 import {
-  PAGE,
   FilesystemError,
-  MAX_SHARED_SEGMENTS,
   DEFAULT_SHARED_MAX_BYTES,
-  createSharedSegment,
+  State,
+  createFilesystemSegment,
   normalizeSharedMaxBytes,
   type FilesystemSection,
-  type GrowableSharedSegment,
 } from "./protocol.js";
 export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
+import {
+  DATA_PAGE_BYTES,
+  DATA_PAGES_PER_SEGMENT,
+  TOTAL_DATA_PAGES,
+  MAX_FILE_PAGES,
+  TABLE_ENTRIES,
+  DIRECT_LEAVES,
+  FILE_ROOT_WORDS,
+  MAX_FILES,
+  TABLE_BLOCKS,
+  ROOT_CELL_BASE,
+  PAGE_CELLS,
+  SLOT_WORDS,
+  HEADER_WORDS,
+  SLOT_OFFSET,
+  TABLE_OWNER_OFFSET,
+  PAGE_CELL_OFFSET,
+  WATCH_OFFSET,
+  DATA_OFFSET,
+  SHARED_ROOT_BYTES,
+} from "./storage-geometry.js";
+import { SHARED_SEGMENT_BYTES } from "./shared-capacity.js";
+export { SLOT_WORDS } from "./storage-geometry.js";
+
 const MAGIC = 0x42574653;
-const HEADER_WORDS = 32 + DIRTY_HEADER_WORDS;
-// Fixed metadata admits package trees plus their cache/staging copies without unbounded growth.
-// Keep the connection backing in protocol.ts large enough for this layout and its first segment.
-const MAX_FILES = 32768;
-const SEGMENT_PAGES = 256;
-const SEGMENT_BYTES = SEGMENT_PAGES * PAGE;
-const MAX_FILE_SEGMENTS = MAX_SHARED_FILE_BYTES / SEGMENT_BYTES;
-const TOTAL_PAGES = SEGMENT_PAGES * MAX_SHARED_SEGMENTS;
-const MAX_FILE_PAGES = MAX_SHARED_FILE_BYTES / PAGE;
-const TABLE_ENTRIES = 256;
-// A partial table per file plus enough full tables to address every storage page.
-const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
-export const SLOT_WORDS = 24;
 const NLINK = 23;
 const FILE_ID = 13;
 const FILE_VERSION = 17;
 const DIRTY_SIZE = 21;
 const DIRTY_MARK = 22;
-const PAGE_OWNER_OFFSET = HEADER_WORDS;
-const SLOT_OFFSET = PAGE_OWNER_OFFSET + TOTAL_PAGES;
-const PAGE_TABLE_OFFSET = SLOT_OFFSET + MAX_FILES * SLOT_WORDS;
-const TABLE_OWNER_OFFSET = PAGE_TABLE_OFFSET + MAX_FILES * MAX_FILE_SEGMENTS;
-const TABLE_DATA_OFFSET = TABLE_OWNER_OFFSET + TABLE_BLOCKS;
-const WATCH_OFFSET = (TABLE_DATA_OFFSET + TABLE_BLOCKS * TABLE_ENTRIES) * 4;
-const DATA_OFFSET = WATCH_OFFSET + WATCH_BYTES;
-const BUFFER_SIZE = DATA_OFFSET + SEGMENT_BYTES;
 const GLOBAL_LOCK = 1;
 const SERVICE_OWNER = 0x7fffffff;
 const USED_PAGES = 2;
@@ -72,6 +71,10 @@ const RETIRED_PAGE = -1;
 // Header words 5 and 6 belong to connection owner allocation and attachment probing.
 const FREED_REVISION_LOW = 7;
 const FREED_REVISION_HIGH = 8;
+// Global-lock accelerators. Nothing below a hint is free; ownership stays authoritative.
+const PHYSICAL_HINT = 27;
+const TABLE_HINT = 28;
+const PINNED_PAGES = 29;
 const MODE = 12;
 const FILE_SIZE = 1;
 const MTIME_LOW = 2;
@@ -105,6 +108,17 @@ export interface SharedSegment {
   buffer: SharedArrayBuffer;
   index: number;
 }
+/** The owner's private record of one write staged for a client that lacks the target segment.
+ * `cells` is that stage request's own header: word 0 is its state and word 1 the position the
+ * client committed at. `bytes` is the owner's private copy, dropped once the stage settles. */
+export interface StagedWrite {
+  readonly slot: number;
+  readonly handle: FileHandle;
+  readonly cells: Int32Array;
+  bytes: Uint8Array | undefined;
+}
+const STAGE_STATE = 0;
+const STAGE_POSITION = 1;
 
 /** Fix only growable shared sources; ordinary/fixed WASM sources keep their original iovec.
  * A source can grow while waiting for a lock or copying another iovec. Capacity checks,
@@ -127,7 +141,10 @@ interface PlannedIdentityRevision {
   readonly identity: FileIdentity;
   readonly allocation: IdentityAllocator;
 }
-/** Shared metadata and a service-grown pool of prepublished growable SAB data segments. */
+/** Shared metadata and a pool of fixed data segments. The owner state builds a segment when a
+ * page in it is first needed; every other state holds only the segments it was given. A page
+ * table entry can name a page in a segment this agent lacks: each path below resolves its
+ * backing before it changes anything, and a miss sends that operation to the owner. */
 export class SharedFilesystemState {
   readonly buffer: SharedArrayBuffer;
   readonly dirtyAdmission: DirtyAdmission;
@@ -137,12 +154,16 @@ export class SharedFilesystemState {
   readonly owners: Int32Array;
   readonly slots: Int32Array;
   readonly pages: Int32Array;
-  private readonly pageTables: Int32Array;
   private readonly tableOwners: Int32Array;
   readonly segments: SharedArrayBuffer[];
   readonly pendingSegments: SharedSegment[] = [];
   private readonly firstBytes: Uint8Array;
   private readonly pageViews: (Uint8Array | undefined)[] = [];
+  /** Scratch for one direct read's resolved source pages; see sourcePages. */
+  private readonly readViews: Uint8Array[] = [];
+  private readViewsBusy = false;
+  /** Owner only: unsettled staged writes by file slot. Empty on every client state. */
+  private readonly staged = new Map<number, StagedWrite[]>();
   private serviceMutation = false;
   private globalOwner: number | undefined;
   private globalDepth = 0;
@@ -164,7 +185,7 @@ export class SharedFilesystemState {
     if (buffer && startupMemoryBudget)
       throw new TypeError("an imported root cannot use startup allocation admission");
     const allocation = startupMemoryBudget
-      ? allocateStartupRoot(startupMemoryBudget, BUFFER_SIZE)
+      ? allocateStartupRoot(startupMemoryBudget, SHARED_ROOT_BYTES)
       : undefined;
     this.buffer = buffer ?? allocation?.buffer ?? SharedFilesystemState.createBuffer();
     buffer = this.buffer;
@@ -178,21 +199,16 @@ export class SharedFilesystemState {
       const initialized = Atomics.compareExchange(this.cells, 0, 0, MAGIC);
       if (initialized === 0) {
         Atomics.store(this.cells, USED_PAGES, 0);
-        Atomics.store(this.cells, 4, normalizeSharedMaxBytes(maxBytes) / SEGMENT_BYTES);
+        Atomics.store(this.cells, 4, normalizeSharedMaxBytes(maxBytes) / SHARED_SEGMENT_BYTES);
       }
       while (initialized !== 0 && Atomics.load(this.cells, 0) !== MAGIC) {
         /* another connection initializes */
       }
-      this.owners = new Int32Array(buffer, PAGE_OWNER_OFFSET * 4, TOTAL_PAGES);
+      this.owners = new Int32Array(buffer, HEADER_WORDS * 4, TOTAL_DATA_PAGES);
       this.slots = new Int32Array(buffer, SLOT_OFFSET * 4, MAX_FILES * SLOT_WORDS);
-      this.pageTables = new Int32Array(
-        buffer,
-        PAGE_TABLE_OFFSET * 4,
-        MAX_FILES * MAX_FILE_SEGMENTS,
-      );
       this.tableOwners = new Int32Array(buffer, TABLE_OWNER_OFFSET * 4, TABLE_BLOCKS);
-      this.pages = new Int32Array(buffer, TABLE_DATA_OFFSET * 4, TABLE_BLOCKS * TABLE_ENTRIES);
-      this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SEGMENT_BYTES);
+      this.pages = new Int32Array(buffer, PAGE_CELL_OFFSET * 4, PAGE_CELLS);
+      this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SHARED_SEGMENT_BYTES);
       this.segments = [buffer].concat(segments);
       allocation?.publish();
     } catch (error) {
@@ -204,6 +220,7 @@ export class SharedFilesystemState {
     this.globalLock();
     try {
       const slot = this.slot(handle);
+      this.settleUnderLock(slot);
       this.checkFile(slot, handle);
       this.checkAccess(slot, 4);
       if (!this.pageReaders) throw new FilesystemError(58, "page retention is not enabled");
@@ -221,45 +238,47 @@ export class SharedFilesystemState {
         throw new RangeError("invalid retained extent");
       let additional = 0;
       for (
-        let logical = Math.floor(offset / PAGE);
-        length && logical < Math.ceil((offset + length) / PAGE);
+        let logical = Math.floor(offset / DATA_PAGE_BYTES);
+        length && logical < Math.ceil((offset + length) / DATA_PAGE_BYTES);
         logical++
       ) {
-        if (!this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) additional += PAGE;
+        if (!this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1])
+          additional += DATA_PAGE_BYTES;
       }
       if (additional > 256 * 1024 * 1024 - this.readerPinBytes())
         throw new ReaderPagePressure("reader page capacity exhausted");
-      const pages: RetainedSharedPage[] = [];
-      for (
-        let logical = Math.floor(offset / PAGE);
-        length > 0 && logical < Math.ceil((offset + length) / PAGE);
-        logical++
-      ) {
-        const physical = this.pages[this.pageAt(slot, logical)]! - 1;
-        pages.push({ physical, bytes: this.segmentFor(physical) });
+      const first = Math.floor(offset / DATA_PAGE_BYTES);
+      const count = length ? Math.ceil((offset + length) / DATA_PAGE_BYTES) - first : 0;
+      const pages = new Uint32Array(count);
+      for (let index = 0; index < count; index++) {
+        pages[index] = this.pages[this.pageAt(slot, first + index)]! - 1;
+        this.segmentBuffer(pages[index]!);
       }
-      const version = new SharedPageVersion(offset, length, pages, () =>
-        this.releaseVersionPages(pages),
+      const version = new SharedPageVersion(
+        offset,
+        length,
+        pages,
+        (physical, target, targetAt, start, bytes) =>
+          target.set(this.segmentFor(physical).subarray(start, start + bytes), targetAt),
+        () => this.releaseVersionPages(pages),
       );
-      for (const page of pages) Atomics.add(this.pageReaders, page.physical, 1);
+      for (const physical of pages)
+        if (Atomics.add(this.pageReaders, physical, 1) === 0) this.cells[PINNED_PAGES]!++;
       return version;
     } finally {
       this.globalUnlock();
     }
   }
   readerPinBytes(): number {
-    if (!this.pageReaders) return 0;
-    let pages = 0;
-    for (const count of this.pageReaders) if (count > 0) pages++;
-    return pages * PAGE;
+    return this.pageReaders ? this.cells[PINNED_PAGES]! * DATA_PAGE_BYTES : 0;
   }
-  private releaseVersionPages(pages: readonly RetainedSharedPage[]): void {
+  private releaseVersionPages(pages: Uint32Array): void {
     this.globalLock(undefined, this.lockOwner, false, "release");
     try {
-      for (const { physical } of pages) {
-        const previous = Atomics.sub(this.pageReaders!, physical, 1);
-        if (previous === 1 && this.owners[physical] === RETIRED_PAGE)
-          this.detachVersionPage(physical);
+      for (const physical of pages) {
+        if (Atomics.sub(this.pageReaders!, physical, 1) !== 1) continue;
+        this.cells[PINNED_PAGES]!--;
+        if (this.owners[physical] === RETIRED_PAGE) this.detachVersionPage(physical);
       }
     } finally {
       this.globalUnlock();
@@ -271,18 +290,33 @@ export class SharedFilesystemState {
       return;
     }
     this.segmentFor(physical).fill(0);
-    this.owners[physical] = 0;
+    this.releasePhysical(physical);
     Atomics.sub(this.cells, USED_PAGES, 1);
     this.dirtyAdmission.capacityReleased();
   }
+  /** The hint falls before ownership clears, so death in between costs only a rescan. */
+  private releasePhysical(physical: number): void {
+    if (physical < this.cells[PHYSICAL_HINT]!) this.cells[PHYSICAL_HINT] = physical;
+    this.owners[physical] = 0;
+  }
+  private physicalPageLimit(): number {
+    return Atomics.load(this.cells, 4) * DATA_PAGES_PER_SEGMENT;
+  }
+  /** The lowest free physical page, or -1. A miss rescans so a hint never reports exhaustion. */
+  private freePhysical(): number {
+    const limit = this.physicalPageLimit();
+    const hinted = this.owners.indexOf(0, this.cells[PHYSICAL_HINT]!);
+    if (hinted >= 0 && hinted < limit) return hinted;
+    const lowest = this.owners.indexOf(0);
+    return lowest >= 0 && lowest < limit ? lowest : -1;
+  }
   private reserveVersionPage(slot: number): number {
-    for (let physical = 0; physical < Atomics.load(this.cells, 4) * SEGMENT_PAGES; physical++) {
-      if (this.owners[physical]) continue;
-      this.ensureSegment(Math.floor(physical / SEGMENT_PAGES));
-      this.owners[physical] = slot;
-      return physical;
-    }
-    throw new FilesystemError(6, "retained page copy capacity exhausted");
+    const physical = this.freePhysical();
+    if (physical < 0) throw new FilesystemError(6, "retained page copy capacity exhausted");
+    this.ensureSegment(Math.floor(physical / DATA_PAGES_PER_SEGMENT));
+    this.owners[physical] = slot;
+    this.cells[PHYSICAL_HINT] = physical + 1;
+    return physical;
   }
   private prepareVersionPages(
     slot: number,
@@ -291,16 +325,19 @@ export class SharedFilesystemState {
     dirtySize?: number,
   ): () => void {
     if (!this.pageReaders || offset === end) return () => {};
+    // A cold replacement's old size can exceed capacity; unbacked pages have no mapping or pin.
+    const last = Math.min(Math.ceil(end / DATA_PAGE_BYTES), this.slots[this.at(slot, CAPACITY)]!);
     let additional = 0;
-    for (let logical = Math.floor(offset / PAGE); logical < Math.ceil(end / PAGE); logical++) {
-      if (this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) additional += PAGE;
+    for (let logical = Math.floor(offset / DATA_PAGE_BYTES); logical < last; logical++) {
+      if (this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1])
+        additional += DATA_PAGE_BYTES;
     }
     const resident = this.residentBytes() + additional;
     if (dirtySize === undefined) this.dirtyAdmission.resident(resident);
     else this.checkDirty(slot, dirtySize, resident);
     const replacements: { entry: number; previous: number; physical: number }[] = [];
     try {
-      for (let logical = Math.floor(offset / PAGE); logical < Math.ceil(end / PAGE); logical++) {
+      for (let logical = Math.floor(offset / DATA_PAGE_BYTES); logical < last; logical++) {
         const entry = this.pageAt(slot, logical);
         const previous = this.pages[entry]! - 1;
         if (!this.pageReaders[previous]) continue;
@@ -309,7 +346,10 @@ export class SharedFilesystemState {
         this.segmentFor(physical).set(this.segmentFor(previous));
       }
     } catch (error) {
-      for (const replacement of replacements) this.owners[replacement.physical] = 0;
+      for (const replacement of replacements) this.releasePhysical(replacement.physical);
+      // A copy page can need a new segment. A native refusal there is exhaustion, not EFBIG.
+      if (error instanceof RangeError)
+        throw new FilesystemError(51, "shared filesystem segment allocation failed");
       throw error;
     }
     for (const { entry, previous, physical } of replacements) {
@@ -337,7 +377,7 @@ export class SharedFilesystemState {
     const capacity = this.slots[this.at(slot, CAPACITY)]!;
     let undo: (() => void) | undefined;
     try {
-      this.allocate(slot, Math.ceil(size / PAGE));
+      this.allocate(slot, Math.ceil(size / DATA_PAGE_BYTES));
       undo = this.prepareVersionPages(slot, offset, offset + length);
     } catch (error) {
       this.trimCapacity(slot, capacity);
@@ -369,8 +409,8 @@ export class SharedFilesystemState {
     this.trimPageTables(slot, needed);
   }
   static createBuffer(memoryBudget?: MemoryBudget): SharedArrayBuffer {
-    if (!memoryBudget) return new SharedArrayBuffer(BUFFER_SIZE);
-    const allocation = allocateStartupRoot(memoryBudget, BUFFER_SIZE);
+    if (!memoryBudget) return new SharedArrayBuffer(SHARED_ROOT_BYTES);
+    const allocation = allocateStartupRoot(memoryBudget, SHARED_ROOT_BYTES);
     try {
       allocation.publish();
       return allocation.buffer;
@@ -380,16 +420,17 @@ export class SharedFilesystemState {
     }
   }
 
-  addSegment(buffer: SharedArrayBuffer, index = this.segments.length): void {
+  /** Attaches an announced segment at its index. A segment is always complete when it is
+   * announced. Delivery can repeat, arrive out of order or follow a launch snapshot, so the
+   * first wrapper accepted for an index stays and later ones are ignored. */
+  addSegment(buffer: SharedArrayBuffer, index: number): void {
     if (
-      buffer.byteLength < SEGMENT_BYTES ||
+      buffer.byteLength !== SHARED_SEGMENT_BYTES ||
       !Number.isInteger(index) ||
       index < 1 ||
       index >= Atomics.load(this.cells, 4)
     )
       throw new RangeError("invalid shared filesystem segment");
-    // An indexed announcement may arrive after a prepublished wrapper has already grown.
-    // Keep the original wrapper so queued delivery cannot replace a live segment.
     this.segments[index] ??= buffer;
   }
   takeNewSegments(): SharedSegment[] {
@@ -397,20 +438,63 @@ export class SharedFilesystemState {
     this.pendingSegments.length = 0;
     return out;
   }
+  private segmentBuffer(page: number): SharedArrayBuffer {
+    const buffer = this.segments[Math.floor(page / DATA_PAGES_PER_SEGMENT)];
+    if (!buffer)
+      throw new MissingSegmentError("shared filesystem segment has not reached this guest");
+    return buffer;
+  }
+  /** Resolves the backing of logical pages [first, end) in this agent's directory. Callers run
+   * it under the file lock before they change a destination, a page or any accounting, so a
+   * MissingSegmentError always means nothing happened. Every page in the range must be mapped. */
+  private requireBacking(slot: number, first: number, end: number): void {
+    for (let logical = first; logical < end; logical++)
+      this.segmentBuffer(this.pages[this.pageAt(slot, logical)]! - 1);
+  }
+  /** The page views of logical pages [first, end), resolved once and then used for the copy, so
+   * resolving them before the first byte moves costs a read almost nothing. Throws
+   * MissingSegmentError, with nothing copied, for a page this agent cannot reach. `views` is the
+   * state's scratch array unless a read is already using it: a guest iovec getter can reenter
+   * another read during the copy. */
+  private sourcePages(slot: number, first: number, end: number, views: Uint8Array[]): void {
+    const pages = this.pages;
+    for (let index = 0; index < end - first; index++)
+      views[index] = this.segmentFor(pages[this.pageAt(slot, first + index)]! - 1);
+  }
+  /** A write over reader-pinned pages copies each one to the lowest free page. Only the owner
+   * can build the segment such a page may need, so any other agent checks here, before it
+   * prepares anything, that its directory already holds every copy target. */
+  private requireCopyBacking(slot: number, first: number, end: number): void {
+    if (!this.pageReaders || this.lockOwner === SERVICE_OWNER) return;
+    const limit = this.physicalPageLimit();
+    let from = this.cells[PHYSICAL_HINT]!;
+    for (let logical = first; logical < end; logical++) {
+      if (!this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) continue;
+      const free = this.owners.indexOf(0, from);
+      // Exhaustion is reported by the copy itself, with its own errno.
+      if (free < 0 || free >= limit) return;
+      this.segmentBuffer(free);
+      from = free + 1;
+    }
+  }
+  private hasPinnedPage(slot: number, first: number, end: number): boolean {
+    if (!this.pageReaders) return false;
+    for (let logical = first; logical < end; logical++)
+      if (this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) return true;
+    return false;
+  }
   private segmentFor(page: number): Uint8Array {
     const cached = this.pageViews[page];
     if (cached) return cached;
-    const segment = Math.floor(page / SEGMENT_PAGES);
-    const local = page % SEGMENT_PAGES;
-    const buffer = this.segments[segment];
-    if (!buffer)
-      throw new MissingSegmentError("shared filesystem segment has not reached this guest");
-    // Fixed page views remain valid when a growable segment grows. Physical pages may be
-    // recycled between files, but their backing buffer and byte offset never change.
+    const segment = Math.floor(page / DATA_PAGES_PER_SEGMENT);
+    const local = page % DATA_PAGES_PER_SEGMENT;
+    const buffer = this.segmentBuffer(page);
+    // Physical pages may be recycled between files, but their backing buffer and byte offset
+    // never change, so a page view stays valid for the life of this state.
     const bytes =
       segment === 0
-        ? this.firstBytes.subarray(local * PAGE, (local + 1) * PAGE)
-        : new Uint8Array(buffer, local * PAGE, PAGE);
+        ? this.firstBytes.subarray(local * DATA_PAGE_BYTES, (local + 1) * DATA_PAGE_BYTES)
+        : new Uint8Array(buffer, local * DATA_PAGE_BYTES, DATA_PAGE_BYTES);
     this.pageViews[page] = bytes;
     return bytes;
   }
@@ -423,7 +507,8 @@ export class SharedFilesystemState {
       const key = Atomics.load(this.slots, this.at(slot, HANDLE));
       if (key === handle + 1) return slot;
       if (key <= 0 && !available) available = slot;
-      if (key === 0) return create ? available : 0;
+      // A matching tombstone ends this handle's probe chain, even after table saturation.
+      if (key === 0 || key === -handle - 1) return create ? available : 0;
     }
     return create ? available : 0;
   }
@@ -435,31 +520,77 @@ export class SharedFilesystemState {
   private at(slot: number, field: number): number {
     return slot * SLOT_WORDS + field;
   }
-  private pageAt(slot: number, logical: number): number {
-    const block =
-      Atomics.load(
-        this.pageTables,
-        slot * MAX_FILE_SEGMENTS + Math.floor(logical / TABLE_ENTRIES),
-      ) - 1;
-    return block * TABLE_ENTRIES + (logical % TABLE_ENTRIES);
+  private rootCell(slot: number, index: number): number {
+    return ROOT_CELL_BASE + slot * FILE_ROOT_WORDS + index;
   }
-  private reservePageTables(slot: number, needed: number): void {
-    for (let table = 0; table < Math.ceil(needed / TABLE_ENTRIES); table++) {
-      const index = slot * MAX_FILE_SEGMENTS + table;
-      if (Atomics.load(this.pageTables, index)) continue;
-      const block = this.tableOwners.indexOf(0);
-      if (block < 0) throw new FilesystemError(51, "shared filesystem page tables exhausted");
-      Atomics.store(this.tableOwners, block, slot);
-      Atomics.store(this.pageTables, index, block + 1);
-    }
+  /** Follows a published link to the first cell of its child block. */
+  private childCells(cell: number): number {
+    return (Atomics.load(this.pages, cell) - 1) * TABLE_ENTRIES;
+  }
+  /** The cell holding a leaf's block. A logical index alone selects direct or tail. */
+  private leafCell(slot: number, leaf: number): number {
+    if (leaf < DIRECT_LEAVES) return this.rootCell(slot, leaf);
+    const tail = leaf - DIRECT_LEAVES;
+    const top = this.childCells(this.rootCell(slot, DIRECT_LEAVES));
+    return this.childCells(top + Math.floor(tail / TABLE_ENTRIES)) + (tail % TABLE_ENTRIES);
+  }
+  private pageAt(slot: number, logical: number): number {
+    const leaf = Math.floor(logical / TABLE_ENTRIES);
+    return this.childCells(this.leafCell(slot, leaf)) + (logical % TABLE_ENTRIES);
+  }
+  private takeBlock(slot: number): number {
+    const hinted = this.tableOwners.indexOf(0, this.cells[TABLE_HINT]!);
+    const block = hinted >= 0 ? hinted : this.tableOwners.indexOf(0);
+    if (block < 0) throw new FilesystemError(51, "shared filesystem page tables exhausted");
+    Atomics.store(this.tableOwners, block, slot);
+    this.cells[TABLE_HINT] = block + 1;
+    return block;
+  }
+  /** Links an existing or new child. Pool blocks are zero whenever they are free. */
+  private ensureLink(slot: number, cell: number): void {
+    if (!Atomics.load(this.pages, cell)) Atomics.store(this.pages, cell, this.takeBlock(slot) + 1);
+  }
+  private ensureLeaf(slot: number, leaf: number): void {
+    if (leaf < DIRECT_LEAVES) return this.ensureLink(slot, this.rootCell(slot, leaf));
+    const tail = leaf - DIRECT_LEAVES;
+    const topLink = this.rootCell(slot, DIRECT_LEAVES);
+    this.ensureLink(slot, topLink);
+    const branchLink = this.childCells(topLink) + Math.floor(tail / TABLE_ENTRIES);
+    this.ensureLink(slot, branchLink);
+    this.ensureLink(slot, this.childCells(branchLink) + (tail % TABLE_ENTRIES));
+  }
+  /** Earlier leaves are complete, so a growth pass starts at the first missing one. */
+  private reservePageTables(slot: number, from: number, needed: number): void {
+    const last = Math.ceil(needed / TABLE_ENTRIES);
+    for (let leaf = Math.ceil(from / TABLE_ENTRIES); leaf < last; leaf++)
+      this.ensureLeaf(slot, leaf);
+  }
+  private releaseCell(cell: number): void {
+    const block = Atomics.exchange(this.pages, cell, 0) - 1;
+    if (block < 0) return;
+    this.pages.fill(0, block * TABLE_ENTRIES, (block + 1) * TABLE_ENTRIES);
+    if (block < this.cells[TABLE_HINT]!) this.cells[TABLE_HINT] = block;
+    Atomics.store(this.tableOwners, block, 0);
+  }
+  /** Releases the branch's leaves from keep on, and the branch itself once none remain. */
+  private trimBranch(cell: number, keep: number): void {
+    if (!Atomics.load(this.pages, cell)) return;
+    const branch = this.childCells(cell);
+    for (let entry = keep; entry < TABLE_ENTRIES; entry++) this.releaseCell(branch + entry);
+    if (!keep) this.releaseCell(cell);
   }
   private trimPageTables(slot: number, needed: number): void {
-    for (let table = Math.ceil(needed / TABLE_ENTRIES); table < MAX_FILE_SEGMENTS; table++) {
-      const block = Atomics.exchange(this.pageTables, slot * MAX_FILE_SEGMENTS + table, 0) - 1;
-      if (block < 0) continue;
-      this.pages.fill(0, block * TABLE_ENTRIES, (block + 1) * TABLE_ENTRIES);
-      Atomics.store(this.tableOwners, block, 0);
-    }
+    const keep = Math.ceil(needed / TABLE_ENTRIES);
+    for (let leaf = keep; leaf < DIRECT_LEAVES; leaf++) this.releaseCell(this.rootCell(slot, leaf));
+    const topLink = this.rootCell(slot, DIRECT_LEAVES);
+    if (!Atomics.load(this.pages, topLink)) return;
+    const tailKeep = Math.max(0, keep - DIRECT_LEAVES);
+    const top = this.childCells(topLink);
+    const partial = tailKeep % TABLE_ENTRIES;
+    if (partial) this.trimBranch(top + Math.floor(tailKeep / TABLE_ENTRIES), partial);
+    for (let entry = Math.ceil(tailKeep / TABLE_ENTRIES); entry < TABLE_ENTRIES; entry++)
+      this.trimBranch(top + entry, 0);
+    if (!tailKeep) this.releaseCell(topLink);
   }
   /** The slot of a registered regular file, or 0. A live handle keeps its slot until it is freed. */
   fileSlot(handle: FileHandle): number {
@@ -512,6 +643,9 @@ export class SharedFilesystemState {
         this.contend(this.slots, index, revoked, owner);
       held = true;
       if (revoked?.()) throw new FilesystemError(11);
+      // Every owner operation on a file first applies the staged writes its clients committed,
+      // so no owner path can serve, persist or reclaim that file's older bytes.
+      if (this.staged.size) this.settleStaged((index - FILE_LOCK) / SLOT_WORDS);
       if (global) this.fileOwnsGlobal.add(index);
     } catch (error) {
       if (held) Atomics.compareExchange(this.slots, index, owner, 0);
@@ -639,7 +773,7 @@ export class SharedFilesystemState {
     if (low === -1) this.slots[base + REVISION_STATE] = this.slots[base + REVISION_STATE]! + 2;
   }
   private residentBytes(): number {
-    return Atomics.load(this.cells, USED_PAGES) * PAGE;
+    return Atomics.load(this.cells, USED_PAGES) * DATA_PAGE_BYTES;
   }
   private checkDirty(slot: number, size: number, resident = this.residentBytes()): void {
     this.dirtyAdmission.checkFile(
@@ -697,16 +831,15 @@ export class SharedFilesystemState {
   private ensureSegment(segment: number): void {
     if (segment >= Atomics.load(this.cells, 4))
       throw new FilesystemError(51, "shared filesystem storage exhausted");
-    if (segment === 0 || this.segments[segment]?.byteLength === SEGMENT_BYTES) return;
-    const existing = this.segments[segment];
-    const buffer = existing ?? createSharedSegment();
-    (buffer as GrowableSharedSegment).grow(SEGMENT_BYTES);
-    if (!existing) {
-      // Standalone states can still exchange indexed segments. Connected identities already
-      // own every wrapper, so their synchronous guests need no port delivery after growth.
-      this.segments[segment] = buffer;
-      this.pendingSegments.push({ buffer, index: segment });
-    }
+    if (segment === 0 || this.segments[segment]) return;
+    // A second builder would create backing the owner never sees. Everyone else asks the owner.
+    if (this.lockOwner !== SERVICE_OWNER)
+      throw new MissingSegmentError("only the filesystem owner creates segments");
+    // A native refusal leaves the directory unchanged, and a later request may try again. A
+    // segment that was built stays, even when the allocation that needed it then fails.
+    const buffer = createFilesystemSegment();
+    this.segments[segment] = buffer;
+    this.pendingSegments.push({ buffer, index: segment });
   }
   private allocate(slot: number, needed: number): void {
     const current = Atomics.load(this.slots, this.at(slot, CAPACITY));
@@ -715,24 +848,24 @@ export class SharedFilesystemState {
     const target = this.dirtyAdmission.enabled
       ? needed
       : Math.max(needed, Math.min(MAX_FILE_PAGES, Math.max(1, current * 2)));
-    this.dirtyAdmission.resident(this.residentBytes() + (target - current) * PAGE);
+    this.dirtyAdmission.resident(this.residentBytes() + (target - current) * DATA_PAGE_BYTES);
     const allocated: number[] = [];
     const rollback = () => {
       for (const physical of allocated) {
         this.segmentFor(physical).fill(0);
-        Atomics.store(this.owners, physical, 0);
+        this.releasePhysical(physical);
       }
       allocated.length = 0;
       this.trimPageTables(slot, current);
     };
     const take = (count: number) => {
-      for (
-        let physical = 0;
-        physical < Atomics.load(this.cells, 4) * SEGMENT_PAGES && allocated.length < count;
-        physical++
-      ) {
-        this.ensureSegment(Math.floor(physical / SEGMENT_PAGES));
-        if (Atomics.compareExchange(this.owners, physical, 0, slot) === 0) allocated.push(physical);
+      while (allocated.length < count) {
+        const physical = this.freePhysical();
+        if (physical < 0) return;
+        this.ensureSegment(Math.floor(physical / DATA_PAGES_PER_SEGMENT));
+        Atomics.store(this.owners, physical, slot);
+        this.cells[PHYSICAL_HINT] = physical + 1;
+        allocated.push(physical);
       }
     };
     try {
@@ -745,7 +878,7 @@ export class SharedFilesystemState {
         throw new FilesystemError(51, "shared filesystem storage exhausted");
       // Finish potentially throwing initialization before publishing any page-table entries.
       for (const physical of allocated) this.segmentFor(physical).fill(0);
-      this.reservePageTables(slot, current + allocated.length);
+      this.reservePageTables(slot, current, current + allocated.length);
       for (let i = 0; i < allocated.length; i++)
         Atomics.store(this.pages, this.pageAt(slot, current + i), allocated[i]! + 1);
       Atomics.store(this.slots, this.at(slot, CAPACITY), current + allocated.length);
@@ -790,7 +923,7 @@ export class SharedFilesystemState {
         pinned = true;
         const loaded = resident || stat.size === 0;
         if (stat.kind === "file" && loaded) {
-          this.allocate(slot, Math.ceil(Math.max(data?.length ?? 0, stat.size) / PAGE));
+          this.allocate(slot, Math.ceil(Math.max(data?.length ?? 0, stat.size) / DATA_PAGE_BYTES));
           if (data?.length) this.copyInto(slot, data, 0);
         }
         Atomics.store(
@@ -887,7 +1020,7 @@ export class SharedFilesystemState {
         if (this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) return;
         if (data.length !== this.slots[this.at(slot, FILE_SIZE)])
           throw new RangeError("persisted file size does not match shared metadata");
-        this.allocate(slot, Math.ceil(data.length / PAGE));
+        this.allocate(slot, Math.ceil(data.length / DATA_PAGE_BYTES));
         this.copyInto(slot, data, 0);
         this.slots[this.at(slot, REVISION_STATE)]! |= RESIDENT;
       } finally {
@@ -980,10 +1113,12 @@ export class SharedFilesystemState {
         ...this.modeField(slot),
       };
       const data = new Uint8Array(stat.size);
-      for (let position = 0; position < data.length; position += PAGE) {
-        const count = Math.min(PAGE, data.length - position);
-        const page = this.segmentFor(this.pages[this.pageAt(slot, position / PAGE)]! - 1);
-        data.set(count === PAGE ? page : page.subarray(0, count), position);
+      for (let position = 0; position < data.length; position += DATA_PAGE_BYTES) {
+        const count = Math.min(DATA_PAGE_BYTES, data.length - position);
+        const page = this.segmentFor(
+          this.pages[this.pageAt(slot, position / DATA_PAGE_BYTES)]! - 1,
+        );
+        data.set(count === DATA_PAGE_BYTES ? page : page.subarray(0, count), position);
       }
       return { stat, data, revision: this.getRevision(slot) };
     } finally {
@@ -1068,7 +1203,7 @@ export class SharedFilesystemState {
         size: Atomics.load(this.slots, this.at(slot, FILE_SIZE)),
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
-        capacity: Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE,
+        capacity: Atomics.load(this.slots, this.at(slot, CAPACITY)) * DATA_PAGE_BYTES,
       };
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
@@ -1138,10 +1273,10 @@ export class SharedFilesystemState {
   private copyInto(slot: number, source: Uint8Array, offset: number): void {
     let at = offset;
     for (let sourceAt = 0; sourceAt < source.length;) {
-      const logical = Math.floor(at / PAGE);
+      const logical = Math.floor(at / DATA_PAGE_BYTES);
       const page = Atomics.load(this.pages, this.pageAt(slot, logical)) - 1;
-      const inPage = at % PAGE;
-      const count = Math.min(source.length - sourceAt, PAGE - inPage);
+      const inPage = at % DATA_PAGE_BYTES;
+      const count = Math.min(source.length - sourceAt, DATA_PAGE_BYTES - inPage);
       this.segmentFor(page).set(source.subarray(sourceAt, sourceAt + count), inPage);
       at += count;
       sourceAt += count;
@@ -1167,9 +1302,10 @@ export class SharedFilesystemState {
         let at = 0;
         while (at < chunk.length && offset + total < size) {
           const position = offset + total;
-          const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
-          const inPage = position % PAGE;
-          const count = Math.min(chunk.length - at, size - position, PAGE - inPage);
+          const page =
+            Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / DATA_PAGE_BYTES))) - 1;
+          const inPage = position % DATA_PAGE_BYTES;
+          const count = Math.min(chunk.length - at, size - position, DATA_PAGE_BYTES - inPage);
           chunk.set(this.segmentFor(page).subarray(inPage, inPage + count), at);
           at += count;
           total += count;
@@ -1251,28 +1387,56 @@ export class SharedFilesystemState {
       this.checkAccess(slot, 4);
       if (!(slots[base + REVISION_STATE]! & RESIDENT))
         throw new MissingDataError("shared filesystem file has not been loaded");
-      const size = slots[base + FILE_SIZE]!,
-        pages = this.pages;
-      let position = offset;
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i]!,
-          length = chunk.length;
-        let at = 0;
-        while (at < length && position < size) {
-          const inPage = position % PAGE;
-          const count = Math.min(length - at, size - position, PAGE - inPage);
-          const page = this.segmentFor(pages[this.pageAt(slot, (position - inPage) / PAGE)]! - 1);
-          copyBytes.call(chunk, count === PAGE ? page : page.subarray(inPage, inPage + count), at);
-          at += count;
-          position += count;
-        }
-        if (at < length) break;
+      let requested = 0;
+      for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
+      // Resolve every source page before the first destination byte changes: a range can start
+      // in a segment this agent holds and end in one it lacks. Bytes at or past the end of the
+      // file need no backing, so an empty read and a read at EOF never ask for a segment.
+      const size = Math.min(slots[base + FILE_SIZE]!, offset + requested);
+      if (size <= offset) return 0;
+      const first = Math.floor(offset / DATA_PAGE_BYTES);
+      const scratch = !this.readViewsBusy;
+      const views = scratch ? this.readViews : [];
+      this.sourcePages(slot, first, Math.ceil(size / DATA_PAGE_BYTES), views);
+      if (scratch) this.readViewsBusy = true;
+      try {
+        return this.copyPages(views, first, chunks, offset, size);
+      } finally {
+        if (scratch) this.readViewsBusy = false;
       }
-      return position - offset;
     } finally {
       Atomics.compareExchange(slots, lock, owner, 0);
       this.section?.exit();
     }
+  }
+  /** Copies file bytes [offset, size) from resolved page views into the iovecs. */
+  private copyPages(
+    views: readonly Uint8Array[],
+    first: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    size: number,
+  ): number {
+    let position = offset;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!,
+        length = chunk.length;
+      let at = 0;
+      while (at < length && position < size) {
+        const inPage = position % DATA_PAGE_BYTES;
+        const count = Math.min(length - at, size - position, DATA_PAGE_BYTES - inPage);
+        const page = views[(position - inPage) / DATA_PAGE_BYTES - first]!;
+        copyBytes.call(
+          chunk,
+          count === DATA_PAGE_BYTES ? page : page.subarray(inPage, inPage + count),
+          at,
+        );
+        at += count;
+        position += count;
+      }
+      if (at < length) break;
+    }
+    return position - offset;
   }
   private readyGlobal(revoked: () => boolean, owner: number): boolean {
     try {
@@ -1319,9 +1483,11 @@ export class SharedFilesystemState {
       const chunk = chunks[i]!,
         length = chunk.length;
       for (let at = 0; at < length;) {
-        const inPage = position % PAGE;
-        const count = Math.min(length - at, PAGE - inPage);
-        const page = this.segmentFor(pages[this.pageAt(slot, (position - inPage) / PAGE)]! - 1);
+        const inPage = position % DATA_PAGE_BYTES;
+        const count = Math.min(length - at, DATA_PAGE_BYTES - inPage);
+        const page = this.segmentFor(
+          pages[this.pageAt(slot, (position - inPage) / DATA_PAGE_BYTES)]! - 1,
+        );
         // A fixed-length source view never changes length; build sub-views without species lookup.
         page.set(
           count === length ? chunk : new Uint8Array(chunk.buffer, chunk.byteOffset + at, count),
@@ -1386,13 +1552,18 @@ export class SharedFilesystemState {
           return at;
         }
         const end = at + total;
-        if (!(slots[base + REVISION_STATE]! & RESIDENT) || end > slots[base + CAPACITY]! * PAGE)
+        if (
+          !(slots[base + REVISION_STATE]! & RESIDENT) ||
+          end > slots[base + CAPACITY]! * DATA_PAGE_BYTES
+        )
           return -Math.max(1, end);
-        // Resolve every backing page before the first byte is committed. A retry must never
-        // hide a partial write when a segment is not yet available.
-        if (nonblocking || this.publication)
-          for (let page = Math.floor(at / PAGE); page < Math.ceil(end / PAGE); page++)
-            this.segmentFor(this.pages[this.pageAt(slot, page)]! - 1);
+        // Resolve every target page, and every page a reader-pinned target would be copied to,
+        // before dirty admission, identity or publication preparation and the first byte. A
+        // miss then means nothing happened, and the caller takes the write to the owner.
+        const first = Math.floor(at / DATA_PAGE_BYTES),
+          last = Math.ceil(end / DATA_PAGE_BYTES);
+        this.requireBacking(slot, first, last);
+        this.requireCopyBacking(slot, first, last);
         this.checkDirty(slot, Math.max(size, end));
         const mtime = Date.now();
         const identity = this.prepareIdentityVersion(slot, true);
@@ -1556,6 +1727,209 @@ export class SharedFilesystemState {
     );
     return end < 0 ? -end : { written: total, offset: end };
   }
+  /** Client commit of a write the owner has staged, for target pages in a segment this agent
+   * lacks. It runs under the same nonblocking locks, odd epoch and data section as a direct
+   * write and touches only attached metadata: the commit point hands the stage to the owner by
+   * exchanging its state from Complete to Committed, then clears the file's resident bit. That
+   * bit already sends every direct read, write and readiness probe to the owner, and the owner
+   * copies the staged bytes into the file's existing pages before it serves anything. So the
+   * write is visible from the call that returns its count, needs no free page, and does not
+   * depend on what the file held when it was staged.
+   *
+   * Returns the end offset, or undefined when nothing was committed and the stage has to be
+   * prepared again: the owner withdrew it, the file is not resident (another agent's commit is
+   * waiting for the owner, or the file is not loaded), the end no longer fits the capacity, or
+   * a target page became reader-pinned. Lock contention throws errno 6 and keeps the stage. */
+  commitStagedWrite(
+    slot: number,
+    handle: FileHandle,
+    cells: Int32Array,
+    bytes: Uint8Array,
+    append: boolean,
+    offset: number,
+    epoch: Int32Array,
+    revoked: () => boolean,
+    owner: number,
+    admission?: PublicationAdmission,
+  ): number | undefined {
+    const slots = this.slots,
+      base = slot * SLOT_WORDS,
+      lock = base + FILE_LOCK;
+    this.globalLock(revoked, owner, true, "data", "file");
+    Atomics.add(epoch, 0, 1);
+    try {
+      if (Atomics.compareExchange(slots, lock, 0, owner) !== 0) throw new FilesystemError(6);
+      try {
+        if (revoked()) throw new FilesystemError(11);
+        if (slots[base + HANDLE] !== handle + 1) throw new FilesystemError(8);
+        this.checkAccess(slot, 2);
+        this.publication?.assertCurrent();
+        if (this.publication && !admission)
+          throw new FilesystemError(28, "publication admission required");
+        if (Atomics.load(cells, STAGE_STATE) !== State.Complete) return undefined;
+        const size = slots[base + FILE_SIZE]!;
+        const at = append ? size : offset;
+        const end = at + bytes.length;
+        if (
+          !(slots[base + REVISION_STATE]! & RESIDENT) ||
+          end > slots[base + CAPACITY]! * DATA_PAGE_BYTES
+        )
+          return undefined;
+        const first = Math.floor(at / DATA_PAGE_BYTES),
+          last = Math.ceil(end / DATA_PAGE_BYTES);
+        // The owner applies in place, so a pinned page has to be relocated by a new stage.
+        if (this.hasPinnedPage(slot, first, last)) return undefined;
+        this.checkDirty(slot, Math.max(size, end));
+        const mtime = Date.now();
+        const identity = this.prepareIdentityVersion(slot, true);
+        const prepared = this.prepareDirectPublication(
+          slot,
+          [bytes],
+          append,
+          at,
+          end,
+          size,
+          mtime,
+          identity,
+          admission,
+        );
+        this.dirty(slot, Math.max(size, end));
+        // Commit point. The owner's withdrawal is the opposing exchange from the same value,
+        // so exactly one of them wins and a lost race here has changed no file state.
+        Atomics.store(cells, STAGE_POSITION, at);
+        if (
+          Atomics.compareExchange(cells, STAGE_STATE, State.Complete, State.Committed) !==
+          State.Complete
+        )
+          return undefined;
+        try {
+          // The revision moves before the gate closes. If this agent dies between the two, the
+          // owner finds a committed stage on a resident file and finishes the write itself; at
+          // every later point the revision has already moved. Applied bytes are never left
+          // under an old revision.
+          this.changed(slot);
+          slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! & ~RESIDENT;
+          if (end > size) slots[base + FILE_SIZE] = end;
+          slots[base + MTIME_LOW] = mtime >>> 0;
+          slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
+          this.commitIdentityVersion(slot, identity);
+          if (prepared) this.publication!.commit(prepared.publication);
+        } catch (error) {
+          // The write is committed; a failure after that point is unknown, never a retry.
+          this.publication?.stop();
+          throw error;
+        }
+        return end;
+      } finally {
+        Atomics.compareExchange(slots, lock, owner, 0);
+      }
+    } finally {
+      Atomics.add(epoch, 0, 1);
+      this.globalUnlock(owner);
+    }
+  }
+  /** Owner only. Records a write for a client that cannot reach the target pages itself, and
+   * leaves the file so that client can commit without the owner: capacity covers the end and,
+   * with page retention on, no target page is reader-pinned. The file's bytes, size, timestamp
+   * and revision do not change, and the staged bytes take no filesystem page: they stay in this
+   * private record until that client commits and the owner applies them. */
+  stageWrite(
+    handle: FileHandle,
+    offset: number,
+    append: boolean,
+    bytes: Uint8Array,
+    cells: Int32Array,
+  ): StagedWrite {
+    if (this.lockOwner !== SERVICE_OWNER)
+      throw new FilesystemError(58, "only the filesystem owner stages writes");
+    if (!Number.isSafeInteger(offset) || offset < 0 || !bytes.length) throw new FilesystemError(28);
+    this.globalLock();
+    try {
+      const slot = this.slot(handle);
+      this.checkFile(slot, handle);
+      this.checkAccess(slot, 2);
+      const at = append ? this.slots[this.at(slot, FILE_SIZE)]! : offset;
+      const end = at + bytes.length;
+      this.growLocked(handle, end);
+      this.prepareVersionWrite(handle, at, bytes.length, end).commit();
+      const stage: StagedWrite = { slot, handle, cells, bytes };
+      const stages = this.staged.get(slot);
+      if (stages) stages.push(stage);
+      else this.staged.set(slot, [stage]);
+      return stage;
+    } finally {
+      this.globalUnlock();
+    }
+  }
+  /** Owner only. Ends one staged write, exactly once: applies it when its client committed it,
+   * and otherwise withdraws it so that no later commit can succeed. The record remembers that it
+   * settled, so a repeated or late call does nothing: it cannot replay bytes over newer content,
+   * lift the gate of a newer stage on the same file, or read a request block that was reused. */
+  settleStagedWrite(stage: StagedWrite): void {
+    if (!stage.bytes) return;
+    const lock = this.at(stage.slot, FILE_LOCK);
+    // Taking the file lock applies every committed stage of this file, this one included.
+    this.lock(lock, undefined, this.lockOwner, "release");
+    try {
+      if (!stage.bytes) return;
+      this.forgetStaged(stage);
+      Atomics.compareExchange(stage.cells, STAGE_STATE, State.Complete, State.Cancelled);
+      // No commit can be in flight under this file lock, except from an agent that was reaped
+      // while it was still running. Its exchange is then the one that won.
+      if (Atomics.load(stage.cells, STAGE_STATE) === State.Committed) this.applyStaged(stage);
+      else stage.bytes = undefined;
+    } finally {
+      this.unlock(lock);
+    }
+  }
+  private forgetStaged(stage: StagedWrite): void {
+    const stages = this.staged.get(stage.slot);
+    const index = stages ? stages.indexOf(stage) : -1;
+    if (index < 0) return;
+    stages!.splice(index, 1);
+    if (!stages!.length) this.staged.delete(stage.slot);
+  }
+  /** For owner paths that read or reshape a file's pages without taking its file lock. Taking
+   * the lock is what applies the file's committed stages. */
+  private settleUnderLock(slot: number): void {
+    if (!this.staged.size) return;
+    this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, "release");
+    this.unlock(this.at(slot, FILE_LOCK));
+  }
+  /** Owner only, with this slot's file lock held. Commit needs that lock too, so each stage
+   * here is either wholly committed or not committed at all. */
+  private settleStaged(slot: number): void {
+    const stages = this.staged.get(slot);
+    if (!stages) return;
+    const committed = stages.filter(
+      (stage) => Atomics.load(stage.cells, STAGE_STATE) === State.Committed,
+    );
+    for (const stage of committed) {
+      this.forgetStaged(stage);
+      this.applyStaged(stage);
+    }
+  }
+  /** Copies a committed stage into the file's own pages and makes the file resident again. The
+   * committing client already published the size, timestamp and revision. One that died right
+   * after its commit point changed none of them, so the owner finishes that write here. */
+  private applyStaged(stage: StagedWrite): void {
+    const bytes = stage.bytes;
+    stage.bytes = undefined;
+    if (!bytes) return;
+    const slots = this.slots,
+      base = stage.slot * SLOT_WORDS;
+    // A handle never names another file, and a freed slot holds no pages to write into.
+    if (slots[base + HANDLE] !== stage.handle + 1 || slots[base] !== 1) return;
+    const at = Atomics.load(stage.cells, STAGE_POSITION);
+    const end = at + bytes.length;
+    if (!slots[base + CAPACITY]) return;
+    if (at >= 0 && end <= slots[base + CAPACITY]! * DATA_PAGE_BYTES) {
+      this.copyInto(stage.slot, bytes, at);
+      if (slots[base + FILE_SIZE]! < end) slots[base + FILE_SIZE] = end;
+      if (slots[base + REVISION_STATE]! & RESIDENT) this.changed(stage.slot);
+    }
+    slots[base + REVISION_STATE] = slots[base + REVISION_STATE]! | RESIDENT;
+  }
   /** Caller owns the global mutation lock. Undefined asks for service growth after unlock. */
   tryWrite(
     handle: FileHandle,
@@ -1576,7 +1950,7 @@ export class SharedFilesystemState {
       const end = offset + total;
       if (
         !(this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) ||
-        end > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE
+        end > Atomics.load(this.slots, this.at(slot, CAPACITY)) * DATA_PAGE_BYTES
       )
         return undefined;
       const identity = this.prepareIdentityVersion(slot, true);
@@ -1633,7 +2007,7 @@ export class SharedFilesystemState {
       if (!total) return { written: 0, offset };
       if (
         !(this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) ||
-        offset + total > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE
+        offset + total > Atomics.load(this.slots, this.at(slot, CAPACITY)) * DATA_PAGE_BYTES
       )
         return offset + total;
       const identity = this.prepareIdentityVersion(slot, true);
@@ -1667,9 +2041,16 @@ export class SharedFilesystemState {
   }
   growLocked(handle: FileHandle, size: number): void {
     const slot = this.slot(handle);
-    const needed = Math.ceil(size / PAGE);
+    // A client waiting on a file whose staged write is committed asks for growth to become
+    // ready, so that write is applied here.
+    this.settleUnderLock(slot);
+    const needed = Math.ceil(size / DATA_PAGE_BYTES);
     const capacity = this.slots[this.at(slot, CAPACITY)]!;
-    this.checkDirty(slot, size, this.residentBytes() + Math.max(0, needed - capacity) * PAGE);
+    this.checkDirty(
+      slot,
+      size,
+      this.residentBytes() + Math.max(0, needed - capacity) * DATA_PAGE_BYTES,
+    );
     this.allocate(slot, needed);
   }
   grow(handle: FileHandle, size: number): void {
@@ -1695,10 +2076,23 @@ export class SharedFilesystemState {
       this.checkAccess(slot, 2);
       const old = Atomics.load(this.slots, this.at(slot, FILE_SIZE));
       const resident = (this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) !== 0;
-      if (!resident && !(truncate && size === 0))
+      const capacity = Atomics.load(this.slots, this.at(slot, CAPACITY));
+      // A file that is not resident but still maps pages can be waiting for the owner to apply
+      // a committed staged write. Only the owner may replace it, after that apply.
+      if (!resident && (!(truncate && size === 0) || (capacity && owner !== SERVICE_OWNER)))
         throw new MissingDataError("shared filesystem file has not been loaded");
-      if (size > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE)
-        throw new RangeError("file needs growth");
+      if (size > capacity * DATA_PAGE_BYTES) throw new RangeError("file needs growth");
+      // Truncation zeroes the removed range and copies a reader-pinned boundary page. Resolve
+      // both before dirty admission, identity or publication preparation.
+      if (resident && truncate && size < old) {
+        const first = Math.floor(size / DATA_PAGE_BYTES);
+        this.requireBacking(slot, first, Math.ceil(old / DATA_PAGE_BYTES));
+        this.requireCopyBacking(
+          slot,
+          first,
+          Math.ceil(truncateBoundaryEnd(size, old) / DATA_PAGE_BYTES),
+        );
+      }
       const next = truncate ? size : Math.max(old, size);
       const mtime = truncate ? Date.now() : this.getMtime(slot);
       const identity = this.prepareIdentityVersion(
@@ -1727,11 +2121,16 @@ export class SharedFilesystemState {
   private zeroTruncatedPages(slot: number, size: number, old: number): void {
     let position = size;
     while (position < old) {
-      const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
-      const count = Math.min(old - position, PAGE - (position % PAGE));
+      const page =
+        Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / DATA_PAGE_BYTES))) - 1;
+      const count = Math.min(old - position, DATA_PAGE_BYTES - (position % DATA_PAGE_BYTES));
       // Whole pinned pages leave the live mapping in reclaimLocked, unchanged for readers.
-      if (position % PAGE || !this.pageReaders?.[page])
-        this.segmentFor(page).fill(0, position % PAGE, (position % PAGE) + count);
+      if (position % DATA_PAGE_BYTES || !this.pageReaders?.[page])
+        this.segmentFor(page).fill(
+          0,
+          position % DATA_PAGE_BYTES,
+          (position % DATA_PAGE_BYTES) + count,
+        );
       position += count;
     }
   }
@@ -1781,7 +2180,9 @@ export class SharedFilesystemState {
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK));
     try {
-      const needed = Math.ceil(Atomics.load(this.slots, this.at(slot, FILE_SIZE)) / PAGE);
+      const needed = Math.ceil(
+        Atomics.load(this.slots, this.at(slot, FILE_SIZE)) / DATA_PAGE_BYTES,
+      );
       const capacity = Atomics.load(this.slots, this.at(slot, CAPACITY));
       for (let logical = needed; logical < capacity; logical++) {
         const physical = Atomics.load(this.pages, this.pageAt(slot, logical)) - 1;
@@ -1910,7 +2311,9 @@ export class SharedFilesystemState {
     for (let field = 0; field < HANDLE; field++)
       if (field !== FILE_LOCK) Atomics.store(this.slots, this.at(slot, field), 0);
     this.slots[this.at(slot, REVISION_STATE)]! &= ~RESIDENT;
-    Atomics.store(this.slots, this.at(slot, HANDLE), -1);
+    // Preserve the removed handle as a lookup terminator without moving any live slot.
+    const key = this.at(slot, HANDLE);
+    Atomics.store(this.slots, key, -this.slots[key]!);
   }
   private free(handle: FileHandle, access: "data" | "release" = "data"): void {
     this.globalLock(undefined, this.lockOwner, false, access);
@@ -1965,19 +2368,19 @@ export class SharedFilesystemState {
     let files = 0;
     for (let slot = 1; slot < MAX_FILES; slot++)
       if (Atomics.load(this.slots, this.at(slot, 0))) files++;
-    const usedBytes = Atomics.load(this.cells, USED_PAGES) * PAGE;
+    const usedBytes = Atomics.load(this.cells, USED_PAGES) * DATA_PAGE_BYTES;
     const poolBytes = this.segments
       .slice(1)
-      .reduce((bytes, buffer) => bytes + buffer.byteLength, SEGMENT_BYTES);
+      .reduce((bytes, buffer) => bytes + buffer.byteLength, SHARED_SEGMENT_BYTES);
     const metadataBytes =
-      this.buffer.byteLength - SEGMENT_BYTES + (this.pageReaders?.byteLength ?? 0);
+      this.buffer.byteLength - SHARED_SEGMENT_BYTES + (this.pageReaders?.byteLength ?? 0);
     return {
       bytes: poolBytes + metadataBytes,
       poolBytes,
       metadataBytes,
       usedBytes,
       freeBytes: poolBytes - usedBytes,
-      maxBytes: Atomics.load(this.cells, 4) * SEGMENT_BYTES,
+      maxBytes: Atomics.load(this.cells, 4) * SHARED_SEGMENT_BYTES,
       files,
     };
   }

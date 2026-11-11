@@ -1,6 +1,7 @@
 import { SLOT_WORDS } from "../fs/shared.js";
+import { DATA_PAGE_BYTES as PAGE } from "../fs/storage-geometry";
 import { expect, test } from "bun:test";
-import { PAGE, createFilesystemIdentity } from "../fs/protocol";
+import { createFilesystemIdentity } from "../fs/protocol";
 import * as shared from "../fs/shared";
 
 function fixture() {

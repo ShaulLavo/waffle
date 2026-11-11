@@ -15,6 +15,7 @@ export const atomicsWaitAsync = (
       array: Int32Array,
       index: number,
       value: number,
+      timeout?: number,
     ): { async: false; value: string } | { async: true; value: Promise<string> };
   }
 ).waitAsync;
@@ -31,7 +32,6 @@ export const reflectGet = Reflect.get;
 export const reflectSet = Reflect.set;
 export const ProxyConstructor = Proxy;
 export const StringConstructor = String;
-export const RangeErrorConstructor = RangeError;
 const stringSliceMethod = String.prototype.slice;
 const utf8Encoder = new TextEncoder();
 const utf8EncodeInto = TextEncoder.prototype.encodeInto;
@@ -54,8 +54,12 @@ type TypedArray = Parameters<typeof typedArrayBuffer>[0];
 const byteLengthGetter = descriptor(prototype, "byteLength")!.get!;
 const tagGetter = descriptor(prototype, Symbol.toStringTag)!.get!;
 const setMethod = prototype.set;
+const fillMethod = prototype.fill;
 export function typedArrayByteLength(view: TypedArray): number {
   return apply(byteLengthGetter, view, []);
+}
+export function typedArrayFill(view: Uint8Array, value: number): void {
+  apply(fillMethod, view, [value]);
 }
 export function typedArraySet(
   view: TypedArray,
@@ -186,6 +190,9 @@ export function cryptoRandomUUID(): string {
 }
 // Relay scheduling passes a closure over private pipe state to the native timer.
 export const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
+export const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
+export const scheduleInterval = globalThis.setInterval.bind(globalThis);
+export const cancelInterval = globalThis.clearInterval.bind(globalThis);
 
 export const SetConstructor = Set;
 export const WeakMapConstructor = WeakMap;
@@ -232,6 +239,17 @@ const wasmMemoryBufferGetter = descriptor(WebAssembly.Memory.prototype, "buffer"
 const arrayBufferByteLengthGetter = descriptor(ArrayBuffer.prototype, "byteLength")!.get!;
 const arrayBufferByteLength = (buffer: ArrayBuffer): number =>
   apply(arrayBufferByteLengthGetter, buffer, []);
+export const ArrayBufferConstructor = ArrayBuffer;
+export const RangeErrorConstructor = RangeError;
+export const symbolIterator: typeof Symbol.iterator = Symbol.iterator;
+/** The native byte length of a genuine non-shared ArrayBuffer, or undefined for anything else. */
+export function arrayBufferLength(value: unknown): number | undefined {
+  try {
+    return apply(arrayBufferByteLengthGetter, value, []);
+  } catch {
+    return undefined;
+  }
+}
 type WasmBufferReader =
   | { kind: "array"; buffer: ArrayBuffer; read: (buffer: ArrayBuffer) => number }
   | { kind: "shared"; buffer: SharedArrayBuffer; read: (buffer: SharedArrayBuffer) => number };

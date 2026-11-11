@@ -1,4 +1,9 @@
 import {
+  captureProcessObserver,
+  acquireObservedProcess,
+  checkProcessObservation,
+} from "../../proc/observation.js";
+import {
   NotificationWaitScope,
   type NotificationWaitSet,
 } from "../../browser/notification-wait.js";
@@ -12,6 +17,7 @@ import { attachPipeEndpoint, type PipeEndpointHandle } from "../../proc/pipes.js
 import { WorkerProcessClient, type WorkerProcessTransport } from "../../proc/worker-client.js";
 
 export interface MixedRequest {
+  phase: "idle" | "sources";
   filesystem: FilesystemConnection;
   notifications: NotificationConnection;
   ring: SharedArrayBuffer;
@@ -65,29 +71,55 @@ function waitParked(
   return { stage: `${stage}-parked`, before, after: current, turns };
 }
 
-async function run(request: MixedRequest): Promise<void> {
+function checkIdleWaits(set: NotificationWaitSet, gate: Int32Array): void {
+  // No producer has run in this Worker, so no relay publication can still be in flight.
+  const quiet = set.sample();
+  globalThis.postMessage({ stage: "quiet" });
+  check(Atomics.wait(gate, 0, 0, 1500) !== "timed-out", "quiet barrier missing");
+  Atomics.store(gate, 0, 0);
+  const start = performance.now();
+  check(set.wait(quiet, start + 70) === "timed-out", "quiet wait did not expire");
+  check(performance.now() >= start + 60, "quiet wait returned early");
+  const beforeRevoke = set.sample();
+  globalThis.postMessage({ stage: "revoke" });
+  check(
+    set.wait(beforeRevoke, Infinity) === "closed",
+    "external revoke did not wake blocked guest",
+  );
+}
+
+async function run(
+  request: MixedRequest,
+): Promise<{ done: true; reports: unknown[]; turns: number }> {
+  const observer = captureProcessObserver(request.process);
   const fs = new FilesystemClient(request.filesystem);
   const descriptors = new DescriptorTable();
   const network = new NetHost(request.ring, () => {});
   const scope = new NotificationWaitScope(request.notifications, fs);
   let watch: number | undefined;
   try {
+    checkProcessObservation(observer);
     const root = await fs.asyncCall("preopen", ["/"]);
+    checkProcessObservation(observer);
     watch = await fs.asyncCall("watchOpen", [root, true]);
-    const service = new WorkerProcessClient({
-      transport: request.process,
-      descriptors,
-      codec: {
-        export() {
-          throw Error("unused");
-        },
-        import() {
-          throw Error("unused");
-        },
-        discard() {},
-      },
-      postMessage() {},
-    });
+    const service = acquireObservedProcess(
+      observer,
+      () =>
+        new WorkerProcessClient({
+          transport: request.process,
+          descriptors,
+          codec: {
+            export() {
+              throw Error("unused");
+            },
+            import() {
+              throw Error("unused");
+            },
+            discard() {},
+          },
+          postMessage() {},
+        }),
+    );
     const reader = attachPipeEndpoint(request.pipe);
     const fd = descriptors.open(reader, (1n << 29n) - 1n, (1n << 29n) - 1n);
     const process = new ProcessABI({
@@ -101,6 +133,10 @@ async function run(request: MixedRequest): Promise<void> {
     });
     const set = await scope.arm({ network, process, subscriptions: [{ kind: 0, id: fd }] });
     check(set.covered, "common pipe must be covered");
+    if (request.phase === "idle") {
+      checkIdleWaits(set, request.gate);
+      return { done: true, reports: [], turns: 0 };
+    }
     fs.call("watchRead", [watch]);
     const reports: unknown[] = [];
     reports.push(waitForSource(set, "filesystem", request.gate, "fs-service"));
@@ -137,9 +173,11 @@ async function run(request: MixedRequest): Promise<void> {
     set.wait(set.sample(), Infinity);
     check(performance.now() - fallbackStart < 250, "uncovered fallback parked indefinitely");
     set.setProcessSubscriptions([{ kind: 0, id: fd }]);
+    // Earlier parked news can leave an unread Data record on the first handle.
+    const deadlineHandle = network.fetch('{"url":"https://deadline.invalid"}');
     const deadline = performance.now() + 140;
     let sample = set.sample();
-    globalThis.postMessage({ stage: "deadline" });
+    globalThis.postMessage({ stage: { deadline: deadlineHandle } });
     let turns = 0;
     while (performance.now() < deadline) {
       set.wait(sample, deadline);
@@ -149,17 +187,16 @@ async function run(request: MixedRequest): Promise<void> {
     }
     check(performance.now() - deadline < 60, "absolute deadline restarted after an early wake");
     check(turns < 8, "quiet wait repeatedly rescanned");
-    const quiet = set.sample();
-    const start = performance.now();
-    check(set.wait(quiet, start + 70) === "timed-out", "quiet wait did not expire");
-    check(performance.now() >= start + 60, "quiet wait returned early");
-    const beforeRevoke = set.sample();
-    globalThis.postMessage({ stage: "revoke", reports, turns });
+    globalThis.postMessage({ stage: "deadline-complete" });
+    check(Atomics.wait(request.gate, 0, 0, 1500) !== "timed-out", "deadline source missing");
+    Atomics.store(request.gate, 0, 0);
+    network.poll(0);
+    const deadlinePayload = network.read(deadlineHandle, 8);
     check(
-      set.wait(beforeRevoke, Infinity) === "closed",
-      "external revoke did not wake blocked guest",
+      deadlinePayload instanceof Uint8Array && deadlinePayload[0] === 82,
+      "deadline source payload missing",
     );
-    globalThis.postMessage({ done: true, reports, turns });
+    return { done: true, reports, turns };
   } finally {
     scope.dispose();
     network.dispose();
@@ -170,7 +207,8 @@ async function run(request: MixedRequest): Promise<void> {
 }
 
 globalThis.onmessage = ({ data }: MessageEvent<MixedRequest>) => {
-  void run(data).catch((error) =>
-    globalThis.postMessage({ error: String(error), stack: error.stack }),
+  void run(data).then(
+    (result) => globalThis.postMessage(result),
+    (error) => globalThis.postMessage({ error: String(error), stack: error.stack }),
   );
 };

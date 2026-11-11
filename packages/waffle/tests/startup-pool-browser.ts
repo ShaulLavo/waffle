@@ -74,6 +74,11 @@ export async function browserStartupPool(): Promise<void> {
     demandConstructions.push(created.length - before);
     return handle;
   });
+  const assertIdle = async (expected: number) => {
+    await pause();
+    assert(created.length === expected, `idle workers created after ${expected} launches`);
+    assert(stopped.size === expected, `workers retained after ${expected} exits`);
+  };
   const source = program();
   const remove = runtime.registerProgram("/app", {
     adapter: "fixture",
@@ -126,22 +131,22 @@ export async function browserStartupPool(): Promise<void> {
   try {
     await runtime.filesystem.writeFile("/app", source);
     await runtime.filesystem.writeFile("/loop", program(true));
-    await service.adoptRuntimeRoot(root);
+    await service.adoptRuntimeRoot(root, { memory: [] });
     supervisor = await service.ready();
     await wait(await spawn("first"));
-    await until(() => created.length === 3 && stopped.size === 1);
+    await assertIdle(1);
     const second = await spawn("second"),
       third = await spawn("third");
     assert(
-      demandConstructions[1] === 0 && demandConstructions[2] === 0,
-      "warm concurrent spawns constructed a Worker on demand",
+      demandConstructions[1] === 1 && demandConstructions[2] === 1,
+      "concurrent spawns did not each construct a fresh Worker on demand",
     );
     await Promise.all([wait(second), wait(third)]);
     assert(
       loads === 1 && modules[0] === modules[1] && modules[0] === modules[2],
       "module cache missed concurrent/repeated launches",
     );
-    await until(() => created.length === 5 && stopped.size === 3);
+    await assertIdle(3);
     for (const signal of [2, 9]) {
       const token = `loop-${signal}`;
       const loop = await spawn(token, "/loop");
@@ -170,7 +175,8 @@ export async function browserStartupPool(): Promise<void> {
         startupPool: {
           sourceLoads: loads,
           processes: used.size,
-          warmSpawnsWithoutConstruction: 2,
+          demandConstructions,
+          unrequestedWorkers: created.length - used.size,
           freshMemoryAndRealm: true,
           cancellation: "SIGINT and SIGKILL",
           replacementInvalidated: true,

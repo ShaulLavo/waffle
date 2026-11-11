@@ -15,11 +15,11 @@ Arrows from the page mean "owns and disposes". Arrows from the guests mean "borr
 
 The rule exists because the filesystem, the pid space and the network namespace are shared state. Two owners would mean two trees, two pid counters and two loopback networks. Borrowing gives the question "whose filesystem is this?" one answer.
 
-Disposal follows the same ownership. `Runtime.dispose()` first fences filesystem work that was already admitted. It stops guest consumers only after that work is quiet, then closes the services it owns, and last releases the one-runtime guard. A guest cannot dispose the runtime it borrows, because the capabilities it receives leave out `dispose`.
+Disposal follows the same ownership. `Runtime.dispose()` first fences filesystem work that was already admitted. It stops guest consumers only after that work is quiet, then closes the services it owns, and last releases the one-runtime guard. A guest cannot dispose the runtime it borrows, because the capabilities it receives leave out `dispose`. An activated GPU display also closes and joins its exact service readers before releasing the page. An abandoned reader or failed cleanup keeps that ownership pending.
 
 ## What the runtime owns
 
-**Filesystem service.** A dedicated worker owns the file tree in shared memory. The runtime grows it in 64 KiB pages inside 16 MiB growable `SharedArrayBuffer` segments, with a 1.5 GiB resident pool by default. A guest reads and writes pages directly with no message to the service when capacity is already allocated. Path changes and growth still go through the service. Fixed metadata admits 32,767 resident nodes, separate from the 4,096 capabilities per session. Ordinary connections allocate a 64 MiB root buffer for metadata and the first data segment; startup-admitted roots charge their exact layout size to the memory budget. The `mode` you pick chooses what backs the tree. [Filesystem modes](vfs.md) lists them.
+**Filesystem service.** A dedicated worker owns the file tree in shared memory. The runtime grows it in 4 KiB storage pages inside fixed 16 MiB `SharedArrayBuffer` segments, with a 1.5 GiB resident pool by default. The worker builds a segment only when a page in it is first needed, so an empty tree holds none beyond its root. A guest reads and writes pages directly with no message to the service when capacity is already allocated and it holds that segment. Path changes, growth and pages in a segment the guest has not received yet go through the service. Fixed metadata admits 32,767 resident nodes, separate from the 4,096 capabilities per session. All roots allocate exactly 33,289,256 bytes for metadata and the first data segment. Startup-admitted roots charge that layout and 512 control bytes to the memory budget. The `mode` you pick chooses what backs the tree. [Filesystem modes](vfs.md) lists them.
 
 **Process supervisor.** It tracks pids, jobs, signals and exit outcomes, and it holds the registry that maps `/bin/name` to a compiled module and an adapter. Each process gets its own worker. The supervisor loads on the first spawn, so a page that only needs a filesystem never pays for it.
 
@@ -47,7 +47,7 @@ The reservation snapshots argv, environment and working directory and retains th
 
 ## Why a kill takes two steps
 
-Killing a process first selects its outcome, for example `signaled` with 137 for `SIGKILL`, and revokes its descriptors. Terminating the worker comes later, after the filesystem confirms that nothing the guest started is still inside a critical section. The delay is deliberate. A worker killed while it holds a filesystem lock would leave that lock held forever, and every other guest would hang. The cost is that "the process is dead" and "the worker is gone" are two moments. Waffle never hands a killed process's buffers to another process.
+Killing a process first selects its outcome, for example `signaled` with 137 for `SIGKILL`, and revokes its descriptors. Terminating the worker comes later, after the filesystem confirms that nothing the guest started is still inside a critical section. The delay is deliberate. A worker killed while it holds a filesystem lock would leave that lock held forever, and every other guest would hang. The cost is that "the process is dead" and "the worker is gone" are two moments. Waffle reuses a pipe slot only after its counted operations finish. A killed Worker with an abandoned operation keeps that slot quarantined.
 
 ## Why guests block
 

@@ -1,3 +1,6 @@
+import type { OwnedServiceWorker } from "waffle/testing/page-runner/page";
+import { finishNetworkCase } from "./network-finalizer.js";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
 import {
   createRuntime,
   type Runtime,
@@ -6,6 +9,7 @@ import {
 } from "../index.js";
 import { FilesystemClient } from "../fs/client.js";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
+import { preview1ListenerBrowserCases } from "./preview1-listener-browser.js";
 import { networkFlowCases } from "./network-flow-cases.js";
 import { createRing } from "../browser/net/ring.js";
 import { PreviewRouter } from "../browser/preview.js";
@@ -396,12 +400,28 @@ async function fetchAddressCases(server: Guest, client: Guest): Promise<void> {
   await server.call({ op: "close", handle: listener });
 }
 
+export interface NetworkBrowserEnvironment {
+  readonly serviceWorker: OwnedServiceWorker;
+}
+const directServiceWorker: OwnedServiceWorker = {
+  register: () =>
+    navigator.serviceWorker.register("/network-sw.js", { scope: "/", type: "module" }),
+  controls: (_registration, controller) => controller !== null,
+  unregister: (registration) => registration.unregister(),
+};
 /** Executed in a real browser by network-browser-runner.ts. */
-export async function networkBrowserCases(): Promise<string[]> {
+export async function networkBrowserCases(
+  { serviceWorker }: NetworkBrowserEnvironment = { serviceWorker: directServiceWorker },
+): Promise<string[]> {
+  let phase: "network-only" | "preview1" = "network-only";
+  let processActivations = 0;
+  const activationCount = () => processActivations;
   const runtime = createRuntime({
     filesystem: { workerURL: "/network-fs.js", mode: "memory" },
-    processHost() {
-      throw Error("Networking activated processes");
+    processHost(options) {
+      processActivations++;
+      if (phase !== "preview1") throw Error("Networking activated processes");
+      return new BrowserProcessBroker(options);
     },
   });
   const network = await runtime.network();
@@ -434,6 +454,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     client = make(),
     survivor = make(),
     isolated = make(isolatedNetwork);
+  let primary: { error: unknown } | undefined;
   try {
     await Promise.all(guests.map((item) => item.ready));
     await unixCases(runtime, (scope) => make(network, 0, false, scope));
@@ -482,18 +503,20 @@ export async function networkBrowserCases(): Promise<string[]> {
     const http = make();
     await http.ready;
     const listener = number(await http.call({ op: "listen", port: 32132 }));
-    registration = await navigator.serviceWorker.register("/network-sw.js", {
-      scope: "/",
-      type: "module",
-    });
+    registration = await serviceWorker.register();
     await activated(registration);
     await until(
-      () => Promise.resolve(navigator.serviceWorker.controller),
-      (value) => value !== null,
+      () =>
+        Promise.resolve(serviceWorker.controls(registration!, navigator.serviceWorker.controller)),
+      (value) => value === true,
     );
     const serving = http.call({ op: "serve", listener });
     void serving.catch(() => {});
     const payload = `request-${crypto.randomUUID()}`;
+    check(
+      serviceWorker.controls(registration, navigator.serviceWorker.controller),
+      "Preview controller identity changed",
+    );
     const response = await fetch("/_net/32132/render?version=1", { method: "POST", body: payload });
     check(response.status === 200, `Preview returned ${response.status}`);
     const result = await response.json();
@@ -552,7 +575,16 @@ export async function networkBrowserCases(): Promise<string[]> {
     );
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
+    check(activationCount() === 0, "Network-only cases activated process services");
+    phase = "preview1";
+    await preview1ListenerBrowserCases(runtime, client);
+    check(
+      activationCount() === 1,
+      "Intentional Preview 1 phase did not use the one real process owner",
+    );
     return [
+      "network-only phase completes with zero process activation; final Preview 1 phase uses one real broker and the same ledger",
+      "Preview 1 loopback listener accepts a same-runtime Bun-shaped peer, pending poll, NONBLOCK, duplex and half-close through the normal worker",
       "Unix path socket node, duplex, half-close and unlink across scoped workers; unscoped and external connects denied; abstract name served by an unscoped worker without a node",
       "runtime-owned IPv4 localhost lookup before any helper or worker exists",
       "IPv6 wildcard, loopback, mapped addresses and HTTP destination families across real workers",
@@ -563,11 +595,22 @@ export async function networkBrowserCases(): Promise<string[]> {
       "failed startup, abrupt owner exit and unrelated socket survival",
       "HTTP over service-worker preview and cross-worker TCP",
     ];
+  } catch (error) {
+    primary = { error };
+    throw error;
   } finally {
-    for (const item of guests) item.retire();
-    await registration?.unregister();
-    navigator.serviceWorker.removeEventListener("message", route);
-    isolatedNamespace.dispose();
-    await runtime.dispose();
+    await finishNetworkCase(
+      primary,
+      guests
+        .map((item) => () => item.retire())
+        .concat([
+          async () => {
+            if (registration) await serviceWorker.unregister(registration);
+          },
+          () => navigator.serviceWorker.removeEventListener("message", route),
+          () => isolatedNamespace.dispose(),
+          () => runtime.dispose(),
+        ]),
+    );
   }
 }

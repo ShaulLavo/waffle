@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test";
+import { swiftShaderArgs } from "./gpu-browser-qualification.js";
+import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { BrowserRunnerLifecycle } from "./browser-runner-lifecycle.ts";
+import { engines, BrowserRunnerLifecycle } from "./browser-runner-lifecycle.ts";
 import type { BrowserResourceOwner } from "./process-recycling-browser-runner-control.ts";
 
 function nextTurn(): Promise<void> {
@@ -70,4 +71,89 @@ test("controller deadline marks interruption before closing owned resources", ()
   expect(result.exitCode).toBe(1);
   expect(result.stdout.toString()).toContain("controller-interrupted=true");
   expect(result.stderr.toString()).toContain("Browser runner timed out");
+});
+
+for (const engine of ["chromium", "firefox", "webkit"] as const) {
+  for (const args of [undefined, swiftShaderArgs] as const) {
+    test(`persistent ${engine} preserves profile and owned paths with ${args ? "explicit" : "default"} args`, async () => {
+      const lifecycle = new BrowserRunnerLifecycle();
+      lifecycle.scratch = "/work/tmp/gpu-async-launch";
+      const launch = spyOn(engines[engine], "launchPersistentContext").mockRejectedValue(
+        new Error("launch boundary"),
+      );
+      try {
+        await expect(lifecycle.persistent(engine, "/work/tmp/exact-profile", args)).rejects.toThrow(
+          "launch boundary",
+        );
+        const options = {
+          headless: true,
+          downloadsPath: lifecycle.scratch,
+          tracesDir: lifecycle.scratch,
+        };
+        expect(launch.mock.calls[0]).toEqual([
+          "/work/tmp/exact-profile",
+          args === undefined ? options : { ...options, args: Array.from(args) },
+        ]);
+        if (args) expect(launch.mock.calls[0]?.[1]?.args).not.toBe(args);
+      } finally {
+        await lifecycle.close();
+        launch.mockRestore();
+      }
+    });
+  }
+}
+
+test("embedded ownership leaves signal listeners and both process fences to the caller", async () => {
+  const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+  const timer = spyOn(globalThis, "setTimeout");
+  const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
+  try {
+    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+    await lifecycle.close();
+    expect(timer.mock.calls.filter((call) => call[1] === 600_000 || call[1] === 60_000)).toEqual(
+      [],
+    );
+  } finally {
+    await lifecycle.close();
+    timer.mockRestore();
+  }
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+});
+
+test("standalone lifecycle retains its default execution and cleanup fences", async () => {
+  const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
+  const timer = spyOn(globalThis, "setTimeout");
+  const lifecycle = new BrowserRunnerLifecycle();
+  try {
+    expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(
+      before.map((count) => count + 1),
+    );
+    await lifecycle.close();
+    expect(timer.mock.calls.filter((call) => call[1] === 600_000)).toHaveLength(1);
+    expect(timer.mock.calls.filter((call) => call[1] === 60_000)).toHaveLength(1);
+  } finally {
+    await lifecycle.close();
+    timer.mockRestore();
+  }
+  expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(before);
+});
+
+test("embedded browser launch disables Playwright's own process signal handlers", async () => {
+  const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, undefined, "caller");
+  const launch = spyOn(engines.chromium, "launchPersistentContext").mockRejectedValue(
+    new Error("launch boundary"),
+  );
+  try {
+    await expect(lifecycle.persistent("chromium", "/unused/profile")).rejects.toThrow(
+      "launch boundary",
+    );
+    expect(launch.mock.calls[0]?.[1]).toMatchObject({
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+    });
+  } finally {
+    await lifecycle.close();
+    launch.mockRestore();
+  }
 });

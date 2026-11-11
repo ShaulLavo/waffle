@@ -18,10 +18,9 @@ with another tree.
 
 The fixed plan includes capabilities, owner states, epoch, signal, revocation and
 section words. It also includes every publication backing, including versions,
-page readers and reader lifetimes. Empty growable segments consume allocation and
-reference records at construction but zero backing bytes. Their maximum lengths
-are not charged as allocated physical capacity. Future segment growth is outside
-this contract.
+page readers and reader lifetimes. It holds no data segment: the filesystem owner
+builds each fixed segment later, when a page in it is first needed. Those segments
+are outside this contract.
 
 The canonical ledger reserves bytes and records before allocation. A reentrant
 allocator observes the existing reservation. Insufficient combined capacity

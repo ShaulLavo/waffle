@@ -69,7 +69,7 @@ export class BrowserRunnerLifecycle {
       .catch(console.error)
       .finally(() => process.exit(1));
   };
-  private deadline: ReturnType<typeof setTimeout>;
+  private deadline: ReturnType<typeof setTimeout> | undefined;
   scratch = "";
   get controllerInterrupted(): boolean {
     return this.controllerInterruption;
@@ -78,7 +78,9 @@ export class BrowserRunnerLifecycle {
     timeoutMs = 600_000,
     private cleanupTimeoutMs = 5000,
     private observeBrowserClose?: ResourceCloseObserver,
+    private readonly interruption: "standalone" | "caller" = "standalone",
   ) {
+    if (interruption === "caller") return;
     process.once("SIGINT", this.interrupted);
     process.once("SIGTERM", this.interrupted);
     this.deadline = setTimeout(() => {
@@ -151,11 +153,17 @@ export class BrowserRunnerLifecycle {
     });
     return `http://127.0.0.1:${this.server.port}`;
   }
+  private callerSignalOptions() {
+    return this.interruption === "caller"
+      ? { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }
+      : {};
+  }
   async launch(name: keyof typeof engines): Promise<Browser> {
     this.assertLive();
     const owner: Owner<Browser> = {
       observeClose: this.observeBrowserClose,
       creation: engines[name].launch({
+        ...this.callerSignalOptions(),
         headless: true,
         downloadsPath: this.scratch,
         tracesDir: this.scratch,
@@ -167,10 +175,16 @@ export class BrowserRunnerLifecycle {
     this.assertLive();
     return browser;
   }
-  async persistent(name: keyof typeof engines, profile: string): Promise<BrowserContext> {
+  async persistent(
+    name: keyof typeof engines,
+    profile: string,
+    args?: readonly string[],
+  ): Promise<BrowserContext> {
     this.assertLive();
     const owner: Owner<BrowserContext> = {
       creation: engines[name].launchPersistentContext(profile, {
+        ...(args === undefined ? {} : { args: Array.from(args) }),
+        ...this.callerSignalOptions(),
         headless: true,
         downloadsPath: this.scratch,
         tracesDir: this.scratch,
@@ -259,10 +273,13 @@ export class BrowserRunnerLifecycle {
   private async cleanup(): Promise<void> {
     // Keep interruption armed until cleanup settles; the host queue remains
     // the outer kill fence if a native process cannot be confirmed stopped.
-    const hardStop = setTimeout(() => {
-      console.error("Browser cleanup exceeded its 60-second fence");
-      process.exit(1);
-    }, 60000);
+    const hardStop =
+      this.interruption === "standalone"
+        ? setTimeout(() => {
+            console.error("Browser cleanup exceeded its 60-second fence");
+            process.exit(1);
+          }, 60000)
+        : undefined;
     const failures: unknown[] = [];
     try {
       await this.stopContexts(failures);

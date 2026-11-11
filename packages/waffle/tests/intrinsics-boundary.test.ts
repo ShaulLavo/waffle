@@ -30,6 +30,9 @@ async function isolatedIntrinsics(
     module: { exports: {} },
     crypto: cryptoHost,
     setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
     AbortSignal,
     EventTarget,
     TextEncoder: class extends TextEncoder {},
@@ -109,6 +112,8 @@ describe("private process authority builtin boundary", () => {
       performance,
       setTimeout,
       clearTimeout,
+      setInterval,
+      clearInterval,
       MessageChannel,
       MessagePort,
       EventTarget,
@@ -232,6 +237,8 @@ describe("private process authority builtin boundary", () => {
       "liveTerminalLifetimes",
       "liveTerminalInputs",
       "liveTerminalContexts",
+      "liveObservationToken",
+      "liveObservationIteration",
     ])
       expect(rejected.has(name), name).toBe(true);
     for (const name of [
@@ -256,6 +263,7 @@ describe("private process authority builtin boundary", () => {
     expect(enforcedModules).toContain("proc/intrinsics.ts");
     for (const module of [
       "proc/terminal-lifetime.ts",
+      "proc/observation.ts",
       "browser/terminal-lifetime.ts",
       "browser/terminal-session.ts",
       "browser/terminal-input.ts",

@@ -1,0 +1,38 @@
+import { gzipSync } from "node:zlib";
+import { resolve } from "node:path";
+
+// G2 on Bun 1.4.4: display 3,289 B, guest 5,592 B, service 36,141 B gzip.
+// Reader ownership: display 4,319 B gzip on Bun 1.4.4. Display allows about 12% headroom.
+// Guest, service and core bounds are unchanged.
+export const GPU_BUDGETS = { display: 4816, guest: 6264, service: 40478 };
+const entries = {
+  display: "browser/display/owner.ts",
+  guest: "browser/gpu/guest.ts",
+  service: "browser/gpu/service-worker.ts",
+};
+export function checkGpuBudget(name: keyof typeof GPU_BUDGETS, measured: number): void {
+  if (measured > GPU_BUDGETS[name])
+    throw new Error(
+      `${name} GPU gzip exceeds ${GPU_BUDGETS[name]} bytes by ${measured - GPU_BUDGETS[name]}`,
+    );
+}
+export async function gpuSize() {
+  const sizes: Partial<Record<keyof typeof GPU_BUDGETS, number>> = {};
+  for (const name of Object.keys(entries) as (keyof typeof entries)[]) {
+    const result = await Bun.build({
+      entrypoints: [resolve(import.meta.dir, "..", entries[name])],
+      target: "browser",
+      format: "esm",
+      minify: true,
+    });
+    if (!result.success || !result.outputs[0])
+      throw new Error(`GPU bundle failed: ${result.logs.join("\n")}`);
+    const measured = gzipSync(Buffer.from(await result.outputs[0].arrayBuffer()), {
+      level: 9,
+    }).byteLength;
+    checkGpuBudget(name, measured);
+    sizes[name] = measured;
+  }
+  return sizes;
+}
+if (import.meta.main) console.log(JSON.stringify(await gpuSize()));

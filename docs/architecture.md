@@ -58,10 +58,10 @@ guest inline. `ExecutableRegistry` maps any executable name to a compiled module
 asynchronous loader) and an opaque guest-adapter key. The Bun adapter uses its existing slots
 12–15, while the same worker bootstrap can execute an ordinary preview1 module.
 
-The borrowed process service's `isIdleWorker(worker)` reports whether an already-observed worker
-is still inert in that service's precreated pool. Membership ends before a worker is leased.
-The query exposes no worker references or termination controls; process ownership and cleanup
-checks apply after the worker receives its process request.
+The borrowed process service's `isIdleWorker(worker)` returns false. The service creates workers
+only for a requested launch and retains no idle workers. The query exposes no worker references
+or termination controls; process ownership and cleanup checks apply after the worker receives
+its process request.
 
 `reserveSpawn` synchronously snapshots argv/env/cwd and retains descriptor bindings (including
 nonstandard fds); `start` asynchronously resolves the module and launches the worker. `spawn`
@@ -120,12 +120,11 @@ Revocation hooks connect logical process death to host capabilities. Filesystem 
 not proof of physical teardown: an exit acknowledgement or the filesystem's admission fence
 must prove host critical sections quiescent before reaping and physical termination.
 Each process has fresh interrupt/revocation/transport buffers;
-killed buffers are never assigned to another process. After the first worker launch, the broker
-precreates up to two unused workers across all worker URLs. A consumer that launches its own root
-worker takes one from the same pool with `takeWorker(url)`. Each worker runs at most one process;
-used workers follow the existing quiescence and termination path. The registry already caches
+killed buffers are never assigned to another process. The broker creates a fresh worker only
+when a process launches. A consumer that launches its own root worker requests a fresh worker
+with `takeWorker(url)` and owns its termination. Each worker runs at most one process;
+broker-launched workers follow the existing quiescence and termination path. The registry caches
 compiled modules per registration, and source registrations share a bounded content cache.
-Paired Chromium command timings for worker precreation remain pending.
 
 The generic service's registry, process table and supervisor are dynamically imported on first
 spawn. Small identity, typed-outcome and signal-state leaves are available earlier for synchronous
@@ -364,12 +363,43 @@ is drained; closing the last reader produces EPIPE.
 code marks a process revoked before freezing its linked cursors and exposing its exit. Cursor
 allocation links a new cell and then rechecks revocation before admitting the endpoint, so growth
 cannot escape a concurrent kill. Guest WASM never receives this control memory. A stopped
-producer cannot publish past that frozen watermark, and killed buffers are never recycled.
+producer cannot publish past that frozen watermark. Each ring also counts synchronous mutations
+in a finite slot incarnation. Reuse advances that incarnation only at zero active sections;
+stale endpoint writes, closes and pid revocation cannot change its replacement. A Worker
+terminated inside a section leaves the slot quarantined rather than permitting unsafe reuse.
+Raw buffers remain private runtime authority, not a guest corruption sandbox.
+
+The default pipe retains one fixed 2,622,760-byte buffer and admits 16 simultaneous writing
+processes and 16 reading processes. Closed writer rings can append new owners after unread
+committed records, preserving tickets, record pins and cursor counters. Reader rings must be
+fully drained or recovered by the relay before reuse. Reclaiming a direct reader switches to
+relay mode before publishing its replacement. Fresh slots are preferred. Each slot permits
+8,388,607 reuses without wrapping; active, quarantined or incarnation-exhausted slots consume
+capacity. Saturation returns ENFILE (41), independently of payload backpressure (EAGAIN).
+
+Without a publication registry, reclaimed slots do not retain historical revoked-pid tombstones:
+a direct host retain of that old pid can create a new endpoint. Production enrolls unique child
+pids in the registry, which permanently refuses collected identities. Retained old endpoints
+still fail their incarnation check.
 
 Registry cells are append-only, 16 bytes each, in a growable shared buffer. A simple same-process
 pipe uses four cells, or 64 bytes of lifetime metadata after its pipe buffers are released.
-Defaults allocate about 2 MiB initially and allow 16,777,216 cells (256 MiB plus the header),
-roughly 4,194,304 simple pipes per service; additional process endpoints consume more cells.
+Defaults allocate 2,105,360 bytes initially and allow 1,048,576 cells, or 16,785,424 bytes
+including owner metadata. An explicit maximum can admit up to 16,777,216 cells. The optional
+host allocator receives both exact sizes before construction so page owners can account for
+the declared backing. A fresh direct writer uses a publication cell and a reader-lease cell;
+each reused writer needs only one new publication cell. Each fresh or reused reader needs two
+cells. A root-held default pipe with 3,001 sequential child writers uses 3,020 cells, or 48,320
+bytes of cell storage, without growing its initial registry backing. The root's four cells and
+15 fresh writer leases are included. Cells remain shared with all other service uses.
+`PipeOptions.allocateShared(length)` supplies a realm-local allocator for fixed pipe backing,
+a locally created wake, endpoint lifetimes and new description flags. Attached handles reuse
+existing backing without charging it again; their later endpoint controls use the receiving
+realm's allocator. `attachPipeEndpoint` and `attachPipeController` accept that allocator in
+private options, as do worker host, broker and codec construction. No function crosses the
+cloneable wire handle. Inherited descriptions share flags and allocate only a new lifetime.
+The hook provides accounting, not a nominal allowance, refund policy or lifetime ledger.
+
 The separate process directory supports 1,024 simultaneously enrolled processes; collected
 process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
 
@@ -511,10 +541,20 @@ but unrecoverable storage raises an error rather than silently creating an empty
 `name` selects an isolated database for tests/workspaces. Closing a page without a completed
 flush may lose its uncommitted edits; browser persistence is not a power-loss-safe host filesystem.
 
-Ports schedule requests; each request owns a SharedArrayBuffer with a 32-byte completion header,
-JSON operation/arguments and optional binary input. Results overwrite the data region. Large
-results are read in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
+Ports schedule requests; each request owns a block in its connection's stable shared arena with a
+32-byte completion header and a response room of at most 64 KiB. Inputs up to 64 KiB share that block.
+A larger input is copied once into a private ArrayBuffer and transferred before the guest parks, so a
+blocked guest keeps the same arena and the same `Atomics.wait` notification. An explicit `capacity`
+above 64 KiB is clamped to that room. Results that do not fit use the overflow path and are read
+in 64 KiB pieces, not placed in a fixed-size process snapshot. A completion owns
 its buffer until `release()`; buffers and revocation words are never recycled between guests.
+
+Every request debits the connection's logical limit of 2,147,479,552 bytes, inline or private, and
+is refused synchronously with errno 48 when it cannot fit. A private input also reserves its full
+byte length from the namespace before the buffer exists; that charge ends when the service gives
+up the request, or at successful connection retirement if the message never arrived. The arena
+itself reserves 134,316,032 bytes, enough for 1,024 live blocks under first-fit placement. Those
+figures are logical accounting and declared address space, not measured physical memory.
 
 ```ts
 const request = client.submit("read", [handle, 4096, 0]); // does not block
@@ -539,10 +579,23 @@ so the epoch stays odd until their bytes, size and timestamp are in place. Cache
 service alone owns backend pins. Preopens and open descriptions retain handles; transient path pins
 are bounded and evicting them invalidates cached paths.
 
-The service owns the page allocator and grows capacity geometrically in 64 KiB pages, across
-16 MiB growable SharedArrayBuffer segments. Connections carry the zero-byte segment references
-before execution; only the service grows their backing storage. A synchronous guest therefore
-sees completed growth without returning to its event loop or receiving another port message.
+The service owns the page allocator and grows capacity geometrically in 4 KiB storage pages, across
+fixed 16 MiB SharedArrayBuffer segments. Only the service builds a segment, when a page in it is
+first needed, so a new tree holds no backing beyond its root. A connection starts with the
+segments its launcher already held, and the service offers every later one by index on the
+connection's port. That delivery only makes access direct. A page table entry may name a page in
+a segment an agent lacks: every direct path resolves its backing before it changes anything, and
+on a miss the service performs the operation through the request arena that was attached before
+the guest ran. A synchronous guest therefore sees completed growth without returning to its event
+loop or receiving another port message.
+
+An immediate (`try`) write to such a page never waits for the service. The first call hands the
+service a private copy of at most 64 KiB and returns EAGAIN with nothing changed. The retry
+commits in attached metadata, under the same nonblocking locks as a direct write, and marks the
+file not resident. That state already sends every direct read, write and readiness probe to the
+service, which copies the staged bytes into the file's existing pages before it serves, persists
+or reclaims anything. The commit needs no free page and does not depend on what the file held when
+it was staged. The service applies or withdraws each staged write exactly once.
 `createFilesystemIdentity(undefined, maxBytes)` configures
 the pool cap (1.5 GiB by default, rounded to whole segments); files can span segments up to the
 independent 1 GiB per-file ceiling. A full pool reports WASI ENOSPC, while a request beyond the addressable
@@ -550,15 +603,36 @@ maximum reports WASI EFBIG.
 The 1.5 GiB ceiling leaves 512 MiB of headroom for sequential package installs beyond a
 retained 1 GiB tree. Smaller explicit caps still apply. It is a payload reservation limit,
 not an aggregate browser or process memory budget. The fixed allocator layout occupies
-59.45 MiB including its first 16 MiB data segment. Ordinary connections retain their
-64 MiB root allocation. Startup-admitted standalone roots charge the exact layout,
-65,664 bytes more than the former 1 GiB aggregate layout. Additional payload backing grows
+33,289,256 bytes including its first 16 MiB data segment. Ordinary connections and
+startup-admitted standalone roots allocate that same exact layout. Startup admission
+adds 512 control bytes to the root backing charge. Additional payload backing grows
 lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the
 configured cap, and grown backing remains allocated until disposal.
 `resources()` reports allocated backing bytes, data-pool and metadata bytes (including private
-capability tables), used/free bytes, the configured cap, and registered identities. Zero-byte
-segment references do not count as allocated backing storage. Grown segments are retained
-for page reuse until the filesystem is disposed.
+capability tables), used/free bytes, the configured cap, and registered identities. Only
+segments that were built count as backing storage. Built segments are retained for page
+reuse until the filesystem is disposed, and are never handed to another tree.
+
+Storage geometry lives in the private `fs/storage-geometry.ts` module. All mapping blocks
+hold 64 entries, so one pool serves every level. A leaf maps 256 KiB of logical file data.
+Each file has eight root words: seven direct leaves cover its first 1.75 MiB, and one tail
+pointer reaches a top block and branch blocks up to the 1 GiB file limit. Whether a page
+uses the tail depends only on its logical index, so growth never reinterprets an existing
+root. The 40,758-block pool covers every distribution of files and data within the fixed
+limits. This addressing is independent of the 4,096 physical pages per 16 MiB segment.
+Transport chunks and WebAssembly memory pages remain 64 KiB. The fixed layout retains
+32,768 slots, including reserved slot zero.
+
+An observed workspace allocates 393,216 physical reader counters, or 1,572,864 bytes.
+A retained resident selection stores one 32-bit physical page ID per page. One aligned
+256 MiB pin charges 262,400 metadata bytes against the unchanged 2 MiB reader metadata
+limit. Seven overlapping selections of that full range fit before structured metadata
+pressure. Physical pin bytes are shared. Closing a selection releases its IDs and admits
+the next pin. Reads borrowing one selection keep its existing shared lifetime.
+
+Smaller storage pages reduce small-file padding, not the runtime's other buffers,
+request arenas, or guest memories. Built segments remain a high-water allocation;
+current used bytes do not measure committed backing or native residency.
 
 Connections carry their own revocation word and every ancestor's word, plus a shared ancestry
 wake signal. Blocking waits recheck revocation after a signal change; asynchronous values use
@@ -625,3 +699,46 @@ installing playground dependencies.
 ## Lazy network implementation
 
 `runtime.network()` owns one separate Rust WASM instance through its namespace. Core and process loading do not load this module. Browser helpers retain virtual-only transport and unchanged rings. Native embedders wire the Waffle-owned OS adapter explicitly. See [ADR 005](adr/005-lazy-rust-wasm-network.md).
+
+## GPU service reader lifetime
+
+Each activated display service owns one fresh 64-byte counted admission allocation. The page
+installs it before sending any open. A command reader admits the complete physical ring read,
+including padding, exceptions and tail stores. Scheduler visits and later native callbacks enter
+again. No admitted section spans a promise or task.
+
+Service failure closes that exact service's reader admission synchronously. The page selects
+original transport terminals, joins all admitted sections, then settles those same controls
+again before requesting termination. `Worker.terminate()` is a separate cleanup request.
+An abandoned admitted section leaves retirement pending. A failed join or stop keeps the Runtime,
+allocator and singleton guard owned. Replacement GPU activation waits for successful old-service
+bookkeeping and uses new grants and surfaces.
+
+Healthy Runtime suspension instead closes new display admission synchronously and revokes every
+grant through normal cooperative cleanup. It awaits their actual acknowledgements before closing
+and joining the service reader allocation and requesting termination. A missing acknowledgement
+leaves shutdown pending, without a timeout or termination shortcut.
+
+Normal grant revocation keeps peer admission open. Its irreversible local lease rejects new
+frames immediately. The service queues cleanup after all active callback frames return, then
+queues a separate acknowledgement. A reentrant native map fill may finish its admitted copy before
+that boundary. Neither reentry nor a microtask acknowledges retirement inline. Cleanup errors
+remain retained.
+
+Visible canvases belong to the service surface lifetime, not the carrying grant. The page sends
+an ordered private ID registration before the first canvas transfer, without activating a service
+when a surface is merely created. A retired grant may deliver that registered canvas under service
+admission, but cannot inspect or reopen its old command controls. Surface disposal invalidates the
+identity immediately and retains any in-flight attachment until its returned native context is
+cleaned up. Pending and visible entries share the existing bounded owner; no disposed-ID history
+or new shared allocation supplies authority. Cleanup failures retain their actual resources.
+
+Reader quiescence does not prove that aliases or native memory have been reclaimed. Before
+transferring a graphics-bearing launch, the broker binds its exact ticket to the original grant.
+The ticket retains all that launch's control allocation charges conservatively. The original
+allocation receipt is the sole charging route; receiving a different clone in an open adds no
+charge. An allocation-only listener captures the old ticket independently of child/root maps and
+ordinary message handlers, and survives Runtime disposal. The default unbounded path keeps each
+original receipt holder as non-refundable debt. The bounded path retains its existing aggregate
+consumed debt. Page-created original controls and known service exposures stay rooted through page
+destruction. No guest connection contains the fence, ticket, retention token or join proof.

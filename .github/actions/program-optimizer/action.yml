@@ -19,9 +19,9 @@ runs:
         trap 'rm -rf -- "$scratch"' EXIT
         trap 'exit 130' INT
         trap 'exit 143' TERM HUP
-        curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 --silent --show-error \
+        node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" \
           https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz \
-          -o "$scratch/binaryen.tar.gz"
+          "$scratch/binaryen.tar.gz" 300000
         printf '%s  %s\n' 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489 "$scratch/binaryen.tar.gz" | sha256sum --check --status
         tar -xzf "$scratch/binaryen.tar.gz" -C "$scratch" binaryen-version_133/bin/wasm-opt
         printf '%s  %s\n' 8f25e9fd5db0fc5f210003aaa432922feb2e52d309e430def2f929e34da9466b "$scratch/binaryen-version_133/bin/wasm-opt" | sha256sum --check --status

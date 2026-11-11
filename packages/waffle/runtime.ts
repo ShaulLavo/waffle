@@ -1,8 +1,22 @@
+import { installSharedControlAllocator } from "./memory/control.js";
+import { defaultSharedMemoryPlatform, validateDeclaration } from "./memory/platform.js";
+import {
+  bytes,
+  pageSharedMemoryLedger,
+  type SharedMemoryDeclaration,
+  type RuntimeReservations,
+} from "./memory/reservations.js";
 import {
   ProgramCollection,
   type ProgramsOptions,
   type RuntimePrograms,
 } from "./programs/collection.js";
+import type { RuntimeDisplay } from "./browser/display/owner.js";
+export type { RuntimeDisplay, DisplaySurface } from "./browser/display/owner.js";
+type RuntimeDisplayOwner = ReturnType<
+  (typeof import("./browser/display/owner.js"))["createDisplayOwner"]
+>;
+
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
 export type {
   RuntimeNetwork,
@@ -83,7 +97,7 @@ export type RuntimeSupervisor = Omit<
 >;
 export type ProcessService = Omit<
   BrowserProcessBroker,
-  "dispose" | "suspend" | "quiesce" | "ready"
+  "dispose" | "suspend" | "quiesce" | "ready" | "retainRootGraphics"
 > & {
   ready(): Promise<RuntimeSupervisor>;
 };
@@ -136,6 +150,8 @@ export type ProgramDefinition = {
     }
 );
 export interface RuntimeOptions {
+  /** An issued `declareSharedMemoryPlatform` result. Omission selects the unbounded default. */
+  readonly sharedMemory?: SharedMemoryDeclaration;
   readonly programs?: ProgramsOptions;
   /** Explicit runtime host identity. Omission leaves host identity unsupported. */
   hostIdentity?: RuntimeHostIdentity;
@@ -153,6 +169,7 @@ export interface RuntimeOptions {
   memoryGroups?: MemoryGroupPolicyOptions;
 }
 export interface Runtime {
+  readonly sharedMemory: Pick<RuntimeReservations, "snapshot" | "check">;
   readonly programs: RuntimePrograms;
   readonly hostIdentity: RuntimeHostIdentity | null;
   readonly filesystem: RuntimeFilesystem;
@@ -170,6 +187,8 @@ export interface Runtime {
   retainConsumer(consumer: RuntimeConsumer): () => void;
   /** Lazy runtime-owned localhost services, independent of process activation. */
   network(): Promise<RuntimeNetwork>;
+  /** Lazy display ownership. Does not activate processes or start a GPU service. */
+  display(): Promise<RuntimeDisplay>;
   processes(): Promise<ProcessService>;
   dispose(): Promise<void>;
 }
@@ -224,6 +243,11 @@ const processCapabilities = {
   memoryGroups: "method",
   admitRootMemoryGroup: "method",
   takeWorker: "method",
+  rootControlGrant: "method",
+  rootControlAllocated: "method",
+  rootStopped: "method",
+  rootObservation: "method",
+  captureRootStop: "method",
   isIdleWorker: "method",
   kill: "async",
   killJob: "async",
@@ -377,10 +401,27 @@ function sourceTime(): number | undefined {
 }
 
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
-  const hostIdentity = snapshotHostIdentity(options.hostIdentity);
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
-  const token = {};
+  const token: { display?: Promise<RuntimeDisplayOwner | undefined>; disposal?: Promise<void> } =
+    {};
   owners[ownerKey] = token;
+  let hostIdentity: ReturnType<typeof snapshotHostIdentity>;
+  let reservations: RuntimeReservations;
+  let restoreControlAllocator: () => void;
+  try {
+    hostIdentity = snapshotHostIdentity(options?.hostIdentity);
+    const declared: unknown = options.sharedMemory;
+    // Only omission selects the default; null, foreign and recovered defaults are refused.
+    const platform =
+      declared === undefined ? defaultSharedMemoryPlatform : validateDeclaration(declared);
+    reservations = pageSharedMemoryLedger(platform).openRuntime(platform);
+    restoreControlAllocator = installSharedControlAllocator((length) =>
+      reservations.buffer("control", { kind: "fixed-buffer", length: bytes(length) }),
+    );
+  } catch (error) {
+    if (owners[ownerKey] === token) delete owners[ownerKey];
+    throw error;
+  }
   let filesystem: SharedFilesystem;
   let identities: ProcessIdentityAllocator;
   let registry: ExecutableRegistry | undefined;
@@ -388,8 +429,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     if (typeof SharedArrayBuffer !== "function")
       throw new Error("Page runtime requires SharedArrayBuffer and cross-origin isolation");
     identities = new ProcessIdentityAllocator();
-    filesystem = new SharedFilesystem(options.filesystem, options.onStartupStage);
+    filesystem = new SharedFilesystem(options.filesystem, options.onStartupStage, reservations);
   } catch (error) {
+    reservations.dispose();
+    restoreControlAllocator();
     if (owners[ownerKey] === token) delete owners[ownerKey];
     throw error;
   }
@@ -415,6 +458,9 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let host: BrowserProcessBroker | undefined;
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
   let activation: Promise<ProcessService> | undefined;
+  let displayOwner: RuntimeDisplayOwner | undefined;
+  let ownedDisplay: Promise<RuntimeDisplayOwner | undefined> | undefined;
+  let displayActivation: Promise<RuntimeDisplay> | undefined;
   let ownedNetwork: Promise<RuntimeNetworkOwner | undefined> | undefined;
   let networkActivation: Promise<RuntimeNetwork> | undefined;
   let disposal: Promise<void> | undefined;
@@ -431,9 +477,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   ) => {
     const shared = typeof source === "function" ? sourceModules.get(source) : undefined;
     if (shared) return shared;
-    const ownedSource = source instanceof Uint8Array ? new Uint8Array(source) : source;
+    let sourceOrModule:
+      | Uint8Array<ArrayBuffer>
+      | (() => Uint8Array | Promise<Uint8Array>)
+      | WebAssembly.Module = source instanceof Uint8Array ? new Uint8Array(source) : source;
     const module = async () => {
       assertLive();
+      const ownedSource = sourceOrModule;
+      if (ownedSource instanceof WebAssembly.Module) return ownedSource;
       onLoad?.({ kind: "preparing" });
       try {
         assertLive();
@@ -442,14 +493,24 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         const sourceEnd = sourceTime();
         if (!(bytes instanceof Uint8Array))
           throw new TypeError("Program source loader must return Wasm bytes");
-        // Own source bytes before an asynchronous import can yield to a mutating caller.
-        const snapshot = new Uint8Array(bytes);
-        const { compileInterruptible, programStage } = await import("./interrupt/loader.js");
+        // Function loaders need a private snapshot before an asynchronous import can yield;
+        // direct sources were copied at registration and are already fixed and unshared.
+        const snapshot = typeof ownedSource === "function" ? new Uint8Array(bytes) : ownedSource;
+        const { compileInterruptibleOwned, programStage } =
+          await import("./interrupt/loader-internal.js");
         if (sourceStart !== undefined && sourceEnd !== undefined)
           programStage("source", sourceStart, { bytes: snapshot.byteLength }, sourceEnd);
-        const compiled = await compileInterruptible(snapshot);
+        const { inspectThreadSource, declareThreadModule } =
+          await import("./memory/declarations.js");
+        const threaded = inspectThreadSource(snapshot);
+        const compiled = await compileInterruptibleOwned(
+          snapshot,
+          threaded ? "supervised-thread" : "ordinary",
+        );
+        if (threaded) declareThreadModule(compiled, threaded);
         assertLive();
         onLoad?.({ kind: "loaded" });
+        sourceOrModule = compiled;
         return compiled;
       } catch (error) {
         onLoad?.({ kind: "error", error });
@@ -527,6 +588,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     }
   };
   const runtime: Runtime = {
+    sharedMemory: Object.freeze({
+      snapshot: () => reservations.snapshot(),
+      check: (plan) => reservations.check(plan),
+    }),
     hostIdentity,
     get programs() {
       return programCollection.view;
@@ -647,6 +712,21 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         physicalStops.delete(owned);
       };
     },
+    display() {
+      if (disposed) return Promise.reject(new Error("Runtime is disposed"));
+      ownedDisplay ??= import("./browser/display/owner.js").then(({ createDisplayOwner }) => {
+        if (disposed) return undefined;
+        displayOwner = createDisplayOwner(assertLive);
+        return displayOwner;
+      });
+      token.display = ownedDisplay;
+      displayActivation ??= ownedDisplay.then((owner) => {
+        assertLive();
+        if (!owner) throw new Error("Runtime is disposed");
+        return owner.display;
+      });
+      return displayActivation;
+    },
     network() {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (networkActivation) return networkActivation;
@@ -685,9 +765,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         ]);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {
+          reservations,
           hostIdentity,
           filesystem: {
-            connect: (identity) => filesystem.connect(identity),
+            connect: (identity, headroom) => filesystem.connect(identity, headroom),
             revoke: (identity) => filesystem.revoke(identity),
             reap: (identity) => filesystem.reap(identity),
             quiesce: (identity) => filesystem.quiesce(identity),
@@ -808,6 +889,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           stops.map(([owner, stop]) => joinStop({ owner, stop, physicalStops, cleanupDebt })),
         );
         failures.push(...stopFailures(stopped));
+        const beforeDisplay = failures.length;
+        if (ownedDisplay) {
+          const pendingDisplay = ownedDisplay;
+          await attempt(async () => (await pendingDisplay)?.dispose());
+        }
+        if (displayOwner?.retained() && failures.length === beforeDisplay)
+          failures.push(new Error("Display retirement is retained"));
+        if (failures.length !== beforeDisplay) throwFailures();
         let network: RuntimeNetworkOwner | undefined;
         if (ownedNetwork) await attempt(async () => (network = await ownedNetwork));
         if (network) await attempt(() => network?.dispose());
@@ -823,12 +912,18 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());
         if (failures.length !== failuresBeforeFilesystemClose) throwFailures();
+        reservations.dispose();
+        restoreControlAllocator();
         adapters.clear();
         for (const name of programs.keys()) registry?.unregister(name);
         programs.clear();
         if (owners[ownerKey] === token) delete owners[ownerKey];
         throwFailures();
       });
+      token.disposal = disposal;
+      // Publish owned process outcomes before consumer callbacks or display revocation can wake
+      // guests. Physical stops still wait for terminationFence and the existing quiescence gates.
+      suspend(failures);
       // Wake page operations before activation/drain can await startup. Keep the worker
       // and any acquired ownership alive until admitted consumer sections have fenced;
       // the normal final filesystem.dispose() then performs the startup abort handshake.
@@ -852,7 +947,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           failures.push(error);
         }
       }
-      suspend(failures);
+      try {
+        displayOwner?.suspend();
+      } catch (error) {
+        failures.push(error);
+      }
       return disposal;
     },
   };

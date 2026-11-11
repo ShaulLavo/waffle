@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { expect, test } from "bun:test";
 import {
   BrowserProcessBroker,
@@ -173,6 +174,7 @@ async function fixture() {
   const fence = Promise.withResolvers<void>();
   let holdFence = false;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry,
@@ -320,6 +322,7 @@ async function fixture() {
   globalThis.Worker = ObservedWorker;
   try {
     const rootOptions: RuntimeRootOptions = {
+      memory: [],
       prepareDescendant: {
         terminal: authority,
         run(descendant, turn) {
@@ -442,6 +445,7 @@ test("real Worker same-job descendants inherit identity-only stdin with root adm
       }),
     );
     await f.broker.adoptRuntimeRoot(other, {
+      memory: [],
       prepareDescendant: {
         terminal: otherAuthority,
         run(descendant) {

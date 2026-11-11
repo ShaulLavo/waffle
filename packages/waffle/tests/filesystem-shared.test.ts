@@ -1,6 +1,7 @@
 import { SLOT_WORDS } from "../fs/shared.js";
-import { expect, test } from "bun:test";
-import { DEFAULT_SHARED_MAX_BYTES, PAGE } from "../fs/protocol";
+import { expect, spyOn, test } from "bun:test";
+import { DEFAULT_SHARED_MAX_BYTES } from "../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE, DATA_PAGES_PER_SEGMENT } from "../fs/storage-geometry";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
 
 test("revoking a killed shared-page writer releases its file lock", () => {
@@ -17,8 +18,8 @@ test("the service grows into another SAB segment and preserves page data", () =>
   const state = new SharedFilesystemState();
   state.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE * 256, mtime: 1 },
-    new Uint8Array(PAGE * 256).fill(65),
+    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, mtime: 1 },
+    new Uint8Array(PAGE * DATA_PAGES_PER_SEGMENT).fill(65),
   );
   state.register(
     1,
@@ -38,8 +39,8 @@ test("storage cap reports ENOSPC while the address-space limit reports EFBIG", (
   const cap = new SharedFilesystemState(undefined, 16 * 1024 * 1024);
   cap.register(
     0,
-    { kind: "file", ino: 1, nlink: 1, size: PAGE * 256, mtime: 1 },
-    new Uint8Array(PAGE * 256),
+    { kind: "file", ino: 1, nlink: 1, size: PAGE * DATA_PAGES_PER_SEGMENT, mtime: 1 },
+    new Uint8Array(PAGE * DATA_PAGES_PER_SEGMENT),
   );
   try {
     cap.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 }, new Uint8Array(PAGE));
@@ -61,7 +62,13 @@ test("a cloned root attachment preserves service-owned extra segments", () => {
   const buffer = SharedFilesystemState.createBuffer();
   backend.attachShared(buffer);
   const state = backend.shared;
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 256, mtime: 1 });
+  state.register(0, {
+    kind: "file",
+    ino: 1,
+    nlink: 1,
+    size: PAGE * DATA_PAGES_PER_SEGMENT,
+    mtime: 1,
+  });
   state.register(
     1,
     { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 },
@@ -98,13 +105,19 @@ test("revoking the global mutation owner repairs its epoch", () => {
 });
 
 test("failed growth returns partial page reservations to the allocator", () => {
-  const state = new SharedFilesystemState(undefined, PAGE * 256);
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 255, mtime: 1 });
+  const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
+  state.register(0, {
+    kind: "file",
+    ino: 1,
+    nlink: 1,
+    size: PAGE * (DATA_PAGES_PER_SEGMENT - 1),
+    mtime: 1,
+  });
   expect(() =>
     state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, mtime: 1 }),
   ).toThrow();
   state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, mtime: 1 });
-  expect(state.resources().usedBytes).toBe(PAGE * 256);
+  expect(state.resources().usedBytes).toBe(PAGE * DATA_PAGES_PER_SEGMENT);
 });
 
 test("namespace edits refresh shared parent directory timestamps", () => {
@@ -117,7 +130,7 @@ test("namespace edits refresh shared parent directory timestamps", () => {
 });
 
 test("unlink retains open pages then zeroes and reuses them on last close", () => {
-  const state = new SharedFilesystemState(undefined, PAGE * 256);
+  const state = new SharedFilesystemState(undefined, PAGE * DATA_PAGES_PER_SEGMENT);
   state.register(
     0,
     { kind: "file", ino: 1, nlink: 1, size: PAGE, mtime: 1 },
@@ -139,10 +152,16 @@ test("unlink retains open pages then zeroes and reuses them on last close", () =
 
 test("resource snapshots include all allocated SAB bytes and the storage cap", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 256, mtime: 1 });
+  state.register(0, {
+    kind: "file",
+    ino: 1,
+    nlink: 1,
+    size: PAGE * DATA_PAGES_PER_SEGMENT,
+    mtime: 1,
+  });
   state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 });
   const resources = state.resources();
-  expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * 256);
+  expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * DATA_PAGES_PER_SEGMENT);
   expect(resources.metadataBytes! + resources.poolBytes!).toBe(resources.bytes);
   expect(resources.usedBytes! + resources.freeBytes!).toBe(resources.poolBytes);
   expect(resources.maxBytes).toBe(DEFAULT_SHARED_MAX_BYTES);
@@ -188,4 +207,89 @@ test("stat rejects a metadata slot reused while waiting for its file lock", () =
   expect(state.stat(0)).toBeUndefined();
   expect(state.fileSlot(32767)).toBe(slot);
   expect(state.stat(32767)).toMatchObject({ ino: 2, mtime: 2 });
+});
+
+test.each([0, 127])("a freed handle %i lookup skips unrelated resident nodes", (handle) => {
+  const state = new SharedFilesystemState();
+  for (let index = 0; index < 256; index++)
+    state.register(index, { kind: "file", ino: index + 1, nlink: 1, size: 0, mtime: 1 });
+  const observer = new SharedFilesystemState(state.buffer);
+  state.unlink(handle);
+  const loads = spyOn(Atomics, "load");
+  try {
+    expect(observer.revision(handle)).toBeUndefined();
+    expect(loads.mock.calls.filter(([array]) => Object.is(array, observer.slots))).toHaveLength(1);
+  } finally {
+    loads.mockRestore();
+  }
+});
+
+test("reusing collision tombstones preserves live slots and reincarnated handles", () => {
+  const state = new SharedFilesystemState();
+  const stride = state.slots.length / SLOT_WORDS - 1;
+  const register = (handle: number) =>
+    state.register(handle, { kind: "file", ino: handle + 1, nlink: 1, size: 0, mtime: 1 });
+  register(0);
+  register(stride);
+  register(stride * 2);
+  const liveSlot = state.fileSlot(stride * 2);
+  state.unlink(stride);
+  register(stride * 2);
+  expect(state.fileSlot(stride * 2)).toBe(liveSlot);
+  expect(state.resources().files).toBe(2);
+  state.unlink(0);
+  register(stride);
+  expect(state.fileSlot(stride)).toBe(1);
+  expect(state.fileSlot(stride * 2)).toBe(liveSlot);
+  const previous = state.revision(stride * 2)!;
+  state.unlink(stride * 2);
+  expect(state.revision(stride * 2)).toBeUndefined();
+  register(stride * 2);
+  expect(state.fileSlot(stride * 2)).toBe(2);
+  expect(state.revision(stride * 2)).toBeGreaterThan(previous);
+  register(stride * 2);
+  expect(state.resources().files).toBe(2);
+  state.unlink(stride);
+  state.unlink(stride * 2);
+  expect(state.registeredHandles()).toEqual([]);
+});
+
+test("host namespace edits do not probe shared metadata for an unregistered root", () => {
+  const backend = new MemoryBackend();
+  const bytes = new Uint8Array();
+  for (let index = 0; index < 16; index++) backend.execute("writeFile", [`/node-${index}`], bytes);
+  const root = backend.fs.handleForNode(backend.fs.root);
+  expect(backend.shared.stat(root)).toBeUndefined();
+  const identity = spyOn(backend.shared, "identity");
+  const stat = spyOn(backend.shared, "stat");
+  const update = spyOn(backend.shared, "updateIdentity");
+  try {
+    expect(backend.execute("remove", ["/node-0"], bytes)).toBe(true);
+    expect(identity.mock.calls.some(([handle]) => handle === root)).toBe(false);
+    expect(stat.mock.calls.some(([handle]) => handle === root)).toBe(false);
+    expect(update.mock.calls.some(([handle]) => handle === root)).toBe(false);
+  } finally {
+    identity.mockRestore();
+    stat.mockRestore();
+    update.mockRestore();
+  }
+});
+
+test("a borrowing backend keeps registered parent identities and timestamps current", () => {
+  const clock = spyOn(Date, "now").mockReturnValue(10_000);
+  try {
+    const owner = new MemoryBackend();
+    const bytes = new Uint8Array();
+    const root = owner.execute("preopen", ["/"], bytes);
+    if (typeof root !== "number") throw new Error("preopen did not return a handle");
+    const alias = new MemoryBackend(undefined, undefined, owner);
+    alias.execute("setMtime", [root, 1], bytes);
+    const previous = alias.shared.identity(root)!;
+    alias.execute("writeFile", ["/child"], bytes);
+    expect(owner.shared.stat(root)!.mtime).toBeGreaterThan(1);
+    expect(owner.shared.identity(root)!.version).toBeGreaterThan(previous.version);
+    expect(owner.identity(root)).toEqual(owner.shared.identity(root)!);
+  } finally {
+    clock.mockRestore();
+  }
 });

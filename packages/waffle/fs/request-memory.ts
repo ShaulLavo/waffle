@@ -1,11 +1,16 @@
 import { FilesystemError } from "../core/filesystem.js";
 import { FilesystemSection } from "./section.js";
-import type { FilesystemIdentity } from "./protocol.js";
+import type { FilesystemConnection, FilesystemIdentity } from "./protocol.js";
+import type { ArenaSource, Headroom } from "../memory/reservations.js";
 import {
   Int32ArrayConstructor,
   BigInt64ArrayConstructor,
   BigIntConstructor,
   Uint8ArrayConstructor,
+  typedArrayFill,
+  typedArrayLength,
+  arrayBufferLength,
+  RangeErrorConstructor,
   SharedArrayBufferConstructor,
   objectFreeze,
   atomicsLoad,
@@ -22,9 +27,15 @@ import {
   isSharedArrayBuffer,
 } from "../proc/intrinsics.js";
 
+import { PAGE } from "./shared-capacity.js";
+
 export const REQUEST_HEADER = 32;
 export const REQUEST_BUDGET_BYTES = 32;
-export const REQUEST_CONTROL_BYTES = 64;
+export const REQUEST_CONTROL_BYTES = 72;
+/** Inputs above this size travel as a transferred private buffer. */
+export const REQUEST_INLINE_BYTES = PAGE;
+/** First-fit proof for 1,024 live blocks of at most 65,584 bytes; memory/reservations.ts mirrors it. */
+export const REQUEST_ARENA_BYTES = 134_316_032;
 export const FALLBACK_REQUEST_CONNECTION_BYTES = 64 * 1024 * 1024;
 /** @public Hard transport bounds; retained backing and live request counts are separate quotas. */
 export const FILESYSTEM_REQUEST_LIMITS = objectFreeze({
@@ -44,6 +55,7 @@ const C = {
   bytes: 5,
   retirementError: 6,
   sections: 7,
+  private: 8,
 } as const;
 const B = { generation: 4, probe: 5, pending: 7 } as const;
 export const REQUEST_CLIENT = 1,
@@ -60,6 +72,8 @@ export interface FilesystemRequestBuffer {
   readonly id: number;
   readonly offset: number;
   readonly length: number;
+  /** Private input length, zero when the input is inline. Never a reference to the payload. */
+  readonly privateBytes: number;
 }
 export function captureRequestMemory(memory: unknown): FilesystemRequestMemory {
   if (
@@ -99,6 +113,7 @@ interface Arena {
   readonly data: SharedArrayBuffer;
   revocation: SharedArrayBuffer;
   generation: number;
+  stranded: boolean;
 }
 export class FilesystemTransportError extends FilesystemError {
   readonly code = "CLOSED";
@@ -207,9 +222,21 @@ export function closeRequestMemory(
 ): void {
   update(memory, C.closed, (previous) => previous || (reason === "protocol" ? 3 : 1));
 }
+/** A retirement with an errno cannot prove which private ownership ended, so it refunds nothing. */
 export function retireRequestMemory(memory: FilesystemRequestMemory, errno = 0): void {
   update(memory, C.retirementError, () => errno);
   update(memory, C.retired, () => 1);
+  if (!errno) settlePrivateBytes(memory);
+}
+function settlePrivateBytes(memory: FilesystemRequestMemory): void {
+  const words = control(memory);
+  for (;;) {
+    const previous = atomicsLoad(words, C.private);
+    if (previous >> 32n !== BigIntConstructor(memory.generation)) return;
+    if (atomicsCompareExchange(words, C.private, previous, 0n) !== previous) continue;
+    refund(memory.budget, Number(previous & MASK));
+    return;
+  }
 }
 export function createRequestBudget(
   construction?: Construction,
@@ -248,6 +275,33 @@ export function retainResponseBytes(memory: FilesystemRequestMemory, bytes: numb
     held = false;
     refund(memory.budget, bytes);
   };
+}
+function reservePrivateBytes(memory: FilesystemRequestMemory, bytes: number): void {
+  if (!bytes) return;
+  charge(memory.budget, bytes);
+  const words = control(memory);
+  for (;;) {
+    const previous = atomicsLoad(words, C.private);
+    if (previous >> 32n !== BigIntConstructor(memory.generation)) {
+      refund(memory.budget, bytes);
+      throw new FilesystemTransportError("stale");
+    }
+    const next = tagged(memory.generation, Number(previous & MASK) + bytes);
+    if (atomicsCompareExchange(words, C.private, previous, next) === previous) return;
+  }
+}
+/** Retirement exchanges the tag away, so a late release cannot refund those bytes again. */
+function releasePrivateBytes(memory: FilesystemRequestMemory, bytes: number): void {
+  if (!bytes) return;
+  const words = control(memory);
+  for (;;) {
+    const previous = atomicsLoad(words, C.private);
+    if (previous >> 32n !== BigIntConstructor(memory.generation)) return;
+    const next = tagged(memory.generation, Number(previous & MASK) - bytes);
+    if (atomicsCompareExchange(words, C.private, previous, next) !== previous) continue;
+    refund(memory.budget, bytes);
+    return;
+  }
 }
 function claimRequest(budget: SharedArrayBuffer): void {
   const words = new Int32ArrayConstructor(budget);
@@ -301,7 +355,12 @@ export function requestBudgetBytes(budget: SharedArrayBuffer): number {
   return Number(atomicsLoad(new BigInt64ArrayConstructor(budget), 0));
 }
 function arenaMemory(arena: Arena, budget: SharedArrayBuffer): FilesystemRequestMemory {
-  return { budget, control: arena.control, data: arena.data, generation: arena.generation };
+  return {
+    budget,
+    control: arena.control,
+    data: arena.data,
+    generation: arena.generation,
+  };
 }
 function validateConnectionBytes(bytes: number): number {
   if (
@@ -314,9 +373,9 @@ function validateConnectionBytes(bytes: number): number {
 }
 export function createRequestArenaData(allocate: RequestArenaAllocator): SharedArrayBuffer {
   try {
-    return allocate(0, FILESYSTEM_REQUEST_LIMITS.connectionBytes);
+    return allocate(0, REQUEST_ARENA_BYTES);
   } catch (error) {
-    if (!(error instanceof RangeError)) throw error;
+    if (!(error instanceof RangeErrorConstructor)) throw error;
     return allocate(0, FALLBACK_REQUEST_CONNECTION_BYTES);
   }
 }
@@ -327,7 +386,9 @@ export class FilesystemRequestPool {
   readonly connectionBytes: number;
   constructor(
     readonly budget: SharedArrayBuffer,
-    connectionBytes = FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+    connectionBytes = REQUEST_ARENA_BYTES,
+    readonly source?: ArenaSource,
+    readonly allocate?: RequestArenaAllocator,
   ) {
     this.connectionBytes = validateConnectionBytes(connectionBytes);
   }
@@ -342,24 +403,37 @@ export class FilesystemRequestPool {
     atomicsStore(own, B.probe, previous);
     if (!same) throw new FilesystemError(2, "filesystem connector namespace mismatch");
   }
-  take(revocation: SharedArrayBuffer, construction?: Construction): FilesystemRequestMemory {
+  take(
+    revocation: SharedArrayBuffer,
+    construction?: Construction,
+    headroom: Headroom | null = null,
+  ): FilesystemRequestMemory {
     const generation = nextGeneration(this.budget);
     let arena: Arena | undefined;
     for (let i = 0; i < this.arenas.length; i++) {
       const candidate = this.arenas[i]!;
       if (atomicsLoad(new Int32ArrayConstructor(candidate.revocation), 0) !== 2) continue;
       if (!get(arenaMemory(candidate, this.budget), C.retired)) continue;
-      if (get(arenaMemory(candidate, this.budget), C.retirementError)) continue;
+      // The old client counts itself in while it publishes a request into this arena. A reaped
+      // agent can still be inside that section, mid-copy. Only an observed zero frees the arena:
+      // the count is never reset, and neither a timeout nor a terminate return stands in for
+      // it. Until then the arena stays here, charged, and a later take looks again.
+      if (get(arenaMemory(candidate, this.budget), C.sections)) continue;
+      if (get(arenaMemory(candidate, this.budget), C.retirementError)) {
+        this.strand(candidate);
+        continue;
+      }
       arena = candidate;
       break;
     }
-    if (!arena) arena = this.create(revocation, construction);
+    if (!arena) arena = this.create(revocation, construction, headroom);
     else {
       const previous = arenaMemory(arena, this.budget);
       update(previous, C.closed, () => 2);
       const abandoned = atomicsExchange(control(previous), C.count, 0n);
       atomicsAdd(new Int32ArrayConstructor(this.budget), B.pending, -Number(abandoned & MASK));
       atomicsStore(control(previous), C.bytes, 0n);
+      typedArrayFill(new Uint8ArrayConstructor(arena.data), 0);
       arena.control = this.createControl();
     }
     arena.revocation = revocation;
@@ -375,16 +449,26 @@ export class FilesystemRequestPool {
       generation,
     });
   }
-  private create(revocation: SharedArrayBuffer, construction?: Construction): Arena {
-    const control = this.createControl(construction);
+  private strand(arena: Arena): void {
+    if (arena.stranded) return;
+    arena.stranded = true;
+    this.source?.strand(arena.data);
+  }
+  private create(
+    revocation: SharedArrayBuffer,
+    construction?: Construction,
+    headroom: Headroom | null = null,
+  ): Arena {
     const allocate: RequestArenaAllocator = construction
       ? (bytes, maximum) => construction.allocateShared(bytes, maximum)
-      : (bytes, maximum) => createGrowableSharedArrayBuffer(bytes, maximum);
-    const data =
-      this.connectionBytes === FILESYSTEM_REQUEST_LIMITS.connectionBytes
+      : (this.allocate ?? ((bytes, maximum) => createGrowableSharedArrayBuffer(bytes, maximum)));
+    const control = this.createControl(construction);
+    const data = this.source
+      ? this.source.create(headroom)
+      : this.connectionBytes === REQUEST_ARENA_BYTES
         ? createRequestArenaData(allocate)
         : allocate(0, this.connectionBytes);
-    const arena = { control, data, revocation, generation: 0 };
+    const arena = { control, data, revocation, generation: 0, stranded: false };
     this.arenas[this.arenas.length] = arena;
     return arena;
   }
@@ -393,6 +477,7 @@ export class FilesystemRequestPool {
     try {
       const control =
         construction?.allocateShared(REQUEST_CONTROL_BYTES) ??
+        this.allocate?.(REQUEST_CONTROL_BYTES, REQUEST_CONTROL_BYTES) ??
         new SharedArrayBufferConstructor(REQUEST_CONTROL_BYTES);
       this.receipts[this.receipts.length] = control;
       return control;
@@ -408,11 +493,41 @@ export function requestMemoryRetired(memory: FilesystemRequestMemory): boolean {
 export function requestMemoryRetirementError(memory: FilesystemRequestMemory): number {
   return get(memory, C.retirementError);
 }
-function prefix(buffer: FilesystemRequestBuffer): Int32Array {
+/** Local cancellation is not a remote transport retirement receipt. */
+export async function waitForFilesystemTransportRetirement(
+  connection: Pick<FilesystemConnection, "requests" | "signal">,
+): Promise<void> {
+  const memory = connection.requests;
+  const signal = new Int32ArrayConstructor(connection.signal);
+  for (;;) {
+    const observed = atomicsLoad(signal, 0);
+    const failure = requestTransportError(memory);
+    if (failure) throw failure;
+    if (requestMemoryRetired(memory)) {
+      const errno = requestMemoryRetirementError(memory);
+      if (errno) throw new FilesystemError(errno, "filesystem transport retirement failed");
+      return;
+    }
+    const waiting = atomicsWaitAsync(signal, 0, observed);
+    if (waiting.async) await waiting.value;
+  }
+}
+
+type RequestLocation = Pick<FilesystemRequestBuffer, "memory" | "offset">;
+function prefix(buffer: RequestLocation): Int32Array {
   return new Int32ArrayConstructor(buffer.memory.data, buffer.offset - PREFIX, PREFIX / 4);
 }
-export function requestCells(buffer: FilesystemRequestBuffer): Int32Array {
+export function requestCells(buffer: RequestLocation): Int32Array {
   return new Int32ArrayConstructor(buffer.memory.data, buffer.offset, REQUEST_HEADER / 4);
+}
+function requestBlockBytes(capacity: number): number {
+  return Math.ceil((PREFIX + REQUEST_HEADER + capacity) / 16) * 16;
+}
+function logicalRequestBytes(block: number, privateBytes: number): number {
+  return privateBytes ? Math.max(block, requestBlockBytes(privateBytes)) : block;
+}
+export function requestMemoryExhausted(): FilesystemError {
+  return new FilesystemError(48, "filesystem connection request memory exhausted");
 }
 export function requestBytes(buffer: FilesystemRequestBuffer): Uint8Array {
   return new Uint8ArrayConstructor(
@@ -425,7 +540,10 @@ export function requestBytes(buffer: FilesystemRequestBuffer): Uint8Array {
 export class FilesystemRequestAllocator {
   private nextId = 1;
   readonly memory: FilesystemRequestMemory;
-  constructor(memory: FilesystemRequestMemory) {
+  constructor(
+    memory: FilesystemRequestMemory,
+    private readonly logicalLimit: number = FILESYSTEM_REQUEST_LIMITS.connectionBytes,
+  ) {
     this.memory = captureRequestMemory(memory);
     const failure = requestTransportError(this.memory);
     if (failure) throw failure;
@@ -436,23 +554,67 @@ export class FilesystemRequestAllocator {
     )
       throw new FilesystemError(28, "filesystem connection already has a client");
   }
-  allocate(capacity: number): FilesystemRequestBuffer {
+  /** Claims the count, logical bytes and full private charge before any payload exists. */
+  allocate(capacity: number, privateLength = 0): FilesystemRequestBuffer {
     const failure = requestTransportError(this.memory);
     if (failure) throw failure;
-    if (!Number.isSafeInteger(capacity) || capacity < 0) throw new FilesystemError(28);
+    if (get(this.memory, C.retired)) throw new FilesystemTransportError("stale");
+    if (
+      !Number.isSafeInteger(capacity) ||
+      capacity < 0 ||
+      !Number.isSafeInteger(privateLength) ||
+      privateLength < 0
+    )
+      throw new FilesystemError(28);
     if (this.nextId > 0x1fffffff) throw new FilesystemError(33);
     if (get(this.memory, C.count) >= FILESYSTEM_REQUEST_LIMITS.outstanding)
       throw new FilesystemError(6, "filesystem outstanding request quota exhausted");
     claimRequest(this.memory.budget);
     try {
-      return this.allocateBytes(capacity);
+      return this.admit(capacity, privateLength);
     } catch (error) {
       atomicsAdd(new Int32ArrayConstructor(this.memory.budget), B.pending, -1);
       throw error;
     }
   }
-  private allocateBytes(capacity: number): FilesystemRequestBuffer {
-    const needed = Math.ceil((PREFIX + REQUEST_HEADER + capacity) / 16) * 16;
+  private debitLogical(bytes: number): void {
+    const words = control(this.memory);
+    for (;;) {
+      const previous = atomicsLoad(words, C.bytes);
+      if (previous >> 32n !== BigIntConstructor(this.memory.generation))
+        throw new FilesystemTransportError("stale");
+      const value = Number(previous & MASK) + bytes;
+      if (value > this.logicalLimit) throw requestMemoryExhausted();
+      const next = tagged(this.memory.generation, value);
+      if (atomicsCompareExchange(words, C.bytes, previous, next) === previous) return;
+    }
+  }
+  private admit(capacity: number, privateLength: number): FilesystemRequestBuffer {
+    const needed = requestBlockBytes(capacity);
+    const logical = logicalRequestBytes(needed, privateLength);
+    this.debitLogical(logical);
+    try {
+      return this.reserveAndPlace(capacity, needed, privateLength);
+    } catch (error) {
+      update(this.memory, C.bytes, (value) => value - logical);
+      if (error instanceof RangeErrorConstructor) throw requestMemoryExhausted();
+      throw error;
+    }
+  }
+  private reserveAndPlace(
+    capacity: number,
+    needed: number,
+    privateLength: number,
+  ): FilesystemRequestBuffer {
+    reservePrivateBytes(this.memory, privateLength);
+    try {
+      return this.place(capacity, needed, privateLength);
+    } catch (error) {
+      releasePrivateBytes(this.memory, privateLength);
+      throw error;
+    }
+  }
+  private place(capacity: number, needed: number, privateLength: number): FilesystemRequestBuffer {
     const used = get(this.memory, C.used);
     let at = 0;
     while (at < used) {
@@ -460,16 +622,15 @@ export class FilesystemRequestAllocator {
       const length = atomicsLoad(block, 1);
       if (!Number(atomicsLoad(new BigInt64ArrayConstructor(this.memory.data, at + 8, 1), 0) & 3n)) {
         const available = this.coalesce(at, length, used);
-        if (available >= needed) return this.bind(at, needed, available, capacity);
+        if (available >= needed) return this.bind(at, needed, available, capacity, privateLength);
       }
       at += atomicsLoad(block, 1);
     }
     const maximum = sharedArrayBufferMaxByteLength(this.memory.data);
-    if (needed > maximum - used)
-      throw new FilesystemError(48, "filesystem connection request memory exhausted");
+    if (needed > maximum - used) throw requestMemoryExhausted();
     this.grow(used + needed);
     update(this.memory, C.used, () => used + needed);
-    return this.bind(used, needed, needed, capacity);
+    return this.bind(used, needed, needed, capacity, privateLength);
   }
   private coalesce(at: number, length: number, used: number): number {
     let total = length;
@@ -499,6 +660,7 @@ export class FilesystemRequestAllocator {
     needed: number,
     available: number,
     capacity: number,
+    privateLength: number,
   ): FilesystemRequestBuffer {
     const id = this.nextId++;
     const block = new Int32ArrayConstructor(this.memory.data, at, PREFIX / 4);
@@ -519,13 +681,25 @@ export class FilesystemRequestAllocator {
       id,
       offset: at + PREFIX,
       length: REQUEST_HEADER + capacity,
+      privateBytes: privateLength,
     });
     const cells = requestCells(buffer);
     for (let i = 0; i < REQUEST_HEADER / 4; i++) atomicsStore(cells, i, 0);
+    atomicsStore(cells, 7, privateLength);
     update(this.memory, C.count, (value) => value + 1);
-    update(this.memory, C.bytes, (value) => value + needed);
     return buffer;
   }
+}
+function requestPayloadBytes(cells: Int32Array, payload: unknown): number {
+  const declared = atomicsLoad(cells, 7);
+  if (payload === undefined) {
+    if (declared) throw new FilesystemError(28, "missing filesystem request payload");
+    return 0;
+  }
+  const actual = arrayBufferLength(payload);
+  if (actual === undefined || actual <= REQUEST_INLINE_BYTES || actual !== declared)
+    throw new FilesystemError(28, "invalid filesystem request payload");
+  return actual;
 }
 export function receiveRequestBuffer(
   memory: FilesystemRequestMemory,
@@ -533,6 +707,7 @@ export function receiveRequestBuffer(
   generation: number,
   offset: number,
   length: number,
+  payload?: unknown,
 ): FilesystemRequestBuffer {
   if (!current(memory) || generation !== memory.generation)
     throw new FilesystemTransportError("stale");
@@ -548,8 +723,8 @@ export function receiveRequestBuffer(
     offset + length > get(memory, C.used)
   )
     throw new FilesystemError(28, "invalid filesystem request descriptor");
-  const buffer = objectFreeze({ memory, id, offset, length });
-  const meta = prefix(buffer);
+  const location = { memory, offset };
+  const meta = prefix(location);
   if (
     atomicsLoad(meta, 0) !== id ||
     atomicsLoad(meta, 1) < length + PREFIX ||
@@ -561,7 +736,8 @@ export function receiveRequestBuffer(
     )
   )
     throw new FilesystemError(28, "stale filesystem request descriptor");
-  return buffer;
+  const privateBytes = requestPayloadBytes(requestCells(location), payload);
+  return objectFreeze({ memory, id, offset, length, privateBytes });
 }
 function ownership(generation: number, id: number, flags: number): bigint {
   return (
@@ -582,11 +758,14 @@ export function releaseRequestBuffer(
     if (previous >> 3n !== identity || !(previous & BigIntConstructor(role))) return;
     const next = previous & ~BigIntConstructor(role);
     if (atomicsCompareExchange(words, 0, previous, next) !== previous) continue;
-    if (!(next & 3n)) {
-      releaseCount(buffer.memory, bytes);
-    }
+    if (role === REQUEST_SERVICE) releasePrivateBytes(buffer.memory, buffer.privateBytes);
+    if (!(next & 3n)) releaseCount(buffer.memory, logicalRequestBytes(bytes, buffer.privateBytes));
     return;
   }
+}
+function livePrivateBytes(memory: FilesystemRequestMemory): number {
+  const word = atomicsLoad(control(memory), C.private);
+  return word >> 32n === BigIntConstructor(memory.generation) ? Number(word & MASK) : 0;
 }
 export function requestMemoryResources(memory: FilesystemRequestMemory) {
   const stale = get(memory, C.closed) === 2;
@@ -597,6 +776,7 @@ export function requestMemoryResources(memory: FilesystemRequestMemory) {
     maximumBytes: sharedArrayBufferMaxByteLength(memory.data),
     requests: stale ? 0 : get(memory, C.count),
     pendingBytes: stale ? 0 : get(memory, C.bytes),
+    privateBytes: livePrivateBytes(memory),
   };
 }
 
@@ -625,18 +805,17 @@ export function requestMemorySections(memory: FilesystemRequestMemory): number {
   return get(memory, C.sections);
 }
 
-export function requestLengths(buffer: FilesystemRequestBuffer): {
+export function requestLengths(
+  buffer: FilesystemRequestBuffer,
+  input: Uint8Array,
+): {
   inputLength: number;
   dataLength: number;
 } {
   const cells = requestCells(buffer);
   const inputLength = atomicsLoad(cells, 1),
     dataLength = atomicsLoad(cells, 2);
-  if (
-    inputLength < 0 ||
-    dataLength < 0 ||
-    inputLength + dataLength > buffer.length - REQUEST_HEADER
-  )
+  if (inputLength < 0 || dataLength < 0 || inputLength + dataLength > typedArrayLength(input))
     throw new FilesystemError(28, "invalid filesystem request payload bounds");
   return { inputLength, dataLength };
 }

@@ -24,11 +24,11 @@ test("no module compilation before network(), and exactly one instance belongs t
     const Instance = WebAssembly.Instance;
     WebAssembly.compile = (...args) => { compiled++; return compile(...args); };
     WebAssembly.Instance = class extends Instance { constructor(...args) { super(...args); instances++; } };
-    const { createRuntime } = await import(${JSON.stringify(root)});
+    const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
     const { createRing } = await import(${JSON.stringify(ring)});
     assert.equal(compiled, 0); assert.equal(instances, 0);
     for (let index = 0; index < 2; index++) {
-      const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
+      const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
       try {
         await runtime.filesystem.listFiles("/");
         const unregisterAdapter = runtime.registerAdapter("unused", () => { throw Error("must stay inactive"); });
@@ -62,7 +62,11 @@ test("no module compilation before network(), and exactly one instance belongs t
   expect(output).toContain("compile=1, instances=2, helpers=4");
 });
 
-for (const entry of ["../browser/net/host.ts", "./network-browser-worker.ts"]) {
+for (const entry of [
+  "../browser/net/host.ts",
+  "./network-browser-worker.ts",
+  "../browser/preview1-worker.ts",
+]) {
   test(`${entry} excludes owner, helper, loader, native and WASM inputs from the guest graph`, async () => {
     const result = await Bun.build({
       entrypoints: [new URL(entry, import.meta.url).pathname],
@@ -73,7 +77,7 @@ for (const entry of ["../browser/net/host.ts", "./network-browser-worker.ts"]) {
     if (!result.metafile) throw new Error("missing guest graph");
     expect(
       Object.keys(result.metafile.inputs).filter((path) =>
-        /browser\/net\/(?:module|namespace|runtime|helper)\.ts$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
+        /browser\/net\/(?:module|namespace|runtime|helper|outbound-socket)\.ts$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
           path,
         ),
       ),
@@ -101,9 +105,9 @@ test("disposal during a held module load creates no orphan instance", () => {
         return { ...instance, dispose() { disposals++; instance.dispose(); } };
       } };
     } }));
-    const { createRuntime } = await import(${JSON.stringify(root)});
+    const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
     const options = { filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } };
-    const runtime = createRuntime(options);
+    const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), ...options });
     const outcome = runtime.network().then(() => "unexpected", error => error.message);
     await started.promise;
     const disposal = runtime.dispose();
@@ -111,7 +115,7 @@ test("disposal during a held module load creates no orphan instance", () => {
     await disposal;
     assert.match(await outcome, /disposed/i);
     assert.equal(instances, 0); assert.equal(disposals, 0);
-    const next = createRuntime(options);
+    const next = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), ...options });
     await next.network();
     assert.equal(instances, 1);
     await next.dispose(); await next.dispose();
@@ -212,8 +216,8 @@ for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]
         await release.promise;
         throw failure;
       } }));
-      const { createRuntime } = await import(${JSON.stringify(root)});
-      const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
+      const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
+      const runtime = createRuntime({ sharedMemory: declareSharedMemoryPlatform({ kind: "unbounded" }), filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } });
       const outcome = runtime.network().then(() => ({ resolved: true }), reason => ({ resolved: false, reason }));
       await started.promise;
       const disposal = runtime.dispose().then(() => ({ resolved: true }), reason => ({ resolved: false, reason }));
@@ -230,5 +234,22 @@ for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]
     expect(
       execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
     ).toContain("loader rejection preserved by identity during disposal; accessor reads=0");
+  });
+}
+
+for (const entry of ["../index.ts", "../browser/net/helper.ts"]) {
+  test(`${entry} never imports relay or carrier implementations`, async () => {
+    const result = await Bun.build({
+      entrypoints: [new URL(entry, import.meta.url).pathname],
+      target: "browser",
+      metafile: true,
+    });
+    expect(result.success).toBe(true);
+    if (!result.metafile) throw Error("missing no-relay import graph");
+    expect(
+      Object.keys(result.metafile.inputs).filter((path) =>
+        /waffle-relay|(?:^|\/)carriers?\//.test(path),
+      ),
+    ).toEqual([]);
   });
 }

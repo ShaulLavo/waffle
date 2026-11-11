@@ -1,24 +1,29 @@
-import { FilesystemError, PAGE } from "./protocol.js";
+import { FilesystemError } from "./protocol.js";
+import { DATA_PAGE_BYTES } from "./storage-geometry.js";
 
 export class ReaderPagePressure extends Error {}
 
 /** Only the retained partial page needs replacement before a shrink. */
 export function truncateBoundaryEnd(size: number, old: number): number {
-  return size % PAGE ? Math.min(old, Math.ceil(size / PAGE) * PAGE) : size;
+  return size % DATA_PAGE_BYTES
+    ? Math.min(old, Math.ceil(size / DATA_PAGE_BYTES) * DATA_PAGE_BYTES)
+    : size;
 }
 
-export interface RetainedSharedPage {
-  readonly physical: number;
-  readonly bytes: Uint8Array;
-}
-
-/** Internal backing only. Public readers copy bytes and never receive these descriptors. */
+/** Internal backing only. Public readers copy bytes and never receive these physical IDs. */
 export class SharedPageVersion {
   private closed = false;
   constructor(
     readonly offset: number,
     readonly length: number,
-    private readonly pages: readonly RetainedSharedPage[],
+    private readonly pages: Uint32Array,
+    private readonly copyPage: (
+      physical: number,
+      target: Uint8Array,
+      targetAt: number,
+      start: number,
+      count: number,
+    ) => void,
     private readonly retire: () => void,
   ) {}
   read(offset: number, length: number): Uint8Array<ArrayBuffer> {
@@ -35,10 +40,13 @@ export class SharedPageVersion {
     const out = new Uint8Array(length);
     let position = offset;
     while (position < offset + length) {
-      const page = this.pages[Math.floor(position / PAGE) - Math.floor(this.offset / PAGE)]!;
-      const start = position % PAGE;
-      const count = Math.min(PAGE - start, offset + length - position);
-      out.set(page.bytes.subarray(start, start + count), position - offset);
+      const physical =
+        this.pages[
+          Math.floor(position / DATA_PAGE_BYTES) - Math.floor(this.offset / DATA_PAGE_BYTES)
+        ]!;
+      const start = position % DATA_PAGE_BYTES;
+      const count = Math.min(DATA_PAGE_BYTES - start, offset + length - position);
+      this.copyPage(physical, out, position - offset, start, count);
       position += count;
     }
     return out;

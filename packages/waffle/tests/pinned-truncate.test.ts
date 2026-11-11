@@ -1,16 +1,16 @@
 import { expect, test } from "bun:test";
-import { PAGE } from "../fs/protocol";
+import { DATA_PAGE_BYTES as PAGE, DATA_PAGES_PER_SEGMENT } from "../fs/storage-geometry";
 import { residentReadFixture } from "./fixtures/workspace-read";
 import { measureTruncatePages } from "./fixtures/truncate-page-work";
 
 for (const { pages, size, copies } of [
-  { pages: 256, size: 0, copies: 0 },
-  { pages: 255, size: 1, copies: 1 },
-  { pages: 128, size: 1, copies: 1 },
-  { pages: 256, size: PAGE, copies: 0 },
+  { pages: DATA_PAGES_PER_SEGMENT, size: 0, copies: 0 },
+  { pages: DATA_PAGES_PER_SEGMENT - 1, size: 1, copies: 1 },
+  { pages: DATA_PAGES_PER_SEGMENT / 2, size: 1, copies: 1 },
+  { pages: DATA_PAGES_PER_SEGMENT, size: PAGE, copies: 0 },
 ]) {
   test(`public pinned truncate ${pages} pages to ${size} reserves and copies only ${copies} pages`, async () => {
-    const value = await residentReadFixture(pages * PAGE, 256 * PAGE);
+    const value = await residentReadFixture(pages * PAGE, DATA_PAGES_PER_SEGMENT * PAGE);
     const work = measureTruncatePages(value.backend.shared);
     try {
       const first = await value.workspace.pin("/file");
@@ -58,7 +58,10 @@ for (const { pages, size, copies } of [
 }
 
 test("required partial-page COW failure preserves identity, publication and old bytes", async () => {
-  const value = await residentReadFixture(256 * PAGE, 256 * PAGE);
+  const value = await residentReadFixture(
+    DATA_PAGES_PER_SEGMENT * PAGE,
+    DATA_PAGES_PER_SEGMENT * PAGE,
+  );
   const work = measureTruncatePages(value.backend.shared);
   try {
     const pin = await value.workspace.pin("/file");
@@ -76,7 +79,7 @@ test("required partial-page COW failure preserves identity, publication and old 
     expect(value.backend.identity(value.handle)).toEqual(identity);
     expect(value.backend.shared.publication!.cut()).toEqual(cut);
     expect(value.backend.shared.publication!.stopped).toBe(false);
-    expect(value.backend.shared.resources().usedBytes).toBe(256 * PAGE);
+    expect(value.backend.shared.resources().usedBytes).toBe(DATA_PAGES_PER_SEGMENT * PAGE);
     const read = await pin.value.read({ offset: 0, length: 3 });
     expect(read.kind).toBe("ok");
     if (read.kind === "ok") expect(read.value.bytes).toEqual(new Uint8Array(3).fill(65));
@@ -90,7 +93,7 @@ test("required partial-page COW failure preserves identity, publication and old 
 });
 
 test("shrinking an already partial last page preserves its lease and clears later extension", async () => {
-  const value = await residentReadFixture(PAGE + 9, 256 * PAGE);
+  const value = await residentReadFixture(PAGE + 9, DATA_PAGES_PER_SEGMENT * PAGE);
   const work = measureTruncatePages(value.backend.shared);
   try {
     const pin = await value.workspace.pin("/file");
@@ -112,7 +115,7 @@ test("shrinking an already partial last page preserves its lease and clears late
 });
 
 test("writeFile replacement still clears preallocated bytes before later extension", async () => {
-  const value = await residentReadFixture(PAGE + 9, 256 * PAGE);
+  const value = await residentReadFixture(PAGE + 9, DATA_PAGES_PER_SEGMENT * PAGE);
   try {
     const pin = await value.workspace.pin("/file");
     if (pin.kind !== "ok") throw new Error(pin.kind);

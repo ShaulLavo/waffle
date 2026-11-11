@@ -12,6 +12,8 @@ import type { RuntimeNetworkLookupOptions } from "./address.js";
 
 /** Results of the bun_wasm host functions (docs/host-abi.md). */
 export const OK = 0;
+/** The helper accepted an outbound connect and will publish Open or Error later. */
+export const TCP_PENDING = 1;
 export const ERROR = -1;
 export const AGAIN = -2;
 export const BADF = -3;
@@ -39,6 +41,8 @@ export const Kind = {
   Writable: 10,
   /** Lookup result head (JSON RuntimeNetworkLookupResult[]). */
   LookupHead: 11,
+  /** Outbound connector stream opened (JSON { local, peer }). */
+  Open: 12,
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 
@@ -58,6 +62,8 @@ export interface NetError {
   code?: string;
   syscall?: string;
   hostname?: string;
+  address?: string;
+  port?: number;
 }
 
 export interface PeerAddr {
@@ -85,6 +91,8 @@ export type TcpCommand =
   | { type: "tcp-listen"; id: number; port: number; host: string }
   | { type: "tcp-connect"; id: number; port: number; host: string }
   | { type: "tcp-write"; id: number; data: Uint8Array }
+  /** Descriptor-only readiness query; reply status is 1 when writable, 0 while blocked. */
+  | { type: "tcp-ready"; id: number }
   | { type: "unix-listen"; id: number; path: string; unlinkOnClose: boolean }
   | { type: "unix-connect"; id: number; path: string }
   /** Acknowledged path-listener close: replies after the requested unlink settles. */

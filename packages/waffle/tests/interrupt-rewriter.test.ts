@@ -423,9 +423,18 @@ test("refuses GC, legacy exception handling and multi-memory", () => {
   for (const bytes of proposals) refused(bytes);
 });
 
+test("rejects a spawn_error import with the wrong signature", () => {
+  const source = binary(
+    types(type([0x7f, 0x7f], [0x7f])),
+    section(2, vec([name("runtime_proc").concat(name("spawn_error"), [0, 0])])),
+  );
+  expect(() => rewriteInterrupts(source)).toThrow(/signature/i);
+});
+
 test("admits exact runtime_proc imports and rejects forged or malformed imports", () => {
   const imports = [
     ["spawn", type([0x7f, 0x7f], [0x7f])],
+    ["spawn_error", type([0x7f, 0x7f, 0x7f], [0x7f])],
     ["job_of", type([0x7f], [0x7f])],
     ["wait", type([0x7f, 0x7f], [0x7f])],
     ["wait_job", type([0x7f, 0x7f, 0x7f], [0x7f])],

@@ -1,3 +1,4 @@
+import type { ProcessObservationTransfer } from "./observation.js";
 import {
   isInstance,
   sharedArrayBufferByteLength,
@@ -20,6 +21,7 @@ import {
 } from "./types.js";
 
 export interface ProcessRecord {
+  readonly observation: ProcessObservationTransfer;
   readonly pid: number;
   readonly parentPid: number;
   controlParent?: number;
@@ -32,6 +34,11 @@ export interface ProcessRecord {
   readonly signalState: ControlCells;
   readonly outcome: OutcomeWord;
   readonly request: Readonly<SpawnRequest> | null;
+  nativeReturn?: () => void;
+  nativeAcquisition:
+    | { kind: "not-invoked" }
+    | { kind: "invoked" }
+    | { kind: "failed"; error: unknown };
   state: "reserved" | "starting" | "running" | "exited";
   result: ProcessExit | null;
   /** Job completion additionally waits for filesystem admission fences. */

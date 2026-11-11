@@ -1,0 +1,215 @@
+name: Waffle relay image
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/relay-image.yml"
+      - ".github/actions/release-downloads/**"
+      - ".github/actions/save-release-downloads/**"
+      - ".github/actions/setup-tools/**"
+      - "tools/ci-*.ts"
+      - "packages/waffle-relay/container/**"
+      - "packages/waffle-relay/scripts/*relay-image*.ts"
+      - "packages/waffle-relay/scripts/prepare-native-container.ts"
+      - "packages/waffle-relay/tests/tcp-native-fixture.ts"
+      - "packages/waffle-relay/tests/*container.test.ts"
+      - "packages/waffle-relay/tests/relay-image*.test.ts"
+      - "packages/waffle-relay/tests/fixtures/relay-image-*.ts"
+      - "packages/waffle-relay/docs/native-container.md"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Fixed image context to qualify and publish
+        type: choice
+        required: true
+        default: ws
+        options: [ws, native]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+  IMAGE: ghcr.io/shaullavo/waffle-relay
+
+jobs:
+  qualify:
+    if: ${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    name: qualify (${{ matrix.variant }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'pull_request' && '["ws","native"]' || format('["{0}"]', inputs.variant)) }}
+    outputs:
+      artifact-id: ${{ steps.image.outputs.artifact-id }}
+      receipt-sha256: ${{ steps.qualify.outputs.receipt-sha256 }}
+    env:
+      IMAGE_VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
+        with:
+          bun-version: "1.4.4"
+          node-version: "26.12.1"
+      - name: Qualify and save the actual selected image, then prove same-run reload
+        id: qualify
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/relay-image"
+          container="relay-qualification-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$IMAGE_VARIANT"
+          owned=0
+          cleanup() {
+            result=$?
+            trap - EXIT INT TERM
+            cleanup_result=0
+            if [ "$owned" = 1 ] && docker container inspect "$container" >/dev/null 2>&1; then docker rm -f "$container" || cleanup_result=1; fi
+            if [ "$owned" = 1 ] && docker image inspect waffle-relay:validated >/dev/null 2>&1; then docker image rm waffle-relay:validated || cleanup_result=1; fi
+            if [ "$owned" = 1 ]; then rm -rf "$scratch"; fi
+            test ! -e "$scratch" || cleanup_result=1
+            ! docker container inspect "$container" >/dev/null 2>&1 || cleanup_result=1
+            ! docker image inspect waffle-relay:validated >/dev/null 2>&1 || cleanup_result=1
+            printf '{"productExit":%s,"cleanupExit":%s,"qualificationResourcesRemoved":%s}\n' "$result" "$cleanup_result" "$([ "$cleanup_result" = 0 ] && echo true || echo false)"
+            test "$result" = 0 && test "$cleanup_result" = 0
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          docker image ls --no-trunc
+          docker container ls --all --no-trunc
+          test ! -e "$scratch"
+          if docker container inspect "$container" >/dev/null 2>&1; then exit 1; fi
+          if docker image inspect waffle-relay:validated >/dev/null 2>&1; then exit 1; fi
+          owned=1
+          mkdir "$scratch"
+          node packages/waffle-relay/scripts/prepare-relay-image.ts "$scratch"
+          source=$(jq -r .specification.source "$scratch/selection.json")
+          version=$(jq -r .specification.version "$scratch/selection.json")
+          docker build --platform linux/amd64 --provenance=false --sbom=false --tag waffle-relay:validated \
+            --build-arg SOURCE_COMMIT="$source" --build-arg RELEASE_VERSION="$version" "$scratch/context"
+          ln -s /app/node_modules "$scratch/qualification/node_modules"
+          ln -s /app/node_modules/waffle-relay/dist "$scratch/qualification/dist"
+          for entry in verify.ts tests/tcp-native-fixture.ts; do
+            docker run --name "$container" --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+              --mount "type=bind,src=$scratch/qualification,dst=/qualification,readonly" \
+              --entrypoint /usr/local/bin/node waffle-relay:validated "/qualification/$entry"
+          done
+          config=$(jq -r .specification.configSha256 "$scratch/selection.json")
+          lock=$(jq -r .specification.lockSha256 "$scratch/selection.json")
+          docker run --name "$container" --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint /usr/local/bin/node waffle-relay:validated --input-type=module -e \
+            'import assert from "node:assert/strict"; import {readFileSync} from "node:fs"; import {createHash} from "node:crypto"; for(const [file,expected] of [["relay.json",process.argv[1]],["package-lock.json",process.argv[2]]]) assert.equal(createHash("sha256").update(readFileSync("/app/"+file)).digest("hex"),expected);' "$config" "$lock"
+          mkdir "$RUNNER_TEMP/image"
+          docker save waffle-relay:validated | gzip -1 > "$RUNNER_TEMP/image/image.tar.gz"
+          RECEIPT_SHA256=$(node packages/waffle-relay/scripts/relay-image-custody.ts record "$RUNNER_TEMP/image")
+          export RECEIPT_SHA256
+          docker image rm waffle-relay:validated
+          node packages/waffle-relay/scripts/relay-image-custody.ts load "$RUNNER_TEMP/image"
+          cat "$RUNNER_TEMP/image/receipt.json"
+          printf 'receipt-sha256=%s\n' "$RECEIPT_SHA256" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        id: image
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'ShaulLavo/waffle'
+        with:
+          name: relay-image-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}-${{ github.sha }}
+          path: ${{ runner.temp }}/image
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Remove the task's saved image after its sole consumer
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/image"
+
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'ShaulLavo/waffle'
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_VARIANT: ${{ inputs.variant }}
+      RECEIPT_SHA256: ${{ needs.qualify.outputs.receipt-sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/release-downloads
+      - uses: ./.github/actions/setup-tools
+        with:
+          bun-version: "1.4.4"
+          node-version: "26.12.1"
+      - name: Require the same-run producer's exact artifact and receipt
+        env:
+          ARTIFACT_ID: ${{ needs.qualify.outputs.artifact-id }}
+        run: |
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.qualify.outputs.artifact-id }}
+          merge-multiple: true
+          path: image
+      - name: Verify source, variant, archive and actual saved config before login
+        run: node packages/waffle-relay/scripts/relay-image-custody.ts load image
+      - name: Require the hosted runner Buildx without downloading another release
+        run: docker buildx version
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish only the approved package and selected source tag
+        run: |
+          docker tag waffle-relay:validated "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA"
+          docker push "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA"
+      - name: Prove anonymous immutable pull and actual manifest/config/layer correspondence
+        run: |
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA")
+          [[ "$reference" =~ ^ghcr.io/shaullavo/waffle-relay@sha256:[0-9a-f]{64}$ ]]
+          mkdir "$RUNNER_TEMP/anonymous"
+          if [ -d "$HOME/.docker/cli-plugins" ]; then
+            ln -s "$HOME/.docker/cli-plugins" "$RUNNER_TEMP/anonymous/cli-plugins"
+          fi
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous" docker pull --platform linux/amd64 "$reference"
+          DOCKER_CONFIG="$RUNNER_TEMP/anonymous" docker buildx imagetools inspect --raw "$reference" > image/published-manifest.json
+          config=$(jq -r .config.digest image/published-manifest.json)
+          [[ "$config" =~ ^sha256:[0-9a-f]{64}$ ]]
+          token=$(curl --fail --silent --show-error 'https://ghcr.io/token?service=ghcr.io&scope=repository:shaullavo/waffle-relay:pull' | jq -er .token)
+          curl --fail --silent --show-error --location --header "Authorization: Bearer $token" \
+            "https://ghcr.io/v2/shaullavo/waffle-relay/blobs/$config" --output image/published-config.json
+          REGISTRY_PULL_TOKEN="$token" node packages/waffle-relay/scripts/relay-image-custody.ts published image "$reference"
+          printf 'Published and anonymously pulled %s.\n\nVariant %s, exact Origin, embedded relay.json TCP allowlist.\n' "$reference" "$IMAGE_VARIANT" >> "$GITHUB_STEP_SUMMARY"
+          cat image/published-manifest.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: relay-image-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.variant }}-${{ github.sha }}
+          path: |
+            image/published-manifest.json
+            image/published-config.json
+            image/reference
+            image/receipt.json
+          retention-days: 7
+      - name: Remove task-owned local publication resources
+        if: always()
+        run: |
+          if docker image inspect "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA" >/dev/null 2>&1; then docker image rm "$IMAGE:$IMAGE_VARIANT-$GITHUB_SHA"; fi
+          if docker image inspect waffle-relay:validated >/dev/null 2>&1; then docker image rm waffle-relay:validated; fi
+          rm -rf image "$RUNNER_TEMP/anonymous"
+      - uses: ./.github/actions/save-release-downloads
+        if: always() && env.CI_RELEASE_CACHE_INITIAL != ''

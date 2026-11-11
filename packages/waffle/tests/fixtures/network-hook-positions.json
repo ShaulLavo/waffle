@@ -1,0 +1,16 @@
+{
+  "networkBrowserCases": ["networkBrowserCases.body.body[17].block.body[33]:controller"],
+  "createRelayBrowserFixture": [
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[0]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[2]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[4]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[8]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[10]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[15].consequent.body[2]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[15].consequent.body[4]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[17]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[19]:cancellation",
+    "createRelayBrowserFixture.body.body[15].argument.properties[1].value.body.body[21]:cancellation"
+  ],
+  "waitFor": ["waitFor.body.body[0]:cancellation", "waitFor.body.body[2].body.body[0]:cancellation"]
+}

@@ -1,3 +1,6 @@
+import { admitProcessObservation, captureNativeReturn } from "../proc/observation.js";
+import { outcomeWord, serializeOutcome } from "../proc/outcome.js";
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { NotificationWaitScope } from "../browser/notification-wait.js";
 import { NetHost } from "../browser/net/host.js";
@@ -63,6 +66,9 @@ export async function bootstrapNotificationCase(
   const service = new FilesystemService(new MemoryBackend());
   const pair = createFilesystemConnection();
   const bridge = createNotificationBridge(helperUrl);
+  const outcome = outcomeWord();
+  const observation = admitProcessObservation(1, outcome);
+  const returned = captureNativeReturn(observation);
   const worker = new Worker(workerUrl, { type: "module" });
   const notices = new Notices();
   const marker = new Int32Array(new SharedArrayBuffer(16));
@@ -71,6 +77,9 @@ export async function bootstrapNotificationCase(
   try {
     worker.postMessage(
       {
+        controlGrant: { kind: "unbounded" },
+        outcome: serializeOutcome(outcome),
+        observation,
         module: processContextGuest,
         filesystem: pair.client,
         notifications: bridge.connection,
@@ -92,7 +101,10 @@ export async function bootstrapNotificationCase(
     return { mode, entries: marker[0], cleanups: marker[1], relayReply: marker[3] };
   } finally {
     await bridge.dispose();
-    await worker.terminate();
+    const native: { terminate(): void | Promise<void> } = worker;
+    const pending = native.terminate();
+    if (pending) await pending;
+    returned();
     await service.shutdown();
   }
 }
@@ -187,6 +199,7 @@ export async function brokerNotificationCase(
   const diagnostics: unknown[] = [];
   let hostCleanups = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: new ProcessTable(identities),
     registry,
@@ -237,7 +250,7 @@ export async function brokerNotificationCase(
     prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
   });
   try {
-    await broker.adoptRuntimeRoot(transport);
+    await broker.adoptRuntimeRoot(transport, { memory: [] });
     const pid = client.spawn(client.pid, {
       executable: "notification",
       argv: [],
@@ -280,10 +293,7 @@ export async function brokerNotificationCase(
       "guest termination began before relay disposal settled",
     );
     const unused = termination.workers.filter((worker) => !worker.helper && worker.requests === 0);
-    check(
-      unused.length === 2 && unused.every((worker) => worker.terminations === 1),
-      "unused idle workers were not disposed exactly once independently of the relay",
-    );
+    check(unused.length === 0, "broker constructed an unrequested idle worker");
     termination.release();
     const failure = await settled;
     check(

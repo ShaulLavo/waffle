@@ -10,6 +10,8 @@ publish.workspace = true
 default = []
 # Needs Waffle's runtime_proc.inherited_fd launch descriptor list.
 cooperative-wasi = []
+# Development-only stack measurements for downstream regression tests.
+stack-observation = []
 
 [dependencies]
 futures.workspace = true

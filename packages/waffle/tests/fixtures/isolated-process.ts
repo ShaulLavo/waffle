@@ -16,7 +16,10 @@ const modules = readdirSync(processRoot).filter(
  */
 export async function isolatedProcess() {
   const atomics = Object.create(Atomics) as typeof Atomics;
-  const hooks = { typedArraySubarray: native.typedArraySubarray };
+  const hooks = {
+    typedArraySubarray: native.typedArraySubarray,
+    encodeUtf8Prefix: native.encodeUtf8Prefix,
+  };
   const intrinsics: Record<string, unknown> = { ...native };
   for (const key of Object.keys(native)) {
     if (!key.startsWith("atomics")) continue;
@@ -27,6 +30,8 @@ export async function isolatedProcess() {
   }
   intrinsics.typedArraySubarray = (view: Uint8Array, begin?: number, end?: number) =>
     hooks.typedArraySubarray(view, begin, end);
+  intrinsics.encodeUtf8Prefix = (text: string, capacity: number) =>
+    hooks.encodeUtf8Prefix(text, capacity);
   const result = await Bun.build({
     entrypoints: ["isolated-process-entry"],
     target: "node",

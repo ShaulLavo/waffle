@@ -14,7 +14,7 @@ function authority(failAt = Infinity) {
   const failure = new Error("partial restored publication allocation");
   const memory = new MemoryBudget(
     {
-      bytes: 64 * 1024 * 1024,
+      bytes: 128 * 1024 * 1024,
       producers: { allocations: 128, references: 256, leases: 16 },
       progress: { bytes: 0, allocations: 0, references: 0, leases: 0 },
       waiters: 0,
@@ -79,8 +79,8 @@ test("late selected checkpoint uses the real restored root and one canonical led
     expect(publication.buffers.history).toBe(saved.cut.history);
     expect(pair.root.connection.shared).toBe(rootBacking);
     expect(first.backend.shared.buffer).toBe(rootBacking);
-    expect(first.specs).toHaveLength(117);
-    expect(first.specs.filter((spec) => spec.bytes > 1024 * 1024)).toHaveLength(1);
+    expect(first.specs).toHaveLength(22);
+    expect(first.specs.filter((spec) => spec.bytes > 2 * 1024 * 1024)).toHaveLength(1);
     expect(first.memory.snapshot().obligations).toBe(0);
     expect(first.memory.snapshot().producerFree.allocations).toBe(before.producerFree.allocations);
     const domain = first.backend.shared.publication;
@@ -105,7 +105,7 @@ test("late selected checkpoint uses the real restored root and one canonical led
       expect(attached.root.connection.publication?.session.serial).toBeGreaterThan(
         publication.buffers.sessionLimit,
       );
-      expect(second.specs).toHaveLength(117);
+      expect(second.specs).toHaveLength(22);
     } finally {
       await second.close();
     }
@@ -138,7 +138,7 @@ test("late restore rejects limits and exhausted frontier without publishing or l
 
 test("partial restored allocation releases private fixed backing while escaped restored sessions remain charged", async () => {
   const seed = publicationAdapter.fixture();
-  const privateOwner = await restored(seed, undefined, 75);
+  const privateOwner = await restored(seed, undefined, 12);
   const rootOnly = privateOwner.memory.snapshot().allocated;
   try {
     expect(() => privateOwner.construction.attach(privateOwner.backend, seed)).toThrow(

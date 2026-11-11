@@ -1,3 +1,4 @@
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { afterEach, expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
@@ -119,7 +120,13 @@ test("shared worker root and spawned child retain their own cwd through broker a
   const f = fixture();
   const transport = createWorkerProcessTransport({ pid: 100, job: 100, cwd: "/root/🧇" });
   const state = workerProcessState(transport);
-  f.supervisor.createRoot({ pid: state.pid, job: state.job, cwd: transport.cwd, ...state.signals });
+  f.supervisor.createRoot({
+    pid: state.pid,
+    job: state.job,
+    cwd: transport.cwd,
+    observation: transport,
+    ...state.signals,
+  });
   const descriptors = new DescriptorTable();
   cleanups.push(() => descriptors.dispose());
   const messages: WorkerProcessMessage[] = [];
@@ -195,6 +202,7 @@ test("browser root adoption preserves explicit cwd across lazy activation", asyn
   const f = fixture();
   const identities = f.supervisor.table.identities;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table: f.supervisor.table,
     registry: new ExecutableRegistry(),
@@ -216,7 +224,7 @@ test("browser root adoption preserves explicit cwd across lazy activation", asyn
     cwd: "/shell/root",
   });
   transport.data = { filesystem: createFilesystemIdentity() };
-  await broker.adoptRuntimeRoot(transport);
+  await broker.adoptRuntimeRoot(transport, { memory: [] });
   const supervisor = await broker.ready();
   expect(supervisor.cwd(transport.pid)).toBe("/shell/root");
   const nativeRoot = { cwd: "/external/root" };

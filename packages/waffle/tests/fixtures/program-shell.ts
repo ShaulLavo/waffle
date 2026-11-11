@@ -18,6 +18,7 @@ export async function createProgramShell(runtime: Runtime, tables: DescriptorTab
   transport.data = { filesystem: runtime.filesystem.createIdentity() };
   const output: string[] = [];
   await service.adoptRuntimeRoot(transport, {
+    memory: [],
     output: (_fd, bytes) => output.push(new TextDecoder().decode(bytes)),
   });
   const notices: WorkerProcessMessage[] = [];

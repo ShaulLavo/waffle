@@ -1,6 +1,10 @@
 import { Glob, YAML } from "bun";
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -31,10 +35,12 @@ for (const name of ["browser", "libc"]) {
   test(`${name} waits for paths and runs on manual dispatch or filter failure`, () => {
     const job = record(jobs[name]);
     // libc is also the single producer of the memory group fixture the browser gate consumes.
-    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm", "libc"] : "changes");
+    expect(job.needs).toEqual(
+      name === "browser" ? ["changes", "network-wasm", "libc"] : ["changes", "network-wasm"],
+    );
     const producer = name === "libc" ? " || needs.changes.outputs.browser == 'true'" : "";
     expect(job.if).toBe(
-      `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer}) }}`,
+      `\${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true'${producer})) }}`,
     );
     expect(record(changes.outputs)[name]).toBe(`\${{ steps.paths.outputs.${name} }}`);
   });
@@ -72,22 +78,181 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("release workflow publishes only the runtime tarball and checksum", () => {
-  const release = record(
-    YAML.parse(
-      readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
-    ),
-  );
-  expect(record(release.permissions).contents).toBe("write");
-  const steps = record(record(release.jobs).release).steps;
-  if (!Array.isArray(steps)) throw new Error("expected release steps");
-  const publish = steps
+test("browser relay inputs select the normal gate and only its parallel group installs native peers", () => {
+  for (const path of [
+    "packages/waffle/tests/network-relay-browser-runner.ts",
+    "packages/waffle/tests/network-relay-worker.ts",
+    "packages/waffle/tests/fixtures/preview1-relay.wat",
+    "packages/waffle-relay/src/tcp-client.ts",
+    "packages/waffle-relay/src/node-webtransport.ts",
+    "packages/waffle-relay/package.json",
+    "packages/waffle-relay/scripts/prepare-native.ts",
+    "packages/waffle-relay/tests/prepare-native.test.ts",
+    "packages/waffle/tooling/workspace-safari-runner.ts",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const steps = record(jobs.browser).steps;
+  if (!Array.isArray(steps)) throw new Error("expected browser steps");
+  const native = steps
     .map(record)
-    .find((step) => step.name === "Publish the GitHub release assets");
-  expect(publish).toBeDefined();
-  expect(String(publish?.run)).toContain("gh release create");
-  expect(String(publish?.run)).toContain(".sha256");
-  expect(String(publish?.run)).not.toContain("npm publish");
+    .find((step) => step.name === "Prepare and verify the required native relay prebuild");
+  expect(native?.if).toBe("matrix.group == 'parallel'");
+  expect(native?.run).toBe("bun packages/waffle-relay/scripts/prepare-native.ts");
+});
+
+const consumerFilters = [
+  "network",
+  "coreutils",
+  "sed",
+  "findutils",
+  "grep",
+  "ripgrep",
+  "base",
+  "programs",
+  "diffutils",
+  "gh",
+  "jq",
+  "curl",
+  "awk",
+  "tar",
+  "procps",
+  "browser",
+  "libc",
+  "checksums",
+] as const;
+
+test("relay image inputs stay out of unrelated consumer gates", () => {
+  for (const path of [
+    ".github/workflows/relay-image.yml",
+    "packages/waffle-relay/scripts/relay-image-custody.ts",
+  ])
+    for (const name of consumerFilters)
+      expect(selected(name, path), `${name}: ${path}`).toBe(false);
+
+  for (const name of consumerFilters)
+    expect(selected(name, ".github/workflows/ci.yml"), name).toBe(true);
+});
+
+test("shared workflow inputs select the gates that consume them", () => {
+  const optimizerConsumers = new Set([
+    "coreutils",
+    "findutils",
+    "programs",
+    "diffutils",
+    "jq",
+    "awk",
+    "tar",
+    "checksums",
+  ]);
+  for (const name of optimizerConsumers)
+    expect(selected(name, ".github/actions/program-optimizer/action.yml"), name).toBe(true);
+
+  for (const name of consumerFilters.filter((name) => !optimizerConsumers.has(name)))
+    expect(selected(name, ".github/actions/program-optimizer/action.yml"), name).toBe(false);
+
+  expect(selected("findutils", ".github/workflows/findutils-xargs.yml")).toBe(true);
+  expect(selected("coreutils", ".github/workflows/findutils-xargs.yml")).toBe(true);
+  expect(selected("coreutils", ".github/workflows/coreutils-echo.yml")).toBe(true);
+  for (const name of consumerFilters.filter((name) => name !== "coreutils" && name !== "findutils"))
+    expect(selected(name, ".github/workflows/findutils-xargs.yml"), name).toBe(false);
+  for (const name of consumerFilters.filter((name) => name !== "coreutils"))
+    expect(selected(name, ".github/workflows/coreutils-echo.yml"), name).toBe(false);
+});
+
+const release = record(
+  YAML.parse(
+    readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+  ),
+);
+const releaseStepValues = record(record(release.jobs).release).steps;
+if (!Array.isArray(releaseStepValues)) throw new Error("expected release steps");
+const releaseSteps = releaseStepValues.map(record);
+
+function releaseStep(name: string): string {
+  const step = releaseSteps.find((entry) => entry.name === name);
+  if (typeof step?.run !== "string") throw new Error(`missing release step: ${name}`);
+  return step.run;
+}
+
+test("release workflow stages both archives and checksums as one draft", () => {
+  expect(record(release.permissions).contents).toBe("write");
+  expect(releaseStep("Pack the prepared runtime package")).toBe(
+    "bun run --cwd packages/waffle pack",
+  );
+  expect(releaseStep("Pack the prepared relay package")).toBe(
+    "bun pm pack --cwd packages/waffle-relay --destination dist",
+  );
+  const command = releaseStep("Publish the GitHub release assets").replace(/\\\r?\n\s*/g, " ");
+  expect(command).toMatch(/gh release create[^\n]*\s--draft(?:\s|$)/);
+  expect(command).toContain("--verify-tag");
+  for (const asset of ["runtime", "relay"]) {
+    expect(command).toContain(`\${{ steps.archives.outputs.${asset} }}`);
+    expect(command).toContain(`\${{ steps.archives.outputs.${asset} }}.sha256`);
+  }
+  expect(command).not.toContain("npm publish");
+});
+
+test("release guard accepts only a matching tag and package versions", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "waffle-release-guard-"));
+  const manifest = (name: string, version: string) => {
+    const directory = join(root, "packages", name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ version }));
+  };
+  const run = (tag: string) =>
+    spawnSync(
+      "bash",
+      ["-eo", "pipefail", "-c", releaseStep("Verify the release tag and package version")],
+      {
+        cwd: root,
+        env: { ...process.env, RELEASE_TAG: tag },
+      },
+    ).status;
+  try {
+    manifest("waffle", "0.0.108");
+    manifest("waffle-relay", "0.0.108");
+    expect(run("waffle-v0.0.108")).toBe(0);
+    expect(run("waffle-v0.0.109")).not.toBe(0);
+    manifest("waffle-relay", "0.0.0");
+    expect(run("waffle-v0.0.108")).not.toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release checksum step requires both archives and writes separate checksums", () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "waffle-release-assets-"));
+  const output = join(root, "output");
+  const run = () =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", releaseStep("Write the archive checksums")], {
+      cwd: root,
+      env: { ...process.env, GITHUB_OUTPUT: output },
+    }).status;
+  try {
+    for (const name of ["waffle", "waffle-relay"]) {
+      const directory = join(root, "packages", name, "dist");
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(root, "packages", name, "package.json"),
+        JSON.stringify({ version: "1.2.3" }),
+      );
+    }
+    writeFileSync(join(root, "packages/waffle/dist/waffle-1.2.3.tgz"), "runtime");
+    expect(run()).not.toBe(0);
+    writeFileSync(join(root, "packages/waffle-relay/dist/waffle-relay-1.2.3.tgz"), "relay");
+    expect(run()).toBe(0);
+    for (const name of ["waffle", "waffle-relay"]) {
+      const directory = join(root, "packages", name, "dist");
+      const checksum = `${name}-1.2.3.tgz.sha256`;
+      const archive = `${name}-1.2.3.tgz`;
+      const digest = createHash("sha256")
+        .update(readFileSync(join(directory, archive)))
+        .digest("hex");
+      expect(readFileSync(join(directory, checksum), "utf8")).toBe(`${digest}  ${archive}\n`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("browser selects runners, shared controls and guest fixtures", () => {
@@ -98,6 +263,7 @@ test("browser selects runners, shared controls and guest fixtures", () => {
     "packages/waffle/scripts/owned-command.ts",
     "packages/waffle/tests/storage-browser-runner.ts",
     "packages/waffle/tests/publication-browser-runner.ts",
+    "packages/waffle/tests/filesystem-transport-browser-runner.ts",
     "packages/waffle/tests/workspace-browser.ts",
     "packages/waffle/tests/fixtures/publication-guest.ts",
   ])
@@ -137,6 +303,23 @@ test("browser failure retains structured recovery evidence before full protocol"
   );
   expect(steps.indexOf(recoveryUpload)).toBeLessThan(steps.indexOf(protocolUpload));
   expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
+});
+
+test("serial browser controls retain durable process evidence even when the command fails", () => {
+  const steps = stepsFor("browser");
+  const browserTest = steps.find(
+    (step) =>
+      step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
+  );
+  const result = "${{ runner.temp }}/browser-controls-results.json";
+  expect(record(browserTest?.env).BROWSER_CONTROLS_RESULT).toBe(result);
+  const upload = artifactStep(steps, `${result}*`);
+  expect(upload.if).toBe("always() && matrix.group == 'serial'");
+  expect(record(upload.with).name).toBe(
+    "browser-controls-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  expect(record(upload.with)["retention-days"]).toBe(7);
+  expect(record(upload.with)["if-no-files-found"]).toBe("warn");
 });
 
 test("the browser suite runs its two ordered groups on separate runners", () => {
@@ -199,10 +382,12 @@ test("package installs share one Bun package-manager cache contract", () => {
   }
 });
 
-test("package and site gates remain unconditional", () => {
+test("package and site gates run for every ready PR", () => {
   for (const name of ["package", "site"]) {
     const job = record(jobs[name]);
-    expect(job.if).toBeUndefined();
+    expect(job.if).toBe(
+      "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}",
+    );
     expect(job.needs).toBe(name === "package" ? "network-wasm" : undefined);
   }
 });
@@ -332,6 +517,9 @@ test("programs selects every consumed tool, workspace dependency, installer and 
     "tools/program-package.ts",
     "scripts/program-release.ts",
     "scripts/program-release.test.ts",
+    "scripts/program-release-fixtures.ts",
+    "scripts/program-rebind.ts",
+    "scripts/program-rebind.test.ts",
     "scripts/tsconfig.json",
     "tools/program-notices.ts",
     "packages/waffle/programs/index.ts",
@@ -349,7 +537,11 @@ test("programs selects every consumed tool, workspace dependency, installer and 
 
 test("programs normal CI runs the release closure test from the folded source checkpoint", () => {
   expect(
-    stepsFor("programs").some((step) => step.run === "bun test scripts/program-release.test.ts"),
+    stepsFor("programs").some(
+      (step) =>
+        step.run ===
+        "bun test scripts/program-release.test.ts scripts/program-rebind.test.ts scripts/host-interface.test.ts",
+    ),
   ).toBe(true);
 });
 
@@ -376,7 +568,7 @@ test("jq has a separate leaf with the shared network artifact prerequisite", () 
   const job = record(jobs.jq);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.jq == 'true')) }}",
   );
   expect(record(changes.outputs).jq).toBe("${{ steps.paths.outputs.jq }}");
   const steps = stepsFor("jq");
@@ -494,7 +686,9 @@ test("jq pins and verifies its native oracle without a host-jq fallback", () => 
   expect(record(download?.env).JQ_NATIVE_URL).toBe(
     "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
   );
-  expect(String(download?.run)).toContain('curl -fL --retry 3 "$JQ_NATIVE_URL"');
+  expect(String(download?.run)).toContain(
+    'node "$GITHUB_WORKSPACE/tools/ci-release-download.ts" "$JQ_NATIVE_URL"',
+  );
   expect(String(download?.run)).toContain('"$JQ_NATIVE_DIR/jq"');
   expect(record(verify?.env).JQ_NATIVE_DIR).toBe("${{ runner.temp }}/jq-native");
   expect(record(verify?.env).JQ_NATIVE_SHA256).toBe(
@@ -528,7 +722,7 @@ test("the browser gate runs memory groups on the fixture built once by libc", ()
   const uses = (steps: unknown[]) => steps.map((step) => String(record(step).uses ?? ""));
   expect(run(libc).filter((line) => line.includes("build-memory-group-fixture.ts")).length).toBe(2);
   expect(uses(libc)).toContain("actions/upload-artifact@v4");
-  expect(uses(browser)).toContain("actions/download-artifact@v4");
+  expect(uses(browser)).toContain("actions/download-artifact@v8");
   expect(run(browser).some((line) => line.includes("build-memory-group-fixture.ts"))).toBe(false);
   const gate = browser
     .map(record)
@@ -553,8 +747,9 @@ test("a browser-only rerun downloads the reused producer's exact fixture artifac
   const artifact = { id: "12345", name: expand(record(upload.with).name) };
   context["github.run_attempt"] = "2";
 
-  const download = stepsFor("browser").find((step) => step.uses === "actions/download-artifact@v4");
+  const download = stepsFor("browser").find((step) => step.uses === "actions/download-artifact@v8");
   const inputs = record(download?.with);
+  expect(inputs["digest-mismatch"]).toBe("error");
   expect(artifact.name).toBe("memory-group-fixture-40899462745-1");
   expect(expand(inputs.name ?? inputs["artifact-ids"])).toBe(
     inputs.name ? artifact.name : artifact.id,
@@ -580,7 +775,7 @@ test("the browser rejects a missing fixture artifact ID before download", () => 
   );
   expect(guard?.if).toBeUndefined();
   expect(guard?.["continue-on-error"]).toBeUndefined();
-  const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v4");
+  const downloadIndex = steps.findIndex((step) => step.uses === "actions/download-artifact@v8");
   expect(guard).toBeDefined();
   expect(steps.indexOf(record(guard))).toBeLessThan(downloadIndex);
   for (const id of ["", "12345"]) {
@@ -635,7 +830,7 @@ test("diffutils selects its exact integration inputs", () => {
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(record(changes.outputs).diffutils).toBe("${{ steps.paths.outputs.diffutils }}");
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.diffutils == 'true')) }}",
   );
   for (const path of [
     ".github/workflows/ci.yml",
@@ -812,7 +1007,12 @@ test("gh restores the exact network asset and does not set up native compilers",
     ),
   ).toBe(false);
   expect(
-    record(steps.find((step) => step.uses === "actions/setup-node@v4")?.with)["node-version"],
+    record(
+      steps.find(
+        (step) =>
+          step.uses === "./.github/actions/setup-tools" && record(step.with)["node-version"],
+      )?.with,
+    )["node-version"],
   ).toBe("26.12.1");
   expect(steps.map((step) => step.run)).toContain("bun run programs:gh");
 });
@@ -821,7 +1021,7 @@ test("awk has one bounded leaf using the normal finalizer and verified network b
   const job = record(jobs.awk);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.awk == 'true')) }}",
   );
   expect(record(changes.outputs).awk).toBe("${{ steps.paths.outputs.awk }}");
   expect(job["timeout-minutes"]).toBe(15);
@@ -905,10 +1105,14 @@ test("procps selects its exact inputs without selecting native work for package-
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(record(job.env).WAFFLE_NETWORK_PREBUILT).toBe("1");
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.procps == 'true')) }}",
   );
   expect(filters.procps).toEqual([
     ".github/workflows/ci.yml",
+    ".github/actions/release-downloads/**",
+    ".github/actions/save-release-downloads/**",
+    ".github/actions/setup-tools/**",
+    "tools/ci-*.ts",
     "package.json",
     "bun.lock",
     "packages/waffle/**",
@@ -971,7 +1175,7 @@ test("checksums has a bounded leaf using the existing producer route", () => {
   const job = record(jobs["coreutils-checksums"]);
   expect(job.needs).toEqual(["changes", "network-wasm"]);
   expect(job.if).toBe(
-    "${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true') }}",
+    "${{ (github.event_name != 'pull_request' || !github.event.pull_request.draft) && (!cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.checksums == 'true')) }}",
   );
   expect(record(changes.outputs).checksums).toBe("${{ steps.paths.outputs.checksums }}");
   expect(job["timeout-minutes"]).toBe(30);
@@ -1192,3 +1396,118 @@ test("procps CLI checks use package-local input paths and explicit configuration
     expect(step?.run).toBe(check.run);
   }
 });
+
+test("package prepares exactly the pinned shallow-safe allocation reference before runtime tests", () => {
+  const steps = stepsFor("package");
+  const setup = steps.findIndex(
+    (step) => step.run === "bun packages/waffle/tooling/prepare-allocation-reference.ts",
+  );
+  const tests = steps.findIndex((step) => step.run === "bun run test && bun run test:ci");
+  expect(setup).toBeGreaterThanOrEqual(0);
+  expect(setup).toBeLessThan(tests);
+  const source = readFileSync(
+    new URL("./prepare-allocation-reference.ts", import.meta.url),
+    "utf8",
+  );
+  expect(source).toContain("fd1d23c223acbc854b8113fe1e37a7a183728697");
+  expect(source).toContain('"--depth=1"');
+  expect(source).not.toMatch(/--unshallow|fetch.*--all/);
+});
+
+test("G2 producer and native acceptance inputs select the blocking browser job", () => {
+  for (const path of [
+    "packages/waffle/tests/gpu-async-browser-runner.ts",
+    "packages/waffle/tests/gpu-async-fixture.test.ts",
+    "packages/waffle/tests/gpu-async-stream.test.ts",
+    "packages/waffle/tests/gpu-async-native.ts",
+    "packages/waffle/tests/gpu-native-controls.ts",
+    "packages/waffle/tests/fixtures/gpu/async-native.ts",
+    "packages/waffle/tests/fixtures/gpu/async-page.ts",
+    "packages/waffle/tests/fixtures/gpu/async.c",
+    "packages/waffle/tests/fixtures/gpu/async_encode.h",
+    "packages/waffle/tests/fixtures/gpu/async-expected.json",
+    "packages/waffle/browser/gpu/upstream/webgpu.h",
+  ])
+    expect(selected("browser", path), path).toBe(true);
+  const browser = record(jobs.browser);
+  expect(browser["continue-on-error"]).toBeUndefined();
+  const command = stepsFor("browser").find((step) =>
+    String(step.run).startsWith("bun run test:browser "),
+  );
+  expect(command).toBeDefined();
+  expect(command?.["continue-on-error"]).toBeUndefined();
+  const source = stepsFor("libc").find((step) =>
+    String(step.run).includes("gpu-async-stream.test.ts"),
+  );
+  expect(source).toBeDefined();
+  expect(source?.if).toBeUndefined();
+  expect(source?.["continue-on-error"]).toBeUndefined();
+});
+
+test("normal network matrix uses one complete positive command plus bounded controls", async () => {
+  const matrix = await Bun.file(new URL("../scripts/test-browser.ts", import.meta.url)).text();
+  expect(matrix.match(/"tests\/network-browser-runner.ts"/g)).toHaveLength(2);
+  expect(matrix).toContain('engines: ["--page-controls", "chromium"]');
+  const entry = await Bun.file(
+    new URL("../tests/network-browser-runner.ts", import.meta.url),
+  ).text();
+  expect(entry).toContain("completeNetworkCommand");
+  expect(entry).not.toContain("runIsolatedPages");
+});
+
+test("native relay setup requires prebuilt bytes before package and parallel browser checks", () => {
+  for (const name of ["package", "browser"]) {
+    const steps = stepsFor(name);
+    const install = steps.findIndex(
+      (step) => step.run === "bun install --frozen-lockfile --ignore-scripts",
+    );
+    const prepare = steps.findIndex(
+      (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
+    );
+    const product = steps.findIndex(
+      (step) =>
+        typeof step.run === "string" &&
+        (step.run.includes("relay:check") || step.run.includes("bun run test:browser")),
+    );
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(prepare).toBeGreaterThan(install);
+    expect(prepare).toBeLessThan(product);
+    const cache = steps.find(
+      (step) => step.name === "Cache standard native relay prebuild downloads",
+    );
+    expect(cache?.uses).toBe("actions/cache@v4");
+    expect(record(cache?.with).path).toBe("~/.npm/_prebuilds");
+    const key = String(record(cache?.with).key);
+    expect(key).toContain("${{ runner.os }}-${{ runner.arch }}");
+    expect(key).toContain("bun.lock");
+    expect(key).toContain("src/webtransport-integrity.ts");
+    expect(record(cache?.with)["restore-keys"]).toBeUndefined();
+    if (!cache) throw new Error("Missing prebuild cache step");
+    expect(steps.indexOf(cache)).toBeLessThan(prepare);
+    expect(cache?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
+    expect(steps[prepare]?.if).toBe(name === "browser" ? "matrix.group == 'parallel'" : undefined);
+  }
+});
+
+test("package setup explicitly prepares Waffle after the script-free install", () => {
+  const steps = stepsFor("package");
+  const native = steps.findIndex(
+    (step) => step.run === "bun packages/waffle-relay/scripts/prepare-native.ts",
+  );
+  const prepare = steps.findIndex((step) => step.run === "bun run prepare:package");
+  const quality = steps.findIndex((step) => step.run === "bun run quality");
+  expect(prepare).toBeGreaterThan(native);
+  expect(prepare).toBeLessThan(quality);
+  const adapter = steps.findIndex(
+    (step) => step.run === "bun run --cwd packages/git/node_modules/bun-wasm prepare",
+  );
+  expect(adapter).toBeGreaterThan(prepare);
+  expect(adapter).toBeLessThan(quality);
+  const tooling = steps.find((step) => step.name === "Check native preparation tooling");
+  expect(String(tooling?.run)).toContain("oxlint");
+  expect(String(tooling?.run)).toContain("oxfmt --check");
+  expect(String(tooling?.run)).toContain("packages/waffle-relay/tests/prepare-native.test.ts");
+});
+
+import "../../../tools/ci-release-coverage.test.ts";
+import "../../../tools/ci-release-download.test.ts";

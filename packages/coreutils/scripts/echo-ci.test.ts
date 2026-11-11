@@ -71,12 +71,13 @@ test("echo-only changes select a same-run xargs producer without repeating its u
 
 test("consumer verifies the exact same-run artifact and never builds xargs or network", () => {
   const upload = steps(producer).find((step) => step.uses === "actions/upload-artifact@v4");
-  const download = steps(consumer).find((step) => step.uses === "actions/download-artifact@v4");
+  const download = steps(consumer).find((step) => step.uses === "actions/download-artifact@v8");
   assert.equal(
     record(upload?.with).name,
     "xargs-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   assert.equal(record(download?.with).name, record(upload?.with).name);
+  assert.equal(record(download?.with)["digest-mismatch"], "error");
   assert.equal(record(upload?.with)["if-no-files-found"], "error");
   assert.equal(record(consumer.env).WAFFLE_NETWORK_PREBUILT, "1");
   const commands = steps(consumer)
@@ -110,7 +111,11 @@ test("network and singular libc caches are shared exactly and native compilation
     assert.equal(record(restored?.with)["fail-on-cache-miss"], true);
     assert.deepEqual(steps(job).find((step) => step.id === "libc")?.with, libc?.with);
   }
-  const native = steps(jobs.programs).filter((step) => String(step.run).startsWith("cargo test "));
+  const native = steps(jobs.programs).filter((step) =>
+    String(step.run)
+      .replace(/^bash scripts\/with-build-cache\.sh /, "")
+      .startsWith("cargo test "),
+  );
   assert.equal(native.length, 1);
   assert.equal(String(native[0]?.run).split("-p waffle-echo").length, 2);
 });

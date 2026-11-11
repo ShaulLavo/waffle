@@ -30,6 +30,26 @@ const intrinsicModules: Readonly<Record<string, string>> = {
 };
 const trustedModules: Readonly<Record<string, string>> = {
   ...intrinsicModules,
+  "memory/graphics-retention.ts": "Private page ticket issuance, never a guest implementation.",
+  "browser/display/service-readers.ts":
+    "Page/service-only counted incarnation ownership, never guest authority.",
+  "browser/display/launch-retention.ts":
+    "Page-only ticket provenance and allocation receipt lifetime.",
+  "browser/gpu/access.ts": "Service-only irreversible grant lease and synchronous frames.",
+  "browser/gpu/command-reader.ts":
+    "Service-only physical reader admission, never imported by guests.",
+  "browser/display/owner.ts": "Page-only display, grant and service lifecycle owner.",
+  "browser/gpu/service.ts": "Dedicated GPU service, never a guest implementation.",
+  "browser/gpu/service-worker.ts": "Dedicated GPU service entry, never a guest implementation.",
+  "browser/gpu/surfaces.ts": "Dedicated service-owned native canvases and devices.",
+  "browser/gpu/scheduler.ts": "Dedicated resumable service scheduler.",
+  "browser/gpu/replay.ts": "Dedicated service replay and terminal native resource ownership.",
+  "browser/gpu/completions.ts": "Dedicated service completion and pending operation ownership.",
+  "browser/gpu/buffers.ts": "Dedicated native buffer mapping owner.",
+  "browser/gpu/metadata.ts": "Dedicated native C output projection.",
+  "browser/gpu/handles.ts": "Dedicated native GPU object table.",
+  "browser/gpu/lowering.ts": "Dedicated native descriptor lowering.",
+  "browser/gpu/codec.ts": "Service-only schema decoder and encoder.",
   "proc/command.ts": "Trusted page-command data contract, not imported by the guest bootstrap.",
   "proc/command-runner.ts": "Page-only trusted command execution and physical task ownership.",
   "proc/command-stdio.ts": "Page-only asynchronous descriptor I/O for trusted host callbacks.",
@@ -45,6 +65,9 @@ const trustedModules: Readonly<Record<string, string>> = {
   "fs/indexeddb.ts": "Storage backend used by the dedicated filesystem service.",
   "fs/opfs.ts": "Storage backend used by the dedicated filesystem service.",
   "fs/storage.ts": "Storage interface for the dedicated filesystem service.",
+  "thread/runtime-owner.ts": "Page-only aggregate ledger and Worker lifecycle owner.",
+  "thread/service-worker.ts": "Dedicated canonical service Worker, never a guest realm.",
+  "thread/service.ts": "Canonical asynchronous service, never imported by guest bootstrap.",
   "core/memory-views.ts":
     "Guest-owned WebAssembly memory view helpers; no private runtime buffers.",
 };
@@ -70,7 +93,7 @@ export const payloadExceptions: readonly PayloadException[] = [
   },
   {
     file: "proc/pipes.ts",
-    scope: "Ring.write",
+    scope: "Ring.writeEntered",
     rule: "private-iteration",
     expression: "chunks",
     reason: "Caller-owned source iovecs; ring copies use captured natives.",
@@ -84,21 +107,21 @@ export const payloadExceptions: readonly PayloadException[] = [
   },
   {
     file: "browser/worker.ts",
-    scope: "bootstrap.output",
+    scope: "bootstrapAllocated.output",
     rule: "mutable-getter",
     expression: "data.buffer",
     reason: "Output bytes supplied by guest-owned WASM memory, not process control memory.",
   },
   {
     file: "browser/worker.ts",
-    scope: "bootstrap.write",
+    scope: "bootstrapAllocated.write",
     rule: "mutable-getter",
     expression: "data.length",
     reason: "Guest terminal output bytes, not private process or filesystem state.",
   },
   {
     file: "browser/worker.ts",
-    scope: "bootstrap.post",
+    scope: "bootstrapAllocated.post",
     rule: "mutable-getter",
     expression: "data.length",
     reason: "Guest stdout/stderr bytes, not a private process control buffer.",
@@ -128,14 +151,28 @@ export const payloadExceptions: readonly PayloadException[] = [
 
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
 export const enforcedModules = [
+  "browser/display/protocol.ts",
+  "browser/display/guest.ts",
+  "browser/gpu/guest.ts",
+  "browser/gpu/ring.ts",
+  "browser/gpu/payload.ts",
+  "browser/gpu/transport.ts",
+  "browser/gpu/protocol.ts",
   "fs/request-memory.ts",
   "fs/section.ts",
   "proc/intrinsics.ts",
   "proc/intrinsics/core.ts",
   "proc/intrinsics/host.ts",
   "proc/errors.ts",
+  "thread/guest-bootstrap.ts",
+  "thread/guest-worker.ts",
+  "thread/guest-imports.ts",
+  "thread/entry.ts",
+  "thread/lane.ts",
+  "thread/protocol.ts",
   "browser/worker.ts",
   "browser/worker-memory.ts",
+  "browser/preview1-socket.ts",
   "browser/guarded-stream.ts",
   "browser/runtime-terminals.ts",
   "browser/terminal-session.ts",
@@ -153,6 +190,7 @@ export const enforcedModules = [
   "proc/filesystem-codec.ts",
   "proc/identity.ts",
   "proc/outcome.ts",
+  "proc/observation.ts",
   "proc/pipes.ts",
   "proc/signals.ts",
   "proc/terminal-lifetime.ts",
@@ -167,7 +205,12 @@ export const enforcedModules = [
   "proc/worker-pipes.ts",
 ];
 
-const roots = ["browser/worker.ts", "proc/worker-client.ts", "proc/worker-pipes.ts"];
+const roots = [
+  "thread/guest-bootstrap.ts",
+  "browser/worker.ts",
+  "proc/worker-client.ts",
+  "proc/worker-pipes.ts",
+];
 const views = new Set([
   "Int8Array",
   "Uint8Array",
@@ -193,6 +236,16 @@ const containers = new Set([
   "WeakSet",
 ]);
 const authority = new Set([
+  "GraphicsConnection",
+  "GraphicsGrant",
+  "GraphicsOpen",
+  "GuestGpuConnection",
+  "PayloadDirectory",
+  "RecordRing",
+  "RingWriter",
+  "LogicalAppend",
+  "LogicalReader",
+  "RingTerminal",
   "Arena",
   "FilesystemTransportSection",
   "FilesystemRequestMemory",
@@ -202,6 +255,8 @@ const authority = new Set([
   "SharedArrayBuffer",
   "TaggedCells",
   "OutcomeCell",
+  "ProcessObserver",
+  "ProcessObservationTransfer",
   "ControlCells",
   "OutcomeWord",
   "Descriptor",

@@ -1,3 +1,5 @@
+import { standaloneRuntimeProcess } from "./fixtures/standalone-runtime-process.js";
+import { testReservations } from "./fixtures/shared-memory-platform.js";
 import { browserStartupPool } from "./startup-pool-browser.js";
 import { nestedWasi } from "./fixtures/nested-wasi.js";
 import { fdReopenCases } from "./fixtures/fd-reopen-cases.js";
@@ -495,11 +497,12 @@ async function bootstrapCheckActive(
   try {
     await bootstrap(
       {
+        controlGrant: { kind: "unbounded" },
         module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
         args: [],
         env: {},
         filesystem: connection.client,
-        runtimeProcess: client.options.transport,
+        runtimeProcess: standaloneRuntimeProcess(client.options.transport),
       },
       {
         setup(context) {
@@ -700,7 +703,12 @@ class ProcessFixture {
       module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
     });
     const state = workerProcessState(this.root);
-    this.supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+    this.supervisor.createRoot({
+      pid: state.pid,
+      job: state.job,
+      observation: this.root,
+      ...state.signals,
+    });
     this.broker.adoptRoot(this.root);
     await this.worker(this.root);
   }
@@ -1562,6 +1570,7 @@ async function rootCleanupCase(): Promise<void> {
   const notices: WorkerProcessMessage[] = [];
   let retired = 0;
   const broker = new BrowserProcessBroker({
+    reservations: testReservations(),
     identities,
     table,
     registry: new ExecutableRegistry(),
@@ -1590,6 +1599,7 @@ async function rootCleanupCase(): Promise<void> {
       const pid = transport.pid,
         job = workerProcessState(transport).job;
       await broker.adoptRuntimeRoot(transport, {
+        memory: [],
         retired() {
           retired++;
         },

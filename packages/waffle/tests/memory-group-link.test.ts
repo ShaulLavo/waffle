@@ -144,11 +144,11 @@ function host(coreImports?: WebAssembly.Imports) {
   return { wasi, checkActive() {}, coreImports };
 }
 
-const plan = () =>
+const plan = (stackBounds = false) =>
   prepareLinkPlan({
     core: {
       id: "core",
-      source: pieCore(),
+      source: pieCore(stackBounds),
       cooperative: true,
       checkpoint: { module: "env", name: "check" },
       initializeMemory: [],
@@ -329,6 +329,75 @@ async function stopStackMember(member: { lease: MemberLease; worker: Worker }) {
     member.lease.stopped();
   }
 }
+
+async function launchStackMember(
+  member: ReturnType<typeof stackMember>,
+  source: Parameters<typeof prepareLinkPlan>[0],
+  mark = 1,
+) {
+  const response = memberReply(member.worker);
+  const started = member.lease.launch();
+  member.worker.postMessage(
+    { kind: "launch", request: started.request, source, mark },
+    started.transfer,
+  );
+  return response;
+}
+
+async function growStackMember(member: ReturnType<typeof stackMember>, pages: number) {
+  const response = memberReply(member.worker);
+  member.worker.postMessage({ kind: "grow", pages });
+  return response;
+}
+
+test("real image, stack and all granted worker chunks jointly consume the member cap", async () => {
+  const prepared = await plan(true);
+  const groups = new MemoryGroups({ stackBytes: PAGE_BYTES, maximumPages: 64, memberPages: 20 });
+  const a = stackMember(groups, 201, "new");
+  const b = stackMember(groups, 202, a.lease.group);
+  const owner = groups.owner(a.lease.group)!;
+  try {
+    stackObservation(await launchStackMember(a, prepared.toSource()));
+    stackObservation(await launchStackMember(b, prepared.toSource()));
+    expect(owner.snapshot().memberPages).toBe(4);
+    expect(await growStackMember(a, 1)).toBeGreaterThan(0);
+    // Every granted page counts, including any chunk space the worker has not used yet.
+    const before = owner.snapshot();
+    expect(before.memberPages).toBe(before.committedBytes / PAGE_BYTES - 1);
+    expect(await growStackMember(b, 21 - before.memberPages)).toBe(-48);
+    expect(owner.snapshot()).toEqual(before);
+    expect(await growStackMember(a, 15)).toBeGreaterThan(0);
+    expect(owner.snapshot().memberPages).toBe(20);
+    expect(await growStackMember(b, 1)).toBe(-48);
+  } finally {
+    await Promise.all([stopStackMember(a), stopStackMember(b)]);
+  }
+  expect(groups.snapshot()).toEqual([]);
+  expect(groups.budget.committed).toBe(0);
+});
+
+test("partial image admission remains charged through abort until its worker actually stops", async () => {
+  const prepared = await plan(true);
+  const groups = new MemoryGroups({ stackBytes: PAGE_BYTES, maximumPages: 8, memberPages: 1 });
+  const leader = groups.admit(301, "stack-binding-control", "new");
+  const partial = stackMember(groups, 302, leader.group);
+  const owner = groups.owner(leader.group)!;
+  try {
+    expect(await launchStackMember(partial, prepared.toSource())).toEqual({
+      error: "memory group could not carve member stack",
+    });
+    expect(owner.snapshot().memberPages).toBe(1);
+    partial.lease.abort();
+    leader.abort();
+    expect(owner.snapshot()).toMatchObject({ memberPages: 1, members: 1 });
+  } finally {
+    await stopStackMember(partial);
+    leader.abort();
+  }
+  expect(owner.snapshot().memberPages).toBe(0);
+  expect(groups.snapshot()).toEqual([]);
+  expect(groups.budget.committed).toBe(0);
+});
 
 test("real members bind nonoverlapping stack bounds and the matching stack pointer", async () => {
   const prepared = await prepareLinkPlan({

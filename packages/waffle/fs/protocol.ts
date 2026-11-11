@@ -1,3 +1,9 @@
+import {
+  beginIdentityAllocation,
+  recordIdentityAllocationFailure,
+  type FilesystemIdentityAllocation,
+} from "./identity-allocation.js";
+import { allocateSharedControl } from "../memory/control.js";
 import { wakeFilesystemWatch } from "./watch-ring.js";
 import { FilesystemSection } from "./section.js";
 export { FilesystemSection, isRevoked } from "./section.js";
@@ -22,11 +28,13 @@ import { FilesystemError } from "../core/filesystem.js";
 import {
   createRequestBudget,
   FilesystemRequestPool,
+  REQUEST_ARENA_BYTES,
   REQUEST_BUDGET_BYTES,
   REQUEST_CONTROL_BYTES,
   REQUEST_HEADER,
   type FilesystemRequestMemory,
 } from "./request-memory.js";
+import type { ArenaSource, Headroom } from "../memory/reservations.js";
 import {
   DEFAULT_SHARED_MAX_BYTES,
   SHARED_SEGMENT_BYTES,
@@ -43,18 +51,26 @@ export { FilesystemError } from "../core/filesystem.js";
 // state live in the SAB. The service never waits on a guest, including a terminated one.
 // Guest browser-engine polyfills replace MessageChannel; transport endpoints must stay native.
 const NativeMessageChannel = globalThis.MessageChannel;
-export type GrowableSharedSegment = SharedArrayBuffer & {
-  readonly growable: boolean;
-  readonly maxByteLength: number;
-  grow(byteLength: number): void;
-};
-export function createSharedSegment(): GrowableSharedSegment {
-  // The runtime supports growable SABs; ES2022's library declarations do not yet expose them.
-  const Constructor = SharedArrayBuffer as unknown as new (
-    bytes: number,
-    options: { maxByteLength: number },
-  ) => GrowableSharedSegment;
-  return new Constructor(0, { maxByteLength: SHARED_SEGMENT_BYTES });
+/** One full data segment. Only the filesystem owner constructs it, when a page in it is first
+ * needed. It is fixed: Safari reserves a growable buffer's whole maximum up front, so an empty
+ * growable placeholder for future data is never free. See docs/shared-memory.md. */
+export function createFilesystemSegment(): SharedArrayBuffer {
+  return new SharedArrayBufferConstructor(SHARED_SEGMENT_BYTES);
+}
+/** Extra segment `index` lives at directory entry `index - 1`. A later indexed announcement only
+ * adds what this agent lacks; the first accepted wrapper for an index stays. */
+export type SegmentAnnouncement = { readonly segment: number; readonly buffer: SharedArrayBuffer };
+/** The union of two directories of one tree, preferring `known`. Holes stay holes. */
+export function mergeSegmentDirectories(
+  known: readonly SharedArrayBuffer[],
+  other: readonly SharedArrayBuffer[],
+): SharedArrayBuffer[] {
+  const merged = known.slice();
+  for (let index = 0; index < other.length; index++) {
+    const buffer = other[index];
+    if (buffer && !merged[index]) merged[index] = buffer;
+  }
+  return merged;
 }
 export function normalizeSharedMaxBytes(maxBytes: number): number {
   if (Number.isNaN(maxBytes)) throw new RangeError("invalid shared filesystem storage cap");
@@ -72,7 +88,8 @@ export const CAPABILITY_HEADER = 1;
 export const FILESYSTEM_SECTION_BYTES = 8;
 export const CAPABILITY_WORDS = 3;
 export const MAX_CONNECTION_OWNERS = 65536;
-export const CONNECTION_SHARED_BYTES = 64 * 1024 * 1024;
+export { SHARED_ROOT_BYTES as CONNECTION_SHARED_BYTES } from "./storage-geometry.js";
+import { SHARED_ROOT_BYTES } from "./storage-geometry.js";
 export const CAPABILITY_LENGTH = CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS;
 export const enum State {
   Pending,
@@ -80,6 +97,8 @@ export const enum State {
   Cancelled,
   Failed,
   Overflow,
+  /** A staged write whose client committed it in attached metadata; the owner applies its bytes. */
+  Committed,
 }
 export interface FilesystemConnection {
   residentPublication?: ResidentDescriptor;
@@ -92,7 +111,9 @@ export interface FilesystemConnection {
   /** This connection's revocation word, then its ancestors. Never reused. */
   revocations: SharedArrayBuffer[];
   shared: SharedArrayBuffer;
-  /** Extra data segments, published before guests run; only the service grows their backing. */
+  /** Extra data segments this agent already holds, segment k at index k - 1, with holes for the
+   * rest. Only the owner constructs them. A page in a segment missing here is served by the
+   * owner through `requests`, so a blocked agent never needs a new buffer delivered. */
   segments: SharedArrayBuffer[];
   /** Private to this connection, not its descendants: capabilities and local open references. */
   capabilities: SharedArrayBuffer;
@@ -119,11 +140,14 @@ export interface FilesystemReservation {
 export type FilesystemIdentity = Omit<FilesystemConnection, "port" | "requests">;
 export interface FilesystemOwnerConstruction {
   readonly shared: SharedArrayBuffer;
+  readonly arenas?: ArenaSource;
   allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
+  allocatePublication?(bytes: number): SharedArrayBuffer;
 }
 export function filesystemOwnerPlan(publication: PublicationConfiguration) {
   const arena = publicationBufferPlan(publication.limits, publication.observe);
-  const allocations = 9 + MAX_SHARED_SEGMENTS - 1 + arena.allocations;
+  // No data segment is constructed with the identity; the owner builds each one on demand.
+  const allocations = 9 + arena.allocations;
   return {
     bytes:
       MAX_CONNECTION_OWNERS * 4 +
@@ -138,18 +162,6 @@ export function filesystemOwnerPlan(publication: PublicationConfiguration) {
     leases: 0,
   };
 }
-function identitySegments(
-  parent: FilesystemIdentity | undefined,
-  maxBytes: number,
-  construction: FilesystemOwnerConstruction | undefined,
-): SharedArrayBuffer[] {
-  return (
-    parent?.segments ??
-    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
-      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
-    )
-  );
-}
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
  * Firefox does not activate guest-created channels until that guest returns to its event loop.
  */
@@ -160,12 +172,27 @@ export function createFilesystemIdentity(
   construction?: FilesystemOwnerConstruction,
 ): FilesystemIdentity {
   if (construction && parent) throw new TypeError("owner construction cannot fork an identity");
-  const allocate = (bytes: number) =>
-    construction ? construction.allocateShared(bytes) : new SharedArrayBuffer(bytes);
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
-  const shared =
-    parent?.shared ?? construction?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
-  const segments = identitySegments(parent, maxBytes, construction);
+  const allocation = beginIdentityAllocation(parent !== undefined, construction !== undefined);
+  try {
+    return constructFilesystemIdentity(parent, maxBytes, publication, construction, allocation);
+  } catch (error) {
+    recordIdentityAllocationFailure(error, allocation);
+    throw error;
+  }
+}
+function constructFilesystemIdentity(
+  parent: FilesystemIdentity | undefined,
+  maxBytes: number,
+  publication: PublicationConfiguration | WorkspaceConfiguration | undefined,
+  construction: FilesystemOwnerConstruction | undefined,
+  allocation: FilesystemIdentityAllocation,
+): FilesystemIdentity {
+  const allocate = (bytes: number) =>
+    construction ? construction.allocateShared(bytes) : allocateSharedControl(bytes);
+  const shared = parent?.shared ?? construction?.shared ?? allocateSharedControl(SHARED_ROOT_BYTES);
+  allocation.rootComplete = true;
+  allocation.stage = "identity";
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)
     throw new FilesystemError(33, "filesystem identity table exhausted");
@@ -174,7 +201,7 @@ export function createFilesystemIdentity(
   const capabilityBytes = (CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4;
   const capabilities = construction
     ? construction.allocateShared(capabilityBytes)
-    : new SharedArrayBufferConstructor(capabilityBytes);
+    : allocateSharedControl(capabilityBytes);
   const entries = new Int32ArrayConstructor(capabilities, 0, CAPABILITY_LENGTH);
   entries.fill(-1);
   entries[0] = 0;
@@ -189,7 +216,9 @@ export function createFilesystemIdentity(
     signal: parent?.signal ?? allocate(4),
     revocations: [allocate(4)].concat(parent?.revocations ?? []),
     shared,
-    segments,
+    // An independent identity starts with no extra backing at all. A fork shares its parent's
+    // directory, so segments the parent attaches later reach forks made in this realm too.
+    segments: parent?.segments ?? [],
     capabilities,
     sections: allocate(FILESYSTEM_SECTION_BYTES),
     owner,
@@ -211,7 +240,18 @@ function identityPublication(
     const configuration = "workspace" in publication ? workspacePublication : publication;
     const buffers = createPublicationBuffers(configuration.limits, configuration.observe, {
       checkpoint: configuration.restore,
-      ...(construction ? { backing: { kind: "construction", construction } } : {}),
+      ...(construction
+        ? {
+            backing: {
+              kind: "construction",
+              construction: {
+                allocateShared: (bytes: number, maximum?: number) =>
+                  construction.allocatePublication?.(bytes) ??
+                  construction.allocateShared(bytes, maximum),
+              },
+            },
+          }
+        : {}),
     });
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
@@ -290,7 +330,7 @@ function reserveCapability(
       target: target.capabilities,
       targetKey,
       targetOwner: target.owner,
-      state: new SharedArrayBuffer(8),
+      state: allocateSharedControl(8),
     };
     Atomics.store(destination, targetKey, handle);
     Atomics.store(destination, targetKey + 2, 0);
@@ -330,9 +370,10 @@ export function connectFilesystemIdentity(
   identity: FilesystemIdentity,
   pool = new FilesystemRequestPool(identity.requestBudget),
   construction?: FilesystemOwnerConstruction,
+  headroom: Headroom | null = null,
 ) {
   pool.assertBudget(identity.requestBudget);
-  const requests = pool.take(identity.revocations[0]!, construction);
+  const requests = pool.take(identity.revocations[0]!, construction, headroom);
   const channel = new NativeMessageChannel();
   const pair = {
     client: { ...identity, port: channel.port1, requests },
@@ -349,7 +390,15 @@ export function createFilesystemConnection(
   construction?: FilesystemOwnerConstruction,
 ) {
   const identity = createFilesystemIdentity(parent, undefined, publication, construction);
-  return connectFilesystemIdentity(identity, undefined, construction);
+  const pool = construction?.arenas
+    ? new FilesystemRequestPool(
+        identity.requestBudget,
+        REQUEST_ARENA_BYTES,
+        construction.arenas,
+        construction.allocateShared,
+      )
+    : undefined;
+  return connectFilesystemIdentity(identity, pool, construction);
 }
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {
@@ -507,7 +556,7 @@ function transportBytes(value: unknown): Uint8Array {
   return new Uint8ArrayConstructor(value);
 }
 export type RequestMessage =
-  | { id: number; generation: number; offset: number; length: number }
+  | { id: number; generation: number; offset: number; length: number; payload?: ArrayBuffer }
   | { transportClosed: true }
   | { sweep: true }
   | { trim: true }

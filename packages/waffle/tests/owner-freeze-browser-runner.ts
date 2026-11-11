@@ -1,3 +1,4 @@
+import { navigateTestPage } from "./browser-navigation.js";
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, CDPSession, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
@@ -283,7 +284,7 @@ async function auditRetirement(observer: Page, workspace: unknown, name: string)
   await observer.close();
   const audit = await context.newPage();
   try {
-    await audit.goto(origin);
+    await navigateTestPage(audit, origin);
     const finalLocks = typeof workspace === "string" ? await locks(audit, workspace, name) : null;
     if (finalLocks) {
       equal(finalLocks.held, []);
@@ -379,7 +380,7 @@ async function openPages(state: RunState, origin: string): Promise<void> {
     const page = await state.context.newPage();
     state.pages.push(page);
     page.on("worker", (worker) => observeWorker(state, index, worker));
-    await page.goto(origin);
+    await navigateTestPage(page, origin);
     equal(await page.opener(), null);
     equal(await page.evaluate(() => crossOriginIsolated), true);
   }

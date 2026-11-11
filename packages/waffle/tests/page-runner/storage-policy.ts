@@ -1,0 +1,74 @@
+import type { StorageEntry } from "../storage-allocation.js";
+import type { CollectorPolicy } from "./collector.js";
+import { record, strings } from "./protocol.js";
+export function listIds(value: unknown): string[] {
+  if (!record(value) || !strings(value.indexeddb) || !strings(value.opfs))
+    throw new Error("Invalid storage list backend arrays");
+  const ids = value.indexeddb
+    .map((label) => `indexeddb: ${label}`)
+    .concat(value.opfs.map((label) => `opfs: ${label}`));
+  if (new Set(ids).size !== ids.length) throw new Error("Duplicate storage list IDs");
+  return ids;
+}
+function validateStorageAllocation(
+  entry: StorageEntry,
+  runningCaseIds: readonly string[],
+  run: string,
+): void {
+  if (entry.kind === "service-worker")
+    throw new Error("Storage policy does not own service workers");
+  const backendPrefix = entry.kind === "indexeddb" ? "indexeddb:" : "opfs:";
+  const id = runningCaseIds.find((caseId) => caseId.startsWith(backendPrefix));
+  if (!id) throw new Error("Allocation outside running storage case");
+  const logical = logicalAllocation(entry);
+  const backend = id.startsWith("indexeddb:") ? "storage" : "opfs";
+  const expectedKind = backend === "storage" ? "indexeddb" : "opfs-directory";
+  if (entry.kind !== expectedKind || !logical.startsWith(`bun-wasm-${backend}-test-${run}-`))
+    throw new Error("Allocation not owned by this run and backend");
+}
+function invalid(detail: string): never {
+  throw new Error(detail);
+}
+function logicalAllocation(entry: StorageEntry): string {
+  switch (entry.kind) {
+    case "indexeddb":
+      return entry.name;
+    case "service-worker":
+      throw new Error("Not an OPFS allocation");
+    case "opfs-directory":
+      return logicalDirectory(entry.name);
+    default: {
+      const exhaustive: never = entry;
+      return exhaustive;
+    }
+  }
+}
+function logicalDirectory(name: string): string {
+  if (!name.startsWith("bun-wasm-")) invalid("Invalid OPFS directory prefix");
+  let logical: unknown;
+  try {
+    logical = JSON.parse(atob(name.slice(9).replaceAll("-", "+").replaceAll("_", "/")));
+  } catch {
+    invalid("Invalid encoded OPFS allocation");
+  }
+  if (typeof logical !== "string") invalid("Invalid OPFS logical name");
+  const encoded = btoa(JSON.stringify(logical))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+  if (name !== `bun-wasm-${encoded}`) invalid("Noncanonical OPFS directory name");
+  return logical;
+}
+export const storagePolicy: CollectorPolicy = {
+  listIds,
+  allocation: validateStorageAllocation,
+  check() {},
+};
+
+export function ownedDatabase(prefix: string): NonNullable<CollectorPolicy["allocation"]> {
+  if (!prefix || prefix.length > 900) throw new Error("Invalid database prefix");
+  return (entry, runningCaseIds, run) => {
+    if (!runningCaseIds.length || entry.kind !== "indexeddb" || entry.name !== `${prefix}-${run}`)
+      throw new Error("Allocation is not the exact database owned by this running case");
+  };
+}

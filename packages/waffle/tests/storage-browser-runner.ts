@@ -1,3 +1,10 @@
+import {
+  storageWorker,
+  storageCase,
+  type Backend,
+  type WorkerRequest,
+  type TestList,
+} from "./page-runner/storage-worker.js";
 import { resolve } from "node:path";
 import type { Browser, BrowserContext } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
@@ -7,68 +14,18 @@ import {
   storageNavigate,
 } from "./storage-navigation-diagnostics.js";
 
-type Backend = "indexeddb" | "opfs";
-type WorkerRequest = { kind: "list" } | { kind: "run"; backend: Backend; label: string };
-type TestList = Record<Backend, string[]>;
-
-// Bun strips the types before toString(): the worker has TypeScript source, not handwritten JS.
-function storageWorker(): void {
-  function labels(suites: Record<Backend, { label: string }[]>): TestList {
-    return {
-      indexeddb: suites.indexeddb.map((test) => test.label),
-      opfs: suites.opfs.map((test) => test.label),
-    };
-  }
-  async function runStorageRequest(request: WorkerRequest): Promise<void> {
-    const modulePath = "/tests.js";
-    const tests = (await import(modulePath)) as typeof import("./storage-browser");
-    // The runner owns this route; imported backend suites do not assume one exists.
-    const suites = {
-      indexeddb: tests.storageTests("/fs-worker.js", "/open-fs-worker.js"),
-      opfs: tests.opfsStorageTests("/fs-worker.js"),
-    };
-    if (request.kind === "list") {
-      globalThis.postMessage({ result: labels(suites) });
-      return;
-    }
-    const { backend, label } = request;
-    const test = suites[backend].find((test) => test.label === label);
-    if (!test) throw new Error(`Unknown ${backend} storage test: ${label}`);
-    await test.run();
-    globalThis.postMessage({ result: label });
-  }
-  globalThis.onmessage = async (event: MessageEvent<WorkerRequest>) => {
-    try {
-      await runStorageRequest(event.data);
-    } catch (error) {
-      // WebKit's stack contains locations only: never let it replace the actual error message.
-      const detail =
-        error instanceof Error
-          ? `${error.name}: ${error.message}\n${error.stack ?? ""}`
-          : String(error);
-      const environment = {
-        secureContext: globalThis.isSecureContext,
-        crossOriginIsolated: globalThis.crossOriginIsolated,
-        getDirectory: typeof navigator.storage?.getDirectory,
-        syncAccess:
-          typeof FileSystemFileHandle === "undefined"
-            ? "undefined"
-            : typeof (
-                FileSystemFileHandle.prototype as FileSystemFileHandle & {
-                  createSyncAccessHandle?: unknown;
-                }
-              ).createSyncAccessHandle,
-      };
-      globalThis.postMessage({
-        error: `${detail}\nWorker environment: ${JSON.stringify(environment)}`,
-      });
-    }
-  };
-}
-
 function storageCases(listed: TestList) {
   return (["indexeddb", "opfs"] as const).flatMap((backend) =>
     listed[backend].map((label) => ({ backend, label })),
+  );
+}
+if (process.argv[2] === "ios-safari") {
+  const { nativeMain } = await import("./page-runner/native.js");
+  const { storageAdapter } = await import("./page-runner/storage-host.js");
+  process.exit(
+    await nativeMain(storageAdapter, process.argv.slice(3), {
+      filter: process.env.STORAGE_TEST_FILTER,
+    }),
   );
 }
 const lifecycle = new BrowserRunnerLifecycle();
@@ -109,40 +66,6 @@ async function inWorker<T>(
     if (profile) await lifecycle.removeDirectory(profile);
   }
 }
-function storageCase<T>(request: WorkerRequest): Promise<T> {
-  function settle(
-    data: { error?: string; result: T },
-    resolve: (value: T | PromiseLike<T>) => void,
-    reject: (reason?: unknown) => void,
-  ): void {
-    if (data.error) reject(new Error(data.error));
-    else resolve(data.result);
-  }
-  return new Promise<T>((resolve, reject) => {
-    const worker = new Worker("/worker.js", { type: "module" });
-    const timeout = setTimeout(() => {
-      worker.terminate();
-      reject(new Error("storage case worker timed out"));
-    }, 45_000);
-    const finish = () => {
-      clearTimeout(timeout);
-      worker.terminate();
-    };
-    worker.onmessage = (event) => {
-      finish();
-      settle(event.data, resolve, reject);
-    };
-    worker.onerror = (event) => {
-      finish();
-      reject(new Error(event.message));
-    };
-    worker.onmessageerror = () => {
-      finish();
-      reject(new Error("Could not decode storage worker response"));
-    };
-    worker.postMessage(request);
-  });
-}
 async function closeStorageContext(context: BrowserContext, persistent: boolean): Promise<void> {
   try {
     if (persistent) await lifecycle.closeContext(context);
@@ -162,7 +85,9 @@ async function runCase(
 ): Promise<void> {
   const persistent = name === "webkit" && backend === "opfs";
   try {
-    await inWorker<string>(browser, { kind: "run", backend, label }, persistent);
+    const returned = await inWorker<string>(browser, { kind: "run", backend, label }, persistent);
+    if (returned !== label)
+      throw new Error(`Wrong Worker label: ${JSON.stringify(returned)}, expected ${label}`);
     passed[backend].push(label);
     console.log(`  PASS ${name} ${backend}: ${label}`);
   } catch (error) {

@@ -2,6 +2,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildNetwork } from "./tooling/build-network";
+import { packageProgramTools, programToolSources } from "./tooling/program-tools-package";
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -277,8 +278,10 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
 export async function buildNodeModules(
   root = import.meta.dir,
   prepareNetwork = buildNetwork,
+  prepareProgramTools = packageProgramTools,
 ): Promise<void> {
   await prepareNetwork(root);
+  prepareProgramTools(root);
   const outdir = join(root, "dist");
   rmSync(outdir, { recursive: true, force: true });
   const transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });
@@ -300,6 +303,27 @@ export async function buildNodeModules(
       else await emit(path);
     }
   }
+  async function emitFrameworkClosure(): Promise<void> {
+    const pending = ["tests/page-runner/framework.ts", "tests/page-runner/framework-page.ts"];
+    const emitted = new Set<string>();
+    while (pending.length) {
+      const path = pending.pop();
+      if (path === undefined) break;
+      if (emitted.has(path)) continue;
+      emitted.add(path);
+      await emit(path);
+      const imports = transpiler
+        .scanImports(await Bun.file(join(root, path)).text())
+        .filter((entry) => entry.path.startsWith("."));
+      for (const entry of imports) {
+        const target = relative(
+          root,
+          resolve(dirname(join(root, path)), entry.path.replace(/\.js$/, ".ts")),
+        );
+        pending.push(target);
+      }
+    }
+  }
   for (const directory of [
     "core",
     "fs",
@@ -308,12 +332,43 @@ export async function buildNodeModules(
     "browser",
     "group",
     "link",
+    "memory",
+    "thread",
     "search",
     "programs",
   ])
     await visit(directory);
   for (const file of ["index.ts", "runtime.ts"]) if (existsSync(join(root, file))) await emit(file);
+  if (existsSync(join(root, "tooling/program"))) {
+    await visit("tooling/program");
+    // Derivations bind original TypeScript bytes, not transpiler output.
+    for (const file of programToolSources)
+      copyFileSync(join(root, "tooling/program", file), join(outdir, "tooling/program", file));
+    copyFileSync(
+      join(root, "tooling/program/program-transformer.json"),
+      join(outdir, "tooling/program/program-transformer.json"),
+    );
+  }
+  if (existsSync(join(root, "tests/page-runner/framework.ts"))) {
+    await emitFrameworkClosure();
+    await buildFrameworkBootstrap(root, outdir);
+  }
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
+}
+
+export async function buildFrameworkBootstrap(
+  root = import.meta.dir,
+  outdir = join(root, "dist"),
+): Promise<void> {
+  const bootstrap = await Bun.build({
+    entrypoints: [join(root, "tests/page-runner/framework-bootstrap-main.ts")],
+    target: "browser",
+    format: "iife",
+    minify: true,
+  });
+  if (!bootstrap.success || !bootstrap.outputs[0])
+    throw new AggregateError(bootstrap.logs, "Framework bootstrap build failed");
+  await Bun.write(join(outdir, "tests/page-runner/framework-bootstrap.js"), bootstrap.outputs[0]);
 }
 
 if (import.meta.main) await buildNodeModules();

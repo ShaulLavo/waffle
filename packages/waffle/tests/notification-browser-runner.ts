@@ -1,10 +1,19 @@
+import { notificationSources } from "./notification-command.js";
+import { navigateTestPage } from "./browser-navigation.js";
 import { chromium } from "playwright";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   closeBrowserResources,
   type BrowserResourceOwner,
 } from "./process-recycling-browser-runner-control.js";
 
+if (process.argv[2] === "ios-safari") {
+  const { notificationNative } = await import("./page-runner/notification-native.js");
+  process.exit(await notificationNative(process.argv.slice(3)));
+}
 const browsers = new Set<BrowserResourceOwner>();
 const contexts = new Set<BrowserResourceOwner>();
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -25,7 +34,7 @@ process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
 const deadline = setTimeout(stop, 60000);
 try {
-  scratch = await mkdtemp("/work/tmp/wnotify-");
+  scratch = await mkdtemp(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "wnotify-"));
   console.log(
     JSON.stringify({
       resources: "notification-browser",
@@ -34,19 +43,11 @@ try {
       port: "ephemeral-loopback",
     }),
   );
-  const entries = new Map([
-    ["/mixed.js", "./notification-mixed-cases.ts"],
-    ["/lifetime.js", "./notification-lifetime-cases.ts"],
-    ["/guest.js", "./fixtures/notification-mixed-worker.ts"],
-    ["/runtime.js", "./fixtures/notification-runtime-worker.ts"],
-    ["/stalled.js", "./fixtures/notification-stalled-worker.ts"],
-    ["/reject.js", "./fixtures/notification-reject-worker.ts"],
-    ["/helper.js", "../browser/notification-worker.ts"],
-  ]);
+  const entries = new Map(Object.entries(notificationSources));
   const scripts = new Map<string, Blob>();
   for (const [path, entry] of entries) {
     const built = await Bun.build({
-      entrypoints: [new URL(entry, import.meta.url).pathname],
+      entrypoints: [fileURLToPath(new URL(entry, import.meta.url))],
       target: "browser",
     });
     if (!built.success) throw new AggregateError(built.logs, `bundle ${entry}`);
@@ -76,45 +77,11 @@ try {
   contexts.add({ creation: contextCreation, stopped: false });
   const page = await (await contextCreation).newPage();
   page.on("pageerror", (error) => console.error(error));
-  await page.goto(server.url.href);
+  await navigateTestPage(page, server.url.href);
   const result = await page.evaluate(async () => {
-    const mixedPath = "/mixed.js",
-      lifetimePath = "/lifetime.js";
-    const mixed: typeof import("./notification-mixed-cases.js") = await import(mixedPath);
-    const lifetime: typeof import("./notification-lifetime-cases.js") = await import(lifetimePath);
-    const url = (path: string) => new URL(path, location.href).href;
-    return {
-      mixed: await mixed.mixedNotificationCases(url("/guest.js"), url("/helper.js")),
-      terminated: await lifetime.brokerNotificationCase(
-        url("/runtime.js"),
-        url("/helper.js"),
-        false,
-      ),
-      revoked: await lifetime.brokerNotificationCase(url("/runtime.js"), url("/helper.js"), true),
-      startupCancel: await lifetime.bootstrapNotificationCase(
-        url("/runtime.js"),
-        url("/stalled.js"),
-        "arm",
-      ),
-      releaseFailure: await lifetime.scopeDisposalFailureCase(url("/stalled.js"), false),
-      sendFailure: await lifetime.scopeDisposalFailureCase(url("/stalled.js"), true),
-      relayStopFailure: await lifetime.brokerNotificationCase(
-        url("/runtime.js"),
-        url("/helper.js"),
-        false,
-        true,
-      ),
-      relayArmFailure: await lifetime.bootstrapNotificationCase(
-        url("/runtime.js"),
-        url("/reject.js"),
-        "relay",
-      ),
-      startupReject: await lifetime.bootstrapNotificationCase(
-        url("/runtime.js"),
-        url("/helper.js"),
-        "reject",
-      ),
-    };
+    const commandPath = "/notification.js";
+    const command: typeof import("./notification-command.js") = await import(commandPath);
+    return command.notificationCommand();
   });
   console.log(JSON.stringify({ engine: "chromium", result }));
 } finally {

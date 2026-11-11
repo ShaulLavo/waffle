@@ -1,6 +1,7 @@
+import { captureNativeReturn } from "./observation.js";
+import { allocateSharedControl } from "../memory/control.ts";
 import {
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsAdd,
   atomicsLoad,
   atomicsNotify,
@@ -56,6 +57,7 @@ export interface WorkerProcessBrokerOptions {
   /** Transport admission only; the host owns adapter launch and startup-failure diagnostics. */
   onAdmission?: ProcessAdmissionObserver;
   /** Captures the exact lifetime once the supervisor owns its process record. */
+  nativeReturn?(transport: WorkerProcessTransport): () => void;
   onAdmitted?(transport: WorkerProcessTransport): void;
 }
 
@@ -85,7 +87,7 @@ export class WorkerProcessBroker {
     check: async (sender, path, cwd, active, onCancel) => {
       const supervisor = await this.ready();
       active();
-      const wake = new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+      const wake = new Int32ArrayConstructor(allocateSharedControl(4));
       const id = supervisor.accessStart(sender.pid, path, cwd, wake);
       if (id < 0) return id;
       let cancelled = false,
@@ -468,6 +470,8 @@ export class WorkerProcessBroker {
         { ...request, fds: [] },
         {
           pid: state.pid,
+          nativeReturn: this.options.nativeReturn?.(transport) ?? captureNativeReturn(transport),
+          observation: transport,
           job: state.job,
           controlParent: controlLoad(state.controlParent),
           rootPid: state.rootPid,
@@ -672,7 +676,9 @@ export class WorkerProcessBroker {
     claimOutcome(state.signals.outcome, startFailure(error), undefined, describeStartError(error));
     const cleanup = { resourcesReleased: this.discardResources(transport, codec), fenced: false };
     if (!existing) this.rejectedCleanup.set(state.pid, cleanup);
+    const returned = this.options.nativeReturn?.(transport) ?? captureNativeReturn(transport);
     await this.options.quiesce?.(state.pid, transport);
+    returned();
     cleanup.fenced = true;
     if (!cleanup.resourcesReleased) return;
     if (!existing) {
@@ -713,7 +719,9 @@ export class WorkerProcessBroker {
       // disposes the supervisor and clears its event listeners. Retain shared identity
       // only, never descriptor tokens, adapter payloads, or the broker itself.
       const identity: WorkerProcessTransport = {
+        kind: "directory",
         directory: transport.directory,
+        lifetime: transport.lifetime,
         identity: transport.identity,
         slot: transport.slot,
         pid: transport.pid,

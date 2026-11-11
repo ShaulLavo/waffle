@@ -1,3 +1,4 @@
+import { allocateSharedControl } from "../memory/control.ts";
 import { startFailureName, startFailureErrno } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 import {
@@ -16,8 +17,8 @@ import { START_DIAGNOSTIC_WORDS, diagnosticBytes, diagnosticText } from "./start
 import {
   atomicsCompareExchange,
   atomicsLoad,
+  atomicsStore,
   BigInt64ArrayConstructor,
-  SharedArrayBufferConstructor,
   objectFreeze,
   typedArrayBuffer,
   typedArrayByteOffset,
@@ -25,11 +26,9 @@ import {
   isSharedArrayBuffer,
   isBigInt64Array,
   isInstance,
+  sharedArrayBufferByteLength,
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
-  WeakMapConstructor,
-  weakMapGet,
-  weakMapSet,
 } from "./intrinsics.ts";
 
 export interface OutcomeCellTransfer {
@@ -45,7 +44,6 @@ export interface OutcomeWordTransfer {
   type: "outcome-word";
   buffer: SharedArrayBuffer;
   byteOffset: number;
-  diagnostic: SharedArrayBuffer;
 }
 export type OutcomeTransfer = SharedArrayBuffer | OutcomeCellTransfer | OutcomeWordTransfer;
 
@@ -81,18 +79,17 @@ export class OutcomeCell {
   }
 }
 export type OutcomeWord = BigInt64Array | OutcomeCell;
-const diagnostics = new WeakMapConstructor<BigInt64Array, Int32Array>();
+const STANDALONE_WORDS = 1 + Math.ceil((START_DIAGNOSTIC_WORDS * 4) / 8);
 function diagnosticCells(word: OutcomeWord): ControlCells | undefined {
   if (isInstance(word, OutcomeCell)) return word.diagnostic;
   return standaloneDiagnostic(word);
 }
 function standaloneDiagnostic(word: BigInt64Array): Int32Array {
-  let cells = weakMapGet(diagnostics, word);
-  if (!cells) {
-    cells = new Int32ArrayConstructor(new SharedArrayBufferConstructor(START_DIAGNOSTIC_WORDS * 4));
-    weakMapSet(diagnostics, word, cells);
-  }
-  return cells;
+  return new Int32ArrayConstructor(
+    typedArrayBuffer(word),
+    typedArrayByteOffset(word) + 8,
+    START_DIAGNOSTIC_WORDS,
+  );
 }
 function writeDiagnostic(word: OutcomeWord, text: string): void {
   const cells = diagnosticCells(word);
@@ -113,7 +110,19 @@ function publishDiagnostic(word: OutcomeWord, text: string): void {
   try {
     writeDiagnostic(word, text);
   } catch {
-    // Diagnostic allocation or collection must never delay terminal acknowledgement.
+    // A failed copy is complete with no text. Only a live producer may remain pending.
+    settleUnavailableDiagnostic(word);
+  }
+}
+function settleUnavailableDiagnostic(word: OutcomeWord): void {
+  try {
+    if (isInstance(word, OutcomeCell)) {
+      if (word.diagnostic) controlStore(word.diagnostic, 0, 1);
+      return;
+    }
+    atomicsStore(word, 1, 1n);
+  } catch {
+    // Collection revokes diagnostic writes along with the original process incarnation.
   }
 }
 /** Null means the winning producer is still copying its diagnostic. */
@@ -132,12 +141,17 @@ export function readStartDiagnostic(word: OutcomeWord): string | null {
 /** Standalone outcomes do not recycle and use the zero running sentinel. */
 export function outcomeWord(source?: OutcomeWord | SharedArrayBuffer): OutcomeWord {
   if (isInstance(source, OutcomeCell)) return source;
-  const word = isBigInt64Array(source)
-    ? source
-    : new BigInt64ArrayConstructor(source ?? new SharedArrayBufferConstructor(8));
-  if (!isSharedArrayBuffer(typedArrayBuffer(word)) || typedArrayLength(word) !== 1)
-    throw new TypeError("outcome word must be one shared int64");
-  return word;
+  const buffer = isBigInt64Array(source)
+    ? typedArrayBuffer(source)
+    : (source ?? allocateSharedControl(STANDALONE_WORDS * 8));
+  const offset = isBigInt64Array(source) ? typedArrayByteOffset(source) : 0;
+  if (
+    !isSharedArrayBuffer(buffer) ||
+    sharedArrayBufferByteLength(buffer) - offset < STANDALONE_WORDS * 8
+  )
+    throw new TypeError("standalone outcome requires its shared diagnostic storage");
+  if (isBigInt64Array(source) && typedArrayLength(source) === STANDALONE_WORDS) return source;
+  return new BigInt64ArrayConstructor(buffer, offset, STANDALONE_WORDS);
 }
 export function serializeOutcome(source: OutcomeWord): OutcomeTransfer {
   if (isInstance(source, OutcomeCell))
@@ -150,21 +164,20 @@ export function serializeOutcome(source: OutcomeWord): OutcomeTransfer {
       validity: source.validity,
       diagnostic: source.diagnostic ? serializeTaggedCells(source.diagnostic) : undefined,
     };
-  if (!isSharedArrayBuffer(typedArrayBuffer(source)) || typedArrayLength(source) !== 1)
-    throw new TypeError("outcome word must be one shared int64");
+  outcomeWord(source);
+  const word = source;
   return {
     type: "outcome-word",
-    buffer: typedArrayBuffer(source) as SharedArrayBuffer,
-    byteOffset: typedArrayByteOffset(source),
-    diagnostic: typedArrayBuffer(standaloneDiagnostic(source)) as SharedArrayBuffer,
+    buffer: typedArrayBuffer(word) as SharedArrayBuffer,
+    byteOffset: typedArrayByteOffset(word),
   };
 }
 export function reviveOutcome(source: OutcomeTransfer): OutcomeWord {
   if (isSharedArrayBuffer(source)) return outcomeWord(source);
   if (source.type === "outcome-word") {
-    const word = outcomeWord(new BigInt64ArrayConstructor(source.buffer, source.byteOffset, 1));
-    weakMapSet(diagnostics, word, new Int32ArrayConstructor(source.diagnostic));
-    return word;
+    return outcomeWord(
+      new BigInt64ArrayConstructor(source.buffer, source.byteOffset, STANDALONE_WORDS),
+    );
   }
   if (source.type === "outcome-cell") {
     if (source.running !== BigInt(source.pid) << 3n)
