@@ -608,7 +608,7 @@ test("generic runtime process adopts the shared signal winner and releases descr
 });
 
 test("generic executor crash keeps host diagnostics and the first terminal result", async () => {
-  const outcome = new SharedArrayBuffer(8);
+  const outcome = outcomeWord().buffer as SharedArrayBuffer;
   const result = await fixture({
     outcome,
     run() {
@@ -648,7 +648,7 @@ test("generic startup failure reports 126 and never enters its injected executor
 });
 
 test("throwing finish hook still releases owned resources and acknowledges the selected exit once", async () => {
-  const outcome = new SharedArrayBuffer(8);
+  const outcome = outcomeWord().buffer as SharedArrayBuffer;
   const result = await fixture({
     outcome,
     beforeFinish() {
@@ -765,7 +765,7 @@ test("filesystem release failure preserves the exit winner without publishing qu
 });
 
 test("legacy lifecycle failures still attempt diagnostics, release and completion without overwriting its signal winner", async () => {
-  const outcome = new SharedArrayBuffer(8);
+  const outcome = outcomeWord().buffer as SharedArrayBuffer;
   const hooks: string[] = [];
   const result = await fixture({
     outcome,
@@ -972,7 +972,7 @@ for (const env of cwdEnvironments)
   });
 
 test("synchronous executor completion selects its outcome before queued guest microtasks", async () => {
-  const outcome = new SharedArrayBuffer(8);
+  const outcome = outcomeWord().buffer as SharedArrayBuffer;
   let observed: ReturnType<typeof readOutcome>;
   await fixture({
     outcome,
@@ -988,7 +988,7 @@ test("synchronous executor completion selects its outcome before queued guest mi
 
 for (const complete of [false, true])
   test(`startup failure selects typed ENOEXEC before completion (legacy=${complete})`, async () => {
-    const outcome = new SharedArrayBuffer(8);
+    const outcome = outcomeWord().buffer as SharedArrayBuffer;
     const missingStart = new WebAssembly.Module(
       new Uint8Array([
         0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 0, 1, 7, 10, 1, 6, 109, 101, 109, 111, 114, 121, 2, 0,
@@ -1330,7 +1330,7 @@ test("filesystem revoke during arming is caught before guest entry", async () =>
 
 test("external terminal outcome during arming prevents guest entry", async () => {
   const connection = createFilesystemConnection();
-  const outcome = new SharedArrayBuffer(8);
+  const outcome = outcomeWord().buffer as SharedArrayBuffer;
   const messages: RuntimeWorkerMessage[] = [];
   const armStarted = Promise.withResolvers<void>();
   const releaseArm = Promise.withResolvers<void>();
@@ -1371,7 +1371,7 @@ test("external terminal outcome during arming prevents guest entry", async () =>
 
 test("cancellation queued after arming still prevents guest entry", async () => {
   const connection = createFilesystemConnection();
-  const outcome = new SharedArrayBuffer(8);
+  const outcome = outcomeWord().buffer as SharedArrayBuffer;
   const messages: RuntimeWorkerMessage[] = [];
   let starts = 0;
   let runs = 0;
