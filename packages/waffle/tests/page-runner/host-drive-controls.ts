@@ -127,7 +127,23 @@ type DeadlineResult = Pick<
   Awaited<ReturnType<typeof runPageSuite>>,
   "results" | "failures" | "runComplete"
 >;
-export function checkTeardownDeadline(result: DeadlineResult): void {
+function observedTeardownClock(evidence: unknown): boolean {
+  if (!record(evidence) || !Array.isArray(evidence.host) || evidence.host.length !== 1)
+    return false;
+  const host: unknown = evidence.host[0];
+  if (!record(host) || host.caseId !== "host" || !record(host.teardownClock)) return false;
+  const clock = host.teardownClock;
+  return (
+    typeof clock.startedAt === "number" &&
+    Number.isFinite(clock.startedAt) &&
+    typeof clock.deadline === "number" &&
+    Number.isFinite(clock.deadline) &&
+    clock.deadline === clock.startedAt + 60
+  );
+}
+export function checkTeardownDeadline(result: DeadlineResult, evidence: unknown): void {
+  if (!observedTeardownClock(evidence))
+    throw new Error("Body timeout extension changed the independent teardown clock");
   if (JSON.stringify(result.results).includes('"status":"timeout"')) return;
   const host = result.results.host;
   const failure = result.failures[0];
@@ -269,7 +285,12 @@ export async function hostControl(
     throw new Error("Host selection changed inventory");
   if (Object.values(result.cleanup).some((step) => record(step) && step.status === "unconfirmed"))
     throw new Error(`Host ${mode} cleanup unconfirmed ${JSON.stringify(result.cleanup)}`);
-  if (mode === "deadline-teardown") checkTeardownDeadline(result);
+  if (mode === "deadline-teardown") {
+    const evidence: unknown = await Bun.file(
+      join(root, `host-${mode}.json.diagnostics.json`),
+    ).json();
+    checkTeardownDeadline(result, evidence);
+  }
   if (mode === "interruption" && !JSON.stringify(result.results).includes('"disposed":1'))
     throw new Error("Interrupted command skipped settled original teardown");
   if (mode === "disposal-twice" && !JSON.stringify(result.results).includes('"disposed":2'))

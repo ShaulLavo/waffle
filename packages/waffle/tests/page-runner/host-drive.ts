@@ -41,6 +41,7 @@ export class HostDrive {
   private readonly body = new AbortController();
   private deadline = Infinity;
   private teardownUntil: number | undefined;
+  private teardownStartedAt = 0;
   private bodyWork: { kind: "pending"; promise: Promise<unknown> } | { kind: "settled" } = {
     kind: "settled",
   };
@@ -442,10 +443,13 @@ try {
   }
 
   private beginTeardown(): void {
-    this.teardownUntil ??= Math.min(
-      performance.now() + (this.budgets.teardown ?? this.budgets.case),
-      this.started + this.budgets.run,
-    );
+    if (this.teardownUntil === undefined) {
+      this.teardownStartedAt = performance.now();
+      this.teardownUntil = Math.min(
+        this.teardownStartedAt + (this.budgets.teardown ?? this.budgets.case),
+        this.started + this.budgets.run,
+      );
+    }
     this.assets?.revoke(this.state);
   }
   teardownDeadline(): number {
@@ -565,6 +569,10 @@ try {
       pendingBody: this.bodyWork.kind === "pending",
       pendingAssets: this.assets?.pending(this.state) ?? false,
       containmentFailed: this.containmentFailed,
+      teardownClock:
+        this.teardownUntil === undefined
+          ? null
+          : { startedAt: this.teardownStartedAt, deadline: this.teardownUntil },
     };
   }
   async drive(callback: (host: HostCase) => Promise<unknown>): Promise<void> {

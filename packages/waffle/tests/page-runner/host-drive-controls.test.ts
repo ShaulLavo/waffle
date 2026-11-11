@@ -14,8 +14,20 @@ function hostTimeout(): DeadlineResult {
   };
 }
 
+function clockEvidence(milliseconds = 60) {
+  return {
+    host: [{ caseId: "host", teardownClock: { startedAt: 1000, deadline: 1000 + milliseconds } }],
+  };
+}
+
+test("independent teardown control rejects a host cutoff extended to the hook duration", () => {
+  expect(() => checkTeardownDeadline(hostTimeout(), clockEvidence(80))).toThrow(
+    "Body timeout extension changed the independent teardown clock",
+  );
+});
+
 test("independent teardown control accepts the host cutoff before the page report arrives", () => {
-  expect(() => checkTeardownDeadline(hostTimeout())).not.toThrow();
+  expect(() => checkTeardownDeadline(hostTimeout(), clockEvidence())).not.toThrow();
 });
 
 test("independent teardown control still accepts the original page timeout evidence", () => {
@@ -25,15 +37,36 @@ test("independent teardown control still accepts the original page timeout evide
     teardown: { status: "timeout", settled: false },
   };
   result.failures = [];
-  expect(() => checkTeardownDeadline(result)).not.toThrow();
+  expect(() => checkTeardownDeadline(result, clockEvidence())).not.toThrow();
 });
+
+test("page timeout evidence cannot hide an extended host teardown cutoff", () => {
+  const result = hostTimeout();
+  result.results.host = { body: { status: "pass" }, teardown: { status: "timeout" } };
+  expect(() => checkTeardownDeadline(result, clockEvidence(80))).toThrow(
+    "Body timeout extension changed the independent teardown clock",
+  );
+});
+
+test("independent teardown control requires actual owner clock evidence", () => {
+  expect(() => checkTeardownDeadline(hostTimeout(), null)).toThrow(
+    "Body timeout extension changed the independent teardown clock",
+  );
+});
+
+for (const milliseconds of [0, 59, 100_000, NaN, Infinity])
+  test(`independent teardown control rejects an invalid ${milliseconds} ms clock`, () => {
+    expect(() => checkTeardownDeadline(hostTimeout(), clockEvidence(milliseconds))).toThrow(
+      "Body timeout extension changed the independent teardown clock",
+    );
+  });
 
 test("independent teardown control rejects a completed hook without timeout evidence", () => {
   const result = hostTimeout();
   result.results.host = { body: { status: "pass" }, teardown: { status: "pass" } };
   result.failures = [];
   result.runComplete = true;
-  expect(() => checkTeardownDeadline(result)).toThrow(
+  expect(() => checkTeardownDeadline(result, clockEvidence())).toThrow(
     "Body timeout extension changed the independent teardown clock",
   );
 });
@@ -51,7 +84,7 @@ for (const mismatch of ["body", "category", "group", "detail", "extra", "complet
     if (mismatch === "extra")
       result.failures.push({ group: "host", category: "host", detail: "Other failure" });
     if (mismatch === "complete") result.runComplete = true;
-    expect(() => checkTeardownDeadline(result)).toThrow(
+    expect(() => checkTeardownDeadline(result, clockEvidence())).toThrow(
       "Body timeout extension changed the independent teardown clock",
     );
   });
