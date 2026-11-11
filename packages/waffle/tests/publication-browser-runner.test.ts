@@ -13,7 +13,8 @@ for (const mode of ["shutdown", "assigned", "confirmed"] as const)
       {
         env: {
           ...process.env,
-          STORAGE_SCRATCH_ROOT: process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(),
+          STORAGE_SCRATCH_ROOT:
+            process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "win32" ? tmpdir() : "/tmp"),
         },
         timeout: 5_000,
       },
