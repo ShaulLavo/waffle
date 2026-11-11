@@ -406,13 +406,14 @@ function replyError(response: ServerResponse, error: unknown): void {
   response.statusCode = 500;
   response.end(error instanceof Error ? error.message : "Synthetic callback rejected");
 }
-function dropFinalAck(request: IncomingMessage, response: ServerResponse): void {
+export function dropFinalAck(request: IncomingMessage, response: ServerResponse): void {
   let text = "";
   request.on("data", (chunk) => {
     text += String(chunk);
   });
   const original = response.end;
   response.end = function (...args: unknown[]) {
+    if (this.statusCode < 200 || this.statusCode >= 300) return Reflect.apply(original, this, args);
     const payload: unknown = JSON.parse(text);
     if (record(payload) && payload.kind === "retire-ready") {
       this.statusCode = 503;
