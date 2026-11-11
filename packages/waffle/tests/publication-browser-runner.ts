@@ -35,9 +35,7 @@ async function desktopMain(): Promise<void> {
     if (name !== "chromium" && name !== "firefox" && name !== "webkit")
       throw new Error(`Unknown browser: ${name}`);
     const previousTmp = process.env.TMPDIR;
-    let browser: Browser | undefined,
-      context: BrowserContext | undefined,
-      profile: string | undefined;
+    let browser: Browser | undefined, context: BrowserContext | undefined;
     try {
       if (name === "firefox" && process.platform === "linux")
         process.env.TMPDIR = await lifecycle.directory(
@@ -45,7 +43,7 @@ async function desktopMain(): Promise<void> {
           "waffle-ff-",
         );
       if (name === "webkit" && workspace) {
-        profile = await lifecycle.directory(lifecycle.scratch, "webkit-opfs-profile-");
+        const profile = await lifecycle.directory(lifecycle.scratch, "webkit-opfs-profile-");
         context = await lifecycle.persistent("webkit", profile);
         browser = context.browser() ?? undefined;
       } else browser = await lifecycle.launch(name);
@@ -71,7 +69,6 @@ async function desktopMain(): Promise<void> {
       try {
         if (context) await lifecycle.closeContext(context);
         else if (browser) await lifecycle.closeBrowser(browser);
-        if (profile) await lifecycle.removeDirectory(profile);
       } finally {
         if (previousTmp === undefined) delete process.env.TMPDIR;
         else process.env.TMPDIR = previousTmp;
