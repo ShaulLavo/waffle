@@ -50,6 +50,8 @@ export default {
         "tests/gpu-browser-qualification.ts",
         "tests/gpu-browser-runner.ts",
         "tests/link-browser-runner.ts",
+        // Bundled by the link browser runner before the linker imports execute.
+        "tests/fixtures/link-relay-worker.ts",
         "tests/gpu-async-browser-runner.ts",
         "tests/fixtures/gpu/async-page.ts",
         "tests/fixtures/gpu/async-native.ts",

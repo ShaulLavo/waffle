@@ -2,6 +2,7 @@ import { prepareLinkPlan } from "../link/index.js";
 import { MemoryGroups } from "../group/state.js";
 import { source } from "./fixtures/link-initialization.js";
 import { withMemberWorkers } from "./fixtures/link-member-workers.js";
+import { linkedRelayBrowser } from "./link-relay-browser.js";
 
 function reply(worker: Worker): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -51,5 +52,5 @@ export async function sharedLinkBrowser() {
     );
   });
   assert(groups.snapshot().length === 0 && groups.budget.committed === 0, "group cleanup");
-  return { observations, cleanup: true };
+  return { observations, relay: await linkedRelayBrowser(), cleanup: true };
 }

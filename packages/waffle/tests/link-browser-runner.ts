@@ -42,9 +42,11 @@ async function bundle(path: string) {
 }
 
 try {
-  const [page, worker] = await Promise.all([
+  const [page, worker, relayWorker, filesystemWorker] = await Promise.all([
     bundle("link-browser.ts"),
     bundle("fixtures/link-initialization-worker.ts"),
+    bundle("fixtures/link-relay-worker.ts"),
+    bundle("../browser/fs-worker.ts"),
   ]);
   const headers = {
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -55,6 +57,10 @@ try {
     port: 0,
     fetch(request) {
       const path = new URL(request.url).pathname;
+      if (path === "/relay-worker.js" || path === "/fs-worker.js")
+        return new Response(path === "/relay-worker.js" ? relayWorker : filesystemWorker, {
+          headers: { ...headers, "Content-Type": "text/javascript" },
+        });
       if (path === "/worker.js" || path === "/page.js")
         return new Response(path === "/worker.js" ? worker : page, {
           headers: { ...headers, "Content-Type": "text/javascript" },
