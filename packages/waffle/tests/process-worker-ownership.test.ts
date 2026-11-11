@@ -2443,6 +2443,7 @@ for (const joining of [false, true]) {
   test(`process initialization failure rolls back ${joining ? "joined membership" : "private job"} and its captured process reservation`, () => {
     const root = createWorkerProcessTransport({ capacity: 2 });
     const rootState = workerProcessState(root);
+    const processStride = (rootState.jobOutcome.byteOffset - 32 - 3 * 8) / 2;
     const original = Atomics.store;
     const failure = new Error("initialization interrupted");
     let interrupted = false;
@@ -2451,7 +2452,7 @@ for (const joining of [false, true]) {
         !interrupted &&
         array instanceof BigInt64Array &&
         array.buffer === root.directory &&
-        array.byteOffset !== 32 &&
+        array.byteOffset === 32 + processStride &&
         index === 1 &&
         value === packedControl(2, 1)
       ) {

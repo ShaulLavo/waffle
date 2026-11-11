@@ -59,12 +59,12 @@ function errorLine(error: unknown): string {
 
 /** Only copied text crosses the worker boundary, never the original thrown object. */
 export class WorkerStartError extends Error {
-  constructor(
-    message: string,
-    readonly code: StartFailure | undefined,
-    readonly diagnostic: string,
-  ) {
+  readonly code: StartFailure | undefined;
+  readonly diagnostic: string;
+  constructor(message: string, code: StartFailure | undefined, diagnostic: string) {
     super(message);
+    this.code = code;
+    this.diagnostic = diagnostic;
   }
 }
 
