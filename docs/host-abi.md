@@ -734,6 +734,13 @@ futex_unwatch(id) -> 0
 parallelism() -> the group's reported parallelism
 ```
 
+`group_grow(n)` grants exactly `n` pages without speculative leases. A one-page call adds at
+most 64 KiB to the owner's backing charge, or zero when reusing a free range. Granted heap
+pages remain owned until the member physically stops; free backing stays charged until the
+group ends. Fixed backing is reserved separately at group creation. See
+[heap acquisition and retention](memory-groups.md#heap-acquisition-and-retention) for the
+profile's bounds and their limits.
+
 `group_grow` chunks need not be contiguous with earlier ones. A negative `timeout_ns` waits
 forever; `count` `0xffffffff` wakes every waiter. Waits must be 4- or 8-byte aligned. Hard
 termination of the member's worker is the cancellation path for a blocked wait.

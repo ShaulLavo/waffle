@@ -53,6 +53,16 @@ With the default or an unbounded declaration, the budget charges what the owner 
 
 With an explicit bounded declaration the group memory is fixed, with 16,384 initial and maximum pages by default. An explicit `maximumPages` overrides that default. The page reservation ledger charges the entire fixed backing before construction. `committedBytes` and the W3 budget count logical pages granted by the owner, not the full addressable fixed buffer. Logical growth clears the granted range without calling `memory.grow`. A stray write above that range does not trap on a fixed backing.
 
+### Heap acquisition and retention
+
+`runtime_shm.group_grow(n)` grants exactly `n` contiguous 64 KiB pages. Every call goes to the owner, which first reuses a free range and otherwise acquires exactly `n` pages. There are no speculative member leases or unused lease remainders. A one-page request adds at most 65,536 bytes to `committedBytes` and the W3 charge, even after earlier large requests. Reuse adds zero. Refusal changes neither backing nor the charge.
+
+For a growable group, this is also the bound on the increase in `memory.buffer.byteLength` per call. It is not a bound on browser reservation or resident memory. The declared memory maximum is separate, and an explicit bounded profile has already reserved its entire fixed backing at group creation. That profile cannot provide a 64 KiB total physical acquisition bound for a small allocator request.
+
+All granted heap pages stay owned by the member until its successful physical stop, even if the guest allocator frees their contents. Failed stops retain those exact pages as debt. After a successful stop, the pages become zeroed-on-reuse free ranges for later members or shared regions. They remain charged at the group's high-water mark until the group ends, since WebAssembly memory cannot shrink. Acquisition adds no pages beyond the caller's request, and retention adds no unused member lease pages. Total W3 backing remains bounded by `budgetBytes` across groups and by `maximumPages * 65,536` within each group, including reserved page 0, data, stacks and shared regions.
+
+Allocators using this profile must account for their own page rounding and retained segments. Exact host grants do not establish an allocator's total waste bound or the browser's physical memory use. In particular, the group profile supports QuickJS heap growth, but these guarantees alone do not prove a 64 KiB bound for the whole QuickJS process.
+
 An unexposed fixed backing can return to its exact-shape pool after every member physically stops. Before another group receives it, every addressable byte is cleared, including pages never logically granted. A buffer returned by `MemoryGroupHandle.buffer()` is exposed and is never recycled. That method throws after its group ends.
 
 ## Lifetime and physical stop
