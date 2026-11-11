@@ -9,6 +9,7 @@ const asyncGpuRunner = "tests/gpu-async-browser-runner.ts";
 const reporterControls = "tests/page-runner/browser-controls-runner.ts";
 const runners = [
   "tests/browser-navigation-browser-runner.ts",
+  "tests/link-browser-runner.ts",
   "tests/safe-staging-browser-runner.ts",
   "tests/storage-browser-runner.ts",
   "tests/storage-lock-browser-runner.ts",

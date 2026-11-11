@@ -2,8 +2,16 @@ import { Wasi } from "../../core/wasi.js";
 import { MemFS } from "../../fs/memory.js";
 import { createGroupMember } from "../../group/member.js";
 import type { MemoryGroupMemberRequest } from "../../group/protocol.js";
-import { instantiateLinkPlan, prepareLinkPlan } from "../../link/index.js";
-import { source } from "./link-initialization.js";
+import { instantiateLinkPlan, adoptLinkPlan, type SharedLinkPlan } from "../../link/index.js";
+
+const nativeCompile = WebAssembly.compile;
+let compileCalls = 0;
+WebAssembly.compile = (bytes) => {
+  compileCalls++;
+  if (!(bytes instanceof Uint8Array) || !(bytes.buffer instanceof ArrayBuffer))
+    throw new Error("expected private Uint8Array compiler input");
+  return nativeCompile(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+};
 
 let linked: ReturnType<typeof instantiateLinkPlan> | undefined;
 let member: ReturnType<typeof createGroupMember> | undefined;
@@ -27,8 +35,13 @@ function observe() {
     sideMark: read(linked.libraries[0]!.instance),
   };
 }
-async function launch(request: MemoryGroupMemberRequest, mark: number) {
-  const plan = await prepareLinkPlan(source(true, true));
+async function launch(request: MemoryGroupMemberRequest, mark: number, image: SharedLinkPlan) {
+  await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  const compileControl = compileCalls;
+  compileCalls = 0;
+  const plan = adoptLinkPlan(image);
+  Reflect.set(image, "reserve", "absent");
+  Reflect.get(image, "core").initializeMemory.length = 0;
   member = createGroupMember(request, { checkActive() {} });
   const bindings = member.bindings(plan.entryModule);
   bindings.env.trace = () => {};
@@ -54,6 +67,11 @@ async function launch(request: MemoryGroupMemberRequest, mark: number) {
   observation = {
     coreTls,
     sideTls,
+    compileCalls,
+    compileControl,
+    frozen:
+      Object.isFrozen(plan.shared) &&
+      Object.isFrozen(Reflect.get(plan.shared, "core").initializeMemory),
     coreBase: numberGlobal(bindings.env.__memory_base),
     sideBase: side.memoryBase,
     low: numberGlobal(bindings["GOT.mem"].__stack_low),
@@ -71,7 +89,7 @@ async function launch(request: MemoryGroupMemberRequest, mark: number) {
 self.onmessage = async ({
   data,
 }: MessageEvent<
-  | { kind: "launch"; request: MemoryGroupMemberRequest; mark: number }
+  | { kind: "launch"; request: MemoryGroupMemberRequest; mark: number; linkPlan: SharedLinkPlan }
   | { kind: "read" }
   | { kind: "close" }
 >) => {
@@ -87,7 +105,7 @@ self.onmessage = async ({
       self.postMessage(observe());
       return;
     }
-    await launch(data.request, data.mark);
+    await launch(data.request, data.mark, data.linkPlan);
   } catch (error) {
     self.postMessage({ error: String(error) });
   }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
-import { instantiateLinkPlan, prepareLinkPlan } from "../link/index.js";
+import { adoptLinkPlan, instantiateLinkPlan, prepareLinkPlan } from "../link/index.js";
 
 import { source, coreSource, sideSource } from "./fixtures/link-initialization.js";
 import { withMemberWorkers } from "./fixtures/link-member-workers.js";
@@ -175,16 +175,18 @@ for (const declared of [false, true]) {
 test("both ordered lists survive clone readmission and missing lists fail closed", async () => {
   const input = source();
   const plan = await prepareLinkPlan(input);
-  const copy = structuredClone(plan.toSource());
-  expect(copy.core.initializeMemory).toEqual(input.core.initializeMemory);
-  expect(copy.core.initialize).toEqual(input.core.initialize);
-  expect(copy.libraries[0]!.initializeMemory).toEqual(input.libraries[0]!.initializeMemory);
-  const restored = await prepareLinkPlan(copy);
-  expect(restored.toSource()).toEqual(copy);
+  const copy = structuredClone(plan.shared);
+  const metadata = Reflect.get(copy, "core");
+  const libraries = Reflect.get(copy, "libraries");
+  expect(metadata.initializeMemory).toEqual(input.core.initializeMemory);
+  expect(metadata.initialize).toEqual(input.core.initialize);
+  expect(libraries[0]!.initializeMemory).toEqual(input.libraries[0]!.initializeMemory);
+  const restored = adoptLinkPlan(copy);
+  expect(restored.shared).toEqual(copy);
   for (const field of ["initializeMemory", "initialize"] as const) {
     const missing = structuredClone(copy);
-    Reflect.deleteProperty(missing.core, field);
-    await expect(prepareLinkPlan(missing)).rejects.toThrow(`${field} must list export names`);
+    Reflect.deleteProperty(Reflect.get(missing, "core"), field);
+    expect(() => adoptLinkPlan(missing)).toThrow("metadata array");
   }
 });
 
@@ -280,6 +282,7 @@ function memberReply(worker: Worker): Promise<MemberObservation> {
 }
 
 test("two real members initialize their own core and side TLS and retain carved stacks", async () => {
+  const prepared = await prepareLinkPlan(source(true, true));
   const { MemoryGroups } = await import("../group/state.js");
   const groups = new MemoryGroups({ stackBytes: 65536, maximumPages: 32, budgetBytes: 32 * 65536 });
   await withMemberWorkers(
@@ -304,7 +307,12 @@ test("two real members initialize their own core and side TLS and retain carved 
         const response = memberReply(entry.worker);
         const launch = entry.lease.launch();
         entry.worker.postMessage(
-          { kind: "launch", request: launch.request, mark: 111 + index * 111 },
+          {
+            kind: "launch",
+            request: launch.request,
+            mark: 111 + index * 111,
+            linkPlan: prepared.shared,
+          },
           launch.transfer,
         );
         observed.push(await response);

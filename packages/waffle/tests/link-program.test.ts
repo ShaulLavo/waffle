@@ -1,16 +1,20 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
 import {
+  adoptLinkPlan,
   instantiateLinkPlan,
   linkedWorkerHooks,
   prepareLinkPlan,
   type LinkPlanSource,
+  type SharedLinkPlan,
 } from "../link/index.js";
 import { compileInterruptible } from "../interrupt/loader.js";
-import { bootstrap } from "../browser/worker.js";
+import { bootstrap, type RuntimeWorkerRequest } from "../browser/worker.js";
+import type { ProcessContext } from "../proc/types.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
 import { inspectProfile } from "../link/metadata.js";
+import { nodeWorkerTransfers } from "./fixtures/node-worker-transfers.js";
 
 const u32 = (n: number): number[] =>
   n < 128 ? [n] : [(n % 128) + 128].concat(u32(Math.floor(n / 128)));
@@ -231,7 +235,7 @@ test("weak import metadata binds an exact real core provider and survives readmi
   } finally {
     group.dispose();
   }
-  const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
+  const restored = adoptLinkPlan(structuredClone(plan.shared));
   const readmitted = instantiateLinkPlan(restored, host());
   readmitted.initialize();
   try {
@@ -528,7 +532,7 @@ test("cancelled initialization poisons group and never calls later initializer",
   group.dispose();
 });
 
-test("structured-cloned exact source is re-admitted, not a cloned opaque prepared object", async () => {
+test("structured-cloned prepared object is refused while shared images adopt", async () => {
   const plan = await prepareLinkPlan(structuredClone(source()));
   const group = instantiateLinkPlan(plan, host());
   try {
@@ -540,69 +544,93 @@ test("structured-cloned exact source is re-admitted, not a cloned opaque prepare
   expect(() => instantiateLinkPlan(structuredClone(plan), host())).toThrow("local prepared plan");
 });
 
-test("normal worker structured-clones exact source, re-admits it, links and executes", async () => {
-  const { Worker } = await import("node:worker_threads");
-  const plan = await prepareLinkPlan(source());
+function linkedNodeWorkerScript(): string {
   const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
-  const script = `const {parentPort,workerData}=require('node:worker_threads');
+  return `const {parentPort,workerData}=require('node:worker_threads');
 (async()=>{
  const {bootstrap}=await import(${url("../browser/worker.ts")});
  const {linkedWorkerHooks}=await import(${url("../link/index.ts")});
  const {createFilesystemConnection}=await import(${url("../fs/protocol.ts")});
  const connection=createFilesystemConnection(), hooks=linkedWorkerHooks();
+ const compile=WebAssembly.compile; let compiles=0;
+ WebAssembly.compile=(...args)=>{compiles++;return compile(...args)};
+ await WebAssembly.compile(new Uint8Array([0,97,115,109,1,0,0,0]));
+ if(compiles!==1)throw Error('compiler counter control failed');
+ compiles=0;
  let initialized=false;
  try {
  await bootstrap({controlGrant:{kind:"unbounded"},...workerData,filesystem:connection.client,args:[],env:{}},{...hooks,
  setup({fs}){fs.preopen=()=>1;fs.retain=()=>{};fs.release=()=>{}},
- namespaces(){return {env:{check(){}}}},
- instantiated({instance}){if(instance.exports.initialized.value!==0)throw Error('eager initializer')},
+ namespaces(){return {env:{check(){}},test:{check(){}}}},
+ instantiated({instance}){if(instance.exports.initialized && instance.exports.initialized.value!==0)throw Error('eager initializer')},
  initialize(context){hooks.initialize(context);initialized=true},
- run({instance}){if(!initialized)throw Error('missing initializer');return instance.exports.invoke(5)}
+ run({instance}){if(!initialized)throw Error('missing initializer');return instance.exports.invoke ? instance.exports.invoke(5) : (instance.exports._start(),0)}
  },{crossOriginIsolated:true,postMessage:message=>parentPort.postMessage(message)});
+ parentPort.postMessage({compiles});
  } finally{connection.client.port.close();connection.server.port.close();parentPort.close()}
 })().catch(error=>{parentPort.postMessage({error:String(error)});parentPort.close()});`;
-  const worker = new Worker(script, {
-    eval: true,
-    workerData: { module: plan.entryModule, linkPlan: plan.toSource() },
-  });
-  const messages: unknown[] = [];
-  try {
-    await new Promise<void>((resolve, reject) => {
-      worker.on("message", (message) => messages.push(message));
-      worker.once("error", reject);
-      worker.once("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error(`worker exit ${code}`)),
-      );
-    });
-    expect(messages).toContainEqual({
-      type: "exit",
-      code: 12,
-      signal: undefined,
-      sleep: "atomics",
-    });
-    expect(
-      messages.some(
-        (message) => typeof message === "object" && message !== null && "error" in message,
-      ),
-    ).toBe(false);
-  } finally {
-    await worker.terminate();
-  }
-});
+}
 
-test("transport snapshots cannot mutate admitted configuration or bytes", async () => {
+for (const kind of ["ordinary", "adopted root"]) {
+  test(`real ${kind} worker adopts modules with zero compilation`, async () => {
+    const { Worker } = await import("node:worker_threads");
+    const { groupLinkProgram } = await import("./fixtures/group-link-program.js");
+    const plan = await prepareLinkPlan(source());
+    const root = kind === "adopted root" ? await rootAdmissionFixture() : undefined;
+    const program = root
+      ? await groupLinkProgram()
+      : { module: plan.entryModule, linkPlan: plan.shared };
+    const admitted = root?.broker.admitRootMemoryGroup(root.root.pid, program);
+    const worker = new Worker(linkedNodeWorkerScript(), {
+      eval: true,
+      workerData: { ...program, ...(admitted ? { memoryGroup: admitted.request } : {}) },
+      transferList: admitted ? nodeWorkerTransfers(admitted.transfer) : [],
+    });
+    const messages: unknown[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.on("message", (message) => messages.push(message));
+        worker.once("error", reject);
+        worker.once("exit", (code) =>
+          code === 0 ? resolve() : reject(new Error(`worker exit ${code}`)),
+        );
+      });
+      expect(messages).toContainEqual({ compiles: 0 });
+      expect(messages).toContainEqual({
+        type: "exit",
+        code: kind === "ordinary" ? 12 : 0,
+        signal: undefined,
+        sleep: "atomics",
+      });
+      expect(
+        messages.some(
+          (message) => typeof message === "object" && message !== null && "error" in message,
+        ),
+      ).toBe(false);
+    } finally {
+      await worker.terminate();
+      admitted?.stopped();
+      await root?.broker.dispose();
+    }
+  });
+}
+
+test("shared metadata and adopted snapshots cannot mutate an existing plan", async () => {
   const plan = await prepareLinkPlan(source());
-  const transfer = plan.toSource();
-  transfer.core.source.fill(0);
-  const group = instantiateLinkPlan(plan, host());
-  try {
-    group.initialize();
-    expect(call(group.entry, "invoke", 1)).toBe(8);
-  } finally {
-    group.dispose();
+  const received = structuredClone(plan.shared);
+  const restored = adoptLinkPlan(received);
+  expect(plan.shared).toBe(plan.shared);
+  expect(Object.isFrozen(plan.shared)).toBe(true);
+  Reflect.set(received, "reserve", "absent");
+  for (const local of [plan, restored]) {
+    const group = instantiateLinkPlan(local, host());
+    try {
+      group.initialize();
+      expect(call(group.entry, "invoke", 1)).toBe(8);
+    } finally {
+      group.dispose();
+    }
   }
-  const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
-  expect(restored.entryModule).toBe(plan.entryModule);
 });
 
 for (const symbol of ["stdout", "_CLOCK_MONOTONIC", "errno"]) {
@@ -696,14 +724,12 @@ test("GOT.func without a function provider and true Wasm start fail before any i
 });
 
 for (const member of ["core", "engine"]) {
-  test(`duplicate ${member} initializers reject during preparation and readmission`, async () => {
+  test(`duplicate ${member} initializers reject during preparation`, async () => {
     const input = source();
-    const plan = await prepareLinkPlan(input);
-    const transfer = plan.toSource();
-    const target = member === "core" ? transfer.core : transfer.libraries[0]!;
+    const target = member === "core" ? input.core : input.libraries[0]!;
     const repeated = { ...target, initialize: ["init", "init"] };
     const changed =
-      member === "core" ? { ...transfer, core: repeated } : { ...transfer, libraries: [repeated] };
+      member === "core" ? { ...input, core: repeated } : { ...input, libraries: [repeated] };
     await expect(prepareLinkPlan(changed)).rejects.toThrow("duplicate initializer");
     await expect(prepareLinkPlan(structuredClone(changed))).rejects.toThrow(
       "duplicate initializer",
@@ -779,7 +805,7 @@ test("finish reentered by the final relocation clears linked table slots", async
       {
         controlGrant: { kind: "unbounded" },
         module: plan.entryModule,
-        linkPlan: plan.toSource(),
+        linkPlan: plan.shared,
         args: [],
         env: {},
         filesystem: connection.client,
@@ -1077,7 +1103,8 @@ function selfSource(...libraries: Uint8Array[]): LinkPlanSource {
 }
 
 test("a side binds its own defined export through a typed relay when core lacks it", async () => {
-  const group = instantiateLinkPlan(await prepareLinkPlan(selfSource(selfSide())), host());
+  const plan = await prepareLinkPlan(selfSource(selfSide()));
+  const group = instantiateLinkPlan(adoptLinkPlan(structuredClone(plan.shared)), host());
   group.initialize();
   try {
     const lib = group.libraries[0]!;
@@ -1294,5 +1321,257 @@ test("active library relocation is automatic unless declared in memory stages", 
     expect(new DataView(explicit.memory.buffer).getUint32(library.memoryBase + 8, true)).toBe(1);
   } finally {
     explicit.dispose();
+  }
+});
+
+function frozenMetadata(value: unknown): void {
+  if (value instanceof WebAssembly.Module || value === null || typeof value !== "object") return;
+  expect(Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype).toBe(true);
+  expect(Object.isFrozen(value)).toBe(true);
+  for (const entry of Object.values(value)) frozenMetadata(entry);
+}
+
+test("all shared and adopted metadata is recursively frozen plain data without source bytes", async () => {
+  const plan = await prepareLinkPlan(selfSource(selfSide({ got: true, alias: "g" })));
+  frozenMetadata(plan.shared);
+  const received = structuredClone(plan.shared);
+  const adopted = adoptLinkPlan(received);
+  frozenMetadata(adopted.shared);
+  const before = structuredClone(plan.shared);
+  const coreImage = Reflect.get(plan.shared, "core");
+  const library = Reflect.get(plan.shared, "libraries")[0];
+  expect(Reflect.set(coreImage.baseOffsets, "memory", 900)).toBe(false);
+  expect(Reflect.set(coreImage.initialize, "0", "absent")).toBe(false);
+  expect(Reflect.set(library.self.targets, "0", "absent")).toBe(false);
+  expect(Reflect.set(library.self.targetSlots[0], "slot", 100)).toBe(false);
+  expect(Reflect.set(Reflect.get(plan.shared, "libraries"), "length", 0)).toBe(false);
+  expect(plan.shared).toEqual(before);
+  const receivedLibrary = Reflect.get(received, "libraries")[0];
+  receivedLibrary.self.targets[0] = "absent";
+  receivedLibrary.self.targetSlots[0].slot = 100;
+  receivedLibrary.baseOffsets.memory = 100;
+  receivedLibrary.initialize[0] = "absent";
+  Reflect.get(received, "libraries").length = 0;
+  const group = instantiateLinkPlan(adopted, host());
+  try {
+    group.initialize();
+    expect(call(group.libraries[0]!.instance, "entry", 10)).toBe(11);
+  } finally {
+    group.dispose();
+  }
+});
+
+for (const backing of ["buffer", "view", "shared"] as const) {
+  test(`prepare synchronously snapshots ${backing} bytes and small configuration`, async () => {
+    const input = source();
+    const raw = input.core.source;
+    const buffer =
+      backing === "shared"
+        ? new SharedArrayBuffer(raw.length + 22)
+        : new ArrayBuffer(raw.length + 22);
+    const bytes = new Uint8Array(buffer, 11, raw.length);
+    bytes.set(raw);
+    const member = { ...input.core, source: backing === "buffer" ? raw : bytes };
+    const pending = prepareLinkPlan({ ...input, core: member });
+    member.source.fill(0);
+    Reflect.set(member.checkpoint, "name", "absent");
+    Reflect.set(member.initialize, "0", "absent");
+    const plan = await pending;
+    const group = instantiateLinkPlan(adoptLinkPlan(structuredClone(plan.shared)), host());
+    try {
+      group.initialize();
+      expect(call(group.entry, "invoke", 3)).toBe(10);
+    } finally {
+      group.dispose();
+    }
+  });
+}
+
+test("SAB normalization precedes parsing and uses the same private bytes for compilation", async () => {
+  const input = source();
+  const shared = new Uint8Array(new SharedArrayBuffer(input.core.source.length));
+  shared.set(input.core.source);
+  const compile = WebAssembly.compile;
+  const seen: unknown[] = [];
+  const spy = spyOn(WebAssembly, "compile").mockImplementation((bytes) => {
+    shared.fill(0);
+    seen.push(bytes);
+    if (!(bytes instanceof Uint8Array) || !(bytes.buffer instanceof ArrayBuffer))
+      throw new Error("expected private Uint8Array compiler input");
+    return compile(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  });
+  try {
+    const plan = await prepareLinkPlan({ ...input, core: { ...input.core, source: shared } });
+    expect(seen[0]).toBeInstanceOf(Uint8Array);
+    expect((seen[0] as Uint8Array).buffer).toBeInstanceOf(ArrayBuffer);
+    expect(seen[1]).toBeInstanceOf(Uint8Array);
+    expect((seen[1] as Uint8Array).buffer).toBe(input.libraries[0]!.source.buffer);
+    const group = instantiateLinkPlan(plan, host());
+    try {
+      group.initialize();
+      expect(call(group.entry, "invoke", 2)).toBe(9);
+    } finally {
+      group.dispose();
+    }
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("late byte validation failure starts no member compilation", async () => {
+  const input = source();
+  const spy = spyOn(WebAssembly, "compile");
+  try {
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        libraries: [{ ...input.libraries[0]!, initialize: ["absent"] }],
+      }),
+    ).rejects.toThrow("link engine:");
+    expect(spy).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("compilation observes all rejections immediately and reports the first member in order", async () => {
+  const input = source();
+  const first = Promise.withResolvers<WebAssembly.Module>();
+  let calls = 0;
+  const unhandled: unknown[] = [];
+  const observer = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", observer);
+  const spy = spyOn(WebAssembly, "compile").mockImplementation(() => {
+    calls++;
+    return calls === 1
+      ? first.promise
+      : Promise.reject(new WebAssembly.CompileError("second compile"));
+  });
+  try {
+    const pending = prepareLinkPlan(input);
+    const rejected = pending.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    first.reject(new WebAssembly.CompileError("first compile"));
+    const error = await rejected;
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("link core: first compile");
+    expect(calls).toBe(2);
+    expect(unhandled).toEqual([]);
+  } finally {
+    spy.mockRestore();
+    process.off("unhandledRejection", observer);
+  }
+});
+
+test("each explicit preparation owns its compilation and adoption is synchronous with zero compiles", async () => {
+  const compile = spyOn(WebAssembly, "compile");
+  try {
+    const first = await prepareLinkPlan(source());
+    const count = compile.mock.calls.length;
+    expect(count).toBe(2);
+    const second = await prepareLinkPlan(source());
+    expect(compile.mock.calls.length).toBe(count * 2);
+    expect(second.entryModule).not.toBe(first.entryModule);
+    const restored = adoptLinkPlan(structuredClone(first.shared));
+    expect(restored).not.toBeInstanceOf(Promise);
+    expect(compile.mock.calls.length).toBe(count * 2);
+  } finally {
+    compile.mockRestore();
+  }
+});
+
+async function rootAdmissionFixture() {
+  const { BrowserProcessBroker } = await import("../browser/process-broker.js");
+  const { ProcessIdentityAllocator } = await import("../proc/identity.js");
+  const { ProcessTable } = await import("../proc/table.js");
+  const { ExecutableRegistry } = await import("../proc/registry.js");
+  const { createWorkerProcessTransport } = await import("../proc/worker-client.js");
+  const { createFilesystemIdentity } = await import("../fs/protocol.js");
+  const { testReservations } = await import("./fixtures/shared-memory-platform.js");
+  const reservations = testReservations();
+  const identities = new ProcessIdentityAllocator();
+  const broker = new BrowserProcessBroker({
+    reservations,
+    identities,
+    table: new ProcessTable(identities),
+    registry: new ExecutableRegistry(),
+    filesystem: {
+      connect() {
+        throw new Error("unexpected filesystem connection");
+      },
+      revoke() {},
+      reap() {},
+      async quiesce() {},
+    },
+    launch() {
+      throw new Error("unexpected launch");
+    },
+  });
+  const root = createWorkerProcessTransport({ identity: identities.buffer });
+  root.data = { filesystem: createFilesystemIdentity() };
+  try {
+    await broker.adoptRuntimeRoot(root, { memory: [], stop() {} });
+    return { broker, root, reservations };
+  } catch (error) {
+    await broker.dispose();
+    throw error;
+  }
+}
+
+test("adopted roots reject absent, cloned, forged, adopted, non-PIE and mismatched plans before reservations", async () => {
+  const { groupLinkProgram } = await import("./fixtures/group-link-program.js");
+  const good = await groupLinkProgram();
+  const other = await groupLinkProgram();
+  const nonPie = await prepareLinkPlan(source());
+  const bad: unknown[] = [
+    undefined,
+    { module: good.module },
+    { linkPlan: {} },
+    { module: good.module, linkPlan: {} },
+    { module: good.module, linkPlan: structuredClone(good.linkPlan) },
+    { module: good.module, linkPlan: adoptLinkPlan(good.linkPlan).shared },
+    { module: nonPie.entryModule, linkPlan: nonPie.shared },
+    { module: other.module, linkPlan: good.linkPlan },
+  ];
+  const f = await rootAdmissionFixture();
+  try {
+    const before = f.reservations.snapshot();
+    for (const program of bad) {
+      // These deliberately malformed external calls exercise the runtime boundary.
+      expect(() =>
+        f.broker.admitRootMemoryGroup(
+          f.root.pid,
+          program as { module: WebAssembly.Module; linkPlan: SharedLinkPlan },
+        ),
+      ).toThrow("module/linkPlan pair");
+      const candidate = program && typeof program === "object" ? program : {};
+      // Pair rejection must precede reading the remainder of a launch context.
+      expect(() =>
+        f.broker.launchWorker<RuntimeWorkerRequest & { readonly linkPlan: unknown }>(
+          { pid: f.root.pid } as ProcessContext,
+          {
+            workerUrl: "unused",
+            memoryGroup: "new",
+            request: {
+              module: Reflect.get(candidate, "module") as WebAssembly.Module,
+              linkPlan: Reflect.get(candidate, "linkPlan"),
+              args: [],
+              env: {},
+            },
+          },
+        ),
+      ).toThrow("module/linkPlan pair");
+      expect(f.reservations.snapshot()).toEqual(before);
+      expect(f.broker.memoryGroups()).toEqual([]);
+    }
+    const admitted = f.broker.admitRootMemoryGroup(f.root.pid, good);
+    admitted.request.port.close();
+    admitted.stopped();
+    expect(f.broker.memoryGroups()).toEqual([]);
+  } finally {
+    await f.broker.dispose();
   }
 });

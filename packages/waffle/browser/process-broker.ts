@@ -1,4 +1,6 @@
 import { WorkerStartError } from "../proc/start-diagnostic.ts";
+import { requireGroupPlan } from "../link/issuance.js";
+import type { SharedLinkPlan } from "../link/image.js";
 import {
   admitProcessObservation,
   captureNativeReturn,
@@ -1762,6 +1764,11 @@ export class BrowserProcessBroker {
       },
     };
     try {
+      if (options.memoryGroup)
+        requireGroupPlan(
+          options.request.module,
+          "linkPlan" in options.request ? options.request.linkPlan : undefined,
+        );
       const threaded = threadModuleDeclaration(options.request.module);
       if (threaded && graphics) throw new Error("Threaded guests do not accept graphics grants");
       if (threaded) return this.launchThreadWorker(context, options, threaded);
@@ -2118,7 +2125,12 @@ export class BrowserProcessBroker {
   }
   /** Admit an adopted runtime root before posting its worker request. Successful disposal
    * stop of a root with `stop`, or the embedder's `stopped()`, settles it once. */
-  admitRootMemoryGroup(pid: number, join: MemoryGroupLaunch = "new"): RootMemoryGroupMember {
+  admitRootMemoryGroup(
+    pid: number,
+    program: { readonly module: WebAssembly.Module; readonly linkPlan: SharedLinkPlan },
+    join: MemoryGroupLaunch = "new",
+  ): RootMemoryGroupMember {
+    requireGroupPlan(program?.module, program?.linkPlan);
     if (this.suspended) throw new Error("Process broker is disposed");
     const transport = this.roots.get(pid);
     if (!transport) throw new Error(`Unknown runtime root ${pid}`);

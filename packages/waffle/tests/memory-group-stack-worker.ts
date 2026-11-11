@@ -2,10 +2,10 @@ import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
 import { createGroupMember } from "../group/member.js";
 import type { MemoryGroupMemberRequest } from "../group/protocol.js";
-import { instantiateLinkPlan, prepareLinkPlan, type LinkPlanSource } from "../link/index.js";
+import { instantiateLinkPlan, adoptLinkPlan, type SharedLinkPlan } from "../link/index.js";
 
 type Request =
-  | { kind: "launch"; request: MemoryGroupMemberRequest; source: LinkPlanSource; mark: number }
+  | { kind: "launch"; request: MemoryGroupMemberRequest; source: SharedLinkPlan; mark: number }
   | { kind: "read" }
   | { kind: "grow"; pages: number }
   | { kind: "close" };
@@ -42,7 +42,7 @@ function grow(pages: number) {
 
 async function launch(data: Extract<Request, { kind: "launch" }>) {
   member = createGroupMember(data.request, { checkActive() {} });
-  const plan = await prepareLinkPlan(data.source);
+  const plan = adoptLinkPlan(data.source);
   const bindings = member.bindings(plan.entryModule);
   bindings.env.check = () => {};
   const wasi = new Wasi({

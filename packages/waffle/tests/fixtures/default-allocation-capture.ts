@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import type { Runtime } from "../../runtime.js";
+import type { LinkPlanSource } from "../../link/index.js";
 import type { WorkerProcessMessage } from "../../proc/worker-client.js";
 import { pieCore } from "./memory-group-pie.js";
 
@@ -142,7 +143,7 @@ try {
   );
   assert(checkpoint >= 0);
   groupSource.set([116, 115, 116], checkpoint + 1);
-  const groupPlan = await prepareLinkPlan({
+  const groupInput: LinkPlanSource = {
     core: {
       id: "pinned",
       source: groupSource,
@@ -153,7 +154,8 @@ try {
     },
     libraries: [],
     reserve: "reserve",
-  });
+  };
+  const groupPlan = await prepareLinkPlan(groupInput);
   await active.filesystem.writeFile("/group", groupSource);
   active.registerAdapter("pinned", (context, service) =>
     service.launchWorker(context, {
@@ -162,7 +164,7 @@ try {
         module: context.module,
         args: [],
         env: {},
-        ...(context.request.argv[0] === "group" ? { linkPlan: groupPlan.toSource() } : {}),
+        ...(context.request.argv[0] === "group" ? { linkPlan: groupPlan.shared } : {}),
       },
       ...(context.request.argv[0] === "group" ? { memoryGroup: "new" as const } : {}),
     }),

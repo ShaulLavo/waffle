@@ -16,7 +16,7 @@ service.launchWorker(context, {
     module: plan.entryModule,
     args: context.request.argv,
     env: context.request.env,
-    linkPlan: plan.toSource(),
+    linkPlan: plan.shared,
   },
   memoryGroup: "new", // or "inherit" (the parent's group), or a handle from memoryGroupOf(pid)
 });
@@ -24,7 +24,10 @@ service.launchWorker(context, {
 
 Admission reserves a member slot before the Worker is constructed. Every member of a group shares its leader's process directory; joining from another directory fails with `EINVAL`. `memoryGroupOf(pid)` returns `{ id, buffer() }` for a launched member: the group's shared bytes, never its growable `Memory`. `memoryGroups()` returns owner-side counters for each live group: members, reserved, retained, pids, regions, pins, published, holds, watches, `committedBytes`, `memberPages`, `freeBytes` and `bypassed`. A settled root membership is dropped by the broker; only unsettled members stay reachable.
 
-An adopted runtime root that runs its own worker calls `admitRootMemoryGroup(pid, join)` before posting its worker request, and transfers the returned `transfer` list with `request` as the worker request's `memoryGroup` field. The root's membership settles when its controller's `stop` succeeds during disposal, or when the embedder calls `stopped()` after its own successful physical stop. An unsettled member makes runtime disposal fail.
+An adopted runtime root that runs its own worker calls `admitRootMemoryGroup(pid, { module: plan.entryModule, linkPlan: plan.shared }, join)` before posting its worker request, and transfers the returned `transfer` list with `request` as the worker request's `memoryGroup` field. Omitting `join` creates a new group. Both root and child admission require the original
+page-prepared PIE image paired with its exact core module, before reserving group or
+worker resources. Cloned, adopted, forged, missing and non-PIE plans are refused.
+The root's membership settles when its controller's `stop` succeeds during disposal, or when the embedder calls `stopped()` after its own successful physical stop. An unsettled member makes runtime disposal fail.
 
 The member image is a PIE linked with `-pie --experimental-pic --import-memory --shared-memory --import-table --max-memory=4294967296`. It imports `env.memory`, `env.__indirect_function_table`, `env.__memory_base`, `env.__table_base` and a mutable `env.__stack_pointer`. Waffle reads `dylink.0` memory-info, carves the data chunk and a private stack (`stackBytes`), and gives the image its own table with slot 0 left null. A link plan whose core has `dylink.0` is linked the same way, then its PIC libraries reserve through the core allocator as before. Constant data exports of such a core are relative to its `__memory_base`.
 

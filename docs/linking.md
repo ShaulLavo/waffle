@@ -31,7 +31,7 @@ const plan = await prepareLinkPlan({
   reserve: "bun_core_alloc",
 });
 // Send both fields as part of the existing worker request.
-const requestFields = { module: plan.entryModule, linkPlan: plan.toSource() };
+const requestFields = { module: plan.entryModule, linkPlan: plan.shared };
 // Inside the existing worker, compose these hooks with the application's executor.
 const hooks = linkedWorkerHooks();
 ```
@@ -56,11 +56,20 @@ Both ordered stage lists are required. Use `initializeMemory: []` for an active
 split core that needs no memory stages. A carved member binding is single-use,
 even after failure or disposal.
 
-`toSource()` returns fresh exact bytes and configuration. The receiving worker
-must prepare those bytes again. A cloned prepared object is not admitted.
-Preparation snapshots every member before its first asynchronous operation.
-Only compiled modules are cached. Each process gets new instances, memory,
-table, stack globals, data GOT cells and initialization state.
+`plan.shared` is the same recursively frozen image on each read. It contains compiled
+modules and small plain metadata, with no source bytes. Post it with `plan.entryModule`
+in the existing worker request. The receiving worker calls synchronous
+`adoptLinkPlan(request.linkPlan)`; it compiles nothing and owns a frozen metadata snapshot.
+A cloned prepared object is not admitted. Modules are serializable, not transferable.
+Keep them out of transfer lists.
+
+Preparation validates all member bytes before starting member compilation, and starts
+every compile before returning its promise. SAB-backed inputs use a private snapshot
+for validation and compilation. Callers may reuse their byte buffers after the call
+returns. Compiled-module reflection and relay generation follow compilation. Each
+explicit preparation compiles independently; retain one preparation promise to share a
+plan. No source bytes or global compiled-module cache remain. Every process gets fresh
+instances, memory, tables, globals, GOT cells and initialization state.
 
 For direct embedding, `instantiateLinkPlan(plan, {wasi, checkActive, bindMemory})`
 returns an owned group. Call `initialize()` before entry and `dispose()` from

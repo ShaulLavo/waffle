@@ -1,3 +1,4 @@
+import { groupLinkProgram } from "./fixtures/group-link-program.js";
 import { expect, test } from "bun:test";
 import {
   BrowserProcessBroker,
@@ -233,7 +234,7 @@ for (const activated of [false, true]) {
       },
       "group",
     );
-    const group = f.broker.admitRootMemoryGroup(f.transport.pid);
+    const group = f.broker.admitRootMemoryGroup(f.transport.pid, await groupLinkProgram());
     const helper = f.broker.captureRootStop(f.transport.pid, () => {});
     try {
       if (activated) await f.broker.ready();
@@ -310,7 +311,7 @@ for (const activated of [false, true]) {
 
 test("canonical root termination does not settle its independent memory-group membership", async () => {
   const f = await rootFixture({ stop() {} }, "group");
-  const group = f.broker.admitRootMemoryGroup(f.transport.pid);
+  const group = f.broker.admitRootMemoryGroup(f.transport.pid, await groupLinkProgram());
   try {
     const before = f.broker.memoryGroups();
     expect(before).toHaveLength(1);
