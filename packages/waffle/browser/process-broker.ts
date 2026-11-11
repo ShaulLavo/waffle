@@ -1,3 +1,4 @@
+import { WorkerStartError } from "../proc/start-diagnostic.ts";
 import {
   prepareTerminalDescendant,
   terminalPreparationReceipt,
@@ -1517,7 +1518,7 @@ export class BrowserProcessBroker {
       if (data.type === "exit" && data.signal) context.defaultSignal(data.signal);
       else if (data.type === "exit") context.exit(data.code);
       else if (!entered)
-        context.startFailed(Object.assign(new Error(data.message), { code: data.errno }));
+        context.startFailed(new WorkerStartError(data.message, data.errno, data.diagnostic));
       else context.fail(new Error(data.message));
     };
     worker.onerror = (event) => {

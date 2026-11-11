@@ -1808,7 +1808,7 @@ for (const stopAt of ["seal", "job-retiring", "member-retiring", "member-freed"]
     const original = Atomics.compareExchange;
     const stopped = new Error("collector terminated");
     let interrupted = false;
-    const identityOffset = leaderTransport.slot * 78 * 8 + 32;
+    const identityOffset = workerProcessState(leaderTransport).signals.outcome.byteOffset - 5 * 8;
     const groupOffset = group.outcome.byteOffset - 3 * 8;
     Atomics.compareExchange = ((
       array: BigInt64Array,
@@ -2451,7 +2451,7 @@ for (const joining of [false, true]) {
         !interrupted &&
         array instanceof BigInt64Array &&
         array.buffer === root.directory &&
-        array.byteOffset === 32 + 78 * 8 &&
+        array.byteOffset !== 32 &&
         index === 1 &&
         value === packedControl(2, 1)
       ) {

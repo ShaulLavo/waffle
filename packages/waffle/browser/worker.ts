@@ -45,6 +45,7 @@ import { withFileOffset } from "../core/open-file.js";
 import type { ProcessABI } from "../proc/abi.js";
 
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
+import { describeStartError } from "../proc/start-diagnostic.ts";
 import { waitStatus } from "../proc/wait-status.js";
 
 import { fatalInterrupt } from "../interrupt/check.js";
@@ -115,6 +116,7 @@ export type RuntimeWorkerMessage =
       code: number;
       errno?: StartFailure;
       message: string;
+      diagnostic: string;
       sleep?: SleepMode;
       cleanupErrors?: string[];
     }
@@ -489,9 +491,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     runtimeProcess = null;
     requestedSignal = undefined;
   };
-  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => {
+  const claim = (result: Pick<ProcessExit, "kind" | "code">, diagnostic?: string): ProcessExit => {
     try {
-      if (outcome) return claimOutcome(outcome, result);
+      if (outcome) return claimOutcome(outcome, result, undefined, diagnostic);
     } catch (error) {
       detachCollectedProcess(error);
     }
@@ -576,8 +578,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // A parent may act on this exit at once: deliver every byte the guest wrote first.
     if (!settled) hostOutput?.flush(() => revoked() || outcomeSettled());
     const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
+    const startupDiagnostic = startupFailure ? describeStartError(result.error) : undefined;
     let winner =
-      runtimeDiagnostic || !executor.complete || startupFailure ? claim(ownResult) : settled;
+      runtimeDiagnostic || !executor.complete || startupFailure
+        ? claim(ownResult, startupDiagnostic)
+        : settled;
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length)
@@ -667,7 +672,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         type: "error",
         code,
         errno: winner.kind === "start-failed" ? winner.error : undefined,
-        message: describeWorkerError(result.error),
+        message: startupDiagnostic ?? describeWorkerError(result.error),
+        diagnostic: startupDiagnostic ?? describeStartError(result.error),
         sleep: sleepMode,
         ...diagnostics,
       });

@@ -18,6 +18,7 @@ import {
   setAdd,
 } from "./intrinsics.ts";
 import { spawnError, startFailure } from "./start-failure.js";
+import { describeStartError } from "./start-diagnostic.ts";
 import { MAX_ACCESS_REQUESTS } from "./access.js";
 import { controlLoad, controlStore } from "./control.js";
 import {
@@ -45,7 +46,7 @@ import {
   type Stream,
 } from "../core/descriptors.js";
 import { ProcessIdentityAllocator } from "./identity.js";
-import { claimOutcome, readOutcome, markStarted, startStatus } from "./outcome.js";
+import { claimOutcome, readOutcome, markStarted, startStatus, readStartDiagnostic } from "./outcome.js";
 import { defaultSignalTerminates, requestSignal, type SignalTransport } from "./signals.js";
 import {
   ProcessErrno,
@@ -447,7 +448,12 @@ export class WorkerProcessClient {
       try {
         if (child) {
           state = workerProcessState(child);
-          claimOutcome(state.signals.outcome, startFailure(error));
+          claimOutcome(
+            state.signals.outcome,
+            startFailure(error),
+            undefined,
+            describeStartError(error),
+          );
         }
         const resources = child?.resources ?? [];
         for (let index = 0; index < resources.length; index++) {
@@ -549,6 +555,10 @@ export class WorkerProcessClient {
         throw new ProcessError(ProcessErrno.CHILD, "not a retained child process");
       throw error;
     }
+  }
+  spawnDiagnostic(parentPid: number, pid: number): string | null {
+    this.cwd(parentPid);
+    return readStartDiagnostic(this.child(parentPid, pid).signals.outcome);
   }
   /** Readiness never consumes the exit or releases a zombie's storage. */
   childExited(parentPid: number, pid: number): boolean {

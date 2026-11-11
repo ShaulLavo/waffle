@@ -2,8 +2,8 @@ import { objectFreeze } from "./intrinsics/core.ts";
 
 export class ProcessError extends Error {
   readonly errno: number;
-  constructor(errno: number, message: string) {
-    super(message);
+  constructor(errno: number, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.errno = errno;
     this.name = "ProcessError";
   }
