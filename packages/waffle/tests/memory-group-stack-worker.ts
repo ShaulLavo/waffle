@@ -35,6 +35,11 @@ function close() {
   member?.dispose();
 }
 
+function grow(pages: number) {
+  if (!member) throw new Error("member has not been bound");
+  return member.imports.group_grow!(pages);
+}
+
 async function launch(data: Extract<Request, { kind: "launch" }>) {
   member = createGroupMember(data.request, { checkActive() {} });
   const plan = await prepareLinkPlan(data.source);
@@ -78,8 +83,7 @@ self.onmessage = async ({ data }: MessageEvent<Request>) => {
       return;
     }
     if (data.kind === "grow") {
-      if (!member) throw new Error("member has not been bound");
-      self.postMessage(member.imports.group_grow!(data.pages));
+      self.postMessage(grow(data.pages));
       return;
     }
     await launch(data);
