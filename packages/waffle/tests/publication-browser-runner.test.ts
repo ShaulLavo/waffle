@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 for (const mode of ["shutdown", "assigned", "confirmed"] as const)
   test(`publication persistent launch ${mode} preserves profile ownership`, () => {
     const result = Bun.spawnSync(
-      [process.execPath, resolve(import.meta.dir, "fixtures/publication-launch-close.ts"), mode],
+      [
+        process.execPath,
+        fileURLToPath(new URL("./fixtures/publication-launch-close.ts", import.meta.url)),
+        mode,
+      ],
       {
         env: { ...process.env, STORAGE_SCRATCH_ROOT: "/work/tmp", TMPDIR: "/work/tmp" },
         timeout: 5_000,
