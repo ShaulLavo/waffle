@@ -255,12 +255,9 @@ export function claimOutcome(
     const encoded = value | (previous & STARTED);
     const observed = atomicsCompareExchange(cells(word), 0, previous, encoded);
     if (isInstance(word, OutcomeCell)) word.check();
-    if (observed === previous) {
-      if (result.kind === "start-failed") {
-        publishDiagnostic(word, diagnostic ?? "");
-      }
-      onClaim?.();
-      return decode(encoded);
-    }
+    if (observed !== previous) continue;
+    if (result.kind === "start-failed") publishDiagnostic(word, diagnostic ?? "");
+    onClaim?.();
+    return decode(encoded);
   }
 }
