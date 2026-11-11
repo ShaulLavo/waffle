@@ -30,6 +30,8 @@ export interface MemoryGroupPolicy {
   readonly budgetBytes: number;
   /** Address-space maximum of one group, in 64 KiB pages. Not a charge. */
   readonly maximumPages: number;
+  /** Cumulative granted member pages per group, including unused worker leases; excludes regions. */
+  readonly memberPages: number;
   /** Bounded metadata per group. */
   readonly regions: number;
   readonly pins: number;
@@ -43,7 +45,7 @@ export interface MemoryGroupPolicy {
 }
 export type MemoryGroupPolicyOptions = Partial<MemoryGroupPolicy>;
 
-const defaultMemoryGroupPolicy: MemoryGroupPolicy = Object.freeze({
+const defaultMemoryGroupPolicy: Omit<MemoryGroupPolicy, "memberPages"> = Object.freeze({
   members: 16,
   parallelism: 1,
   budgetBytes: 2 * 1024 ** 3,
@@ -57,13 +59,19 @@ const defaultMemoryGroupPolicy: MemoryGroupPolicy = Object.freeze({
 });
 
 function memoryGroupPolicy(options: MemoryGroupPolicyOptions = {}): MemoryGroupPolicy {
-  const policy = { ...defaultMemoryGroupPolicy, ...options };
+  const configured = { ...defaultMemoryGroupPolicy, ...options };
+  const policy = {
+    ...configured,
+    memberPages: options.memberPages === undefined ? configured.maximumPages : options.memberPages,
+  };
   for (const [name, value] of Object.entries(policy)) {
     if (!Number.isSafeInteger(value) || value < 1)
       throw new RangeError(`memory group ${name} must be a positive integer`);
   }
   if (policy.maximumPages > MAX_GROUP_PAGES)
     throw new RangeError("memory group maximumPages exceeds the wasm32 address space");
+  if (policy.memberPages > policy.maximumPages)
+    throw new RangeError("memory group memberPages exceeds maximumPages");
   if (policy.stackBytes % 16)
     throw new RangeError("memory group stackBytes must be 16-byte aligned");
   return Object.freeze(policy);
@@ -120,6 +128,8 @@ export interface MemoryGroupSnapshot {
   readonly watches: number;
   /** Owner-granted logical backing, the W3 charge. Fixed reservation bytes are reported by the page ledger. */
   readonly committedBytes: number;
+  /** Granted member pages, including reserved worker leases and retained members; excludes regions. */
+  readonly memberPages: number;
   /** Growth that bypassed the owner was found and charged; the group admits nothing more. */
   readonly bypassed: boolean;
   /** Committed pages on the free list, reusable by later members and regions. */
@@ -220,6 +230,7 @@ export class MemoryGroupOwner {
   private ended = false;
   /** Bytes charged to the page budget for this group's backing. */
   private charged = PAGE_BYTES;
+  private memberPages = 0;
   private bypassed = false;
   private readonly memory: WebAssembly.Memory;
   readonly control: SharedArrayBuffer;
@@ -319,6 +330,7 @@ export class MemoryGroupOwner {
       holds,
       watches,
       committedBytes: this.charged,
+      memberPages: this.memberPages,
       bypassed: this.bypassed,
       freeBytes: this.free.available * PAGE_BYTES,
     });
@@ -468,9 +480,11 @@ export class MemoryGroupOwner {
 
   private grow(member: Member, pages: number): number {
     if (pages < 1 || pages > this.policy.maximumPages) return -GroupErrno.INVAL;
+    if (pages > this.policy.memberPages - this.memberPages) return -GroupErrno.NOMEM;
     const page = this.takePages(pages);
     if (page === undefined) return -GroupErrno.NOMEM;
     member.chunks.push({ page, pages });
+    this.memberPages += pages;
     return page;
   }
 
@@ -493,7 +507,8 @@ export class MemoryGroupOwner {
       pins: 0,
       published: 0,
     };
-    new Uint8Array(this.memory.buffer, region.addr, len).fill(0);
+    // Large placements are already zeroed by takePages, including recycled and fixed backing.
+    if (region.arena) new Uint8Array(this.memory.buffer, region.addr, len).fill(0);
     this.regions.set(handle, region);
     member.holds.set(handle, 1);
     return [0, handle, region.addr];
@@ -693,7 +708,10 @@ export class MemoryGroupOwner {
       this.maybeFree(region);
     }
     member.holds.clear();
-    for (const chunk of member.chunks) this.free.give(chunk.page, chunk.pages);
+    for (const chunk of member.chunks) {
+      this.free.give(chunk.page, chunk.pages);
+      this.memberPages -= chunk.pages;
+    }
     member.chunks.length = 0;
     this.clearWatches(member.index);
     member.port?.close();

@@ -7,6 +7,7 @@ import { instantiateLinkPlan, prepareLinkPlan, type LinkPlanSource } from "../li
 type Request =
   | { kind: "launch"; request: MemoryGroupMemberRequest; source: LinkPlanSource; mark: number }
   | { kind: "read" }
+  | { kind: "grow"; pages: number }
   | { kind: "close" };
 
 let member: ReturnType<typeof createGroupMember> | undefined;
@@ -74,6 +75,11 @@ self.onmessage = async ({ data }: MessageEvent<Request>) => {
     }
     if (data.kind === "read") {
       self.postMessage(observe());
+      return;
+    }
+    if (data.kind === "grow") {
+      if (!member) throw new Error("member has not been bound");
+      self.postMessage(member.imports.group_grow!(data.pages));
       return;
     }
     await launch(data);
