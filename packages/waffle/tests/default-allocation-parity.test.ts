@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { START_DIAGNOSTIC_WORDS } from "../proc/start-diagnostic.ts";
 import {
   ALLOCATION_REFERENCE_COMMIT as reference,
   requireAllocationReference,
@@ -87,8 +88,13 @@ function withoutIdleWorkers(expected: string[]) {
 function withExecutionObservation(expected: string[]) {
   const oldDirectory = '"initial":720928,"maximum":720928,"growable":false';
   expect(expected.filter((event) => event.includes(oldDirectory))).toHaveLength(2);
+  // One native-return word and the bounded tagged diagnostic are owned by each process slot.
+  const directoryBytes = 32 + 1024 * (89 + START_DIAGNOSTIC_WORDS) * 8;
   const events = expected.map((event) =>
-    event.replace(oldDirectory, '"initial":729120,"maximum":729120,"growable":false'),
+    event.replace(
+      oldDirectory,
+      `"initial":${directoryBytes},"maximum":${directoryBytes},"growable":false`,
+    ),
   );
   for (const purpose of ["connection", "group", "guest"]) {
     for (const outcome of ["attempt", "success"])

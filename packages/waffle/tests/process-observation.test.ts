@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client.ts";
+import { START_DIAGNOSTIC_WORDS } from "../proc/start-diagnostic.ts";
 import {
   collectDirectoryProcess,
   collectDirectoryJob,
@@ -97,10 +98,13 @@ test("each admitted execution costs sixteen control bytes and successful churn h
   }
 });
 
-test("directory backing is exactly 32 + P * 89 * 8 at both supported bounds", () => {
-  expect(createWorkerProcessTransport({ capacity: 1 }).directory.byteLength).toBe(744);
-  expect(createWorkerProcessTransport().directory.byteLength).toBe(729120);
-  expect(createWorkerProcessTransport({ capacity: 65536 }).directory.byteLength).toBe(46661664);
+test("directory backing includes bounded tagged startup diagnostics at both supported bounds", () => {
+  const expected = (capacity: number) => 32 + capacity * (89 + START_DIAGNOSTIC_WORDS) * 8;
+  expect(createWorkerProcessTransport({ capacity: 1 }).directory.byteLength).toBe(expected(1));
+  expect(createWorkerProcessTransport().directory.byteLength).toBe(expected(1024));
+  expect(createWorkerProcessTransport({ capacity: 65536 }).directory.byteLength).toBe(
+    expected(65536),
+  );
 });
 
 test("allocation failure is NOMEM without publishing a process or a launch-count allowance", () => {
