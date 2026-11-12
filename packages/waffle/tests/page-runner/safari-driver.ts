@@ -1,5 +1,6 @@
 import { inspectorEndpoint } from "./inspector-endpoint.js";
 import { SafariObserver, observationIdentityExpression } from "./safari-observer.js";
+import { bootstrapIdentityClasses, bootstrapURLClass } from "./bootstrap-diagnostics.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { isNativeError } from "node:util/types";
 import { createServer } from "node:net";
@@ -292,28 +293,41 @@ export class SafariDriver implements Driver {
     if (!this.descriptor || this.descriptor.capabilities["safari:deviceUDID"] !== this.udid)
       throw new Error("No exact SafariDriver session owns observation");
     const actual = new AbortController().signal;
-    if (
-      (await this.handle(actual)) !== binding.window ||
-      (await this.url(actual)) !== binding.bootstrapURL
-    )
-      throw new Error("SafariDriver bootstrap ownership changed");
+    if ((await this.handle(actual)) !== binding.window)
+      throw new Error("SafariDriver bootstrap ownership changed: check=handle url=not-read");
+    const bootstrapURL = await this.url(actual);
+    if (bootstrapURL !== binding.bootstrapURL)
+      throw new Error(
+        `SafariDriver bootstrap ownership changed: check=url url=${bootstrapURLClass(bootstrapURL, binding)}`,
+      );
     const identity = await this.script(`return ${observationIdentityExpression};`, actual);
     const wanted = JSON.stringify({
       url: binding.bootstrapURL,
       marker: new URL(binding.bootstrapURL).searchParams.get("token"),
     });
-    if (identity !== wanted) throw new Error("SafariDriver bootstrap document changed");
+    if (identity !== wanted)
+      throw new Error(
+        `SafariDriver bootstrap document changed: ${bootstrapIdentityClasses(identity, binding)}`,
+      );
     const path = await inspectorEndpoint(this.inspectorReceipt, this.udid);
     const observer = await SafariObserver.open(path, binding);
     this.observations.set(binding.expectedURL, observer);
     this.observedWindows.set(binding.window, binding.expectedURL);
     binding.signal.throwIfAborted();
-    if (
-      (await this.handle(actual)) !== binding.window ||
-      (await this.url(actual)) !== binding.bootstrapURL ||
-      (await this.script(`return ${observationIdentityExpression};`, actual)) !== wanted
-    )
-      throw new Error("SafariDriver bootstrap ownership changed during Inspector admission");
+    if ((await this.handle(actual)) !== binding.window)
+      throw new Error(
+        "SafariDriver bootstrap ownership changed during Inspector admission: check=handle url=not-read",
+      );
+    const admittedURL = await this.url(actual);
+    if (admittedURL !== binding.bootstrapURL)
+      throw new Error(
+        `SafariDriver bootstrap ownership changed during Inspector admission: check=url url=${bootstrapURLClass(admittedURL, binding)}`,
+      );
+    const admittedIdentity = await this.script(`return ${observationIdentityExpression};`, actual);
+    if (admittedIdentity !== wanted)
+      throw new Error(
+        `SafariDriver bootstrap ownership changed during Inspector admission: check=identity ${bootstrapIdentityClasses(admittedIdentity, binding)}`,
+      );
     const stop = observer.stop.bind(observer);
     let retirement: Promise<void> | undefined;
     const owned: DriverObservation = {
