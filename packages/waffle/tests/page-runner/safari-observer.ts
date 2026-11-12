@@ -262,8 +262,32 @@ export class SafariObserver {
     }
     const selected = matches[0];
     if (matches.length !== 1 || !selected)
-      throw new Error("Exact owned bootstrap not uniquely listed");
+      throw new Error(
+        `Exact owned bootstrap not uniquely listed: ${this.listingCounts(matches.length, pages)}`,
+      );
     return selected;
+  }
+  private listingCounts(matches: number, rows: number): string {
+    const applications = Array.from(this.listings.values(), (listing, index) => {
+      const values = Object.values(listing);
+      const pageRows = values.filter(
+        (row) =>
+          isDict(row) &&
+          ["WIRTypeWeb", "WIRTypeWebPage", "WIRTypePage"].includes(String(row.WIRTypeKey)),
+      ).length;
+      const owned = values.filter(
+        (row) => isDict(row) && row.WIRURLKey === this.binding.bootstrapURL,
+      ).length;
+      return { application: index + 1, rows: values.length, pageRows, matches: owned };
+    });
+    return JSON.stringify({
+      matches,
+      applications: this.applications.size,
+      listings: this.listings.size,
+      rows,
+      pageRows: applications.reduce((sum, application) => sum + application.pageRows, 0),
+      perApplication: applications,
+    });
   }
   private selectRow(application: string, row: unknown, matches: Selection[]): void {
     if (!isDict(row) || row.WIRURLKey !== this.binding.bootstrapURL) return;
