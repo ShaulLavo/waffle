@@ -1,4 +1,21 @@
+import {
+  assert,
+  rejects,
+  bytes,
+  batch,
+  type BrowserStorageTest,
+  type StorageContractCase,
+} from "./storage-browser-helpers.js";
+export {
+  assert,
+  rejects,
+  bytes,
+  batch,
+  type BrowserStorageTest,
+  type StorageContractCase,
+} from "./storage-browser-helpers.js";
 import { withStorageCleanup, type StorageAllocationHooks } from "./storage-allocation.js";
+import { idleWorkspaceCases } from "./idle-workspace-browser.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
@@ -15,42 +32,8 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
 import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
-import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage.js";
+import type { PersistedNode, StorageBackend } from "../fs/storage.js";
 
-export function assert(value: unknown, message: string): asserts value {
-  if (!value) throw new Error(message);
-}
-export async function rejects(action: Promise<unknown>, match: string | RegExp): Promise<void> {
-  try {
-    await action;
-  } catch (error) {
-    assert(
-      typeof match === "string" ? String(error).includes(match) : match.test(String(error)),
-      `Expected ${match}, got ${error}`,
-    );
-    return;
-  }
-  throw new Error(`Expected rejection containing ${match}`);
-}
-export const bytes = (value: string) => new TextEncoder().encode(value);
-export function batch(generation: number, text = `v${generation}`): PersistenceBatch {
-  return {
-    generation,
-    root: 1,
-    removes: [],
-    upserts: [
-      { ino: 1, kind: "dir", mtime: generation, size: 0, children: [["file", 2]] },
-      {
-        ino: 2,
-        kind: "file",
-        mtime: generation,
-        size: bytes(text).length,
-        data: `file:${generation}`,
-      },
-    ],
-    data: new Map([[`file:${generation}`, bytes(text)]]),
-  };
-}
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     value.onsuccess = () => resolve(value.result);
@@ -97,15 +80,6 @@ async function reseedLegacy(name: string): Promise<void> {
   });
 }
 
-export interface BrowserStorageTest {
-  label: string;
-  run(): Promise<void>;
-}
-export interface StorageContractCase {
-  label: string;
-  run(name: string, open: () => Promise<StorageBackend>): Promise<void>;
-  compactEvery?: number;
-}
 type Register = (label: string, run: StorageContractCase["run"], compactEvery?: number) => void;
 
 async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Promise<void> {
@@ -585,6 +559,7 @@ async function pendingRuntimeOpenCase(
     closed = resolve;
   });
   const messages: string[] = [];
+  const states: string[] = [];
   let terminations = 0;
   // Keep the cancelled worker alive only for the late-success probe. Count the production
   // terminate call, then physically terminate in finally after proving it cannot publish.
@@ -595,6 +570,8 @@ async function pendingRuntimeOpenCase(
       worker = this;
       this.addEventListener("message", (event) => {
         if (typeof event.data?.type === "string") messages.push(event.data.type);
+        if (event.data?.type === "filesystem-state" && typeof event.data.status === "string")
+          states.push(event.data.status);
         if (event.data?.type === "probe-open-pending") opened();
         if (event.data?.type === "probe-open-error" || event.data?.type === "filesystem-error")
           failed(new Error(event.data.message));
@@ -643,10 +620,7 @@ async function pendingRuntimeOpenCase(
       messages.filter((message) => message === "probe-late-database-closed").length === 1,
       "late database must close once",
     );
-    assert(
-      !messages.includes("filesystem-state"),
-      "cancelled worker must never publish a ready backend",
-    );
+    assert(!states.includes("ready"), "cancelled worker must never publish a ready backend");
     assert(
       (await restarted.filesystem.lookup("/cancelled")) === undefined,
       "cancelled mkdirp must never replay",
@@ -826,7 +800,7 @@ function indexedDBCases(
         signal: controller.signal,
         locks: {
           request(...args) {
-            lockRequests++;
+            if (args[0] === `bun-wasm:filesystem:indexeddb:${name}`) lockRequests++;
             return navigator.locks.request(...args);
           },
         },
@@ -1298,7 +1272,10 @@ export function storageTests(
   allocation?: StorageAllocationHooks,
 ): BrowserStorageTest[] {
   return storageContractCases()
-    .concat(indexedDBCases(filesystemWorkerURL, gatedWorkerURL, allocation))
+    .concat(
+      indexedDBCases(filesystemWorkerURL, gatedWorkerURL, allocation),
+      idleWorkspaceCases(filesystemWorkerURL, allocation),
+    )
     .map(({ label, run, compactEvery = 2 }) => ({
       label,
       async run() {

@@ -1,3 +1,7 @@
+import {
+  withUncontendedMaintenance,
+  settleStorageFixture,
+} from "./fixtures/storage-maintenance.js";
 import { describe, expect, test } from "bun:test";
 import {
   decodeSnapshot,
@@ -129,7 +133,7 @@ describe("journal recovery", () => {
 describe("single-writer acquisition", () => {
   test("does not request a writer lock when opening the database fails", async () => {
     let held = false;
-    const locks: StorageLockManager = {
+    const locks: StorageLockManager = withUncontendedMaintenance({
       async request(_name, _options, callback) {
         held = true;
         try {
@@ -138,7 +142,7 @@ describe("single-writer acquisition", () => {
           held = false;
         }
       },
-    };
+    });
     const factory = {
       open() {
         throw new Error("open failed");
@@ -167,12 +171,12 @@ for (const whenBusy of ["takeover", "wait"] as const) {
         return (opening = { result: database } as IDBOpenDBRequest);
       },
     } as unknown as IDBFactory;
-    const locks: StorageLockManager = {
+    const locks: StorageLockManager = withUncontendedMaintenance({
       async request() {
         locksRequested++;
         throw new Error("late open requested ownership");
       },
-    };
+    });
     const aborted = new DOMException("test cancellation", "AbortError");
     const result = IndexedDBStorage.open("hanging", {
       indexedDB: factory,
@@ -180,6 +184,8 @@ for (const whenBusy of ["takeover", "wait"] as const) {
       signal: controller.signal,
       whenBusy,
     }).catch((error) => error);
+    await settleStorageFixture();
+    await settleStorageFixture();
     controller.abort(aborted);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -193,6 +199,7 @@ for (const whenBusy of ["takeover", "wait"] as const) {
       expect(locksRequested).toBe(0);
     } finally {
       clearTimeout(timeout);
+      await settleStorageFixture();
       opening.onsuccess!(new Event("success"));
       expect(closed).toBe(1);
       await result;
@@ -235,6 +242,7 @@ for (const whenBusy of ["takeover", "wait"] as const)
         put() {},
       })) as unknown as IDBTransaction["objectStore"];
       const database = {
+        version: 1,
         objectStoreNames: {
           length: 3,
           contains: (name: string) => ["metadata", "journal", "data"].includes(name),
@@ -245,7 +253,7 @@ for (const whenBusy of ["takeover", "wait"] as const)
         transaction: () => transaction,
       } as unknown as IDBDatabase;
       const factory = { open: () => opening } as unknown as IDBFactory;
-      const locks: StorageLockManager = {
+      const locks: StorageLockManager = withUncontendedMaintenance({
         async request(_name, _options, callback) {
           lockHeld = true;
           try {
@@ -254,7 +262,7 @@ for (const whenBusy of ["takeover", "wait"] as const)
             lockHeld = false;
           }
         },
-      };
+      });
       let physicalDebt: Promise<void> | undefined;
       let debtSettled = false;
       const pending = IndexedDBStorage.open("granted", {
@@ -275,9 +283,12 @@ for (const whenBusy of ["takeover", "wait"] as const)
         },
       }).catch((error) => error);
       Object.defineProperty(opening, "result", { value: database });
+      await settleStorageFixture();
       opening.onsuccess!(new Event("success"));
       await allocating;
       if (abortAt === "allocation") {
+        await settleStorageFixture();
+        await settleStorageFixture();
         controller.abort(aborted);
         expect(abortCount).toBe(1);
         expect(lockHeld).toBe(true);
@@ -307,6 +318,7 @@ test("IndexedDB publishes its close attempt before synchronous versionchange ree
       Object.assign(new Event("versionchange"), { oldVersion: 1, newVersion: 2 }),
     );
   const database = {
+    version: 1,
     objectStoreNames: { length: 3, contains: () => true },
     onversionchange: null,
     close() {
@@ -316,7 +328,7 @@ test("IndexedDB publishes its close attempt before synchronous versionchange ree
     },
   } as unknown as IDBDatabase;
   const opening = { result: database } as IDBOpenDBRequest;
-  const locks: StorageLockManager = {
+  const locks: StorageLockManager = withUncontendedMaintenance({
     request(_name, options) {
       if ("signal" in options)
         options.signal?.addEventListener("abort", () => claim.reject(options.signal?.reason), {
@@ -325,7 +337,7 @@ test("IndexedDB publishes its close attempt before synchronous versionchange ree
       requested.resolve();
       return claim.promise;
     },
-  };
+  });
   const result = IndexedDBStorage.open("reentrant-close", {
     indexedDB: { open: () => opening } as unknown as IDBFactory,
     locks,
@@ -334,6 +346,7 @@ test("IndexedDB publishes its close attempt before synchronous versionchange ree
       originalDebt = debt;
     },
   }).catch((error: unknown) => error);
+  await settleStorageFixture();
   opening.onsuccess!(new Event("success"));
   await requested.promise;
   const failed = originalDebt!.catch((error: unknown) => error);
@@ -367,11 +380,11 @@ test("IndexedDB retains the original debt before native request and preserves a 
   } as unknown as IDBFactory;
   const result = IndexedDBStorage.open("late-close-failure", {
     indexedDB: factory,
-    locks: {
+    locks: withUncontendedMaintenance({
       async request() {
         throw new Error("claim must not start");
       },
-    },
+    }),
     signal: controller.signal,
     whenBusy: "wait",
     retainOpeningDebt(debt) {
@@ -379,9 +392,11 @@ test("IndexedDB retains the original debt before native request and preserves a 
     },
   }).catch((error: unknown) => error);
   const aborted = new DOMException("cancel physical request", "AbortError");
+  await settleStorageFixture();
   controller.abort(aborted);
   expect(await result).toBe(aborted);
   const failed = originalDebt!.catch((error: unknown) => error);
+  await settleStorageFixture();
   opening.onsuccess!(new Event("success"));
   expect(await failed).toBe(failure);
   await expect(originalDebt!).rejects.toBe(failure);
@@ -412,6 +427,7 @@ for (const whenBusy of ["wait", "takeover"] as const)
       },
     } as unknown as IDBTransaction;
     const database = {
+      version: 1,
       objectStoreNames: { length: 3, contains: () => true },
       transaction: () => transaction,
       close() {
@@ -419,7 +435,7 @@ for (const whenBusy of ["wait", "takeover"] as const)
       },
     } as unknown as IDBDatabase;
     const opening = { result: database } as IDBOpenDBRequest;
-    const locks: StorageLockManager = {
+    const locks: StorageLockManager = withUncontendedMaintenance({
       async request(_name, _options, callback) {
         try {
           return await callback({});
@@ -427,7 +443,7 @@ for (const whenBusy of ["wait", "takeover"] as const)
           retired.resolve();
         }
       },
-    };
+    });
     const result = IndexedDBStorage.open("setup-failure", {
       whenBusy,
       indexedDB: { open: () => opening } as unknown as IDBFactory,
@@ -445,6 +461,7 @@ for (const whenBusy of ["wait", "takeover"] as const)
       },
     }).catch((error: unknown) => error);
     try {
+      await settleStorageFixture();
       opening.onsuccess!(new Event("success"));
       await retired.promise;
       await new Promise<void>((resolve) => setTimeout(resolve, 0));

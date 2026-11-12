@@ -35,6 +35,8 @@ import {
 } from "./indexeddb-chunks.js";
 import { snapshotPublicationCheckpoint } from "./publication.js";
 import { INDEXEDDB_FORMAT } from "./vfs-format.js";
+import { maintenanceLock, type StorageLockManager } from "./storage-maintenance.js";
+export type { StorageLockManager } from "./storage-maintenance.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
@@ -56,16 +58,9 @@ import {
   type StorageBackend,
 } from "./storage.js";
 
-const OWNERSHIP_LOST_MESSAGE = "This workspace was opened in another tab. Reload to continue here.";
+export const OWNERSHIP_LOST_MESSAGE =
+  "This workspace was opened in another tab. Reload to continue here.";
 
-/** The subset of Web Locks needed by this backend; injectable without an unsafe fallback. */
-export interface StorageLockManager {
-  request<T>(
-    name: string,
-    options: { mode: "exclusive"; steal: true } | { mode: "exclusive"; signal?: AbortSignal },
-    callback: (lock: unknown | null) => Promise<T>,
-  ): Promise<T>;
-}
 export interface IndexedDBStorageOptions {
   readonly retainOpeningDebt?: (debt: Promise<void>) => void;
   indexedDB?: IDBFactory;
@@ -174,6 +169,14 @@ class NativeDatabaseOpening {
 }
 function createStores(database: IDBDatabase): void {
   for (const store of ["metadata", "journal", "data"]) database.createObjectStore(store);
+}
+function validateSchema(database: IDBDatabase): void {
+  if (
+    database.version !== 1 ||
+    database.objectStoreNames.length !== 3 ||
+    !["metadata", "journal", "data"].every((name) => database.objectStoreNames.contains(name))
+  )
+    throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Incompatible IndexedDB database schema");
 }
 function requestStorageLock<T>(
   locks: StorageLockManager,
@@ -593,6 +596,7 @@ export class IndexedDBStorage implements StorageBackend {
   private committedEnvelope: CommitEnvelope | undefined;
   private committedRecord: ChecksummedRecord | undefined;
   private committedPending = false;
+  private readOnlyLegacy = false;
 
   private constructor(
     private readonly db: IDBDatabase,
@@ -601,14 +605,32 @@ export class IndexedDBStorage implements StorageBackend {
     private readonly epoch: number,
     private readonly onOwnershipLost: (() => void) | undefined,
     private readonly committedMode = false,
+    private readonly readOnly = false,
+    private readonly retireMaintenance: () => Promise<void> = () => Promise.resolve(),
   ) {
     db.onversionchange = () => {
+      if (this.readOnly) this.loseOwnership();
       void this.close();
     };
   }
 
   static open(name: string, options: IndexedDBStorageOptions = {}): Promise<IndexedDBStorage> {
     return IndexedDBStorage.openMode(name, options, false);
+  }
+  /** The caller owns the Web Lock and supplies an existing, unchanged database. */
+  static readOnlyConnection(
+    database: IDBDatabase,
+    unlock: () => Promise<void>,
+  ): { storage: IndexedDBStorage; revoke: () => void; assertOwned: () => void } {
+    validateSchema(database);
+    const storage = new IndexedDBStorage(database, unlock, 128, 0, undefined, false, true);
+    return {
+      storage,
+      assertOwned: () => storage.assertOwner(),
+      revoke: () => {
+        storage.loseOwnership();
+      },
+    };
   }
   static async openCommitted(
     name: string,
@@ -627,6 +649,43 @@ export class IndexedDBStorage implements StorageBackend {
     name: string,
     options: IndexedDBStorageOptions,
     committedMode: boolean,
+  ): Promise<IndexedDBStorage> {
+    const locks = options.locks ?? globalThis.navigator?.locks;
+    if (!locks) throw new Error("IndexedDB storage requires IndexedDB and Web Locks");
+    const maintenance = await maintenanceLock(
+      locks,
+      name,
+      "shared",
+      options.signal,
+      options.onWaiting,
+    );
+    if (maintenance === "busy") throw new Error("Unexpected shared maintenance lock refusal");
+    const debts: Promise<void>[] = [];
+    try {
+      return await IndexedDBStorage.openOwned(
+        name,
+        {
+          ...options,
+          retainOpeningDebt(debt) {
+            debts.push(debt);
+            options.retainOpeningDebt?.(debt);
+          },
+        },
+        committedMode,
+        () => maintenance.release(),
+      );
+    } catch (error) {
+      void Promise.all(debts)
+        .then(() => maintenance.release())
+        .catch(() => {});
+      throw error;
+    }
+  }
+  private static async openOwned(
+    name: string,
+    options: IndexedDBStorageOptions,
+    committedMode: boolean,
+    retireMaintenance: () => Promise<void>,
   ): Promise<IndexedDBStorage> {
     const factory = options.indexedDB ?? globalThis.indexedDB;
     const locks: StorageLockManager | undefined = options.locks ?? globalThis.navigator?.locks;
@@ -649,16 +708,11 @@ export class IndexedDBStorage implements StorageBackend {
       await opening.retire();
       throw signal.reason;
     }
-    if (
-      db.objectStoreNames.length !== 3 ||
-      !["metadata", "journal", "data"].every((store) => db.objectStoreNames.contains(store))
-    ) {
+    try {
+      validateSchema(db);
+    } catch (error) {
       await opening.retire();
-      throw new VfsError(
-        "INVALID_VFS_FORMAT",
-        "indexeddb",
-        "Incompatible IndexedDB database schema",
-      );
+      throw error;
     }
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -719,6 +773,8 @@ export class IndexedDBStorage implements StorageBackend {
           value,
           options.onOwnershipLost,
           committedMode,
+          false,
+          retireMaintenance,
         );
         acquired(owner);
         await held;
@@ -772,6 +828,9 @@ export class IndexedDBStorage implements StorageBackend {
       } catch {}
     }
     this.db.close();
+    void Promise.allSettled(Array.from(this.readerWork).concat([this.tail])).then(() =>
+      this.retireMaintenance(),
+    );
     this.onOwnershipLost?.();
     return error;
   }
@@ -795,7 +854,9 @@ export class IndexedDBStorage implements StorageBackend {
   load(): Promise<PersistedIndex | undefined> {
     return this.enqueue(async () => {
       await this.initialize();
-      return this.state && structuredClone(this.index(this.state));
+      if (!this.state) return;
+      const index = this.index(this.state);
+      return this.readOnly ? index : structuredClone(index);
     });
   }
 
@@ -831,10 +892,20 @@ export class IndexedDBStorage implements StorageBackend {
   }
 
   read(key: string): Promise<Uint8Array> {
+    return this.readReadonly(key);
+  }
+  readReadonly(key: string, signal?: AbortSignal): Promise<Uint8Array> {
     return this.enqueue(async () => {
-      await this.initialize();
-      const manifest = await this.manifest(key);
-      return this.readChunks(key, manifest, { offset: 0, length: manifest.size });
+      signal?.throwIfAborted();
+      await this.initialize(signal);
+      if (this.readOnlyLegacy) {
+        const value = await this.readRecord(key, signal);
+        if (!(value instanceof Uint8Array)) chunkError(key);
+        if (value.length !== this.payloadSize(key)) chunkError(key);
+        return value;
+      }
+      const manifest = await this.manifest(key, signal);
+      return this.readChunks(key, manifest, { offset: 0, length: manifest.size, signal });
     });
   }
 
@@ -1087,7 +1158,12 @@ export class IndexedDBStorage implements StorageBackend {
       this.closed = true;
       this.closing = Promise.all(Array.from(this.readerWork).concat([this.tail])).then(async () => {
         this.db.close();
+        if (this.readOnly) {
+          this.state = undefined;
+          this.readers.recovery(new Set());
+        }
         await this.unlock();
+        await this.retireMaintenance();
       });
     }
     return this.closing;
@@ -1217,7 +1293,8 @@ export class IndexedDBStorage implements StorageBackend {
       this.committedEnvelope = envelope;
       this.committedRecord = encoded;
     }
-    if (!this.committedMode && format !== INDEXEDDB_FORMAT)
+    this.readOnlyLegacy = this.readOnly && format !== INDEXEDDB_FORMAT;
+    if (!this.readOnly && !this.committedMode && format !== INDEXEDDB_FORMAT)
       await this.migrateLegacy(dataKeys, signal);
     if (this.state)
       this.recordRecovery(

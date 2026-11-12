@@ -275,6 +275,7 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
   const opened = Promise.withResolvers<void>();
   const database = {
     transaction: () => transaction,
+    version: 1,
     objectStoreNames: {
       length: 3,
       contains: (name: string) => ["metadata", "journal", "data"].includes(name),
@@ -287,6 +288,8 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
   const opening = { result: database } as IDBOpenDBRequest;
   const locks = {
     request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
+      if (name.startsWith("bun-wasm:filesystem:indexeddb-maintenance:"))
+        return Promise.resolve(callback({ name, mode: "shared" }));
       if (!name.startsWith("bun-wasm:filesystem:indexeddb:"))
         return Promise.resolve(callback({ name, mode: "exclusive" })).then(() => {
           released++;
