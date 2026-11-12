@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AttachedConnection, CommandFailure } from "./framework-types.js";
 import { parseCapabilities } from "./framework-validation.js";
-import { openSync, closeSync } from "node:fs";
+import { openSync, closeSync, fchmodSync } from "node:fs";
 import { join } from "node:path";
 import {
   bounded,
@@ -278,6 +278,7 @@ export class SafariDriver implements Driver {
     private readonly scratch: string,
     private readonly observeFailure?: (facts: NativeCommandFailure) => void,
     private readonly inspectorReceipt = process.env.WAFFLE_SAFARI_INSPECTOR_ENDPOINT,
+    private readonly driverLogPath?: string,
   ) {}
   private readonly observedWindows = new Map<string, string>();
   private readonly observations = new Map<string, DriverObservation>();
@@ -339,8 +340,9 @@ export class SafariDriver implements Driver {
   async start(signal: AbortSignal): Promise<void> {
     this.port = await availablePort();
     this.base = `http://127.0.0.1:${this.port}`;
-    const log = openSync(join(this.scratch, "safaridriver.log"), "w");
+    const log = openSync(this.driverLogPath ?? join(this.scratch, "safaridriver.log"), "w", 0o600);
     try {
+      if (this.driverLogPath) fchmodSync(log, 0o600);
       this.child = spawn("/usr/bin/safaridriver", ["-p", String(this.port)], {
         stdio: ["ignore", log, log],
       });

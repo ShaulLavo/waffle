@@ -1,4 +1,5 @@
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
+import { mkdir } from "node:fs/promises";
 import { SafariDriver } from "./safari-driver.js";
 import { runPageSuite, writeResult, type RunOptions, type SuiteAdapter } from "./suite-host.js";
 export type NativeOptions = Pick<
@@ -40,9 +41,17 @@ async function runNative<R>(
     });
     return 3;
   }
+  await mkdir(dirname(resultPath), { recursive: true, mode: 0o700 });
   const result = await runPageSuite(
     adapter,
-    (scratch, observeFailure) => new SafariDriver(udid, scratch, observeFailure),
+    (scratch, observeFailure) =>
+      new SafariDriver(
+        udid,
+        scratch,
+        observeFailure,
+        process.env.WAFFLE_SAFARI_INSPECTOR_ENDPOINT,
+        `${resultPath}.safaridriver.log`,
+      ),
     {
       resultPath,
       ...options,
