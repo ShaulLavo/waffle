@@ -45,6 +45,7 @@ export function reservedPath(path: string): boolean {
       "/favicon.ico",
       "/_waffle_worker_close",
       "/_waffle_observation_bootstrap",
+      "/_waffle_observation_arrival",
     ].includes(path) ||
     path === "/_waffle_owned" ||
     path.startsWith("/_waffle_owned/")

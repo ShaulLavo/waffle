@@ -89,12 +89,21 @@ export function serveCollector(
           return new Response("Method not allowed", { status: 405, headers });
         if (url.pathname === "/report" || url.pathname === "/heartbeat")
           return new Response("Method not allowed", { status: 405, headers });
+        if (url.pathname === "/_waffle_observation_arrival") {
+          if (request.method !== "GET")
+            return new Response("Method not allowed", { status: 405, headers });
+          const token = url.searchParams.get("token");
+          if (!token || !configurations.has(token))
+            throw new ObservationClosed("Unbound bootstrap arrival");
+          collector.bootstrapArrived(token);
+          return new Response(null, { status: 204, headers });
+        }
         if (url.pathname === "/_waffle_observation_bootstrap") {
           const token = url.searchParams.get("token");
           if (!token || !configurations.has(token))
             return new Response("Unbound bootstrap", { status: 404, headers });
           return new Response(
-            `<!doctype html><html data-waffle-observation="${token}"><meta charset="utf-8"><title>Observation bootstrap</title></html>`,
+            `<!doctype html><html data-waffle-observation="${token}"><meta charset="utf-8"><title>Observation bootstrap</title><script>fetch(${JSON.stringify(`/_waffle_observation_arrival?token=${encodeURIComponent(token)}`)})</script></html>`,
             { headers: { ...headers, "Content-Type": "text/html" } },
           );
         }
@@ -136,12 +145,21 @@ async function observeDocument(
   driver: Driver,
   item: SuiteCase<unknown> | null,
   binding: import("./driver.js").DriverObservationBinding,
+  collector: Collector,
+  state: DocumentState,
+  hello: number,
 ) {
   if (!item?.observation) return;
   const observe = driver.observe?.bind(driver);
   if (!item.drive || !observe)
     throw new Error("Declared browser observation is unavailable on this driver");
   await driver.navigate(binding.bootstrapURL, binding.signal);
+  const remaining = state.startedAt + hello - performance.now();
+  if (remaining <= 0) throw new Error("no-hello");
+  await collector.waitForBootstrap(
+    state,
+    AbortSignal.any([binding.signal, AbortSignal.timeout(Math.ceil(remaining))]),
+  );
   return binding.consumers.invoke(() => observe(binding));
 }
 async function navigateDocument(options: {
@@ -550,13 +568,20 @@ export async function runPageSuite<R>(
       ...capabilities,
       registrationAttempts: collector.registrationAttempts,
     });
-    const observation = await observeDocument(driver, item, {
-      window: handle,
-      bootstrapURL: `${fixture.origin}/_waffle_observation_bootstrap?token=${token}`,
-      expectedURL: url,
-      signal: operationSignal,
-      consumers,
-    });
+    const observation = await observeDocument(
+      driver,
+      item,
+      {
+        window: handle,
+        bootstrapURL: `${fixture.origin}/_waffle_observation_bootstrap?token=${token}`,
+        expectedURL: url,
+        signal: operationSignal,
+        consumers,
+      },
+      collector,
+      state,
+      budgets.hello,
+    );
     collector.bindObservation(state, observation, consumers, () => started + budgets.run);
     await navigateDocument({
       driver,

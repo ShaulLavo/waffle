@@ -91,6 +91,61 @@ export type DocumentState = {
   tasks: Map<string, PageTask>;
 };
 export class Collector {
+  private bootstrapArrivals = new WeakSet<DocumentState>();
+  private readonly bootstrapClosed = new WeakSet<DocumentState>();
+  private readonly bootstrapWaiters = new Map<
+    DocumentState,
+    ReturnType<typeof Promise.withResolvers<void>>
+  >();
+  private bootstrapDocument(token: string): DocumentState {
+    const state = this.documents.find((item) => item.token === token);
+    if (
+      !state ||
+      !this.owns(state) ||
+      state.cutoff !== null ||
+      state.physical !== "live" ||
+      state.doc !== null ||
+      this.bootstrapClosed.has(state) ||
+      this.reply(false, state).kind !== "live"
+    )
+      throw new ObservationClosed("Bootstrap arrival is not the exact live document");
+    return state;
+  }
+  bootstrapArrived(token: string): void {
+    const state = this.bootstrapDocument(token);
+    if (this.bootstrapArrivals.has(state))
+      throw new ObservationClosed("Duplicate bootstrap arrival");
+    this.bootstrapArrivals.add(state);
+    this.bootstrapWaiters.get(state)?.resolve();
+  }
+  async waitForBootstrap(state: DocumentState, signal: AbortSignal): Promise<void> {
+    if (this.bootstrapDocument(state.token) !== state)
+      throw new ObservationClosed("Unrelated bootstrap document");
+    if (signal.aborted) {
+      this.bootstrapClosed.add(state);
+      this.bootstrapArrivals.delete(state);
+      signal.throwIfAborted();
+    }
+    if (this.bootstrapArrivals.has(state)) return;
+    if (this.bootstrapWaiters.has(state))
+      throw new ObservationClosed("Bootstrap arrival waiter already owned");
+    const waiting = Promise.withResolvers<void>();
+    const aborted = () => waiting.reject(signal.reason);
+    this.bootstrapWaiters.set(state, waiting);
+    signal.addEventListener("abort", aborted, { once: true });
+    try {
+      await waiting.promise;
+      signal.throwIfAborted();
+      this.bootstrapDocument(state.token);
+    } catch (error) {
+      this.bootstrapClosed.add(state);
+      this.bootstrapArrivals.delete(state);
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", aborted);
+      this.bootstrapWaiters.delete(state);
+    }
+  }
   private readonly observations = new Map<
     DocumentState,
     {
@@ -206,6 +261,10 @@ export class Collector {
   private readonly reports = new ReportChunks();
   private readonly reportingFailed = new Set<DocumentState>();
   cancel(): void {
+    for (const waiting of this.bootstrapWaiters.values())
+      waiting.reject(new ObservationClosed("Bootstrap arrival cancelled"));
+    this.bootstrapWaiters.clear();
+    this.bootstrapArrivals = new WeakSet();
     this.reports.clear();
     this.reporting = {
       kind:
