@@ -79,7 +79,8 @@ async function inWorker<T>(
     if (
       cdp &&
       request.kind === "run" &&
-      request.label === "idle workspace full origin open and read"
+      (request.label === "idle workspace full origin open and read" ||
+        request.label.startsWith("checkpoint failure"))
     )
       await cdp.send("Storage.overrideQuotaForOrigin", { origin, quotaSize: 8 * 1024 * 1024 });
     return await page.evaluate(storageCase<T>, request);

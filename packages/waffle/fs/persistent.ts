@@ -37,6 +37,10 @@ interface CheckpointCapture {
   readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string; revision: number }>;
 }
 
+interface CheckpointEpoch {
+  failure?: { cause: unknown };
+}
+
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
  * no lock or guest request is held across a background commit. */
 export class PersistentBackend extends MemoryBackend {
@@ -56,7 +60,7 @@ export class PersistentBackend extends MemoryBackend {
   private tail: Promise<void> = Promise.resolve();
   private generation = 0;
   private sequence = 0;
-  private checkpointEpoch = 0;
+  private checkpointEpoch: CheckpointEpoch = {};
   private pendingCheckpoints = 0;
   private admittedWork = new Set<Promise<void>>();
   private closing?: Promise<void>;
@@ -825,8 +829,7 @@ export class PersistentBackend extends MemoryBackend {
     const commit = this.tail
       .then(async () => {
         this.assertOpen();
-        if (epoch !== this.checkpointEpoch)
-          throw new Error("filesystem checkpoint invalidated by a failed commit");
+        if (epoch.failure) throw epoch.failure.cause;
         start(metadataBytes + this.pinMetadataBytes() * 4);
         batch.generation = this.generation + 1;
         // A later request may have reattached an inode removed by this older checkpoint.
@@ -868,9 +871,10 @@ export class PersistentBackend extends MemoryBackend {
         this.pendingCheckpoints--;
       });
     this.lastCommit = commit;
-    this.tail = commit.catch(() => {
+    this.tail = commit.catch((cause: unknown) => {
       if (this.stopped) return;
-      this.checkpointEpoch++;
+      this.checkpointEpoch.failure ??= { cause };
+      this.checkpointEpoch = {};
       for (const node of changed) if (!this.detached.has(node)) this.dirty.add(node);
       // A later request may have linked an open inode back into the namespace while
       // this commit waited. Retry the current tree, not the failed checkpoint's removals.
@@ -889,7 +893,6 @@ export class PersistentBackend extends MemoryBackend {
   }
   private stopPersistence(): void {
     this.stopped = true;
-    this.checkpointEpoch++;
     this.cancelTimer();
   }
   dispose(): void {

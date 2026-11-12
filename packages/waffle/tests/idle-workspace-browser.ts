@@ -2,6 +2,7 @@ import { idle, request, seed } from "./idle-workspace-fixtures.js";
 import { idleMaintenanceCases } from "./idle-workspace-maintenance-browser.js";
 import { idleMetadataCases } from "./idle-workspace-metadata-browser.js";
 import { idleCancellationCases } from "./idle-workspace-cancellation-browser.js";
+import { storageQuotaControl } from "./storage-quota-control.js";
 import type { StorageAllocationHooks } from "./storage-allocation.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import {
@@ -48,19 +49,6 @@ async function readonlyAccess(name: string, legacy = false): Promise<void> {
     IDBObjectStore.prototype.get = get;
     await closing;
   }
-}
-
-async function idleQuotaControl(action: "cap" | "reset"): Promise<boolean> {
-  const result = Promise.withResolvers<boolean>();
-  const receive = (event: MessageEvent) => {
-    if (event.data?.kind !== "idle-quota-result") return;
-    globalThis.removeEventListener("message", receive);
-    if (event.data.error) result.reject(new Error(event.data.error));
-    else result.resolve(event.data.active === true);
-  };
-  globalThis.addEventListener("message", receive);
-  globalThis.postMessage({ idleQuota: action });
-  return result.promise;
 }
 
 async function quotaWriteFails(name: string): Promise<void> {
@@ -261,12 +249,12 @@ export function idleWorkspaceCases(
     const opening = indexedDB.open(fillerName);
     opening.onupgradeneeded = () => opening.result.createObjectStore("data");
     (await request(opening)).close();
-    const capped = await idleQuotaControl("cap");
+    const capped = await storageQuotaControl("cap");
     try {
       if (capped) await quotaWriteFails(fillerName);
       await readonlyAccess(name, true);
     } finally {
-      await idleQuotaControl("reset");
+      await storageQuotaControl("reset");
       await request(indexedDB.deleteDatabase(fillerName));
     }
   });

@@ -16,6 +16,7 @@ export {
 } from "./storage-browser-helpers.js";
 import { withStorageCleanup, type StorageAllocationHooks } from "./storage-allocation.js";
 import { idleWorkspaceCases } from "./idle-workspace-browser.js";
+import { checkpointFailureCases } from "./checkpoint-failure-browser.js";
 import { hostFilesystemClient } from "./fixtures/filesystem-host.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
@@ -1275,6 +1276,7 @@ export function storageTests(
     .concat(
       indexedDBCases(filesystemWorkerURL, gatedWorkerURL, allocation),
       idleWorkspaceCases(filesystemWorkerURL, allocation),
+      checkpointFailureCases(),
     )
     .map(({ label, run, compactEvery = 2 }) => ({
       label,
