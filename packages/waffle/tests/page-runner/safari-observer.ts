@@ -375,11 +375,10 @@ export class SafariObserver {
     if (!pending || pending.route !== route) throw new Error("Unowned Inspector reply route");
     if ("error" in message.answer) {
       const error = new Error(`Inspector command refused: ${JSON.stringify(message.answer.error)}`);
-      pending?.reject(error);
+      pending.reject(error);
       this.lose(error);
       return;
     }
-    if (!pending) throw new Error("Unowned Inspector reply");
     pending.reduced?.();
     pending.resolve(message.answer.result);
     this.pending.delete(message.id);
@@ -431,10 +430,8 @@ export class SafariObserver {
         "Worker.initialized",
         { workerId: worker.id },
         false,
-        () => {
-          const state = this.workerConsole.get(worker.id);
-          if (state) state.initialized = ++this.order;
-        },
+        () => this.workerOrder(worker.id, "initialized"),
+        () => this.workerOrder(worker.id, "initializationOuter"),
       );
       const startup = Promise.all([enabling, initialization]);
       this.trackInitialization(startup);
@@ -448,11 +445,22 @@ export class SafariObserver {
       ledger.terminated(id, "safari-worker-terminated");
       const state = this.workerConsole.get(id);
       if (state) state.terminated = ++this.order;
-      if (state && (!state.forwarded || !state.replied || !state.initialized))
+      if (
+        state &&
+        (!state.forwarded ||
+          !state.forwardingOuter ||
+          !state.replied ||
+          !state.initialized ||
+          !state.initializationOuter)
+      )
         throw new Error(`Worker console enable pending at termination: ${JSON.stringify(state)}`);
     }
     if (method === "Network.requestWillBeSent" || method === "Network.requestServedFromMemoryCache")
       this.request(params, method, sequence);
+  }
+  private workerOrder(id: string, reply: "initialized" | "initializationOuter"): void {
+    const state = this.workerConsole.get(id);
+    if (state) state[reply] = ++this.order;
   }
   private trackInitialization(initialization: Promise<unknown>): void {
     this.initializations.add(initialization);
@@ -467,7 +475,7 @@ export class SafariObserver {
   private consoleEvent(context: string, params: unknown): void {
     const message = consoleMessage(params);
     if (consoleExpired(message)) throw new Error("Inspector console buffer expired");
-    if (consoleFailure(message)) this.ledger?.consoleMessage(context, message);
+    if (consoleFailure(message, context === "page")) this.ledger?.consoleMessage(context, message);
   }
   private workerMessage(params: Record<string, unknown>): void {
     if (typeof params.workerId !== "string" || typeof params.message !== "string")
@@ -502,6 +510,9 @@ export class SafariObserver {
       () => {
         state.forwarded = ++this.order;
       },
+      () => {
+        state.forwardingOuter = ++this.order;
+      },
     );
     return bounded(Promise.all([pending.promise, forwarded]), 3000, "Worker Console.enable").catch(
       (error: unknown) => {
@@ -523,6 +534,7 @@ export class SafariObserver {
     params: Record<string, unknown>,
     cleanup = false,
     reduced?: () => void,
+    outerReduced?: () => void,
   ): Promise<unknown> {
     return this.binding.consumers.invoke(async () => {
       this.check(cleanup);
@@ -530,7 +542,7 @@ export class SafariObserver {
         outer = this.nextID++;
       const pending: Pending = { ...Promise.withResolvers<unknown>(), reduced };
       this.pending.set(id, pending);
-      const forwarded = Promise.withResolvers<unknown>();
+      const forwarded: Pending = { ...Promise.withResolvers<unknown>(), reduced: outerReduced };
       this.pending.set(outer, forwarded);
       const data = JSON.stringify({
         id: outer,

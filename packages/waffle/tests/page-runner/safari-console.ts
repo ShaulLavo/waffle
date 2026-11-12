@@ -28,8 +28,8 @@ export function consoleMessage(params: unknown) {
     ...(typeof m.column === "number" ? { column: m.column } : {}),
   };
 }
-export function consoleFailure(m: ReturnType<typeof consoleMessage>): boolean {
-  return m.level === "error" && (m.source === "javascript" || m.type === "log");
+export function consoleFailure(m: ReturnType<typeof consoleMessage>, page: boolean): boolean {
+  return m.level === "error" && ((page && m.source === "javascript") || m.type === "log");
 }
 export function consoleExpired(m: ReturnType<typeof consoleMessage>): boolean {
   return (

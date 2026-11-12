@@ -8,6 +8,12 @@ import { record } from "./protocol.js";
 const bootstrapURL = "https://owned.test/_waffle_observation_bootstrap?token=unique";
 function fixture(
   options: {
+    console?: boolean;
+    holdWorkerReply?: boolean;
+    wrongWorkerRoute?: boolean;
+    rejectWorkerConsole?: boolean;
+    cutoffOuter?: Promise<void>;
+    sameBatchConsole?: string;
     rejectEnable?: boolean;
     rejectPageEnable?: boolean;
     noWorkers?: boolean;
@@ -24,6 +30,7 @@ function fixture(
   const consumers = new HostConsumers();
   const abort = new AbortController();
   const observer = new SafariObserver({
+    console: options.console,
     window: "driver-window",
     bootstrapURL,
     expectedURL: "https://owned.test/case",
@@ -63,6 +70,26 @@ function fixture(
       params: { targetId, message: JSON.stringify(message) },
     });
   const event = (method: string, params: unknown) => inner({ method, params });
+  const innerBatch = (messages: unknown[]) => {
+    const bytes = Buffer.concat(
+      messages.map((message) =>
+        frame({
+          __selector: "_rpc_applicationSentData:",
+          __argument: {
+            WIRApplicationIdentifierKey: "app",
+            WIRDestinationKey: sender,
+            WIRMessageDataKey: Buffer.from(
+              JSON.stringify({
+                method: "Target.dispatchMessageFromTarget",
+                params: { targetId: "page-1", message: JSON.stringify(message) },
+              }),
+            ),
+          },
+        }),
+      ),
+    );
+    frames.feed(bytes, (value) => observer.accept(inspectorEnvelope(value, ++sequence)));
+  };
   const navigate = () => {
     if (!networkEnabled) throw new Error("CPU Network domain is disabled");
     // WebKit webkitgtk-2.50.0 PageNetworkAgent delegates both IDs to enabledPageAgent().
@@ -91,6 +118,9 @@ function fixture(
     if (method === "Network.disable") networkEnabled = false;
     if (
       ![
+        "Console.enable",
+        "Console.disable",
+        "Worker.sendMessageToWorker",
         "Runtime.evaluate",
         "Worker.enable",
         "Worker.disable",
@@ -116,6 +146,29 @@ function fixture(
         },
       },
     });
+  let workerReply: (() => void) | undefined;
+  const forwardWorker = (message: Record<string, unknown>) => {
+    if (
+      !record(message.params) ||
+      typeof message.params.message !== "string" ||
+      typeof message.params.workerId !== "string"
+    )
+      throw new Error("Bad worker send");
+    const workerId = message.params.workerId;
+    const workerCommand: unknown = JSON.parse(message.params.message);
+    if (!record(workerCommand)) throw new Error("Bad worker command");
+    workerReply = () => {
+      const reply = options.rejectWorkerConsole
+        ? { id: workerCommand.id, error: { message: "worker Console refused" } }
+        : { id: workerCommand.id, result: {} };
+      if (options.wrongWorkerRoute) return inner(reply);
+      event("Worker.dispatchMessageFromWorker", { workerId, message: JSON.stringify(reply) });
+    };
+    if (!options.holdWorkerReply) workerReply();
+  };
+  const isCutoff = (method: string) =>
+    method === "Console.enable" &&
+    methods.filter((value) => value === "Console.enable").length === 2;
   const command = (args: PlistDict): Promise<void> => {
     if (!Buffer.isBuffer(args.WIRSocketDataKey)) throw new Error("Bad CPU request");
     const outer: unknown = JSON.parse(args.WIRSocketDataKey.toString());
@@ -123,6 +176,7 @@ function fixture(
       throw new Error("Bad CPU wrapper");
     const message: unknown = JSON.parse(outer.params.message);
     if (!record(message) || typeof message.method !== "string") throw new Error("Bad CPU command");
+    if (message.method === "Worker.sendMessageToWorker") forwardWorker(message);
     methods.push(message.method);
     lifecycle.push(message.method);
     const result =
@@ -139,7 +193,15 @@ function fixture(
       inner({ id: message.id, error: { code: -1, message: "domain refused" } });
     else {
       domain(message.method);
-      const answerInner = () => inner({ id: message.id, result });
+      const cutoff = isCutoff(message.method);
+      const answerInner = () => {
+        if (cutoff && options.sameBatchConsole)
+          return innerBatch([
+            { id: message.id, result },
+            { method: "Console.messageAdded", params: consoleParams(options.sameBatchConsole) },
+          ]);
+        inner({ id: message.id, result });
+      };
       if (message.method === "Page.enable" && options.delayPageInner)
         void options.delayPageInner.then(answerInner);
       else answerInner();
@@ -150,7 +212,8 @@ function fixture(
           ? { id: outer.id, error: { code: -1, message: "outer refused" } }
           : { id: outer.id, result: {} },
       );
-    if (message.method === "Page.enable" && options.delayPageOuter)
+    if (isCutoff(message.method) && options.cutoffOuter) void options.cutoffOuter.then(answerOuter);
+    else if (message.method === "Page.enable" && options.delayPageOuter)
       void options.delayPageOuter.then(answerOuter);
     else if (message.method === "Network.disable" && options.delayOuterDisable)
       void options.delayOuterDisable.then(answerOuter);
@@ -211,6 +274,7 @@ function fixture(
     lifecycle,
     pageDispatched,
     initializationDispatched,
+    replyWorker: () => workerReply?.(),
   };
 }
 
@@ -609,5 +673,151 @@ test("pending lifecycle callbacks cannot delay Worker.initialized and must drain
   callback.resolve();
   await Promise.all([removed, stopped]);
   expect(f.lifecycle.at(-1)).toBe("close");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+function consoleParams(text: string) {
+  return { message: { source: "console-api", level: "error", type: "log", text } };
+}
+test("worker Console enable writes before initialized without awaiting worker reply", async () => {
+  const f = fixture({ console: true, noWorkers: true, holdWorkerReply: true });
+  const ledger = await f.observer.attach();
+  f.event("Worker.workerCreated", { workerId: "fast", url: "https://owned.test/fast.js" });
+  expect(f.methods.slice(-2)).toEqual(["Worker.sendMessageToWorker", "Worker.initialized"]);
+  expect(ledger.console().workers[0]?.replied).toBeUndefined();
+  f.event("Worker.dispatchMessageFromWorker", {
+    workerId: "fast",
+    message: JSON.stringify({
+      method: "Console.messageAdded",
+      params: consoleParams("first-line-marker"),
+    }),
+  });
+  f.replyWorker();
+  await ledger.settleConsole();
+  expect(ledger.console().first).toMatchObject({
+    text: "first-line-marker",
+    context: { url: "https://owned.test/fast.js" },
+  });
+  expect(ledger.console().workers[0]?.replied).toBeGreaterThan(
+    ledger.console().workers[0]?.initialized ?? 0,
+  );
+  await ledger.stop();
+  expect(await f.consumers.join(100)).toBe(true);
+});
+test("cutoff freezes at inner reply before same-batch event and delayed outer ack", async () => {
+  const outer = Promise.withResolvers<void>();
+  const f = fixture({
+    console: true,
+    noWorkers: true,
+    cutoffOuter: outer.promise,
+    sameBatchConsole: "too-late",
+  });
+  const ledger = await f.observer.attach();
+  const cutoff = ledger.settleConsole();
+  const frozen = ledger.console();
+  expect(frozen.first).toBeNull();
+  f.event("Console.messageAdded", consoleParams("also-too-late"));
+  expect(ledger.console()).toBe(frozen);
+  outer.resolve();
+  await cutoff;
+  await ledger.settleConsole();
+  expect(f.methods.filter((method) => method === "Console.enable")).toHaveLength(2);
+  await ledger.stop();
+  expect(ledger.console()).toBe(frozen);
+});
+test("console clearing cannot erase first error and late detach failure preserves snapshot", async () => {
+  const f = fixture({ console: true, noWorkers: true, rejectOuter: "Console.disable" });
+  const ledger = await f.observer.attach();
+  f.event("Console.messageAdded", consoleParams("actual-page-marker"));
+  f.event("Console.messagesCleared", {});
+  await ledger.settleConsole();
+  const frozen = ledger.console();
+  await expect(ledger.stop()).rejects.toThrow("refused");
+  expect(ledger.console()).toBe(frozen);
+  expect(frozen.first?.text).toBe("actual-page-marker");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+test("pending-enable termination is a qualification loss with actual order evidence", async () => {
+  const f = fixture({ console: true, noWorkers: true, holdWorkerReply: true });
+  const ledger = await f.observer.attach();
+  f.event("Worker.workerCreated", { workerId: "fast", url: "https://owned.test/fast.js" });
+  f.event("Worker.workerTerminated", { workerId: "fast" });
+  expect((await ledger.failure).message).toContain("pending at termination");
+  expect(ledger.console().workers[0]).toMatchObject({
+    enableWritten: 1,
+    forwarded: 2,
+    forwardingOuter: 3,
+    initialized: 4,
+    initializationOuter: 5,
+    terminated: 6,
+  });
+  expect(ledger.console().workers[0]?.replied).toBeUndefined();
+  await expect(ledger.stop()).rejects.toThrow();
+  expect(await f.consumers.join(100)).toBe(true);
+});
+test("worker Console refusal cannot produce empty covered success", async () => {
+  const f = fixture({ console: true, noWorkers: true, rejectWorkerConsole: true });
+  const ledger = await f.observer.attach();
+  f.event("Worker.workerCreated", { workerId: "refused", url: "https://owned.test/refused.js" });
+  expect((await ledger.failure).message).toContain("worker Console refused");
+  await expect(ledger.stop()).rejects.toThrow();
+});
+
+test("worker Console missing reply is finite and owned through cleanup", async () => {
+  const f = fixture({ console: true, noWorkers: true, holdWorkerReply: true });
+  const ledger = await f.observer.attach();
+  f.event("Worker.workerCreated", { workerId: "silent", url: "https://owned.test/silent.js" });
+  await expect(ledger.stop()).rejects.toThrow("timed out");
+  expect(ledger.console().loss).toContain("timed out");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+test("unknown worker console envelopes are rejected", async () => {
+  const f = fixture({ console: true, noWorkers: true });
+  const ledger = await f.observer.attach();
+  f.event("Worker.dispatchMessageFromWorker", {
+    workerId: "unknown",
+    message: JSON.stringify({
+      method: "Console.messageAdded",
+      params: consoleParams("wrong-owner"),
+    }),
+  });
+  expect((await ledger.failure).message).toContain("Unknown console Worker");
+  await expect(ledger.stop()).rejects.toThrow();
+  expect(ledger.console().first).toBeNull();
+});
+test("Console domain refusal and expired replay are observation losses", async () => {
+  const refused = fixture({ console: true, noWorkers: true, rejectOuter: "Console.enable" });
+  await expect(refused.observer.attach()).rejects.toThrow("refused");
+  await expect(refused.observer.close()).rejects.toThrow();
+  const f = fixture({ console: true, noWorkers: true });
+  const ledger = await f.observer.attach();
+  f.event("Console.messageAdded", {
+    message: { source: "other", level: "warning", text: "3 console messages are not shown." },
+  });
+  expect((await ledger.failure).message).toContain("buffer expired");
+  await expect(ledger.stop()).rejects.toThrow();
+  expect(ledger.console().loss).toContain("buffer expired");
+});
+
+test("worker reply on the page route cannot acknowledge worker Console", async () => {
+  const f = fixture({ console: true, noWorkers: true, wrongWorkerRoute: true });
+  const ledger = await f.observer.attach();
+  f.event("Worker.workerCreated", { workerId: "wrong-route", url: "https://owned.test/wrong.js" });
+  expect((await ledger.failure).message).toContain("Unowned Inspector reply route");
+  expect(ledger.console().workers[0]?.replied).toBeUndefined();
+  await expect(ledger.stop()).rejects.toThrow();
+  expect(await f.consumers.join(100)).toBe(true);
+});
+test("worker forwarding outer reply is owned even after worker and page-inner replies", async () => {
+  const f = fixture({ console: true, noWorkers: true, omitOuter: "Worker.sendMessageToWorker" });
+  const ledger = await f.observer.attach();
+  f.event("Worker.workerCreated", {
+    workerId: "missing-outer",
+    url: "https://owned.test/outer.js",
+  });
+  expect(ledger.console().workers[0]?.forwarded).toBeGreaterThan(0);
+  expect(ledger.console().workers[0]?.replied).toBeGreaterThan(0);
+  expect(ledger.console().workers[0]?.forwardingOuter).toBeUndefined();
+  await expect(ledger.stop()).rejects.toThrow("timed out");
   expect(await f.consumers.join(100)).toBe(true);
 });

@@ -324,22 +324,26 @@ export class BrowserObservation implements DriverObservation {
     return (this.retirement ??= this.consumers.invoke(() => this.stopOnce()));
   }
   private async stopOnce(): Promise<void> {
-    const results = await Promise.allSettled(
-      Array.from(this.listeners, drainListener).concat(
-        Array.from(this.workerListeners, drainListener),
-      ),
-    );
-    const cleanup = await Promise.allSettled([this.consumers.invoke(this.cleanup)]);
-    const failed = results.find((result) => result.status === "rejected");
-    const callback =
-      failed?.status === "rejected" ? { error: failed.reason } : this.callbackFailure;
-    if (callback && cleanup[0]?.status === "rejected")
-      throw new AggregateError(
-        [callback.error, cleanup[0].reason],
-        "Callback and observation cleanup failed",
+    try {
+      const results = await Promise.allSettled(
+        Array.from(this.listeners, drainListener).concat(
+          Array.from(this.workerListeners, drainListener),
+        ),
       );
-    if (callback) throw callback.error;
-    if (cleanup[0]?.status === "rejected") throw cleanup[0].reason;
-    if (this.lifetime.kind === "lost") throw this.lifetime.error;
+      const cleanup = await Promise.allSettled([this.consumers.invoke(this.cleanup)]);
+      const failed = results.find((result) => result.status === "rejected");
+      const callback =
+        failed?.status === "rejected" ? { error: failed.reason } : this.callbackFailure;
+      if (callback && cleanup[0]?.status === "rejected")
+        throw new AggregateError(
+          [callback.error, cleanup[0].reason],
+          "Callback and observation cleanup failed",
+        );
+      if (callback) throw callback.error;
+      if (cleanup[0]?.status === "rejected") throw cleanup[0].reason;
+      if (this.lifetime.kind === "lost") throw this.lifetime.error;
+    } finally {
+      this.consoleState.freeze();
+    }
   }
 }

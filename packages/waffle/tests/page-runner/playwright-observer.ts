@@ -1,12 +1,12 @@
 import type { ConsoleMessage, Frame, Page, Request, Worker } from "playwright";
-import type { DriverObservationBinding, DriverObservation } from "./driver.js";
+import type { DriverObservationBinding } from "./driver.js";
 import { BrowserObservation, type RequestObservation } from "./browser-observation.js";
 
 /** The existing Page remains the sole application executor. No second browser connection. */
 export function observePlaywrightPage(
   page: Page,
   binding: DriverObservationBinding,
-): DriverObservation {
+): BrowserObservation {
   let next = 0;
   let sequence = 0;
   const ids = new WeakMap<Worker, string>();
@@ -89,15 +89,19 @@ export function observePlaywrightPage(
     ledger.consoleMessage("page", { source: "playwright-pageerror", text: error.message });
   let settled: Promise<void> | undefined;
   const settleConsole = () =>
-    (settled ??= binding.consumers
-      .invoke(async () => {
-        await page.evaluate(() => undefined);
-        ledger.consoleState.freeze();
-      })
-      .catch((error: unknown) => {
-        ledger.lose(error);
-        throw error;
-      }));
+    !binding.console
+      ? Promise.reject(new Error("Console observation not enabled"))
+      : (settled ??= binding.consumers
+          .invoke(async () => {
+            ledger.check();
+            await page.evaluate(() => undefined);
+            ledger.check();
+            ledger.consoleState.freeze();
+          })
+          .catch((error: unknown) => {
+            ledger.lose(error);
+            throw error;
+          }));
   const ledger = new BrowserObservation(
     "existing-playwright-page",
     binding.consumers,

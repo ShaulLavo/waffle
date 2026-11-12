@@ -13,8 +13,10 @@ export type WorkerConsoleOrder = Readonly<{
   worker: HostWorker;
   enableWritten: number;
   forwarded?: number;
+  forwardingOuter?: number;
   replied?: number;
   initialized?: number;
+  initializationOuter?: number;
   terminated?: number;
 }>;
 export type ConsoleSummary = Readonly<{
@@ -37,7 +39,8 @@ export class ConsoleObservation {
   }
   summary(): ConsoleSummary {
     return (
-      this.frozen ?? Object.freeze({ first: this.first, loss: this.loss, workers: this.orders() })
+      this.frozen ??
+      Object.freeze({ first: this.first, loss: this.loss, workers: Object.freeze(this.orders()) })
     );
   }
   freeze(): ConsoleSummary {

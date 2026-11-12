@@ -161,6 +161,36 @@ async function navigateDocument(options: {
   );
   options.observation?.navigationComplete();
 }
+function bindConsoleFailure(
+  declared: boolean,
+  observation: import("./driver.js").DriverObservation | undefined,
+  collector: Collector,
+  state: DocumentState,
+): void {
+  if (!declared) return;
+  if (!observation) throw new Error("Console observation unavailable");
+  void observation.failure.then((error) =>
+    collector.fail("browser-observation", error.message, state),
+  );
+  if (!observation.console || !observation.settleConsole)
+    throw new Error("Console observation unavailable");
+}
+async function stopConsoleObservation(
+  declared: boolean,
+  observation: import("./driver.js").DriverObservation | undefined,
+  collector: Collector,
+  state: DocumentState,
+): Promise<void> {
+  if (!declared || !observation) return;
+  try {
+    await observation.stop();
+  } catch (error) {
+    collector.fail("browser-observation-cleanup", String(error), state);
+  }
+}
+function resultDeadline(group: Group, wait: number | undefined): number | undefined {
+  return group.role === "case" && wait !== undefined ? performance.now() + wait : undefined;
+}
 function sealAssets(fixture: ReturnType<typeof serveCollector> | undefined): void {
   fixture?.assetOwner.seal();
 }
@@ -563,28 +593,23 @@ export async function runPageSuite<R>(
       ...capabilities,
       registrationAttempts: collector.registrationAttempts,
     });
+    const consoleDeclared = item?.console === "fail-on-error";
     const observation = await observeDocument(driver, item, {
       window: handle,
       bootstrapURL: `${fixture.origin}/_waffle_observation_bootstrap?token=${token}`,
       expectedURL: url,
       signal: operationSignal,
       consumers,
-      console: item?.console === "fail-on-error",
+      console: consoleDeclared,
     });
     try {
-      if (item?.console) {
-        void observation?.failure.then((error) =>
-          collector.fail("browser-observation", error.message, state),
-        );
-        if (!observation?.console || !observation.settleConsole)
-          throw new Error("Console observation unavailable");
-      }
+      bindConsoleFailure(consoleDeclared, observation, collector, state);
       collector.bindObservation(
         state,
         observation,
         consumers,
         () => started + budgets.run,
-        !!item?.console,
+        consoleDeclared,
       );
       await navigateDocument({
         driver,
@@ -593,10 +618,7 @@ export async function runPageSuite<R>(
         hello: budgets.hello,
         observation,
       });
-      const resultDeadline =
-        group.role === "case" && adapter.resultWaitMs !== undefined
-          ? performance.now() + adapter.resultWaitMs
-          : undefined;
+      const resultUntil = resultDeadline(group, adapter.resultWaitMs);
       const host = item?.drive
         ? new HostDrive(
             driver,
@@ -644,7 +666,7 @@ export async function runPageSuite<R>(
         await host.drive(item.drive);
         priorFailures = collector.failures.length;
       }
-      const teardown = documentTeardown(host, resultDeadline, operationSignal);
+      const teardown = documentTeardown(host, resultUntil, operationSignal);
       await awaitState(
         state,
         () => state.complete,
@@ -678,13 +700,7 @@ export async function runPageSuite<R>(
       fixture.configurations.delete(token);
       if (item?.id === adapter.fixture?.caseId) application?.revoke("case document retired");
     } finally {
-      if (item?.console && observation) {
-        await observation
-          .stop()
-          .catch((error: unknown) =>
-            collector.fail("browser-observation-cleanup", String(error), state),
-          );
-      }
+      await stopConsoleObservation(consoleDeclared, observation, collector, state);
     }
   }
   async function interruptedFinish(error: unknown): Promise<void> {
