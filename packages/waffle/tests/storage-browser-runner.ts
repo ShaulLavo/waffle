@@ -71,7 +71,7 @@ async function inWorker<T>(
       );
       await cdp.send("Storage.overrideQuotaForOrigin", {
         origin,
-        ...(action === "cap" ? { quotaSize: usage + 1024 } : {}),
+        ...(action === "cap" ? { quotaSize: Math.max(1, usage - 1) } : {}),
       });
       return true;
     });
