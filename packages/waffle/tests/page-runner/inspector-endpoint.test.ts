@@ -158,6 +158,7 @@ for (const field of [
   "argv",
   "device",
   "socket",
+  "address-length",
   "uid",
 ]) {
   test(`endpoint reader rejects changed live ${field} binding despite an unchanged socket node`, async () => {
@@ -171,6 +172,7 @@ for (const field of [
       if (field === "argv") value.process.argv1 += "/changed";
       if (field === "device") value.target.deviceId = "22222222-2222-2222-2222-222222222222";
       if (field === "socket") value.socket.pathNode.ino++;
+      if (field === "address-length") value.socket.addressLength++;
       if (field === "uid") value.helper.uid = value.process.uid = value.socket.pathNode.uid = 99;
       await writeFile(f.current, bytes(value));
       await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
@@ -188,6 +190,24 @@ test("endpoint reader accepts matching freshly invoked helper metadata without s
     await writeFile(f.current, bytes(f.value));
     await expect(inspectorEndpoint(f.saved, udid, f.helper)).resolves.toBe(f.path);
     await writeFile(f.current, Buffer.from("truncated"));
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("endpoint reader accepts descriptor alias changes while retaining discovery validation", async () => {
+  const f = await liveFixture();
+  try {
+    f.value.socket.descriptorCount++;
+    await writeFile(f.current, bytes(f.value));
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).resolves.toBe(f.path);
+    f.value.socket.descriptorCount = 0;
+    await writeFile(f.current, bytes(f.value));
+    await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
+    f.value.socket.descriptorCount = 2;
+    f.value.socket.descriptorPasses = 1;
+    await writeFile(f.current, bytes(f.value));
     await expect(inspectorEndpoint(f.saved, udid, f.helper)).rejects.toThrow();
   } finally {
     await f.cleanup();
