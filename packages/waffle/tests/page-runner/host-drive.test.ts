@@ -382,7 +382,7 @@ test("diagnostics retain the occupied owner queue and oldest queued purpose with
     await entered.promise;
     const queue = f.c.diagnostics.snapshot().current.queue;
     expect(queue.actualPending).toBe(2);
-    expect(queue.currentOrdinal).toBe(queue.active[0]?.ordinal);
+    expect(queue.currentOrdinal).toBe(queue.active[0]?.ordinal ?? null);
     expect(queue.oldestWaiting?.ordinal).toBe(queue.active[1]?.ordinal);
     expect(queue.active.map((entry) => entry.stages.at(-1)?.stage)).toEqual(["started", "queued"]);
     expect(queue.active.map((entry) => entry.facts.purpose)).toEqual([
