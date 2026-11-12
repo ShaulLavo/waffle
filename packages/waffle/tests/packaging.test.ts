@@ -267,3 +267,12 @@ for (const damage of ["missing", "corrupt", "pin", "growth"]) {
     }
   });
 }
+
+test("generated network source retains Binaryen helper copyright and license attribution", async () => {
+  const source = await Bun.file(
+    new URL("../browser/net/network.buffer.js", import.meta.url),
+  ).text();
+  expect(source).toContain("Copyright 2015 WebAssembly Community Group participants");
+  expect(source).toContain("Binaryen 132.0.0");
+  expect(source).toContain("Apache-2.0; see LICENSES/Apache-2.0.txt");
+});
