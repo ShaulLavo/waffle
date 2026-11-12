@@ -322,10 +322,12 @@ function metadataError(): never {
   throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid persisted filesystem metadata");
 }
 function request<T>(value: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
+  const result = new Promise<T>((resolve, reject) => {
     value.onsuccess = () => resolve(value.result);
     value.onerror = () => reject(value.error ?? new Error("IndexedDB request failed"));
   });
+  void result.catch(() => {});
+  return result;
 }
 function completed(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {

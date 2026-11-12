@@ -47,6 +47,12 @@ async function cancelledLoad(name: string, phase: "metadata" | "manifest"): Prom
     prematureOpen = false;
   let manifestsAfterAbort = 0;
   let successor: Promise<IndexedDBStorage> | undefined;
+  const unhandled: unknown[] = [];
+  const observeRejection = (event: PromiseRejectionEvent) => {
+    unhandled.push(event.reason);
+    event.preventDefault();
+  };
+  globalThis.addEventListener("unhandledrejection", observeRejection);
   IDBObjectStore.prototype.get = function (key) {
     if (this.name === "data" && typeof key === "string" && controller.signal.aborted)
       manifestsAfterAbort++;
@@ -103,10 +109,13 @@ async function cancelledLoad(name: string, phase: "metadata" | "manifest"): Prom
       `native transaction settled before connection close: ${JSON.stringify({ settled, closed, prematureClose })}`,
     );
     assert(!prematureOpen, "maintenance held until native completion and connection close");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert(unhandled.length === 0, "cancelled native requests have rejection observers");
   } finally {
     IDBObjectStore.prototype.get = nativeGet;
     IDBDatabase.prototype.close = nativeClose;
     IDBFactory.prototype.open = nativeOpen;
+    globalThis.removeEventListener("unhandledrejection", observeRejection);
     await (await successor)?.close();
   }
 }
