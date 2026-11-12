@@ -932,7 +932,10 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     const observe = this.driver.observe?.bind(this.driver);
     if (!observe) throw new Error("Peer browser observation unavailable");
     const bootstrapURL = `${new URL(state.expectedURL).origin}/_waffle_observation_bootstrap?token=${state.token}`;
-    if (!bootstrapped) await this.driver.navigate(bootstrapURL, signal);
+    if (!bootstrapped) {
+      await this.driver.navigate(bootstrapURL, signal);
+      await this.collector.waitForBootstrap(state, signal);
+    }
     const observation = await observe({
       window: state.handle,
       bootstrapURL,
@@ -1074,6 +1077,7 @@ return t && t.id === ${JSON.stringify(transition.id)} && t.acknowledgedThrough =
     this.checkTransition(transition, signal);
     this.checkTarget(successor, transition.deadline);
     if (transition.progress.kind !== "executing") throw new Error("Reload is not executing");
+    await this.collector.waitForBootstrap(successor, signal);
     await this.driver.selectWindow(successor.handle, signal);
     this.checkTransition(transition, signal);
     const handles = await this.driver.handles(signal);

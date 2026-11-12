@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserObservation } from "./browser-observation.js";
+import { loadBootstrap } from "./bootstrap-control.js";
 import type { DriverObservationBinding } from "./driver.js";
 import { FakeDriver } from "./fake-driver.js";
 import { runPageSuite, type SuiteAdapter, type SuiteCase } from "./suite-host.js";
@@ -50,7 +51,7 @@ class ConsoleDriver extends FakeDriver {
   }
   override async navigate(url: string): Promise<void> {
     if (new URL(url).pathname === "/_waffle_observation_bootstrap") {
-      expect((await fetch(url)).status).toBe(200);
+      await loadBootstrap(url);
       this.currentURL = url;
       return;
     }
