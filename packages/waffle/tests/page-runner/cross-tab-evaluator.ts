@@ -1,5 +1,10 @@
 import { encodeCrossTabValue, decodeCrossTabValue } from "./cross-tab-value.js";
-import { BoundedTrace, evaluationOperation, evaluationMode } from "./stall-diagnostics.js";
+import {
+  BoundedTrace,
+  collectDiagnostic,
+  evaluationOperation,
+  evaluationMode,
+} from "./stall-diagnostics.js";
 export type Evaluation = {
   id: string;
   source: string;
@@ -21,6 +26,7 @@ export function crossTabEvaluator() {
   const descriptors = new Map<string, number>();
   const active = new Set<number>();
   let activeCount = 0;
+  let unavailable = 0;
   function submit(job: Evaluation): void {
     if (!accepting) throw new Error("Cross-tab evaluator stopped");
     queued.push(job);
@@ -71,6 +77,54 @@ export function crossTabEvaluator() {
       });
     }
   }
+  function state() {
+    return {
+      accepting,
+      queued: queued.length,
+      pending: pending.size,
+      unread: answers.size,
+    };
+  }
+  function pageProjection() {
+    const evaluation = trace.snapshot();
+    const bridge = window.__crossTabBridgeTrace?.snapshot();
+    const allEntries = evaluation.active.concat(
+      bridge?.active ?? [],
+      evaluation.completed,
+      bridge?.completed ?? [],
+    );
+    const entries = allEntries.slice(0, 96);
+    let truncated =
+      evaluation.truncated +
+      (bridge?.truncated ?? 0) +
+      Math.max(0, allEntries.length - entries.length);
+    while (JSON.stringify(entries).length > 48 * 1024) {
+      entries.pop();
+      truncated++;
+    }
+    return {
+      clock: "page-monotonic-ms",
+      entries,
+      truncated,
+      total: evaluation.total,
+      totals: evaluation.totals,
+      bridgeTotal: bridge?.total ?? 0,
+      state: { ...state(), active: activeCount },
+      unavailable: unavailable + evaluation.unavailable + (bridge?.unavailable ?? 0),
+    };
+  }
+  function pageDiagnostics(): ReturnType<typeof pageProjection> {
+    return collectDiagnostic(pageProjection, () => ({
+      clock: "page-monotonic-ms",
+      entries: [],
+      truncated: 0,
+      total: 0,
+      totals: {},
+      bridgeTotal: 0,
+      state: { ...state(), active: activeCount },
+      unavailable: ++unavailable,
+    }));
+  }
   return {
     submit,
     run,
@@ -87,50 +141,12 @@ export function crossTabEvaluator() {
       accepting = false;
       wake?.();
     },
-    state: () => ({
-      accepting,
-      queued: queued.length,
-      pending: pending.size,
-      unread: answers.size,
-    }),
+    state,
     activeJobs: () => Array.from(active),
     activeCount: () => activeCount,
     diagnostics: () => trace.snapshot(),
     reply(answer: unknown) {
-      const evaluation = trace.snapshot();
-      const bridge = window.__crossTabBridgeTrace?.snapshot();
-      const allEntries = evaluation.active.concat(
-        bridge?.active ?? [],
-        evaluation.completed,
-        bridge?.completed ?? [],
-      );
-      const entries = allEntries.slice(0, 96);
-      let truncated =
-        evaluation.truncated +
-        (bridge?.truncated ?? 0) +
-        Math.max(0, allEntries.length - entries.length);
-      while (JSON.stringify(entries).length > 48 * 1024) {
-        entries.pop();
-        truncated++;
-      }
-      return {
-        answer,
-        diagnostics: {
-          clock: "page-monotonic-ms",
-          entries,
-          truncated,
-          total: evaluation.total,
-          totals: evaluation.totals,
-          bridgeTotal: bridge?.total ?? 0,
-          state: {
-            accepting,
-            queued: queued.length,
-            pending: pending.size,
-            unread: answers.size,
-            active: activeCount,
-          },
-        },
-      };
+      return { answer, diagnostics: pageDiagnostics() };
     },
   };
 }

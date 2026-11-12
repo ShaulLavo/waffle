@@ -1,6 +1,6 @@
 import { installWorkspaceChannelObserver } from "../fixtures/publication-channel-observer.js";
 import { record } from "./protocol.js";
-import { BoundedTrace, fixturePath } from "./stall-diagnostics.js";
+import { BoundedTrace, collectDiagnostic, fixturePath } from "./stall-diagnostics.js";
 
 export function installPublicationBootstrap(): void {
   installWorkspaceChannelObserver();
@@ -15,9 +15,21 @@ export function installPublicationCloseBridge(): void {
   Reflect.set(globalThis, "__publicationWaitForClose", async (url: string) => {
     if (typeof url !== "string" || !url || url.length > 16_384)
       throw new Error("Invalid Worker close URL");
-    const activeJobs = window.__crossTabEvaluator?.activeJobs() ?? [];
-    const activeJobCount = window.__crossTabEvaluator?.activeCount();
-    const ambiguous = activeJobCount !== 1;
+    const { activeJobs, activeJobCount, ambiguous } = collectDiagnostic<{
+      activeJobs: number[];
+      activeJobCount: number | undefined;
+      ambiguous: boolean;
+    }>(
+      () => {
+        const activeJobs = window.__crossTabEvaluator?.activeJobs() ?? [];
+        const activeJobCount = window.__crossTabEvaluator?.activeCount();
+        return { activeJobs, activeJobCount, ambiguous: activeJobCount !== 1 };
+      },
+      () => {
+        trace.missing();
+        return { activeJobs: [], activeJobCount: undefined, ambiguous: true };
+      },
+    );
     const query = trace.begin("bridge-invoked", {
       fixture: fixturePath(url),
       activeJobs,

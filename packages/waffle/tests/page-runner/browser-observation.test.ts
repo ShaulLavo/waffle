@@ -1,6 +1,30 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { BrowserObservation, requestEvent, workerEvent } from "./browser-observation.js";
 import { HostConsumers } from "./owned-consumers.js";
+
+test("diagnostic clone failure preserves the exact native worker close receipt", async () => {
+  const consumers = new HostConsumers();
+  const ledger = new BrowserObservation("owned", consumers, async () => {});
+  ledger.created("one", "https://owned.test/resident-guest.js");
+  const worker = ledger.workers()[0];
+  if (!worker) throw Error("Missing actual worker");
+  const closed = ledger.waitForWorkerClose(worker);
+  void closed.catch(() => {});
+  const clone = spyOn(globalThis, "structuredClone").mockImplementation(() => {
+    throw Error("DIAGNOSTIC_CLONE_FAILURE");
+  });
+  try {
+    expect(() => ledger.terminated("one", "safari-worker-terminated")).not.toThrow();
+    await closed;
+    expect(ledger.workers()).toEqual([]);
+  } finally {
+    clone.mockRestore();
+    await ledger.stop();
+    await closed.catch(() => {});
+    expect(await consumers.join(100)).toBe(true);
+  }
+  expect(ledger.diagnosticSnapshot().workers.unavailable).toBeGreaterThan(0);
+});
 
 test("worker ordinals remain independent of observer lifecycle diagnostic entries", async () => {
   const consumers = new HostConsumers();

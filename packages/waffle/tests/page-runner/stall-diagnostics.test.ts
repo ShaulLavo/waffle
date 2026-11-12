@@ -203,7 +203,7 @@ test("diagnostic overflow is capped, sanitized and independent of evaluator resu
   }
 });
 
-test("the native adapter keeps submit, take, stop and state transport counts unchanged", async () => {
+async function nativeAdapterControl(pageFailure = false): Promise<void> {
   const evaluator = crossTabEvaluator();
   const diagnostics = new StallDiagnostics();
   const restore = globals({ window: { __crossTabEvaluator: evaluator } });
@@ -237,6 +237,11 @@ test("the native adapter keeps submit, take, stop and state transport counts unc
   };
   bindDiagnostics(peer, diagnostics, 2, 3);
   bindDiagnostics(host, diagnostics, 0, 0);
+  const ingestion = pageFailure
+    ? spyOn(diagnostics, "page").mockImplementation(() => {
+        throw Error("DIAGNOSTIC_INGESTION_FAILURE");
+      })
+    : undefined;
   const lifecycle = nativeCrossTabLifecycle(host, []);
   const browser = await lifecycle.launch("ios-safari");
   const page = await (await browser.newContext()).newPage();
@@ -255,9 +260,112 @@ test("the native adapter keeps submit, take, stop and state transport counts unc
       job: 1,
       polls: 1,
     });
+    if (pageFailure) expect(diagnostics.snapshot().current.unavailable).toBe(4);
   } finally {
+    ingestion?.mockRestore();
     evaluator.stop();
     await lifecycle.closeBrowser(browser);
     restore();
   }
+}
+test("the native adapter keeps submit, take, stop and state transport counts unchanged", () =>
+  nativeAdapterControl());
+test("owner diagnostic ingestion failure preserves answers and transport counts", () =>
+  nativeAdapterControl(true));
+
+test("diagnostic collection and snapshots remain bounded when clone fails", () => {
+  const diagnostics = new StallDiagnostics();
+  diagnostics.observe(1, () => {
+    throw Error("DIAGNOSTIC_OBSERVER_FAILURE");
+  });
+  const clone = spyOn(globalThis, "structuredClone").mockImplementation(() => {
+    throw Error("DIAGNOSTIC_CLONE_FAILURE");
+  });
+  try {
+    const ordinal = diagnostics.evaluations.begin("queued", { job: 1 });
+    diagnostics.evaluations.mark(ordinal, "started");
+    diagnostics.evaluations.end(ordinal, "completed");
+    diagnostics.freeze("evaluation-failure");
+    diagnostics.cleanup();
+    const value = diagnostics.snapshot();
+    expect(value.current.unavailable).toBeGreaterThan(0);
+    expect(diagnostics.context).toBe("cleanup");
+    expect(JSON.stringify(value).length).toBeLessThan(65536);
+  } finally {
+    clone.mockRestore();
+  }
+});
+
+async function replyFailure(
+  kind: "snapshot" | "serialization",
+  bodyFailure = false,
+): Promise<void> {
+  const evaluator = crossTabEvaluator();
+  const bridge = new BoundedTrace("page-monotonic-ms");
+  const restore = globals({ window: { __crossTabBridgeTrace: bridge } });
+  evaluator.submit({
+    id: "one",
+    job: 1,
+    source: bodyFailure ? "throw Error('original-body')" : "return 19",
+    value: encodeCrossTabValue(undefined),
+  });
+  evaluator.stop();
+  await evaluator.run();
+  const failure =
+    kind === "snapshot"
+      ? spyOn(bridge, "snapshot").mockImplementation(() => {
+          throw Error("DIAGNOSTIC_SNAPSHOT_FAILURE");
+        })
+      : spyOn(JSON, "stringify").mockImplementationOnce(() => {
+          throw Error("DIAGNOSTIC_SERIALIZATION_FAILURE");
+        });
+  try {
+    const result = evaluator.reply(evaluator.take("one"));
+    expect(result.answer).toEqual(
+      bodyFailure
+        ? { status: "fail", error: "Error: original-body" }
+        : { status: "pass", value: encodeCrossTabValue(19) },
+    );
+    expect(result.diagnostics.unavailable).toBe(1);
+    expect(result.diagnostics.entries).toEqual([]);
+    expect(result.diagnostics.state.unread).toBe(0);
+    expect(evaluator.take("one")).toBeNull();
+    expect(Object.keys(result).sort()).toEqual(["answer", "diagnostics"]);
+  } finally {
+    failure.mockRestore();
+    restore();
+  }
+}
+test("diagnostic snapshot failure preserves a consumed successful answer in the same envelope", () =>
+  replyFailure("snapshot"));
+test("diagnostic serialization failure preserves a consumed successful answer in the same envelope", () =>
+  replyFailure("serialization"));
+test("diagnostic snapshot failure retains the original failed evaluation", () =>
+  replyFailure("snapshot", true));
+test("diagnostic serialization failure retains the original failed evaluation", () =>
+  replyFailure("serialization", true));
+
+test("throwing page metadata and observer snapshots leave bounded unavailable evidence", () => {
+  const diagnostics = new StallDiagnostics();
+  diagnostics.page(1, {
+    get clock() {
+      throw Error("DIAGNOSTIC_PAGE_FAILURE");
+    },
+  });
+  diagnostics.observe(1, () => {
+    throw Error("DIAGNOSTIC_OBSERVER_FAILURE");
+  });
+  const stringify = spyOn(JSON, "stringify").mockImplementationOnce(() => {
+    throw Error("DIAGNOSTIC_PROJECTION_FAILURE");
+  });
+  try {
+    expect(diagnostics.current().unavailable).toBeGreaterThan(0);
+  } finally {
+    stringify.mockRestore();
+  }
+  diagnostics.freeze("host-body-failure");
+  expect(diagnostics.snapshot().firstFailure).toMatchObject({ reason: "host-body-failure" });
+  expect(diagnostics.snapshot().current.observers).toEqual([
+    { peer: 1, evidence: { unavailable: true } },
+  ]);
 });

@@ -183,6 +183,42 @@ export type Facts = {
   ambiguous?: boolean;
 };
 export type TraceEntry = { ordinal: number; facts: Facts; stages: { stage: Stage; at: number }[] };
+type TraceClock = "host-monotonic-ms" | "page-monotonic-ms";
+type TraceSnapshot = {
+  clock: TraceClock;
+  active: TraceEntry[];
+  completed: TraceEntry[];
+  total: number;
+  elapsedMs: number;
+  elapsedBeforeStartedMs: number;
+  elapsedAfterStartedMs: number;
+  totals: Partial<Record<Operation, number>>;
+  truncated: number;
+  unavailable: number;
+};
+
+function emptyTrace(clock: TraceClock, total = 0, truncated = 0, unavailable = 0): TraceSnapshot {
+  return {
+    clock,
+    active: [],
+    completed: [],
+    total,
+    elapsedMs: 0,
+    elapsedBeforeStartedMs: 0,
+    elapsedAfterStartedMs: 0,
+    totals: {},
+    truncated,
+    unavailable,
+  };
+}
+
+export function collectDiagnostic<T>(collect: () => T, unavailable: () => T): T {
+  try {
+    return collect();
+  } catch {
+    return unavailable();
+  }
+}
 
 export function fixturePath(value: string) {
   try {
@@ -206,28 +242,46 @@ export class BoundedTrace {
   private readonly completed: TraceEntry[] = [];
   private readonly totals: Partial<Record<Operation, number>> = {};
   private dropped = 0;
+  private unavailable = 0;
   private elapsedMs = 0;
   private elapsedBeforeStartedMs = 0;
   private elapsedAfterStartedMs = 0;
   constructor(
-    readonly clock: "host-monotonic-ms" | "page-monotonic-ms",
+    readonly clock: TraceClock,
     private readonly now = () => performance.now(),
   ) {}
+  missing(): void {
+    this.unavailable++;
+  }
   begin(stage: Stage, facts: Facts = {}): number {
     const ordinal = ++this.sequence;
+    try {
+      this.beginEntry(ordinal, stage, facts);
+    } catch {
+      this.unavailable++;
+    }
+    return ordinal;
+  }
+  private beginEntry(ordinal: number, stage: Stage, facts: Facts): void {
     if (facts.operation) this.totals[facts.operation] = (this.totals[facts.operation] ?? 0) + 1;
     if (this.active.size >= 64) {
       this.dropped++;
-      return ordinal;
+      return;
     }
     this.active.set(ordinal, {
       ordinal,
       facts: structuredClone(facts),
       stages: [{ stage, at: this.now() }],
     });
-    return ordinal;
   }
   mark(ordinal: number, stage: Stage, facts: Facts = {}): void {
+    try {
+      this.markEntry(ordinal, stage, facts);
+    } catch {
+      this.unavailable++;
+    }
+  }
+  private markEntry(ordinal: number, stage: Stage, facts: Facts): void {
     const entry =
       this.active.get(ordinal) ?? this.completed.find((item) => item.ordinal === ordinal);
     if (!entry) return;
@@ -241,6 +295,13 @@ export class BoundedTrace {
     entry.stages.push({ stage, at: this.now() });
   }
   end(ordinal: number, stage: Stage): void {
+    try {
+      this.endEntry(ordinal, stage);
+    } catch {
+      this.unavailable++;
+    }
+  }
+  private endEntry(ordinal: number, stage: Stage): void {
     this.mark(ordinal, stage);
     const entry = this.active.get(ordinal);
     if (!entry) return;
@@ -259,18 +320,23 @@ export class BoundedTrace {
     }
     this.completed.push(entry);
   }
-  snapshot() {
-    return structuredClone({
-      clock: this.clock,
-      active: Array.from(this.active.values()),
-      completed: this.completed,
-      total: this.sequence,
-      elapsedMs: this.elapsedMs,
-      elapsedBeforeStartedMs: this.elapsedBeforeStartedMs,
-      elapsedAfterStartedMs: this.elapsedAfterStartedMs,
-      totals: this.totals,
-      truncated: this.dropped,
-    });
+  snapshot(): TraceSnapshot {
+    try {
+      return structuredClone({
+        clock: this.clock,
+        active: Array.from(this.active.values()),
+        completed: this.completed,
+        total: this.sequence,
+        elapsedMs: this.elapsedMs,
+        elapsedBeforeStartedMs: this.elapsedBeforeStartedMs,
+        elapsedAfterStartedMs: this.elapsedAfterStartedMs,
+        totals: this.totals,
+        truncated: this.dropped,
+        unavailable: this.unavailable,
+      });
+    } catch {
+      return emptyTrace(this.clock, this.sequence, this.dropped, ++this.unavailable);
+    }
   }
 }
 
@@ -288,10 +354,20 @@ export class StallDiagnostics {
   private preCleanup: unknown = null;
   private cleanupAt: number | null = null;
   private truncated = 0;
+  private unavailableCount = 0;
+  missing(): void {
+    this.unavailableCount++;
+  }
   page(peer: number, value: unknown): void {
+    collectDiagnostic(
+      () => this.retainPage(peer, value),
+      () => this.missing(),
+    );
+  }
+  private retainPage(peer: number, value: unknown): void {
     // Only locally generated, closed-schema JSON is accepted; never retain page payloads.
     const clean = pageEvidence(value);
-    if (clean === null) return;
+    if (clean === null) return this.missing();
     if (!this.pages.has(peer) && this.pages.size >= 16) {
       this.truncated++;
       return;
@@ -314,16 +390,46 @@ export class StallDiagnostics {
       | "evaluation-failure"
       | "collector-failure" = "owner-failure",
   ): void {
-    this.first ??= structuredClone({ reason, hostAt: performance.now(), evidence: this.current() });
+    collectDiagnostic(
+      () => {
+        this.first ??= structuredClone({
+          reason,
+          hostAt: performance.now(),
+          evidence: this.current(),
+        });
+      },
+      () => {
+        this.missing();
+        this.first ??= { reason, hostAt: null, unavailable: true };
+      },
+    );
   }
   cleanup(): void {
-    this.preCleanup ??= structuredClone(this.current());
-    this.cleanupAt ??= performance.now();
+    collectDiagnostic(
+      () => {
+        this.preCleanup ??= structuredClone(this.current());
+        this.cleanupAt ??= performance.now();
+      },
+      () => {
+        this.missing();
+        this.preCleanup ??= { unavailable: true };
+        this.cleanupAt ??= 0;
+      },
+    );
   }
   get context(): "body" | "cleanup" {
     return this.cleanupAt === null ? "body" : "cleanup";
   }
-  current() {
+  current(): ReturnType<StallDiagnostics["project"]> {
+    return collectDiagnostic(
+      () => this.project(),
+      () => {
+        this.missing();
+        return this.emptyCurrent();
+      },
+    );
+  }
+  private project() {
     return {
       queries: this.queries.snapshot(),
       evaluations: boundedEvaluations(
@@ -337,9 +443,40 @@ export class StallDiagnostics {
       queue: this.queueSnapshot(),
       labels: this.labels.snapshot(),
       pageState: "unavailable-until-existing-reply;last-reply-is-not-live-state",
-      observers: Array.from(this.observers, ([peer, snapshot]) => ({ peer, evidence: snapshot() })),
+      observers: Array.from(this.observers, ([peer, snapshot]) => ({
+        peer,
+        evidence: collectDiagnostic(snapshot, () => {
+          this.missing();
+          return { unavailable: true };
+        }),
+      })),
       cleanupAt: this.cleanupAt,
       truncated: this.truncated,
+      unavailable: this.unavailableCount,
+    };
+  }
+  private emptyCurrent(): ReturnType<StallDiagnostics["project"]> {
+    return {
+      queries: emptyTrace("host-monotonic-ms"),
+      evaluations: {
+        owner: emptyTrace("host-monotonic-ms"),
+        pages: [],
+        truncated: 0,
+        byteLimit: 65536,
+      },
+      lifecycle: emptyTrace("host-monotonic-ms"),
+      queue: {
+        ...emptyTrace("host-monotonic-ms"),
+        actualPending: this.queuePending,
+        currentOrdinal: this.queueCurrent,
+        oldestWaiting: null,
+      },
+      labels: emptyTrace("host-monotonic-ms"),
+      pageState: "unavailable-until-existing-reply;last-reply-is-not-live-state",
+      observers: [],
+      cleanupAt: this.cleanupAt,
+      truncated: this.truncated,
+      unavailable: this.unavailableCount,
     };
   }
   private queueSnapshot() {
@@ -354,16 +491,34 @@ export class StallDiagnostics {
     };
   }
   snapshot() {
-    return structuredClone({
-      firstFailure: this.first,
-      beforeCleanup: this.preCleanup,
-      current: this.current(),
-    });
+    return collectDiagnostic(
+      () =>
+        structuredClone({
+          firstFailure: this.first,
+          beforeCleanup: this.preCleanup,
+          current: this.current(),
+        }),
+      () => {
+        this.missing();
+        return {
+          firstFailure: this.first,
+          beforeCleanup: this.preCleanup,
+          current: this.emptyCurrent(),
+        };
+      },
+    );
   }
 }
 
 function pageEvidence(value: unknown) {
-  if (!record(value) || value.clock !== "page-monotonic-ms" || !Array.isArray(value.entries))
+  if (
+    !record(value) ||
+    value.clock !== "page-monotonic-ms" ||
+    !Array.isArray(value.entries) ||
+    typeof value.unavailable !== "number" ||
+    !Number.isSafeInteger(value.unavailable) ||
+    value.unavailable < 0
+  )
     return null;
   const entries = value.entries.slice(0, 96).flatMap(pageEntry);
   const totals: Partial<Record<Operation, number>> = {};
@@ -390,6 +545,7 @@ function pageEvidence(value: unknown) {
     clock: "page-monotonic-ms",
     entries,
     truncated: typeof value.truncated === "number" ? Math.max(0, value.truncated) : 0,
+    unavailable: value.unavailable,
   };
 }
 function pageEntry(value: unknown): TraceEntry[] {

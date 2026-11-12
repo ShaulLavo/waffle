@@ -12,6 +12,7 @@ import {
   diagnosticsFor,
   evaluationOperation,
   evaluationMode,
+  collectDiagnostic,
   type Purpose,
 } from "./stall-diagnostics.js";
 
@@ -31,7 +32,10 @@ function nativePage(
     const value = await peer.script(source, purpose);
     if (!record(value) || !("answer" in value))
       throw new Error("Missing evaluator diagnostic envelope");
-    diagnostics?.page(facts.peer, value.diagnostics);
+    collectDiagnostic(
+      () => diagnostics?.page(facts.peer, value.diagnostics),
+      () => diagnostics?.missing(),
+    );
     return value.answer;
   }
   const workers: HostWorker[] = [];
