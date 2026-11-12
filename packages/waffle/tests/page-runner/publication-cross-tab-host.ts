@@ -100,7 +100,7 @@ export function nativeCrossTabLifecycle(
   const contexts: CrossTabContext[] = [];
   let index = 0;
   const browser: CrossTabBrowser = {
-    version: () => "native Safari",
+    version: () => "page-runner driver",
     async newContext() {
       const pages: CrossTabPage[] = [];
       const context: CrossTabContext = {
