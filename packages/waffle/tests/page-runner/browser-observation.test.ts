@@ -2,6 +2,26 @@ import { expect, test } from "bun:test";
 import { BrowserObservation, requestEvent, workerEvent } from "./browser-observation.js";
 import { HostConsumers } from "./owned-consumers.js";
 
+test("worker ordinals remain independent of observer lifecycle diagnostic entries", async () => {
+  const consumers = new HostConsumers();
+  const release = Promise.withResolvers<void>();
+  const ledger = new BrowserObservation("owned", consumers, () => release.promise);
+  ledger.created("one", "https://owned.test/resident-guest.js");
+  ledger.terminated("one", "safari-worker-terminated");
+  const stopped = ledger.stop();
+  try {
+    ledger.created("two", "https://owned.test/resident-authority.js");
+    const ordinal = ledger.workerOrdinal("https://owned.test/resident-authority.js");
+    expect(ordinal).toBe(2);
+    expect(ledger.diagnosticSnapshot().workers.active[0]?.facts.worker).toBe(ordinal ?? undefined);
+    ledger.terminated("two", "safari-worker-terminated");
+  } finally {
+    release.resolve();
+    await stopped;
+    expect(await consumers.join(100)).toBe(true);
+  }
+});
+
 const request = (url = "https://owned.test/python.wasm", sequence = 1, extras = {}) =>
   requestEvent(
     "Network.requestWillBeSent",

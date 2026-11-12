@@ -40,6 +40,7 @@ type Lifetime =
 export type WorkerCloseSource = "safari-worker-terminated" | "playwright-worker-close";
 type WorkerRecord = {
   ordinal: number;
+  workerOrdinal: number;
   worker: HostWorker;
   close: ReturnType<typeof Promise.withResolvers<void>>;
   terminal: { kind: "live" } | { kind: "closed"; source: WorkerCloseSource };
@@ -97,8 +98,8 @@ export class BrowserObservation implements DriverObservation {
   }
   workerOrdinal(worker: HostWorker | string): number | null {
     return (
-      (typeof worker === "string" ? this.latest.get(worker) : this.owned.get(worker))?.ordinal ??
-      null
+      (typeof worker === "string" ? this.latest.get(worker) : this.owned.get(worker))
+        ?.workerOrdinal ?? null
     );
   }
   initialized(id: string, success: boolean): void {
@@ -176,6 +177,7 @@ export class BrowserObservation implements DriverObservation {
     });
     const entry: WorkerRecord = {
       ordinal,
+      workerOrdinal: this.identities.size + 1,
       worker,
       close: Promise.withResolvers<void>(),
       terminal: { kind: "live" },
