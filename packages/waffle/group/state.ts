@@ -169,11 +169,11 @@ interface Region {
   /** Publications that reference this region. */
   published: number;
 }
-/** A transit pin. Its owner is the member that must accept or discard the delivery. */
+/** A pin belongs to one member incarnation or to this containing group. */
 interface Pin {
   readonly id: number;
   readonly region: Region;
-  owner: Member;
+  owner: { readonly kind: "member"; readonly member: Member } | { readonly kind: "group" };
 }
 /** A group-owned reference set. It outlives its publisher and only that incarnation withdraws it. */
 interface Publication {
@@ -425,6 +425,8 @@ export class MemoryGroupOwner {
         return this.pin(member, a!);
       case GroupOp.ROUTE:
         return [this.route(member, a!, b!)];
+      case GroupOp.ROUTE_GROUP:
+        return [this.routeGroup(member, a!)];
       case GroupOp.ACCEPT:
         return this.accept(member, a!);
       case GroupOp.UNPIN:
@@ -575,7 +577,7 @@ export class MemoryGroupOwner {
     if (!region || !member.holds.get(handle)) return [-GroupErrno.BADF];
     if (this.pins.size >= this.policy.pins || this.pinIds.exhausted) return [-GroupErrno.AGAIN];
     const id = this.pinIds.take();
-    this.pins.set(id, { id, region, owner: member });
+    this.pins.set(id, { id, region, owner: { kind: "member", member } });
     region.pins++;
     return [0, id];
   }
@@ -583,20 +585,28 @@ export class MemoryGroupOwner {
   /** The owner hands its delivery to the member that will read it. */
   private route(member: Member, id: number, pid: number): number {
     const pin = this.pins.get(id);
-    if (!pin || pin.owner !== member) return -GroupErrno.BADF;
+    if (!pin || pin.owner.kind !== "member" || pin.owner.member !== member) return -GroupErrno.BADF;
     const target = this.members.find(
       (candidate) =>
         candidate?.pid === pid &&
         (candidate.phase === "launched" || candidate.phase === "reserved"),
     );
     if (!target) return -GroupErrno.SRCH;
-    pin.owner = target;
+    pin.owner = { kind: "member", member: target };
+    return 0;
+  }
+
+  private routeGroup(member: Member, id: number): number {
+    const pin = this.pins.get(id);
+    if (!pin || pin.owner.kind !== "member" || pin.owner.member !== member) return -GroupErrno.BADF;
+    pin.owner = { kind: "group" };
     return 0;
   }
 
   private accept(member: Member, id: number): number[] {
     const pin = this.pins.get(id);
-    if (!pin || pin.owner !== member) return [-GroupErrno.BADF];
+    if (!pin || pin.owner.kind !== "member" || pin.owner.member !== member)
+      return [-GroupErrno.BADF];
     const region = pin.region;
     this.pins.delete(id);
     region.pins--;
@@ -606,7 +616,8 @@ export class MemoryGroupOwner {
 
   private unpin(member: Member, id: number): number {
     const pin = this.pins.get(id);
-    if (!pin || pin.owner !== member) return -GroupErrno.BADF;
+    if (!pin || (pin.owner.kind === "member" && pin.owner.member !== member))
+      return -GroupErrno.BADF;
     this.dropPin(pin);
     return 0;
   }
@@ -701,7 +712,9 @@ export class MemoryGroupOwner {
     if (this.members[member.index] !== member) return;
     member.phase = "released";
     // Pins whose delivery this member owned have no remaining consumer.
-    for (const pin of Array.from(this.pins.values())) if (pin.owner === member) this.dropPin(pin);
+    for (const pin of Array.from(this.pins.values())) {
+      if (pin.owner.kind === "member" && pin.owner.member === member) this.dropPin(pin);
+    }
     for (const handle of member.holds.keys()) {
       const region = this.regions.get(handle)!;
       region.holders.delete(member);

@@ -58,6 +58,7 @@ const Op = {
   WITHDRAW: 29,
   PUBLISH_RAW: 30,
   OPEN_RAW: 31,
+  ROUTE_GROUP: 32,
 } as const;
 
 interface Member {
@@ -582,6 +583,41 @@ async function limits(h: Harness, a: Member, report: Report) {
   report.failedStop = { before, debt };
 }
 
+/** The compiled import keeps the same pin and bytes through creator physical stop. */
+async function groupPin(
+  h: Harness,
+  creator: Member,
+  survivor: Member,
+  report: Report,
+  label: string,
+) {
+  const baseline = h.snapshot();
+  const [created, handle, addr] = await h.call(creator, Op.CREATE, 65536, 65536);
+  assert(created === 0, "group-pin region creation failed");
+  const [pinned, pin] = await h.call(creator, Op.PIN, handle!);
+  assert(pinned === 0, "group pin creation failed");
+  await h.call(creator, Op.STORE, addr!, 73);
+  await h.call(creator, Op.DETACH, handle!);
+  const before = h.snapshot();
+  assert((await h.call(survivor, Op.ROUTE_GROUP, pin!))[0] === -8, "non-owner converted pin");
+  assert((await h.call(creator, Op.ROUTE_GROUP, pin!))[0] === 0, "group conversion failed");
+  assert(JSON.stringify(h.snapshot()) === JSON.stringify(before), "conversion changed accounting");
+  assert((await h.call(creator, Op.ROUTE_GROUP, pin!))[0] === -8, "repeat conversion succeeded");
+  assert((await h.call(survivor, Op.ACCEPT, pin!))[0] === -8, "group pin accepted");
+  assert((await h.call(creator, Op.ROUTE, pin!, survivor.pid))[0] === -8, "group pin routed");
+  await h.kill(creator);
+  await h.reaped(creator.pid);
+  assert(h.snapshot().pins === baseline.pins + 1, "creator stop dropped group pin");
+  assert((await h.call(survivor, Op.LOAD, addr!))[0] === 73, "creator stop lost region bytes");
+  const charged = h.snapshot().committedBytes;
+  assert((await h.call(survivor, Op.UNPIN, pin!))[0] === 0, "survivor could not unpin");
+  assert((await h.call(survivor, Op.UNPIN, pin!))[0] === -8, "repeat unpin succeeded");
+  assert((await h.call(survivor, Op.ATTACH, handle!))[0] === -8, "unpinned region survived");
+  assert(h.snapshot().pins === baseline.pins, "unpin leaked metadata");
+  assert(h.snapshot().committedBytes === charged, "unpin shrank backing charge");
+  report[label] = { pin, before, after: h.snapshot(), sentinel: 73 };
+}
+
 /** @browserEntry Runs the J1 acceptance through the real runtime and Waffle's PIE loader. */
 export async function memoryGroupBrowser(): Promise<Report> {
   const report: Report = {};
@@ -599,8 +635,10 @@ export async function memoryGroupBrowser(): Promise<Report> {
     await churn(h, a, mailbox!, report);
     // Leaves one orphan publication, which must stay until the retained member settles.
     await publicationLifetime(h, a, report);
+    await groupPin(h, await h.spawn("member"), b, report, "memberGroupPin");
     await limits(h, a, report);
-    for (const member of [a, b, reused]) await h.exit(member);
+    await groupPin(h, a, b, report, "rootGroupPin");
+    for (const member of [b, reused]) await h.exit(member);
     await until(() => h.snapshot().members === 0, "members exited");
     report.final = h.snapshot();
     assert(h.snapshot().published === 1, "a retained member's group lost its publication");

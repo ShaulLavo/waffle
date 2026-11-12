@@ -11,6 +11,7 @@ IMPORT("runtime_shm", "shm_attach") int32_t shm_attach(uint32_t handle, uint32_t
 IMPORT("runtime_shm", "shm_detach") int32_t shm_detach(uint32_t handle);
 IMPORT("runtime_shm", "shm_pin") int32_t shm_pin(uint32_t handle, uint32_t *out);
 IMPORT("runtime_shm", "shm_route") int32_t shm_route(uint32_t pin, uint32_t pid);
+IMPORT("runtime_shm", "shm_route_group") int32_t shm_route_group(uint32_t pin);
 IMPORT("runtime_shm", "shm_accept") int32_t shm_accept(uint32_t pin, uint32_t *out);
 IMPORT("runtime_shm", "shm_unpin") int32_t shm_unpin(uint32_t pin);
 IMPORT("runtime_shm", "shm_publish") int32_t shm_publish(uint32_t kind, uint32_t primary, uint32_t companion, uint32_t meta, uint32_t *out);
@@ -191,6 +192,7 @@ static void run(void) {
     case 29: r[0] = shm_withdraw((uint32_t)a[0]); break;
     case 30: r[0] = shm_publish((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t *)(uintptr_t)(uint32_t)a[4]); break;
     case 31: r[0] = shm_publication_open((uint32_t)a[0], (uint32_t)a[1], (uint32_t *)(uintptr_t)(uint32_t)a[2]); break;
+    case 32: r[0] = shm_route_group((uint32_t)a[0]); break;
     default: r[0] = -28;
   }
 }
