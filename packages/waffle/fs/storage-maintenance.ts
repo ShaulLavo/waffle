@@ -1,5 +1,6 @@
 /** Shared runtime connections permit takeover; exclusive inspection cannot be stolen. */
 export interface StorageLockManager {
+  query(): Promise<unknown>;
   request<T>(
     name: string,
     options:
@@ -12,6 +13,16 @@ export interface StorageLockManager {
 
 interface MaintenanceLease {
   release(): Promise<void>;
+}
+
+export async function releasedAtBroker(
+  locks: Pick<StorageLockManager, "query">,
+  lifetime: Promise<unknown>,
+): Promise<void> {
+  await lifetime;
+  // Chromium orders this reply after the earlier associated lock-handle closure.
+  // Snapshot contents may include unrelated owners and are deliberately unused.
+  await locks.query();
 }
 
 export async function maintenanceLock(
@@ -40,6 +51,7 @@ async function requestMaintenance(
   signal?.throwIfAborted();
   const ready = Promise.withResolvers<MaintenanceLease | "busy">();
   const held = Promise.withResolvers<void>();
+  let released: Promise<void> | undefined;
   const lifetime = locks.request(
     `bun-wasm:filesystem:indexeddb-maintenance:${name}`,
     options,
@@ -53,9 +65,9 @@ async function requestMaintenance(
         return;
       }
       ready.resolve({
-        async release() {
+        release() {
           held.resolve();
-          await lifetime;
+          return (released ??= releasedAtBroker(locks, lifetime));
         },
       });
       await held.promise;

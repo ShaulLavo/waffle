@@ -1,4 +1,5 @@
 import { ResidentConstruction } from "../fs/root-construction.js";
+import { attemptCleanup, throwCleanupFailures } from "../fs/cleanup.js";
 import { MemoryBudget } from "../fs/memory-budget.js";
 import { PersistentBackend } from "../fs/persistent.js";
 import { filesystemOwnerPlan } from "../fs/protocol.js";
@@ -346,9 +347,13 @@ class PersistentOwner implements PersistentResidentOwner {
   }
   private async releaseGuards(): Promise<void> {
     const guards = this.guards;
+    const failures: unknown[] = [];
     if (guards.kind === "server") await guards.server.finishStop();
-    if (guards.kind === "exclusive" || guards.kind === "shared") await guards.continuity.release();
-    if (guards.kind !== "none" && guards.kind !== "server") await guards.bootstrap.release();
+    if (guards.kind === "exclusive" || guards.kind === "shared")
+      await attemptCleanup(failures, () => guards.continuity.release());
+    if (guards.kind !== "none" && guards.kind !== "server")
+      await attemptCleanup(failures, () => guards.bootstrap.release());
+    throwCleanupFailures(failures, "Persistent owner guard cleanup failed");
     this.guards = { kind: "none" };
   }
 }

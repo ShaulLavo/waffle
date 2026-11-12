@@ -52,6 +52,32 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `tools/ci-release-download.ts`, `tools/ci-bootstrap-tools.ts`, CI download actions                                                          | Adapted code          | bun-wasm at `1bf9291451587b9b36786513dba817e855d470cb` and `b753bcd1fa4aff3089c304286c248a3da8a6e1e6`. Node-compatible API downloads and tool bootstrap, adapted to Waffle paths and inventory-based cache saving. See [CI release downloads](#ci-release-downloads).                                                                                                                                                        |
 | `tools/ci-native-prebuild.ts`                                                                                                               | Adapted code          | Cache filename calculation from `prebuild-install` 7.1.3 `util.js`, with Waffle-owned archive checksum validation. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                        |
 | `tools/ci-release-cache.ts`, Wasmtime action, CI coverage tests                                                                             | Original adapter      | Waffle-owned complete-asset inventory, pinned Wasmtime setup, and CI download guards. No external implementation copied. See [CI release downloads](#ci-release-downloads).                                                                                                                                                                                                                                                  |
+| `fs/{storage-maintenance,idle-owner,publication-attachment}.ts`                                                                             | Original adapter      | Same-context broker release confirmation. No upstream implementation copied. See [Web Locks release confirmation](#web-locks-release-confirmation).                                                                                                                                                                                                                                                                          |
+
+## Web Locks release confirmation
+
+`fs/storage-maintenance.ts` and the lease in `fs/publication-attachment.ts` are original
+Waffle interop code, not copied or adapted Chromium implementations. After releasing
+a maintenance or publication guard, Waffle joins the original native request and
+queries that same context's lock manager once. The idle owner's writer is released
+after maintenance cleanup and is confirmed separately. Normal IndexedDB close
+releases its writer first, so its subsequent maintenance confirmation covers both.
+
+This restores release-before-settlement ordering on Chromium 156.0.8078.4. The
+implementation rationale comes from Chromium's
+[`lock.cc`](https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.4/third_party/blink/renderer/modules/locks/lock.cc),
+[`lock_manager.mojom`](https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.4/third_party/blink/public/mojom/locks/lock_manager.mojom)
+and [Mojo associated-interface ordering](https://chromium.googlesource.com/chromium/src/+/refs/tags/156.0.8078.4/mojo/public/cpp/bindings/README.md).
+The handle closure and query share an ordered manager channel. The query reply
+confirms processing of that closure; an empty snapshot from another context does not.
+No upstream implementation was copied, and no acquisition, retry or timer is added.
+
+The query does not inspect or wait for unrelated holders and grants no guest lock
+authority. Chromium's contention notification does nothing to active pages and
+Workers but may evict unrelated same-origin holders from the back-forward cache.
+Confirmation failure rejects the original close or release and is retained on
+repeated calls. Independent cleanup failures retain the operation error first.
+OPFS's existing waiting lock acquisition is unchanged.
 
 ## GNU diffutils
 

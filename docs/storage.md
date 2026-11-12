@@ -138,3 +138,19 @@ concurrent `close()` joins that same operation. `close()` without deletion relea
 without changing storage, and repeated calls return the same promise. Always close cursors
 and handles in `finally`, including after a read or preservation failure. Once an idle handle
 closes, its inspection methods reject.
+
+## Broker-confirmed lock release
+
+Successful maintenance and publication guard releases join the native request and
+one query on the releasing context's Web Locks manager. Idle workspace close also
+confirms its writer after maintenance cleanup. This prevents a renderer-complete
+release from reporting success while Chromium's broker still holds the lease.
+The query result is unused. It does not acquire a lock, wait for active holders,
+retry, or add guest authority. Chromium may evict unrelated same-origin holders
+from the back-forward cache when it notifies them of query contention.
+
+A failed required confirmation rejects close, delete or guard release. Repeating
+close or release retains that first outcome without another query. If independent
+cleanup also fails, the original operation error is retained first, including a
+falsy thrown value. Failed native close or outstanding physical work continues to
+retain ownership under the existing shutdown contract.

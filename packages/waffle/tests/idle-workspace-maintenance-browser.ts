@@ -50,6 +50,7 @@ function observedOpener(name: string, factory = indexedDB) {
   const opened = IndexedDBStorage.open(name, {
     indexedDB: observedFactory,
     locks: {
+      query: () => navigator.locks.query(),
       request(...args) {
         if (args[0] === `bun-wasm:filesystem:indexeddb-maintenance:${name}`) requested.resolve();
         return navigator.locks.request(...args);

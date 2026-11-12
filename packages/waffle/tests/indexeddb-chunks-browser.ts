@@ -490,6 +490,7 @@ function migrationEpochFence() {
 async function migrationEpochFenceCase(name: string) {
   await seedV1(name);
   const locks = {
+    query: () => Promise.resolve(undefined),
     async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) {
       return callback({});
     },
