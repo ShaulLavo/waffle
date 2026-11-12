@@ -6,13 +6,17 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import manifest from "../package.json" with { type: "json" };
 import { NETWORK_ASSETS } from "./build-network.js";
+import { packageProgramTools } from "./program-tools-package.js";
 
 async function rawNetworkInstall(root = join(import.meta.dir, "..")): Promise<void> {
+  const programTools = join(root, "tooling/program");
+  const hadProgramTools = existsSync(programTools);
   const rawScratch = await mkdtemp(
     join(process.env.WAFFLE_RAW_SOURCE_SCRATCH_ROOT ?? tmpdir(), "waffle-raw-source-"),
   );
   try {
     assertNoAncestorDependencies(rawScratch);
+    packageProgramTools(root);
     const raw = join(rawScratch, "source");
     await mkdir(raw);
     for (const file of manifest.files.filter((file) => file !== "dist")) {
@@ -66,6 +70,7 @@ async function rawNetworkInstall(root = join(import.meta.dir, "..")): Promise<vo
     );
   } finally {
     await rm(rawScratch, { recursive: true, force: true });
+    if (!hadProgramTools) await rm(programTools, { recursive: true, force: true });
   }
 }
 function assertNoAncestorDependencies(directory: string): void {
