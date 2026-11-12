@@ -19,8 +19,9 @@ import { record } from "./protocol.js";
 type Message =
   | { kind: "reply"; id: number; answer: Record<string, unknown> }
   | { kind: "event"; method: string; params: Record<string, unknown> };
+type ReplyRoute = { kind: "target" } | { kind: "page" } | { kind: "worker"; id: string };
 type Pending = ReturnType<typeof Promise.withResolvers<unknown>> & {
-  route?: string;
+  route: ReplyRoute;
   reduced?: () => void;
 };
 type WorkerConsole = { -readonly [K in keyof WorkerConsoleOrder]: WorkerConsoleOrder[K] };
@@ -42,6 +43,11 @@ type MetadataWait = {
   pending: ReturnType<typeof Promise.withResolvers<InspectorEnvelope>>;
 };
 export const observationIdentityExpression = `JSON.stringify({url:location.href,marker:document.documentElement.getAttribute('data-waffle-observation')})`;
+
+function sameReplyRoute(expected: ReplyRoute, actual: ReplyRoute): boolean {
+  if (expected.kind === "worker") return actual.kind === "worker" && expected.id === actual.id;
+  return expected.kind === actual.kind;
+}
 
 function parseMessage(text: string): Message {
   if (Buffer.byteLength(text) > 1 << 20) throw new Error("Inspector JSON size bound exceeded");
@@ -360,7 +366,7 @@ export class SafariObserver {
     )
       throw new Error("Unexpected chunked Inspector data");
     const message = parseMessage(messageText(args.WIRMessageDataKey));
-    if (message.kind === "reply") return this.reply(message);
+    if (message.kind === "reply") return this.reply(message, { kind: "target" });
     if (message.method === "Target.targetCreated") return this.createdTarget(message.params);
     if (message.method === "Target.targetDestroyed") {
       if (message.params.targetId !== this.target || !this.ledger?.closing)
@@ -377,7 +383,7 @@ export class SafariObserver {
     if (message.params.targetId !== this.target || typeof message.params.message !== "string")
       throw new Error("Inspector target lifetime changed");
     const inner = parseMessage(message.params.message);
-    if (inner.kind === "reply") return this.reply(inner);
+    if (inner.kind === "reply") return this.reply(inner, { kind: "page" });
     this.event(inner.method, inner.params, event.sequence);
   }
   private createdTarget(params: Record<string, unknown>): void {
@@ -394,9 +400,10 @@ export class SafariObserver {
     if (this.target && this.target !== info.targetId) throw new Error("Inspector target replaced");
     this.target = info.targetId;
   }
-  private reply(message: Extract<Message, { kind: "reply" }>, route?: string): void {
+  private reply(message: Extract<Message, { kind: "reply" }>, route: ReplyRoute): void {
     const pending = this.pending.get(message.id);
-    if (!pending || pending.route !== route) throw new Error("Unowned Inspector reply route");
+    if (!pending || !sameReplyRoute(pending.route, route))
+      throw new Error("Unowned Inspector reply route");
     if ("error" in message.answer) {
       const error = new Error(`Inspector command refused: ${JSON.stringify(message.answer.error)}`);
       pending.reject(error);
@@ -506,7 +513,8 @@ export class SafariObserver {
       throw new Error("Invalid Inspector worker console envelope");
     this.ledger?.workerIdentity(params.workerId);
     const message = parseMessage(params.message);
-    if (message.kind === "reply") return this.reply(message, params.workerId);
+    if (message.kind === "reply")
+      return this.reply(message, { kind: "worker", id: params.workerId });
     if (message.method === "Console.messageAdded")
       this.consoleEvent(params.workerId, message.params);
   }
@@ -518,7 +526,7 @@ export class SafariObserver {
     const replyID = this.nextID++;
     const pending: Pending = {
       ...Promise.withResolvers<unknown>(),
-      route: id,
+      route: { kind: "worker", id },
       reduced: () => {
         state.replied = ++this.order;
       },
@@ -564,9 +572,17 @@ export class SafariObserver {
       this.check(cleanup);
       const id = this.nextID++,
         outer = this.nextID++;
-      const pending: Pending = { ...Promise.withResolvers<unknown>(), reduced };
+      const pending: Pending = {
+        ...Promise.withResolvers<unknown>(),
+        route: { kind: "page" },
+        reduced,
+      };
       this.pending.set(id, pending);
-      const forwarded: Pending = { ...Promise.withResolvers<unknown>(), reduced: outerReduced };
+      const forwarded: Pending = {
+        ...Promise.withResolvers<unknown>(),
+        route: { kind: "target" },
+        reduced: outerReduced,
+      };
       this.pending.set(outer, forwarded);
       const data = JSON.stringify({
         id: outer,

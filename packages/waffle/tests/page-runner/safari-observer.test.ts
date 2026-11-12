@@ -13,6 +13,8 @@ function fixture(
     wrongWorkerRoute?: boolean;
     rejectWorkerConsole?: boolean;
     cutoffOuter?: Promise<void>;
+    cutoffInnerOnOuterRoute?: boolean;
+    cutoffOuterOnPageRoute?: boolean;
     sameBatchConsole?: string;
     rejectEnable?: boolean;
     rejectPageEnable?: boolean;
@@ -195,6 +197,7 @@ function fixture(
       domain(message.method);
       const cutoff = isCutoff(message.method);
       const answerInner = () => {
+        if (cutoff && options.cutoffInnerOnOuterRoute) return envelope({ id: message.id, result });
         if (cutoff && options.sameBatchConsole)
           return innerBatch([
             { id: message.id, result },
@@ -206,8 +209,9 @@ function fixture(
         void options.delayPageInner.then(answerInner);
       else answerInner();
     }
+    const cutoffCommand = isCutoff(message.method);
     const answerOuter = () =>
-      envelope(
+      (cutoffCommand && options.cutoffOuterOnPageRoute ? inner : envelope)(
         message.method === options.rejectOuter
           ? { id: outer.id, error: { code: -1, message: "outer refused" } }
           : { id: outer.id, result: {} },
@@ -704,6 +708,35 @@ test("worker Console enable writes before initialized without awaiting worker re
   await ledger.stop();
   expect(await f.consumers.join(100)).toBe(true);
 });
+test("outer reply cannot impersonate the cutoff page reply", async () => {
+  const outer = Promise.withResolvers<void>();
+  const f = fixture({
+    console: true,
+    noWorkers: true,
+    cutoffInnerOnOuterRoute: true,
+    cutoffOuter: outer.promise,
+  });
+  const ledger = await f.observer.attach();
+  const cutoff = ledger.settleConsole();
+  void cutoff.catch(() => {});
+  f.event("Console.messageAdded", consoleParams("marker-after-wrong-route"));
+  outer.resolve();
+  await expect(cutoff).rejects.toThrow("route");
+  expect((await ledger.failure).message).toContain("route");
+  expect(ledger.console().loss).toContain("route");
+  await expect(ledger.stop()).rejects.toThrow("route");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
+test("page reply cannot acknowledge the cutoff Target forwarding command", async () => {
+  const f = fixture({ console: true, noWorkers: true, cutoffOuterOnPageRoute: true });
+  const ledger = await f.observer.attach();
+  await expect(ledger.settleConsole()).rejects.toThrow("route");
+  expect((await ledger.failure).message).toContain("route");
+  await expect(ledger.stop()).rejects.toThrow("route");
+  expect(await f.consumers.join(100)).toBe(true);
+});
+
 test("cutoff freezes at inner reply before same-batch event and delayed outer ack", async () => {
   const outer = Promise.withResolvers<void>();
   const f = fixture({
