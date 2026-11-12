@@ -1,0 +1,7 @@
+{
+  "name": "waffle-network-translator",
+  "private": true,
+  "dependencies": {
+    "binaryen": "132.0.0"
+  }
+}

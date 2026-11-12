@@ -23,3 +23,7 @@ packages/waffle/tooling/program/
 
 # Durable browser control reports, outside disposable profiles
 .browser-controls/
+
+/packages/waffle/browser/net/network.buffer.js
+/packages/waffle/browser/net/network.buffer.sha256
+/packages/waffle/browser/net/network.growth.json

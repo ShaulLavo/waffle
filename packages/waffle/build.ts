@@ -1,7 +1,7 @@
 // Source-first package: emit one Node module per source, preserving shared state.
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { buildNetwork } from "./tooling/build-network";
+import { buildNetwork, NETWORK_ASSETS } from "./tooling/build-network";
 import { packageProgramTools, programToolSources } from "./tooling/program-tools-package";
 
 function inside(root: string, path: string): boolean {
@@ -353,7 +353,8 @@ export async function buildNodeModules(
     await emitFrameworkClosure();
     await buildFrameworkBootstrap(root, outdir);
   }
-  copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
+  for (const asset of NETWORK_ASSETS)
+    copyFileSync(join(root, "browser/net", asset), join(outdir, "browser/net", asset));
 }
 
 export async function buildFrameworkBootstrap(

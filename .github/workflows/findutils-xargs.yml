@@ -43,7 +43,10 @@ jobs:
             packages/waffle/browser/net/network.wasm
             packages/waffle/browser/net/network.input-hash
             packages/waffle/browser/net/network.sha256
-          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+            packages/waffle/browser/net/network.buffer.js
+            packages/waffle/browser/net/network.buffer.sha256
+            packages/waffle/browser/net/network.growth.json
+          key: network-wasm-v2-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts', 'packages/waffle/tooling/network-translator.ts', 'packages/waffle/tooling/network-translator/**', 'packages/waffle/tooling/network-growth.ts') }}
           fail-on-cache-miss: true
       - name: Cache Bun downloads
         uses: actions/cache@v4

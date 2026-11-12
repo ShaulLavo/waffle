@@ -1,17 +1,25 @@
-import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
+import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID, TCP_RESET } from "./tcp-status.js";
 import { AGAIN, ERROR, UNSUPPORTED, type PeerAddr } from "./protocol.js";
-import { loadNetworkModule, type NetworkModule } from "./module.js";
+import {
+  loadBufferNetworkModule,
+  NetworkOwnerFailure,
+  type BufferNetworkModule as NetworkModule,
+} from "./buffer-module.js";
 import { tcpAddress } from "./address.js";
 import { ECONNREFUSED, EADDRINUSE, ENOBUFS } from "./unix-status.js";
 
 // Keep module evaluation synchronous. A suspended network compile can expose uninitialized
 // class bindings to concurrent dynamic imports on affected module loaders.
-let compilation: ReturnType<typeof loadNetworkModule> | undefined;
+let compilation: ReturnType<typeof loadBufferNetworkModule> | undefined;
 export interface SocketSink {
   data(bytes: Uint8Array): void;
   end(): void;
   writable?(): void;
+  /** The network module failed: bytes not yet delivered are lost. Called at most once. */
+  reset?(): void;
 }
+/** Runs a module operation; a terminal failure retires the namespace and yields `failed`. */
+type Guard = <T>(operation: () => T, failed: T) => T;
 type Listener = {
   owner: object;
   handle: number;
@@ -80,41 +88,59 @@ export class LoopbackSocket {
   private sink: SocketSink | null = null;
   private closed = false;
   private ended = false;
+  /** Set once by a terminal module failure. The socket then never calls the module. */
+  private failed = false;
   private writers = new Set<() => void>();
   constructor(
     private module: NetworkModule,
     private id: number,
     private release: () => void,
+    private guard: Guard,
+    private reset: (sink: SocketSink) => void,
   ) {}
   pair(peer: LoopbackSocket): void {
     this.peer = peer;
   }
   receive(sink: SocketSink): void {
+    if (this.failed) return this.reset(sink);
     this.sink = sink;
     this.drain();
   }
+  private take(): Uint8Array | number {
+    return this.guard(() => this.module.read("net_take", this.id, this.module.capacity), 0);
+  }
   private drain(): void {
-    if (this.closed || !this.sink) return;
+    if (this.closed || this.failed || !this.sink) return;
     for (;;) {
-      const bytes = this.module.read("net_take", this.id, this.module.capacity);
+      const bytes = this.take();
       if (typeof bytes === "number" || bytes.length === 0) break;
       this.sink.data(bytes);
       if (this.closed || !this.sink) return;
     }
-    if (this.ended || !this.module.call("net_ended", this.id)) return;
+    if (this.failed || this.ended) return;
+    if (!this.guard(() => this.module.call("net_ended", this.id), 0)) return;
     this.ended = true;
     this.sink.end();
   }
+  /** Module failure: a reset, not an end. Unblocks writers so they observe TCP_RESET. */
+  fail(): SocketSink | null {
+    if (this.closed || this.failed) return null;
+    this.failed = true;
+    const sink = this.sink;
+    this.sink = null;
+    this.wakeWriters();
+    return sink;
+  }
   write(bytes: Uint8Array): number {
     if (this.closed) return TCP_PIPE;
+    if (this.failed) return TCP_RESET;
     let count = 0;
     while (count < bytes.length) {
-      const written = status(
-        this.module.write(
-          "net_write",
-          this.id,
-          bytes.subarray(count, count + this.module.capacity),
-        ),
+      if (this.failed) return count || TCP_RESET;
+      const chunk = bytes.subarray(count, count + this.module.capacity);
+      const written = this.guard(
+        () => status(this.module.write("net_write", this.id, chunk)),
+        TCP_RESET,
       );
       if (written < 0) return count || written;
       count += written;
@@ -123,15 +149,18 @@ export class LoopbackSocket {
     return count;
   }
   consumed(bytes: number): void {
-    if (this.closed || !this.module.call("net_consumed", this.id, bytes)) return;
+    if (this.closed || this.failed) return;
+    if (!this.guard(() => this.module.call("net_consumed", this.id, bytes), 0)) return;
     this.peer?.wakeWriters();
     this.peer?.sink?.writable?.();
   }
+  /** A failed socket reports writable so its next write returns the sticky TCP_RESET. */
   writableNow(): boolean {
-    return !this.closed && !!this.module.call("net_writable", this.id);
+    if (this.closed) return false;
+    return this.failed || !!this.guard(() => this.module.call("net_writable", this.id), 1);
   }
   writable(): Promise<void> {
-    if (this.closed || this.module.call("net_writable", this.id)) return Promise.resolve();
+    if (this.closed || this.writableNow()) return Promise.resolve();
     return new Promise((resolve) => this.writers.add(resolve));
   }
   private wakeWriters(): void {
@@ -139,15 +168,15 @@ export class LoopbackSocket {
     this.writers.clear();
   }
   shutdown(): void {
-    if (this.closed) return;
-    this.module.call("net_shutdown", this.id);
+    if (this.closed || this.failed) return;
+    this.guard(() => this.module.call("net_shutdown", this.id), 0);
     this.peer?.drain();
   }
   close(): void {
     if (this.closed) return;
     this.closed = true;
     this.release();
-    this.module.call("net_close", this.id);
+    if (!this.failed) this.guard(() => this.module.call("net_close", this.id), 0);
     try {
       this.peer?.drain();
     } finally {
@@ -160,12 +189,44 @@ export class LoopbackSocket {
 /** One module instance per namespace; JS retains only callbacks and owner identity. */
 export class NetNamespace {
   static async create(assertActive: () => void = () => {}): Promise<NetNamespace> {
-    const compiled = await (compilation ??= loadNetworkModule());
+    const compiled = await (compilation ??= loadBufferNetworkModule());
     assertActive();
     return new NetNamespace(compiled.create());
   }
 
   private constructor(private readonly module: NetworkModule) {}
+  private failure: NetworkOwnerFailure | undefined;
+  /** The terminal module failure, if any. The namespace is never revived or recreated. */
+  failed(): NetworkOwnerFailure | undefined {
+    return this.failure;
+  }
+  private readonly guard: Guard = (operation, failed) => {
+    if (this.failure) return failed;
+    try {
+      return operation();
+    } catch (error) {
+      if (!(error instanceof NetworkOwnerFailure)) throw error;
+      this.retire(error);
+      return failed;
+    }
+  };
+  /** Runs once. Resets every live socket and forgets every listener; calls no module code. */
+  private retire(failure: NetworkOwnerFailure): void {
+    if (this.failure) return;
+    this.failure = failure;
+    this.listeners.clear();
+    this.bindings.clear();
+    this.abstract.clear();
+    const sinks = Array.from(this.sockets, (socket) => socket.fail());
+    for (const sink of sinks) if (sink) this.reset(sink);
+  }
+  private readonly reset = (sink: SocketSink): void => {
+    try {
+      sink.reset?.();
+    } catch (error) {
+      this.failure?.callbackErrors.push(error);
+    }
+  };
   private listeners = new Map<number, Listener>();
   private sockets = new Set<LoopbackSocket>();
   private bindings = new Map<string, PathListener>();
@@ -176,7 +237,7 @@ export class NetNamespace {
   private pathPairs = 0;
   /** Take a listener slot before any FS work, so a refused bind creates nothing. */
   reservePathListener(): boolean {
-    if (this.listenerSlots() >= PATH_LISTENERS) return false;
+    if (this.failure || this.listenerSlots() >= PATH_LISTENERS) return false;
     this.reservedListeners++;
     return true;
   }
@@ -189,6 +250,7 @@ export class NetNamespace {
   /** Consumes one reservation. The FS created the node exclusively, so a live key is a bug. */
   listenPath(key: SocketKey, listener: PathListener): number {
     this.reservedListeners--;
+    if (this.failure) return ENOBUFS;
     const name = bindingKey(key);
     if (this.bindings.has(name)) return EADDRINUSE;
     this.bindings.set(name, listener);
@@ -200,6 +262,7 @@ export class NetNamespace {
   }
   /** Synchronous: no filesystem work, so no reservation. */
   listenAbstract(name: string, listener: PathListener): number {
+    if (this.failure) return ENOBUFS;
     if (this.abstract.has(name)) return EADDRINUSE;
     if (this.listenerSlots() >= PATH_LISTENERS) return ENOBUFS;
     this.abstract.set(name, listener);
@@ -223,28 +286,46 @@ export class NetNamespace {
   ): LoopbackSocket | number {
     if (!listener || listener.pending() >= PATH_BACKLOG) return ECONNREFUSED;
     if (this.pathPairs >= PATH_PAIRS) return ENOBUFS;
-    const id = status(this.module.call("net_pair"));
-    if (id < 0) return ENOBUFS;
+    // A failed namespace refuses like one with no listener; a full one has no buffers.
+    const ids = this.guard(() => this.open(() => this.module.call("net_pair")), ECONNREFUSED);
+    if (typeof ids === "number") return ids === ECONNREFUSED ? ECONNREFUSED : ENOBUFS;
     this.pathPairs++;
     let open = 2;
     const closed = () => {
       if (--open === 0) this.pathPairs--;
     };
-    const [client, server] = this.pair(id, closed);
+    const [client, server] = this.pair(ids, closed);
     client.receive(sink);
     listener.accept(server);
     return client;
   }
-  private pair(id: number, closed: () => void): [LoopbackSocket, LoopbackSocket] {
-    const peer = this.module.call("net_peer", id);
-    const client = new LoopbackSocket(this.module, id, () => {
-      this.sockets.delete(client);
-      closed();
-    });
-    const server = new LoopbackSocket(this.module, peer, () => {
-      this.sockets.delete(server);
-      closed();
-    });
+  /** One guarded step: create a pair and learn its peer, or the refusal status. */
+  private open(create: () => number): [number, number] | number {
+    const id = status(create());
+    if (id < 0) return id;
+    return [id, this.module.call("net_peer", id)];
+  }
+  private pair([id, peer]: [number, number], closed: () => void): [LoopbackSocket, LoopbackSocket] {
+    const client = new LoopbackSocket(
+      this.module,
+      id,
+      () => {
+        this.sockets.delete(client);
+        closed();
+      },
+      this.guard,
+      this.reset,
+    );
+    const server = new LoopbackSocket(
+      this.module,
+      peer,
+      () => {
+        this.sockets.delete(server);
+        closed();
+      },
+      this.guard,
+      this.reset,
+    );
     client.pair(server);
     server.pair(client);
     this.sockets.add(client);
@@ -253,7 +334,10 @@ export class NetNamespace {
   }
   listen(port: number, listener: Listener): number {
     if (!Number.isInteger(port) || port < 0 || port > 65535) return TCP_INVALID;
-    const bound = status(this.module.call("net_listen", kind(listener.local), port));
+    const bound = this.guard(
+      () => status(this.module.call("net_listen", kind(listener.local), port)),
+      ERROR,
+    );
     if (bound < 0) return bound;
     this.listeners.set(bound, { ...listener, local: { ...listener.local, port: bound } });
     return bound;
@@ -261,14 +345,14 @@ export class NetNamespace {
   unlisten(owner: object, handle: number): void {
     for (const [port, listener] of this.listeners) {
       if (listener.owner !== owner || listener.handle !== handle) continue;
-      this.module.call("net_unlisten", port);
+      this.guard(() => this.module.call("net_unlisten", port), 0);
       this.listeners.delete(port);
     }
   }
   release(owner: object): void {
     for (const [port, listener] of this.listeners) {
       if (listener.owner !== owner) continue;
-      this.module.call("net_unlisten", port);
+      this.guard(() => this.module.call("net_unlisten", port), 0);
       this.listeners.delete(port);
     }
     for (const [name, listener] of this.bindings)
@@ -289,18 +373,25 @@ export class NetNamespace {
   ): { socket: LoopbackSocket; port: number } | number {
     const listener = this.listeners.get(port);
     if (!listener) return TCP_REFUSED;
-    const id = status(this.module.call("net_connect", target(host, listener.local), port));
-    if (id < 0) return id;
-    const peer = this.module.call("net_peer", id);
-    const [client, server] = this.pair(id, () => {});
+    // One guarded step creates the pair and reads its addresses, before any socket exists.
+    const opened = this.guard(() => {
+      const ids = this.open(() =>
+        this.module.call("net_connect", target(host, listener.local), port),
+      );
+      if (typeof ids === "number") return ids;
+      const [id, peer] = ids;
+      return {
+        ids,
+        local: address(this.module.address(id)),
+        remote: address(this.module.address(peer, true)),
+        accepted: address(this.module.address(peer)),
+      };
+    }, TCP_REFUSED);
+    if (typeof opened === "number") return opened;
+    const [client, server] = this.pair(opened.ids, () => {});
     client.receive(sink);
-    const local = address(this.module.address(id));
-    listener.accept(
-      address(this.module.address(peer, true)),
-      address(this.module.address(peer)),
-      server,
-    );
-    return { socket: client, port: local.port };
+    listener.accept(opened.remote, opened.accepted, server);
+    return { socket: client, port: opened.local.port };
   }
   dispose(): void {
     try {

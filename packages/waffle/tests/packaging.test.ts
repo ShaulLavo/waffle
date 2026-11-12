@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { buildNetwork, verifyNetwork } from "../tooling/build-network";
+import { buildNetwork, verifyNetwork, NETWORK_ASSETS } from "../tooling/build-network";
 import { buildFrameworkBootstrap, buildNodeModules, rewriteNodeImports } from "../build";
 import { assertWasiLibcBuildInputs } from "../tooling/package-inputs";
 
@@ -115,7 +115,13 @@ async function networkFixture(): Promise<string> {
       "rust-toolchain.toml",
       "network",
       "tooling/build-network.ts",
+      "tooling/network-growth.ts",
+      "tooling/network-translator.ts",
+      "tooling/network-translator",
       "browser/net/module.ts",
+      "browser/net/owner.ts",
+      "browser/net/buffer-module.ts",
+      "browser/net/network.buffer.d.ts",
     ])
       await cp(join(source, path), join(root, path), { recursive: true });
     return root;
@@ -126,12 +132,10 @@ async function networkFixture(): Promise<string> {
 }
 
 async function seedNetwork(root: string): Promise<Uint8Array<ArrayBuffer>> {
-  const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
-  await buildNetwork(root, async () => {
-    const output = join(root, "built.wasm");
-    await writeFile(output, bytes);
-    return output;
-  });
+  const source = new URL("../browser/net/", import.meta.url).pathname;
+  for (const asset of NETWORK_ASSETS)
+    await cp(join(source, asset), join(root, "browser/net", asset));
+  const bytes = new Uint8Array(await Bun.file(join(source, "network.wasm")).arrayBuffer());
   return bytes;
 }
 
@@ -200,6 +204,9 @@ test("generated network artifacts stay ignored and untracked", () => {
     "browser/net/network.wasm",
     "browser/net/network.input-hash",
     "browser/net/network.sha256",
+    "browser/net/network.buffer.js",
+    "browser/net/network.buffer.sha256",
+    "browser/net/network.growth.json",
   ];
   expect(
     execFileSync("git", ["check-ignore"].concat(paths), { cwd: root, encoding: "utf8" })
@@ -227,7 +234,7 @@ test("CI preparation fails rather than launching Cargo for a missing artifact", 
     );
     const error = await new Response(child.stderr).text();
     expect(await child.exited).not.toBe(0);
-    expect(error).toContain("Cargo is forbidden in this job");
+    expect(error).toContain("Cargo and translation are forbidden in this job");
     expect(existsSync(join(root, "browser/net/network.wasm"))).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });

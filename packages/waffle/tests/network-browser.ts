@@ -424,7 +424,33 @@ export async function networkBrowserCases(
       return new BrowserProcessBroker(options);
     },
   });
-  const network = await runtime.network();
+  const Memory = WebAssembly.Memory;
+  const Instance = WebAssembly.Instance;
+  let memories = 0,
+    instances = 0;
+  WebAssembly.Memory = class extends Memory {
+    constructor(...args: ConstructorParameters<typeof Memory>) {
+      super(...args);
+      memories++;
+    }
+  };
+  WebAssembly.Instance = class extends Instance {
+    constructor(...args: ConstructorParameters<typeof Instance>) {
+      super(...args);
+      instances++;
+    }
+  };
+  const network = await runtime.network().finally(() => {
+    WebAssembly.Memory = Memory;
+    WebAssembly.Instance = Instance;
+  });
+  check(memories === 0 && instances === 0, "Runtime network constructed a Wasm memory or instance");
+  check(
+    !performance
+      .getEntriesByType("resource")
+      .some((entry) => /network\.wasm(?:$|[?#])/.test(entry.name)),
+    "Runtime requested network.wasm",
+  );
   const localhost = network.lookup("localhost", { family: 0, hints: 0 });
   check(
     localhost.length === 1 && localhost[0]?.address === "127.0.0.1" && localhost[0].family === 4,

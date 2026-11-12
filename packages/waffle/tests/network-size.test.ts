@@ -6,7 +6,15 @@ test("network WASM and loader have separate enforceable budgets", async () => {
   const size = await networkSize();
   expect(size.wasm).toBeGreaterThan(0);
   expect(size.wasmGzip).toBeLessThan(size.wasm);
-  for (const name of ["wasm", "wasmGzip", "loaderGzip"] as const) {
+  for (const name of [
+    "wasm",
+    "wasmGzip",
+    "loaderGzip",
+    "generatedRaw",
+    "chunkRaw",
+    "chunkGzip",
+    "bufferLoaderGzip",
+  ] as const) {
     expect(() =>
       checkNetworkBudget({ ...NETWORK_BUDGET, [name]: NETWORK_BUDGET[name] + 1 }),
     ).toThrow(/network/);
