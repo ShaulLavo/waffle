@@ -20,8 +20,6 @@ const originalHashes = {
     "43d27744b1824a829b865f6c3403e09f234a9699da7a140428436a0ed380441c",
   "fixtures/publication-channel-observer.ts":
     "d30e355a0c6b733dda387a24bd42e522a09d0802df1615dcffea78726246e911",
-  "publication-cross-tab-browser-runner.ts":
-    "619b9f91455438ce46fe73573ad879ecafb106cbd369358615cf456f6dd239f7",
   "recovery-r42-browser-runner.ts":
     "fcf07ba902e231c5c158ac6f576f31e7e41c33fea1875cce452cdb43c836c791",
 };
