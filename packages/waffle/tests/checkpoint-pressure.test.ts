@@ -3,6 +3,7 @@ import { nextReservation, storeReservation, type StoredReservation } from "../fs
 import { expect, spyOn, test } from "bun:test";
 import { SharedFilesystemState } from "../fs/shared";
 import { PersistentBackend } from "../fs/persistent";
+import { errno } from "../fs/protocol";
 import {
   snapshotBatch,
   type PersistedIndex,
@@ -389,7 +390,7 @@ test("persist failure invalidates queued captures, releases every reservation an
       const second = track(backend.checkpoint());
       store.persistReleased.resolve();
       await expect(first).rejects.toThrow("held persist failed");
-      await expect(second).rejects.toThrow("invalidated by a failed commit");
+      await expect(second).rejects.toBe(store.persistFailure);
       expect(store.index?.generation).toBe(1);
       expect(backend.checkpointPressure()).toMatchObject({
         pendingBytes: 0,
@@ -404,6 +405,37 @@ test("persist failure invalidates queued captures, releases every reservation an
     { ...limits, maxBytes: 16, maxMetadataBytes: 32_768 },
   );
 });
+
+for (const name of ["QuotaExceededError", "AbortError", "UnknownError", "Error"])
+  test(`queued checkpoints retain the original ${name} through flush and retry`, async () => {
+    await withBackend(
+      async (backend, store, track) => {
+        write(backend, "base");
+        await backend.flush();
+        const failure = new DOMException("native persist failure", name);
+        store.persistFailure = failure;
+        store.holdPersist = true;
+        write(backend, "aaaa");
+        const background = track(backend.checkpoint());
+        await turn();
+        write(backend, "bbbb");
+        const queued = track(backend.flush());
+        write(backend, "cccc");
+        const later = track(backend.flush());
+        store.persistReleased.resolve();
+        for (const work of [background, queued, later]) {
+          const error = await work.catch((error: unknown) => error);
+          expect(error).toBe(failure);
+          expect(errno(error)).toBe(name === "QuotaExceededError" ? 51 : 29);
+        }
+        store.persistFailure = undefined;
+        await backend.flush();
+        expect(store.index?.generation).toBe(2);
+        expect(Array.from(store.batches.at(-1)!.data.values())).toEqual([encode("cccc")]);
+      },
+      { ...limits, maxBytes: 24, maxOperations: 4, maxMetadataBytes: 65_536 },
+    );
+  });
 
 test("payload flush failure releases pressure without rolling back the committed generation", async () => {
   await withBackend(async (backend, store, track) => {

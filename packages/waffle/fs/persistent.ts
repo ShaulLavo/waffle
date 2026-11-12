@@ -1,3 +1,4 @@
+import { restoreTree } from "./persisted-tree.js";
 import type { ReadBacking } from "./workspace-read.js";
 import type { MemoryBudget } from "./memory-budget.js";
 import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
@@ -10,14 +11,7 @@ import {
 import { FilesystemError, PAGE } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend, type LocalMutationPlan, type MemoryBackendSharedRoot } from "./backend.js";
-import {
-  MemFS,
-  adoptInodes,
-  type Node,
-  type DirNode,
-  type FileNode,
-  type NamespacePlan,
-} from "./memory.js";
+import { MemFS, adoptInodes, type Node, type FileNode, type NamespacePlan } from "./memory.js";
 import {
   validatePersistedIndex,
   type PersistedIndex,
@@ -43,28 +37,12 @@ interface CheckpointCapture {
   readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string; revision: number }>;
 }
 
-/** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
- * no lock or guest request is held across a background commit. */
-function restoreNode(entry: PersistedNode): Node {
-  const metadata = {
-    ino: entry.ino,
-    identity: entry.identity && restoreIdentity(entry.identity),
-    mtime: entry.mtime,
-  };
-  if (entry.kind === "dir")
-    return { ...metadata, kind: "dir", mode: entry.mode ?? 0o700, children: new Map() };
-  if (entry.kind === "socket") return { ...metadata, kind: "socket", mode: entry.mode ?? 0o600 };
-  if (entry.kind === "symlink")
-    return { ...metadata, kind: "symlink", mode: entry.mode ?? 0o600, target: entry.target };
-  return {
-    ...metadata,
-    kind: "file",
-    mode: entry.mode ?? 0o600,
-    size: entry.size,
-    data: new Uint8Array(),
-  };
+interface CheckpointEpoch {
+  failure?: { cause: unknown };
 }
 
+/** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
+ * no lock or guest request is held across a background commit. */
 export class PersistentBackend extends MemoryBackend {
   private readonly pressure: CheckpointPressure;
   private nodes = new Map<number, Node>();
@@ -82,7 +60,7 @@ export class PersistentBackend extends MemoryBackend {
   private tail: Promise<void> = Promise.resolve();
   private generation = 0;
   private sequence = 0;
-  private checkpointEpoch = 0;
+  private checkpointEpoch: CheckpointEpoch = {};
   private pendingCheckpoints = 0;
   private admittedWork = new Set<Promise<void>>();
   private closing?: Promise<void>;
@@ -160,23 +138,12 @@ export class PersistentBackend extends MemoryBackend {
         options.startupRoot,
         options.sharedRoot,
       );
-    const nodes = new Map<number, Node>();
-    for (const entry of index.nodes) nodes.set(entry.ino, restoreNode(entry));
-    for (const entry of index.nodes)
-      if (entry.kind === "dir") {
-        const node = nodes.get(entry.ino) as DirNode;
-        for (const [name, ino] of entry.children ?? []) {
-          const child = nodes.get(ino);
-          if (!child) throw new Error(`persisted filesystem references missing inode ${ino}`);
-          node.children.set(name, child);
-        }
-      }
-    const root = nodes.get(index.root);
-    if (root?.kind !== "dir") throw new Error("persisted filesystem has no root directory");
+    const fs = restoreTree(index);
+    const root = fs.root;
     adoptInodes(root);
     const backend = new PersistentBackend(
       storage,
-      new MemFS(root),
+      fs,
       reservation,
       index,
       0,
@@ -188,7 +155,7 @@ export class PersistentBackend extends MemoryBackend {
     try {
       if (!index.nodes[0]?.identity) {
         await storage.flush();
-        for (const node of nodes.values()) backend.dirty.add(node);
+        for (const node of backend.nodes.values()) backend.dirty.add(node);
         await backend.flush();
       }
       backend.startTimer(options.intervalMs ?? 50);
@@ -862,8 +829,7 @@ export class PersistentBackend extends MemoryBackend {
     const commit = this.tail
       .then(async () => {
         this.assertOpen();
-        if (epoch !== this.checkpointEpoch)
-          throw new Error("filesystem checkpoint invalidated by a failed commit");
+        if (epoch.failure) throw epoch.failure.cause;
         start(metadataBytes + this.pinMetadataBytes() * 4);
         batch.generation = this.generation + 1;
         // A later request may have reattached an inode removed by this older checkpoint.
@@ -905,9 +871,10 @@ export class PersistentBackend extends MemoryBackend {
         this.pendingCheckpoints--;
       });
     this.lastCommit = commit;
-    this.tail = commit.catch(() => {
+    this.tail = commit.catch((cause: unknown) => {
       if (this.stopped) return;
-      this.checkpointEpoch++;
+      this.checkpointEpoch.failure ??= { cause };
+      this.checkpointEpoch = {};
       for (const node of changed) if (!this.detached.has(node)) this.dirty.add(node);
       // A later request may have linked an open inode back into the namespace while
       // this commit waited. Retry the current tree, not the failed checkpoint's removals.
@@ -926,7 +893,6 @@ export class PersistentBackend extends MemoryBackend {
   }
   private stopPersistence(): void {
     this.stopped = true;
-    this.checkpointEpoch++;
     this.cancelTimer();
   }
   dispose(): void {

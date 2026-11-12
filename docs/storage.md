@@ -58,3 +58,83 @@ returns one original promise, rejects new work, and joins admitted reads/checkpo
 before its final durable save and native storage close. A failed drain or final save
 does not initiate native close. A failed native close remains the original failure.
 These ordinary paths do not finalize private publication owners.
+
+## Inspect and delete an idle workspace
+
+`storedWorkspaces("fast")` returns actual stored workspace names in the current origin,
+without a naming prefix or ordering guarantee. It validates FAST storage and omits unrelated,
+unsupported and corrupt databases. It never creates or upgrades a database. Selecting corrupt
+Waffle storage explicitly with `openIdleWorkspace` rejects with `VfsError` code
+`INVALID_VFS_FORMAT`; selecting an unrelated database returns `"missing"`.
+
+```ts
+import { openIdleWorkspace, storedWorkspaces } from "waffle";
+
+for (const name of await storedWorkspaces("fast")) {
+  const workspace = await openIdleWorkspace({ mode: "fast", name });
+  if (typeof workspace === "string") continue;
+  const cursor = workspace.walk("/", { ignoreRoots: ["/app/node_modules"] });
+  try {
+    for (;;) {
+      const page = await cursor.next();
+      console.log(page.entries);
+      if (page.done) break;
+    }
+  } finally {
+    await cursor.close();
+    await workspace.close();
+  }
+}
+```
+
+`openIdleWorkspace(selection, { signal })` takes a non-stealable maintenance lock without
+waiting. It returns `"busy"` if a runtime, queued ordinary opener or another idle handle owns
+the workspace, and `"missing"` if no Waffle workspace is stored. It does not need or create
+the page runtime, shared filesystem memory, processes or network. Opening and reading use
+only readonly transactions. They allocate no epoch or file identity and perform no migration,
+garbage collection or recovery commit. A legacy or recovered tree is inspected in place,
+including when the origin refuses new writes. Payload corruption is reported when its bytes
+are read.
+
+Every ordinary IndexedDB connection acquires shared maintenance ownership before opening the
+database or requesting its writer lock. Ordinary runtimes can still take over from each other.
+An accepted idle view holds exclusive maintenance ownership until `close()` or `delete()`
+finishes. Ordinary opening waits behind it, including default takeover. A hidden or frozen
+runtime remains busy, and a frozen idle owner can delay ordinary opening until it closes or
+its browser context exits. Enumeration also waits behind maintenance; close an idle handle
+before enumerating the same origin again.
+
+`walk(path = "/", { signal, ignoreRoots })` includes the selected entry and every descendant
+without traversing symlinks. Each page has at most 256 entries. `done: true` means exhaustive
+completion; later calls return empty completed pages. Entries expose absolute `path`, `kind`,
+view-local `ino`, whole-tree `nlink`, permission `mode`, byte `size`, and `mtime` in Unix
+milliseconds. Symlinks also expose `target`. Legacy permission defaults are resolved to
+`0700` for directories and `0600` for other entries. Empty directories and sockets remain
+visible. Shared file inodes identify hard links. Directory link counts describe references in
+the stored tree, with one reference for the root.
+
+Ignored roots are exact absolute canonical paths. Empty components, repeated or trailing
+slashes, `.` and `..` components, relative paths and NUL are rejected with `TypeError`.
+`"/"` is a valid canonical path but cannot exclude the selected root. An ignored root equal
+to or above the selected entry rejects with `RangeError`. A strict descendant root and its
+whole subtree are omitted before descendant traversal. Ancestors and similarly prefixed
+siblings remain visible. Disjoint, duplicate and overlapping roots are harmless. Options are
+snapshotted when the cursor is created. Closing or cancelling a cursor releases its traversal
+state. Every page checks cancellation and handle lifetime.
+
+`readFile(path, { maxBytes = 8388608, signal })` returns complete copied bytes, or `undefined`
+for a missing ordinary file. It matches runtime path and permission semantics. `maxBytes`
+must be an integer from zero through 8 MiB. A larger stored file rejects with `RangeError`
+before loading its payload. Cancellation rejects with `signal.reason`; reads never truncate.
+`listFiles(path)` remains a regular-file convenience and omits empty directories and non-file
+entries. A preservation tool must inspect all retained metadata and total sizes before reading
+payloads, and refuse entries its restore writer cannot recreate.
+
+`delete()` closes the inspection connection and removes the entire database while retaining
+maintenance ownership. It resolves only on native deletion success. A blocking external
+connection leaves deletion pending. Cancelling after the non-cancellable native request starts
+does not release ownership early; the deletion settles first, then reports cancellation. A
+concurrent `close()` joins that same operation. `close()` without deletion releases resources
+without changing storage, and repeated calls return the same promise. Always close cursors
+and handles in `finally`, including after a read or preservation failure. Once an idle handle
+closes, its inspection methods reject.

@@ -1,4 +1,15 @@
 export { createRuntime } from "./runtime.js";
+export {
+  storedWorkspaces,
+  openIdleWorkspace,
+  type StoredWorkspaceSelection,
+  type IdleWorkspace,
+  type StoredWorkspaceEntry,
+  type IdleWorkspacePage,
+  type IdleWorkspaceWalk,
+  type IdleWorkspaceReadOptions,
+  type IdleWorkspaceWalkOptions,
+} from "./fs/idle-workspace.js";
 export type {
   NetConnect,
   NetConnectErrorCode,

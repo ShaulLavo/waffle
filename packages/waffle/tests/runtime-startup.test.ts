@@ -1,3 +1,4 @@
+import { withUncontendedMaintenance } from "./fixtures/storage-maintenance.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import {
   createRuntime,
@@ -194,6 +195,7 @@ function indexedDBFixture() {
   let grant!: () => void;
   let closed = false;
   const db = {
+    version: 1,
     objectStoreNames: {
       length: 3,
       contains: (name: string) => ["metadata", "journal", "data"].includes(name),
@@ -209,7 +211,7 @@ function indexedDBFixture() {
     },
   } as unknown as IDBDatabase;
   const indexedDB = { open: () => opening } as unknown as IDBFactory;
-  const locks: StorageLockManager = {
+  const locks: StorageLockManager = withUncontendedMaintenance({
     request(_name, _options, callback) {
       return new Promise((resolve, reject) => {
         grant = () => {
@@ -217,7 +219,7 @@ function indexedDBFixture() {
         };
       });
     },
-  };
+  });
   return {
     indexedDB,
     locks,
@@ -248,7 +250,9 @@ test("IndexedDB stages bracket the actual open, lock grant and epoch transaction
       seen.push(stage);
     },
   });
+  await tick();
   expect(seen).toEqual(["indexeddb-open-requested"]);
+  await tick();
   fixture.opened();
   await tick();
   expect(seen).toEqual([
@@ -275,6 +279,7 @@ test("IndexedDB performs no diagnostic clock calls without an observer", async (
   clockSpies.push(clock);
   const fixture = indexedDBFixture();
   const opening = IndexedDBStorage.open("fixture", fixture);
+  await tick();
   fixture.opened();
   await tick();
   fixture.grant();
