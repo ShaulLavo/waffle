@@ -1376,6 +1376,7 @@ jobs:
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           BROWSER_CONTROLS_RESULT: ${{ runner.temp }}/browser-controls-results.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
+          STORAGE_LIFECYCLE_OBSERVER: ${{ matrix.group == 'parallel' && '1' || '0' }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
           WAFFLE_BROWSER_GROUP: ${{ matrix.group }}
       - run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
