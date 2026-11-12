@@ -2,13 +2,17 @@
 
 `waffle/network` exposes `loadNetworkModule(url?)`. The default URL is `network.wasm` beside the loader. Loading compiles bytes. `create(io?)` creates an independent owner; the default OS import returns `Unsupported`. `dispose()` is terminal and idempotent for that owner.
 
+The runtime uses the lazy translated form instead. The public loader and native OS adapter retain their real `WebAssembly.Memory` contract. Both forms run the same virtual commands and share the [virtual resource policy](adr/005-lazy-rust-wasm-network.md#virtual-resource-policy-and-failure).
+
+`net_usage(kind)` reports endpoint records (0), TCP listener records (1), issued chunks (2), or free chunks (3). Counts are internal diagnostics, not memory measurements. Unknown kinds return InvalidInput.
+
 ## Memory and calls
 
 The module exports unshared memory, `tcp_buffer()` and `tcp_capacity()`. The scratch buffer holds 64 KiB. Callers copy input before an operation and copy output before another operation. The host import must not retain pointers, call module exports reentrantly, or use memory after returning. The fixed scratch ABI takes lengths but no caller-selected pointers, so it needs no public allocate/free pair. Invalid or oversized lengths fail before changing state. Native import pointers and lengths are checked against the supplied memory; address operations require exactly 32 bytes. Memory growth can replace its buffer. The loader refreshes views on each call and returns owned output copies.
 
 All tokens are positive `u32` values below `i32::MAX`. Zero is not a socket. Tokens belong to one instance and must not cross namespaces. Native adapters issue monotonically increasing tokens and do not reuse closed tokens. The module quarantines every issued native token until the instance is destroyed, including after raw `tcp_dispose()`. A reused token fails with `InvalidInput`; a duplicate active token does not close the live resource. The quarantine costs one set entry per issued native token. Delayed readiness for a closed token makes no host call.
 
-Results are nonnegative byte counts or tokens, or a negative error kind. Errors are `-1 WouldBlock`, `-2 InvalidInput`, `-3 AddrInUse`, `-4 AddrNotAvailable`, `-5 ConnectionRefused`, `-6 BrokenPipe`, `-7 NotConnected`, `-8 PermissionDenied`, `-9 TimedOut`, `-10 Unsupported`, `-11 ConnectionReset`, `-12 ConnectionAborted`, `-13 Other`, `-14 HostUnreachable`, `-15 NetworkUnreachable`, and `-16 NetworkDown`. They are transport classifications, not Bun JSON or OS error strings. The calling operation and input address supply syscall and target context.
+Results are nonnegative byte counts or tokens, or a negative error kind. Errors are `-1 WouldBlock`, `-2 InvalidInput`, `-3 AddrInUse`, `-4 AddrNotAvailable`, `-5 ConnectionRefused`, `-6 BrokenPipe`, `-7 NotConnected`, `-8 PermissionDenied`, `-9 TimedOut`, `-10 Unsupported`, `-11 ConnectionReset`, `-12 ConnectionAborted`, `-13 Other`, `-14 HostUnreachable`, `-15 NetworkUnreachable`, `-16 NetworkDown`, and `-17 QuotaExceeded`. They are transport classifications, not Bun JSON or OS error strings. The calling operation and input address supply syscall and target context.
 
 Addresses occupy 32 bytes. Little-endian `u32` fields hold family at offset 0 and port at offset 4. Network-order IP octets start at offset 8. IPv6 uses all 16 octets, flowinfo at offset 24, and scope ID at offset 28. IPv4 uses four octets and zeroes the remaining fields.
 

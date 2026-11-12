@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { NETWORK_ASSETS } from "./build-network.js";
 import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs.js";
 
 const packageRoot = resolve(import.meta.dir, "..");
@@ -59,7 +60,15 @@ async function run(): Promise<void> {
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
-  ].concat(wasiLibcBuildInputs);
+  ].concat(
+    wasiLibcBuildInputs,
+    NETWORK_ASSETS.flatMap((asset) => [`browser/net/${asset}`, `dist/browser/net/${asset}`]),
+    [
+      "browser/net/network.buffer.d.ts",
+      "tooling/network-translator/package.json",
+      "tooling/network-translator/bun.lock",
+    ],
+  );
   for (const path of required) {
     if (!existsSync(join(packedRoot, path))) throw new Error(`archive is missing ${path}`);
   }
@@ -97,6 +106,7 @@ async function run(): Promise<void> {
   await pageRunnerConsumer(consumerDirectory);
   await frameworkConsumer(consumerDirectory, "packed");
   await sourceInstallParity(packedRoot);
+  await networkInstallParity(packedRoot);
   const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
   const exports = record(metadata.exports);
   const nodeSpecifiers: string[] = [];
@@ -112,6 +122,9 @@ async function run(): Promise<void> {
     if (link.adoptLinkPlan !== link.PreparedLinkPlan.adopt || link.prepareLinkPlan !== link.PreparedLinkPlan.prepare)
       throw new Error("packed link exports changed");
     if ("toSource" in link.PreparedLinkPlan.prototype) throw new Error("legacy link transport remains");
+    const { loadBufferNetworkModule } = await import("./node_modules/waffle/dist/browser/net/buffer-module.js");
+    const buffer = (await loadBufferNetworkModule()).create();
+    try { if (buffer.call("net_pair") < 1) throw Error("packed translated dynamic import failed"); } finally { buffer.dispose(); }
     const { loadNetworkModule } = await import("waffle/network");
     const network = (await loadNetworkModule()).create();
     try { if (network.call("net_listen", 40, 23456) !== 23456) throw new Error("packed network failed"); }
@@ -499,6 +512,26 @@ async function sourceInstallParity(packedRoot: string): Promise<void> {
   await rm(join(installed, "dist"), { recursive: true, force: true });
   await rename(prepared, join(installed, "dist"));
   await frameworkConsumer(consumer, "source");
+}
+
+async function networkInstallParity(packedRoot: string): Promise<void> {
+  const noTools = join(scratch, "empty-tools");
+  const prepared = join(scratch, "prepared-offline");
+  await cp(packedRoot, prepared, { recursive: true });
+  execFileSync(process.execPath, ["prepare.ts"], {
+    cwd: prepared,
+    stdio: "pipe",
+    env: {
+      ...process.env,
+      WAFFLE_NETWORK_PREBUILT: "1",
+      WAFFLE_TOOL_CACHE: noTools,
+      npm_config_registry: "http://127.0.0.1:1",
+      HTTP_PROXY: "http://127.0.0.1:1",
+      HTTPS_PROXY: "http://127.0.0.1:1",
+    },
+  });
+  if (existsSync(noTools)) throw Error("prepared archive provisioned compiler tools");
+  console.log("network install: prepared archive verified offline without compiler tools");
 }
 
 try {

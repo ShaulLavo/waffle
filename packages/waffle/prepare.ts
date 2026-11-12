@@ -14,6 +14,7 @@ const required = [
   "tooling/program/program-build-tools.ts",
   "dist/tooling/program/program-build-tools.js",
   "dist/browser/net/network.wasm",
+  "dist/browser/net/network.buffer.js",
   "dist/core/index.js",
   "dist/core/memory-views.js",
   "dist/fs/index.js",

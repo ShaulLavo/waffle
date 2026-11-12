@@ -23,6 +23,7 @@ pub fn encode_error(error: &io::Error) -> i32 {
         HostUnreachable => 14,
         NetworkUnreachable => 15,
         NetworkDown => 16,
+        QuotaExceeded => 17,
         _ => 13,
     })
 }
@@ -45,6 +46,7 @@ pub fn decode_error(code: i32) -> io::Error {
         14 => HostUnreachable,
         15 => NetworkUnreachable,
         16 => NetworkDown,
+        17 => QuotaExceeded,
         _ => Other,
     };
     kind.into()

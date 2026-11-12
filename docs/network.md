@@ -193,3 +193,9 @@ this transport fixture and are not claimed as verified by it.
 The existing lazy `runtime.network()` activation loads a separate Rust WASM module. Each runtime namespace owns one instance. Rust owns virtual ports, endpoint metadata, byte queues, credit, and half-close state. The TypeScript helper still owns rings, fetch, HTTP, preview callbacks, and cleanup ordering. The Rust module remains virtual-only in browsers; outbound streams bypass it through the page connector.
 
 Native embedders can load the same module explicitly and wire Waffle's native `socket2` adapter. IPv6-any listeners disable IPv6-only mode and fall back to IPv4 when IPv6 is unavailable. Bun retains its own JSON, handle table, JavaScript APIs, engine wiring, and policy. See [Network module ABI](network-module.md) and [ADR 005](adr/005-lazy-rust-wasm-network.md).
+
+## Virtual network capacity
+
+Runtime virtual TCP, pathname and abstract sockets share at most 256 live pairs (512 endpoint records). Both halves remain charged until both close. TCP can exhaust the shared budget before any pathname connection exists; pathname/abstract sockets also retain their 128-pair cap. There are at most 1,024 virtual TCP listeners. Native OS sockets are unchanged. Each direction holds at most 1 MiB of unconsumed bytes.
+
+Queues lazily acquire reusable 4 MiB slabs. The first byte costs one slab, around 5.3 MiB of linear memory with initialization in the current artifact. Slabs remain until owner release. Quota refusal leaves existing traffic healthy and closing resources restores admission. A catchable translated allocation failure resets all loopback sockets and refuses new loopback work for that runtime. Lookups and external traffic keep working. See the [allocation contract](network-memory.md) for the conditional 1 GiB envelope. These figures do not measure physical memory or qualify native/framework workloads.

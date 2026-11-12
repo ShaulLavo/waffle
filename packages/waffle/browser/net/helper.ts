@@ -58,6 +58,13 @@ const encoder = new TextEncoder();
 /** Hostnames that mean "this machine": fetches to them may reach the guest's own servers. */
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "[::]"]);
 const json = (value: unknown) => encoder.encode(JSON.stringify(value));
+/** What a guest reads from a loopback socket whose network module failed. */
+const SOCKET_RESET: NetError = {
+  name: "Error",
+  message: "socket ECONNRESET",
+  code: "ECONNRESET",
+  syscall: "read",
+};
 
 type FetchRequest = NetRequest & { type: "fetch" };
 type UnixRequest = TcpRequest & { type: "unix-listen" | "unix-connect" | "unix-close" };
@@ -404,6 +411,7 @@ export class NetHelper {
             );
         },
         end: () => sink.end(),
+        reset: () => sink.error("the network stopped"),
       },
       host,
     );
@@ -494,6 +502,10 @@ export class NetHelper {
       },
       writable: () => {
         void this.ring.write(id, Kind.Writable);
+      },
+      // After any bytes already handed over, as an outbound stream failure is reported.
+      reset: () => {
+        sending = sending.then(() => this.ring.write(id, Kind.Error, json(SOCKET_RESET)));
       },
     };
   }

@@ -4,14 +4,15 @@ import { execFileSync } from "node:child_process";
 test("no module compilation before network(), and exactly one instance belongs to each runtime", () => {
   const root = new URL("../index.ts", import.meta.url).href;
   const ring = new URL("../browser/net/ring.ts", import.meta.url).href;
-  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/buffer-module.ts", import.meta.url).href;
   const worker = new URL("../browser/fs-worker.ts", import.meta.url).href;
   const script = `
     import assert from "node:assert/strict";
     import { mock } from "bun:test";
-    let compiled = 0, instances = 0, loads = 0, disposals = 0;
-    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
+    let compiled = 0, instances = 0, loads = 0, disposals = 0, wasmInstances = 0;
+    const { loadBufferNetworkModule: originalLoad, NetworkOwnerFailure } = await import(${JSON.stringify(moduleURL)});
     function observeInstance(instance) {
+      instances++;
       return { ...instance, dispose() { disposals++; instance.dispose(); } };
     }
     async function observedLoad(...args) {
@@ -19,11 +20,11 @@ test("no module compilation before network(), and exactly one instance belongs t
       const loaded = await originalLoad(...args);
       return { create: (...args) => observeInstance(loaded.create(...args)) };
     }
-    mock.module(${JSON.stringify(moduleURL)}, () => ({ loadNetworkModule: observedLoad }));
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ NetworkOwnerFailure, loadBufferNetworkModule: observedLoad }));
     const compile = WebAssembly.compile;
     const Instance = WebAssembly.Instance;
     WebAssembly.compile = (...args) => { compiled++; return compile(...args); };
-    WebAssembly.Instance = class extends Instance { constructor(...args) { super(...args); instances++; } };
+    WebAssembly.Instance = class extends Instance { constructor(...args) { super(...args); wasmInstances++; } };
     const { createRuntime, declareSharedMemoryPlatform } = await import(${JSON.stringify(root)});
     const { createRing } = await import(${JSON.stringify(ring)});
     assert.equal(compiled, 0); assert.equal(instances, 0);
@@ -37,7 +38,8 @@ test("no module compilation before network(), and exactly one instance belongs t
         await runtime.processes();
         assert.equal(loads, index ? 1 : 0);
         assert.equal(instances, index);
-        assert.equal(compiled, index ? 1 : 0);
+        assert.equal(compiled, 0);
+        assert.equal(wasmInstances, 0);
         const first = runtime.network();
         const second = runtime.network();
         assert.equal(first, second);
@@ -52,14 +54,15 @@ test("no module compilation before network(), and exactly one instance belongs t
       } finally { await runtime.dispose(); await runtime.dispose(); }
       assert.equal(disposals, index + 1);
     }
-    assert.equal(compiled, 1);
-    console.log("lazy network compile=1, instances=2, helpers=4, loads=1, disposals=2");
+    assert.equal(compiled, 0);
+    assert.equal(wasmInstances, 0);
+    console.log("lazy network compile=0, instances=2, helpers=4, loads=1, disposals=2");
   `;
   const output = execFileSync(process.execPath, ["--eval", script], {
     encoding: "utf8",
     timeout: 10000,
   });
-  expect(output).toContain("compile=1, instances=2, helpers=4");
+  expect(output).toContain("compile=0, instances=2, helpers=4");
 });
 
 for (const entry of [
@@ -77,7 +80,7 @@ for (const entry of [
     if (!result.metafile) throw new Error("missing guest graph");
     expect(
       Object.keys(result.metafile.inputs).filter((path) =>
-        /browser\/net\/(?:module|namespace|runtime|helper|outbound-socket)\.ts$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
+        /browser\/net\/(?:module|owner|buffer-module|network\.buffer|namespace|runtime|helper|outbound-socket)\.(?:ts|js)$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
           path,
         ),
       ),
@@ -88,15 +91,15 @@ for (const entry of [
 
 test("disposal during a held module load creates no orphan instance", () => {
   const root = new URL("../index.ts", import.meta.url).href;
-  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/buffer-module.ts", import.meta.url).href;
   const worker = new URL("../browser/fs-worker.ts", import.meta.url).href;
   const script = `
     import assert from "node:assert/strict";
     import { mock } from "bun:test";
     const started = Promise.withResolvers(), release = Promise.withResolvers();
     let instances = 0, disposals = 0;
-    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
-    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+    const { loadBufferNetworkModule: originalLoad, NetworkOwnerFailure } = await import(${JSON.stringify(moduleURL)});
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ NetworkOwnerFailure, async loadBufferNetworkModule() {
       started.resolve(); await release.promise;
       const compiled = await originalLoad();
       return { create(...args) {
@@ -130,14 +133,14 @@ test("disposal during a held module load creates no orphan instance", () => {
 test("concurrent network imports finish before the explicit shared compilation starts", () => {
   const helperURL = new URL("../browser/net/helper.ts", import.meta.url).href;
   const runtimeURL = new URL("../browser/net/runtime.ts", import.meta.url).href;
-  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/buffer-module.ts", import.meta.url).href;
   const script = `
     import assert from "node:assert/strict";
     import { mock } from "bun:test";
-    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
+    const { loadBufferNetworkModule: originalLoad, NetworkOwnerFailure } = await import(${JSON.stringify(moduleURL)});
     const release = Promise.withResolvers();
     let imported = false, loads = 0, instances = 0;
-    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ NetworkOwnerFailure, async loadBufferNetworkModule() {
       assert.equal(imported, true, "network compilation must not suspend module evaluation");
       loads++;
       await release.promise;
@@ -170,13 +173,14 @@ test("concurrent network imports finish before the explicit shared compilation s
 test("explicit namespace initialization preserves a shared loader failure without retrying", () => {
   const namespaceURL = new URL("../browser/net/namespace.ts", import.meta.url).href;
   const runtimeURL = new URL("../browser/net/runtime.ts", import.meta.url).href;
-  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/buffer-module.ts", import.meta.url).href;
   const script = `
     import assert from "node:assert/strict";
     import { mock } from "bun:test";
     let loads = 0;
+    const { NetworkOwnerFailure } = await import(${JSON.stringify(moduleURL)});
     const failure = new TypeError("network module is unsupported");
-    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ NetworkOwnerFailure, async loadBufferNetworkModule() {
       loads++;
       throw failure;
     } }));
@@ -197,7 +201,7 @@ test("explicit namespace initialization preserves a shared loader failure withou
 for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]) {
   test(`genuine network loader rejection survives disposal by identity (${failure})`, () => {
     const root = new URL("../index.ts", import.meta.url).href;
-    const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+    const moduleURL = new URL("../browser/net/buffer-module.ts", import.meta.url).href;
     const worker = new URL("../browser/fs-worker.ts", import.meta.url).href;
     const script = `
       import assert from "node:assert/strict";
@@ -209,8 +213,9 @@ for (const failure of ["undefined", "null", "false", "0", '""', "accessorError"]
           get() { reads++; throw Error("loader error accessor must not run"); },
         }]),
       ));
+      const { NetworkOwnerFailure } = await import(${JSON.stringify(moduleURL)});
       const failure = ${failure};
-      mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+      mock.module(${JSON.stringify(moduleURL)}, () => ({ NetworkOwnerFailure, async loadBufferNetworkModule() {
         loads++;
         started.resolve();
         await release.promise;

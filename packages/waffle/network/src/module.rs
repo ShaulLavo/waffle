@@ -290,6 +290,21 @@ pub extern "C" fn net_address(id: u32, peer: u32) -> i32 {
         Ok(0)
     })
 }
+/// Live resource counts: 0 endpoints, 1 listeners, 2 chunks issued, 3 chunks free.
+#[unsafe(no_mangle)]
+pub extern "C" fn net_usage(kind: u32) -> i32 {
+    run(|module| {
+        let usage = module.net.usage();
+        let count = match kind {
+            0 => usage.endpoints,
+            1 => usage.listeners,
+            2 => usage.chunks_issued,
+            3 => usage.chunks_free,
+            _ => return Err(io::ErrorKind::InvalidInput.into()),
+        };
+        Ok(count as u32)
+    })
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn tcp_poll(id: u32) -> i32 {
     run(|module| module.tcp.poll(SocketId(id)).map(|()| 0))

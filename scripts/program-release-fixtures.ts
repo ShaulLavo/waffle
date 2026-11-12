@@ -7,6 +7,7 @@ import { transformationProvenance } from "../tools/program-derivation.ts";
 import { programToolSources } from "../packages/waffle/tooling/program-tools-package.ts";
 import { cappedWasiFixture } from "../packages/python/scripts/wasi-artifact-fixture.ts";
 import { buildNodeModules } from "../packages/waffle/build.ts";
+import { NETWORK_ASSETS } from "../packages/waffle/tooling/build-network.ts";
 
 const repository = resolve(import.meta.dirname, "..");
 const runtimeVersion: unknown = JSON.parse(
@@ -80,11 +81,7 @@ export async function prepareRuntimeFixture(scratch: string, version = String(ru
     resolve(tools, "program-transformer.json"),
     JSON.stringify(transformationProvenance()) + "\n",
   );
-  // This suite executes package metadata, not networking. Keep its network fixture explicit.
-  writeFileSync(
-    resolve(root, "browser/net/network.wasm"),
-    Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0),
-  );
+  writeNetworkFixture(root);
   await buildNodeModules(root, async () => {});
   const destination = resolve(scratch, "runtime-archive");
   mkdirSync(destination);
@@ -96,4 +93,24 @@ export async function prepareRuntimeFixture(scratch: string, version = String(ru
   const archive = resolve(destination, `waffle-${version}.tgz`);
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
   return { archive, sha256: digest, version };
+}
+
+/** Metadata tests carry explicit stand-ins and must never execute networking. */
+function writeNetworkFixture(root: string): void {
+  const wasm = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
+  const buffer =
+    'export function instantiate() { throw new Error("Networking is outside this metadata fixture"); }\n';
+  const assets = new Map<string, string | Uint8Array>([
+    ["network.wasm", wasm],
+    ["network.sha256", createHash("sha256").update(wasm).digest("hex")],
+    ["network.buffer.js", buffer],
+    ["network.buffer.sha256", createHash("sha256").update(buffer).digest("hex")],
+    ["network.input-hash", "metadata-only network fixture"],
+    ["network.growth.json", JSON.stringify({ fixture: "metadata-only, not executable" })],
+  ]);
+  for (const asset of NETWORK_ASSETS) {
+    const content = assets.get(asset);
+    if (content === undefined) throw new Error(`Missing metadata network fixture: ${asset}`);
+    writeFileSync(resolve(root, "browser/net", asset), content);
+  }
 }

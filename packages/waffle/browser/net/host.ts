@@ -723,7 +723,7 @@ export class NetHost {
     const code = codes[status] ?? "ECANCELED";
     return {
       name: "Error",
-      message: `${status === TCP_RESET ? "outbound" : "loopback"} TCP: ${code}`,
+      message: `${status === TCP_RESET ? "TCP" : "loopback TCP"}: ${code}`,
       code,
     };
   }
