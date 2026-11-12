@@ -26,6 +26,7 @@ export const GroupOp = Object.freeze({
   PUBLISH: 9,
   OPEN: 10,
   WITHDRAW: 11,
+  ROUTE_GROUP: 12,
 });
 
 export interface GroupRequestMessage {
