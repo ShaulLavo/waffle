@@ -3,6 +3,7 @@ import { idleMaintenanceCases } from "./idle-workspace-maintenance-browser.js";
 import { idleMetadataCases } from "./idle-workspace-metadata-browser.js";
 import { idleCancellationCases } from "./idle-workspace-cancellation-browser.js";
 import { storageQuotaControl } from "./storage-quota-control.js";
+import { storageLifecycleMarker } from "./storage-lifecycle-marker.js";
 import type { StorageAllocationHooks } from "./storage-allocation.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import {
@@ -301,8 +302,11 @@ export function idleWorkspaceCases(
           "runtime owns workspace",
         );
       } finally {
+        storageLifecycleMarker("runtime-dispose-call", name);
         await runtime.dispose();
+        storageLifecycleMarker("runtime-dispose-fulfilled", name);
       }
+      storageLifecycleMarker("idle-open-after-dispose", name);
       const owner = await idle(name);
       try {
         assert(

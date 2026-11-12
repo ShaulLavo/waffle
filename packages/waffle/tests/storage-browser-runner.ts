@@ -29,6 +29,7 @@ if (process.argv[2] === "ios-safari") {
   );
 }
 const lifecycle = new BrowserRunnerLifecycle();
+const observeLifecycle = process.env.STORAGE_LIFECYCLE_OBSERVER === "1";
 let origin = "",
   activeDiagnostics: NavigationDiagnostics | undefined,
   persistentShutdownFailed = false;
@@ -47,7 +48,11 @@ async function inWorker<T>(
     } else context = await browser.newContext();
     const page = await context.newPage();
     page.on("console", (message) => {
-      if (message.text().startsWith("Storage usage measurement ")) console.log(message.text());
+      if (
+        message.text().startsWith("Storage usage measurement ") ||
+        message.text().startsWith("STORAGE_LIFECYCLE ")
+      )
+        console.log(message.text());
     });
     const caseName =
       request.kind === "list"
@@ -161,9 +166,20 @@ try {
     {
       "/": "<!doctype html><title>Storage tests</title>",
       "/tests.js": await browserBundle(resolve(import.meta.dir, "storage-browser.ts")),
-      "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+      "/fs-worker.js": await browserBundle(
+        resolve(
+          import.meta.dir,
+          observeLifecycle ? "fixtures/storage-lifecycle-fs-worker.ts" : "../browser/fs-worker.ts",
+        ),
+      ),
       "/open-fs-worker.js": await browserBundle(resolve(import.meta.dir, "storage-open-worker.ts")),
-      "/worker.js": `(${storageWorker.toString()})();`,
+      "/lifecycle-observer.js": observeLifecycle
+        ? await browserBundle(resolve(import.meta.dir, "storage-lifecycle-observer.ts"))
+        : "",
+      "/worker.js":
+        (observeLifecycle
+          ? 'import { installStorageLifecycleObserver } from "/lifecycle-observer.js"; installStorageLifecycleObserver("storage-case");\n'
+          : "") + `(${storageWorker.toString()})();`,
     },
     Number(process.env.STORAGE_TEST_PORT ?? 0),
     () => {

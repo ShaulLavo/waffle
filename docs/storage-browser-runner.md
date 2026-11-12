@@ -41,6 +41,12 @@ failure and real-storage controls, use the cached Playwright engines:
 bun packages/waffle/tests/page-runner/browser-controls-runner.ts chromium webkit --result /absolute/controls.json
 ```
 
+Set `STORAGE_LIFECYCLE_OBSERVER=1` on the desktop storage runner to log native
+IndexedDB and Web Locks lifecycle observations. CI enables it for the parallel
+browser group. The observer adds native queries and promise reactions that can
+change scheduling. A missing event does not prove a lock was released, and a
+passing observed run does not establish what happened in an earlier failure.
+
 These controls test reporting failures, the original Worker timeout, document death,
 and exact-name cleanup without deleting foreign-prefix storage. They do not count
 as an iOS storage-suite run. The standard browser matrix and CI run these controls
