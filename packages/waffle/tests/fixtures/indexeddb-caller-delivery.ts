@@ -55,6 +55,7 @@ export function indexeddbCallerDelivery(
     },
   };
   const original = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   Object.defineProperty(globalThis, "indexedDB", {
     configurable: true,
     value: { open: () => delivered(database) },
@@ -79,6 +80,7 @@ export function indexeddbCallerDelivery(
       return name.includes("maintenance") ? result : Promise.race([result, loss.promise]);
     },
   };
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { locks } });
   return {
     locks,
     database,
@@ -91,6 +93,8 @@ export function indexeddbCallerDelivery(
     restore() {
       if (original) Object.defineProperty(globalThis, "indexedDB", original);
       else Reflect.deleteProperty(globalThis, "indexedDB");
+      if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+      else Reflect.deleteProperty(globalThis, "navigator");
     },
   };
 }

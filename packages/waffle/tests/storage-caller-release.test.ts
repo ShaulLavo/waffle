@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { indexeddbCallerDelivery } from "./fixtures/indexeddb-caller-delivery.js";
+import { openFilesystemWorkerBackend } from "../browser/filesystem-worker-backend.js";
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   const result = await promise.then(
@@ -11,16 +12,25 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   if (result.kind !== "fail") throw new Error("Expected the original operation to fail");
   return result.error;
 }
-async function recovery(primary: unknown, failConfirmation: boolean): Promise<void> {
+async function recovery(
+  caller: "committed" | "worker",
+  primary: unknown,
+  failConfirmation: boolean,
+): Promise<void> {
   const confirmation = new Error("recovery confirmation");
   const native = indexeddbCallerDelivery({
     recoveryFailure: { value: primary },
     ...(failConfirmation ? { queryFailure: { value: confirmation } } : {}),
   });
   try {
-    const result = await rejection(
-      IndexedDBStorage.openCommitted("recovery", { locks: native.locks }),
-    );
+    const opening =
+      caller === "committed"
+        ? IndexedDBStorage.openCommitted("recovery", { locks: native.locks })
+        : openFilesystemWorkerBackend(
+            { implementation: "indexeddb", name: "worker-recovery" },
+            { onOwnershipLost() {} },
+          );
+    const result = await rejection(opening);
     if (!failConfirmation) {
       expect(result).toBe(primary);
       return;
@@ -35,12 +45,16 @@ async function recovery(primary: unknown, failConfirmation: boolean): Promise<vo
     native.restore();
   }
 }
-for (const primary of [undefined, null, false, 0, "", new Error("recovery")]) {
-  test(`committed recovery retains primary and confirmation: ${String(primary)}`, () =>
-    recovery(primary, true));
-  test(`committed recovery preserves sole primary: ${String(primary)}`, () =>
-    recovery(primary, false));
+function recoveryCases(caller: "committed" | "worker"): void {
+  for (const primary of [undefined, null, false, 0, "", new Error("recovery")]) {
+    test(`${caller} recovery retains primary and confirmation: ${String(primary)}`, () =>
+      recovery(caller, primary, true));
+    test(`${caller} recovery preserves sole primary: ${String(primary)}`, () =>
+      recovery(caller, primary, false));
+  }
 }
+recoveryCases("committed");
+recoveryCases("worker");
 async function background(mode: "loss" | "versionchange"): Promise<void> {
   const path = fileURLToPath(
     new URL("./fixtures/indexeddb-background-confirmation.ts", import.meta.url),
