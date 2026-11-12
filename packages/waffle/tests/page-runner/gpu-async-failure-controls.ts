@@ -26,6 +26,7 @@ export async function runGpuAsyncFailureControls(root: string, scratch: string, 
           inventory: () =>
             adapter.inventory().map((item) => ({
               ...item,
+              console: undefined,
               drive:
                 mode === "cancel-after-open"
                   ? async (host) => {

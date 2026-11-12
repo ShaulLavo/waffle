@@ -1,4 +1,5 @@
 import { BrowserObservation, requestEvent } from "./browser-observation.js";
+import { loadBootstrap } from "./bootstrap-control.js";
 import type { DriverObservationBinding } from "./driver.js";
 import { PlaywrightDriver } from "./playwright-driver.js";
 import { BrowserRunnerLifecycle } from "../browser-runner-lifecycle.js";
@@ -2023,9 +2024,7 @@ class ObservedHostDriver extends HostDriver {
   ledger: BrowserObservation | undefined;
   override async navigate(url: string): Promise<void> {
     if (new URL(url).pathname === "/_waffle_observation_bootstrap") {
-      const response = await fetch(url);
-      if (!response.ok || !(await response.text()).includes("data-waffle-observation"))
-        throw new Error("No owned inert bootstrap");
+      await loadBootstrap(url);
       this.currentURL = url;
       this.trace.push("bootstrap");
       return;

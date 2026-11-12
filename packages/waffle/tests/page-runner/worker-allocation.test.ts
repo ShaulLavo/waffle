@@ -86,15 +86,19 @@ for (const value of [
 
 test("fixture admission follows the live exact document, token and case", () => {
   const { c, state } = control();
-  expect(c.admitFixture("t", "d", "c")).toBe(state);
+  const limits = {
+    budgets: { hello: 1000, heartbeat: 1000, case: 1000, group: 2000, run: 5000 },
+    runStartedAt: performance.now(),
+  };
+  expect(c.admitFixture("t", "d", "c", limits).state).toBe(state);
   for (const [token, doc, id] of [
     ["wrong", "d", "c"],
     ["t", "old", "c"],
     ["t", "d", "other"],
   ])
-    expect(() => c.admitFixture(token!, doc!, id!)).toThrow(ObservationClosed);
+    expect(() => c.admitFixture(token!, doc!, id!, limits)).toThrow(ObservationClosed);
   c.abandon("revoked");
-  expect(() => c.admitFixture("t", "d", "c")).toThrow(ObservationClosed);
+  expect(() => c.admitFixture("t", "d", "c", limits)).toThrow(ObservationClosed);
 });
 test("settlement must repeat the exact admitted metadata and cannot be reported twice", () => {
   const { c, send } = control();

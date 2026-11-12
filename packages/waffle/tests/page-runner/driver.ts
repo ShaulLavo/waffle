@@ -33,6 +33,8 @@ export interface DriverPressControl {
 }
 export interface DriverObservation {
   readonly failure: Promise<Error>;
+  console?(): import("./console-observation.js").ConsoleSummary;
+  settleConsole?(): Promise<void>;
   navigationComplete(): void;
   check(): void;
   workers(): readonly HostWorker[];
@@ -47,6 +49,7 @@ export interface DriverObservation {
   stop(): Promise<void>;
 }
 export type DriverObservationBinding = {
+  console?: boolean;
   window: string;
   bootstrapURL: string;
   expectedURL: string;
